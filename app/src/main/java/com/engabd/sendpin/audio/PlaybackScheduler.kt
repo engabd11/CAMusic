@@ -1,7 +1,7 @@
-package com.cyborgautomation.sendspin.audio
+package com.engabd.sendpin.audio
 
-import com.cyborgautomation.sendspin.protocol.AudioFrame
-import com.cyborgautomation.sendspin.protocol.ClockSync
+import com.engabd.sendpin.protocol.AudioFrame
+import com.engabd.sendpin.protocol.ClockSync
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collect

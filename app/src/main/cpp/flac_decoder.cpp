@@ -155,13 +155,13 @@ void flac_decoder_destroy(void* handle) {
 #include <jni.h>
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_com_cyborgautomation_sendspin_audio_NativeFlacDecoder_nativeCreate(
+Java_com_engabd_sendpin_audio_NativeFlacDecoder_nativeCreate(
     JNIEnv*, jclass, jint sampleRate, jint channels, jint bitDepth) {
     return reinterpret_cast<jlong>(flac_decoder_create(sampleRate, channels, bitDepth));
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_cyborgautomation_sendspin_audio_NativeFlacDecoder_nativeDecode(
+Java_com_engabd_sendpin_audio_NativeFlacDecoder_nativeDecode(
     JNIEnv* env, jclass, jlong handle,
     jbyteArray flacData, jbyteArray pcmOut, jint maxBytes) {
     jbyte* flac = env->GetByteArrayElements(flacData, nullptr);
@@ -178,13 +178,13 @@ Java_com_cyborgautomation_sendspin_audio_NativeFlacDecoder_nativeDecode(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_cyborgautomation_sendspin_audio_NativeFlacDecoder_nativeReset(
+Java_com_engabd_sendpin_audio_NativeFlacDecoder_nativeReset(
     JNIEnv*, jclass, jlong handle) {
     flac_decoder_reset(reinterpret_cast<void*>(handle));
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_cyborgautomation_sendspin_audio_NativeFlacDecoder_nativeDestroy(
+Java_com_engabd_sendpin_audio_NativeFlacDecoder_nativeDestroy(
     JNIEnv*, jclass, jlong handle) {
     flac_decoder_destroy(reinterpret_cast<void*>(handle));
 }

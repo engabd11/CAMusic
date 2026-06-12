@@ -1,4 +1,4 @@
-package com.cyborgautomation.sendspin.protocol
+package com.engabd.sendpin.protocol
 
 sealed class AudioFrame {
     abstract val timestamp: Long  // microseconds, server time

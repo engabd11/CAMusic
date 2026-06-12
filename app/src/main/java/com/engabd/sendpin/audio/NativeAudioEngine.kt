@@ -1,8 +1,8 @@
-package com.cyborgautomation.sendspin.audio
+package com.engabd.sendpin.audio
 
 object NativeAudioEngine {
     init {
-        System.loadLibrary("sendspin_audio")
+        System.loadLibrary("sendpin_audio")
     }
 
     external fun nativeStart(sampleRate: Int, channels: Int, bitDepth: Int): Int

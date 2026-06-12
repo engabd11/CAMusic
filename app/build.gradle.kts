@@ -6,11 +6,11 @@ plugins {
 }
 
 android {
-    namespace = "com.cyborgautomation.sendspin"
+    namespace = "com.engabd.sendpin"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.cyborgautomation.sendspin"
+        applicationId = "com.engabd.sendpin"
         minSdk = 31
         targetSdk = 35
         versionCode = 1

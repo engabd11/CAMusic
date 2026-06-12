@@ -16,7 +16,7 @@ app/src/main/
 │   ├── audio_engine.cpp    # AAudio/Oboe output engine
 │   ├── flac_decoder.cpp    # libFLAC stream decoder
 │   └── audio_engine.h / flac_decoder.h
-├── java/com/cyborgautomation/sendspin/
+├── java/com/engabd/sendspin/
 │   ├── MainActivity.kt
 │   ├── audio/              # Audio pipeline
 │   │   ├── AudioOutput.kt

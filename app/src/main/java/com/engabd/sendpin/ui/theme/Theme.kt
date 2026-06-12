@@ -1,4 +1,4 @@
-package com.cyborgautomation.sendspin.ui.theme
+package com.engabd.sendpin.ui.theme
 
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme

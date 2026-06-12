@@ -1,12 +1,12 @@
-package com.cyborgautomation.sendspin
+package com.engabd.sendpin
 
 import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import com.cyborgautomation.sendspin.service.SendspinService
-import com.cyborgautomation.sendspin.ui.App
+import com.engabd.sendpin.service.SendspinService
+import com.engabd.sendpin.ui.App
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {

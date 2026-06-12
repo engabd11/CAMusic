@@ -210,13 +210,13 @@ float engine_get_buffer_fill() {
 #include <jni.h>
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_cyborgautomation_sendspin_audio_NativeAudioEngine_nativeStart(
+Java_com_engabd_sendpin_audio_NativeAudioEngine_nativeStart(
     JNIEnv* env, jobject, jint sampleRate, jint channels, jint bitDepth) {
     return engine_start((int)sampleRate, (int)channels, (int)bitDepth);
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_cyborgautomation_sendspin_audio_NativeAudioEngine_nativeWrite(
+Java_com_engabd_sendpin_audio_NativeAudioEngine_nativeWrite(
     JNIEnv* env, jobject, jbyteArray pcmData, jint byteCount) {
     jbyte* data = env->GetByteArrayElements(pcmData, nullptr);
     int result = engine_write(reinterpret_cast<const uint8_t*>(data), (int)byteCount);
@@ -225,25 +225,25 @@ Java_com_cyborgautomation_sendspin_audio_NativeAudioEngine_nativeWrite(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_cyborgautomation_sendspin_audio_NativeAudioEngine_nativeStop(
+Java_com_engabd_sendpin_audio_NativeAudioEngine_nativeStop(
     JNIEnv*, jobject) {
     engine_stop();
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_cyborgautomation_sendspin_audio_NativeAudioEngine_nativeSetVolume(
+Java_com_engabd_sendpin_audio_NativeAudioEngine_nativeSetVolume(
     JNIEnv*, jobject, jfloat volume) {
     engine_set_volume((float)volume);
 }
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_com_cyborgautomation_sendspin_audio_NativeAudioEngine_nativeGetFramesWritten(
+Java_com_engabd_sendpin_audio_NativeAudioEngine_nativeGetFramesWritten(
     JNIEnv*, jobject) {
     return (jlong)engine_get_frames_written();
 }
 
 extern "C" JNIEXPORT jfloat JNICALL
-Java_com_cyborgautomation_sendspin_audio_NativeAudioEngine_nativeGetBufferFill(
+Java_com_engabd_sendpin_audio_NativeAudioEngine_nativeGetBufferFill(
     JNIEnv*, jobject) {
     return (jfloat)engine_get_buffer_fill();
 }

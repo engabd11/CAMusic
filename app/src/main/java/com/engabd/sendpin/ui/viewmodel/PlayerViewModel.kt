@@ -1,13 +1,13 @@
-package com.cyborgautomation.sendspin.ui.viewmodel
+package com.engabd.sendpin.ui.viewmodel
 
 import android.app.Application
 import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.cyborgautomation.sendspin.audio.*
-import com.cyborgautomation.sendspin.discovery.MaDiscovery
-import com.cyborgautomation.sendspin.discovery.PlayerIdentity
-import com.cyborgautomation.sendspin.protocol.*
+import com.engabd.sendpin.audio.*
+import com.engabd.sendpin.discovery.MaDiscovery
+import com.engabd.sendpin.discovery.PlayerIdentity
+import com.engabd.sendpin.protocol.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 

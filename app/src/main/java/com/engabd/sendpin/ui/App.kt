@@ -1,4 +1,4 @@
-package com.cyborgautomation.sendspin.ui
+package com.engabd.sendpin.ui
 
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -12,9 +12,9 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import com.cyborgautomation.sendspin.ui.screens.NowPlayingScreen
-import com.cyborgautomation.sendspin.ui.screens.SettingsScreen
-import com.cyborgautomation.sendspin.ui.theme.SendspinTheme
+import com.engabd.sendpin.ui.screens.NowPlayingScreen
+import com.engabd.sendpin.ui.screens.SettingsScreen
+import com.engabd.sendpin.ui.theme.SendspinTheme
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

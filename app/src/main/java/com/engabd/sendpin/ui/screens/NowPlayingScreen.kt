@@ -1,4 +1,4 @@
-package com.cyborgautomation.sendspin.ui.screens
+package com.engabd.sendpin.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -21,7 +21,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
-import com.cyborgautomation.sendspin.ui.viewmodel.PlayerViewModel
+import com.engabd.sendpin.ui.viewmodel.PlayerViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

@@ -1,4 +1,4 @@
-package com.cyborgautomation.sendspin.protocol
+package com.engabd.sendpin.protocol
 
 import kotlinx.serialization.Serializable
 

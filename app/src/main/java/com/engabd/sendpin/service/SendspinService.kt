@@ -1,4 +1,4 @@
-package com.cyborgautomation.sendspin.service
+package com.engabd.sendpin.service
 
 import android.app.*
 import android.content.BroadcastReceiver
@@ -11,14 +11,14 @@ import android.media.AudioManager
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
-import com.cyborgautomation.sendspin.MainActivity
-import com.cyborgautomation.sendspin.audio.AudioOutput
-import com.cyborgautomation.sendspin.audio.FormatNegotiator
-import com.cyborgautomation.sendspin.audio.NativeFlacDecoder
-import com.cyborgautomation.sendspin.audio.NegotiatedFormat
-import com.cyborgautomation.sendspin.audio.PlaybackScheduler
-import com.cyborgautomation.sendspin.discovery.PlayerIdentity
-import com.cyborgautomation.sendspin.protocol.*
+import com.engabd.sendpin.MainActivity
+import com.engabd.sendpin.audio.AudioOutput
+import com.engabd.sendpin.audio.FormatNegotiator
+import com.engabd.sendpin.audio.NativeFlacDecoder
+import com.engabd.sendpin.audio.NegotiatedFormat
+import com.engabd.sendpin.audio.PlaybackScheduler
+import com.engabd.sendpin.discovery.PlayerIdentity
+import com.engabd.sendpin.protocol.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
@@ -27,11 +27,11 @@ class SendspinService : Service() {
     companion object {
         const val CHANNEL_ID = "sendspin_playback"
         const val NOTIFICATION_ID = 1001
-        const val ACTION_PLAY_PAUSE = "com.cyborgautomation.sendspin.PLAY_PAUSE"
-        const val ACTION_NEXT = "com.cyborgautomation.sendspin.NEXT"
-        const val ACTION_STOP = "com.cyborgautomation.sendspin.STOP"
-        const val ACTION_CONNECT = "com.cyborgautomation.sendspin.CONNECT"
-        const val ACTION_DISCONNECT = "com.cyborgautomation.sendspin.DISCONNECT"
+        const val ACTION_PLAY_PAUSE = "com.engabd.sendpin.PLAY_PAUSE"
+        const val ACTION_NEXT = "com.engabd.sendpin.NEXT"
+        const val ACTION_STOP = "com.engabd.sendpin.STOP"
+        const val ACTION_CONNECT = "com.engabd.sendpin.CONNECT"
+        const val ACTION_DISCONNECT = "com.engabd.sendpin.DISCONNECT"
         const val EXTRA_SERVER_URL = "server_url"
     }
 

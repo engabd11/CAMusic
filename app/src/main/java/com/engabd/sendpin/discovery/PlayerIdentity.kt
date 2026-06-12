@@ -1,8 +1,8 @@
-package com.cyborgautomation.sendspin.discovery
+package com.engabd.sendpin.discovery
 
 import android.os.Build
 import android.provider.Settings
-import com.cyborgautomation.sendspin.protocol.DeviceInfo
+import com.engabd.sendpin.protocol.DeviceInfo
 import java.util.*
 
 object PlayerIdentity {

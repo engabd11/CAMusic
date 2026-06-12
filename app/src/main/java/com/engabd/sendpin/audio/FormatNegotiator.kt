@@ -1,6 +1,6 @@
-package com.cyborgautomation.sendspin.audio
+package com.engabd.sendpin.audio
 
-import com.cyborgautomation.sendspin.protocol.AudioFormatSpec
+import com.engabd.sendpin.protocol.AudioFormatSpec
 
 data class NegotiatedFormat(
     val codec: String,    // "pcm" or "flac"

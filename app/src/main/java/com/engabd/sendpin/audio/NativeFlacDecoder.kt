@@ -1,4 +1,4 @@
-package com.cyborgautomation.sendspin.audio
+package com.engabd.sendpin.audio
 
 class NativeFlacDecoder(
     private val sampleRate: Int,
@@ -31,7 +31,7 @@ class NativeFlacDecoder(
 
     companion object {
         init {
-            System.loadLibrary("sendspin_audio")
+            System.loadLibrary("sendpin_audio")
         }
     }
 

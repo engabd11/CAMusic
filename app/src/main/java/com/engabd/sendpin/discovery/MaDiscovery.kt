@@ -1,4 +1,4 @@
-package com.cyborgautomation.sendspin.discovery
+package com.engabd.sendpin.discovery
 
 import android.content.Context
 import android.net.nsd.NsdManager

@@ -1,4 +1,4 @@
-package com.cyborgautomation.sendspin.audio
+package com.engabd.sendpin.audio
 
 class AudioOutput(
     private val sampleRate: Int,

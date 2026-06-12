@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22.1)
-project("sendspin_audio")
+project("sendpin_audio")
 
 find_library(log-lib log)
 
@@ -13,14 +13,14 @@ else()
     find_library(OBOE_LIB oboe REQUIRED)
 endif()
 
-add_library(sendspin_audio SHARED
+add_library(sendpin_audio SHARED
     audio_engine.cpp
     flac_decoder.cpp
 )
 
-target_include_directories(sendspin_audio PRIVATE ${CMAKE_SOURCE_DIR})
+target_include_directories(sendpin_audio PRIVATE ${CMAKE_SOURCE_DIR})
 
-target_link_libraries(sendspin_audio
+target_link_libraries(sendpin_audio
     ${log-lib}
     ${OBOE_LIB}
     android
@@ -28,6 +28,6 @@ target_link_libraries(sendspin_audio
 
 # Uncomment when libFLAC is cross-compiled:
 # if(EXISTS ${FLAC_LIB})
-#     target_link_libraries(sendspin_audio ${FLAC_LIB})
-#     target_compile_definitions(sendspin_audio PRIVATE FLAC_ENABLED=1)
+#     target_link_libraries(sendpin_audio ${FLAC_LIB})
+#     target_compile_definitions(sendpin_audio PRIVATE FLAC_ENABLED=1)
 # endif()
