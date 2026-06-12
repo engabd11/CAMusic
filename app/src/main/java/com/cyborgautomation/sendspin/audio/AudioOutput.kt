@@ -9,7 +9,7 @@ class AudioOutput(
     private var started = false
 
     fun start(): Boolean {
-        if (started) stop()
+        if (started) close()
         val result = NativeAudioEngine.start(sampleRate, channels, bitDepth)
         started = result == 0
         return started

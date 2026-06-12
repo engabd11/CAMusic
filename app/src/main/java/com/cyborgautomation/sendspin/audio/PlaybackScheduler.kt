@@ -4,7 +4,9 @@ import com.cyborgautomation.sendspin.protocol.AudioFrame
 import com.cyborgautomation.sendspin.protocol.ClockSync
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collect
 import java.util.*
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
@@ -27,7 +29,6 @@ class PlaybackScheduler(
     private val engageUs: Long = 3000    // 3ms — start correcting
     private val deadbandUs: Long = 1500  // 1.5ms — stop correcting
     private val reanchorUs: Long = 500_000  // 500ms — full resync
-    private val maxSpeedCorrection = 0.04f  // 4% max speed change
 
     fun start() {
         if (!audioOutput.start()) return
@@ -54,8 +55,9 @@ class PlaybackScheduler(
     }
 
     private suspend fun run() {
-        while (started && isActive) {
-            val frame = synchronized(queue) { queue.poll() } ?: run {
+        while (started && coroutineContext.isActive) {
+            val frame = synchronized(queue) { queue.poll() }
+            if (frame == null) {
                 delay(5)
                 continue
             }
@@ -72,30 +74,27 @@ class PlaybackScheduler(
             val drift = frame.timestamp - cursorUs
 
             // Drift correction
-            if (kotlin.math.abs(drift) > reanchorUs) {
+            if (abs(drift) > reanchorUs) {
                 // Too far — full resync
                 cursorUs = frame.timestamp
-            } else if (kotlin.math.abs(drift) > engageUs) {
-                // Active correction: adjust play speed
-                val correctionFrames = (kotlin.math.abs(drift) / 2000).toInt()
-                if (drift > 0) {
-                    // Behind: insert silence frames to catch up
-                    // (handled by consuming frames faster — no delay)
-                } else {
-                    // Ahead: drop frames
+            } else if (abs(drift) > engageUs) {
+                // Ahead: drop frames
+                if (drift < 0) {
+                    val correctionFrames = (abs(drift) / 2000).toInt()
                     synchronized(queue) {
                         repeat(min(correctionFrames, queue.size)) {
                             queue.poll()
                         }
                     }
                 }
+                // Behind: no delay → catch up naturally
             }
 
             // Wait until playback time
             val targetLocal = clockSync.serverTimeToLocal(frame.timestamp)
             val waitUs = targetLocal - (System.nanoTime() / 1000)
             if (waitUs > 0) {
-                delay(waitUs / 1000, (waitUs % 1000).toInt())
+                delay(waitUs / 1000)  // Convert microseconds to milliseconds
             }
 
             // Resolve PCM bytes

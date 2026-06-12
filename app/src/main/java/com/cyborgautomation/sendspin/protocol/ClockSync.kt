@@ -1,6 +1,7 @@
 package com.cyborgautomation.sendspin.protocol
 
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.first
 
 class ClockSync(private val client: SendspinClient) {
@@ -63,18 +64,19 @@ class ClockSync(private val client: SendspinClient) {
         client.send(Message.ClientTime(t1))
 
         // Wait for server/time response (timeout: 5 seconds)
-        val response = withTimeoutOrNull(5000) {
+        val response: Message.ServerTime? = withTimeoutOrNull(5000) {
             client.messages
                 .filterIsInstance<Message.ServerTime>()
                 .first()
-        } ?: return null
+        }
+        if (response == null) return null
 
         val t4 = systemTimeUs()
-        val t2 = response.t2
-        val t3 = response.t3
+        val t2: Long = response.t2
+        val t3: Long = response.t3
 
         // NTP offset: ((t2 - t1) + (t3 - t4)) / 2
-        val offset = ((t2 - t1) + (t3 - t4)) / 2
+        val offset = ((t2 - t1) + (t3 - t4)) / 2L
         return offset
     }
 

@@ -20,6 +20,8 @@ import com.cyborgautomation.sendspin.audio.PlaybackScheduler
 import com.cyborgautomation.sendspin.discovery.PlayerIdentity
 import com.cyborgautomation.sendspin.protocol.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.first
 
 class SendspinService : Service() {
     companion object {
@@ -440,11 +442,7 @@ class SendspinService : Service() {
             .addAction(android.R.drawable.ic_media_previous, "Previous", null) // Not yet implemented
             .addAction(playPauseIcon, playPauseLabel, playPauseIntent)
             .addAction(android.R.drawable.ic_media_next, "Next", nextIntent)
-            .addAction(android.R.drawable.ic_media_stop, "Stop", stopIntent)
-            .setStyle(
-                androidx.media.app.NotificationCompat.MediaStyle()
-                    .setShowActionsInCompactView(0, 1, 2)
-            )
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stopIntent)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
 
