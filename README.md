@@ -1,6 +1,11 @@
-# Sendspin for Android
+# Sendpin for Android
 
-**Bit-perfect 24-bit hi-res sendspin player for Music Assistant.**
+> **⚠️ Work in Progress — Not Ready Yet**
+>
+> This project is actively under development. It does not build or function yet.
+> Come back later, or watch this repo for updates.
+
+**Bit-perfect 24-bit hi-res sendpin player for Music Assistant.**
 
 Stream FLAC 96/24 or PCM 96/24 from your Music Assistant server to your Android device with zero quality loss, using AAudio's exclusive I24 mode to bypass Android's 16-bit audio mixer.
 
@@ -19,7 +24,7 @@ Stream FLAC 96/24 or PCM 96/24 from your Music Assistant server to your Android 
 ## Requirements
 
 - Android 12+ (API 31)
-- Music Assistant server on your network with sendspin support
+- Music Assistant server on your network with sendpin support
 - ARM64 device recommended (x86_64 for emulator testing)
 
 ## Architecture
@@ -32,11 +37,11 @@ Stream FLAC 96/24 or PCM 96/24 from your Music Assistant server to your Android 
 │                    PlayerViewModel                        │
 │            (state management, lifecycle)                  │
 ├──────────────────────┬──────────────────────────────────┤
-│   Sendspin Protocol   │        Audio Pipeline             │
+│   Sendpin Protocol    │        Audio Pipeline             │
 │   (Kotlin)            │        (C++/JNI)                  │
 │                       │                                  │
 │  • Messages.kt        │  • audio_engine.cpp (Oboe/AAudio) │
-│  • SendspinClient.kt  │  • flac_decoder.cpp (libFLAC)    │
+│  • SendpinClient.kt   │  • flac_decoder.cpp (libFLAC)    │
 │  • ClockSync.kt       │  • Ring buffer (packed i24 LE)   │
 │  • AudioFrame.kt      │                                  │
 ├──────────────────────┴──────────────────────────────────┤
@@ -65,7 +70,7 @@ WebSocket Binary Frame
 2. Install NDK 26+ (for C++/CMake support)
 3. Clone and open in Android Studio:
    ```bash
-   git clone https://github.com/engabd11/sendspin-android.git
+   git clone https://github.com/engabd11/sendpin-android.git
    ```
 4. Sync Gradle and run on device or emulator
 

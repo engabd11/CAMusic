@@ -3,15 +3,14 @@ project("sendspin_audio")
 
 find_library(log-lib log)
 
-# Oboe: use NDK source (most reliable across NDK versions)
-# NDK r26+ provides Oboe at sources/third_party/oboe
-set(OBOE_DIR "${CMAKE_ANDROID_NDK}/sources/third_party/oboe")
-if(EXISTS "${OBOE_DIR}/CMakeLists.txt")
-    add_subdirectory("${OBOE_DIR}" oboe_build)
-    set(OBOE_TARGET oboe)
+# Oboe: use NDK sources (reliable across all NDK versions)
+# In NDK r21+, Oboe is at sources/third_party/oboe
+if(EXISTS "${ANDROID_NDK}/sources/third_party/oboe/CMakeLists.txt")
+    add_subdirectory("${ANDROID_NDK}/sources/third_party/oboe" "${CMAKE_CURRENT_BINARY_DIR}/oboe")
+    set(OBOE_LIB oboe)
 else()
-    # Fallback: try prebuilt find_library
-    find_library(OBOE_TARGET oboe)
+    # Fallback: try prebuilt
+    find_library(OBOE_LIB oboe REQUIRED)
 endif()
 
 add_library(sendspin_audio SHARED
@@ -23,7 +22,7 @@ target_include_directories(sendspin_audio PRIVATE ${CMAKE_SOURCE_DIR})
 
 target_link_libraries(sendspin_audio
     ${log-lib}
-    ${OBOE_TARGET}
+    ${OBOE_LIB}
     android
 )
 

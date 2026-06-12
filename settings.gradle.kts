@@ -15,5 +15,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "sendspin"
+rootProject.name = "sendpin"
 include(":app")

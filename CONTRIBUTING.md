@@ -1,9 +1,9 @@
-# Contributing to Sendspin for Android
+# Contributing to Sendpin for Android
 
 ## Getting Started
 
 1. Fork the repository
-2. Clone your fork: `git clone https://github.com/YOUR_USERNAME/sendspin-android.git`
+2. Clone your fork: `git clone https://github.com/YOUR_USERNAME/sendpin-android.git`
 3. Open in Android Studio
 4. Create a feature branch: `git checkout -b feat/my-feature`
 
@@ -27,7 +27,7 @@ app/src/main/
 │   ├── discovery/          # mDNS discovery
 │   │   ├── MaDiscovery.kt
 │   │   └── PlayerIdentity.kt
-│   ├── protocol/           # Sendspin WebSocket protocol
+│   ├── protocol/           # Sendpin WebSocket protocol
 │   │   ├── AudioFrame.kt
 │   │   ├── ClockSync.kt
 │   │   ├── Messages.kt
