@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Simple S icon on dark background -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M42,38 L66,38 L66,42 L48,42 L48,52 L64,52 L64,56 L44,56 L44,70 L66,70 L66,74 L42,74 Z"/>
+</vector>
