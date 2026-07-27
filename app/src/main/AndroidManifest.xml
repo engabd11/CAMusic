@@ -12,6 +12,7 @@
         android:icon="@mipmap/ic_launcher"
         android:label="Sendspin"
         android:supportsRtl="true"
+        android:usesCleartextTraffic="true"
         android:theme="@style/Theme.Sendspin">
 
         <activity
