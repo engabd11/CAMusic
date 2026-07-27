@@ -8,6 +8,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -18,78 +20,81 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.engabd.sendpin.ma.LibraryViewModel
-import com.engabd.sendpin.ma.MaApiClient
+import com.engabd.sendpin.ma.LibraryViewModel.Backend
 import com.engabd.sendpin.ma.MaItem
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LibraryScreen(viewModel: LibraryViewModel = viewModel()) {
-    val connState by viewModel.connState.collectAsState()
+    val ready by viewModel.ready.collectAsState()
+    val backend by viewModel.backend.collectAsState()
     val snackbar = remember { SnackbarHostState() }
 
-    LaunchedEffect(Unit) {
-        viewModel.toast.collect { snackbar.showSnackbar(it) }
-    }
+    LaunchedEffect(Unit) { viewModel.toast.collect { snackbar.showSnackbar(it) } }
 
     Scaffold(
         topBar = { TopAppBar(title = { Text("Library") }) },
         snackbarHost = { SnackbarHost(snackbar) },
     ) { padding ->
-        Box(Modifier.padding(padding).fillMaxSize()) {
-            if (connState != MaApiClient.State.CONNECTED) {
-                ConnectForm(viewModel, connState)
-            } else {
-                BrowseUi(viewModel)
-            }
+        Column(Modifier.padding(padding).fillMaxSize()) {
+            BackendToggle(backend, viewModel::setBackend)
+            if (!ready) ConnectForm(viewModel, backend) else BrowseUi(viewModel)
         }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ConnectForm(viewModel: LibraryViewModel, connState: MaApiClient.State) {
-    val baseUrl by viewModel.baseUrl.collectAsState()
-    val username by viewModel.username.collectAsState()
-    val password by viewModel.password.collectAsState()
-
-    Column(
-        Modifier.fillMaxSize().padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+private fun BackendToggle(backend: Backend, onSelect: (Backend) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Text("Connect to Music Assistant", style = MaterialTheme.typography.titleMedium)
-        Text(
-            "Browsing and search use the Music Assistant API. Enter your server and login.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        OutlinedTextField(
-            value = baseUrl, onValueChange = viewModel::setBaseUrl,
-            label = { Text("Server URL") }, placeholder = { Text("http://192.168.0.10:8095") },
-            singleLine = true, modifier = Modifier.fillMaxWidth(),
-        )
-        OutlinedTextField(
-            value = username, onValueChange = viewModel::setUsername,
-            label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-        )
-        OutlinedTextField(
-            value = password, onValueChange = viewModel::setPassword,
-            label = { Text("Password") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-        )
-        Button(
-            onClick = { viewModel.connect() },
-            enabled = baseUrl.isNotBlank() && connState != MaApiClient.State.CONNECTING,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            if (connState == MaApiClient.State.CONNECTING) {
-                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-            } else {
-                Text("Connect")
-            }
-        }
-        if (connState == MaApiClient.State.ERROR) {
-            Text("Couldn't connect. Check the URL and login.", color = MaterialTheme.colorScheme.error)
-        }
+        FilterChip(selected = backend == Backend.MA, onClick = { onSelect(Backend.MA) }, label = { Text("Music Assistant") })
+        FilterChip(selected = backend == Backend.SUBSONIC, onClick = { onSelect(Backend.SUBSONIC) }, label = { Text("Navidrome") })
     }
+}
+
+@Composable
+private fun ConnectForm(viewModel: LibraryViewModel, backend: Backend) {
+    val connecting by viewModel.connecting.collectAsState()
+    val connError by viewModel.connError.collectAsState()
+
+    Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        if (backend == Backend.MA) {
+            val url by viewModel.maUrl.collectAsState()
+            val user by viewModel.maUser.collectAsState()
+            val pass by viewModel.maPass.collectAsState()
+            Text("Connect to Music Assistant", style = MaterialTheme.typography.titleMedium)
+            Field("Server URL", url, viewModel::setMaUrl, "http://192.168.0.10:8095")
+            Field("Username", user, viewModel::setMaUser)
+            Field("Password", pass, viewModel::setMaPass)
+        } else {
+            val url by viewModel.navUrl.collectAsState()
+            val user by viewModel.navUser.collectAsState()
+            val pass by viewModel.navPass.collectAsState()
+            Text("Connect to Navidrome / OpenSubsonic", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Direct mode plays on this phone and can download for offline — works even when Music Assistant is down.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Field("Server URL", url, viewModel::setNavUrl, "http://192.168.0.10:4533")
+            Field("Username", user, viewModel::setNavUser)
+            Field("Password", pass, viewModel::setNavPass)
+        }
+        Button(onClick = { viewModel.connect() }, enabled = !connecting, modifier = Modifier.fillMaxWidth()) {
+            if (connecting) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp) else Text("Connect")
+        }
+        connError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+    }
+}
+
+@Composable
+private fun Field(label: String, value: String, onChange: (String) -> Unit, placeholder: String = "") {
+    OutlinedTextField(
+        value = value, onValueChange = onChange, label = { Text(label) },
+        placeholder = { if (placeholder.isNotBlank()) Text(placeholder) },
+        singleLine = true, modifier = Modifier.fillMaxWidth(),
+    )
 }
 
 @Composable
@@ -104,19 +109,13 @@ private fun BrowseUi(viewModel: LibraryViewModel) {
         OutlinedTextField(
             value = query,
             onValueChange = { query = it; if (it.isBlank()) viewModel.clearSearch() },
-            label = { Text("Search") },
-            singleLine = true,
-            trailingIcon = {
-                TextButton(onClick = { viewModel.doSearch(query) }, enabled = query.isNotBlank()) { Text("Go") }
-            },
+            label = { Text("Search") }, singleLine = true,
+            trailingIcon = { TextButton(onClick = { viewModel.doSearch(query) }, enabled = query.isNotBlank()) { Text("Go") } },
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
         )
 
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(onClick = { if (!viewModel.back()) Unit }) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = { viewModel.back() }) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
             }
             Text(
@@ -134,14 +133,14 @@ private fun BrowseUi(viewModel: LibraryViewModel) {
         error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(12.dp)) }
 
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 4.dp)) {
-            if (search != null) {
-                val s = search!!
+            val s = search
+            if (s != null) {
                 section("Artists", s.artists, viewModel)
                 section("Albums", s.albums, viewModel)
                 section("Tracks", s.tracks, viewModel)
                 section("Playlists", s.playlists, viewModel)
             } else {
-                items(node.items) { item -> ItemRow(item, viewModel) }
+                items(node.items) { entry -> ItemRow(entry, viewModel) }
             }
         }
     }
@@ -153,8 +152,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.section(
     if (list.isEmpty()) return
     item {
         Text(
-            title.uppercase(),
-            style = MaterialTheme.typography.labelSmall,
+            title.uppercase(), style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.primary,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
         )
@@ -164,26 +162,32 @@ private fun androidx.compose.foundation.lazy.LazyListScope.section(
 
 @Composable
 private fun ItemRow(item: MaItem, viewModel: LibraryViewModel) {
+    val isCategory = item.provider == "__cat__"
+    val isDownload = item.provider == "__dl__"
+    val isSubsonicTrack = item.provider == "subsonic" && item.mediaType == "track"
+
     ListItem(
         headlineContent = { Text(item.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
         supportingContent = { item.subtitle?.let { Text(it, maxLines = 1, overflow = TextOverflow.Ellipsis) } },
         leadingContent = {
-            if (item.image != null) {
-                AsyncImage(model = item.image, contentDescription = null, modifier = Modifier.size(44.dp))
-            }
+            if (item.image != null) AsyncImage(model = item.image, contentDescription = null, modifier = Modifier.size(44.dp))
         },
         trailingContent = {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                if (item.playable) {
-                    IconButton(onClick = { viewModel.play(item, "add") }) {
+                when {
+                    isSubsonicTrack -> IconButton(onClick = { viewModel.download(item) }) {
+                        Icon(Icons.Default.Download, contentDescription = "Download")
+                    }
+                    isDownload -> IconButton(onClick = { viewModel.deleteDownload(item.itemId) }) {
+                        Icon(Icons.Default.Delete, contentDescription = "Delete download")
+                    }
+                    item.playable -> IconButton(onClick = { viewModel.play(item, "add") }) {
                         Icon(Icons.Default.Add, contentDescription = "Add to queue")
                     }
                 }
                 when {
-                    item.browsable || item.provider == "__cat__" ->
-                        Icon(Icons.Default.ChevronRight, contentDescription = null)
-                    item.playable ->
-                        Icon(Icons.Default.PlayArrow, contentDescription = "Play")
+                    isCategory || item.browsable -> Icon(Icons.Default.ChevronRight, contentDescription = null)
+                    item.playable -> Icon(Icons.Default.PlayArrow, contentDescription = "Play")
                     else -> {}
                 }
             }

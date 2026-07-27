@@ -3,8 +3,12 @@ package com.engabd.sendpin.ma
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.engabd.sendpin.audio.LocalPlayer
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.PlayerIdentity
+import com.engabd.sendpin.download.DownloadManager
+import com.engabd.sendpin.download.DownloadedTrack
+import com.engabd.sendpin.subsonic.SubsonicClient
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -14,70 +18,119 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
- * On-device Music Assistant library: browse Artists/Albums/Tracks/Playlists,
- * search, and play to a target player (defaults to *this phone*, whose MA queue
- * id equals its Sendspin client id). Connects to the MA `/ws` API with the stored
- * server + login. Plain state for a plain UI — the polished design lands later.
+ * On-device library. Two switchable backends:
+ *  - **Music Assistant** (`/ws` API): browse/search and play to a target player,
+ *    defaulting to THIS phone (its MA queue id == our Sendspin client id).
+ *  - **Navidrome / OpenSubsonic** (direct): browse/search and play *locally* on the
+ *    phone (standalone when MA is down), and download original files for offline.
+ *
+ * Plain state for a plain UI — the polished design lands later.
  */
 class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
-    private val settings = AppSettings(app)
-    private val api = MaApiClient()
-    private val repo = MaRepository(api)
-
-    /** This phone's MA player id (== the Sendspin client id we register with). */
-    val myPlayerId: String = PlayerIdentity.getPlayerId(app)
-
+    enum class Backend { MA, SUBSONIC }
     data class Node(val title: String, val items: List<MaItem>)
 
-    val connState: StateFlow<MaApiClient.State> = api.state
+    private val settings = AppSettings(app)
+    val myPlayerId: String = PlayerIdentity.getPlayerId(app)
 
-    private val _baseUrl = MutableStateFlow(""); val baseUrl: StateFlow<String> = _baseUrl
-    private val _username = MutableStateFlow(""); val username: StateFlow<String> = _username
-    private val _password = MutableStateFlow(""); val password: StateFlow<String> = _password
+    private val maApi = MaApiClient()
+    private val maRepo = MaRepository(maApi)
+    private var subsonic: SubsonicClient? = null
 
-    private val _node = MutableStateFlow(Node("Library", rootItems())); val node: StateFlow<Node> = _node
+    val localPlayer = LocalPlayer()
+    val downloadManager = DownloadManager(app)
+    val downloads: StateFlow<List<DownloadedTrack>> get() = downloadManager.downloads
+
+    private val _backend = MutableStateFlow(Backend.MA); val backend: StateFlow<Backend> = _backend
+    private val _ready = MutableStateFlow(false); val ready: StateFlow<Boolean> = _ready
+    private val _connecting = MutableStateFlow(false); val connecting: StateFlow<Boolean> = _connecting
+    private val _connError = MutableStateFlow<String?>(null); val connError: StateFlow<String?> = _connError
+
+    private val _maUrl = MutableStateFlow(""); val maUrl: StateFlow<String> = _maUrl
+    private val _maUser = MutableStateFlow(""); val maUser: StateFlow<String> = _maUser
+    private val _maPass = MutableStateFlow(""); val maPass: StateFlow<String> = _maPass
+    private val _navUrl = MutableStateFlow(""); val navUrl: StateFlow<String> = _navUrl
+    private val _navUser = MutableStateFlow(""); val navUser: StateFlow<String> = _navUser
+    private val _navPass = MutableStateFlow(""); val navPass: StateFlow<String> = _navPass
+
+    private val _node = MutableStateFlow(Node("Library", emptyList())); val node: StateFlow<Node> = _node
     private val _loading = MutableStateFlow(false); val loading: StateFlow<Boolean> = _loading
     private val _error = MutableStateFlow<String?>(null); val error: StateFlow<String?> = _error
     private val _search = MutableStateFlow<MaSearchResults?>(null); val search: StateFlow<MaSearchResults?> = _search
     private val _toast = MutableSharedFlow<String>(extraBufferCapacity = 8); val toast: SharedFlow<String> = _toast.asSharedFlow()
-
     private val stack = ArrayDeque<Node>()
 
     init {
         viewModelScope.launch {
-            _baseUrl.value = settings.maBaseUrl.first()
-            _username.value = settings.maUsername.first()
-            _password.value = settings.maPassword.first()
-            if (_baseUrl.value.isNotBlank()) connect()
+            _maUrl.value = settings.maBaseUrl.first(); _maUser.value = settings.maUsername.first(); _maPass.value = settings.maPassword.first()
+            _navUrl.value = settings.navUrl.first(); _navUser.value = settings.navUsername.first(); _navPass.value = settings.navPassword.first()
+            _backend.value = if (settings.backend.first() == "subsonic") Backend.SUBSONIC else Backend.MA
+            if (currentUrl().isNotBlank()) connect()
         }
-    }
-
-    fun setBaseUrl(v: String) { _baseUrl.value = v }
-    fun setUsername(v: String) { _username.value = v }
-    fun setPassword(v: String) { _password.value = v }
-
-    fun connect() {
-        val url = _baseUrl.value.trim()
-        if (url.isBlank()) return
-        viewModelScope.launch { settings.setMa(url, _username.value, _password.value) }
-        api.connect(url, token = null, username = _username.value.ifBlank { null }, password = _password.value.ifBlank { null })
         viewModelScope.launch {
-            val st = api.state.first { it == MaApiClient.State.CONNECTED || it == MaApiClient.State.ERROR }
-            if (st == MaApiClient.State.CONNECTED) {
-                stack.clear()
-                _node.value = Node("Library", rootItems())
+            maApi.state.collect { st ->
+                if (_backend.value != Backend.MA) return@collect
+                _ready.value = st == MaApiClient.State.CONNECTED
+                if (st == MaApiClient.State.CONNECTED) showRoot()
+                if (st == MaApiClient.State.ERROR) _connError.value = "Connection failed"
             }
         }
     }
 
-    fun disconnect() = api.disconnect()
+    fun setBackend(b: Backend) {
+        if (_backend.value == b) return
+        _backend.value = b
+        _ready.value = false
+        _search.value = null
+        stack.clear()
+        viewModelScope.launch { settings.setBackend(if (b == Backend.SUBSONIC) "subsonic" else "ma") }
+        if (currentUrl().isNotBlank()) connect()
+    }
 
-    /** Tap handling: open a category, browse a container, or play a track. */
+    fun setMaUrl(v: String) { _maUrl.value = v }
+    fun setMaUser(v: String) { _maUser.value = v }
+    fun setMaPass(v: String) { _maPass.value = v }
+    fun setNavUrl(v: String) { _navUrl.value = v }
+    fun setNavUser(v: String) { _navUser.value = v }
+    fun setNavPass(v: String) { _navPass.value = v }
+
+    private fun currentUrl() = if (_backend.value == Backend.MA) _maUrl.value else _navUrl.value
+
+    fun connect() {
+        _connError.value = null
+        viewModelScope.launch {
+            settings.setMa(_maUrl.value, _maUser.value, _maPass.value)
+            settings.setNavidrome(_navUrl.value, _navUser.value, _navPass.value)
+        }
+        if (_backend.value == Backend.MA) {
+            val url = _maUrl.value.trim(); if (url.isBlank()) return
+            _connecting.value = true
+            maApi.connect(url, token = null, username = _maUser.value.ifBlank { null }, password = _maPass.value.ifBlank { null })
+            viewModelScope.launch {
+                maApi.state.first { it == MaApiClient.State.CONNECTED || it == MaApiClient.State.ERROR }
+                _connecting.value = false
+            }
+        } else {
+            val url = _navUrl.value.trim(); if (url.isBlank()) return
+            _connecting.value = true
+            val sc = SubsonicClient(url, _navUser.value, _navPass.value); subsonic = sc
+            viewModelScope.launch {
+                val ok = sc.ping()
+                _connecting.value = false
+                if (ok) { _ready.value = true; showRoot() }
+                else { _ready.value = false; _connError.value = "Couldn't reach Navidrome (check URL + login)" }
+            }
+        }
+    }
+
+    // --- browse / play ----------------------------------------------------
+
     fun open(item: MaItem) {
         when {
             item.provider == CATEGORY -> openCategory(item.itemId, item.name)
-            item.browsable -> pushNode(item.name) { repo.children(item) }
+            item.provider == DOWNLOAD -> item.uri?.let { localPlayer.play(it, item.name); _toast.tryEmit("Playing ${item.name}") }
+            item.browsable -> pushNode(item.name) { childrenOf(item) }
             item.playable -> play(item)
         }
     }
@@ -89,10 +142,13 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun play(item: MaItem, option: String = "replace") {
-        val uri = item.uri ?: return
         viewModelScope.launch {
             try {
-                repo.playMedia(myPlayerId, listOf(uri), option)
+                when (item.provider) {
+                    "subsonic" -> subsonic?.let { localPlayer.play(it.streamUrl(item.itemId), item.name) }
+                    DOWNLOAD -> item.uri?.let { localPlayer.play(it, item.name) }
+                    else -> item.uri?.let { maRepo.playMedia(myPlayerId, listOf(it), option) }
+                }
                 _toast.tryEmit(if (option == "add") "Added to queue" else "Playing ${item.name}")
             } catch (e: Exception) {
                 _toast.tryEmit(e.message ?: "Couldn't play")
@@ -101,23 +157,41 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun playAll(items: List<MaItem>) {
-        val uris = items.mapNotNull { it.uri }
-        if (uris.isEmpty()) return
+        val tracks = items.filter { it.playable }
+        if (tracks.isEmpty()) return
         viewModelScope.launch {
             try {
-                repo.playMedia(myPlayerId, uris, "replace")
-                _toast.tryEmit("Queued ${uris.size} tracks")
+                if (_backend.value == Backend.MA) {
+                    maRepo.playMedia(myPlayerId, tracks.mapNotNull { it.uri }, "replace")
+                    _toast.tryEmit("Queued ${tracks.size} tracks")
+                } else {
+                    play(tracks.first())   // local player has no queue yet
+                }
             } catch (e: Exception) {
                 _toast.tryEmit(e.message ?: "Couldn't play")
             }
         }
     }
 
+    fun download(item: MaItem) {
+        val sc = subsonic ?: return
+        if (item.mediaType != "track") return
+        viewModelScope.launch {
+            _toast.tryEmit("Downloading ${item.name}…")
+            val ok = downloadManager.download(item, sc.downloadUrl(item.itemId))
+            _toast.tryEmit(if (ok) "Downloaded ${item.name}" else "Download failed")
+        }
+    }
+
+    fun deleteDownload(id: String) = downloadManager.delete(id)
+
     fun doSearch(query: String) {
         if (query.isBlank()) { _search.value = null; return }
         viewModelScope.launch {
             _loading.value = true; _error.value = null
-            try { _search.value = repo.search(query) } catch (e: Exception) { _error.value = e.message }
+            try {
+                _search.value = if (_backend.value == Backend.MA) maRepo.search(query) else subsonic?.search(query)
+            } catch (e: Exception) { _error.value = e.message }
             _loading.value = false
         }
     }
@@ -126,13 +200,26 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     // --- internals --------------------------------------------------------
 
-    private fun openCategory(id: String, title: String) = pushNode(title) {
-        when (id) {
-            "artists" -> repo.artists()
-            "albums" -> repo.albums()
-            "tracks" -> repo.tracks()
-            "playlists" -> repo.playlists()
-            else -> emptyList()
+    private suspend fun childrenOf(item: MaItem): List<MaItem> =
+        if (item.provider == "subsonic") subsonic?.children(item) ?: emptyList() else maRepo.children(item)
+
+    private fun openCategory(id: String, title: String) {
+        if (id == "downloads") {
+            val items = downloads.value.map { downloadItem(it) }
+            stack.addLast(_node.value)
+            _node.value = Node("Downloads", items)
+            return
+        }
+        pushNode(title) {
+            if (_backend.value == Backend.MA) when (id) {
+                "artists" -> maRepo.artists(); "albums" -> maRepo.albums()
+                "tracks" -> maRepo.tracks(); "playlists" -> maRepo.playlists(); else -> emptyList()
+            } else when (id) {
+                "artists" -> subsonic?.artists().orEmpty()
+                "newest" -> subsonic?.albumList("newest").orEmpty()
+                "playlists" -> subsonic?.playlists().orEmpty()
+                else -> emptyList()
+            }
         }
     }
 
@@ -143,29 +230,42 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 val items = loader()
                 stack.addLast(_node.value)
                 _node.value = Node(title, items)
-            } catch (e: Exception) {
-                _error.value = e.message ?: "Failed to load"
-            }
+            } catch (e: Exception) { _error.value = e.message ?: "Failed to load" }
             _loading.value = false
         }
     }
 
-    private fun rootItems(): List<MaItem> = listOf(
-        category("artists", "Artists"),
-        category("albums", "Albums"),
-        category("tracks", "Tracks"),
-        category("playlists", "Playlists"),
-    )
+    private fun showRoot() {
+        stack.clear()
+        _search.value = null
+        _node.value = Node("Library", rootItems())
+    }
+
+    private fun rootItems(): List<MaItem> = buildList {
+        if (_backend.value == Backend.MA) {
+            add(category("artists", "Artists")); add(category("albums", "Albums"))
+            add(category("tracks", "Tracks")); add(category("playlists", "Playlists"))
+        } else {
+            add(category("artists", "Artists")); add(category("newest", "Recently Added"))
+            add(category("playlists", "Playlists"))
+        }
+        add(category("downloads", "Downloads"))
+    }
 
     private fun category(id: String, name: String) =
         MaItem(id, CATEGORY, name, null, "category", null, null, null)
 
+    private fun downloadItem(d: DownloadedTrack) =
+        MaItem(d.id, DOWNLOAD, d.title, d.filePath, "track", d.artist, d.image, null)
+
     override fun onCleared() {
         super.onCleared()
-        api.disconnect()
+        maApi.disconnect()
+        localPlayer.stop()
     }
 
     private companion object {
         const val CATEGORY = "__cat__"
+        const val DOWNLOAD = "__dl__"
     }
 }
