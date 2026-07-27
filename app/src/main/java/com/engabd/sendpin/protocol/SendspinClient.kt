@@ -81,7 +81,7 @@ class SendspinClient(
     private val _streamEvents = MutableSharedFlow<StreamEvent>(extraBufferCapacity = 32)
     val streamEvents: SharedFlow<StreamEvent> = _streamEvents.asSharedFlow()
 
-    // Raw binary audio chunks; the audio layer parses these via AudioFrameParser.
+    // Raw binary audio chunks; SendspinAudioEngine parses the header + decodes.
     private val _audioFrames = MutableSharedFlow<ByteArray>(extraBufferCapacity = 512)
     val audioFrames: SharedFlow<ByteArray> = _audioFrames.asSharedFlow()
 

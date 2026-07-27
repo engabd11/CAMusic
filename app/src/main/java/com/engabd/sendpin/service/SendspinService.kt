@@ -12,14 +12,9 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.engabd.sendpin.MainActivity
-import com.engabd.sendpin.audio.AudioOutput
 import com.engabd.sendpin.audio.FormatNegotiator
-import com.engabd.sendpin.audio.NativeFlacDecoder
-import com.engabd.sendpin.audio.NegotiatedFormat
-import com.engabd.sendpin.audio.PlaybackScheduler
+import com.engabd.sendpin.audio.SendspinAudioEngine
 import com.engabd.sendpin.discovery.PlayerIdentity
-import com.engabd.sendpin.protocol.AudioFormatSpec
-import com.engabd.sendpin.protocol.AudioFrameParser
 import com.engabd.sendpin.protocol.SendspinClient
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collect
@@ -38,26 +33,18 @@ class SendspinService : Service() {
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    // Audio focus
     private lateinit var audioManager: AudioManager
     private var audioFocusRequest: AudioFocusRequest? = null
     private var hasAudioFocus = false
 
-    // Protocol + audio pipeline
     private var client: SendspinClient? = null
-    private var audioOutput: AudioOutput? = null
-    private var flacDecoder: NativeFlacDecoder? = null
-    private var scheduler: PlaybackScheduler? = null
-    private var negotiatedFormat: NegotiatedFormat? = null
-    private val frameParser = AudioFrameParser()
+    private var engine: SendspinAudioEngine? = null
 
-    // State
     private var trackTitle = ""
     private var artist = ""
     private var album = ""
     private var isPlaying = false
     private var serverUrl = ""
-    private var wasPlayingBeforeFocusLoss = false
 
     override fun onCreate() {
         super.onCreate()
@@ -94,43 +81,35 @@ class SendspinService : Service() {
         val playerName = PlayerIdentity.getDefaultPlayerName()
         val deviceInfo = PlayerIdentity.getDeviceInfo()
 
-        val c = SendspinClient()
-        client = c
+        val c = SendspinClient(); client = c
+        val eng = SendspinAudioEngine(c.clock); engine = eng
 
-        serviceScope.launch { c.nowPlaying.collect { np ->
-            trackTitle = np?.title ?: ""
-            artist = np?.artist ?: ""
-            album = np?.album ?: ""
-            updateNotification()
-        } }
-        serviceScope.launch { c.streamEvents.collect { ev ->
-            when (ev) {
-                is SendspinClient.StreamEvent.Start -> {
-                    val nf = FormatNegotiator.resolve(ev.format)
-                    negotiatedFormat = nf
-                    frameParser.setFormat(AudioFormatSpec(nf.codec, nf.channels, nf.sampleRate, nf.bitDepth))
-                    setupAudioPipeline(nf)
-                    isPlaying = true
-                    updateNotification()
-                }
-                SendspinClient.StreamEvent.End -> {
-                    tearDownAudioPipeline()
-                    negotiatedFormat = null
-                    isPlaying = false
-                    updateNotification()
-                }
-                SendspinClient.StreamEvent.Clear -> { /* seek/jump */ }
+        serviceScope.launch {
+            c.nowPlaying.collect { np ->
+                trackTitle = np?.title ?: ""
+                artist = np?.artist ?: ""
+                album = np?.album ?: ""
+                updateNotification()
             }
-        } }
-        serviceScope.launch { c.serverCommands.collect { cmd ->
-            when (cmd.command) {
-                "volume" -> cmd.volume?.let { audioOutput?.setVolume(it / 100f) }
-                "mute" -> cmd.mute?.let { audioOutput?.setVolume(if (it) 0f else 1f) }
+        }
+        serviceScope.launch {
+            c.streamEvents.collect { ev ->
+                when (ev) {
+                    is SendspinClient.StreamEvent.Start -> { eng.start(ev.format); isPlaying = true; updateNotification() }
+                    SendspinClient.StreamEvent.End -> { eng.stop(); isPlaying = false; updateNotification() }
+                    SendspinClient.StreamEvent.Clear -> eng.flush()
+                }
             }
-        } }
-        serviceScope.launch { c.audioFrames.collect { bytes ->
-            try { scheduler?.enqueue(frameParser.parse(bytes)) } catch (_: Exception) {}
-        } }
+        }
+        serviceScope.launch {
+            c.serverCommands.collect { cmd ->
+                when (cmd.command) {
+                    "volume" -> cmd.volume?.let { eng.setVolume(it / 100f) }
+                    "mute" -> cmd.mute?.let { eng.setVolume(if (it) 0f else 1f) }
+                }
+            }
+        }
+        serviceScope.launch { c.audioFrames.collect { bytes -> eng.submit(bytes) } }
 
         requestAudioFocus()
         c.connect(url, playerId, playerName, deviceInfo, FormatNegotiator.supportedFormats)
@@ -138,79 +117,27 @@ class SendspinService : Service() {
     }
 
     private fun disconnect() {
-        tearDownAudioPipeline()
+        engine?.stop(); engine = null
+        client?.close(); client = null
         abandonAudioFocus()
-        client?.close()
-        client = null
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
+    // Local play/pause ducks output (playback is server-driven for a player@v1).
     private fun togglePlayPause() {
-        if (isPlaying) pausePlayback() else resumePlayback()
-    }
-
-    private fun pausePlayback() {
-        isPlaying = false
-        tearDownAudioPipeline()
-        client?.sendClientState()
-        updateNotification()
-    }
-
-    private fun resumePlayback() {
-        val format = negotiatedFormat
-        if (format == null) {
-            client?.sendClientState()
-            return
-        }
-        setupAudioPipeline(format)
-        isPlaying = true
-        client?.sendClientState()
+        isPlaying = !isPlaying
+        engine?.setVolume(if (isPlaying) 1f else 0f)
+        client?.sendClientState(muted = !isPlaying)
         updateNotification()
     }
 
     private fun stopPlayback() {
-        tearDownAudioPipeline()
-        negotiatedFormat = null
+        engine?.stop()
         isPlaying = false
         trackTitle = ""; artist = ""; album = ""
         client?.sendClientState()
         updateNotification()
-    }
-
-    private fun tearDownAudioPipeline() {
-        scheduler?.stop(); scheduler = null
-        flacDecoder?.close(); flacDecoder = null
-        audioOutput = null
-    }
-
-    private fun setupAudioPipeline(format: NegotiatedFormat) {
-        tearDownAudioPipeline()
-
-        if (format.codec == "flac") {
-            flacDecoder = NativeFlacDecoder(
-                sampleRate = format.sampleRate,
-                channels = format.channels,
-                bitDepth = format.bitDepth,
-            )
-        }
-
-        val ao = AudioOutput(
-            sampleRate = format.sampleRate,
-            channels = format.channels,
-            bitDepth = format.bitDepth,
-        )
-        audioOutput = ao
-
-        val cl = client ?: return
-        val s = PlaybackScheduler(
-            clockSync = cl.clock,
-            audioOutput = ao,
-            flacDecoder = flacDecoder,
-            negotiatedFormat = format,
-        )
-        scheduler = s
-        s.start()
     }
 
     // --- Audio Focus ---
@@ -231,12 +158,9 @@ class SendspinService : Service() {
         } else {
             @Suppress("DEPRECATION")
             result = audioManager.requestAudioFocus(
-                afChangeListener,
-                AudioManager.STREAM_MUSIC,
-                AudioManager.AUDIOFOCUS_GAIN
+                afChangeListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN
             )
         }
-
         hasAudioFocus = result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
     }
 
@@ -248,60 +172,26 @@ class SendspinService : Service() {
             audioManager.abandonAudioFocus(afChangeListener)
         }
         hasAudioFocus = false
-        wasPlayingBeforeFocusLoss = false
     }
 
+    // Duck rather than tear down, so the stream stays in sync when focus returns.
     private val afChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
         when (focusChange) {
-            AudioManager.AUDIOFOCUS_GAIN -> {
-                hasAudioFocus = true
-                if (wasPlayingBeforeFocusLoss) {
-                    val format = negotiatedFormat
-                    if (format != null) {
-                        setupAudioPipeline(format)
-                        isPlaying = true
-                    }
-                    wasPlayingBeforeFocusLoss = false
-                } else {
-                    audioOutput?.setVolume(1.0f)
-                }
-                updateNotification()
-            }
-            AudioManager.AUDIOFOCUS_LOSS -> {
-                hasAudioFocus = false
-                wasPlayingBeforeFocusLoss = isPlaying
-                tearDownAudioPipeline()
-                isPlaying = false
-                updateNotification()
-            }
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
-                hasAudioFocus = false
-                wasPlayingBeforeFocusLoss = isPlaying
-                tearDownAudioPipeline()
-                isPlaying = false
-                updateNotification()
-            }
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
-                hasAudioFocus = true
-                audioOutput?.setVolume(0.2f)
-            }
+            AudioManager.AUDIOFOCUS_GAIN -> { hasAudioFocus = true; engine?.setVolume(1.0f) }
+            AudioManager.AUDIOFOCUS_LOSS -> { hasAudioFocus = false; engine?.setVolume(0f) }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> { hasAudioFocus = false; engine?.setVolume(0f) }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> engine?.setVolume(0.2f)
         }
     }
 
-    // --- Becoming Noisy (headphone unplug) ---
-
     private val noisyReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
-                tearDownAudioPipeline()
-                isPlaying = false
-                updateNotification()
-            }
+            if (intent?.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) engine?.setVolume(0f)
         }
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        // Keep service running when app is swiped away — music should continue.
+        // Keep running when swiped from recents — music should continue.
     }
 
     // --- Notification ---
@@ -309,45 +199,34 @@ class SendspinService : Service() {
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
-                CHANNEL_ID,
-                "Sendspin Playback",
-                NotificationManager.IMPORTANCE_LOW
+                CHANNEL_ID, "Sendspin Playback", NotificationManager.IMPORTANCE_LOW
             ).apply {
                 description = "Shows current track and playback controls"
                 setShowBadge(false)
                 setSound(null, null)
             }
-            val manager = getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(channel)
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
     }
 
     private fun updateNotification() {
-        val playPauseIcon = if (isPlaying) android.R.drawable.ic_media_pause
-                            else android.R.drawable.ic_media_play
+        val playPauseIcon = if (isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play
         val playPauseLabel = if (isPlaying) "Pause" else "Play"
 
         val contentIntent = PendingIntent.getActivity(
-            this, 0,
-            Intent(this, MainActivity::class.java),
+            this, 0, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-
         val playPauseIntent = PendingIntent.getService(
-            this, 0,
-            Intent(this, SendspinService::class.java).apply { action = ACTION_PLAY_PAUSE },
+            this, 0, Intent(this, SendspinService::class.java).apply { action = ACTION_PLAY_PAUSE },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-
         val nextIntent = PendingIntent.getService(
-            this, 1,
-            Intent(this, SendspinService::class.java).apply { action = ACTION_NEXT },
+            this, 1, Intent(this, SendspinService::class.java).apply { action = ACTION_NEXT },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-
         val stopIntent = PendingIntent.getService(
-            this, 2,
-            Intent(this, SendspinService::class.java).apply { action = ACTION_STOP },
+            this, 2, Intent(this, SendspinService::class.java).apply { action = ACTION_STOP },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
@@ -369,11 +248,7 @@ class SendspinService : Service() {
             .build()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-            )
+            startForeground(NOTIFICATION_ID, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }

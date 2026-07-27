@@ -15,8 +15,6 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
-
-        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
     }
 
     buildTypes {
@@ -35,12 +33,10 @@ android {
 
     buildFeatures { compose = true }
 
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
-        }
-    }
+    // The native AAudio-I24 / libFLAC pipeline (src/main/cpp) is kept for the
+    // future bit-perfect 24-bit phase but is NOT built for now — M1 decodes with
+    // MediaCodec + AudioTrack (16-bit), which needs no NDK. Re-enable the
+    // externalNativeBuild { cmake { … } } block here when the hi-res path lands.
 }
 
 dependencies {
@@ -64,8 +60,6 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("androidx.datastore:datastore-preferences:1.1.1")
-
-    implementation("com.google.oboe:oboe:1.9.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
