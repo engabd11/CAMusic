@@ -8,21 +8,40 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
+/**
+ * Discovers Sendspin **servers** (e.g. Music Assistant) on the LAN via mDNS.
+ *
+ * Per the current Sendspin spec (github.com/Sendspin/spec, connection.md), a
+ * server that accepts *client-initiated* connections advertises the
+ * `_sendspin-server._tcp` service (recommended port **8927**) with a TXT `path`
+ * record (e.g. `/sendspin`) and an optional `name`. This app is a **player**: it
+ * scans for those servers and connects to `ws://<host>:<port><path>`, then runs
+ * the Noise handshake as the *responder* (the server is the Noise initiator).
+ *
+ * (The reciprocal `_sendspin._tcp` / port 8928 is the *server-initiated*
+ * direction — the server discovers and connects to a device that advertises
+ * itself. Not used by an app that scans for and connects to MA; a later version
+ * could also advertise `_sendspin._tcp` so MA can push to us.)
+ */
 class MaDiscovery(private val context: Context) {
     companion object {
         private const val TAG = "MaDiscovery"
-        private const val SERVICE_TYPE = "_mass._tcp.local."
+
+        // Client-initiated discovery: find Sendspin servers (Music Assistant) to
+        // connect to. Android's NsdManager wants the "_type._tcp." form.
+        private const val SERVICE_TYPE = "_sendspin-server._tcp."
+        private const val DEFAULT_PATH = "/sendspin"
     }
 
     data class MaServer(
         val name: String,
         val host: String,
         val port: Int,
-        val serverId: String,
-        val version: String,
+        val path: String,
     ) {
-        val webSocketUrl: String get() = "ws://$host:$port/ws"
-        val displayName: String get() = "$name ($host:$port) — v$version"
+        /** WebSocket URL the player connects to (before the Noise handshake). */
+        val webSocketUrl: String get() = "ws://$host:$port$path"
+        val displayName: String get() = "$name ($host:$port)"
     }
 
     private val nsdManager: NsdManager =
@@ -90,12 +109,16 @@ class MaDiscovery(private val context: Context) {
                 pendingResolves.remove(serviceInfo.serviceName)
 
                 val attributes = serviceInfo.attributes ?: emptyMap()
+                val rawPath = attributes["path"]?.let { String(it) }?.takeIf { it.isNotBlank() }
+                    ?: DEFAULT_PATH
+                val path = if (rawPath.startsWith("/")) rawPath else "/$rawPath"
+                val txtName = attributes["name"]?.let { String(it) }?.takeIf { it.isNotBlank() }
+
                 val server = MaServer(
-                    name = serviceInfo.serviceName,
+                    name = txtName ?: serviceInfo.serviceName,
                     host = serviceInfo.host?.hostAddress ?: return,
                     port = serviceInfo.port,
-                    serverId = attributes["server_id"]?.let { String(it) } ?: "unknown",
-                    version = attributes["version"]?.let { String(it) } ?: "unknown",
+                    path = path,
                 )
 
                 val current = _discoveredServers.value.toMutableList()
