@@ -9,38 +9,31 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * Discovers Sendspin **servers** (e.g. Music Assistant) on the LAN via mDNS.
+ * Discovers **Music Assistant servers** on the LAN via mDNS.
  *
- * Per the current Sendspin spec (github.com/Sendspin/spec, connection.md), a
- * server that accepts *client-initiated* connections advertises the
- * `_sendspin-server._tcp` service (recommended port **8927**) with a TXT `path`
- * record (e.g. `/sendspin`) and an optional `name`. This app is a **player**: it
- * scans for those servers and connects to `ws://<host>:<port><path>`, then runs
- * the Noise handshake as the *responder* (the server is the Noise initiator).
- *
- * (The reciprocal `_sendspin._tcp` / port 8928 is the *server-initiated*
- * direction — the server discovers and connects to a device that advertises
- * itself. Not used by an app that scans for and connects to MA; a later version
- * could also advertise `_sendspin._tcp` so MA can push to us.)
+ * MA advertises the long-standing `_mass._tcp` service on its web port (default
+ * 8095). That one host:port serves **both** the Sendspin player socket
+ * (`/sendspin`) and the MA API (`/ws`) — the same arrangement the massdroid /
+ * MA-app clients use — so the discovered server is used for both. (The Sendspin
+ * spec also defines `_sendspin-server._tcp`; whether MA advertises it varies, so
+ * `_mass._tcp` is the reliable target. Verify against your server if discovery
+ * comes up empty and enter the URL manually.)
  */
 class MaDiscovery(private val context: Context) {
     companion object {
         private const val TAG = "MaDiscovery"
-
-        // Client-initiated discovery: find Sendspin servers (Music Assistant) to
-        // connect to. Android's NsdManager wants the "_type._tcp." form.
-        private const val SERVICE_TYPE = "_sendspin-server._tcp."
-        private const val DEFAULT_PATH = "/sendspin"
+        private const val SERVICE_TYPE = "_mass._tcp."
     }
 
     data class MaServer(
         val name: String,
         val host: String,
         val port: Int,
-        val path: String,
     ) {
-        /** WebSocket URL the player connects to (before the Noise handshake). */
-        val webSocketUrl: String get() = "ws://$host:$port$path"
+        /** Base HTTP URL — the MA API (`/ws`) + imageproxy live here. */
+        val baseUrl: String get() = "http://$host:$port"
+        /** The Sendspin player WebSocket URL (before the handshake). */
+        val webSocketUrl: String get() = "ws://$host:$port/sendspin"
         val displayName: String get() = "$name ($host:$port)"
     }
 
@@ -108,19 +101,11 @@ class MaDiscovery(private val context: Context) {
                 Log.d(TAG, "Resolved: ${serviceInfo.serviceName} at ${serviceInfo.host}:${serviceInfo.port}")
                 pendingResolves.remove(serviceInfo.serviceName)
 
-                val attributes = serviceInfo.attributes ?: emptyMap()
-                val rawPath = attributes["path"]?.let { String(it) }?.takeIf { it.isNotBlank() }
-                    ?: DEFAULT_PATH
-                val path = if (rawPath.startsWith("/")) rawPath else "/$rawPath"
-                val txtName = attributes["name"]?.let { String(it) }?.takeIf { it.isNotBlank() }
-
                 val server = MaServer(
-                    name = txtName ?: serviceInfo.serviceName,
+                    name = serviceInfo.serviceName,
                     host = serviceInfo.host?.hostAddress ?: return,
                     port = serviceInfo.port,
-                    path = path,
                 )
-
                 val current = _discoveredServers.value.toMutableList()
                 current.removeAll { it.name == server.name }
                 current.add(server)

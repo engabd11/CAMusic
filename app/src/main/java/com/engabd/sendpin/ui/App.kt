@@ -3,6 +3,7 @@ package com.engabd.sendpin.ui
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
@@ -12,6 +13,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.engabd.sendpin.ui.screens.LibraryScreen
 import com.engabd.sendpin.ui.screens.NowPlayingScreen
 import com.engabd.sendpin.ui.screens.SettingsScreen
 import com.engabd.sendpin.ui.theme.SendspinTheme
@@ -41,6 +43,18 @@ fun App() {
                         }
                     )
                     NavigationBarItem(
+                        icon = { Icon(Icons.Default.LibraryMusic, contentDescription = "Library") },
+                        label = { Text("Library") },
+                        selected = currentRoute == "library",
+                        onClick = {
+                            if (currentRoute != "library") {
+                                navController.navigate("library") {
+                                    popUpTo("now_playing") { inclusive = false }
+                                }
+                            }
+                        }
+                    )
+                    NavigationBarItem(
                         icon = { Icon(Icons.Default.Settings, contentDescription = "Settings") },
                         label = { Text("Settings") },
                         selected = currentRoute == "settings",
@@ -61,6 +75,7 @@ fun App() {
                 modifier = Modifier.padding(innerPadding)
             ) {
                 composable("now_playing") { NowPlayingScreen() }
+                composable("library") { LibraryScreen() }
                 composable("settings") { SettingsScreen() }
             }
         }
