@@ -1,125 +1,103 @@
-# Sendspin protocol — alignment target (current spec)
+# Sendspin protocol — alignment target (what Music Assistant actually speaks)
 
-Derived from **github.com/Sendspin/spec** (`connection.md`, `messaging.md`) + the Music Assistant
-Sendspin provider docs, on 2026-07-27. This is the exact target the `protocol/` layer is being
-re-aligned to. Items marked **(confirm on wire)** need a live device↔MA `/sendspin` capture and/or a
-read of `Sendspin/sendspin-go` before implementation, because the spec is a technical preview.
+**Updated 2026-07-27 after studying two working, permissively-licensed clients:**
+- **massdroid** (`github.com/sfortis/massdroid_native`, **MIT**) — native Android/Kotlin MA player.
+- **MA mobile app** (`github.com/music-assistant/mobile-app`, **Apache 2.0**) — MA's own KMP app.
 
-The current code implements an **older Resonate draft** (plain-WS JSON `client/hello`, NTP,
-`_mass._tcp`, `stream/end` per track, `player@v1` only, no encryption). Below is what it must become.
+Both are compatible with nowdroid's MIT license (attribute in ported files). They are the ground
+truth: **no packet capture and no Noise library are needed.**
 
-## 1. Discovery (done)
+## The key correction
 
-- This app is a **player** and initiates the connection → **client-initiated** discovery: browse
-  `_sendspin-server._tcp.local.` (recommended port **8927**). TXT records: `path` (e.g. `/sendspin`),
-  optional `name`. Connect to `ws://<host>:<port><path>`.
-- The reciprocal `_sendspin._tcp` / **8928** is *server-initiated* (server connects to a device that
-  advertises itself). A later version may also advertise `_sendspin._tcp` so MA can push to us.
-- `MaDiscovery.kt` is updated accordingly.
+The published spec (`github.com/Sendspin/spec`) describes a fuller, **Noise-secured** protocol
+(`client/init` → Noise KKpsk2, Curve25519 ids, port 8927, binary type-byte framing). **Music
+Assistant's current built-in Sendspin provider does NOT use that.** What both working clients speak
+is a **plain WebSocket + JSON** protocol on MA's own web port:
 
-## 2. Identity (Curve25519, not UUID)
+- Connect: `ws://<ma-host>:<ma-port>/sendspin` (MA default port **8095**; `wss://` for TLS). The
+  mDNS `_sendspin-server._tcp` record still locates a server, but MA integrates the endpoint on its
+  main port, and a standalone player can also just take a host:port.
+- **Text** WebSocket frames = JSON protocol messages. **Binary** frames = audio chunks. (No Noise, no
+  per-frame type byte — the WS frame kind *is* the discriminator.)
+- `client_id` is a **plain stable string** (a per-install UUID is fine — nowdroid's `PlayerIdentity`
+  is OK; drop the Curve25519 idea).
 
-- `client_id` MUST be the device's **static Curve25519 public key**, base64url, **43 chars**
-  (32 bytes, no padding). `PlayerIdentity.getPlayerId()` currently returns a UUID — replace with a
-  persisted Curve25519 keypair (store the private key in EncryptedSharedPreferences / Keystore-wrapped).
-- The server has its own static key (`server_id`); with KKpsk2 both static keys are known to each
-  other after the init exchange.
+So nowdroid's original plain-WS assumption was basically right; the work is matching the exact
+message shapes, formats, and clock behaviour below.
 
-## 3. Handshake sequence
+## Handshake
 
-WebSocket connect → then:
+**Direct / proxy (WebSocket):**
+1. Open `ws://host:8095/sendspin`.
+2. *(proxy/auth mode only)* send `{ "type":"auth", "token":"<token>", "client_id":"<id>" }` →
+   receive `{ "type":"auth_ok" }` (or `{ "type":"auth_error", "message":"…" }`). On a LAN direct
+   connection there may be no token step.
+3. Send `client/hello` (payload below) → receive `server/hello`.
+4. Time-sync loop (`client/time`/`server/time`) begins; `client/state` reports availability.
+5. `stream/start` → binary audio frames; `server/state` carries now-playing metadata;
+   `server/command` carries volume/mute; `stream/clear`/`stream/end` bound tracks.
 
-1. **`client/init`** — TEXT frame, JSON: `client_id` (base64url Curve25519 pubkey), `version` = 1,
-   `suite` = one of `25519_ChaChaPoly_SHA256` (software) or `25519_AESGCM_SHA256` (hw-accelerated).
-2. **`server/init`** — TEXT frame, JSON: `server_id` (base64url pubkey), `version` = 1.
-3. **Noise KKpsk2 handshake.** The **server is the Noise initiator, the client (this app) is the
-   responder**, regardless of who opened the WebSocket. The **prologue** mixed into the Noise state on
-   both sides is the exact bytes of `client/init` **concatenated with** the exact bytes of
-   `server/init`. Handshake messages are carried as `noise/handshake` with `data` = base64url of the
-   Noise bytes — **message 1 payload** = `psk_id` (string), **message 2 payload** = `{}`.
-   **(confirm on wire:** whether `noise/handshake` rides as TEXT frames or as binary type-0 frames,
-   and exact base64 vs raw.)**
-4. After a successful Noise handshake, the transport switches to **encrypted binary frames** and
-   continues with **`server/hello`** → **`client/hello`** → **`server/activate`**.
+**Remote (WebRTC):** MA opens a `sendspin` data channel alongside the `ma-api` channel; same JSON
+protocol over the channel, **no per-channel auth** (inherited). (Later phase — direct WS first.)
 
-### Pairing
+## Messages (envelope: `{ "type", "payload" }`)
 
-- Methods: `pairing_psk`, `dynamic_pin`, `static_pin`. The client advertises `supported_pair_methods`
-  and `unpaired_access { enabled: bool }` in `client/hello`; the server picks `selected_pair_method`
-  in `server/activate`. **(confirm on wire:** MA's default method + the PIN UX / where the PSK is
-  derived. For a phone, `dynamic_pin` (show/enter a code) is the likely default.)**
+- `auth` → `{ token, client_id }` *(proxy only)*; replies `auth_ok` / `auth_error{message}`.
+- `client/hello` → `{ client_id, name, version, supported_roles:["player@v1","metadata@v1"],
+  device_info{product_name,manufacturer,software_version}, player@v1_support{supported_formats[],
+  buffer_capacity, supported_commands:["volume","mute"]} }`
+- `server/hello` → `{ server_id, name, version, active_roles[], connection_reason:"discovery"|"playback" }`
+- `client/time` → `{ client_transmitted }` (µs)
+- `server/time` → `{ client_transmitted, server_received, server_transmitted }` (client stamps its
+  own **T4 receive time** locally, at the WS onMessage callback — see Clock)
+- `client/state` → `{ state:"synchronized", player{ volume, muted, static_delay_ms } }`
+- `server/state` → `{ metadata{ title, artist, album, album_artist, artwork_url, year, track,
+  progress{ track_progress, track_duration, playback_speed }, repeat, shuffle, timestamp } }`
+- `stream/start` → `{ player{ codec, sample_rate, channels, bit_depth, codec_header? } }`
+- `stream/request-format` → `{ player{ codec, sample_rate, bit_depth, channels } }` (client asks for
+  a format change; server replies with a new `stream/start`)
+- `stream/clear` (no payload) — seek / track jump; `stream/end` (no payload) — end of stream
+- `server/command` → `{ player{ command, volume?, mute? } }` (e.g. `command:"volume"`)
+- `group/update` → `{ playback_state:"playing"|"stopped", group_id, group_name }`
+- `client/goodbye` → `{ reason }` — `shutdown` | `restart` (warm, ~30 s resume grace) | `user_request`
 
-## 4. Post-handshake framing (binary, with a type byte)
+## Audio formats
 
-Every frame after the handshake is a Noise-encrypted **binary** WebSocket message whose first
-plaintext byte is a `uint8` message type:
+`codec ∈ {flac, opus, pcm}`, `sample_rate` (default **48000**), `channels` (2), `bit_depth` (**16**),
+optional `codec_header` (base64, for FLAC). Battle-tested choices from massdroid:
+- **List FLAC first** in `supported_formats` — it is the server's fallback order when no preferred
+  format override is set; listing opus first makes grouped sync fall back to opus.
+- Keep everything **48 kHz / 16-bit** for grouped sync + Android `AudioTrack` PCM16 (no resample in
+  the timing path). 24-bit hi-res is a later, opt-in phase.
+- `buffer_capacity` ≈ a few MB (massdroid uses 4 MB ≈ 30 s FLAC) so a throughput dip rides the buffer.
 
-| Type | Meaning |
+## Clock sync (Kalman)
+
+NTP 4-point exchange feeding a **2-D Kalman filter (offset + drift)** — a port of the Sendspin
+reference `sendspin-js/time-filter.ts` (the same filter massdroid ships). Critical detail: **stamp T4
+(client-received) at the WebSocket `onMessage` callback**, before deserialize/coroutine dispatch —
+capturing it later biases the offset low and the player plays late. Don't report
+`client/state` available / start grouped playback until the filter has converged (≥ ~8 low-RTT
+samples, error ≤ ~5 ms). `ClockKalmanFilter.kt` implements this (pure Kotlin, JVM-tested).
+
+## Gotchas (learned from the reference)
+
+- **Flexible duration**: `track_duration`/`track_progress` can be `123456` **or** `123456.0` (MA
+  multiplies a float duration by 1000 without an int cast). A strict `Long` serializer drops the whole
+  `server/state` and triggers reconnect loops — use a serializer that accepts both.
+- **Ordered stream**: control JSON and binary audio share one WebSocket; process them through **one
+  ordered flow** so `stream/clear` can't be reordered past audio frames.
+- **static_delay_ms**: manual per-player sync trim, sent in `client/state`.
+
+## nowdroid rewrite map (M0)
+
+| nowdroid file | becomes |
 |---|---|
-| `0` | JSON control message (UTF-8 body) |
-| `2`–`3` | Fragmentation frames |
-| `4`–`7` | **Player** role, message slots 0–3 (audio) |
-| `8`–`11` | Artwork role |
-| `12`–`15` | Source role |
-| `16`–`23` | Visualizer role |
-| `192`–`255` | Application-specific |
+| `discovery/MaDiscovery.kt` | `_sendspin-server._tcp` + TXT `path` (**done**) |
+| `protocol/Messages.kt` + `AudioFormatSpec.kt` | reference-accurate `{type,payload}` models + `SendspinIncoming.parse` + a flexible-long serializer |
+| `protocol/ClockSync.kt` | the Kalman `ClockKalmanFilter` (**added, JVM-tested**) wired in |
+| `protocol/SendspinClient.kt` | plain-WS lifecycle: connect → (auth) → hello → time loop → ordered text/binary flow, reconnect/backoff |
+| `protocol/AudioFrame.kt` + `audio/*` | binary audio chunk handling per `stream/start` format (M1) |
+| `service/SendspinService.kt`, `ui/viewmodel/PlayerViewModel.kt` | orchestrate the above |
 
-So control JSON (`server/hello`, `stream/start`, `client/time`, …) is sent as **binary type-0**, not
-a WS text frame. Player **audio** is types 4–7 with **server-relative timestamps carried in the
-decrypted plaintext**. **(confirm on wire:** the exact audio header layout after the type byte —
-timestamp width/endianness, sequence, codec/format indication vs `stream/start`.)**
-
-## 5. Message field names (from messaging.md)
-
-- `client/init`: `client_id`, `version`, `suite`
-- `server/init`: `server_id`, `version`
-- `noise/handshake`: `data` (base64url)
-- `server/hello`: `name`
-- `client/hello`: `name`, `device_info?{product_name?,manufacturer?,software_version?,mac_address?}`,
-  `trust_level`('user'|'none'), `supported_roles[]`, `player@v1_support?`, `source@v1_support?`,
-  `artwork@v1_support?`, `visualizer@v1_support?`, `supported_pair_methods?[]`,
-  `unpaired_access{enabled}`
-- `server/activate`: `activities[]`('playback'|'pairing'|'management'), `active_roles?[]`,
-  `selected_pair_method?`('dynamic_pin'|'pairing_psk'|'static_pin')
-- `client/time`: `client_transmitted` (µs)
-- `server/time`: `client_transmitted`, `server_received`, `server_transmitted` (client measures its
-  own receive time `t4` locally → NTP-style 4 points)
-- `client/state`: `available`(bool), `player?`, `source?`
-- `server/state`: `metadata?`, `controller?`, `color?`
-- `stream/start`: `server_transmitted`, `player?`, `artwork?`, `visualizer?`
-- `stream/request-format`: `player?`, `artwork?`, `visualizer?`
-- `stream/clear`: `server_transmitted`, `roles?[]`
-- `stream/end`: `server_transmitted`, `roles?[]` (per-role; NOT sent between tracks during gapless)
-- `group/update`: `playback_state?`('playing'|'stopped'), `group_id?`, `group_name?`
-
-**(confirm on wire:** the `player`/`player@v1_support` sub-object schema — sample rate, bit depth,
-codec, channels, buffer capacity — vs the current `AudioFormatSpec {codec,channels,sampleRate,bitDepth}`.)**
-
-## 6. Clock sync
-
-- `client/time { client_transmitted }` → `server/time { client_transmitted, server_received,
-  server_transmitted }`; client records `t4` (local receive). Offset ≈
-  `((server_received − client_transmitted) + (server_transmitted − t4)) / 2`.
-- Spec uses a **Kalman filter** (time-filter) rather than a raw average; don't report
-  `client/state.available = true` until the filter has converged. The current EMA is a placeholder →
-  upgrade to a Kalman/robust filter.
-
-## 7. Roles
-
-- Implement **`player`** (audio out) first; add **`controller`** (browse/search/queue/transport) for
-  M2. `metadata`/`artwork` are for on-device display; `visualizer`/`color` are the light-sync hooks
-  (the HA integration is the natural consumer of those, not this app).
-
-## 8. M0 task list (protocol)
-
-1. Discovery → spec (**done**).
-2. `Identity`: persisted Curve25519 keypair; `client_id` = base64url pubkey.
-3. Choose a Noise lib (Noise-Java / Cacophony) — verify **KKpsk2** + PSK + both cipher suites; else a
-   focused KKpsk2 impl. Add JVM handshake-vector tests.
-4. `Messages.kt` → the field names in §5 (sub-objects as typed models where known, `JsonObject?`
-   placeholders where **(confirm on wire)**). JVM serialization round-trip tests.
-5. `SendspinTransport`: WS connect → init exchange → Noise → binary type-0 JSON + type-4 audio;
-   fragmentation (types 2–3).
-6. `ClockSync`: 4-point exchange + a proper filter; gate `available`.
-7. Wire `PlayerViewModel` / `SendspinService` to the new transport; keep the audio engine (Oboe/AAudio
-   I24 + libFLAC) behind `stream/start` format.
+References ported/adapted with attribution: massdroid (MIT), MA mobile-app (Apache 2.0), sendspin-js.

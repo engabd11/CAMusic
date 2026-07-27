@@ -18,25 +18,22 @@ locally, and (later) works offline.
   ~M2.
 - **Offline download is in scope** (M3).
 
-## The #1 work: re-align to the current spec
+## The #1 work: align to what Music Assistant actually speaks
 
-The skeleton targets an **older Resonate/sendspin draft**. The exact target is in
-[`protocol-alignment.md`](protocol-alignment.md) (derived from github.com/Sendspin/spec). Summary of
-the gaps: discovery service/port/path; a mandatory **Noise KKpsk2** handshake + pairing (none today);
-`client_id` must be a **Curve25519 public key** (not a UUID); **post-handshake frames are binary**
-(type byte; type 0 = JSON, types 4–7 = player audio) — WS-text JSON is pre-handshake only; Kalman
-clock sync; `stream/clear` (not per-track `stream/end`) for gapless/seek; `stream/request-format`.
-
-**Verify the live handshake first.** Capture a real device↔MA `/sendspin` session and read the
-`Sendspin/sendspin-go` reference before implementing the Noise handshake + binary framing — the spec
-is technical preview and a few framing details must be confirmed on the wire, not assumed.
+Two working, permissively-licensed clients — **massdroid** (MIT) and **MA's own mobile app**
+(Apache 2.0) — show MA speaks a **plain WebSocket + JSON** Sendspin (text frames = JSON, binary =
+audio), **not** the spec's Noise-secured variant. So no packet capture and no Noise library are
+needed; the exact message shapes, formats, clock, and gotchas are in
+[`protocol-alignment.md`](protocol-alignment.md). nowdroid's original plain-WS approach was close —
+the work is matching the `{type,payload}` messages, the flac/opus/pcm @ 48k/16 formats, the Kalman
+clock, and the reconnect/ordering behaviour, then wiring the audio engine.
 
 ## Milestones (Android-first)
 
-- **M0 — Re-align + build.** Discovery → `_sendspin-server._tcp:8927` + TXT `path` (**done**).
-  Rewrite the message models + handshake (client/init → Noise → server/hello → client/hello →
-  server/activate), typed binary framing, Kalman-ish clock sync, Curve25519 identity + pairing.
-  *Milestone:* the app connects, pairs, and **registers as a player in Music Assistant**.
+- **M0 — Re-align + build.** Discovery → `_sendspin-server._tcp` + TXT `path` (**done**). Rewrite the
+  message models (`{type,payload}`), the plain-WS client (connect → optional auth → `client/hello` →
+  `server/hello` → time loop, with reconnect/backoff), and the Kalman clock (**added**).
+  *Milestone:* the app connects and **registers as a player in Music Assistant**.
 - **M1 — Playback.** FLAC 16-bit + PCM, **gapless**, sample-accurate sync vs a real MA + a second
   player. Foreground service + audio focus (scaffolded).
 - **M2 — Control + library.** `controller` role: browse Artists/Albums/Tracks/Playlists (same model

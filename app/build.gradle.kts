@@ -69,4 +69,8 @@ dependencies {
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
+
+    // JVM unit tests (pure protocol/clock logic): ./gradlew :app:testDebugUnitTest
+    testImplementation(kotlin("test"))
+    testImplementation("junit:junit:4.13.2")
 }
