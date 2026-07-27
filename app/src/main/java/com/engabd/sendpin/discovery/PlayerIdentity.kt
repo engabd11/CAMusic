@@ -25,9 +25,9 @@ object PlayerIdentity {
         cachedDeviceInfo?.let { return it }
 
         cachedDeviceInfo = DeviceInfo(
+            productName = Build.MODEL,
             manufacturer = Build.MANUFACTURER,
-            model = Build.MODEL,
-            os = "Android ${Build.VERSION.SDK_INT}",
+            softwareVersion = "Android ${Build.VERSION.SDK_INT}",
         )
         return cachedDeviceInfo!!
     }

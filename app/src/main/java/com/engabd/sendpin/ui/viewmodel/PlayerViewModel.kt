@@ -4,10 +4,17 @@ import android.app.Application
 import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.engabd.sendpin.audio.*
+import com.engabd.sendpin.audio.AudioOutput
+import com.engabd.sendpin.audio.FormatNegotiator
+import com.engabd.sendpin.audio.NativeFlacDecoder
+import com.engabd.sendpin.audio.NegotiatedFormat
+import com.engabd.sendpin.audio.PlaybackScheduler
 import com.engabd.sendpin.discovery.MaDiscovery
 import com.engabd.sendpin.discovery.PlayerIdentity
-import com.engabd.sendpin.protocol.*
+import com.engabd.sendpin.protocol.AudioFormatSpec
+import com.engabd.sendpin.protocol.AudioFrameParser
+import com.engabd.sendpin.protocol.SendspinClient
+import com.engabd.sendpin.protocol.StreamStartPlayerInfo
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
@@ -27,192 +34,127 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     // Connection state
     private val _connected = MutableStateFlow(false)
     val connected: StateFlow<Boolean> = _connected
-
     private val _connectionStatus = MutableStateFlow("Disconnected")
     val connectionStatus: StateFlow<String> = _connectionStatus
 
     // Playback state
     private val _trackTitle = MutableStateFlow("")
     val trackTitle: StateFlow<String> = _trackTitle
-
     private val _artist = MutableStateFlow("")
     val artist: StateFlow<String> = _artist
-
     private val _album = MutableStateFlow("")
     val album: StateFlow<String> = _album
-
     private val _artworkUrl = MutableStateFlow<String?>(null)
     val artworkUrl: StateFlow<String?> = _artworkUrl
-
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying
-
     private val _volume = MutableStateFlow(1.0f)
     val volume: StateFlow<Float> = _volume
-
     private val _currentFormat = MutableStateFlow("—")
     val currentFormat: StateFlow<String> = _currentFormat
+    private val _serverUrl = MutableStateFlow("")
+    val serverUrl: StateFlow<String> = _serverUrl
 
-    // Audio pipeline
+    // Protocol + audio pipeline
     private var client: SendspinClient? = null
-    private var clockSync: ClockSync? = null
     private var audioOutput: AudioOutput? = null
     private var flacDecoder: NativeFlacDecoder? = null
     private var scheduler: PlaybackScheduler? = null
-    private var negotiatedFormat: NegotiatedFormat? = null
-
-    // Server URL
-    private val _serverUrl = MutableStateFlow("")
-    val serverUrl: StateFlow<String> = _serverUrl
+    private val frameParser = AudioFrameParser()
 
     fun startDiscovery() = discovery.startDiscovery()
     fun stopDiscovery() = discovery.stopDiscovery()
 
     fun connectToServer(url: String) {
+        disconnect()
         _serverUrl.value = url
+        val c = SendspinClient()
+        client = c
+
+        viewModelScope.launch { c.state.collect { _connected.value = it == SendspinClient.State.CONNECTED } }
+        viewModelScope.launch { c.statusText.collect { _connectionStatus.value = it } }
         viewModelScope.launch {
-            try {
-                _connectionStatus.value = "Connecting..."
-
-                client = SendspinClient(
-                    serverUrl = url,
-                    playerId = playerId,
-                    playerName = playerName,
-                    deviceInfo = deviceInfo,
-                    playerV1Support = PlayerV1Support(
-                        supportedFormats = FormatNegotiator.supportedFormats
-                    ),
-                )
-
-                client!!.connect()
-
-                // Wait for connection
-                client!!.connectionState.first { it == SendspinClient.ConnectionState.CONNECTED }
-                _connected.value = true
-                _connectionStatus.value = "Connected"
-
-                // Initialize clock sync
-                clockSync = ClockSync(client!!)
-                clockSync!!.initialSync()
-
-                // Listen for messages
-                viewModelScope.launch {
-                    client!!.messages.collect { msg ->
-                        handleMessage(msg)
-                    }
-                }
-
-                // Listen for audio frames
-                viewModelScope.launch {
-                    client!!.audioFrames.collect { frame ->
-                        scheduler?.enqueue(frame)
-                    }
-                }
-            } catch (e: Exception) {
-                _connectionStatus.value = "Error: ${e.message}"
-                disconnect()
+            c.nowPlaying.collect { np ->
+                _trackTitle.value = np?.title ?: ""
+                _artist.value = np?.artist ?: ""
+                _album.value = np?.album ?: ""
+                _artworkUrl.value = np?.artworkUrl
             }
         }
+        viewModelScope.launch {
+            c.streamFormat.collect { f ->
+                _currentFormat.value = f?.let {
+                    "${it.sampleRate / 1000}kHz / ${it.bitDepth}-bit / ${it.codec.uppercase()}"
+                } ?: "—"
+            }
+        }
+        viewModelScope.launch {
+            c.serverCommands.collect { cmd ->
+                when (cmd.command) {
+                    "volume" -> cmd.volume?.let { v -> _volume.value = v / 100f; audioOutput?.setVolume(v / 100f) }
+                    "mute" -> cmd.mute?.let { m -> audioOutput?.setVolume(if (m) 0f else _volume.value) }
+                }
+            }
+        }
+        viewModelScope.launch {
+            c.streamEvents.collect { ev ->
+                when (ev) {
+                    is SendspinClient.StreamEvent.Start -> { setupPipeline(ev.format); _isPlaying.value = true }
+                    SendspinClient.StreamEvent.End -> { teardownPipeline(); _isPlaying.value = false }
+                    SendspinClient.StreamEvent.Clear -> { /* seek/jump: scheduler re-anchors on the new timestamps */ }
+                }
+            }
+        }
+        viewModelScope.launch {
+            c.audioFrames.collect { bytes ->
+                try { scheduler?.enqueue(frameParser.parse(bytes)) } catch (_: Exception) {}
+            }
+        }
+
+        c.connect(url, playerId, playerName, deviceInfo, FormatNegotiator.supportedFormats)
+    }
+
+    private fun setupPipeline(format: StreamStartPlayerInfo) {
+        teardownPipeline()
+        val nf: NegotiatedFormat = FormatNegotiator.resolve(format)
+        _currentFormat.value = "${nf.sampleRate / 1000}kHz / ${nf.bitDepth}-bit / ${nf.codec.uppercase()}"
+        frameParser.setFormat(AudioFormatSpec(nf.codec, nf.channels, nf.sampleRate, nf.bitDepth))
+
+        if (nf.codec == "flac") {
+            flacDecoder = NativeFlacDecoder(sampleRate = nf.sampleRate, channels = nf.channels, bitDepth = nf.bitDepth)
+        }
+        val ao = AudioOutput(sampleRate = nf.sampleRate, channels = nf.channels, bitDepth = nf.bitDepth)
+        audioOutput = ao
+        val cl = client ?: return
+        val s = PlaybackScheduler(clockSync = cl.clock, audioOutput = ao, flacDecoder = flacDecoder, negotiatedFormat = nf)
+        scheduler = s
+        s.start()
+    }
+
+    private fun teardownPipeline() {
+        scheduler?.stop(); scheduler = null
+        flacDecoder?.close(); flacDecoder = null
+        audioOutput = null
+    }
+
+    /** Play/pause of MA playback is server-driven for a Sendspin player@v1 (the
+     * server commands us), so this is a no-op placeholder for the UI button. */
+    fun onPlayPause() { /* server-driven; kept for UI compatibility */ }
+
+    fun onVolumeChange(vol: Float) {
+        _volume.value = vol
+        audioOutput?.setVolume(vol)
+        client?.sendClientState(volume = (vol * 100).toInt())
     }
 
     fun disconnect() {
-        scheduler?.stop()
-        scheduler = null
-        flacDecoder?.close()
-        flacDecoder = null
-        audioOutput?.close()
-        audioOutput = null
-        clockSync = null
-        client?.disconnect()
+        teardownPipeline()
         client?.close()
         client = null
         _connected.value = false
         _connectionStatus.value = "Disconnected"
         _currentFormat.value = "—"
-    }
-
-    fun onPlayPause() {
-        client?.send(Message.ClientState())
-        // Toggle via server/command expectation; server sends play/pause commands
-        // In a real player, we'd send the appropriate command
-    }
-
-    fun onVolumeChange(vol: Float) {
-        _volume.value = vol
-        audioOutput?.setVolume(vol)
-        client?.send(Message.ClientState(volume = vol))
-    }
-
-    private fun handleMessage(msg: Message) {
-        when (msg) {
-            is Message.ServerHello -> {
-                _connectionStatus.value = "Connected to ${msg.serverName}"
-            }
-            is Message.ServerState -> {
-                _trackTitle.value = msg.trackTitle
-                _artist.value = msg.artist
-                _album.value = msg.album
-                _artworkUrl.value = msg.artworkUrl
-                _isPlaying.value = msg.playing
-                msg.volume.let { _volume.value = it }
-                msg.streamFormat?.let {
-                    _currentFormat.value = "${it.sampleRate/1000}kHz / ${it.bitDepth}-bit / ${it.codec.uppercase()}"
-                }
-            }
-            is Message.StreamStart -> {
-                handleStreamStart(msg)
-            }
-            is Message.StreamEnd -> {
-                scheduler?.stop()
-                _isPlaying.value = false
-            }
-            is Message.ServerCommand -> {
-                when (msg.command) {
-                    "play" -> _isPlaying.value = true
-                    "pause" -> _isPlaying.value = false
-                    "stop" -> { _isPlaying.value = false; scheduler?.stop() }
-                }
-            }
-            else -> {}
-        }
-    }
-
-    private fun handleStreamStart(msg: Message.StreamStart) {
-        val format = FormatNegotiator.resolve(msg.format) ?: return
-        negotiatedFormat = format
-
-        _currentFormat.value = "${format.sampleRate/1000}kHz / ${format.bitDepth}-bit / ${format.codec.uppercase()}"
-
-        // Set up codec
-        when (format.codec) {
-            "flac" -> {
-                flacDecoder = NativeFlacDecoder(
-                    sampleRate = format.sampleRate,
-                    channels = format.channels,
-                    bitDepth = format.bitDepth,
-                )
-            }
-            "pcm" -> {
-                flacDecoder?.close()
-                flacDecoder = null
-            }
-        }
-
-        // Start audio output
-        audioOutput = AudioOutput(
-            sampleRate = format.sampleRate,
-            channels = format.channels,
-            bitDepth = format.bitDepth,
-        )
-
-        // Start scheduler
-        scheduler = PlaybackScheduler(
-            clockSync = clockSync!!,
-            audioOutput = audioOutput!!,
-            flacDecoder = flacDecoder,
-            negotiatedFormat = format,
-        )
-        scheduler!!.start()
+        _isPlaying.value = false
     }
 
     override fun onCleared() {

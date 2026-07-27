@@ -18,10 +18,11 @@ import com.engabd.sendpin.audio.NativeFlacDecoder
 import com.engabd.sendpin.audio.NegotiatedFormat
 import com.engabd.sendpin.audio.PlaybackScheduler
 import com.engabd.sendpin.discovery.PlayerIdentity
-import com.engabd.sendpin.protocol.*
+import com.engabd.sendpin.protocol.AudioFormatSpec
+import com.engabd.sendpin.protocol.AudioFrameParser
+import com.engabd.sendpin.protocol.SendspinClient
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.flow.first
 
 class SendspinService : Service() {
     companion object {
@@ -42,15 +43,13 @@ class SendspinService : Service() {
     private var audioFocusRequest: AudioFocusRequest? = null
     private var hasAudioFocus = false
 
-    // Protocol
+    // Protocol + audio pipeline
     private var client: SendspinClient? = null
-    private var clockSync: ClockSync? = null
-
-    // Audio pipeline
     private var audioOutput: AudioOutput? = null
     private var flacDecoder: NativeFlacDecoder? = null
     private var scheduler: PlaybackScheduler? = null
     private var negotiatedFormat: NegotiatedFormat? = null
+    private val frameParser = AudioFrameParser()
 
     // State
     private var trackTitle = ""
@@ -65,7 +64,6 @@ class SendspinService : Service() {
         createNotificationChannel()
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
-        // Register noisy receiver (headphone unplug)
         val filter = IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(noisyReceiver, filter, RECEIVER_NOT_EXPORTED)
@@ -77,7 +75,7 @@ class SendspinService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_PLAY_PAUSE -> togglePlayPause()
-            ACTION_NEXT -> sendNextCommand()
+            ACTION_NEXT -> { /* track advance is server-driven */ }
             ACTION_STOP -> stopPlayback()
             ACTION_CONNECT -> {
                 serverUrl = intent.getStringExtra(EXTRA_SERVER_URL) ?: return START_NOT_STICKY
@@ -92,55 +90,56 @@ class SendspinService : Service() {
 
     private fun connect(url: String) {
         serverUrl = url
-        serviceScope.launch {
-            try {
-                val playerId = PlayerIdentity.getPlayerId(this@SendspinService)
-                val playerName = PlayerIdentity.getDefaultPlayerName()
-                val deviceInfo = PlayerIdentity.getDeviceInfo()
+        val playerId = PlayerIdentity.getPlayerId(this)
+        val playerName = PlayerIdentity.getDefaultPlayerName()
+        val deviceInfo = PlayerIdentity.getDeviceInfo()
 
-                client = SendspinClient(
-                    serverUrl = url,
-                    playerId = playerId,
-                    playerName = playerName,
-                    deviceInfo = deviceInfo,
-                    playerV1Support = PlayerV1Support(
-                        supportedFormats = FormatNegotiator.supportedFormats
-                    ),
-                )
+        val c = SendspinClient()
+        client = c
 
-                client!!.connect()
-                client!!.connectionState.first { it == SendspinClient.ConnectionState.CONNECTED }
-
-                clockSync = ClockSync(client!!)
-                clockSync!!.initialSync()
-
-                requestAudioFocus()
-
-                // Listen for control messages
-                launch {
-                    client!!.messages.collect { msg -> handleMessage(msg) }
+        serviceScope.launch { c.nowPlaying.collect { np ->
+            trackTitle = np?.title ?: ""
+            artist = np?.artist ?: ""
+            album = np?.album ?: ""
+            updateNotification()
+        } }
+        serviceScope.launch { c.streamEvents.collect { ev ->
+            when (ev) {
+                is SendspinClient.StreamEvent.Start -> {
+                    val nf = FormatNegotiator.resolve(ev.format)
+                    negotiatedFormat = nf
+                    frameParser.setFormat(AudioFormatSpec(nf.codec, nf.channels, nf.sampleRate, nf.bitDepth))
+                    setupAudioPipeline(nf)
+                    isPlaying = true
+                    updateNotification()
                 }
-
-                // Listen for audio frames -> feed to scheduler
-                launch {
-                    client!!.audioFrames.collect { frame ->
-                        scheduler?.enqueue(frame)
-                    }
+                SendspinClient.StreamEvent.End -> {
+                    tearDownAudioPipeline()
+                    negotiatedFormat = null
+                    isPlaying = false
+                    updateNotification()
                 }
-
-                updateNotification()
-            } catch (e: Exception) {
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf()
+                SendspinClient.StreamEvent.Clear -> { /* seek/jump */ }
             }
-        }
+        } }
+        serviceScope.launch { c.serverCommands.collect { cmd ->
+            when (cmd.command) {
+                "volume" -> cmd.volume?.let { audioOutput?.setVolume(it / 100f) }
+                "mute" -> cmd.mute?.let { audioOutput?.setVolume(if (it) 0f else 1f) }
+            }
+        } }
+        serviceScope.launch { c.audioFrames.collect { bytes ->
+            try { scheduler?.enqueue(frameParser.parse(bytes)) } catch (_: Exception) {}
+        } }
+
+        requestAudioFocus()
+        c.connect(url, playerId, playerName, deviceInfo, FormatNegotiator.supportedFormats)
+        updateNotification()
     }
 
     private fun disconnect() {
         tearDownAudioPipeline()
         abandonAudioFocus()
-        clockSync = null
-        client?.disconnect()
         client?.close()
         client = null
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -148,34 +147,25 @@ class SendspinService : Service() {
     }
 
     private fun togglePlayPause() {
-        if (isPlaying) {
-            pausePlayback()
-        } else {
-            resumePlayback()
-        }
+        if (isPlaying) pausePlayback() else resumePlayback()
     }
 
     private fun pausePlayback() {
         isPlaying = false
-        scheduler?.stop()
-        scheduler = null
-        audioOutput = null
-        flacDecoder?.close()
-        flacDecoder = null
-        client?.send(Message.ClientState())
+        tearDownAudioPipeline()
+        client?.sendClientState()
         updateNotification()
     }
 
     private fun resumePlayback() {
         val format = negotiatedFormat
-        if (format == null || client == null) {
-            // No active stream format — request play from server
-            client?.send(Message.ClientState())
+        if (format == null) {
+            client?.sendClientState()
             return
         }
         setupAudioPipeline(format)
         isPlaying = true
-        client?.send(Message.ClientState())
+        client?.sendClientState()
         updateNotification()
     }
 
@@ -183,109 +173,44 @@ class SendspinService : Service() {
         tearDownAudioPipeline()
         negotiatedFormat = null
         isPlaying = false
-        trackTitle = ""
-        artist = ""
-        album = ""
-        client?.send(Message.ClientState())
+        trackTitle = ""; artist = ""; album = ""
+        client?.sendClientState()
         updateNotification()
     }
 
-    private fun sendNextCommand() {
-        client?.send(Message.ClientState())
-        // Note: The server handles track advancement when we signal we're ready
-    }
-
     private fun tearDownAudioPipeline() {
-        scheduler?.stop()
-        scheduler = null
-        flacDecoder?.close()
-        flacDecoder = null
+        scheduler?.stop(); scheduler = null
+        flacDecoder?.close(); flacDecoder = null
         audioOutput = null
     }
 
-    private fun handleMessage(msg: Message) {
-        when (msg) {
-            is Message.ServerState -> {
-                trackTitle = msg.trackTitle
-                artist = msg.artist
-                album = msg.album
-                isPlaying = msg.playing
-                updateNotification()
-            }
-            is Message.StreamStart -> {
-                val format = FormatNegotiator.resolve(msg.format) ?: return
-                negotiatedFormat = format
-                setupAudioPipeline(format)
-                isPlaying = true
-                updateNotification()
-            }
-            is Message.StreamEnd -> {
-                tearDownAudioPipeline()
-                negotiatedFormat = null
-                isPlaying = false
-                updateNotification()
-            }
-            is Message.ServerCommand -> {
-                when (msg.command) {
-                    "play" -> {
-                        val format = negotiatedFormat
-                        if (format != null) {
-                            setupAudioPipeline(format)
-                        }
-                        isPlaying = true
-                    }
-                    "pause" -> {
-                        tearDownAudioPipeline()
-                        isPlaying = false
-                    }
-                    "stop" -> {
-                        tearDownAudioPipeline()
-                        negotiatedFormat = null
-                        isPlaying = false
-                    }
-                    "volume" -> msg.volume?.let { audioOutput?.setVolume(it) }
-                }
-                updateNotification()
-            }
-            else -> {}
-        }
-    }
-
     private fun setupAudioPipeline(format: NegotiatedFormat) {
-        // Tear down any existing pipeline first
         tearDownAudioPipeline()
 
-        when (format.codec) {
-            "flac" -> {
-                flacDecoder = NativeFlacDecoder(
-                    sampleRate = format.sampleRate,
-                    channels = format.channels,
-                    bitDepth = format.bitDepth,
-                )
-            }
-            "pcm" -> {
-                flacDecoder?.close()
-                flacDecoder = null
-            }
+        if (format.codec == "flac") {
+            flacDecoder = NativeFlacDecoder(
+                sampleRate = format.sampleRate,
+                channels = format.channels,
+                bitDepth = format.bitDepth,
+            )
         }
 
-        audioOutput = AudioOutput(
+        val ao = AudioOutput(
             sampleRate = format.sampleRate,
             channels = format.channels,
             bitDepth = format.bitDepth,
         )
+        audioOutput = ao
 
-        val cs = clockSync
-        val ao = audioOutput
-        if (cs == null || ao == null) return
-
-        scheduler = PlaybackScheduler(
-            clockSync = cs,
+        val cl = client ?: return
+        val s = PlaybackScheduler(
+            clockSync = cl.clock,
             audioOutput = ao,
             flacDecoder = flacDecoder,
             negotiatedFormat = format,
         )
-        scheduler!!.start()
+        scheduler = s
+        s.start()
     }
 
     // --- Audio Focus ---
@@ -331,7 +256,6 @@ class SendspinService : Service() {
             AudioManager.AUDIOFOCUS_GAIN -> {
                 hasAudioFocus = true
                 if (wasPlayingBeforeFocusLoss) {
-                    // Resume playback if we were playing before losing focus
                     val format = negotiatedFormat
                     if (format != null) {
                         setupAudioPipeline(format)
@@ -377,8 +301,7 @@ class SendspinService : Service() {
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        // Keep service running when app is swiped away from recents.
-        // Do NOT call stopSelf() — the user expects music to continue.
+        // Keep service running when app is swiped away — music should continue.
     }
 
     // --- Notification ---
@@ -429,8 +352,7 @@ class SendspinService : Service() {
         )
 
         val contentTitle = trackTitle.ifEmpty { "Sendspin" }
-        val contentText = if (artist.isNotEmpty()) "$artist — $album"
-                          else "Music Assistant"
+        val contentText = if (artist.isNotEmpty()) "$artist — $album" else "Music Assistant"
 
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(contentTitle)
@@ -439,7 +361,7 @@ class SendspinService : Service() {
             .setContentIntent(contentIntent)
             .setOngoing(isPlaying)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .addAction(android.R.drawable.ic_media_previous, "Previous", null) // Not yet implemented
+            .addAction(android.R.drawable.ic_media_previous, "Previous", null)
             .addAction(playPauseIcon, playPauseLabel, playPauseIntent)
             .addAction(android.R.drawable.ic_media_next, "Next", nextIntent)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stopIntent)
