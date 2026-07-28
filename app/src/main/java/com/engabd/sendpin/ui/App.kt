@@ -1,7 +1,11 @@
 package com.engabd.sendpin.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Lightbulb
@@ -11,8 +15,13 @@ import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -26,6 +35,7 @@ import com.engabd.sendpin.ui.screens.NowPlayingScreen
 import com.engabd.sendpin.ui.screens.OnboardingScreen
 import com.engabd.sendpin.ui.screens.SettingsScreen
 import com.engabd.sendpin.ui.screens.SpeakersScreen
+import com.engabd.sendpin.ui.theme.Ink
 import com.engabd.sendpin.ui.theme.SendspinTheme
 import com.engabd.sendpin.ui.viewmodel.PlayerViewModel
 
@@ -48,14 +58,28 @@ fun App() {
         val art by playerVm.artworkUrl.collectAsState()
         val accent = rememberAlbumAccent(art)
 
-        // First-run gate: show onboarding until a server connects (or the user opts to explore offline).
+        // Onboarding is first-run only: once a server is saved the app auto-connects
+        // on launch (see PlayerViewModel.init) and never shows onboarding again until
+        // the user logs out. "Explore offline" skips it for the current launch.
         val connected by playerVm.connected.collectAsState()
-        var onboarded by rememberSaveable { mutableStateOf(false) }
-        LaunchedEffect(connected) { if (connected) onboarded = true }
+        val hasSavedServer by playerVm.hasSavedServer.collectAsState()
+        val bootChecked by playerVm.bootChecked.collectAsState()
+        var skipped by rememberSaveable { mutableStateOf(false) }
 
-        if (!onboarded) {
+        // Brief splash until we've read settings — avoids flashing onboarding on every launch.
+        if (!bootChecked) {
+            Box(Modifier.fillMaxSize().background(Ink), contentAlignment = Alignment.Center) {
+                Box(
+                    Modifier.size(78.dp).clip(RoundedCornerShape(24.dp)).background(accent),
+                    contentAlignment = Alignment.Center,
+                ) { Text("S", color = Ink, fontWeight = FontWeight.Black, fontSize = 40.sp) }
+            }
+            return@SendspinTheme
+        }
+
+        if (!hasSavedServer && !connected && !skipped) {
             CompositionLocalProvider(LocalAccent provides accent) {
-                OnboardingScreen(viewModel = playerVm, onSkip = { onboarded = true })
+                OnboardingScreen(viewModel = playerVm, onSkip = { skipped = true })
             }
             return@SendspinTheme
         }

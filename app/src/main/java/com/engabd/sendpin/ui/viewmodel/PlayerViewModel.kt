@@ -52,6 +52,45 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     val savedPassword: Flow<String> get() = settings.maPassword
     val savedPlayerName: Flow<String> get() = settings.playerName
 
+    /** True once a server has been saved — the app skips onboarding and auto-connects. */
+    val hasSavedServer: StateFlow<Boolean> =
+        settings.maBaseUrl.map { it.isNotBlank() }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    // False until the first settings read completes, so the app shows a splash rather
+    // than flashing onboarding before we know whether a server is already saved.
+    private val _bootChecked = MutableStateFlow(false); val bootChecked: StateFlow<Boolean> = _bootChecked
+
+    init {
+        // Auto-connect on launch using saved credentials (so onboarding is first-run only).
+        viewModelScope.launch {
+            val base = settings.maBaseUrl.first()
+            val user = settings.maUsername.first()
+            if (base.isNotBlank() && user.isNotBlank()) connectToServer(sendspinUrlFrom(base))
+            _bootChecked.value = true
+        }
+    }
+
+    private fun sendspinUrlFrom(base: String): String {
+        val ws = base.trim().replace("https://", "wss://").replace("http://", "ws://")
+            .let { if (it.startsWith("ws")) it else "ws://$it" }.trimEnd('/')
+        return "$ws/sendspin"
+    }
+
+    /** Re-connect the player using the saved server + credentials. */
+    fun enablePlayer() = viewModelScope.launch {
+        val base = settings.maBaseUrl.first()
+        if (base.isNotBlank()) connectToServer(sendspinUrlFrom(base))
+    }
+
+    /** Stop the player (leave settings intact). */
+    fun disablePlayer() = disconnect()
+
+    /** Sign out: drop the connection and clear saved credentials so onboarding returns. */
+    fun logout() {
+        disconnect()
+        viewModelScope.launch { settings.setMa("", "", "") }
+    }
+
     private var client: SendspinClient? = null
     private var engine: SendspinAudioEngine? = null
 
@@ -176,10 +215,16 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     /** Play/pause is server-driven for a Sendspin player@v1; kept for UI compatibility. */
     fun onPlayPause() { /* no-op */ }
 
+    private var volumeJob: kotlinx.coroutines.Job? = null
     fun onVolumeChange(vol: Float) {
         _volume.value = vol
-        engine?.setVolume(vol)
-        client?.sendClientState(volume = (vol * 100).toInt())
+        engine?.setVolume(vol)   // local output — instant
+        // Debounce the report to the server so a slider drag doesn't flood it.
+        volumeJob?.cancel()
+        volumeJob = viewModelScope.launch {
+            kotlinx.coroutines.delay(180)
+            client?.sendClientState(volume = (vol * 100).toInt())
+        }
     }
 
     fun disconnect() {

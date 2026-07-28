@@ -53,6 +53,11 @@ class SendspinClient(
     @Volatile private var webSocket: WebSocket? = null
     private var timeJob: Job? = null
     private var stateJob: Job? = null
+    private var reconnectJob: Job? = null
+
+    @Volatile private var userClosed = false
+    private var builtUrl = ""
+    private var attempt = 0
 
     private var clientId = ""
     private var clientName = ""
@@ -115,13 +120,38 @@ class SendspinClient(
         _statusText.value = "Connecting…"
         connectStartMs = System.currentTimeMillis()
         _events.value = emptyList()
-        val url = buildUrl(serverUrl)
-        dbg("connect → $url (token=${if (token.isNullOrBlank()) "none" else "set"})")
-        val request = Request.Builder().url(url).build()
-        webSocket = httpClient.newWebSocket(request, listener)
+        userClosed = false
+        attempt = 0
+        reconnectJob?.cancel()
+        builtUrl = buildUrl(serverUrl)
+        dbg("connect → $builtUrl (token=${if (token.isNullOrBlank()) "none" else "set"})")
+        openSocket()
+    }
+
+    private fun openSocket() {
+        webSocket = httpClient.newWebSocket(Request.Builder().url(builtUrl).build(), listener)
+    }
+
+    /** Reconnect with capped backoff after an unexpected drop (keeps the MA player available). */
+    private fun scheduleReconnect() {
+        if (userClosed) return
+        reconnectJob?.cancel()
+        reconnectJob = scope.launch {
+            val delayMs = (500L * (1 shl attempt.coerceAtMost(5))).coerceAtMost(15_000L)
+            attempt++
+            dbg("reconnecting in ${delayMs}ms (attempt $attempt)")
+            delay(delayMs)
+            if (!userClosed) {
+                _state.value = State.CONNECTING
+                _statusText.value = "Reconnecting…"
+                openSocket()
+            }
+        }
     }
 
     fun disconnect(reason: String = "user_request") {
+        userClosed = true
+        reconnectJob?.cancel(); reconnectJob = null
         timeJob?.cancel(); timeJob = null
         stateJob?.cancel(); stateJob = null
         val ws = webSocket
@@ -199,16 +229,21 @@ class SendspinClient(
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             dbg("ws CLOSED $code '$reason'")
+            timeJob?.cancel(); stateJob?.cancel()
             if (_state.value != State.ERROR) {
                 _state.value = State.DISCONNECTED
                 _statusText.value = "Disconnected"
             }
+            // 4001 = "First message must be auth" → a token problem, retrying won't help.
+            if (code != 4001) scheduleReconnect()
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             dbg("ws FAILURE (http ${response?.code}): ${t.message}")
+            timeJob?.cancel(); stateJob?.cancel()
             _state.value = State.ERROR
             _statusText.value = "Error: ${t.message}"
+            if (response?.code != 404) scheduleReconnect()
         }
     }
 
@@ -221,6 +256,7 @@ class SendspinClient(
             }
             is SendspinIncoming.ServerHello -> {
                 dbg("server/hello → CONNECTED ✓")
+                attempt = 0   // reset backoff on a good handshake
                 _state.value = State.CONNECTED
                 _statusText.value = "Connected"
                 startTimeSync()

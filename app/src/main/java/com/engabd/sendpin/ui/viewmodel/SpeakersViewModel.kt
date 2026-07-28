@@ -74,6 +74,14 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
         ((leader?.groupVolume ?: leader?.volumeLevel ?: 0) / 100f).coerceIn(0f, 1f)
     }.stateIn(viewModelScope, SharingStarted.Eagerly, 0f)
 
+    /**
+     * Whether the active player can lead a group. Sendspin players (incl. this phone)
+     * can't — MA replies "does not support group commands" — so we gate Join on this.
+     */
+    val leaderCanGroup: StateFlow<Boolean> = combine(_players, _target) { players, _ ->
+        players.firstOrNull { it.playerId == leaderIdOf(players) }?.canSetMembers ?: false
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
     init {
         viewModelScope.launch {
             val url = settings.maBaseUrl.first()
@@ -119,7 +127,14 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun join(playerId: String) = act { repo.setMembers(leaderId, add = listOf(playerId)) }
+    fun join(playerId: String) {
+        val leader = _players.value.firstOrNull { it.playerId == leaderId }
+        if (leader?.canSetMembers != true) {
+            _error.value = "\"${leader?.name ?: "This player"}\" can't lead a group. Pick a speaker that supports grouping (tap its name to Play here), then Join others to it."
+            return
+        }
+        act { repo.setMembers(leaderId, add = listOf(playerId)) }
+    }
     fun unjoin(playerId: String) = act {
         if (playerId == leaderId) return@act
         repo.ungroup(playerId)
@@ -148,15 +163,28 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
         ungroupAll()
     }
 
+    // Volume dragging fires every frame; debounce so we don't flood MA (which then
+    // logs "Ignoring command cmd_volume_set …" and lags). UI updates optimistically.
+    private val volumeJobs = mutableMapOf<String, kotlinx.coroutines.Job>()
+    private var groupVolJob: kotlinx.coroutines.Job? = null
+
     fun setPlayerVolume(playerId: String, level01: Float) {
         val lvl = (level01 * 100).toInt().coerceIn(0, 100)
         _players.update { list -> list.map { if (it.playerId == playerId) it.copy(volumeLevel = lvl) else it } }
-        act { repo.setVolume(playerId, lvl) }
+        volumeJobs[playerId]?.cancel()
+        volumeJobs[playerId] = viewModelScope.launch {
+            delay(180)
+            try { repo.setVolume(playerId, lvl) } catch (e: Exception) { _error.value = e.message }
+        }
     }
 
     fun setGroupVolume(level01: Float) {
         val lvl = (level01 * 100).toInt().coerceIn(0, 100)
-        act { repo.setGroupVolume(leaderId, lvl) }
+        groupVolJob?.cancel()
+        groupVolJob = viewModelScope.launch {
+            delay(180)
+            try { repo.setGroupVolume(leaderId, lvl) } catch (e: Exception) { _error.value = e.message }
+        }
     }
 
     fun changeOffset(playerId: String, deltaMs: Int) {

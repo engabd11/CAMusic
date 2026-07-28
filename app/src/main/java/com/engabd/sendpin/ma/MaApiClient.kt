@@ -60,19 +60,41 @@ class MaApiClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
     var serverUrl: String? = null
         private set
 
+    @Volatile private var userClosed = false
+    private var wsUrl = ""
+    private var attempt = 0
+    private var reconnectJob: kotlinx.coroutines.Job? = null
+
     fun connect(url: String, token: String? = null, username: String? = null, password: String? = null) {
         serverUrl = url
         this.token = token
         this.login = if (!username.isNullOrBlank() && !password.isNullOrBlank()) username to password else null
         _state.value = State.CONNECTING
-        val wsUrl = url.trimEnd('/').replace("http://", "ws://").replace("https://", "wss://") + "/ws"
+        userClosed = false; attempt = 0; reconnectJob?.cancel()
+        wsUrl = url.trimEnd('/').replace("http://", "ws://").replace("https://", "wss://") + "/ws"
         ws = http.newWebSocket(Request.Builder().url(wsUrl).build(), listener)
     }
 
     fun disconnect() {
+        userClosed = true; reconnectJob?.cancel()
         ws?.close(1000, "bye"); ws = null
         _state.value = State.DISCONNECTED
         pending.values.forEach { it.complete(null) }; pending.clear(); partials.clear()
+    }
+
+    /** Reconnect with backoff after an unexpected drop — keeps browse/volume/grouping working. */
+    private fun scheduleReconnect() {
+        if (userClosed || wsUrl.isBlank()) return
+        reconnectJob?.cancel()
+        reconnectJob = scope.launch {
+            val delayMs = (500L * (1 shl attempt.coerceAtMost(5))).coerceAtMost(15_000L)
+            attempt++
+            kotlinx.coroutines.delay(delayMs)
+            if (!userClosed) {
+                _state.value = State.CONNECTING
+                ws = http.newWebSocket(Request.Builder().url(wsUrl).build(), listener)
+            }
+        }
     }
 
     private val listener = object : WebSocketListener() {
@@ -82,9 +104,12 @@ class MaApiClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             _state.value = State.ERROR
             pending.values.forEach { it.complete(null) }; pending.clear()
+            scheduleReconnect()
         }
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             if (_state.value != State.ERROR) _state.value = State.DISCONNECTED
+            pending.values.forEach { it.complete(null) }; pending.clear()
+            scheduleReconnect()
         }
     }
 
@@ -142,6 +167,7 @@ class MaApiClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
             }
             // else: no credentials — assume an open LAN server. Commands that turn
             // out to need auth will fail individually rather than blocking connect.
+            attempt = 0   // good handshake → reset reconnect backoff
             _state.value = State.CONNECTED
         } catch (e: Exception) {
             Log.e("MaApi", "auth: ${e.message}")

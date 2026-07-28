@@ -14,6 +14,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -46,11 +48,14 @@ fun SettingsScreen(
     var haUrl by remember { mutableStateOf("") }
     var haToken by remember { mutableStateOf("") }
     var haSaved by remember { mutableStateOf(false) }
+    var haTokenVisible by remember { mutableStateOf(false) }
+    var playerName by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) {
         viewModel.startDiscovery()
         haUrl = settings.haUrl.first()
         haToken = settings.haToken.first()
+        playerName = settings.playerName.first()
     }
 
     Scaffold(
@@ -193,6 +198,58 @@ fun SettingsScreen(
                 }
             }
 
+            // Player (name + enable/disable), like the MA app.
+            item {
+                Text(
+                    "Player",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+
+            item {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        OutlinedTextField(
+                            value = playerName,
+                            onValueChange = { playerName = it },
+                            label = { Text("Player name") },
+                            placeholder = { Text("e.g. Abdullah's phone") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Text(
+                            "Shown in Music Assistant. Applies when the player (re)connects.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            if (connected) {
+                                OutlinedButton(onClick = { viewModel.disablePlayer() }, modifier = Modifier.weight(1f)) {
+                                    Text("Disable player")
+                                }
+                                Button(
+                                    onClick = { scope.launch { settings.setPlayerName(playerName.trim()); viewModel.enablePlayer() } },
+                                    modifier = Modifier.weight(1f)
+                                ) { Text("Apply name") }
+                            } else {
+                                Button(
+                                    onClick = { scope.launch { settings.setPlayerName(playerName.trim()); viewModel.enablePlayer() } },
+                                    modifier = Modifier.weight(1f)
+                                ) { Text("Enable player") }
+                            }
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        TextButton(onClick = { viewModel.logout() }, modifier = Modifier.fillMaxWidth()) {
+                            Icon(Icons.Default.Logout, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Log out")
+                        }
+                    }
+                }
+            }
+
             // Audio Format Preferences
             item {
                 Text(
@@ -281,7 +338,16 @@ fun SettingsScreen(
                         OutlinedTextField(
                             value = haToken, onValueChange = { haToken = it; haSaved = false },
                             label = { Text("Long-lived access token") }, placeholder = { Text("eyJ…") },
-                            singleLine = true, modifier = Modifier.fillMaxWidth()
+                            singleLine = true, modifier = Modifier.fillMaxWidth(),
+                            visualTransformation = if (haTokenVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                            trailingIcon = {
+                                IconButton(onClick = { haTokenVisible = !haTokenVisible }) {
+                                    Icon(
+                                        if (haTokenVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                        contentDescription = if (haTokenVisible) "Hide token" else "Show token",
+                                    )
+                                }
+                            }
                         )
                         Spacer(Modifier.height(10.dp))
                         Button(
