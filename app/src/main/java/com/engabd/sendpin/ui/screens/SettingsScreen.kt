@@ -2,17 +2,25 @@ package com.engabd.sendpin.ui.screens
 
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import com.engabd.sendpin.ui.design.navBarInset
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -21,17 +29,17 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.engabd.sendpin.data.AppSettings
-import com.engabd.sendpin.ui.theme.Ink
-import com.engabd.sendpin.ui.theme.TextPrimary
+import com.engabd.sendpin.ui.design.*
+import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.PlayerViewModel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     viewModel: PlayerViewModel = viewModel()
 ) {
+    val accent = LocalAccent.current
     val discoveredServers by viewModel.discoveredServers.collectAsState()
     val isDiscovering by viewModel.isDiscovering.collectAsState()
     val connected by viewModel.connected.collectAsState()
@@ -39,11 +47,6 @@ fun SettingsScreen(
     val currentFormat by viewModel.currentFormat.collectAsState()
     val context = LocalContext.current
 
-    var manualUrl by remember { mutableStateOf("") }
-    var prefer96k by remember { mutableStateOf(true) }
-    var preferFlac by remember { mutableStateOf(true) }
-
-    // Home Assistant (drives the light-sync integration).
     val scope = rememberCoroutineScope()
     val settings = remember { AppSettings(context) }
     var haUrl by remember { mutableStateOf("") }
@@ -59,341 +62,176 @@ fun SettingsScreen(
         playerName = settings.playerName.first()
     }
 
-    Scaffold(
-        containerColor = Ink,
-        topBar = {
-            TopAppBar(
-                title = { Text("Settings", fontWeight = FontWeight.ExtraBold, fontSize = 22.sp) },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Ink, titleContentColor = TextPrimary),
-            )
-        }
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-            // Bottom room for the floating tab bar, which overlays this screen.
-            contentPadding = PaddingValues(top = 16.dp, bottom = navBarInset() + 16.dp),
-        ) {
-            // Server Selection
-            item {
+    Box(Modifier.fillMaxSize().background(Ink)) {
+        Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars)) {
+            // Header
+            Row(
+                Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, top = 16.dp, bottom = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Text(
-                    "Music Assistant Server",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.primary
+                    "Settings", color = TextPrimary, fontFamily = AppFont,
+                    fontWeight = FontWeight.ExtraBold, fontSize = 26.sp,
+                    letterSpacing = (-0.5).sp,
                 )
             }
 
-            item {
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        // Discovered servers
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text("Discovered Servers", style = MaterialTheme.typography.bodyLarge)
-                            IconButton(onClick = { viewModel.startDiscovery() }) {
-                                Icon(
-                                    Icons.Default.Refresh,
-                                    contentDescription = "Refresh",
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                        }
-
-                        if (isDiscovering) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.padding(vertical = 8.dp)
-                            ) {
-                                CircularProgressIndicator(modifier = Modifier.size(16.dp))
-                                Spacer(Modifier.width(8.dp))
-                                Text("Searching...", style = MaterialTheme.typography.bodySmall)
-                            }
-                        }
-
-                        if (discoveredServers.isEmpty() && !isDiscovering) {
-                            Text(
-                                "No servers found on the network",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-
-                        discoveredServers.forEach { server ->
-                            Card(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 4.dp)
-                                    .clickable {
-                                        viewModel.connectToServer(server.webSocketUrl)
-                                    },
-                                colors = CardDefaults.cardColors(
-                                    containerColor = if (serverUrl == server.webSocketUrl && connected)
-                                        MaterialTheme.colorScheme.primaryContainer
-                                    else
-                                        MaterialTheme.colorScheme.surfaceVariant
-                                )
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(server.name, style = MaterialTheme.typography.bodyMedium)
-                                        Text(
-                                            "${server.host}:${server.port}",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                    if (serverUrl == server.webSocketUrl && connected) {
-                                        Icon(
-                                            Icons.Default.CheckCircle,
-                                            contentDescription = "Connected",
-                                            tint = MaterialTheme.colorScheme.primary
-                                        )
-                                    }
+            LazyColumn(
+                Modifier.weight(1f).fillMaxWidth(),
+                contentPadding = PaddingValues(horizontal = 18.dp, bottom = navBarInset() + 16.dp),
+                verticalArrangement = Arrangement.spacedBy(22.dp),
+            ) {
+                // ── Connection ──────────────────────────────────────────────
+                item {
+                    var manualUrl by remember { mutableStateOf("") }
+                    SectionHeader(Icons.Default.Cloud, "Connection", accent)
+                    Spacer(Modifier.height(12.dp))
+                    GlassCard(radius = 16.dp) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            if (isDiscovering) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = accent)
+                                    Spacer(Modifier.width(10.dp))
+                                    Text("Scanning…", color = TextMuted, fontSize = 13.sp)
                                 }
                             }
-                        }
-                    }
-                }
-            }
-
-            // Manual URL Entry
-            item {
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text("Manual Connection", style = MaterialTheme.typography.bodyLarge)
-                        Spacer(Modifier.height(8.dp))
-                        OutlinedTextField(
-                            value = manualUrl,
-                            onValueChange = { manualUrl = it },
-                            label = { Text("WebSocket URL") },
-                            placeholder = { Text("ws://192.168.0.100:8095/ws") },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        Button(
-                            onClick = { viewModel.connectToServer(manualUrl) },
-                            modifier = Modifier.fillMaxWidth(),
-                            enabled = manualUrl.isNotBlank()
-                        ) {
-                            Text(if (connected) "Reconnect" else "Connect")
-                        }
-                        if (connected) {
-                            Spacer(Modifier.height(4.dp))
-                            OutlinedButton(
-                                onClick = { viewModel.disconnect() },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text("Disconnect")
+                            if (!isDiscovering && discoveredServers.isEmpty()) {
+                                Text("No servers found on the network", color = TextFaint, fontSize = 13.sp)
                             }
-                        }
-                    }
-                }
-            }
-
-            // Player (name + enable/disable), like the MA app.
-            item {
-                Text(
-                    "Player",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-
-            item {
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        OutlinedTextField(
-                            value = playerName,
-                            onValueChange = { playerName = it },
-                            label = { Text("Player name") },
-                            placeholder = { Text("e.g. Abdullah's phone") },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Text(
-                            "Shown in Music Assistant. Applies when the player (re)connects.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(Modifier.height(10.dp))
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            discoveredServers.forEach { server ->
+                                ServerRow(
+                                    name = server.name,
+                                    host = "${server.host}:${server.port}",
+                                    connected = serverUrl == server.webSocketUrl && connected,
+                                    accent = accent,
+                                ) { viewModel.connectToServer(server.webSocketUrl) }
+                            }
+                            OledField(manualUrl, { manualUrl = it }, "WebSocket URL", "ws://192.168.0.100:8095/ws", accent)
+                            OledButton(
+                                if (connected) "Reconnect" else "Connect",
+                                enabled = manualUrl.isNotBlank(),
+                                accent = accent,
+                            ) { viewModel.connectToServer(manualUrl) }
                             if (connected) {
-                                OutlinedButton(onClick = { viewModel.disablePlayer() }, modifier = Modifier.weight(1f)) {
-                                    Text("Disable player")
-                                }
-                                Button(
-                                    onClick = { scope.launch { settings.setPlayerName(playerName.trim()); viewModel.enablePlayer() } },
-                                    modifier = Modifier.weight(1f)
-                                ) { Text("Apply name") }
-                            } else {
-                                Button(
-                                    onClick = { scope.launch { settings.setPlayerName(playerName.trim()); viewModel.enablePlayer() } },
-                                    modifier = Modifier.weight(1f)
-                                ) { Text("Enable player") }
+                                OledButton("Disconnect", accent = accent, outline = true) { viewModel.disconnect() }
                             }
-                        }
-                        Spacer(Modifier.height(8.dp))
-                        TextButton(onClick = { viewModel.logout() }, modifier = Modifier.fillMaxWidth()) {
-                            Icon(Icons.Default.Logout, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("Log out")
                         }
                     }
                 }
-            }
 
-            // Audio Format Preferences
-            item {
-                Text(
-                    "Audio Format",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-
-            item {
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Prefer 96kHz when available")
-                                Text(
-                                    "Use hi-res 96/24 format instead of 48/24",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            Switch(checked = prefer96k, onCheckedChange = { prefer96k = it })
-                        }
-
-                        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Prefer FLAC over PCM")
-                                Text(
-                                    "FLAC is bandwidth-efficient lossless — same bit-perfect quality",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            Switch(checked = preferFlac, onCheckedChange = { preferFlac = it })
-                        }
-                    }
-                }
-            }
-
-            // Current Status
-            item {
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text("Current Status", style = MaterialTheme.typography.bodyLarge)
-                        Spacer(Modifier.height(8.dp))
-                        LabeledRow("Connection", if (connected) "Connected" else "Disconnected")
-                        LabeledRow("Format", currentFormat)
-                        LabeledRow("Player ID", viewModel.playerId.take(12) + "...")
-                        LabeledRow("Device", viewModel.playerName)
-                    }
-                }
-            }
-
-            // Home Assistant (light sync)
-            item {
-                Text(
-                    "Home Assistant (light sync)",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-
-            item {
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text("Drives the Hue Synco light-sync integration. Use a long-lived access token (Profile → Security).",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Spacer(Modifier.height(10.dp))
-                        OutlinedTextField(
-                            value = haUrl, onValueChange = { haUrl = it; haSaved = false },
-                            label = { Text("HA URL") }, placeholder = { Text("http://192.168.0.10:8123") },
-                            singleLine = true, modifier = Modifier.fillMaxWidth()
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        OutlinedTextField(
-                            value = haToken, onValueChange = { haToken = it; haSaved = false },
-                            label = { Text("Long-lived access token") }, placeholder = { Text("eyJ…") },
-                            singleLine = true, modifier = Modifier.fillMaxWidth(),
-                            visualTransformation = if (haTokenVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                            trailingIcon = {
-                                IconButton(onClick = { haTokenVisible = !haTokenVisible }) {
-                                    Icon(
-                                        if (haTokenVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                        contentDescription = if (haTokenVisible) "Hide token" else "Show token",
-                                    )
+                // ── Player ──────────────────────────────────────────────────
+                item {
+                    SectionHeader(Icons.Default.Smartphone, "Player", accent)
+                    Spacer(Modifier.height(12.dp))
+                    GlassCard(radius = 16.dp) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            OledField(playerName, { playerName = it }, "Player name", "e.g. Abdullah's phone", accent)
+                            Text(
+                                "Shown in Music Assistant. Applies when the player (re)connects.",
+                                color = TextFaint, fontSize = 11.sp,
+                            )
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                if (connected) {
+                                    OledButton("Disable", modifier = Modifier.weight(1f), accent = accent, outline = true) { viewModel.disablePlayer() }
+                                    OledButton("Apply", modifier = Modifier.weight(1f), accent = accent) {
+                                        scope.launch { settings.setPlayerName(playerName.trim()); viewModel.enablePlayer() }
+                                    }
+                                } else {
+                                    OledButton("Enable player", modifier = Modifier.weight(1f), accent = accent) {
+                                        scope.launch { settings.setPlayerName(playerName.trim()); viewModel.enablePlayer() }
+                                    }
                                 }
                             }
-                        )
-                        Spacer(Modifier.height(10.dp))
-                        Button(
-                            onClick = {
-                                scope.launch { settings.setHomeAssistant(haUrl.trim(), haToken.trim()); haSaved = true }
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            enabled = haUrl.isNotBlank() && haToken.isNotBlank()
-                        ) { Text(if (haSaved) "Saved" else "Save") }
+                            OledButton("Log out", accent = accent, outline = true) { viewModel.logout() }
+                        }
                     }
                 }
-            }
 
-            // About
-            item {
-                Text(
-                    "About",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-
-            item {
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text("Sendspin", style = MaterialTheme.typography.bodyLarge)
-                        Text(
-                            "v0.1.0 — a Sendspin player & Navidrome client for Music Assistant\n\n" +
-                            "Plays FLAC / Opus 16-bit as an MA player, with Navidrome-direct " +
-                            "browse + offline downloads and Hue light-sync controls. " +
-                            "Bit-perfect 24-bit output is a later phase.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        TextButton(
-                            onClick = {
-                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/engabd11/sendspin-nowdroid"))
-                                context.startActivity(intent)
+                // ── Audio ───────────────────────────────────────────────────
+                item {
+                    var prefer96k by remember { mutableStateOf(true) }
+                    var preferFlac by remember { mutableStateOf(true) }
+                    SectionHeader(Icons.Default.GraphicEq, "Audio", accent)
+                    Spacer(Modifier.height(12.dp))
+                    GlassCard(radius = 16.dp) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            ToggleRow("Prefer 96kHz", "Use hi-res 96/24 instead of 48/24", prefer96k, accent) { prefer96k = it }
+                            ToggleRow("Prefer FLAC", "Bandwidth-efficient lossless — same bit-perfect quality", preferFlac, accent) { preferFlac = it }
+                            // Status readout
+                            Column(
+                                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                                    .background(Ink3).padding(14.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                StatusRow("Connection", if (connected) "Connected" else "Disconnected")
+                                StatusRow("Format", currentFormat)
+                                StatusRow("Player ID", viewModel.playerId.take(12) + "…")
+                                StatusRow("Device", viewModel.playerName)
                             }
-                        ) {
-                            Icon(Icons.Default.Code, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("GitHub Repository")
+                        }
+                    }
+                }
+
+                // ── Light Sync (HA) ─────────────────────────────────────────
+                item {
+                    SectionHeader(Icons.Default.Lightbulb, "Light Sync", accent)
+                    Spacer(Modifier.height(12.dp))
+                    GlassCard(radius = 16.dp) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Text(
+                                "Drives the Hue Synco light-sync integration. Use a long-lived access token (Profile → Security).",
+                                color = TextMuted, fontSize = 13.sp,
+                            )
+                            OledField(haUrl, { haUrl = it; haSaved = false }, "HA URL", "http://192.168.0.10:8123", accent)
+                            OledField(
+                                haToken, { haToken = it; haSaved = false },
+                                "Long-lived access token", "eyJ…", accent,
+                                visualTransformation = if (haTokenVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                                trailingIcon = {
+                                    Box(Modifier.size(20.dp).clip(CircleShape).clickable { haTokenVisible = !haTokenVisible }) {
+                                        Icon(
+                                            if (haTokenVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                            if (haTokenVisible) "Hide" else "Show",
+                                            tint = TextMuted, modifier = Modifier.size(20.dp),
+                                        )
+                                    }
+                                },
+                            )
+                            OledButton(
+                                if (haSaved) "Saved" else "Save",
+                                enabled = haUrl.isNotBlank() && haToken.isNotBlank(),
+                                accent = accent,
+                            ) { scope.launch { settings.setHomeAssistant(haUrl.trim(), haToken.trim()); haSaved = true } }
+                        }
+                    }
+                }
+
+                // ── About ────────────────────────────────────────────────────
+                item {
+                    SectionHeader(Icons.Default.Info, "About", accent)
+                    Spacer(Modifier.height(12.dp))
+                    GlassCard(radius = 16.dp) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Text(
+                                "Sendspin — a Music Assistant player & controller for Android.\n\n" +
+                                "Plays FLAC / Opus 16-bit as an MA player, with Navidrome-direct " +
+                                "browse + offline downloads and Hue light-sync controls.",
+                                color = TextMuted, fontSize = 13.sp,
+                            )
+                            Row(
+                                Modifier.clip(RoundedCornerShape(100)).background(Glass)
+                                    .border(1.dp, Hairline, RoundedCornerShape(100))
+                                    .clickable {
+                                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/engabd11/sendspin-nowdroid")))
+                                    }
+                                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Icon(Icons.Default.Code, null, tint = accent, modifier = Modifier.size(16.dp))
+                                Text("GitHub Repository", color = TextSecondary, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            }
+                            Text("v0.1.3 (code 4)", color = TextFaint, fontFamily = MonoFont, fontSize = 11.sp)
                         }
                     }
                 }
@@ -402,15 +240,101 @@ fun SettingsScreen(
     }
 }
 
+// ─── Reusable OLED design components for settings ──────────────────────────
+
 @Composable
-private fun LabeledRow(label: String, value: String) {
+private fun SectionHeader(icon: ImageVector, title: String, accent: Color) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Box(
+            Modifier.size(32.dp).clip(RoundedCornerShape(10.dp)).background(accent.a(0.12f))
+                .border(1.dp, accent.a(0.3f), RoundedCornerShape(10.dp)),
+            contentAlignment = Alignment.Center,
+        ) { Icon(icon, null, tint = accent, modifier = Modifier.size(16.dp)) }
+        Text(title, color = TextPrimary, fontFamily = AppFont, fontWeight = FontWeight.ExtraBold, fontSize = 18.sp)
+    }
+}
+
+@Composable
+private fun ServerRow(name: String, host: String, connected: Boolean, accent: Color, onClick: () -> Unit) {
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 2.dp),
-        horizontalArrangement = Arrangement.SpaceBetween
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+            .background(if (connected) accent.a(0.08f) else Glass)
+            .border(1.dp, if (connected) accent.a(0.3f) else Hairline, RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick).padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(value, style = MaterialTheme.typography.bodySmall)
+        Column(Modifier.weight(1f)) {
+            Text(name, color = TextPrimary, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1)
+            Text(host, color = TextMuted, fontSize = 11.sp)
+        }
+        if (connected) Icon(Icons.Default.CheckCircle, null, tint = accent, modifier = Modifier.size(18.dp))
+    }
+}
+
+@Composable
+private fun OledField(
+    value: String, onChange: (String) -> Unit, label: String, placeholder: String, accent: Color,
+    visualTransformation: VisualTransformation = VisualTransformation.None,
+    trailingIcon: @Composable (() -> Unit)? = null,
+) {
+    OutlinedTextField(
+        value = value, onValueChange = onChange,
+        label = { Text(label) }, placeholder = { Text(placeholder) },
+        singleLine = true, modifier = Modifier.fillMaxWidth(),
+        visualTransformation = visualTransformation,
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = accent, cursorColor = accent, focusedLabelColor = accent,
+            unfocusedBorderColor = Hairline, focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
+        ),
+        trailingIcon = trailingIcon,
+    )
+}
+
+@Composable
+private fun OledButton(
+    text: String, accent: Color, enabled: Boolean = true, outline: Boolean = false,
+    modifier: Modifier = Modifier, onClick: () -> Unit,
+) {
+    Box(
+        modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(13.dp))
+            .background(if (outline || !enabled) Glass else accent)
+            .border(1.dp, if (outline) Hairline else androidx.compose.ui.graphics.Color.Transparent, RoundedCornerShape(13.dp))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(vertical = 13.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(text, color = if (outline || !enabled) TextMuted else Ink, fontFamily = AppFont, fontWeight = FontWeight.ExtraBold, fontSize = 13.sp)
+    }
+}
+
+@Composable
+private fun ToggleRow(title: String, subtitle: String, checked: Boolean, accent: Color, onChange: (Boolean) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Ink3)
+            .border(1.dp, Hairline, RoundedCornerShape(12.dp)).clickable { onChange(!checked) }
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, color = TextPrimary, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            Text(subtitle, color = TextFaint, fontSize = 11.sp)
+        }
+        Box(
+            Modifier.size(44.dp, 24.dp).clip(RoundedCornerShape(100))
+                .background(if (checked) accent else Glass)
+                .border(1.dp, if (checked) accent.a(0.5f) else Hairline, RoundedCornerShape(100))
+                .padding(2.dp),
+            contentAlignment = if (checked) Alignment.CenterEnd else Alignment.CenterStart,
+        ) { Box(Modifier.size(18.dp).clip(CircleShape).background(if (checked) Ink else TextMuted)) }
+    }
+}
+
+@Composable
+private fun StatusRow(label: String, value: String) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(label, color = TextMuted, fontSize = 12.sp)
+        Text(value, color = TextSecondary, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 12.sp)
     }
 }

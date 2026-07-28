@@ -42,11 +42,29 @@ class LightSyncRepository(private val ha: HaClient) {
 
     companion object {
         const val PLATFORM = "hue_music_sync"
-        // Colour swatches surfaced as dots in the UI (subset of the ColorScheme enum).
+        // Colour swatches matching the 18 ColorScheme values in syncoV2 const.py.
+        // The UI renders these as dots; the integration accepts the enum string values.
         val PALETTE_SWATCHES = listOf(
-            "sunset", "ocean", "forest", "lavender", "ember", "rainbow",
+            "sunset" to 0xFFE0803C,
+            "ocean" to 0xFF3CA0E0,
+            "forest" to 0xFF3ECF7A,
+            "lavender" to 0xFFB56AE0,
+            "ember" to 0xFFE05656,
+            "aurora" to 0xFF3CCFA0,
+            "rainbow" to 0xFFE0C256,
+            "tropical" to 0xFFE07AC0,
+            "savanna" to 0xFFE08848,
+            "blossom" to 0xFFE0A8C0,
+            "honolulu" to 0xFFE04880,
+            "galaxy" to 0xFF7A6AE0,
+            "neon" to 0xFF48E0D0,
+            "peacock" to 0xFF48A0E0,
+            "citrus" to 0xFFE0D048,
+            "rosegold" to 0xFFE0A8A0,
         )
         const val ALBUM_COLOUR = "album_art_v2"
+        const val ALBUM_COLOUR_V1 = "album_art"
+        const val SONG_COLOUR = "song"
         // Advanced live tunables (keys + labels match const.TUNABLE_KEYS in the integration).
         val TUNABLE_DEFS = listOf(
             "reactivity" to "Reactivity", "glow" to "Glow", "movement" to "Movement",

@@ -40,7 +40,11 @@ private val EffectFallback = listOf("music", "movies", "fireworks")
 
 private val SwatchColour = mapOf(
     "sunset" to 0xFFE0803C, "ocean" to 0xFF3CA0E0, "forest" to 0xFF3ECF7A,
-    "lavender" to 0xFFB56AE0, "ember" to 0xFFE05656, "rainbow" to 0xFFE0C256,
+    "lavender" to 0xFFB56AE0, "ember" to 0xFFE05656, "aurora" to 0xFF3CCFA0,
+    "rainbow" to 0xFFE0C256, "tropical" to 0xFFE07AC0, "savanna" to 0xFFE08848,
+    "blossom" to 0xFFE0A8C0, "honolulu" to 0xFFE04880, "galaxy" to 0xFF7A6AE0,
+    "neon" to 0xFF48E0D0, "peacock" to 0xFF48A0E0, "citrus" to 0xFFE0D048,
+    "rosegold" to 0xFFE0A8A0,
 )
 
 @Composable
@@ -107,10 +111,17 @@ fun LightSyncScreen(onBack: () -> Unit = {}, viewModel: LightSyncViewModel = vie
 
                 if (areas.size > 1) {
                     Spacer(Modifier.height(22.dp))
-                    SectionLabel("Area")
+                    SectionLabel("Entertainment zone")
                     Spacer(Modifier.height(10.dp))
-                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        areas.forEach { ar -> Pill(ar.name, ar.id == a.id) { viewModel.selectArea(ar.id) } }
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        areas.forEach { ar ->
+                            AreaChip(
+                                name = ar.name,
+                                selected = ar.id == a.id,
+                                active = ar.enabled,
+                                accent = accent,
+                            ) { viewModel.selectArea(ar.id) }
+                        }
                     }
                 }
 
@@ -119,9 +130,9 @@ fun LightSyncScreen(onBack: () -> Unit = {}, viewModel: LightSyncViewModel = vie
                 SectionLabel("Follow player")
                 Spacer(Modifier.height(10.dp))
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Pill("Auto", a.mediaPlayer.isBlank()) { viewModel.setFollowPlayer("") }
+                    PlayerPill("Auto", a.mediaPlayer.isBlank(), accent) { viewModel.setFollowPlayer("") }
                     mediaPlayers.forEach { mp ->
-                        Pill(mp.name, a.mediaPlayer == mp.entityId) { viewModel.setFollowPlayer(mp.entityId) }
+                        PlayerPill(mp.name, a.mediaPlayer == mp.entityId, accent) { viewModel.setFollowPlayer(mp.entityId) }
                     }
                 }
 
@@ -155,15 +166,17 @@ fun LightSyncScreen(onBack: () -> Unit = {}, viewModel: LightSyncViewModel = vie
 
                 Spacer(Modifier.height(22.dp))
                 val albumSelected = a.colour?.startsWith("album") == true
+                val songSelected = a.colour == LightSyncRepository.SONG_COLOUR
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     SectionLabel("Colour", modifier = Modifier.weight(1f))
-                    ToggleChip("Follow album", albumSelected) { viewModel.setColour(LightSyncRepository.ALBUM_COLOUR) }
                 }
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(10.dp))
+                // Dynamic colour sources first (album art, song harmony), then preset palettes.
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     AlbumSwatch(selected = albumSelected) { viewModel.setColour(LightSyncRepository.ALBUM_COLOUR) }
-                    LightSyncRepository.PALETTE_SWATCHES.forEach { name ->
-                        ColourDot(Color(SwatchColour[name] ?: 0xFF888888), selected = a.colour == name) { viewModel.setColour(name) }
+                    SongSwatch(selected = songSelected) { viewModel.setColour(LightSyncRepository.SONG_COLOUR) }
+                    LightSyncRepository.PALETTE_SWATCHES.forEach { (name, colour) ->
+                        ColourDot(Color(colour), selected = a.colour == name) { viewModel.setColour(name) }
                     }
                 }
 
@@ -330,11 +343,62 @@ private fun AlbumSwatch(selected: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
+private fun SongSwatch(selected: Boolean, onClick: () -> Unit) {
+    val accent = LocalAccent.current
+    Box(
+        Modifier.size(40.dp).clip(CircleShape)
+            .background(Brush.linearGradient(listOf(accent.a(0.6f), Color(0xFF7A6AE0).a(0.6f))))
+            .border(if (selected) 3.dp else 0.dp, TextPrimary, CircleShape).clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) { Icon(Icons.Default.MusicNote, "Song harmony colour", tint = Ink, modifier = Modifier.size(17.dp)) }
+}
+
+@Composable
 private fun ColourDot(color: Color, selected: Boolean, onClick: () -> Unit) {
     Box(
         Modifier.size(40.dp).clip(CircleShape).background(color)
             .border(if (selected) 3.dp else 0.dp, TextPrimary, CircleShape).clickable(onClick = onClick),
     )
+}
+
+/** An entertainment zone chip with a live/off indicator dot. */
+@Composable
+private fun AreaChip(name: String, selected: Boolean, active: Boolean, accent: Color, onClick: () -> Unit) {
+    val bg = if (selected) accent.a(0.14f) else Glass
+    val border = if (selected) accent.a(0.5f) else HairlineSoft
+    val tint = if (selected) accent else TextSecondary
+    Row(
+        Modifier.clip(RoundedCornerShape(100)).background(bg).border(1.dp, border, RoundedCornerShape(100))
+            .clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(7.dp),
+    ) {
+        Box(
+            Modifier.size(7.dp).clip(CircleShape)
+                .background(if (active) accent else TextFaint),
+        )
+        Text(name, color = tint, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1)
+    }
+}
+
+/** A player picker pill with an icon. */
+@Composable
+private fun PlayerPill(name: String, selected: Boolean, accent: Color, onClick: () -> Unit) {
+    val bg = if (selected) accent.a(0.14f) else Glass
+    val border = if (selected) accent.a(0.5f) else HairlineSoft
+    val tint = if (selected) accent else TextSecondary
+    Row(
+        Modifier.clip(RoundedCornerShape(100)).background(bg).border(1.dp, border, RoundedCornerShape(100))
+            .clickable(onClick = onClick).padding(horizontal = 13.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Icon(
+            if (name == "Auto") Icons.Default.AutoAwesome else Icons.Default.Speaker,
+            null, tint = tint, modifier = Modifier.size(14.dp),
+        )
+        Text(name, color = tint, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1)
+    }
 }
 
 @Composable

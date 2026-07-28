@@ -4,10 +4,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
@@ -74,7 +72,6 @@ fun NowPlayingScreen(
                 Modifier
                     .fillMaxSize()
                     .windowInsetsPadding(WindowInsets.statusBars)
-                    .verticalScroll(rememberScrollState())
                     .padding(horizontal = 14.dp)
                     .padding(top = 8.dp, bottom = navBarInset() + 12.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -90,15 +87,20 @@ fun NowPlayingScreen(
 
                 Spacer(Modifier.height(4.dp))
 
+                // Album art fills the available space, shrinking on small screens
+                // and growing on large ones — no scroll needed.
                 AlbumArt(
                     url = st.artworkUrl,
                     glow = palette.swatch(0),
-                    modifier = Modifier.fillMaxWidth().alpha(if (st.idle) 0.55f else 1f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .alpha(if (st.idle) 0.55f else 1f),
                     glowAlpha = if (st.idle) 0.18f else 0.45f,
                     placeholder = Icons.AutoMirrored.Filled.QueueMusic,
                 )
 
-                Spacer(Modifier.height(20.dp))
+                Spacer(Modifier.height(16.dp))
 
                 // Secondary actions, with the quality badge sitting at the centre of them.
                 Row(
@@ -116,7 +118,7 @@ fun NowPlayingScreen(
                     ) { liked = !liked }
                 }
 
-                Spacer(Modifier.height(18.dp))
+                Spacer(Modifier.height(14.dp))
 
                 if (st.idle) {
                     IdleNotice(st.playerName, st.blank, onBrowse)
