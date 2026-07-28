@@ -1,101 +1,149 @@
-# Sendpin for Android
+# Sendspin for Android
 
-> **⚠️ Work in Progress — Not Ready Yet**
->
-> This project is actively under development. It does not build or function yet.
-> Come back later, or watch this repo for updates.
+**Your phone as a Music Assistant player — and a remote for everything else in the house.**
 
-**Bit-perfect 24-bit hi-res sendpin player for Music Assistant.**
+Sendspin joins your Music Assistant server as a real Sendspin player, so MA can stream to
+it, group it with your other speakers, and speak Home Assistant TTS announcements through
+it. The same app also browses the library, drives whichever player you're listening to,
+and controls Hue music-sync lighting through Home Assistant.
 
-Stream FLAC 96/24 or PCM 96/24 from your Music Assistant server to your Android device with zero quality loss, using AAudio's exclusive I24 mode to bypass Android's 16-bit audio mixer.
+> **Status: early — v0.1.3.** The player, controller, grouping and light-sync paths all
+> work against a live server. Playback is 16-bit; the bit-perfect 24-bit path is not built
+> yet (see [Audio](#audio)). Expect rough edges.
 
-## Features
+## What it does
 
-- **Bit-perfect 24-bit audio** — AAudio `I24` Exclusive mode, identical to `AAUDIO_FORMAT_PCM_I24_PACKED`
-- **Hi-res support** — FLAC 96/24, PCM 96/24, FLAC 48/24, PCM 48/24, with automatic format negotiation
-- **FLAC decoding** — Native libFLAC decoder via JNI, decoding to packed 3-byte i24 LE (zero-conversion passthrough)
-- **Zero-copy PCM path** — PCM frames are byte-identical to AAudio I24, no format conversion needed
-- **Synchronized playback** — NTP clock sync with Music Assistant for multi-room audio
-- **mDNS discovery** — Automatically discovers Music Assistant servers on your LAN
-- **Foreground service** — Playback continues when app is backgrounded
-- **Audio focus** — Properly handles phone calls and other audio interruptions
-- **Material 3 design** — Clean, modern UI with dynamic color support (Android 12+)
+**As a player**
+- Registers with Music Assistant over the Sendspin WebSocket protocol and stays available
+  in the background via a foreground service
+- Clock-synced playback (NTP-style exchange through a Kalman filter) so it stays in step
+  when grouped with other MA speakers
+- FLAC, Opus and PCM, decoded with Android's `MediaCodec` and played through `AudioTrack`
+- Home Assistant TTS announcements land on it like any other MA player
+- mDNS discovery of MA servers on the LAN (`_mass._tcp.`), or type the URL in
+
+**As a controller**
+- Browse and search the MA library — artists, albums, tracks, playlists — plus
+  *Recently played*, *Recently added*, *Continue listening* and *For you* shelves
+- Play to **any** MA player, not just the phone: Now Playing reflects and controls
+  whichever player is selected
+- Transport, seek, shuffle, repeat, volume, and the live codec/sample-rate/bit-depth of
+  whatever is actually streaming
+- Download tracks for offline playback
+
+**Speakers**
+- Group and ungroup MA players around a leader, with per-player and group volume
+- Per-player Sendspin **sync offset** (MA's `sendspin_sync_delay` player config), so you
+  can nudge a lagging speaker into line by hand
+
+**Light Sync**
+- Drives the [syncoV2](https://github.com/engabd11/syncoV2) `hue_music_sync` Home
+  Assistant integration over the HA WebSocket API
+- Per-entertainment-zone: enable, intensity ladder (with Auto and its selectable rungs),
+  effect, brightness ceiling, light timing offset, and the advanced live tunables
+- All 19 colour schemes — 16 preset palettes previewed with their real gradient colours,
+  plus the two album-art modes and the song-harmony mode
+- Pick which media player a zone follows, or leave it on Auto
 
 ## Requirements
 
 - Android 12+ (API 31)
-- Music Assistant server on your network with sendpin support
-- ARM64 device recommended (x86_64 for emulator testing)
+- A [Music Assistant](https://music-assistant.io) server (2.9+) on the same network,
+  with the Sendspin player provider enabled
+- *Optional:* Home Assistant with the [syncoV2](https://github.com/engabd11/syncoV2)
+  `hue_music_sync` integration, for the Light Sync tab
+- *Optional:* a Navidrome / OpenSubsonic server, as a direct library backend when MA
+  isn't reachable
+
+## Setup
+
+1. Install the debug APK (see [Building](#building)) or grab it from the CI artifacts.
+2. On first launch, pick a discovered MA server or enter its URL
+   (e.g. `http://192.168.0.10:8095`). Add a username and password if your server
+   requires auth — they're encrypted at rest with the Android Keystore.
+3. The phone appears in Music Assistant under the name set in **Settings → Player**.
+4. For Light Sync, open the **Lights** tab and add your Home Assistant URL and a
+   long-lived access token (HA → Profile → Security).
+
+## Audio
+
+Playback is currently **16-bit**, in pure Kotlin, with no NDK dependency:
+
+```
+WebSocket binary frame
+    ├─ FLAC / Opus → MediaCodec → PCM 16 → AudioTrack
+    └─ PCM         → passthrough        → AudioTrack
+```
+
+The app advertises `flac 48/16` first, which matches Music Assistant's own default and
+keeps grouped sync stable. It also advertises 24-bit FLAC formats for the future.
+
+A native AAudio `I24` exclusive-mode pipeline lives in `app/src/main/cpp/` for the planned
+bit-perfect 24-bit phase. **It is not compiled** — the `externalNativeBuild` block is
+commented out in `app/build.gradle.kts`, so the app builds and runs without the NDK.
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    Jetpack Compose UI                     │
-│              (NowPlaying + Settings screens)              │
-├─────────────────────────────────────────────────────────┤
-│                    PlayerViewModel                        │
-│            (state management, lifecycle)                  │
-├──────────────────────┬──────────────────────────────────┤
-│   Sendpin Protocol    │        Audio Pipeline             │
-│   (Kotlin)            │        (C++/JNI)                  │
-│                       │                                  │
-│  • Messages.kt        │  • audio_engine.cpp (Oboe/AAudio) │
-│  • SendpinClient.kt   │  • flac_decoder.cpp (libFLAC)    │
-│  • ClockSync.kt       │  • Ring buffer (packed i24 LE)   │
-│  • AudioFrame.kt      │                                  │
-├──────────────────────┴──────────────────────────────────┤
-│                  mDNS Discovery (NSD)                     │
-│              (_mass._tcp.local. services)                 │
-└─────────────────────────────────────────────────────────┘
+Jetpack Compose UI  ·  OLED design system (true black, album-derived accent)
+  Now Playing · Library · Speakers · Lights · Settings
+        │
+   ViewModels (per screen; the player VM is hoisted to the app root)
+        │
+        ├── Sendspin protocol ──  SendspinClient · ClockSync · Kalman filter
+        │   (this phone as an MA player)      → SendspinAudioEngine → AudioTrack
+        │
+        ├── MA main API ────────  MaApiClient (/ws) · MaRepository
+        │   (browse, search, transport, queues, grouping, player config)
+        │
+        ├── Home Assistant ─────  HaClient · LightSyncRepository
+        │   (hue_music_sync entities + set_options service)
+        │
+        └── OpenSubsonic ───────  SubsonicClient   (direct library fallback)
+
+  SendspinService (foreground) keeps the process and connection alive
 ```
 
-### Audio Pipeline
-
-```
-WebSocket Binary Frame
-    │
-    ├─ PCM codec:  raw packed 3-byte i24 LE
-    │              → memcpy → ring buffer → AAudio I24 DMA
-    │              (ZERO conversion)
-    │
-    └─ FLAC codec: raw FLAC frame
-                   → libFLAC decode → pack to 3-byte i24 LE
-                   → ring buffer → AAudio I24 DMA
-```
+Colour comes from the artwork: covers are clustered in CIELAB (the same approach syncoV2
+uses for its album palettes) to pull a lead accent plus companion swatches, which drive
+every glow, gradient and control tint in the app.
 
 ## Building
 
-1. Install Android Studio Hedgehog (2024.1.1+) or later
-2. Install NDK 26+ (for C++/CMake support)
-3. Clone and open in Android Studio:
-   ```bash
-   git clone https://github.com/engabd11/sendpin-android.git
-   ```
-4. Sync Gradle and run on device or emulator
+Requires JDK 17 and the Android SDK (compileSdk 35). No NDK needed.
 
-### libFLAC (Optional)
+```bash
+git clone https://github.com/engabd11/sendspin-nowdroid.git
+cd sendspin-nowdroid
+./gradlew assembleDebug
+# app/build/outputs/apk/debug/app-debug.apk
+```
 
-FLAC decoding is optional for v0.1. To enable:
+Unit tests (protocol and clock logic):
 
-1. Cross-compile libFLAC for Android:
-   ```bash
-   git clone https://github.com/xiph/flac.git
-   cd flac && git checkout 1.5.0
-   cmake -B build-android-arm64 \
-     -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake \
-     -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=26 \
-     -DBUILD_CXXLIBS=OFF -DBUILD_PROGRAMS=OFF -DBUILD_EXAMPLES=OFF \
-     -DBUILD_TESTING=OFF -DWITH_OGG=OFF -DCMAKE_BUILD_TYPE=Release
-   cmake --build build-android-arm64
-   ```
-2. Copy `build-android-arm64/src/libFLAC/libFLAC.a` to `app/src/main/jniLibs/arm64-v8a/`
-3. Uncomment the FLAC lines in `app/src/main/cpp/CMakeLists.txt`
+```bash
+./gradlew :app:testDebugUnitTest
+```
 
-## License
+CI builds the debug APK on every push and pull request and uploads it as an artifact.
 
-MIT License — see [LICENSE](LICENSE)
+## Documentation
+
+- [docs/architecture-decision.md](docs/architecture-decision.md)
+- [docs/protocol-alignment.md](docs/protocol-alignment.md)
+- [docs/design-brief.md](docs/design-brief.md)
+- [docs/roadmap.md](docs/roadmap.md)
+- [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## Credits
 
+The Sendspin protocol client and audio engine are modelled on
+[massdroid](https://github.com/music-assistant) (MIT) and Music Assistant's own mobile
+app (Apache-2.0). Light Sync targets the
+[syncoV2](https://github.com/engabd11/syncoV2) `hue_music_sync` integration.
+
 Built by **Cyborg Automation AU** (engabd.com.au)
+
+## License
+
+MIT — see [LICENSE](LICENSE)
