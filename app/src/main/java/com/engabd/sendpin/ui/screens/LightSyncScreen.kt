@@ -50,6 +50,7 @@ fun LightSyncScreen(onBack: () -> Unit = {}, viewModel: LightSyncViewModel = vie
     val areas by viewModel.areas.collectAsState()
     val area by viewModel.selectedArea.collectAsState()
     val error by viewModel.error.collectAsState()
+    val mediaPlayers by viewModel.mediaPlayers.collectAsState()
     val prefillUrl by viewModel.haUrl.collectAsState()
     val prefillToken by viewModel.haToken.collectAsState()
 
@@ -113,12 +114,35 @@ fun LightSyncScreen(onBack: () -> Unit = {}, viewModel: LightSyncViewModel = vie
                     }
                 }
 
+                // Which player this area follows ("" = Auto — whatever is playing).
+                Spacer(Modifier.height(22.dp))
+                SectionLabel("Follow player")
+                Spacer(Modifier.height(10.dp))
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Pill("Auto", a.mediaPlayer.isBlank()) { viewModel.setFollowPlayer("") }
+                    mediaPlayers.forEach { mp ->
+                        Pill(mp.name, a.mediaPlayer == mp.entityId) { viewModel.setFollowPlayer(mp.entityId) }
+                    }
+                }
+
                 val modeOptions = a.modeOptions.ifEmpty { ModeFallback }
                 Spacer(Modifier.height(22.dp))
                 SectionLabel("Intensity")
                 Spacer(Modifier.height(10.dp))
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     modeOptions.forEach { opt -> Pill(opt.label(), opt == a.mode) { viewModel.setMode(opt) } }
+                }
+
+                // Auto rungs — the intensities Auto may pick from (only when mode == auto).
+                if (a.mode == "auto") {
+                    Spacer(Modifier.height(12.dp))
+                    SectionLabel("Auto can use")
+                    Spacer(Modifier.height(9.dp))
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        LightSyncRepository.AUTO_RUNGS.forEach { rung ->
+                            ToggleChip(rung.label(), rung in a.autoLevels) { viewModel.toggleAutoLevel(rung) }
+                        }
+                    }
                 }
 
                 val effectOptions = a.effectOptions.ifEmpty { EffectFallback }
@@ -153,15 +177,47 @@ fun LightSyncScreen(onBack: () -> Unit = {}, viewModel: LightSyncViewModel = vie
                 SectionLabel("Timing")
                 Spacer(Modifier.height(10.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Light offset", color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, modifier = Modifier.weight(1f))
-                    OffsetStep("−") { viewModel.changeTiming(-5) }
-                    Text("${a.timingMs} ms", color = TextSecondary, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 12.sp, modifier = Modifier.widthIn(min = 56.dp))
-                    OffsetStep("+") { viewModel.changeTiming(5) }
+                    Column(Modifier.weight(1f)) {
+                        Text("Auto timing", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        Text("Calibrate the delay per song", color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
+                    }
+                    AccentSwitch(a.autoTiming) { viewModel.setAutoTiming(it) }
                 }
-                Text(
-                    "Positive delays the lights; negative pushes them ahead of the audio.",
-                    color = TextFaint, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp),
-                )
+                if (!a.autoTiming) {
+                    Spacer(Modifier.height(12.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Light offset", color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                        OffsetStep("−") { viewModel.changeTiming(-5) }
+                        Text("${a.timingMs} ms", color = TextSecondary, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 12.sp, modifier = Modifier.widthIn(min = 56.dp))
+                        OffsetStep("+") { viewModel.changeTiming(5) }
+                    }
+                    Text(
+                        "Positive delays the lights; negative pushes them ahead of the audio.",
+                        color = TextFaint, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp),
+                    )
+                }
+
+                // Advanced live tunables — the card's knob section.
+                Spacer(Modifier.height(22.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        SectionLabel("Advanced")
+                        Spacer(Modifier.height(2.dp))
+                        Text("Fine-tune the reaction", color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
+                    }
+                    AccentSwitch(a.advanced) { viewModel.setAdvanced(it) }
+                }
+                if (a.advanced) {
+                    Spacer(Modifier.height(12.dp))
+                    LightSyncRepository.TUNABLE_DEFS.forEach { (key, label) ->
+                        val factor = a.tunables[key] ?: 1f
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 5.dp), horizontalArrangement = Arrangement.spacedBy(11.dp)) {
+                            Text(label, color = TextSecondary, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, modifier = Modifier.width(96.dp))
+                            HSlider((factor / 2f).coerceIn(0f, 1f), { viewModel.setTunable(key, (it * 2f)) }, modifier = Modifier.weight(1f))
+                            Text("${(factor * 100).roundToInt()}%", color = TextMuted, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 11.sp, modifier = Modifier.widthIn(min = 40.dp))
+                        }
+                    }
+                }
             }
         }
     }

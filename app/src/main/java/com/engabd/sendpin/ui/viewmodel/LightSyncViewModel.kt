@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.ha.HaClient
+import com.engabd.sendpin.ha.HaMediaPlayer
 import com.engabd.sendpin.ha.LightArea
 import com.engabd.sendpin.ha.LightSyncRepository
 import kotlinx.coroutines.flow.*
@@ -22,6 +23,7 @@ class LightSyncViewModel(app: Application) : AndroidViewModel(app) {
     private val repo = LightSyncRepository(ha)
 
     private val _areas = MutableStateFlow<List<LightArea>>(emptyList()); val areas: StateFlow<List<LightArea>> = _areas
+    private val _mediaPlayers = MutableStateFlow<List<HaMediaPlayer>>(emptyList()); val mediaPlayers: StateFlow<List<HaMediaPlayer>> = _mediaPlayers
     private val _selectedId = MutableStateFlow<String?>(null)
     private val _error = MutableStateFlow<String?>(null); val error: StateFlow<String?> = _error
     private val _needsConfig = MutableStateFlow(false); val needsConfig: StateFlow<Boolean> = _needsConfig
@@ -85,6 +87,7 @@ class LightSyncViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val areas = repo.discover()
                 _areas.value = areas
+                _mediaPlayers.value = repo.mediaPlayers()
                 if (_selectedId.value == null || areas.none { it.id == _selectedId.value }) {
                     _selectedId.value = areas.firstOrNull()?.id
                 }
@@ -101,7 +104,8 @@ class LightSyncViewModel(app: Application) : AndroidViewModel(app) {
     fun setMode(option: String) = patch({ it.copy(mode = option) }) { repo.setMode(it, option) }
     fun setEffect(option: String) = patch({ it.copy(effect = option) }) { repo.setEffect(it, option) }
     fun setColour(option: String) = patch({ it.copy(colour = option) }) { repo.setColour(it, option) }
-    fun setBrightness(pct: Int) = patch({ it.copy(brightnessPct = pct.coerceIn(5, 100)) }) { repo.setBrightness(it, pct) }
+    // Continuous sliders → debounced so a drag doesn't flood HA.
+    fun setBrightness(pct: Int) = patchDebounced("brightness", { it.copy(brightnessPct = pct.coerceIn(5, 100)) }) { repo.setBrightness(it, pct) }
     fun setTiming(ms: Int) = patch({ it.copy(timingMs = ms.coerceIn(-500, 500)) }) { repo.setTiming(it, ms) }
 
     fun changeTiming(deltaMs: Int) {
@@ -109,11 +113,52 @@ class LightSyncViewModel(app: Application) : AndroidViewModel(app) {
         setTiming(ms)
     }
 
+    // --- advanced settings (via hue_music_sync.set_options) ----------------
+
+    fun setFollowPlayer(entityId: String) =
+        patch({ it.copy(mediaPlayer = entityId) }) { repo.setFollowPlayer(it, entityId) }
+
+    /** Toggle one rung in the Auto ladder (keeps at least one selected). */
+    fun toggleAutoLevel(level: String) {
+        val area = selectedArea.value ?: return
+        val next = if (level in area.autoLevels) area.autoLevels - level else area.autoLevels + level
+        if (next.isEmpty()) return
+        val ordered = LightSyncRepository.AUTO_RUNGS.filter { it in next }
+        patch({ it.copy(autoLevels = ordered) }) { repo.setAutoLevels(it, ordered) }
+    }
+
+    fun setAutoTiming(on: Boolean) =
+        patch({ it.copy(autoTiming = on) }) { repo.setAutoTiming(it, on) }
+
+    fun setAdvanced(on: Boolean) =
+        patch({ it.copy(advanced = on) }) { repo.setAdvanced(it, on) }
+
+    /** Set one tunable factor (0f..2f); sends the full map, debounced for drags. */
+    fun setTunable(key: String, factor: Float) {
+        val area = selectedArea.value ?: return
+        val full = LightSyncRepository.TUNABLE_DEFS.associate { (k, _) ->
+            k to if (k == key) factor else (area.tunables[k] ?: 1f)
+        }
+        patchDebounced("tunable", { it.copy(tunables = full) }) { repo.setTunables(it, full) }
+    }
+
     /** Optimistically patch the selected area locally, then send the command to HA. */
     private inline fun patch(crossinline local: (LightArea) -> LightArea, crossinline remote: suspend (LightArea) -> Unit) {
         val target = selectedArea.value ?: return
         _areas.update { list -> list.map { if (it.id == target.id) local(it) else it } }
         viewModelScope.launch {
+            try { remote(local(target)) } catch (e: Exception) { _error.value = e.message }
+        }
+    }
+
+    // Debounced variant for sliders (brightness, tunables) so a drag sends one call.
+    private val debounceJobs = mutableMapOf<String, kotlinx.coroutines.Job>()
+    private inline fun patchDebounced(key: String, crossinline local: (LightArea) -> LightArea, crossinline remote: suspend (LightArea) -> Unit) {
+        val target = selectedArea.value ?: return
+        _areas.update { list -> list.map { if (it.id == target.id) local(it) else it } }
+        debounceJobs[key]?.cancel()
+        debounceJobs[key] = viewModelScope.launch {
+            kotlinx.coroutines.delay(200)
             try { remote(local(target)) } catch (e: Exception) { _error.value = e.message }
         }
     }

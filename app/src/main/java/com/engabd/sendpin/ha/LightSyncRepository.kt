@@ -2,6 +2,9 @@ package com.engabd.sendpin.ha
 
 import kotlinx.serialization.json.*
 
+/** A selectable media player the area can follow. */
+data class HaMediaPlayer(val entityId: String, val name: String)
+
 /** One Hue Synco entertainment area (an HA device) with its controllable entities. */
 data class LightArea(
     val id: String,                 // HA device_id
@@ -21,6 +24,12 @@ data class LightArea(
     val brightnessEntity: String?,
     val timingMs: Int,
     val timingEntity: String?,
+    // Settings driven via the hue_music_sync.set_options service (not entities):
+    val mediaPlayer: String,        // "" = Auto (follow whatever plays)
+    val autoLevels: List<String>,   // Auto rungs (only meaningful when mode == auto)
+    val autoTiming: Boolean,
+    val advanced: Boolean,
+    val tunables: Map<String, Float>,
 )
 
 /**
@@ -38,6 +47,13 @@ class LightSyncRepository(private val ha: HaClient) {
             "sunset", "ocean", "forest", "lavender", "ember", "rainbow",
         )
         const val ALBUM_COLOUR = "album_art_v2"
+        // Advanced live tunables (keys + labels match const.TUNABLE_KEYS in the integration).
+        val TUNABLE_DEFS = listOf(
+            "reactivity" to "Reactivity", "glow" to "Glow", "movement" to "Movement",
+            "contrast" to "Contrast", "colour_speed" to "Colour speed", "loudness" to "Loudness",
+        )
+        // The intensity rungs Auto may pick from (const.INTENSITY_LADDER).
+        val AUTO_RUNGS = listOf("subtle", "medium", "high", "intense", "extreme")
     }
 
     suspend fun discover(): List<LightArea> {
@@ -94,6 +110,14 @@ class LightSyncRepository(private val ha: HaClient) {
 
             fun st(entityId: String?) = entityId?.let { stateOf[it] }
 
+            // The sync switch carries the non-entity settings as attributes (see the
+            // integration's area_attributes): advanced/tunables/media_player/auto_*.
+            val sw = st(switchEid)?.second ?: JsonObject(emptyMap())
+            val tun = (sw["tunables"] as? JsonObject)?.mapNotNull { (k, v) ->
+                val f = (v as? JsonPrimitive)?.let { it.floatOrNull ?: it.contentOrNull?.toFloatOrNull() }
+                if (f != null) k to f else null
+            }?.toMap() ?: emptyMap()
+
             LightArea(
                 id = deviceId,
                 name = (deviceName[deviceId] ?: "Area").removePrefix("Music Sync — ").removePrefix("Music Sync - "),
@@ -112,8 +136,24 @@ class LightSyncRepository(private val ha: HaClient) {
                 brightnessEntity = brightnessEid,
                 timingMs = st(timingEid)?.first?.toFloatOrNull()?.toInt() ?: 0,
                 timingEntity = timingEid,
+                mediaPlayer = sw["media_player"]?.jsonPrimitive?.contentOrNull ?: "",
+                autoLevels = (sw["auto_levels"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: AUTO_RUNGS,
+                autoTiming = sw["auto_timing"]?.jsonPrimitive?.booleanOrNull ?: false,
+                advanced = sw["advanced"]?.jsonPrimitive?.booleanOrNull ?: false,
+                tunables = tun,
             )
         }
+    }
+
+    /** Media players the areas can follow (active players + a friendly name). */
+    suspend fun mediaPlayers(): List<HaMediaPlayer> = ha.getStates().mapNotNull { s ->
+        val o = s as? JsonObject ?: return@mapNotNull null
+        val eid = o["entity_id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+        if (!eid.startsWith("media_player.")) return@mapNotNull null
+        val state = o["state"]?.jsonPrimitive?.contentOrNull
+        if (state == "unavailable") return@mapNotNull null
+        val name = (o["attributes"] as? JsonObject)?.get("friendly_name")?.jsonPrimitive?.contentOrNull ?: eid
+        HaMediaPlayer(eid, name)
     }
 
     private fun optionsOf(entry: Pair<String?, JsonObject>?): List<String> =
@@ -145,4 +185,31 @@ class LightSyncRepository(private val ha: HaClient) {
         entityId ?: return
         ha.callService("number", "set_value", entityId, buildJsonObject { put("value", value) })
     }
+
+    // --- advanced settings via the hue_music_sync.set_options service -------
+
+    /** Call set_options targeting the area's sync switch (matches the HA card). */
+    private suspend fun setOptions(area: LightArea, data: JsonObject) {
+        val eid = area.switchEntity ?: return
+        ha.callService(PLATFORM, "set_options", eid, data)
+    }
+
+    /** [entityId] "" = Auto (follow whatever plays). */
+    suspend fun setFollowPlayer(area: LightArea, entityId: String) =
+        setOptions(area, buildJsonObject { put("media_player", entityId) })
+
+    suspend fun setAutoLevels(area: LightArea, levels: List<String>) =
+        setOptions(area, buildJsonObject { put("auto_levels", JsonArray(levels.map { JsonPrimitive(it) })) })
+
+    suspend fun setAutoTiming(area: LightArea, on: Boolean) =
+        setOptions(area, buildJsonObject { put("auto_timing", on) })
+
+    suspend fun setAdvanced(area: LightArea, on: Boolean) =
+        setOptions(area, buildJsonObject { put("advanced", on) })
+
+    /** Send the FULL tunable map (the integration replaces the stored dict). */
+    suspend fun setTunables(area: LightArea, tunables: Map<String, Float>) =
+        setOptions(area, buildJsonObject {
+            put("tunables", buildJsonObject { tunables.forEach { (k, v) -> put(k, v) } })
+        })
 }
