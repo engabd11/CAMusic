@@ -120,7 +120,6 @@ fun App() {
                 ) {
                     composable("now_playing") {
                         NowPlayingScreen(
-                            viewModel = playerVm,
                             onOpenSpeakers = { go("speakers") },
                             onOpenLightSync = { go("light_sync") },
                             onBrowse = { go("library") },

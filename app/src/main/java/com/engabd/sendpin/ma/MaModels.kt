@@ -23,6 +23,16 @@ data class MaItem(
     }
 }
 
+/** What a player is currently playing (from a player's `current_media`). */
+data class MaNowPlaying(
+    val title: String,
+    val artist: String,
+    val album: String,
+    val imageUrl: String?,
+    val durationMs: Long?,
+    val elapsedMs: Long?,
+)
+
 /** A Music Assistant player (a possible playback target / group). */
 data class MaPlayer(
     val playerId: String,
@@ -30,6 +40,7 @@ data class MaPlayer(
     val available: Boolean,
     val powered: Boolean,
     val type: String = "player",             // player | group | ...
+    val state: String = "idle",              // playback_state: playing | paused | idle
     val volumeLevel: Int = 0,                // 0..100
     val groupVolume: Int? = null,            // 0..100 when this is a group/sync leader
     val syncedTo: String? = null,            // the leader this player is synced to (member)
@@ -37,7 +48,9 @@ data class MaPlayer(
     val canGroupWith: List<String> = emptyList(), // player_ids this can be grouped with
     val supportedFeatures: List<String> = emptyList(),
     val icon: String? = null,
+    val nowPlaying: MaNowPlaying? = null,
 ) {
+    val isPlaying get() = state == "playing"
     /** This player leads an (ad-hoc sync or static) group. */
     val isLeader get() = groupChilds.isNotEmpty()
 
@@ -94,6 +107,7 @@ object MaParse {
                 available = o["available"]?.jsonPrimitive?.booleanOrNull ?: true,
                 powered = o["powered"]?.jsonPrimitive?.booleanOrNull ?: true,
                 type = o["type"]?.jsonPrimitive?.contentOrNull ?: "player",
+                state = o["playback_state"]?.jsonPrimitive?.contentOrNull ?: "idle",
                 volumeLevel = o["volume_level"]?.jsonPrimitive?.intOrNull ?: 0,
                 groupVolume = o["group_volume"]?.jsonPrimitive?.intOrNull,
                 syncedTo = o["synced_to"]?.jsonPrimitive?.contentOrNull,
@@ -101,8 +115,26 @@ object MaParse {
                 canGroupWith = strList(o["can_group_with"]),
                 supportedFeatures = strList(o["supported_features"]),
                 icon = o["icon"]?.jsonPrimitive?.contentOrNull,
+                nowPlaying = nowPlaying(o["current_media"], o["elapsed_time"]),
             )
         }
+    }
+
+    private fun nowPlaying(el: JsonElement?, elapsed: JsonElement?): MaNowPlaying? {
+        val m = el as? JsonObject ?: return null
+        val title = m["title"]?.jsonPrimitive?.contentOrNull ?: return null
+        fun ms(e: JsonElement?): Long? = (e as? JsonPrimitive)?.let {
+            it.doubleOrNull?.let { d -> (d * 1000).toLong() } ?: it.longOrNull
+        }
+        return MaNowPlaying(
+            title = title,
+            artist = m["artist"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+            album = m["album"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+            imageUrl = m["image_url"]?.jsonPrimitive?.contentOrNull
+                ?: ((m["image"] as? JsonObject)?.get("path")?.jsonPrimitive?.contentOrNull),
+            durationMs = ms(m["duration"]),
+            elapsedMs = ms(m["elapsed_time"] ?: elapsed),
+        )
     }
 
     private fun strList(el: JsonElement?): List<String> =

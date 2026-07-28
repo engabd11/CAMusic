@@ -29,141 +29,142 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
-import com.engabd.sendpin.ui.viewmodel.PlayerViewModel
+import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
 
 @Composable
 fun NowPlayingScreen(
-    viewModel: PlayerViewModel = viewModel(),
+    viewModel: NowPlayingViewModel = viewModel(),
     onOpenSpeakers: () -> Unit = {},
     onOpenLightSync: () -> Unit = {},
     onBrowse: () -> Unit = {},
 ) {
-    val title by viewModel.trackTitle.collectAsState()
-    val artist by viewModel.artist.collectAsState()
-    val album by viewModel.album.collectAsState()
-    val art by viewModel.artworkUrl.collectAsState()
-    val isPlaying by viewModel.isPlaying.collectAsState()
-    val volume by viewModel.volume.collectAsState()
+    val st by viewModel.state.collectAsState()
     val connected by viewModel.connected.collectAsState()
-    val format by viewModel.currentFormat.collectAsState()
 
-    val accent = LocalAccent.current
-    val hasTrack = title.isNotBlank()
+    // Accent follows the player being shown (may differ from the app-wide one).
+    val accent = rememberAlbumAccent(st.artworkUrl)
+    val art = st.artworkUrl
 
-    Box(Modifier.fillMaxSize().background(Ink)) {
-        if (!hasTrack) {
-            IdlePlayer(accent, onBrowse)
-            return@Box
-        }
+    // Smoothly interpolate the position between 2s polls.
+    var pos by remember { mutableStateOf(0L) }
+    LaunchedEffect(st.positionMs, st.isPlaying, st.title) {
+        pos = st.positionMs
+        while (st.isPlaying) { kotlinx.coroutines.delay(500); pos += 500 }
+    }
+    val dur = st.durationMs
+    val progress = if (dur > 0) (pos.toFloat() / dur).coerceIn(0f, 1f) else 0f
 
-        // Blurred album backdrop + darkening gradient.
-        if (art != null) {
-            AsyncImage(
-                model = art, contentDescription = null, contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize().blur(48.dp).alpha(0.55f),
-            )
-        }
-        Box(
-            Modifier.fillMaxSize().background(
-                Brush.verticalGradient(
-                    0f to Ink.a(0.28f), 0.46f to Ink.a(0.66f), 0.9f to Ink,
+    CompositionLocalProvider(LocalAccent provides accent) {
+        Box(Modifier.fillMaxSize().background(Ink)) {
+            if (!st.hasTrack) {
+                IdlePlayer(accent, st.playerName, onBrowse)
+                return@Box
+            }
+
+            if (art != null) {
+                AsyncImage(
+                    model = art, contentDescription = null, contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize().blur(48.dp).alpha(0.55f),
+                )
+            }
+            Box(
+                Modifier.fillMaxSize().background(
+                    Brush.verticalGradient(0f to Ink.a(0.28f), 0.46f to Ink.a(0.66f), 0.9f to Ink)
                 )
             )
-        )
 
-        Column(
-            Modifier.fillMaxSize().padding(horizontal = 16.dp).padding(top = 8.dp, bottom = 8.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            if (!connected) OfflineBanner()
-
-            // Top bar: back, group pill, overflow.
-            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.KeyboardArrowDown, "Minimize", tint = TextSecondary, modifier = Modifier.size(24.dp))
-                Spacer(Modifier.weight(1f))
-                Row(
-                    Modifier.clip(RoundedCornerShape(100)).background(Glass).border(1.dp, Hairline, RoundedCornerShape(100))
-                        .clickable(onClick = onOpenSpeakers).padding(horizontal = 12.dp, vertical = 7.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    Icon(Icons.Default.Speaker, null, tint = TextPrimary, modifier = Modifier.size(15.dp))
-                    Text("This phone", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                }
-                Spacer(Modifier.weight(1f))
-                Icon(Icons.Default.MoreVert, "More", tint = TextSecondary, modifier = Modifier.size(22.dp))
-            }
-
-            Spacer(Modifier.height(8.dp))
-
-            // Cover.
-            Box(
-                Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(20.dp)).background(Ink2),
-                contentAlignment = Alignment.Center,
+            Column(
+                Modifier.fillMaxSize().padding(horizontal = 16.dp).padding(top = 8.dp, bottom = 8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                if (art != null) {
-                    AsyncImage(model = art, contentDescription = "Album art", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
-                } else {
-                    Icon(Icons.Default.MusicNote, null, tint = TextFaint, modifier = Modifier.size(64.dp))
+                if (!connected) OfflineBanner()
+
+                // Top bar: minimize, player pill → Speakers, overflow.
+                Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.KeyboardArrowDown, "Minimize", tint = TextSecondary, modifier = Modifier.size(24.dp))
+                    Spacer(Modifier.weight(1f))
+                    Row(
+                        Modifier.clip(RoundedCornerShape(100)).background(Glass).border(1.dp, Hairline, RoundedCornerShape(100))
+                            .clickable(onClick = onOpenSpeakers).padding(horizontal = 12.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Icon(if (st.isSelf) Icons.Default.Smartphone else Icons.Default.Speaker, null, tint = TextPrimary, modifier = Modifier.size(15.dp))
+                        Text(st.playerName, color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1)
+                    }
+                    Spacer(Modifier.weight(1f))
+                    Icon(Icons.Default.MoreVert, "More", tint = TextSecondary, modifier = Modifier.size(22.dp))
                 }
-            }
 
-            Spacer(Modifier.height(18.dp))
+                Spacer(Modifier.height(8.dp))
 
-            // Action chips row (quality + light sync).
-            Row(horizontalArrangement = Arrangement.spacedBy(9.dp), verticalAlignment = Alignment.CenterVertically) {
-                GhostChip(Icons.Default.Add, "Add")
-                QualityBadge(format.ifBlank { "—" })
                 Box(
-                    Modifier.size(38.dp).clip(RoundedCornerShape(11.dp)).background(Glass)
-                        .border(1.dp, Hairline, RoundedCornerShape(11.dp)).clickable(onClick = onOpenLightSync),
+                    Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(20.dp)).background(Ink2),
                     contentAlignment = Alignment.Center,
-                ) { Icon(Icons.Default.Lightbulb, "Light sync", tint = accent, modifier = Modifier.size(17.dp)) }
-                GhostChip(Icons.Default.FavoriteBorder, "Like")
-            }
+                ) {
+                    if (art != null) AsyncImage(model = art, contentDescription = "Album art", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+                    else Icon(Icons.Default.MusicNote, null, tint = TextFaint, modifier = Modifier.size(64.dp))
+                }
 
-            Spacer(Modifier.height(18.dp))
+                Spacer(Modifier.height(18.dp))
 
-            // Title / artist / album.
-            Text(title, color = TextPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 26.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
-            if (artist.isNotBlank()) Text(artist, color = TextSecondary, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (album.isNotBlank()) Text(album, color = TextFaint, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Row(horizontalArrangement = Arrangement.spacedBy(9.dp), verticalAlignment = Alignment.CenterVertically) {
+                    GhostChip(Icons.Default.Add, "Add")
+                    Box(
+                        Modifier.size(38.dp).clip(RoundedCornerShape(11.dp)).background(Glass)
+                            .border(1.dp, Hairline, RoundedCornerShape(11.dp)).clickable(onClick = onOpenLightSync),
+                        contentAlignment = Alignment.Center,
+                    ) { Icon(Icons.Default.Lightbulb, "Light sync", tint = accent, modifier = Modifier.size(17.dp)) }
+                    GhostChip(Icons.Default.FavoriteBorder, "Like")
+                }
 
-            Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(18.dp))
 
-            // Scrubber (visual — Sendspin position isn't exposed yet).
-            var progress by remember { mutableStateOf(0.42f) }
-            HSlider(progress, { progress = it })
-            Row(Modifier.fillMaxWidth().padding(top = 2.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("1:47", color = TextMuted, fontFamily = MonoFont, fontSize = 11.sp)
-                Text("4:12", color = TextMuted, fontFamily = MonoFont, fontSize = 11.sp)
-            }
+                Text(st.title, color = TextPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 26.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
+                if (st.artist.isNotBlank()) Text(st.artist, color = TextSecondary, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (st.album.isNotBlank()) Text(st.album, color = TextFaint, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
 
-            Spacer(Modifier.height(14.dp))
+                Spacer(Modifier.height(16.dp))
 
-            // Transport.
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Shuffle, "Shuffle", tint = TextMuted, modifier = Modifier.size(20.dp))
-                Icon(Icons.Default.SkipPrevious, "Previous", tint = TextPrimary, modifier = Modifier.size(30.dp))
-                Box(
-                    Modifier.size(64.dp).shadow(22.dp, CircleShape, ambientColor = accent, spotColor = accent)
-                        .clip(CircleShape).background(accent).clickable { viewModel.onPlayPause() },
-                    contentAlignment = Alignment.Center,
-                ) { Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, "Play/Pause", tint = Ink, modifier = Modifier.size(30.dp)) }
-                Icon(Icons.Default.SkipNext, "Next", tint = TextPrimary, modifier = Modifier.size(30.dp))
-                Icon(Icons.Default.Repeat, "Repeat", tint = accent, modifier = Modifier.size(20.dp))
-            }
+                // Real scrubber.
+                HSlider(progress, { f -> pos = (f * dur).toLong(); viewModel.seekTo(f) })
+                Row(Modifier.fillMaxWidth().padding(top = 2.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(fmtTime(pos), color = TextMuted, fontFamily = MonoFont, fontSize = 11.sp)
+                    Text(if (dur > 0) fmtTime(dur) else "--:--", color = TextMuted, fontFamily = MonoFont, fontSize = 11.sp)
+                }
 
-            Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(14.dp))
 
-            // Volume.
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(11.dp)) {
-                Icon(Icons.Default.VolumeUp, "Volume", tint = TextMuted, modifier = Modifier.size(16.dp))
-                HSlider(volume.coerceIn(0f, 1f), { viewModel.onVolumeChange(it) }, modifier = Modifier.weight(1f))
-                Text("${(volume * 100).toInt()}", color = TextMuted, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Shuffle, "Shuffle", tint = TextMuted, modifier = Modifier.size(20.dp))
+                    Box(Modifier.clip(CircleShape).clickable { viewModel.previous() }.padding(4.dp)) {
+                        Icon(Icons.Default.SkipPrevious, "Previous", tint = TextPrimary, modifier = Modifier.size(30.dp))
+                    }
+                    Box(
+                        Modifier.size(64.dp).shadow(22.dp, CircleShape, ambientColor = accent, spotColor = accent)
+                            .clip(CircleShape).background(accent).clickable { viewModel.playPause() },
+                        contentAlignment = Alignment.Center,
+                    ) { Icon(if (st.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, "Play/Pause", tint = Ink, modifier = Modifier.size(30.dp)) }
+                    Box(Modifier.clip(CircleShape).clickable { viewModel.next() }.padding(4.dp)) {
+                        Icon(Icons.Default.SkipNext, "Next", tint = TextPrimary, modifier = Modifier.size(30.dp))
+                    }
+                    Icon(Icons.Default.Repeat, "Repeat", tint = accent, modifier = Modifier.size(20.dp))
+                }
+
+                Spacer(Modifier.height(16.dp))
+
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(11.dp)) {
+                    Icon(Icons.Default.VolumeUp, "Volume", tint = TextMuted, modifier = Modifier.size(16.dp))
+                    HSlider(st.volume.coerceIn(0f, 1f), { viewModel.setVolume(it) }, modifier = Modifier.weight(1f))
+                    Text("${(st.volume * 100).toInt()}", color = TextMuted, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                }
             }
         }
     }
+}
+
+private fun fmtTime(ms: Long): String {
+    val s = (ms / 1000).coerceAtLeast(0)
+    return "%d:%02d".format(s / 60, s % 60)
 }
 
 @Composable
@@ -183,12 +184,12 @@ private fun OfflineBanner() {
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Icon(Icons.Default.CloudOff, null, tint = WarnAmber, modifier = Modifier.size(15.dp))
-        Text("Offline — playing downloads", color = Color(0xFFF2C574), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+        Text("Reconnecting…", color = Color(0xFFF2C574), fontWeight = FontWeight.Bold, fontSize = 12.sp)
     }
 }
 
 @Composable
-private fun IdlePlayer(accent: Color, onBrowse: () -> Unit) {
+private fun IdlePlayer(accent: Color, playerName: String, onBrowse: () -> Unit) {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Bloom(accent, 420.dp, 20.dp, (-40).dp, 0.28f)
         Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(34.dp)) {
@@ -197,10 +198,10 @@ private fun IdlePlayer(accent: Color, onBrowse: () -> Unit) {
                 contentAlignment = Alignment.Center,
             ) { Icon(Icons.Default.QueueMusic, null, tint = TextFaint, modifier = Modifier.size(34.dp)) }
             Spacer(Modifier.height(22.dp))
-            Text("Sendspin is quiet", color = TextPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp)
+            Text("Nothing playing on $playerName", color = TextPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp, textAlign = TextAlign.Center)
             Spacer(Modifier.height(6.dp))
             Text(
-                "Nothing playing right now. Pick something from your library to fill the room.",
+                "Pick something from your library to fill the room.",
                 color = TextMuted, fontSize = 14.sp, textAlign = TextAlign.Center, modifier = Modifier.widthIn(max = 260.dp),
             )
             Spacer(Modifier.height(26.dp))

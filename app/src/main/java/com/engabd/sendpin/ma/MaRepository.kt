@@ -73,6 +73,11 @@ class MaRepository(val api: MaApiClient) {
     suspend fun next(playerId: String) = cmd("next", playerId)
     suspend fun previous(playerId: String) = cmd("previous", playerId)
 
+    suspend fun seek(playerId: String, positionSec: Int) =
+        api.sendCommand("players/cmd/seek", buildJsonObject {
+            put("player_id", playerId); put("position", positionSec.coerceAtLeast(0))
+        })
+
     suspend fun setVolume(playerId: String, level: Int) =
         api.sendCommand("players/cmd/volume_set", buildJsonObject {
             put("player_id", playerId); put("volume_level", level.coerceIn(0, 100))
