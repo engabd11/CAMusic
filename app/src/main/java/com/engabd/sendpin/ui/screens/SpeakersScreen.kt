@@ -11,6 +11,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -36,6 +37,7 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
     val groupVolume by viewModel.groupVolume.collectAsState()
     val connected by viewModel.connected.collectAsState()
     val error by viewModel.error.collectAsState()
+    val canGroup by viewModel.leaderCanGroup.collectAsState()
 
     val total = joined.size + available.size
     val allJoined = available.isEmpty() && joined.isNotEmpty()
@@ -55,8 +57,11 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
                         color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
                     )
                 }
-                Pill(if (allJoined) "Ungroup" else "Group all", allJoined) {
-                    if (allJoined) viewModel.ungroupAll() else viewModel.groupAll()
+                // Grouping needs a leader that supports it; Ungroup always works.
+                if (allJoined || canGroup) {
+                    Pill(if (allJoined) "Ungroup" else "Group all", allJoined) {
+                        if (allJoined) viewModel.ungroupAll() else viewModel.groupAll()
+                    }
                 }
             }
 
@@ -89,9 +94,24 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
                 }
 
                 if (available.isNotEmpty()) {
-                    item { Spacer(Modifier.height(10.dp)); SectionLabel("Available on this network"); Spacer(Modifier.height(10.dp)) }
+                    item {
+                        Spacer(Modifier.height(10.dp))
+                        SectionLabel("Available on this network")
+                        Spacer(Modifier.height(10.dp))
+                        // Sendspin players (this phone included) can't lead a group, so
+                        // say so up front rather than letting Join fail on the first tap.
+                        if (!canGroup) {
+                            NoteRow("This player can't lead a group. Tap a speaker's name to play there, then Join the rest to it.")
+                            Spacer(Modifier.height(12.dp))
+                        }
+                    }
                     items(available, key = { it.id }) { p ->
-                        FreeCard(p, onPlayHere = { viewModel.selectPlayer(p.id) }, onJoin = { viewModel.join(p.id) })
+                        FreeCard(
+                            p,
+                            canJoin = canGroup,
+                            onPlayHere = { viewModel.selectPlayer(p.id) },
+                            onJoin = { viewModel.join(p.id) },
+                        )
                         Spacer(Modifier.height(12.dp))
                     }
                 }
@@ -203,7 +223,7 @@ private fun JoinedCard(p: SpeakerUi, onSelect: () -> Unit, onUnjoin: () -> Unit,
 }
 
 @Composable
-private fun FreeCard(p: SpeakerUi, onPlayHere: () -> Unit, onJoin: () -> Unit) {
+private fun FreeCard(p: SpeakerUi, canJoin: Boolean, onPlayHere: () -> Unit, onJoin: () -> Unit) {
     val accent = LocalAccent.current
     Row(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Glass).border(1.dp, HairlineSoft, RoundedCornerShape(16.dp)).padding(14.dp),
@@ -216,9 +236,24 @@ private fun FreeCard(p: SpeakerUi, onPlayHere: () -> Unit, onJoin: () -> Unit) {
             Text(p.name, color = TextSecondary, fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text("Tap to play here · ${p.meta}", color = TextFaint, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        Box(Modifier.clip(RoundedCornerShape(100)).background(accent.a(0.16f)).border(1.dp, accent.a(0.55f), RoundedCornerShape(100)).clickable(onClick = onJoin).padding(horizontal = 16.dp, vertical = 8.dp)) {
-            Text("Join", color = accent, fontWeight = FontWeight.ExtraBold, fontSize = 11.sp)
+        if (canJoin) {
+            Box(Modifier.clip(RoundedCornerShape(100)).background(accent.a(0.16f)).border(1.dp, accent.a(0.55f), RoundedCornerShape(100)).clickable(onClick = onJoin).padding(horizontal = 16.dp, vertical = 8.dp)) {
+                Text("Join", color = accent, fontWeight = FontWeight.ExtraBold, fontSize = 11.sp)
+            }
         }
+    }
+}
+
+/** A quiet inline explanation — not an error, just why a control isn't there. */
+@Composable
+private fun NoteRow(msg: String) {
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Glass)
+            .border(1.dp, HairlineSoft, RoundedCornerShape(12.dp)).padding(13.dp),
+        horizontalArrangement = Arrangement.spacedBy(9.dp),
+    ) {
+        Icon(Icons.Outlined.Info, null, tint = TextFaint, modifier = Modifier.size(15.dp))
+        Text(msg, color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, lineHeight = 15.sp)
     }
 }
 
