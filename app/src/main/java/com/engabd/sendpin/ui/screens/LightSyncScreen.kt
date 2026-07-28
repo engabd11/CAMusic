@@ -22,12 +22,15 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.engabd.sendpin.ha.HaMediaPlayer
 import com.engabd.sendpin.ha.LightArea
 import com.engabd.sendpin.ha.LightSyncRepository
 import com.engabd.sendpin.ui.design.*
@@ -37,15 +40,6 @@ import kotlin.math.roundToInt
 
 private val ModeFallback = listOf("auto", "subtle", "medium", "high", "intense", "extreme")
 private val EffectFallback = listOf("music", "movies", "fireworks")
-
-private val SwatchColour = mapOf(
-    "sunset" to 0xFFE0803C, "ocean" to 0xFF3CA0E0, "forest" to 0xFF3ECF7A,
-    "lavender" to 0xFFB56AE0, "ember" to 0xFFE05656, "aurora" to 0xFF3CCFA0,
-    "rainbow" to 0xFFE0C256, "tropical" to 0xFFE07AC0, "savanna" to 0xFFE08848,
-    "blossom" to 0xFFE0A8C0, "honolulu" to 0xFFE04880, "galaxy" to 0xFF7A6AE0,
-    "neon" to 0xFF48E0D0, "peacock" to 0xFF48A0E0, "citrus" to 0xFFE0D048,
-    "rosegold" to 0xFFE0A8A0,
-)
 
 @Composable
 fun LightSyncScreen(onBack: () -> Unit = {}, viewModel: LightSyncViewModel = viewModel()) {
@@ -129,12 +123,11 @@ fun LightSyncScreen(onBack: () -> Unit = {}, viewModel: LightSyncViewModel = vie
                 Spacer(Modifier.height(22.dp))
                 SectionLabel("Follow player")
                 Spacer(Modifier.height(10.dp))
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    PlayerPill("Auto", a.mediaPlayer.isBlank(), accent) { viewModel.setFollowPlayer("") }
-                    mediaPlayers.forEach { mp ->
-                        PlayerPill(mp.name, a.mediaPlayer == mp.entityId, accent) { viewModel.setFollowPlayer(mp.entityId) }
-                    }
-                }
+                PlayerRow(
+                    selected = a.mediaPlayer,
+                    players = mediaPlayers,
+                    onSelect = viewModel::setFollowPlayer,
+                )
 
                 val modeOptions = a.modeOptions.ifEmpty { ModeFallback }
                 Spacer(Modifier.height(22.dp))
@@ -143,10 +136,15 @@ fun LightSyncScreen(onBack: () -> Unit = {}, viewModel: LightSyncViewModel = vie
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     modeOptions.forEach { opt -> Pill(opt.label(), opt == a.mode) { viewModel.setMode(opt) } }
                 }
+                // What the selected rung actually does — the ladder's names don't say.
+                LightSyncRepository.MODE_BLURBS[a.mode]?.let {
+                    Spacer(Modifier.height(9.dp))
+                    Text(it, color = TextFaint, fontSize = 11.sp, lineHeight = 15.sp)
+                }
 
                 // Auto rungs — the intensities Auto may pick from (only when mode == auto).
                 if (a.mode == "auto") {
-                    Spacer(Modifier.height(12.dp))
+                    Spacer(Modifier.height(14.dp))
                     SectionLabel("Auto can use")
                     Spacer(Modifier.height(9.dp))
                     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -154,6 +152,11 @@ fun LightSyncScreen(onBack: () -> Unit = {}, viewModel: LightSyncViewModel = vie
                             ToggleChip(rung.label(), rung in a.autoLevels) { viewModel.toggleAutoLevel(rung) }
                         }
                     }
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Auto spreads these across each song's own dynamic range — the quiet parts sit on the lowest, the biggest moments reach the highest.",
+                        color = TextFaint, fontSize = 11.sp, lineHeight = 15.sp,
+                    )
                 }
 
                 val effectOptions = a.effectOptions.ifEmpty { EffectFallback }
@@ -163,22 +166,15 @@ fun LightSyncScreen(onBack: () -> Unit = {}, viewModel: LightSyncViewModel = vie
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     effectOptions.forEach { opt -> EffectTile(opt, effectIcon(opt), opt == a.effect) { viewModel.setEffect(opt) } }
                 }
+                LightSyncRepository.EFFECT_BLURBS[a.effect]?.let {
+                    Spacer(Modifier.height(9.dp))
+                    Text(it, color = TextFaint, fontSize = 11.sp, lineHeight = 15.sp)
+                }
 
                 Spacer(Modifier.height(22.dp))
-                val albumSelected = a.colour?.startsWith("album") == true
-                val songSelected = a.colour == LightSyncRepository.SONG_COLOUR
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    SectionLabel("Colour", modifier = Modifier.weight(1f))
-                }
+                SectionLabel("Colour")
                 Spacer(Modifier.height(10.dp))
-                // Dynamic colour sources first (album art, song harmony), then preset palettes.
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    AlbumSwatch(selected = albumSelected) { viewModel.setColour(LightSyncRepository.ALBUM_COLOUR) }
-                    SongSwatch(selected = songSelected) { viewModel.setColour(LightSyncRepository.SONG_COLOUR) }
-                    LightSyncRepository.PALETTE_SWATCHES.forEach { (name, colour) ->
-                        ColourDot(Color(colour), selected = a.colour == name) { viewModel.setColour(name) }
-                    }
-                }
+                ColourPicker(selected = a.colour, onSelect = viewModel::setColour)
 
                 Spacer(Modifier.height(22.dp))
                 SectionLabel("Brightness ceiling")
@@ -332,33 +328,109 @@ private fun EffectTile(name: String, icon: ImageVector, selected: Boolean, onCli
     }
 }
 
+/**
+ * The colour section: the three live sources, then the preset schemes.
+ *
+ * Schemes are gradients — Rainbow is seven stops, Honolulu four — so each is
+ * previewed as a sweep of its own anchor colours with its name under it. A row
+ * of sixteen unlabelled single-colour dots said neither what a scheme was called
+ * nor what it would look like.
+ */
 @Composable
-private fun AlbumSwatch(selected: Boolean, onClick: () -> Unit) {
+private fun ColourPicker(selected: String?, onSelect: (String) -> Unit) {
     val accent = LocalAccent.current
-    Box(
-        Modifier.size(40.dp).clip(CircleShape).background(accent)
-            .border(if (selected) 3.dp else 0.dp, TextPrimary, CircleShape).clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) { Icon(Icons.Default.AutoAwesome, "Album colour", tint = Ink, modifier = Modifier.size(17.dp)) }
+    val palette = LocalPalette.current
+
+    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        // The dynamic sources preview with the *current* album's real colours, so
+        // the choice shows what it will actually do to the room.
+        SwatchTile(
+            colours = listOf(accent, palette.swatch(1), palette.swatch(2)),
+            label = "Album art",
+            caption = "Weighted",
+            icon = Icons.Default.AutoAwesome,
+            selected = selected == LightSyncRepository.ALBUM_COLOUR,
+        ) { onSelect(LightSyncRepository.ALBUM_COLOUR) }
+
+        SwatchTile(
+            colours = listOf(palette.swatch(1), accent),
+            label = "Album art",
+            caption = "Even",
+            icon = Icons.Default.Image,
+            selected = selected == LightSyncRepository.ALBUM_COLOUR_V1,
+        ) { onSelect(LightSyncRepository.ALBUM_COLOUR_V1) }
+
+        SwatchTile(
+            colours = listOf(Color(0xFF33FFC2), Color(0xFF7D40FF), Color(0xFFFF59D1)),
+            label = "Song",
+            caption = "Harmony",
+            icon = Icons.Default.MusicNote,
+            selected = selected == LightSyncRepository.SONG_COLOUR,
+        ) { onSelect(LightSyncRepository.SONG_COLOUR) }
+
+        LightSyncRepository.PALETTES.forEach { scheme ->
+            SwatchTile(
+                colours = scheme.colours.map { Color(it) },
+                label = scheme.label,
+                selected = selected == scheme.key,
+            ) { onSelect(scheme.key) }
+        }
+    }
+
+    // Say what the dynamic sources actually derive from — the labels can't.
+    val blurb = when (selected) {
+        LightSyncRepository.ALBUM_COLOUR -> "Colours from the cover, each held in proportion to its share of the artwork."
+        LightSyncRepository.ALBUM_COLOUR_V1 -> "Colours from the cover, cycled evenly."
+        LightSyncRepository.SONG_COLOUR -> "Colours derived from the song's own key and harmony."
+        else -> null
+    }
+    blurb?.let {
+        Spacer(Modifier.height(9.dp))
+        Text(it, color = TextFaint, fontSize = 11.sp, lineHeight = 15.sp)
+    }
 }
 
+/** One colour choice: a gradient sweep of the palette's own colours, plus its name. */
 @Composable
-private fun SongSwatch(selected: Boolean, onClick: () -> Unit) {
+private fun SwatchTile(
+    colours: List<Color>,
+    label: String,
+    selected: Boolean,
+    caption: String? = null,
+    icon: ImageVector? = null,
+    onClick: () -> Unit,
+) {
     val accent = LocalAccent.current
-    Box(
-        Modifier.size(40.dp).clip(CircleShape)
-            .background(Brush.linearGradient(listOf(accent.a(0.6f), Color(0xFF7A6AE0).a(0.6f))))
-            .border(if (selected) 3.dp else 0.dp, TextPrimary, CircleShape).clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) { Icon(Icons.Default.MusicNote, "Song harmony colour", tint = Ink, modifier = Modifier.size(17.dp)) }
-}
-
-@Composable
-private fun ColourDot(color: Color, selected: Boolean, onClick: () -> Unit) {
-    Box(
-        Modifier.size(40.dp).clip(CircleShape).background(color)
-            .border(if (selected) 3.dp else 0.dp, TextPrimary, CircleShape).clickable(onClick = onClick),
-    )
+    // A single stop makes no gradient, so a lone colour is doubled up.
+    val stops = if (colours.size >= 2) colours else colours + colours
+    Column(
+        Modifier.width(64.dp).clickable(onClick = onClick),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Box(
+            Modifier.size(46.dp).clip(CircleShape)
+                .background(Brush.sweepGradient(stops + stops.first()))
+                .border(if (selected) 2.5.dp else 1.dp, if (selected) TextPrimary else Hairline, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (icon != null) {
+                // The dynamic sources carry a mark so they read as sources, not presets.
+                Box(Modifier.size(22.dp).clip(CircleShape).background(Ink.a(0.55f)), contentAlignment = Alignment.Center) {
+                    Icon(icon, null, tint = TextPrimary, modifier = Modifier.size(13.dp))
+                }
+            }
+        }
+        Spacer(Modifier.height(7.dp))
+        Text(
+            label,
+            color = if (selected) accent else TextMuted,
+            fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 10.sp,
+            maxLines = 1, overflow = TextOverflow.Ellipsis,
+        )
+        if (caption != null) {
+            Text(caption, color = TextFaint, fontFamily = AppFont, fontWeight = FontWeight.SemiBold, fontSize = 9.sp, maxLines = 1)
+        }
+    }
 }
 
 /** An entertainment zone chip with a live/off indicator dot. */
@@ -381,23 +453,68 @@ private fun AreaChip(name: String, selected: Boolean, active: Boolean, accent: C
     }
 }
 
-/** A player picker pill with an icon. */
+/**
+ * Which player the area listens to. A house can have a dozen `media_player`
+ * entities, so each card says whether it is playing and what — the repository
+ * sorts whatever is live to the front — and Auto leads, since it is the answer
+ * most of the time.
+ */
 @Composable
-private fun PlayerPill(name: String, selected: Boolean, accent: Color, onClick: () -> Unit) {
-    val bg = if (selected) accent.a(0.14f) else Glass
-    val border = if (selected) accent.a(0.5f) else HairlineSoft
-    val tint = if (selected) accent else TextSecondary
+private fun PlayerRow(selected: String, players: List<HaMediaPlayer>, onSelect: (String) -> Unit) {
+    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        PlayerCard(
+            name = "Auto",
+            detail = "Whatever is playing",
+            icon = Icons.Default.AutoAwesome,
+            live = players.any { it.isPlaying },
+            selected = selected.isBlank(),
+        ) { onSelect("") }
+
+        players.forEach { mp ->
+            PlayerCard(
+                name = mp.name,
+                detail = mp.nowPlaying ?: mp.state.label(),
+                icon = Icons.Default.Speaker,
+                live = mp.isPlaying,
+                selected = selected == mp.entityId,
+            ) { onSelect(mp.entityId) }
+        }
+    }
+}
+
+@Composable
+private fun PlayerCard(
+    name: String,
+    detail: String,
+    icon: ImageVector,
+    live: Boolean,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val accent = LocalAccent.current
+    val shape = RoundedCornerShape(14.dp)
     Row(
-        Modifier.clip(RoundedCornerShape(100)).background(bg).border(1.dp, border, RoundedCornerShape(100))
-            .clickable(onClick = onClick).padding(horizontal = 13.dp, vertical = 8.dp),
+        Modifier.widthIn(min = 150.dp, max = 220.dp).clip(shape)
+            .background(if (selected) accent.a(0.14f) else Glass)
+            .border(1.dp, if (selected) accent.a(0.5f) else HairlineSoft, shape)
+            .clickable(onClick = onClick).padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        horizontalArrangement = Arrangement.spacedBy(9.dp),
     ) {
-        Icon(
-            if (name == "Auto") Icons.Default.AutoAwesome else Icons.Default.Speaker,
-            null, tint = tint, modifier = Modifier.size(14.dp),
-        )
-        Text(name, color = tint, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1)
+        Icon(icon, null, tint = if (selected) accent else TextMuted, modifier = Modifier.size(16.dp))
+        Column(Modifier.weight(1f, fill = false)) {
+            Text(
+                name,
+                color = if (selected) accent else TextSecondary,
+                fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 12.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                detail, color = TextFaint, fontFamily = AppFont, fontWeight = FontWeight.SemiBold,
+                fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (live) Box(Modifier.size(6.dp).clip(CircleShape).background(accent))
     }
 }
 

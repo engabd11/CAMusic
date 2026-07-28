@@ -70,6 +70,14 @@ class LightSyncViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
+        // Keep the screen live while it's open: which player is playing, and any
+        // change made from the HA card or another phone.
+        viewModelScope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(5_000)
+                if (ha.state.value == HaClient.State.CONNECTED) refresh()
+            }
+        }
     }
 
     /** Save + connect from the inline form. */
@@ -86,17 +94,25 @@ class LightSyncViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 val areas = repo.discover()
-                _areas.value = areas
-                _mediaPlayers.value = repo.mediaPlayers()
-                if (_selectedId.value == null || areas.none { it.id == _selectedId.value }) {
-                    _selectedId.value = areas.firstOrNull()?.id
+                // Don't overwrite a control the user just moved: HA needs a moment to
+                // apply an option, and a poll landing in between would snap the
+                // control back to its old value.
+                if (System.currentTimeMillis() >= holdLocalUntil) {
+                    _areas.value = areas
+                    if (_selectedId.value == null || areas.none { it.id == _selectedId.value }) {
+                        _selectedId.value = areas.firstOrNull()?.id
+                    }
                 }
+                _mediaPlayers.value = repo.mediaPlayers()
                 _error.value = null
             } catch (e: Exception) {
                 _error.value = e.message
             }
         }
     }
+
+    /** Until when local edits outrank whatever HA reports. */
+    @Volatile private var holdLocalUntil = 0L
 
     fun selectArea(id: String) { _selectedId.value = id }
 
@@ -146,6 +162,7 @@ class LightSyncViewModel(app: Application) : AndroidViewModel(app) {
     private inline fun patch(crossinline local: (LightArea) -> LightArea, crossinline remote: suspend (LightArea) -> Unit) {
         val target = selectedArea.value ?: return
         _areas.update { list -> list.map { if (it.id == target.id) local(it) else it } }
+        holdLocalUntil = System.currentTimeMillis() + LOCAL_HOLD_MS
         viewModelScope.launch {
             try { remote(local(target)) } catch (e: Exception) { _error.value = e.message }
         }
@@ -156,11 +173,17 @@ class LightSyncViewModel(app: Application) : AndroidViewModel(app) {
     private inline fun patchDebounced(key: String, crossinline local: (LightArea) -> LightArea, crossinline remote: suspend (LightArea) -> Unit) {
         val target = selectedArea.value ?: return
         _areas.update { list -> list.map { if (it.id == target.id) local(it) else it } }
+        holdLocalUntil = System.currentTimeMillis() + LOCAL_HOLD_MS
         debounceJobs[key]?.cancel()
         debounceJobs[key] = viewModelScope.launch {
             kotlinx.coroutines.delay(200)
             try { remote(local(target)) } catch (e: Exception) { _error.value = e.message }
         }
+    }
+
+    private companion object {
+        /** How long a local edit outranks HA's answer. */
+        const val LOCAL_HOLD_MS = 3_000L
     }
 
     override fun onCleared() {
