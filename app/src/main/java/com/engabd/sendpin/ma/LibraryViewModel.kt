@@ -6,15 +6,19 @@ import androidx.lifecycle.viewModelScope
 import com.engabd.sendpin.audio.LocalPlayer
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.PlayerIdentity
+import com.engabd.sendpin.download.DownloadJob
 import com.engabd.sendpin.download.DownloadManager
 import com.engabd.sendpin.download.DownloadedTrack
 import com.engabd.sendpin.subsonic.SubsonicClient
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 /**
@@ -24,7 +28,8 @@ import kotlinx.coroutines.launch
  *  - **Navidrome / OpenSubsonic** (direct): browse/search and play *locally* on the
  *    phone (standalone when MA is down), and download original files for offline.
  *
- * Plain state for a plain UI — the polished design lands later.
+ * Backs the OLED library UI: a root shelf of categories plus recently played,
+ * then a browse stack, with search, downloads and connection state alongside.
  */
 class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -48,6 +53,8 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _backend = MutableStateFlow(Backend.MA); val backend: StateFlow<Backend> = _backend
     private val _ready = MutableStateFlow(false); val ready: StateFlow<Boolean> = _ready
+    /** Settings have been read, so a blank server URL now means "really not set up". */
+    private val _booted = MutableStateFlow(false); val booted: StateFlow<Boolean> = _booted
     private val _connecting = MutableStateFlow(false); val connecting: StateFlow<Boolean> = _connecting
     private val _connError = MutableStateFlow<String?>(null); val connError: StateFlow<String?> = _connError
 
@@ -58,18 +65,29 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private val _navUser = MutableStateFlow(""); val navUser: StateFlow<String> = _navUser
     private val _navPass = MutableStateFlow(""); val navPass: StateFlow<String> = _navPass
 
+    /** A server address is on file, so we're connecting rather than unconfigured. */
+    val hasServer: StateFlow<Boolean> = combine(_backend, _maUrl, _navUrl) { b, ma, nav ->
+        (if (b == Backend.SUBSONIC) nav else ma).isNotBlank()
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
     private val _node = MutableStateFlow(Node("Library", emptyList())); val node: StateFlow<Node> = _node
     private val _loading = MutableStateFlow(false); val loading: StateFlow<Boolean> = _loading
     private val _error = MutableStateFlow<String?>(null); val error: StateFlow<String?> = _error
     private val _search = MutableStateFlow<MaSearchResults?>(null); val search: StateFlow<MaSearchResults?> = _search
+    private val _recent = MutableStateFlow<List<MaItem>>(emptyList()); val recent: StateFlow<List<MaItem>> = _recent
+    val downloadJobs: StateFlow<List<DownloadJob>> get() = downloadManager.jobs
     private val _toast = MutableSharedFlow<String>(extraBufferCapacity = 8); val toast: SharedFlow<String> = _toast.asSharedFlow()
     private val stack = ArrayDeque<Node>()
+
+    /** How deep the browser is; 0 = the root shelf (categories + recently played). */
+    private val _depth = MutableStateFlow(0); val depth: StateFlow<Int> = _depth
 
     init {
         viewModelScope.launch {
             _maUrl.value = settings.maBaseUrl.first(); _maUser.value = settings.maUsername.first(); _maPass.value = settings.maPassword.first()
             _navUrl.value = settings.navUrl.first(); _navUser.value = settings.navUsername.first(); _navPass.value = settings.navPassword.first()
             _backend.value = if (settings.backend.first() == "subsonic") Backend.SUBSONIC else Backend.MA
+            _booted.value = true
             if (currentUrl().isNotBlank()) connect()
         }
         viewModelScope.launch { settings.targetPlayer.collect { _targetPlayer.value = it } }
@@ -142,7 +160,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     fun back(): Boolean {
         if (_search.value != null) { _search.value = null; return true }
-        if (stack.isNotEmpty()) { _node.value = stack.removeLast(); return true }
+        if (stack.isNotEmpty()) { _node.value = stack.removeLast(); _depth.value = stack.size; return true }
         return false
     }
 
@@ -190,6 +208,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     fun deleteDownload(id: String) = downloadManager.delete(id)
 
+    /** Drop a failed download row once the user has acknowledged it. */
+    fun dismissDownload(id: String) = downloadManager.dismissJob(id)
+
     fun doSearch(query: String) {
         if (query.isBlank()) { _search.value = null; return }
         viewModelScope.launch {
@@ -213,6 +234,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             val items = downloads.value.map { downloadItem(it) }
             stack.addLast(_node.value)
             _node.value = Node("Downloads", items)
+            _depth.value = stack.size
             return
         }
         pushNode(title) {
@@ -235,6 +257,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 val items = loader()
                 stack.addLast(_node.value)
                 _node.value = Node(title, items)
+                _depth.value = stack.size
             } catch (e: Exception) { _error.value = e.message ?: "Failed to load" }
             _loading.value = false
         }
@@ -244,7 +267,20 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         stack.clear()
         _search.value = null
         _node.value = Node("Library", rootItems())
+        _depth.value = 0
+        loadRecent()
     }
+
+    /** Best-effort — the shelf is hidden rather than erroring if a server lacks it. */
+    private fun loadRecent() {
+        viewModelScope.launch {
+            _recent.value = try {
+                if (_backend.value == Backend.MA) maRepo.recentlyPlayed()
+                else subsonic?.albumList("recent", size = 12).orEmpty()
+            } catch (_: Exception) { emptyList() }
+        }
+    }
+
 
     private fun rootItems(): List<MaItem> = buildList {
         if (_backend.value == Backend.MA) {
