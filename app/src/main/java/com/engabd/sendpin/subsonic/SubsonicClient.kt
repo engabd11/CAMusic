@@ -59,8 +59,13 @@ class SubsonicClient(
 
     fun streamUrl(id: String): String = restUrl("stream", mapOf("id" to id), jsonFmt = false)
     fun downloadUrl(id: String): String = restUrl("download", mapOf("id" to id), jsonFmt = false)
+    /**
+     * One URL for both list thumbnails and the full-bleed Now Playing cover:
+     * Coil samples it down per use and caches a single copy. 300px was sharp
+     * enough for a 44dp row and nothing else — a phone cover is ~1100px.
+     */
     private fun coverUrl(id: String?): String? =
-        id?.let { restUrl("getCoverArt", mapOf("id" to it, "size" to "300"), jsonFmt = false) }
+        id?.let { restUrl("getCoverArt", mapOf("id" to it, "size" to "1200"), jsonFmt = false) }
 
     // --- requests ---------------------------------------------------------
 

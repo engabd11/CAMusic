@@ -4,9 +4,14 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -14,23 +19,25 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import coil.compose.AsyncImage
+import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
 
+/**
+ * The album, and everything else out of its way. Art fills the panel edge to
+ * edge as a blurred wash that resolves to true #000 before the bottom, so on an
+ * OLED screen the cover has no frame — it just stops. Every accent on the
+ * screen (controls, glows, badge, scrubber) is sampled from that same cover.
+ */
 @Composable
 fun NowPlayingScreen(
     viewModel: NowPlayingViewModel = viewModel(),
@@ -41,9 +48,9 @@ fun NowPlayingScreen(
     val st by viewModel.state.collectAsState()
     val connected by viewModel.connected.collectAsState()
 
-    // Accent follows the player being shown (may differ from the app-wide one).
-    val accent = rememberAlbumAccent(st.artworkUrl)
-    val art = st.artworkUrl
+    // The palette follows the player being shown, which may differ from the app-wide one.
+    val palette = rememberAlbumPalette(st.artworkUrl)
+    val accent = palette.accent
 
     // Smoothly interpolate the position between 2s polls.
     var pos by remember { mutableStateOf(0L) }
@@ -54,125 +61,218 @@ fun NowPlayingScreen(
     val dur = st.durationMs
     val progress = if (dur > 0) (pos.toFloat() / dur).coerceIn(0f, 1f) else 0f
 
-    CompositionLocalProvider(LocalAccent provides accent) {
-        Box(Modifier.fillMaxSize().background(Ink)) {
-            if (!st.hasTrack) {
-                IdlePlayer(accent, st.playerName, onBrowse)
-                return@Box
-            }
+    var liked by remember(st.title) { mutableStateOf(false) }
 
-            if (art != null) {
-                AsyncImage(
-                    model = art, contentDescription = null, contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize().blur(48.dp).alpha(0.55f),
-                )
-            }
-            Box(
-                Modifier.fillMaxSize().background(
-                    Brush.verticalGradient(0f to Ink.a(0.28f), 0.46f to Ink.a(0.66f), 0.9f to Ink)
-                )
-            )
+    CompositionLocalProvider(LocalAccent provides accent, LocalPalette provides palette) {
+        Box(Modifier.fillMaxSize().background(Ink)) {
+            // The screen keeps its shape whether or not anything is playing: an
+            // idle player shows the last track it had (dimmed, with a notice)
+            // rather than swapping the whole screen for an empty state.
+            MeltBackdrop(st.artworkUrl, intensity = if (st.idle) 0.5f else 1f)
 
             Column(
-                Modifier.fillMaxSize().padding(horizontal = 16.dp).padding(top = 8.dp, bottom = 8.dp),
+                Modifier
+                    .fillMaxSize()
+                    .windowInsetsPadding(WindowInsets.statusBars)
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 14.dp)
+                    .padding(top = 8.dp, bottom = navBarInset() + 12.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 if (!connected) OfflineBanner()
 
-                // Top bar: minimize, player pill → Speakers, overflow.
-                Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.KeyboardArrowDown, "Minimize", tint = TextSecondary, modifier = Modifier.size(24.dp))
-                    Spacer(Modifier.weight(1f))
-                    Row(
-                        Modifier.clip(RoundedCornerShape(100)).background(Glass).border(1.dp, Hairline, RoundedCornerShape(100))
-                            .clickable(onClick = onOpenSpeakers).padding(horizontal = 12.dp, vertical = 7.dp),
-                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        Icon(if (st.isSelf) Icons.Default.Smartphone else Icons.Default.Speaker, null, tint = TextPrimary, modifier = Modifier.size(15.dp))
-                        Text(st.playerName, color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1)
-                    }
-                    Spacer(Modifier.weight(1f))
-                    Icon(Icons.Default.MoreVert, "More", tint = TextSecondary, modifier = Modifier.size(22.dp))
-                }
+                TopBar(
+                    playerName = st.playerName,
+                    isSelf = st.isSelf,
+                    groupSize = st.groupSize,
+                    onOpenSpeakers = onOpenSpeakers,
+                )
 
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(4.dp))
 
-                Box(
-                    Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(20.dp)).background(Ink2),
-                    contentAlignment = Alignment.Center,
+                AlbumArt(
+                    url = st.artworkUrl,
+                    glow = palette.swatch(0),
+                    modifier = Modifier.fillMaxWidth().alpha(if (st.idle) 0.55f else 1f),
+                    glowAlpha = if (st.idle) 0.18f else 0.45f,
+                    placeholder = Icons.AutoMirrored.Filled.QueueMusic,
+                )
+
+                Spacer(Modifier.height(20.dp))
+
+                // Secondary actions, with the quality badge sitting at the centre of them.
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    if (art != null) AsyncImage(model = art, contentDescription = "Album art", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
-                    else Icon(Icons.Default.MusicNote, null, tint = TextFaint, modifier = Modifier.size(64.dp))
+                    IconChip(Icons.AutoMirrored.Filled.PlaylistAdd, "Add to playlist")
+                    IconChip(Icons.Default.Album, "Go to album")
+                    QualityChip(st.quality)
+                    IconChip(Icons.AutoMirrored.Filled.QueueMusic, "Queue")
+                    IconChip(Icons.Default.Lightbulb, "Light sync", active = true, onClick = onOpenLightSync)
+                    IconChip(
+                        if (liked) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                        "Like", active = liked,
+                    ) { liked = !liked }
                 }
 
                 Spacer(Modifier.height(18.dp))
 
-                Row(horizontalArrangement = Arrangement.spacedBy(9.dp), verticalAlignment = Alignment.CenterVertically) {
-                    GhostChip(Icons.Default.Add, "Add")
-                    Box(
-                        Modifier.size(38.dp).clip(RoundedCornerShape(11.dp)).background(Glass)
-                            .border(1.dp, Hairline, RoundedCornerShape(11.dp)).clickable(onClick = onOpenLightSync),
-                        contentAlignment = Alignment.Center,
-                    ) { Icon(Icons.Default.Lightbulb, "Light sync", tint = accent, modifier = Modifier.size(17.dp)) }
-                    GhostChip(Icons.Default.FavoriteBorder, "Like")
+                if (st.idle) {
+                    IdleNotice(st.playerName, st.blank, onBrowse)
+                    Spacer(Modifier.height(12.dp))
                 }
 
-                Spacer(Modifier.height(18.dp))
+                Text(
+                    if (st.blank) "Nothing playing" else st.title,
+                    color = if (st.idle) TextSecondary else TextPrimary,
+                    fontFamily = AppFont, fontWeight = FontWeight.ExtraBold,
+                    fontSize = 27.sp, letterSpacing = (-0.5).sp, maxLines = 1,
+                    overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
+                )
+                if (st.artist.isNotBlank()) {
+                    Spacer(Modifier.height(5.dp))
+                    Text(
+                        st.artist, color = Color.White.a(0.62f), fontFamily = AppFont,
+                        fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1,
+                        overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
+                    )
+                }
+                if (st.album.isNotBlank()) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        st.album, color = TextFaint, fontFamily = AppFont, fontSize = 13.sp,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
+                    )
+                }
 
-                Text(st.title, color = TextPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 26.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
-                if (st.artist.isNotBlank()) Text(st.artist, color = TextSecondary, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                if (st.album.isNotBlank()) Text(st.album, color = TextFaint, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Spacer(Modifier.height(20.dp))
 
-                Spacer(Modifier.height(16.dp))
-
-                // Real scrubber.
                 HSlider(progress, { f -> pos = (f * dur).toLong(); viewModel.seekTo(f) })
-                Row(Modifier.fillMaxWidth().padding(top = 2.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(fmtTime(pos), color = TextMuted, fontFamily = MonoFont, fontSize = 11.sp)
-                    Text(if (dur > 0) fmtTime(dur) else "--:--", color = TextMuted, fontFamily = MonoFont, fontSize = 11.sp)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    TimeText(fmtTime(pos))
+                    TimeText(if (dur > 0) fmtTime(dur) else "--:--")
                 }
 
                 Spacer(Modifier.height(14.dp))
 
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Shuffle, "Shuffle", tint = TextMuted, modifier = Modifier.size(20.dp))
-                    Box(Modifier.clip(CircleShape).clickable { viewModel.previous() }.padding(4.dp)) {
-                        Icon(Icons.Default.SkipPrevious, "Previous", tint = TextPrimary, modifier = Modifier.size(30.dp))
-                    }
-                    Box(
-                        Modifier.size(64.dp).shadow(22.dp, CircleShape, ambientColor = accent, spotColor = accent)
-                            .clip(CircleShape).background(accent).clickable { viewModel.playPause() },
-                        contentAlignment = Alignment.Center,
-                    ) { Icon(if (st.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, "Play/Pause", tint = Ink, modifier = Modifier.size(30.dp)) }
-                    Box(Modifier.clip(CircleShape).clickable { viewModel.next() }.padding(4.dp)) {
-                        Icon(Icons.Default.SkipNext, "Next", tint = TextPrimary, modifier = Modifier.size(30.dp))
-                    }
-                    Icon(Icons.Default.Repeat, "Repeat", tint = accent, modifier = Modifier.size(20.dp))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TransportIcon(Icons.Default.Shuffle, "Shuffle", 20.dp, st.shuffle) { viewModel.toggleShuffle() }
+                    TransportIcon(Icons.Default.SkipPrevious, "Previous", 26.dp) { viewModel.previous() }
+                    PlayButton(st.isPlaying) { viewModel.playPause() }
+                    TransportIcon(Icons.Default.SkipNext, "Next", 26.dp) { viewModel.next() }
+                    TransportIcon(
+                        if (st.repeatMode == "one") Icons.Default.RepeatOne else Icons.Default.Repeat,
+                        "Repeat", 20.dp, st.repeatMode != "off",
+                    ) { viewModel.cycleRepeat() }
                 }
 
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(18.dp))
 
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(11.dp)) {
-                    Icon(Icons.Default.VolumeUp, "Volume", tint = TextMuted, modifier = Modifier.size(16.dp))
-                    HSlider(st.volume.coerceIn(0f, 1f), { viewModel.setVolume(it) }, modifier = Modifier.weight(1f))
-                    Text("${(st.volume * 100).toInt()}", color = TextMuted, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(11.dp),
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.VolumeUp, "Volume", tint = TextMuted, modifier = Modifier.size(16.dp))
+                    HSlider(
+                        st.volume.coerceIn(0f, 1f), { viewModel.setVolume(it) },
+                        modifier = Modifier.weight(1f), knob = 12.dp, accented = false,
+                    )
+                    Text(
+                        "${(st.volume * 100).toInt()}", color = TextMuted, fontFamily = MonoFont,
+                        fontWeight = FontWeight.Bold, fontSize = 11.sp,
+                        modifier = Modifier.width(22.dp), textAlign = TextAlign.End,
+                    )
                 }
             }
         }
     }
 }
 
-private fun fmtTime(ms: Long): String {
-    val s = (ms / 1000).coerceAtLeast(0)
-    return "%d:%02d".format(s / 60, s % 60)
+/**
+ * The split player control: a glass half naming what's playing where, welded to
+ * an accent half that opens the speaker picker. The design's minimize/overflow
+ * icons are dropped — this app is tab-based (nothing to minimize to) and their
+ * menu items already live in the chip row under the cover.
+ */
+@Composable
+private fun TopBar(playerName: String, isSelf: Boolean, groupSize: Int, onOpenSpeakers: () -> Unit) {
+    val accent = LocalAccent.current
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                Modifier
+                    .clip(RoundedCornerShape(topStart = 100.dp, bottomStart = 100.dp))
+                    .background(GlassStrong)
+                    .clickable(onClick = onOpenSpeakers)
+                    .padding(start = 14.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Icon(
+                    if (isSelf) Icons.Default.Smartphone else Icons.Default.Speaker, null,
+                    tint = Color.White.a(0.85f), modifier = Modifier.size(14.dp),
+                )
+                Text(
+                    if (groupSize > 1) "$playerName ($groupSize)" else playerName,
+                    color = TextPrimary, fontFamily = AppFont, fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.widthIn(max = 150.dp),
+                )
+            }
+            Box(
+                Modifier
+                    .clip(RoundedCornerShape(topEnd = 100.dp, bottomEnd = 100.dp))
+                    .background(accent)
+                    .clickable(onClick = onOpenSpeakers)
+                    .padding(horizontal = 13.dp, vertical = 9.dp),
+            ) { Icon(Icons.Default.Link, "Speakers", tint = Ink, modifier = Modifier.size(14.dp)) }
+        }
+    }
+}
+
+/** The quality badge, or a neutral placeholder until the stream reports itself. */
+@Composable
+private fun QualityChip(q: StreamQuality?) {
+    if (q == null) QualityPill("—", lossless = false)
+    else QualityPill(q.label, hiRes = q.hiRes, lossless = q.lossless)
 }
 
 @Composable
-private fun GhostChip(icon: androidx.compose.ui.graphics.vector.ImageVector, cd: String) {
+private fun TransportIcon(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    cd: String,
+    size: androidx.compose.ui.unit.Dp,
+    active: Boolean = false,
+    onClick: () -> Unit,
+) {
+    val accent = LocalAccent.current
     Box(
-        Modifier.size(38.dp).clip(RoundedCornerShape(11.dp)).background(Glass).border(1.dp, Hairline, RoundedCornerShape(11.dp)),
+        Modifier.clip(CircleShape).clickable(onClick = onClick).padding(6.dp),
         contentAlignment = Alignment.Center,
-    ) { Icon(icon, cd, tint = TextSecondary, modifier = Modifier.size(16.dp)) }
+    ) {
+        if (active) Bloom(accent, size * 1.8f, 0.dp, 0.dp, 0.5f)
+        Icon(icon, cd, tint = if (active) accent else Color.White.a(0.9f), modifier = Modifier.size(size))
+    }
+}
+
+@Composable
+private fun TimeText(text: String) {
+    Text(text, color = TextMuted, fontFamily = MonoFont, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
+}
+
+private fun fmtTime(ms: Long): String {
+    val s = (ms / 1000).coerceAtLeast(0)
+    return "%d:%02d".format(s / 60, s % 60)
 }
 
 @Composable
@@ -184,31 +284,35 @@ private fun OfflineBanner() {
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Icon(Icons.Default.CloudOff, null, tint = WarnAmber, modifier = Modifier.size(15.dp))
-        Text("Reconnecting…", color = Color(0xFFF2C574), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+        Text(
+            "Reconnecting…", color = Color(0xFFF2C574), fontFamily = AppFont,
+            fontWeight = FontWeight.Bold, fontSize = 12.sp,
+        )
     }
 }
 
+/**
+ * Shown in place of nothing when the player is quiet. It sits inside the normal
+ * layout so the screen never changes shape — the art above it is the last thing
+ * that played, dimmed, and everything else stays where the user left it.
+ */
 @Composable
-private fun IdlePlayer(accent: Color, playerName: String, onBrowse: () -> Unit) {
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Bloom(accent, 420.dp, 20.dp, (-40).dp, 0.28f)
-        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(34.dp)) {
-            Box(
-                Modifier.size(96.dp).clip(RoundedCornerShape(28.dp)).background(Glass).border(1.dp, Hairline, RoundedCornerShape(28.dp)),
-                contentAlignment = Alignment.Center,
-            ) { Icon(Icons.Default.QueueMusic, null, tint = TextFaint, modifier = Modifier.size(34.dp)) }
-            Spacer(Modifier.height(22.dp))
-            Text("Nothing playing on $playerName", color = TextPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp, textAlign = TextAlign.Center)
-            Spacer(Modifier.height(6.dp))
-            Text(
-                "Pick something from your library to fill the room.",
-                color = TextMuted, fontSize = 14.sp, textAlign = TextAlign.Center, modifier = Modifier.widthIn(max = 260.dp),
-            )
-            Spacer(Modifier.height(26.dp))
-            Box(
-                Modifier.clip(RoundedCornerShape(100)).background(Glass).border(1.dp, Hairline, RoundedCornerShape(100))
-                    .clickable(onClick = onBrowse).padding(horizontal = 24.dp, vertical = 13.dp),
-            ) { Text("Browse library", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 13.sp) }
-        }
+private fun IdleNotice(playerName: String, blank: Boolean, onBrowse: () -> Unit) {
+    Row(
+        Modifier
+            .clip(RoundedCornerShape(100))
+            .background(Glass)
+            .border(1.dp, Hairline, RoundedCornerShape(100))
+            .clickable(onClick = onBrowse)
+            .padding(start = 14.dp, end = 16.dp, top = 9.dp, bottom = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(Icons.Default.PauseCircleOutline, null, tint = TextMuted, modifier = Modifier.size(15.dp))
+        Text(
+            if (blank) "Nothing playing on $playerName — browse" else "Nothing playing — browse",
+            color = TextSecondary, fontFamily = AppFont, fontWeight = FontWeight.Bold,
+            fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+        )
     }
 }

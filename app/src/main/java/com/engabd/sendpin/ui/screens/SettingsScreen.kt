@@ -4,6 +4,7 @@ import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import com.engabd.sendpin.ui.design.navBarInset
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -73,7 +74,8 @@ fun SettingsScreen(
                 .padding(padding)
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
-            contentPadding = PaddingValues(vertical = 16.dp)
+            // Bottom room for the floating tab bar, which overlays this screen.
+            contentPadding = PaddingValues(top = 16.dp, bottom = navBarInset() + 16.dp),
         ) {
             // Server Selection
             item {

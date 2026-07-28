@@ -59,7 +59,7 @@ fun LightSyncScreen(onBack: () -> Unit = {}, viewModel: LightSyncViewModel = vie
     Box(Modifier.fillMaxSize().background(Ink)) {
         Bloom(if (enabled) accent else TextFaint, 440.dp, (-40).dp, (-70).dp, if (enabled) 0.42f else 0.16f)
 
-        Column(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars)) {
             // Header.
             Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, top = 16.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 CircleBtn(Icons.AutoMirrored.Filled.ArrowBack, "Back", onBack)
@@ -71,7 +71,7 @@ fun LightSyncScreen(onBack: () -> Unit = {}, viewModel: LightSyncViewModel = vie
                 StatusPill(connected && enabled)
             }
 
-            Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp).padding(bottom = 100.dp)) {
+            Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp).padding(bottom = navBarInset() + 16.dp)) {
 
                 if (!connected) {
                     ConnectCard(

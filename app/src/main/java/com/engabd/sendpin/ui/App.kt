@@ -18,7 +18,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -28,7 +27,12 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.engabd.sendpin.ui.design.LocalAccent
-import com.engabd.sendpin.ui.design.rememberAlbumAccent
+import com.engabd.sendpin.ui.design.LocalPalette
+import com.engabd.sendpin.ui.design.NavTab
+import com.engabd.sendpin.ui.design.SendspinNavBar
+import com.engabd.sendpin.ui.design.rememberAlbumPalette
+import com.engabd.sendpin.ma.LibraryViewModel
+import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
 import com.engabd.sendpin.ui.screens.LibraryScreen
 import com.engabd.sendpin.ui.screens.LightSyncScreen
 import com.engabd.sendpin.ui.screens.NowPlayingScreen
@@ -39,14 +43,12 @@ import com.engabd.sendpin.ui.theme.Ink
 import com.engabd.sendpin.ui.theme.SendspinTheme
 import com.engabd.sendpin.ui.viewmodel.PlayerViewModel
 
-private data class Tab(val route: String, val label: String, val icon: ImageVector)
-
 private val Tabs = listOf(
-    Tab("now_playing", "Playing", Icons.Default.PlayArrow),
-    Tab("library", "Library", Icons.Default.LibraryMusic),
-    Tab("speakers", "Speakers", Icons.Default.Speaker),
-    Tab("light_sync", "Lights", Icons.Default.Lightbulb),
-    Tab("settings", "Settings", Icons.Default.Settings),
+    NavTab("now_playing", "Playing", Icons.Default.PlayArrow),
+    NavTab("library", "Library", Icons.Default.LibraryMusic),
+    NavTab("speakers", "Speakers", Icons.Default.Speaker),
+    NavTab("light_sync", "Lights", Icons.Default.Lightbulb),
+    NavTab("settings", "Settings", Icons.Default.Settings),
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -56,7 +58,8 @@ fun App() {
         // One shared player VM at the app root so the album-derived accent flows to every screen.
         val playerVm: PlayerViewModel = viewModel()
         val art by playerVm.artworkUrl.collectAsState()
-        val accent = rememberAlbumAccent(art)
+        val palette = rememberAlbumPalette(art)
+        val accent = palette.accent
 
         // Onboarding is first-run only: once a server is saved the app auto-connects
         // on launch (see PlayerViewModel.init) and never shows onboarding again until
@@ -78,7 +81,7 @@ fun App() {
         }
 
         if (!hasSavedServer && !connected && !skipped) {
-            CompositionLocalProvider(LocalAccent provides accent) {
+            CompositionLocalProvider(LocalAccent provides accent, LocalPalette provides palette) {
                 OnboardingScreen(viewModel = playerVm, onSkip = { skipped = true })
             }
             return@SendspinTheme
@@ -87,6 +90,13 @@ fun App() {
         val navController = rememberNavController()
         val navBackStackEntry by navController.currentBackStackEntryAsState()
         val currentRoute = navBackStackEntry?.destination?.route
+
+        // Hoisted to the Activity, not the nav entry. Tab switches pop back to
+        // now_playing, which would otherwise destroy each screen's ViewModel and
+        // force it to reconnect — the library would flash its connect form and
+        // Now Playing its idle state on every switch.
+        val nowPlayingVm: NowPlayingViewModel = viewModel()
+        val libraryVm: LibraryViewModel = viewModel()
 
         fun go(route: String) {
             if (currentRoute != route) {
@@ -97,39 +107,35 @@ fun App() {
             }
         }
 
-        CompositionLocalProvider(LocalAccent provides accent) {
-            Scaffold(
-                modifier = Modifier.fillMaxSize(),
-                bottomBar = {
-                    NavigationBar {
-                        Tabs.forEach { tab ->
-                            NavigationBarItem(
-                                icon = { Icon(tab.icon, contentDescription = tab.label) },
-                                label = { Text(tab.label) },
-                                selected = currentRoute == tab.route,
-                                onClick = { go(tab.route) },
-                            )
-                        }
-                    }
-                },
-            ) { innerPadding ->
+        CompositionLocalProvider(LocalAccent provides accent, LocalPalette provides palette) {
+            // The tab bar floats over the content instead of displacing it, so the
+            // album wash reaches the bottom of the panel. Screens leave room for it
+            // with navBarInset().
+            Box(Modifier.fillMaxSize().background(Ink)) {
                 NavHost(
                     navController = navController,
                     startDestination = "now_playing",
-                    modifier = Modifier.padding(innerPadding),
+                    modifier = Modifier.fillMaxSize(),
                 ) {
                     composable("now_playing") {
                         NowPlayingScreen(
+                            viewModel = nowPlayingVm,
                             onOpenSpeakers = { go("speakers") },
                             onOpenLightSync = { go("light_sync") },
                             onBrowse = { go("library") },
                         )
                     }
-                    composable("library") { LibraryScreen() }
+                    composable("library") { LibraryScreen(libraryVm) }
                     composable("speakers") { SpeakersScreen(onBack = { navController.popBackStack() }) }
                     composable("light_sync") { LightSyncScreen(onBack = { navController.popBackStack() }) }
                     composable("settings") { SettingsScreen(viewModel = playerVm) }
                 }
+                SendspinNavBar(
+                    tabs = Tabs,
+                    currentRoute = currentRoute,
+                    modifier = Modifier.align(Alignment.BottomCenter),
+                    onSelect = ::go,
+                )
             }
         }
     }

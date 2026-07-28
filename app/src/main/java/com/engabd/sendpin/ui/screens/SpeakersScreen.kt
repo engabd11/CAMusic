@@ -43,7 +43,7 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
     Box(Modifier.fillMaxSize().background(Ink)) {
         Bloom(accent, 420.dp, (-60).dp, (-56).dp, 0.4f)
 
-        Column(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars)) {
             // Header.
             Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, top = 16.dp, bottom = 14.dp), verticalAlignment = Alignment.CenterVertically) {
                 CircleIconButton(Icons.AutoMirrored.Filled.ArrowBack, "Back", onBack)
@@ -64,7 +64,7 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
                 ErrorRow(error!!)
             }
 
-            LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(start = 18.dp, end = 18.dp, bottom = 96.dp)) {
+            LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(start = 18.dp, end = 18.dp, bottom = navBarInset() + 16.dp)) {
                 item {
                     val targetName = joined.firstOrNull { it.isTarget }?.name ?: "This group"
                     GroupHeroCard(groupVolume, joined.size, targetName) { viewModel.setGroupVolume(it) }
