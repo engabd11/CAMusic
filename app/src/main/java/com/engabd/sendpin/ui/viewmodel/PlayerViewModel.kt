@@ -1,244 +1,60 @@
 package com.engabd.sendpin.ui.viewmodel
 
 import android.app.Application
-import android.content.Context
 import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
-import com.engabd.sendpin.audio.FormatNegotiator
-import com.engabd.sendpin.audio.SendspinAudioEngine
-import com.engabd.sendpin.data.AppSettings
-import com.engabd.sendpin.discovery.MaDiscovery
-import com.engabd.sendpin.discovery.PlayerIdentity
-import com.engabd.sendpin.ma.MaApiClient
-import com.engabd.sendpin.protocol.SendspinClient
-import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
+import com.engabd.sendpin.SendpinApp
 
+/**
+ * Thin UI facade over the process-scoped [com.engabd.sendpin.service.Playback]
+ * connection (held by [SendpinApp]). The connection itself lives outside the
+ * ViewModel so it survives the Activity and keeps playing in the background.
+ */
 class PlayerViewModel(application: Application) : AndroidViewModel(application) {
-    private val context: Context get() = getApplication()
+    private val pb = (application as SendpinApp).playback
 
     // Discovery
-    private val discovery = MaDiscovery(context)
-    val discoveredServers = discovery.discoveredServers
-    val isDiscovering = discovery.isDiscovering
+    val discoveredServers = pb.discoveredServers
+    val isDiscovering = pb.isDiscovering
 
-    private val settings = AppSettings(context)
+    val playerId get() = pb.playerId
+    val playerName get() = pb.playerName
 
-    // Player identity
-    val playerId = PlayerIdentity.getPlayerId(context)
-    val playerName = PlayerIdentity.getDefaultPlayerName()
-    private val deviceInfo = PlayerIdentity.getDeviceInfo()
+    // Connection + playback state
+    val connected = pb.connected
+    val connectionStatus = pb.connectionStatus
+    val trackTitle = pb.trackTitle
+    val artist = pb.artist
+    val album = pb.album
+    val artworkUrl = pb.artworkUrl
+    val isPlaying = pb.isPlaying
+    val volume = pb.volume
+    val currentFormat = pb.currentFormat
+    val serverUrl = pb.serverUrl
+    val connectionLog = pb.connectionLog
 
-    // Connection state
-    private val _connected = MutableStateFlow(false); val connected: StateFlow<Boolean> = _connected
-    private val _connectionStatus = MutableStateFlow("Disconnected"); val connectionStatus: StateFlow<String> = _connectionStatus
+    val savedUsername = pb.savedUsername
+    val savedPassword = pb.savedPassword
+    val savedPlayerName = pb.savedPlayerName
+    val hasSavedServer = pb.hasSavedServer
+    val bootChecked = pb.bootChecked
 
-    // Playback state
-    private val _trackTitle = MutableStateFlow(""); val trackTitle: StateFlow<String> = _trackTitle
-    private val _artist = MutableStateFlow(""); val artist: StateFlow<String> = _artist
-    private val _album = MutableStateFlow(""); val album: StateFlow<String> = _album
-    private val _artworkUrl = MutableStateFlow<String?>(null); val artworkUrl: StateFlow<String?> = _artworkUrl
-    private val _isPlaying = MutableStateFlow(false); val isPlaying: StateFlow<Boolean> = _isPlaying
-    private val _volume = MutableStateFlow(1.0f); val volume: StateFlow<Float> = _volume
-    private val _currentFormat = MutableStateFlow("—"); val currentFormat: StateFlow<String> = _currentFormat
-    private val _serverUrl = MutableStateFlow(""); val serverUrl: StateFlow<String> = _serverUrl
+    fun startDiscovery() = pb.startDiscovery()
+    fun stopDiscovery() = pb.stopDiscovery()
 
-    // On-screen handshake trace (for diagnosing connection issues without adb).
-    private val _connectionLog = MutableStateFlow<List<String>>(emptyList()); val connectionLog: StateFlow<List<String>> = _connectionLog
+    fun connectToServer(url: String, username: String = "", password: String = "", playerName: String = "") =
+        pb.connectToServer(url, username, password, playerName)
 
-    // Saved MA credentials + player name, for pre-filling the onboarding fields.
-    val savedUsername: Flow<String> get() = settings.maUsername
-    val savedPassword: Flow<String> get() = settings.maPassword
-    val savedPlayerName: Flow<String> get() = settings.playerName
+    fun enablePlayer() = pb.enablePlayer()
+    fun disablePlayer() = pb.disablePlayer()
+    fun logout() = pb.logout()
 
-    /** True once a server has been saved — the app skips onboarding and auto-connects. */
-    val hasSavedServer: StateFlow<Boolean> =
-        settings.maBaseUrl.map { it.isNotBlank() }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+    fun onPlayPause() = pb.onPlayPause()
+    fun onVolumeChange(vol: Float) = pb.onVolumeChange(vol)
+    fun disconnect() = pb.disconnect()
 
-    // False until the first settings read completes, so the app shows a splash rather
-    // than flashing onboarding before we know whether a server is already saved.
-    private val _bootChecked = MutableStateFlow(false); val bootChecked: StateFlow<Boolean> = _bootChecked
-
-    init {
-        // Auto-connect on launch using saved credentials (so onboarding is first-run only).
-        viewModelScope.launch {
-            val base = settings.maBaseUrl.first()
-            val user = settings.maUsername.first()
-            if (base.isNotBlank() && user.isNotBlank()) connectToServer(sendspinUrlFrom(base))
-            _bootChecked.value = true
-        }
-    }
-
-    private fun sendspinUrlFrom(base: String): String {
-        val ws = base.trim().replace("https://", "wss://").replace("http://", "ws://")
-            .let { if (it.startsWith("ws")) it else "ws://$it" }.trimEnd('/')
-        return "$ws/sendspin"
-    }
-
-    /** Re-connect the player using the saved server + credentials. */
-    fun enablePlayer() = viewModelScope.launch {
-        val base = settings.maBaseUrl.first()
-        if (base.isNotBlank()) connectToServer(sendspinUrlFrom(base))
-    }
-
-    /** Stop the player (leave settings intact). */
-    fun disablePlayer() = disconnect()
-
-    /** Sign out: drop the connection and clear saved credentials so onboarding returns. */
-    fun logout() {
-        disconnect()
-        viewModelScope.launch { settings.setMa("", "", "") }
-    }
-
-    private var client: SendspinClient? = null
-    private var engine: SendspinAudioEngine? = null
-
-    private var discoveryStop: kotlinx.coroutines.Job? = null
-
-    fun startDiscovery() {
-        discovery.startDiscovery()
-        // mDNS keeps running until stopped; cap it so the UI stops showing "Searching…".
-        discoveryStop?.cancel()
-        discoveryStop = viewModelScope.launch {
-            kotlinx.coroutines.delay(8_000)
-            discovery.stopDiscovery()
-        }
-    }
-
-    fun stopDiscovery() {
-        discoveryStop?.cancel()
-        discovery.stopDiscovery()
-    }
-
-    /**
-     * Connect the Sendspin player. When MA serves `/sendspin` on its main API port
-     * ("proxy mode") it demands an `auth` frame first ("First message must be auth"),
-     * so we log into the MA API to get an access token and hand it to the handshake.
-     * Blank credentials fall back to the saved ones (Settings / a previous connect).
-     */
-    fun connectToServer(url: String, username: String = "", password: String = "", playerName: String = "") {
-        disconnect()
-        _serverUrl.value = url
-        _connectionStatus.value = "Signing in…"
-        viewModelScope.launch {
-            val user = username.ifBlank { settings.maUsername.first() }
-            val pass = password.ifBlank { settings.maPassword.first() }
-            val name = playerName.ifBlank { settings.playerName.first() }
-                .ifBlank { PlayerIdentity.getDefaultPlayerName() }
-            val base = httpBase(url)
-            // Persist for reconnects (Settings / discovered-server tap).
-            settings.setMa(base, user, pass)
-            settings.setPlayerName(name)
-            val hasCreds = user.isNotBlank() && pass.isNotBlank()
-            val token = if (hasCreds) fetchMaToken(base, user, pass) else null
-            if (hasCreds && token == null) {
-                _connectionStatus.value = "Sign-in failed — check username / password"
-                return@launch
-            }
-            startSendspin(url, token, name)
-        }
-    }
-
-    /** Log into the MA main API and return the access token (null on failure). */
-    private suspend fun fetchMaToken(base: String, user: String, pass: String): String? {
-        val api = MaApiClient()
-        return try {
-            api.connect(base, token = null, username = user, password = pass)
-            val end = withTimeoutOrNull(12_000) {
-                api.state.first { it == MaApiClient.State.CONNECTED || it == MaApiClient.State.ERROR }
-            }
-            if (end == MaApiClient.State.CONNECTED) api.authToken else null
-        } catch (_: Exception) {
-            null
-        } finally {
-            api.disconnect()
-        }
-    }
-
-    private fun startSendspin(url: String, token: String?, name: String) {
-        val c = SendspinClient(); client = c
-        val eng = SendspinAudioEngine(c.clock); engine = eng
-
-        viewModelScope.launch { c.state.collect { _connected.value = it == SendspinClient.State.CONNECTED } }
-        viewModelScope.launch { c.statusText.collect { _connectionStatus.value = it } }
-        viewModelScope.launch { c.events.collect { _connectionLog.value = it } }
-        viewModelScope.launch {
-            c.nowPlaying.collect { np ->
-                _trackTitle.value = np?.title ?: ""
-                _artist.value = np?.artist ?: ""
-                _album.value = np?.album ?: ""
-                _artworkUrl.value = np?.artworkUrl
-            }
-        }
-        viewModelScope.launch {
-            c.streamFormat.collect { f ->
-                _currentFormat.value = f?.let {
-                    "${it.sampleRate / 1000}kHz / ${it.bitDepth}-bit / ${it.codec.uppercase()}"
-                } ?: "—"
-            }
-        }
-        viewModelScope.launch {
-            c.serverCommands.collect { cmd ->
-                when (cmd.command) {
-                    "volume" -> cmd.volume?.let { v -> _volume.value = v / 100f; eng.setVolume(v / 100f) }
-                    "mute" -> cmd.mute?.let { m -> eng.setVolume(if (m) 0f else _volume.value) }
-                }
-            }
-        }
-        viewModelScope.launch {
-            c.streamEvents.collect { ev ->
-                when (ev) {
-                    is SendspinClient.StreamEvent.Start -> { eng.start(ev.format); _isPlaying.value = true }
-                    SendspinClient.StreamEvent.End -> { eng.stop(); _isPlaying.value = false }
-                    SendspinClient.StreamEvent.Clear -> eng.flush()
-                }
-            }
-        }
-        viewModelScope.launch { c.audioFrames.collect { bytes -> eng.submit(bytes) } }
-
-        c.connect(url, playerId, name, deviceInfo, FormatNegotiator.supportedFormats, token)
-    }
-
-    /** Derive the MA API base (`http[s]://host:port`) from a Sendspin ws URL. */
-    private fun httpBase(url: String): String {
-        var u = url.trim()
-        if (u.startsWith("wss://")) u = "https://" + u.removePrefix("wss://")
-        else if (u.startsWith("ws://")) u = "http://" + u.removePrefix("ws://")
-        else if (!u.startsWith("http")) u = "http://$u"
-        // Strip any path (/sendspin, /ws, …) — keep scheme://host:port.
-        val schemeEnd = u.indexOf("://") + 3
-        val pathStart = u.indexOf('/', schemeEnd)
-        return if (pathStart >= 0) u.substring(0, pathStart) else u
-    }
-
-    /** Play/pause is server-driven for a Sendspin player@v1; kept for UI compatibility. */
-    fun onPlayPause() { /* no-op */ }
-
-    private var volumeJob: kotlinx.coroutines.Job? = null
-    fun onVolumeChange(vol: Float) {
-        _volume.value = vol
-        engine?.setVolume(vol)   // local output — instant
-        // Debounce the report to the server so a slider drag doesn't flood it.
-        volumeJob?.cancel()
-        volumeJob = viewModelScope.launch {
-            kotlinx.coroutines.delay(180)
-            client?.sendClientState(volume = (vol * 100).toInt())
-        }
-    }
-
-    fun disconnect() {
-        engine?.stop(); engine = null
-        client?.close(); client = null
-        _connected.value = false
-        _connectionStatus.value = "Disconnected"
-        _currentFormat.value = "—"
-        _isPlaying.value = false
-    }
-
+    // The connection is process-scoped; don't tear it down when the screen goes away.
     override fun onCleared() {
         super.onCleared()
-        disconnect()
-        stopDiscovery()
+        pb.stopDiscovery()
     }
 }
