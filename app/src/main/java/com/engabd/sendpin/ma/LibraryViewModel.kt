@@ -259,6 +259,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             _loading.value = true; _error.value = null
             try {
                 val items = loader()
+                rememberFavorites(items)
                 stack.addLast(_node.value)
                 _node.value = Node(title, items)
                 _depth.value = stack.size
@@ -293,6 +294,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         if (_backend.value != Backend.MA) return
         viewModelScope.launch {
             _recentlyAdded.value = try { maRepo.recentlyAdded() } catch (_: Exception) { emptyList() }
+            rememberFavorites(_recentlyAdded.value)
         }
     }
 
@@ -301,6 +303,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         if (_backend.value != Backend.MA) return
         viewModelScope.launch {
             _recommendations.value = try { maRepo.recommendations() } catch (_: Exception) { emptyList() }
+            rememberFavorites(_recommendations.value)
         }
     }
 
@@ -309,27 +312,44 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         if (_backend.value != Backend.MA) return
         viewModelScope.launch {
             _inProgress.value = try { maRepo.inProgress() } catch (_: Exception) { emptyList() }
+            rememberFavorites(_inProgress.value)
         }
     }
 
-    /** Toggle favorite for a track — tracks local state and calls add or remove accordingly. */
+    /**
+     * Which items are favourited. Seeded from the server (MA sets `favorite` on
+     * every media item it returns) and then updated optimistically, so the heart
+     * is right the moment a shelf loads instead of only after the user taps it.
+     */
     private val _favorites = MutableStateFlow<Set<String>>(emptySet())
     val favorites: StateFlow<Set<String>> = _favorites
 
+    /** Fold whatever a load returned into the known-favourites set. */
+    private fun rememberFavorites(items: List<MaItem>) {
+        if (items.isEmpty()) return
+        _favorites.update { known ->
+            val fav = items.filter { it.favorite }.map { it.itemId }
+            val unfav = items.filterNot { it.favorite }.map { it.itemId }.toSet()
+            (known - unfav) + fav
+        }
+    }
+
     fun toggleFavorite(item: MaItem) {
         val isFav = item.itemId in _favorites.value
+        // Flip locally first: the command is a round-trip and the heart should
+        // not sit still while it happens. Rolled back if the server refuses.
+        _favorites.update { if (isFav) it - item.itemId else it + item.itemId }
         viewModelScope.launch {
             try {
                 if (isFav) {
                     maRepo.removeFavorite(item)
-                    _favorites.update { it - item.itemId }
                     _toast.tryEmit("Removed from favorites")
                 } else {
                     maRepo.addFavorite(item)
-                    _favorites.update { it + item.itemId }
                     _toast.tryEmit("Added to favorites")
                 }
             } catch (e: Exception) {
+                _favorites.update { if (isFav) it + item.itemId else it - item.itemId }
                 _toast.tryEmit(e.message ?: "Couldn't toggle favorite")
             }
         }

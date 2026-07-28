@@ -20,14 +20,9 @@ import com.engabd.sendpin.ui.theme.FallbackPalette
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
-import kotlin.math.atan2
 import kotlin.math.cbrt
-import kotlin.math.cos
-import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.sin
-import kotlin.math.sqrt
 
 /**
  * The colours a cover melts into: a bright [accent] plus ranked companion
@@ -115,6 +110,19 @@ private fun hsvToRgb(h: Float, s: Float, v: Float): FloatArray {
     return floatArrayOf(r + m, g + m, b + m)
 }
 
+/**
+ * RGB → HSL, returns [h, s, l] with h in degrees. Distinct from [rgbToHsv]: the
+ * final swatches are *lifted* in HSL, where lightness is symmetric about 0.5, so
+ * pushing a colour brighter doesn't wash its saturation out the way raising HSV's
+ * value does.
+ */
+private fun rgbToHsl(r: Float, g: Float, b: Float): FloatArray {
+    val out = FloatArray(3)
+    fun b8(c: Float) = (c * 255f).toInt().coerceIn(0, 255)
+    ColorUtils.RGBToHSL(b8(r), b8(g), b8(b), out)
+    return out
+}
+
 private fun hslColor(h: Float, s: Float, l: Float): Color =
     Color(ColorUtils.HSLToColor(floatArrayOf(((h % 360f) + 360f) % 360f, s, l)))
 
@@ -180,16 +188,20 @@ private fun kmeansClusters(pixels: List<FloatArray>, k: Int): List<Cluster> {
         }
     }
 
-    // Build clusters with mean RGB + HSV
+    // Build clusters with mean RGB + HSV, in one accumulation pass over the pixels.
+    val counts = IntArray(kk)
+    val sums = Array(kk) { FloatArray(3) }
+    for (i in 0 until n) {
+        val j = labels[i]
+        counts[j]++
+        sums[j][0] += pixels[i][0]; sums[j][1] += pixels[i][1]; sums[j][2] += pixels[i][2]
+    }
     val total = n.toFloat()
     return (0 until kk).mapNotNull { j ->
-        val members = pixels.filterIndexed { i, _ -> labels[i] == j }
-        if (members.isEmpty()) return@mapNotNull null
-        val meanR = members.map { it[0] }.average().toFloat()
-        val meanG = members.map { it[1] }.average().toFloat()
-        val meanB = members.map { it[2] }.average().toFloat()
-        val hsv = rgbToHsv(meanR, meanG, meanB)
-        Cluster(floatArrayOf(meanR, meanG, meanB), hsv, members.size / total)
+        val cnt = counts[j]
+        if (cnt == 0) return@mapNotNull null
+        val rgb = floatArrayOf(sums[j][0] / cnt, sums[j][1] / cnt, sums[j][2] / cnt)
+        Cluster(rgb, rgbToHsv(rgb[0], rgb[1], rgb[2]), cnt / total)
     }
 }
 
@@ -204,31 +216,39 @@ private fun tintedWhite(rgb: FloatArray, v: Float): FloatArray {
 }
 
 /** Faithful fallback for covers with almost no colour. */
-private fun lowColourFallback(pixels: List<FloatArray>): List<FloatArray> {
+private fun lowColourFallback(pixels: List<FloatArray>): Extraction {
     // Find colourful pixels (sat >= 0.12)
     val colourful = pixels.filter { rgbToHsv(it[0], it[1], it[2])[1] >= 0.12f }
-    return if (colourful.size >= 4) {
+    val only = if (colourful.size >= 4) {
         val meanR = colourful.map { it[0] }.average().toFloat()
         val meanG = colourful.map { it[1] }.average().toFloat()
         val meanB = colourful.map { it[2] }.average().toFloat()
         val hsv = rgbToHsv(meanR, meanG, meanB)
-        listOf(hsvToRgb(hsv[0], max(hsv[1], 0.40f), max(0.3f, hsv[2])))
+        hsvToRgb(hsv[0], max(hsv[1], 0.40f), max(0.3f, hsv[2]))
     } else {
-        listOf(NEUTRAL_WHITE)
+        NEUTRAL_WHITE
     }
+    return Extraction(only, listOf(only))
 }
+
+/**
+ * The extraction's two answers: the single colour the cover *leads* with, and the
+ * companion set. syncoV2 only needs the set (it spreads it round a room as a
+ * cyclic gradient, hue-ordered so neighbouring bulbs relate); the app also needs
+ * one lead colour for controls, and that has to be the most vivid swatch rather
+ * than whichever happens to sit lowest on the hue wheel.
+ */
+private class Extraction(val lead: FloatArray, val swatches: List<FloatArray>)
 
 /**
  * Extract up to [k] theme-faithful colours from RGB pixels using CIELAB k-means.
  * Ported from syncoV2's `_kmeans_palette` (album_art.py).
  */
-private fun kmeansPalette(pixels: List<FloatArray>, k: Int = 5): List<FloatArray> {
-    if (pixels.isEmpty()) return emptyList()
+private fun kmeansPalette(pixels: List<FloatArray>, k: Int = 5): Extraction? {
+    if (pixels.isEmpty()) return null
 
     // Drop only the true extremes (matte black, paper white); keep greys and dark tones
     val body = pixels.filter {
-        val v = max(it[0], max(it[1], it[2]))
-        val mn = min(it[0], min(it[1], it[2]))
         val luma = 0.299f * it[0] + 0.587f * it[1] + 0.114f * it[2]
         luma >= 0.04f && luma <= 0.98f
     }
@@ -237,7 +257,6 @@ private fun kmeansPalette(pixels: List<FloatArray>, k: Int = 5): List<FloatArray
     val nClusters = min(14, body.size)
     val clusters = kmeansClusters(body, nClusters)
 
-    val total = body.size.toFloat()
     val accents = mutableListOf<Triple<Float, FloatArray, FloatArray>>()  // (score, hsv, rgb)
     val bases = mutableListOf<Pair<Float, Cluster>>()  // (population, cluster)
 
@@ -268,7 +287,7 @@ private fun kmeansPalette(pixels: List<FloatArray>, k: Int = 5): List<FloatArray
     accents.sortByDescending { it.first }
     val accentOut = mutableListOf<FloatArray>()
     val pickedHues = mutableListOf<Float>()
-    for ((_, hsv, rgb) in accents) {
+    for ((_, hsv, _) in accents) {
         if (baseOut.size + accentOut.size >= k) break
         val h = hsv[0]
         if (pickedHues.all { hueDistance(h, it) >= HUE_MIN_SEP * 360f }) {
@@ -277,11 +296,14 @@ private fun kmeansPalette(pixels: List<FloatArray>, k: Int = 5): List<FloatArray
         }
     }
 
-    val out = (baseOut + accentOut)
+    val out = baseOut + accentOut
     if (out.isEmpty()) return lowColourFallback(pixels)
 
-    // Order by hue so the cyclic gradient drifts smoothly between related hues
-    return out.sortedBy { rgbToHsv(it[0], it[1], it[2])[0] }
+    // The lead is the top-scoring vivid accent; a cover with none (a sepia photo,
+    // a monochrome sleeve) leads with its dominant base instead.
+    val lead = accentOut.firstOrNull() ?: baseOut.first()
+    // The set is hue-ordered so the cyclic gradient drifts between related hues.
+    return Extraction(lead, out.sortedBy { rgbToHsv(it[0], it[1], it[2])[0] })
 }
 
 /** Bin [bmp] via CIELAB k-means and return the ranked palette, or null if it has no usable colour. */
@@ -302,28 +324,28 @@ internal fun paletteOf(bmp: Bitmap): AlbumPalette? {
         pixels.add(floatArrayOf(r, g, b))
     }
 
-    val colors = kmeansPalette(pixels, k = 5)
-    if (colors.isEmpty()) return null
-
-    // Convert to Compose Colors
-    val swatchColors = colors.map { Color(it[0], it[1], it[2]) }
-    if (swatchColors.isEmpty()) return null
+    val extracted = kmeansPalette(pixels, k = 5) ?: return null
 
     // The accent is pushed brighter and more saturated than the art so it stays
     // legible as a control colour against true black.
-    val topHsv = rgbToHsv(colors[0][0], colors[0][1], colors[0][2])
+    val leadHsl = rgbToHsl(extracted.lead[0], extracted.lead[1], extracted.lead[2])
     val accent = hslColor(
-        topHsv[0],
-        (topHsv[1] + 0.24f).coerceIn(0.5f, 0.72f),
-        (topHsv[2] + 0.12f).coerceIn(0.58f, 0.70f),
+        leadHsl[0],
+        (leadHsl[1] + 0.24f).coerceIn(0.5f, 0.72f),
+        (leadHsl[2] + 0.12f).coerceIn(0.58f, 0.70f),
     )
 
-    val rest = colors.drop(1).mapIndexed { i, rgb ->
-        val hsv = rgbToHsv(rgb[0], rgb[1], rgb[2])
-        hslColor(hsv[0], (hsv[1] + 0.1f).coerceIn(0.36f, 0.58f), (hsv[2] + 0.16f).coerceIn(0.58f, 0.72f))
-    }
+    // Companions keep the cover's hue order (so gradients drift rather than jump)
+    // but are lifted to the same legible band. The lead leads the list: swatch(0)
+    // is what the glows are built from.
+    val companions = extracted.swatches
+        .filter { it !== extracted.lead }
+        .map { rgb ->
+            val hsl = rgbToHsl(rgb[0], rgb[1], rgb[2])
+            hslColor(hsl[0], (hsl[1] + 0.1f).coerceIn(0.36f, 0.58f), (hsl[2] + 0.16f).coerceIn(0.58f, 0.72f))
+        }
 
-    return AlbumPalette(accent = accent, swatches = listOf(accent) + rest)
+    return AlbumPalette(accent = accent, swatches = listOf(accent) + companions)
 }
 
 /** Load [url] and derive the album's [AlbumPalette]. Falls back to the amber default. */

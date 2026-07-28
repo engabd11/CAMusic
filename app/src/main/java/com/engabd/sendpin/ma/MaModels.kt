@@ -14,6 +14,7 @@ data class MaItem(
     val subtitle: String?,   // artist(s) / owner
     val image: String?,      // best-effort image URL
     val duration: Int?,
+    val favorite: Boolean = false,
 ) {
     val browsable get() = mediaType in BROWSABLE
     val playable get() = uri != null && mediaType in PLAYABLE
@@ -127,6 +128,7 @@ object MaParse {
             subtitle = artistString(o) ?: o["owner"]?.jsonPrimitive?.contentOrNull,
             image = imageUrl(o, serverUrl),
             duration = o["duration"]?.jsonPrimitive?.let { it.intOrNull ?: it.doubleOrNull?.toInt() },
+            favorite = o["favorite"]?.jsonPrimitive?.booleanOrNull ?: false,
         )
     }
 

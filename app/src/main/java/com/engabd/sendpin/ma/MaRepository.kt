@@ -155,11 +155,15 @@ class MaRepository(val api: MaApiClient) {
 
     // --- favorites ---------------------------------------------------------
 
-    /** Add an item to favorites. The API expects a full media-item object, not individual fields. */
-    suspend fun addFavorite(item: MaItem) =
-        api.sendCommand("music/favorites/add_item", buildJsonObject {
-            put("item", itemRef(item))
-        })
+    /**
+     * Add an item to favorites. MA takes `item` as either a full media-item object
+     * or a URI string; the URI is the shape we can always produce faithfully, and
+     * the server resolves it back to the item itself.
+     */
+    suspend fun addFavorite(item: MaItem) {
+        val uri = item.uri ?: "${item.mediaType}://${item.provider}/${item.itemId}"
+        api.sendCommand("music/favorites/add_item", buildJsonObject { put("item", uri) })
+    }
 
     /** Remove a library item from favorites by media_type + library_item_id. */
     suspend fun removeFavorite(item: MaItem) =
@@ -176,11 +180,15 @@ class MaRepository(val api: MaApiClient) {
             put("limit", limit)
         }), serverUrl)
 
-    /** Natural-language music search via CLAP embeddings. `resolve=true` includes track name/artist. */
+    /**
+     * Natural-language music search via CLAP embeddings. `resolve=true` includes
+     * track name/artist. The result comes back as either an array or a dict of
+     * matches depending on the provider, so it is handed to the parser unchanged.
+     */
     suspend fun sonicTextSearch(query: String, limit: Int = 12) = MaParse.similarTracks(
         api.sendCommand("sonic_similarity/text_search", buildJsonObject {
             put("query", query); put("limit", limit); put("resolve", true)
-        }) as? JsonArray, serverUrl)
+        }), serverUrl)
 
     // --- player power & options --------------------------------------------
 
@@ -208,22 +216,27 @@ class MaRepository(val api: MaApiClient) {
 
     // --- lyrics ------------------------------------------------------------
 
-    /** Get lyrics for a track. The API expects a full Track object and returns a (lyrics, lrc_lyrics) tuple. */
-    suspend fun getLyrics(item: MaItem) = MaParse.lyrics(
-        api.sendCommand("metadata/get_track_lyrics", buildJsonObject {
-            put("track", itemRef(item))
-        })
-    )
+    /**
+     * Lyrics for a track, as a `(lyrics, lrc_lyrics)` tuple.
+     *
+     * `metadata/get_track_lyrics` takes a whole `Track`, not a reference to one, so
+     * the track is resolved first and the server's own object handed straight back
+     * to it — a two-field stand-in fails to deserialise.
+     */
+    suspend fun getLyrics(item: MaItem): MaLyrics? {
+        val track = api.sendCommand("music/tracks/get", itemRef(item))?.jsonObject ?: return null
+        return MaParse.lyrics(api.sendCommand("metadata/get_track_lyrics", buildJsonObject {
+            put("track", track)
+        }))
+    }
 
     // --- track preview -----------------------------------------------------
 
-    /** Get a short preview URL for a track. */
-    suspend fun trackPreview(itemId: String, provider: String): String? {
-        val res = api.sendCommand("music/tracks/preview", buildJsonObject {
-            put("item_id", itemId); put("provider_instance_id_or_domain", provider)
-        })?.jsonObject
-        return res?.get("url")?.jsonPrimitive?.contentOrNull
-    }
+    /** A short preview URL for a track. The command returns the URL as a bare string. */
+    suspend fun trackPreview(itemId: String, provider: String): String? =
+        api.sendCommand("music/tracks/preview", buildJsonObject {
+            put("provider_instance_id_or_domain", provider); put("item_id", itemId)
+        })?.jsonPrimitive?.contentOrNull
 
     private suspend fun cmd(command: String, playerId: String) =
         api.sendCommand("players/cmd/$command", buildJsonObject { put("player_id", playerId) })
