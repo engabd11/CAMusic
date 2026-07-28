@@ -200,6 +200,9 @@ private fun Browse(viewModel: LibraryViewModel) {
     val error by viewModel.error.collectAsState()
     val search by viewModel.search.collectAsState()
     val recent by viewModel.recent.collectAsState()
+    val recentlyAdded by viewModel.recentlyAdded.collectAsState()
+    val recommendations by viewModel.recommendations.collectAsState()
+    val inProgress by viewModel.inProgress.collectAsState()
     val jobs by viewModel.downloadJobs.collectAsState()
 
     val s = search
@@ -238,9 +241,27 @@ private fun Browse(viewModel: LibraryViewModel) {
         }
 
         if (depth == 0) {
-            // Root shelf: the category grid, then a wall of recently played art.
+            // Root shelf: the category grid, then dynamic shelves of content.
             items(node.items, span = { GridItemSpan(3) }) { cat ->
                 CategoryCard(cat) { viewModel.open(cat) }
+            }
+            if (inProgress.isNotEmpty()) {
+                item(span = { full() }) { Shelf("Continue listening") }
+                items(inProgress, span = { GridItemSpan(2) }) { it2 ->
+                    CoverTile(it2) { viewModel.open(it2) }
+                }
+            }
+            if (recentlyAdded.isNotEmpty()) {
+                item(span = { full() }) { Shelf("Recently added") }
+                items(recentlyAdded, span = { GridItemSpan(2) }) { it2 ->
+                    CoverTile(it2) { viewModel.open(it2) }
+                }
+            }
+            if (recommendations.isNotEmpty()) {
+                item(span = { full() }) { Shelf("For you") }
+                items(recommendations, span = { GridItemSpan(2) }) { it2 ->
+                    CoverTile(it2) { viewModel.open(it2) }
+                }
             }
             if (recent.isNotEmpty()) {
                 item(span = { full() }) { Shelf("Recently played") }

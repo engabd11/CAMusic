@@ -30,6 +30,18 @@ class MaRepository(val api: MaApiClient) {
     suspend fun recentlyPlayed(limit: Int = 12) =
         MaParse.items(api.sendCommand("music/recently_played_items", buildJsonObject { put("limit", limit) }), serverUrl)
 
+    /** Recently added tracks — "New to your library". */
+    suspend fun recentlyAdded(limit: Int = 12) =
+        MaParse.items(api.sendCommand("music/recently_added_tracks", buildJsonObject { put("limit", limit) }), serverUrl)
+
+    /** Personalised recommendations. */
+    suspend fun recommendations(limit: Int = 12) =
+        MaParse.items(api.sendCommand("music/recommendations", buildJsonObject { put("limit", limit) }), serverUrl)
+
+    /** Audiobooks and podcasts in progress. */
+    suspend fun inProgress(limit: Int = 12) =
+        MaParse.items(api.sendCommand("music/in_progress_items", buildJsonObject { put("limit", limit) }), serverUrl)
+
     suspend fun artistAlbums(item: MaItem) =
         MaParse.items(api.sendCommand("music/artists/artist_albums", itemRef(item)), serverUrl)
 
@@ -100,6 +112,113 @@ class MaRepository(val api: MaApiClient) {
         api.sendCommand("player_queues/repeat", buildJsonObject {
             put("queue_id", queueId); put("repeat_mode", mode)
         })
+
+    // --- queue management --------------------------------------------------
+
+    /** Full queue items for a player. */
+    suspend fun queueItems(queueId: String) =
+        MaParse.queueItems(api.sendCommand("player_queues/items", buildJsonObject { put("queue_id", queueId) }), serverUrl)
+
+    /** Remove an item from the queue by index or item id. */
+    suspend fun deleteQueueItem(queueId: String, itemIdOrIndex: String) =
+        api.sendCommand("player_queues/delete_item", buildJsonObject {
+            put("queue_id", queueId); put("item_id_or_index", itemIdOrIndex)
+        })
+
+    /** Clear the entire queue. */
+    suspend fun clearQueue(queueId: String) =
+        api.sendCommand("player_queues/clear", buildJsonObject { put("queue_id", queueId) })
+
+    /** Move a queue item up or down. */
+    suspend fun moveQueueItem(queueId: String, itemId: String, newIndex: Int) =
+        api.sendCommand("player_queues/move_item", buildJsonObject {
+            put("queue_id", queueId); put("queue_item_id", itemId); put("new_index", newIndex)
+        })
+
+    /** Save the current queue as a playlist. */
+    suspend fun saveQueueAsPlaylist(queueId: String, name: String) =
+        api.sendCommand("player_queues/save_as_playlist", buildJsonObject {
+            put("queue_id", queueId); put("name", name)
+        })
+
+    /** Play a specific item at an index in the queue. */
+    suspend fun playIndex(queueId: String, index: Int) =
+        api.sendCommand("player_queues/play_index", buildJsonObject {
+            put("queue_id", queueId); put("index", index)
+        })
+
+    // --- favorites ---------------------------------------------------------
+
+    /** Add an item to favorites. */
+    suspend fun addFavorite(itemId: String, provider: String, mediaType: String) =
+        api.sendCommand("music/favorites/add_item", buildJsonObject {
+            put("item_id", itemId); put("provider_instance_id_or_domain", provider)
+            put("media_type", mediaType)
+        })
+
+    /** Remove an item from favorites. */
+    suspend fun removeFavorite(itemId: String, provider: String, mediaType: String) =
+        api.sendCommand("music/favorites/remove_item", buildJsonObject {
+            put("item_id", itemId); put("provider_instance_id_or_domain", provider)
+            put("media_type", mediaType)
+        })
+
+    // --- sonic similarity --------------------------------------------------
+
+    /** Find acoustically similar tracks. */
+    suspend fun similarTracks(itemId: String, provider: String, limit: Int = 12) =
+        MaParse.similarTracks(api.sendCommand("music/tracks/similar_tracks", buildJsonObject {
+            put("item_id", itemId); put("provider_instance_id_or_domain", provider)
+            put("limit", limit)
+        }), serverUrl)
+
+    /** Natural-language music search via CLAP embeddings. */
+    suspend fun sonicTextSearch(query: String, limit: Int = 12) =
+        MaParse.similarTracks(api.sendCommand("sonic_similarity/text_search", buildJsonObject {
+            put("query", query); put("limit", limit)
+        }), serverUrl)
+
+    // --- player power & options --------------------------------------------
+
+    /** Turn a player on or off. */
+    suspend fun setPower(playerId: String, powered: Boolean) =
+        api.sendCommand("players/cmd/power", buildJsonObject {
+            put("player_id", playerId); put("powered", powered)
+        })
+
+    // --- playback speed ----------------------------------------------------
+
+    /** Set playback speed (1.0 = normal, 1.5 = 1.5×, etc.). */
+    suspend fun setPlaybackSpeed(queueId: String, speed: Float) =
+        api.sendCommand("player_queues/set_playback_speed", buildJsonObject {
+            put("queue_id", queueId); put("speed", speed.coerceIn(0.5f, 3.0f))
+        })
+
+    // --- don't stop the music ----------------------------------------------
+
+    /** Auto-populate the queue when it runs low. */
+    suspend fun setDontStopTheMusic(queueId: String, enabled: Boolean) =
+        api.sendCommand("player_queues/dont_stop_the_music", buildJsonObject {
+            put("queue_id", queueId); put("enabled", enabled)
+        })
+
+    // --- lyrics ------------------------------------------------------------
+
+    /** Get lyrics for a track. */
+    suspend fun getLyrics(itemId: String, provider: String) =
+        MaParse.lyrics(api.sendCommand("metadata/get_track_lyrics", buildJsonObject {
+            put("item_id", itemId); put("provider_instance_id_or_domain", provider)
+        }))
+
+    // --- track preview -----------------------------------------------------
+
+    /** Get a short preview URL for a track. */
+    suspend fun trackPreview(itemId: String, provider: String): String? {
+        val res = api.sendCommand("music/tracks/preview", buildJsonObject {
+            put("item_id", itemId); put("provider_instance_id_or_domain", provider)
+        })?.jsonObject
+        return res?.get("url")?.jsonPrimitive?.contentOrNull
+    }
 
     private suspend fun cmd(command: String, playerId: String) =
         api.sendCommand("players/cmd/$command", buildJsonObject { put("player_id", playerId) })

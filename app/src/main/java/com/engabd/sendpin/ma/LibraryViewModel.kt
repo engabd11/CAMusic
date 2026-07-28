@@ -75,6 +75,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private val _error = MutableStateFlow<String?>(null); val error: StateFlow<String?> = _error
     private val _search = MutableStateFlow<MaSearchResults?>(null); val search: StateFlow<MaSearchResults?> = _search
     private val _recent = MutableStateFlow<List<MaItem>>(emptyList()); val recent: StateFlow<List<MaItem>> = _recent
+    private val _recentlyAdded = MutableStateFlow<List<MaItem>>(emptyList()); val recentlyAdded: StateFlow<List<MaItem>> = _recentlyAdded
+    private val _recommendations = MutableStateFlow<List<MaItem>>(emptyList()); val recommendations: StateFlow<List<MaItem>> = _recommendations
+    private val _inProgress = MutableStateFlow<List<MaItem>>(emptyList()); val inProgress: StateFlow<List<MaItem>> = _inProgress
     val downloadJobs: StateFlow<List<DownloadJob>> get() = downloadManager.jobs
     private val _toast = MutableSharedFlow<String>(extraBufferCapacity = 8); val toast: SharedFlow<String> = _toast.asSharedFlow()
     private val stack = ArrayDeque<Node>()
@@ -269,6 +272,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         _node.value = Node("Library", rootItems())
         _depth.value = 0
         loadRecent()
+        loadRecentlyAdded()
+        loadRecommendations()
+        loadInProgress()
     }
 
     /** Best-effort — the shelf is hidden rather than erroring if a server lacks it. */
@@ -278,6 +284,44 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 if (_backend.value == Backend.MA) maRepo.recentlyPlayed()
                 else subsonic?.albumList("recent", size = 12).orEmpty()
             } catch (_: Exception) { emptyList() }
+        }
+    }
+
+    /** Load the "Recently Added" shelf (MA only). */
+    private fun loadRecentlyAdded() {
+        if (_backend.value != Backend.MA) return
+        viewModelScope.launch {
+            _recentlyAdded.value = try { maRepo.recentlyAdded() } catch (_: Exception) { emptyList() }
+        }
+    }
+
+    /** Load the "For You" recommendations shelf (MA only). */
+    private fun loadRecommendations() {
+        if (_backend.value != Backend.MA) return
+        viewModelScope.launch {
+            _recommendations.value = try { maRepo.recommendations() } catch (_: Exception) { emptyList() }
+        }
+    }
+
+    /** Load in-progress audiobooks/podcasts (MA only). */
+    private fun loadInProgress() {
+        if (_backend.value != Backend.MA) return
+        viewModelScope.launch {
+            _inProgress.value = try { maRepo.inProgress() } catch (_: Exception) { emptyList() }
+        }
+    }
+
+    /** Toggle favorite for a track. */
+    fun toggleFavorite(item: MaItem) {
+        viewModelScope.launch {
+            try {
+                // We don't track favorite state server-side yet, so always add.
+                // A future improvement: query music/favorites to check state first.
+                maRepo.addFavorite(item.itemId, item.provider, item.mediaType)
+                _toast.tryEmit("Added to favorites")
+            } catch (e: Exception) {
+                _toast.tryEmit(e.message ?: "Couldn't favorite")
+            }
         }
     }
 
