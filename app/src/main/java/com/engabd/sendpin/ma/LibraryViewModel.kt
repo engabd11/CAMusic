@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /**
@@ -311,19 +312,30 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Toggle favorite for a track. */
+    /** Toggle favorite for a track — tracks local state and calls add or remove accordingly. */
+    private val _favorites = MutableStateFlow<Set<String>>(emptySet())
+    val favorites: StateFlow<Set<String>> = _favorites
+
     fun toggleFavorite(item: MaItem) {
+        val isFav = item.itemId in _favorites.value
         viewModelScope.launch {
             try {
-                // We don't track favorite state server-side yet, so always add.
-                // A future improvement: query music/favorites to check state first.
-                maRepo.addFavorite(item.itemId, item.provider, item.mediaType)
-                _toast.tryEmit("Added to favorites")
+                if (isFav) {
+                    maRepo.removeFavorite(item)
+                    _favorites.update { it - item.itemId }
+                    _toast.tryEmit("Removed from favorites")
+                } else {
+                    maRepo.addFavorite(item)
+                    _favorites.update { it + item.itemId }
+                    _toast.tryEmit("Added to favorites")
+                }
             } catch (e: Exception) {
-                _toast.tryEmit(e.message ?: "Couldn't favorite")
+                _toast.tryEmit(e.message ?: "Couldn't toggle favorite")
             }
         }
     }
+
+    fun isFavorite(item: MaItem): Boolean = item.itemId in _favorites.value
 
 
     private fun rootItems(): List<MaItem> = buildList {

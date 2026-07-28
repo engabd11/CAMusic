@@ -249,19 +249,49 @@ object MaParse {
     // --- lyrics ------------------------------------------------------------
 
     fun lyrics(result: JsonElement?): MaLyrics? {
-        val o = result as? JsonObject ?: return null
-        val text = o["lyrics"]?.jsonPrimitive?.contentOrNull
-            ?: o["text"]?.jsonPrimitive?.contentOrNull ?: return null
-        return MaLyrics(
-            text = text,
-            synced = o["synced"]?.jsonPrimitive?.booleanOrNull ?: false,
-        )
+        // MA returns a (lyrics, lrc_lyrics) tuple — a 2-element array where [0] is
+        // plain text and [1] is LRC-synced text (or null). It can also come back as
+        // a bare string for older endpoints.
+        when (result) {
+            is JsonArray -> {
+                if (result.size < 1) return null
+                val lrc = result.getOrNull(1)?.jsonPrimitive?.contentOrNull
+                val plain = result.getOrNull(0)?.jsonPrimitive?.contentOrNull
+                val text = lrc ?: plain ?: return null
+                return MaLyrics(text = text, synced = lrc != null)
+            }
+            is JsonObject -> {
+                val text = result["lyrics"]?.jsonPrimitive?.contentOrNull
+                    ?: result["text"]?.jsonPrimitive?.contentOrNull ?: return null
+                return MaLyrics(
+                    text = text,
+                    synced = result["synced"]?.jsonPrimitive?.booleanOrNull ?: false,
+                )
+            }
+            is JsonPrimitive -> {
+                val text = result.contentOrNull ?: return null
+                return MaLyrics(text = text, synced = false)
+            }
+            else -> return null
+        }
     }
 
     // --- similar tracks ----------------------------------------------------
 
     fun similarTracks(result: JsonElement?, serverUrl: String?): List<MaSimilarTrack> {
-        val arr = result as? JsonArray ?: return emptyList()
+        // music/tracks/similar_tracks → Array of Track; sonic_similarity/text_search
+        // → object with string keys and Any values (a dict of matches). Both carry
+        // item_id / name / artists at the leaf level.
+        val arr = when (result) {
+            is JsonArray -> result
+            is JsonObject -> {
+                // text_search returns a dict; try common result-wrapper keys, else treat values.
+                (result["matches"] as? JsonArray)
+                    ?: (result["result"] as? JsonArray)
+                    ?: JsonArray(result.values.filter { it is JsonObject || it is JsonArray })
+            }
+            else -> return emptyList()
+        }
         return arr.mapNotNull { el ->
             val o = el as? JsonObject ?: return@mapNotNull null
             val id = o["item_id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null

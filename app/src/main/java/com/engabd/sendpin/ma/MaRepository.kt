@@ -34,9 +34,15 @@ class MaRepository(val api: MaApiClient) {
     suspend fun recentlyAdded(limit: Int = 12) =
         MaParse.items(api.sendCommand("music/recently_added_tracks", buildJsonObject { put("limit", limit) }), serverUrl)
 
-    /** Personalised recommendations. */
-    suspend fun recommendations(limit: Int = 12) =
-        MaParse.items(api.sendCommand("music/recommendations", buildJsonObject { put("limit", limit) }), serverUrl)
+    /** Personalised recommendations — returns RecommendationFolder[] with nested items. */
+    suspend fun recommendations(): List<MaItem> {
+        val folders = api.sendCommand("music/recommendations") as? JsonArray ?: return emptyList()
+        return folders.flatMap { f ->
+            val o = f as? JsonObject ?: return@flatMap emptyList()
+            val items = o["items"] as? JsonArray ?: return@flatMap emptyList()
+            MaParse.items(items, serverUrl)
+        }
+    }
 
     /** Audiobooks and podcasts in progress. */
     suspend fun inProgress(limit: Int = 12) =
@@ -129,10 +135,10 @@ class MaRepository(val api: MaApiClient) {
     suspend fun clearQueue(queueId: String) =
         api.sendCommand("player_queues/clear", buildJsonObject { put("queue_id", queueId) })
 
-    /** Move a queue item up or down. */
-    suspend fun moveQueueItem(queueId: String, itemId: String, newIndex: Int) =
+    /** Move a queue item by a position shift (0 = top/next, negative = up, positive = down). */
+    suspend fun moveQueueItem(queueId: String, itemId: String, posShift: Int) =
         api.sendCommand("player_queues/move_item", buildJsonObject {
-            put("queue_id", queueId); put("queue_item_id", itemId); put("new_index", newIndex)
+            put("queue_id", queueId); put("queue_item_id", itemId); put("pos_shift", posShift)
         })
 
     /** Save the current queue as a playlist. */
@@ -149,18 +155,16 @@ class MaRepository(val api: MaApiClient) {
 
     // --- favorites ---------------------------------------------------------
 
-    /** Add an item to favorites. */
-    suspend fun addFavorite(itemId: String, provider: String, mediaType: String) =
+    /** Add an item to favorites. The API expects a full media-item object, not individual fields. */
+    suspend fun addFavorite(item: MaItem) =
         api.sendCommand("music/favorites/add_item", buildJsonObject {
-            put("item_id", itemId); put("provider_instance_id_or_domain", provider)
-            put("media_type", mediaType)
+            put("item", itemRef(item))
         })
 
-    /** Remove an item from favorites. */
-    suspend fun removeFavorite(itemId: String, provider: String, mediaType: String) =
+    /** Remove a library item from favorites by media_type + library_item_id. */
+    suspend fun removeFavorite(item: MaItem) =
         api.sendCommand("music/favorites/remove_item", buildJsonObject {
-            put("item_id", itemId); put("provider_instance_id_or_domain", provider)
-            put("media_type", mediaType)
+            put("media_type", item.mediaType); put("library_item_id", item.itemId)
         })
 
     // --- sonic similarity --------------------------------------------------
@@ -172,11 +176,11 @@ class MaRepository(val api: MaApiClient) {
             put("limit", limit)
         }), serverUrl)
 
-    /** Natural-language music search via CLAP embeddings. */
-    suspend fun sonicTextSearch(query: String, limit: Int = 12) =
-        MaParse.similarTracks(api.sendCommand("sonic_similarity/text_search", buildJsonObject {
-            put("query", query); put("limit", limit)
-        }), serverUrl)
+    /** Natural-language music search via CLAP embeddings. `resolve=true` includes track name/artist. */
+    suspend fun sonicTextSearch(query: String, limit: Int = 12) = MaParse.similarTracks(
+        api.sendCommand("sonic_similarity/text_search", buildJsonObject {
+            put("query", query); put("limit", limit); put("resolve", true)
+        }) as? JsonArray, serverUrl)
 
     // --- player power & options --------------------------------------------
 
@@ -199,16 +203,17 @@ class MaRepository(val api: MaApiClient) {
     /** Auto-populate the queue when it runs low. */
     suspend fun setDontStopTheMusic(queueId: String, enabled: Boolean) =
         api.sendCommand("player_queues/dont_stop_the_music", buildJsonObject {
-            put("queue_id", queueId); put("enabled", enabled)
+            put("queue_id", queueId); put("dont_stop_the_music_enabled", enabled)
         })
 
     // --- lyrics ------------------------------------------------------------
 
-    /** Get lyrics for a track. */
-    suspend fun getLyrics(itemId: String, provider: String) =
-        MaParse.lyrics(api.sendCommand("metadata/get_track_lyrics", buildJsonObject {
-            put("item_id", itemId); put("provider_instance_id_or_domain", provider)
-        }))
+    /** Get lyrics for a track. The API expects a full Track object and returns a (lyrics, lrc_lyrics) tuple. */
+    suspend fun getLyrics(item: MaItem) = MaParse.lyrics(
+        api.sendCommand("metadata/get_track_lyrics", buildJsonObject {
+            put("track", itemRef(item))
+        })
+    )
 
     // --- track preview -----------------------------------------------------
 
