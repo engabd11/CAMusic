@@ -39,6 +39,9 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     private val _currentFormat = MutableStateFlow("—"); val currentFormat: StateFlow<String> = _currentFormat
     private val _serverUrl = MutableStateFlow(""); val serverUrl: StateFlow<String> = _serverUrl
 
+    // On-screen handshake trace (for diagnosing connection issues without adb).
+    private val _connectionLog = MutableStateFlow<List<String>>(emptyList()); val connectionLog: StateFlow<List<String>> = _connectionLog
+
     private var client: SendspinClient? = null
     private var engine: SendspinAudioEngine? = null
 
@@ -53,6 +56,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
 
         viewModelScope.launch { c.state.collect { _connected.value = it == SendspinClient.State.CONNECTED } }
         viewModelScope.launch { c.statusText.collect { _connectionStatus.value = it } }
+        viewModelScope.launch { c.events.collect { _connectionLog.value = it } }
         viewModelScope.launch {
             c.nowPlaying.collect { np ->
                 _trackTitle.value = np?.title ?: ""

@@ -40,6 +40,7 @@ fun OnboardingScreen(
     val servers by viewModel.discoveredServers.collectAsState()
     val discovering by viewModel.isDiscovering.collectAsState()
     val status by viewModel.connectionStatus.collectAsState()
+    val log by viewModel.connectionLog.collectAsState()
     var manual by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) { viewModel.startDiscovery() }
@@ -139,6 +140,21 @@ fun OnboardingScreen(
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Icon(Icons.Default.CheckCircle, null, tint = accent, modifier = Modifier.size(15.dp))
                     Text(status, color = TextSecondary, fontSize = 13.sp)
+                }
+            }
+
+            // Handshake trace — diagnostic (shows why a connection stalls).
+            if (log.isNotEmpty()) {
+                Spacer(Modifier.height(14.dp))
+                Column(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Glass)
+                        .border(1.dp, HairlineSoft, RoundedCornerShape(12.dp)).padding(12.dp),
+                ) {
+                    Text("CONNECTION LOG", color = TextFaint, fontWeight = FontWeight.Bold, fontSize = 9.sp, letterSpacing = 1.2.sp)
+                    Spacer(Modifier.height(6.dp))
+                    log.takeLast(12).forEach { line ->
+                        Text(line, color = TextSecondary, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, fontSize = 10.sp, lineHeight = 14.sp)
+                    }
                 }
             }
 

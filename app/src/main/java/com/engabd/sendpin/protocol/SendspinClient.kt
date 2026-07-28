@@ -70,6 +70,17 @@ class SendspinClient(
     private val _statusText = MutableStateFlow("Disconnected")
     val statusText: StateFlow<String> = _statusText.asStateFlow()
 
+    // On-screen handshake trace (also mirrored to logcat) — the last ~40 events.
+    private val _events = MutableStateFlow<List<String>>(emptyList())
+    val events: StateFlow<List<String>> = _events.asStateFlow()
+    private var connectStartMs = 0L
+
+    private fun dbg(msg: String) {
+        Log.i(TAG, msg)
+        val t = if (connectStartMs == 0L) 0 else System.currentTimeMillis() - connectStartMs
+        _events.value = (_events.value + "+${t}ms  $msg").takeLast(40)
+    }
+
     private val _nowPlaying = MutableStateFlow<NowPlaying?>(null)
     val nowPlaying: StateFlow<NowPlaying?> = _nowPlaying.asStateFlow()
 
@@ -102,8 +113,10 @@ class SendspinClient(
 
         _state.value = State.CONNECTING
         _statusText.value = "Connecting…"
+        connectStartMs = System.currentTimeMillis()
+        _events.value = emptyList()
         val url = buildUrl(serverUrl)
-        Log.i(TAG, "connect → $url (clientId=$clientId, token=${if (token.isNullOrBlank()) "none" else "set"})")
+        dbg("connect → $url (token=${if (token.isNullOrBlank()) "none" else "set"})")
         val request = Request.Builder().url(url).build()
         webSocket = httpClient.newWebSocket(request, listener)
     }
@@ -148,14 +161,14 @@ class SendspinClient(
             // the field-based send() a silent no-op. Send the first frame via the param.
             this@SendspinClient.webSocket = webSocket
             val t = token
-            Log.i(TAG, "ws onOpen (http ${response.code}); ${if (t.isNullOrBlank()) "no token → hello" else "token → auth"}")
+            dbg("ws OPEN (http ${response.code}) → ${if (t.isNullOrBlank()) "no token, sending hello" else "sending auth"}")
             if (t.isNullOrBlank()) {
                 sendHello(webSocket)
             } else {
                 _state.value = State.AUTHENTICATING
                 _statusText.value = "Authenticating…"
                 val ok = webSocket.send(json.encodeToString(SendspinAuthMessage(token = t, clientId = clientId)))
-                Log.i(TAG, "sent auth (queued=$ok)")
+                dbg("sent auth (queued=$ok)")
             }
         }
 
@@ -165,12 +178,12 @@ class SendspinClient(
             val parsed = try {
                 SendspinIncoming.parse(text, json)
             } catch (e: Exception) {
-                Log.w(TAG, "parse error on: ${text.take(200)}", e)
+                dbg("rx PARSE-ERROR: ${text.take(160)}")
                 SendspinIncoming.Unknown("parse_error")
             }
-            // Log the type of every text frame (server/time is chatty → debug only).
+            // server/time is chatty once syncing → keep it out of the on-screen trace.
             if (parsed is SendspinIncoming.ServerTime) Log.d(TAG, "rx server/time")
-            else Log.i(TAG, "rx ${text.take(220)}")
+            else dbg("rx ${text.take(200)}")
             val incoming = if (parsed is SendspinIncoming.ServerTime) parsed.copy(clientReceivedUs = rxUs) else parsed
             scope.launch { handleIncoming(incoming) }
         }
@@ -180,12 +193,12 @@ class SendspinClient(
         }
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-            Log.i(TAG, "ws onClosing $code '$reason'")
+            dbg("ws CLOSING $code '$reason'")
             webSocket.close(1000, null)
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-            Log.i(TAG, "ws onClosed $code '$reason'")
+            dbg("ws CLOSED $code '$reason'")
             if (_state.value != State.ERROR) {
                 _state.value = State.DISCONNECTED
                 _statusText.value = "Disconnected"
@@ -193,7 +206,7 @@ class SendspinClient(
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-            Log.e(TAG, "ws onFailure (http ${response?.code}): ${t.message}", t)
+            dbg("ws FAILURE (http ${response?.code}): ${t.message}")
             _state.value = State.ERROR
             _statusText.value = "Error: ${t.message}"
         }
@@ -207,7 +220,7 @@ class SendspinClient(
                 _statusText.value = "Auth failed: ${msg.message}"
             }
             is SendspinIncoming.ServerHello -> {
-                Log.i(TAG, "server/hello → CONNECTED")
+                dbg("server/hello → CONNECTED ✓")
                 _state.value = State.CONNECTED
                 _statusText.value = "Connected"
                 startTimeSync()
@@ -252,7 +265,7 @@ class SendspinClient(
         )
         val text = json.encodeToString(hello)
         val queued = ws?.send(text) ?: false
-        Log.i(TAG, "sent client/hello (queued=$queued): ${text.take(300)}")
+        dbg("sent client/hello (queued=$queued)")
     }
 
     private fun startTimeSync() {
