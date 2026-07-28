@@ -126,7 +126,7 @@ fun Bloom(color: Color, size: Dp, x: Dp, y: Dp, alpha: Float = 0.5f) {
 // --- buttons --------------------------------------------------------------
 
 @Composable
-fun Pill(text: String, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+fun Pill(text: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val accent = LocalAccent.current
     Box(
         modifier
@@ -147,7 +147,7 @@ fun Pill(text: String, selected: Boolean, onClick: () -> Unit, modifier: Modifie
 }
 
 @Composable
-fun ToggleChip(text: String, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+fun ToggleChip(text: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val accent = LocalAccent.current
     Box(
         modifier
