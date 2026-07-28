@@ -26,6 +26,10 @@ class MaRepository(val api: MaApiClient) {
     suspend fun playlists(offset: Int = 0, limit: Int = 500) =
         MaParse.items(api.sendCommand("music/playlists/library_items", libraryArgs(offset, limit)), serverUrl)
 
+    /** Feeds the library's "Recently played" shelf. */
+    suspend fun recentlyPlayed(limit: Int = 12) =
+        MaParse.items(api.sendCommand("music/recently_played_items", buildJsonObject { put("limit", limit) }), serverUrl)
+
     suspend fun artistAlbums(item: MaItem) =
         MaParse.items(api.sendCommand("music/artists/artist_albums", itemRef(item)), serverUrl)
 
@@ -59,6 +63,9 @@ class MaRepository(val api: MaApiClient) {
 
     suspend fun players() = MaParse.players(api.sendCommand("players/all"))
 
+    /** All player queues — carries the stream details behind the quality badge. */
+    suspend fun queues() = MaParse.queues(api.sendCommand("player_queues/all"))
+
     /** Play items to a player (queue_id == player_id). [option]: play|replace|next|add. */
     suspend fun playMedia(playerId: String, uris: List<String>, option: String = "replace") {
         api.sendCommand("player_queues/play_media", buildJsonObject {
@@ -81,6 +88,17 @@ class MaRepository(val api: MaApiClient) {
     suspend fun setVolume(playerId: String, level: Int) =
         api.sendCommand("players/cmd/volume_set", buildJsonObject {
             put("player_id", playerId); put("volume_level", level.coerceIn(0, 100))
+        })
+
+    suspend fun setShuffle(queueId: String, enabled: Boolean) =
+        api.sendCommand("player_queues/shuffle", buildJsonObject {
+            put("queue_id", queueId); put("shuffle_enabled", enabled)
+        })
+
+    /** [mode] is `off`, `one` or `all`. */
+    suspend fun setRepeat(queueId: String, mode: String) =
+        api.sendCommand("player_queues/repeat", buildJsonObject {
+            put("queue_id", queueId); put("repeat_mode", mode)
         })
 
     private suspend fun cmd(command: String, playerId: String) =

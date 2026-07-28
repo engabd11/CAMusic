@@ -5,6 +5,7 @@ import android.content.Intent
 import androidx.core.content.ContextCompat
 import com.engabd.sendpin.audio.FormatNegotiator
 import com.engabd.sendpin.audio.SendspinAudioEngine
+import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.MaDiscovery
 import com.engabd.sendpin.discovery.PlayerIdentity
@@ -48,6 +49,7 @@ class Playback(private val app: Context) {
     private val _isPlaying = MutableStateFlow(false); val isPlaying: StateFlow<Boolean> = _isPlaying
     private val _volume = MutableStateFlow(1.0f); val volume: StateFlow<Float> = _volume
     private val _currentFormat = MutableStateFlow("—"); val currentFormat: StateFlow<String> = _currentFormat
+    private val _streamQuality = MutableStateFlow<StreamQuality?>(null); val streamQuality: StateFlow<StreamQuality?> = _streamQuality
     private val _serverUrl = MutableStateFlow(""); val serverUrl: StateFlow<String> = _serverUrl
     private val _connectionLog = MutableStateFlow<List<String>>(emptyList()); val connectionLog: StateFlow<List<String>> = _connectionLog
 
@@ -138,6 +140,7 @@ class Playback(private val app: Context) {
         scope.launch {
             c.streamFormat.collect { f ->
                 _currentFormat.value = f?.let { "${it.sampleRate / 1000}kHz / ${it.bitDepth}-bit / ${it.codec.uppercase()}" } ?: "—"
+                _streamQuality.value = f?.let { StreamQuality(it.codec, it.sampleRate, it.bitDepth) }
             }
         }
         scope.launch {
@@ -195,6 +198,7 @@ class Playback(private val app: Context) {
         _connected.value = false
         _connectionStatus.value = "Disconnected"
         _currentFormat.value = "—"
+        _streamQuality.value = null
         _isPlaying.value = false
         if (stopService) app.stopService(Intent(app, SendspinService::class.java))
     }

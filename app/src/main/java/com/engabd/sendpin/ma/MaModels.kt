@@ -1,5 +1,6 @@
 package com.engabd.sendpin.ma
 
+import com.engabd.sendpin.audio.StreamQuality
 import kotlinx.serialization.json.*
 import java.net.URLEncoder
 
@@ -63,6 +64,14 @@ data class MaPlayer(
 
 /** A player's Sendspin sync-delay config value + the (variable) key it lives under. */
 data class SyncDelay(val key: String, val ms: Int)
+
+/** A player queue, reduced to the part the UI cares about: what's streaming. */
+data class MaQueue(
+    val queueId: String,
+    val quality: StreamQuality?,
+    val shuffleEnabled: Boolean = false,
+    val repeatMode: String = "off",   // off | one | all
+)
 
 /** Grouped search hits. */
 data class MaSearchResults(
@@ -134,6 +143,41 @@ object MaParse {
                 ?: ((m["image"] as? JsonObject)?.get("path")?.jsonPrimitive?.contentOrNull),
             durationMs = ms(m["duration"]),
             elapsedMs = ms(m["elapsed_time"] ?: elapsed),
+        )
+    }
+
+    fun queues(result: JsonElement?): List<MaQueue> {
+        val arr = result as? JsonArray ?: return emptyList()
+        return arr.mapNotNull { el ->
+            val o = el as? JsonObject ?: return@mapNotNull null
+            val id = o["queue_id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+            MaQueue(
+                queueId = id,
+                quality = quality(o["current_item"]),
+                shuffleEnabled = o["shuffle_enabled"]?.jsonPrimitive?.booleanOrNull ?: false,
+                repeatMode = o["repeat_mode"]?.jsonPrimitive?.contentOrNull ?: "off",
+            )
+        }
+    }
+
+    /**
+     * Pull codec/rate/depth out of a queue item's `streamdetails`. MA has moved
+     * these between the stream details root and a nested `audio_format` across
+     * versions, so both shapes are accepted — and the *output* format is
+     * preferred over the source, since that's what the speaker actually receives.
+     */
+    private fun quality(currentItem: JsonElement?): StreamQuality? {
+        val sd = (currentItem as? JsonObject)?.get("streamdetails") as? JsonObject ?: return null
+        val fmt = (sd["audio_format"] as? JsonObject) ?: sd
+        val codec = fmt["content_type"]?.jsonPrimitive?.contentOrNull
+            ?: fmt["codec"]?.jsonPrimitive?.contentOrNull
+            ?: return null
+        if (codec.isBlank() || codec.equals("unknown", ignoreCase = true)) return null
+        return StreamQuality(
+            codec = codec,
+            sampleRateHz = fmt["sample_rate"]?.jsonPrimitive?.intOrNull ?: 0,
+            bitDepth = fmt["bit_depth"]?.jsonPrimitive?.intOrNull ?: 0,
+            bitrateKbps = fmt["bit_rate"]?.jsonPrimitive?.intOrNull ?: 0,
         )
     }
 
