@@ -29,7 +29,27 @@ data class MaPlayer(
     val name: String,
     val available: Boolean,
     val powered: Boolean,
-)
+    val type: String = "player",             // player | group | ...
+    val volumeLevel: Int = 0,                // 0..100
+    val groupVolume: Int? = null,            // 0..100 when this is a group/sync leader
+    val syncedTo: String? = null,            // the leader this player is synced to (member)
+    val groupChilds: List<String> = emptyList(), // members when this player is the leader
+    val canGroupWith: List<String> = emptyList(), // player_ids this can be grouped with
+    val supportedFeatures: List<String> = emptyList(),
+    val icon: String? = null,
+) {
+    /** This player leads an (ad-hoc sync or static) group. */
+    val isLeader get() = groupChilds.isNotEmpty()
+
+    /** This player follows another player's group. */
+    val isMember get() = syncedTo != null
+
+    /** The server lets us add/remove members with this player as target. */
+    val canSetMembers get() = "set_members" in supportedFeatures
+}
+
+/** A player's Sendspin sync-delay config value + the (variable) key it lives under. */
+data class SyncDelay(val key: String, val ms: Int)
 
 /** Grouped search hits. */
 data class MaSearchResults(
@@ -73,9 +93,20 @@ object MaParse {
                     ?: o["name"]?.jsonPrimitive?.contentOrNull ?: id,
                 available = o["available"]?.jsonPrimitive?.booleanOrNull ?: true,
                 powered = o["powered"]?.jsonPrimitive?.booleanOrNull ?: true,
+                type = o["type"]?.jsonPrimitive?.contentOrNull ?: "player",
+                volumeLevel = o["volume_level"]?.jsonPrimitive?.intOrNull ?: 0,
+                groupVolume = o["group_volume"]?.jsonPrimitive?.intOrNull,
+                syncedTo = o["synced_to"]?.jsonPrimitive?.contentOrNull,
+                groupChilds = strList(o["group_childs"]),
+                canGroupWith = strList(o["can_group_with"]),
+                supportedFeatures = strList(o["supported_features"]),
+                icon = o["icon"]?.jsonPrimitive?.contentOrNull,
             )
         }
     }
+
+    private fun strList(el: JsonElement?): List<String> =
+        (el as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList()
 
     private fun artistString(o: JsonObject): String? {
         val arr = o["artists"] as? JsonArray ?: return null

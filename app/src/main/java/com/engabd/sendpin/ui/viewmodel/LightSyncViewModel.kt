@@ -1,0 +1,110 @@
+package com.engabd.sendpin.ui.viewmodel
+
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.engabd.sendpin.data.AppSettings
+import com.engabd.sendpin.ha.HaClient
+import com.engabd.sendpin.ha.LightArea
+import com.engabd.sendpin.ha.LightSyncRepository
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
+
+/**
+ * Light-sync control over the **Home Assistant** WebSocket API (the Hue Synco
+ * integration's per-area entities). Needs an HA base URL + long-lived token; MA-
+ * only stack by design (light sync lives in HA next to Music Assistant).
+ */
+class LightSyncViewModel(app: Application) : AndroidViewModel(app) {
+
+    private val settings = AppSettings(app)
+    private val ha = HaClient()
+    private val repo = LightSyncRepository(ha)
+
+    private val _areas = MutableStateFlow<List<LightArea>>(emptyList()); val areas: StateFlow<List<LightArea>> = _areas
+    private val _selectedId = MutableStateFlow<String?>(null)
+    private val _error = MutableStateFlow<String?>(null); val error: StateFlow<String?> = _error
+    private val _needsConfig = MutableStateFlow(false); val needsConfig: StateFlow<Boolean> = _needsConfig
+
+    val connected: StateFlow<Boolean> = ha.state
+        .map { it == HaClient.State.CONNECTED }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    val selectedArea: StateFlow<LightArea?> = combine(_areas, _selectedId) { areas, id ->
+        areas.firstOrNull { it.id == id } ?: areas.firstOrNull()
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    // Persisted HA fields for the inline connect form.
+    val haUrl: StateFlow<String> = settings.haUrl.stateIn(viewModelScope, SharingStarted.Eagerly, "")
+    val haToken: StateFlow<String> = settings.haToken.stateIn(viewModelScope, SharingStarted.Eagerly, "")
+
+    init {
+        viewModelScope.launch {
+            val url = settings.haUrl.first()
+            val token = settings.haToken.first()
+            if (url.isNotBlank() && token.isNotBlank()) ha.connect(url, token) else _needsConfig.value = true
+        }
+        viewModelScope.launch {
+            ha.state.collect { st ->
+                when (st) {
+                    HaClient.State.CONNECTED -> { _needsConfig.value = false; refresh() }
+                    HaClient.State.ERROR -> _error.value = "Couldn't reach Home Assistant (check URL + token)"
+                    else -> {}
+                }
+            }
+        }
+    }
+
+    /** Save + connect from the inline form. */
+    fun connect(url: String, token: String) {
+        _error.value = null
+        viewModelScope.launch { settings.setHomeAssistant(url.trim(), token.trim()) }
+        if (url.isNotBlank() && token.isNotBlank()) {
+            _needsConfig.value = false
+            ha.connect(url.trim(), token.trim())
+        }
+    }
+
+    fun refresh() {
+        viewModelScope.launch {
+            try {
+                val areas = repo.discover()
+                _areas.value = areas
+                if (_selectedId.value == null || areas.none { it.id == _selectedId.value }) {
+                    _selectedId.value = areas.firstOrNull()?.id
+                }
+                _error.value = null
+            } catch (e: Exception) {
+                _error.value = e.message
+            }
+        }
+    }
+
+    fun selectArea(id: String) { _selectedId.value = id }
+
+    fun setEnabled(on: Boolean) = patch({ it.copy(enabled = on) }) { repo.setEnabled(it, on) }
+    fun setMode(option: String) = patch({ it.copy(mode = option) }) { repo.setMode(it, option) }
+    fun setEffect(option: String) = patch({ it.copy(effect = option) }) { repo.setEffect(it, option) }
+    fun setColour(option: String) = patch({ it.copy(colour = option) }) { repo.setColour(it, option) }
+    fun setBrightness(pct: Int) = patch({ it.copy(brightnessPct = pct.coerceIn(5, 100)) }) { repo.setBrightness(it, pct) }
+    fun setTiming(ms: Int) = patch({ it.copy(timingMs = ms.coerceIn(-500, 500)) }) { repo.setTiming(it, ms) }
+
+    fun changeTiming(deltaMs: Int) {
+        val ms = (selectedArea.value?.timingMs ?: 0) + deltaMs
+        setTiming(ms)
+    }
+
+    /** Optimistically patch the selected area locally, then send the command to HA. */
+    private inline fun patch(crossinline local: (LightArea) -> LightArea, crossinline remote: suspend (LightArea) -> Unit) {
+        val target = selectedArea.value ?: return
+        _areas.update { list -> list.map { if (it.id == target.id) local(it) else it } }
+        viewModelScope.launch {
+            try { remote(local(target)) } catch (e: Exception) { _error.value = e.message }
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        ha.disconnect()
+    }
+}

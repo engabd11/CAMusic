@@ -17,9 +17,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.ui.theme.Ink
 import com.engabd.sendpin.ui.theme.TextPrimary
 import com.engabd.sendpin.ui.viewmodel.PlayerViewModel
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -37,8 +40,17 @@ fun SettingsScreen(
     var prefer96k by remember { mutableStateOf(true) }
     var preferFlac by remember { mutableStateOf(true) }
 
+    // Home Assistant (drives the light-sync integration).
+    val scope = rememberCoroutineScope()
+    val settings = remember { AppSettings(context) }
+    var haUrl by remember { mutableStateOf("") }
+    var haToken by remember { mutableStateOf("") }
+    var haSaved by remember { mutableStateOf(false) }
+
     LaunchedEffect(Unit) {
         viewModel.startDiscovery()
+        haUrl = settings.haUrl.first()
+        haToken = settings.haToken.first()
     }
 
     Scaffold(
@@ -240,6 +252,45 @@ fun SettingsScreen(
                         LabeledRow("Format", currentFormat)
                         LabeledRow("Player ID", viewModel.playerId.take(12) + "...")
                         LabeledRow("Device", viewModel.playerName)
+                    }
+                }
+            }
+
+            // Home Assistant (light sync)
+            item {
+                Text(
+                    "Home Assistant (light sync)",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+
+            item {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text("Drives the Hue Synco light-sync integration. Use a long-lived access token (Profile → Security).",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(Modifier.height(10.dp))
+                        OutlinedTextField(
+                            value = haUrl, onValueChange = { haUrl = it; haSaved = false },
+                            label = { Text("HA URL") }, placeholder = { Text("http://192.168.0.10:8123") },
+                            singleLine = true, modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = haToken, onValueChange = { haToken = it; haSaved = false },
+                            label = { Text("Long-lived access token") }, placeholder = { Text("eyJ…") },
+                            singleLine = true, modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        Button(
+                            onClick = {
+                                scope.launch { settings.setHomeAssistant(haUrl.trim(), haToken.trim()); haSaved = true }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = haUrl.isNotBlank() && haToken.isNotBlank()
+                        ) { Text(if (haSaved) "Saved" else "Save") }
                     }
                 }
             }

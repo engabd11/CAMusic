@@ -139,9 +139,9 @@ class MaApiClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
             } else if (!token.isNullOrBlank()) {
                 authToken = token
                 sendRaw("auth", buildJsonObject { put("token", token!!); put("device_name", "Sendpin") })
-            } else {
-                _state.value = State.ERROR; return
             }
+            // else: no credentials — assume an open LAN server. Commands that turn
+            // out to need auth will fail individually rather than blocking connect.
             _state.value = State.CONNECTED
         } catch (e: Exception) {
             Log.e("MaApi", "auth: ${e.message}")

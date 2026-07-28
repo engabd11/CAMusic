@@ -81,6 +81,61 @@ class MaRepository(val api: MaApiClient) {
     private suspend fun cmd(command: String, playerId: String) =
         api.sendCommand("players/cmd/$command", buildJsonObject { put("player_id", playerId) })
 
+    // --- grouping ---------------------------------------------------------
+
+    /**
+     * Add/remove sync members with [targetPlayer] as the group leader. Joining a
+     * player to *this phone* = `setMembers(myPlayerId, add=listOf(other))`.
+     */
+    suspend fun setMembers(
+        targetPlayer: String,
+        add: List<String> = emptyList(),
+        remove: List<String> = emptyList(),
+    ) = api.sendCommand("players/cmd/set_members", buildJsonObject {
+        put("target_player", targetPlayer)
+        if (add.isNotEmpty()) put("player_ids_to_add", JsonArray(add.map { JsonPrimitive(it) }))
+        if (remove.isNotEmpty()) put("player_ids_to_remove", JsonArray(remove.map { JsonPrimitive(it) }))
+    })
+
+    /** Remove a single player from whatever group it is synced into. */
+    suspend fun ungroup(playerId: String) =
+        api.sendCommand("players/cmd/ungroup", buildJsonObject { put("player_id", playerId) })
+
+    /** Group volume (fans out to members preserving ratios). [leaderId] = the group/leader. */
+    suspend fun setGroupVolume(leaderId: String, level: Int) =
+        api.sendCommand("players/cmd/group_volume", buildJsonObject {
+            put("player_id", leaderId); put("volume_level", level.coerceIn(0, 100))
+        })
+
+    // --- per-player Sendspin sync-delay (player config) -------------------
+
+    /**
+     * The per-player Sendspin sync-delay lives in the player config. The key
+     * varies (plain `sendspin_sync_delay` or a protocol-wrapped
+     * `<sub>||protocol||sendspin_sync_delay`), so match by suffix and carry the
+     * exact key back for the save.
+     */
+    suspend fun getSyncDelay(playerId: String): SyncDelay? {
+        val res = api.sendCommand("config/players/get", buildJsonObject { put("player_id", playerId) })
+            ?.jsonObject ?: return null
+        val values = res["values"]?.jsonObject ?: return null
+        val key = values.keys.firstOrNull { it.endsWith("sendspin_sync_delay") } ?: return null
+        val ms = values[key].configInt() ?: 0
+        return SyncDelay(key, ms)
+    }
+
+    suspend fun setSyncDelay(playerId: String, key: String, ms: Int) =
+        api.sendCommand("config/players/save", buildJsonObject {
+            put("player_id", playerId)
+            put("values", buildJsonObject { put(key, ms) })
+        })
+
+    private fun JsonElement?.configInt(): Int? = when (this) {
+        is JsonPrimitive -> intOrNull
+        is JsonObject -> this["value"]?.jsonPrimitive?.intOrNull
+        else -> null
+    }
+
     // --- args -------------------------------------------------------------
 
     private fun libraryArgs(offset: Int, limit: Int) = buildJsonObject {

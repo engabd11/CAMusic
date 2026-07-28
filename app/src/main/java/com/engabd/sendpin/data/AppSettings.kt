@@ -23,6 +23,8 @@ class AppSettings(private val context: Context) {
         private val NAV_URL = stringPreferencesKey("nav_url")                  // e.g. http://192.168.0.10:4533
         private val NAV_USERNAME = stringPreferencesKey("nav_username")
         private val NAV_PASSWORD = stringPreferencesKey("nav_password")
+        private val HA_URL = stringPreferencesKey("ha_url")                    // e.g. http://192.168.0.10:8123
+        private val HA_TOKEN = stringPreferencesKey("ha_token")                // long-lived access token
     }
 
     val backend: Flow<String> = context.dataStore.data.map { it[BACKEND] ?: "ma" }
@@ -32,6 +34,8 @@ class AppSettings(private val context: Context) {
     val navUrl: Flow<String> = context.dataStore.data.map { it[NAV_URL] ?: "" }
     val navUsername: Flow<String> = context.dataStore.data.map { it[NAV_USERNAME] ?: "" }
     val navPassword: Flow<String> = context.dataStore.data.map { it[NAV_PASSWORD] ?: "" }
+    val haUrl: Flow<String> = context.dataStore.data.map { it[HA_URL] ?: "" }
+    val haToken: Flow<String> = context.dataStore.data.map { it[HA_TOKEN] ?: "" }
 
     suspend fun setBackend(value: String) {
         context.dataStore.edit { it[BACKEND] = value }
@@ -51,5 +55,9 @@ class AppSettings(private val context: Context) {
 
     suspend fun setBaseUrl(baseUrl: String) {
         context.dataStore.edit { it[MA_BASE_URL] = baseUrl }
+    }
+
+    suspend fun setHomeAssistant(url: String, token: String) {
+        context.dataStore.edit { it[HA_URL] = url; it[HA_TOKEN] = token }
     }
 }
