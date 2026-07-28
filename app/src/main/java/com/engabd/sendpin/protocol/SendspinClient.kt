@@ -296,7 +296,12 @@ class SendspinClient(
         if (url.startsWith("https://")) url = "wss://" + url.removePrefix("https://")
         if (!url.startsWith("ws://") && !url.startsWith("wss://")) url = "ws://$url"
         val noSlash = url.trimEnd('/')
-        return if (noSlash.contains("/sendspin")) noSlash else "$noSlash/sendspin"
+        return when {
+            noSlash.endsWith("/sendspin") -> noSlash
+            // A pasted main-API URL (…/ws) → swap the path, don't nest /ws/sendspin.
+            noSlash.endsWith("/ws") -> noSlash.removeSuffix("/ws") + "/sendspin"
+            else -> "$noSlash/sendspin"
+        }
     }
 
     private companion object {

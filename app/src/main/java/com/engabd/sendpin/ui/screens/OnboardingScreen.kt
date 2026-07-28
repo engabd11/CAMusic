@@ -30,6 +30,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.PlayerViewModel
+import kotlinx.coroutines.flow.first
 
 @Composable
 fun OnboardingScreen(
@@ -42,8 +43,14 @@ fun OnboardingScreen(
     val status by viewModel.connectionStatus.collectAsState()
     val log by viewModel.connectionLog.collectAsState()
     var manual by remember { mutableStateOf("") }
+    var user by remember { mutableStateOf("") }
+    var pass by remember { mutableStateOf("") }
 
-    LaunchedEffect(Unit) { viewModel.startDiscovery() }
+    LaunchedEffect(Unit) {
+        viewModel.startDiscovery()
+        user = viewModel.savedUsername.first()
+        pass = viewModel.savedPassword.first()
+    }
 
     Box(Modifier.fillMaxSize().background(Ink)) {
         Bloom(accent, 460.dp, 40.dp, (-80).dp, 0.34f)
@@ -67,7 +74,35 @@ fun OnboardingScreen(
                 color = TextMuted, fontSize = 14.sp, textAlign = TextAlign.Center, modifier = Modifier.widthIn(max = 300.dp),
             )
 
-            Spacer(Modifier.height(34.dp))
+            Spacer(Modifier.height(30.dp))
+
+            // Sign-in (MA usually requires auth on its main port — same login you use in the MA app).
+            Row(Modifier.fillMaxWidth()) { SectionLabel("Sign in") }
+            Spacer(Modifier.height(10.dp))
+            OutlinedTextField(
+                value = user, onValueChange = { user = it },
+                label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = accent, cursorColor = accent, focusedLabelColor = accent,
+                    unfocusedBorderColor = Hairline, focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
+                ),
+            )
+            Spacer(Modifier.height(10.dp))
+            OutlinedTextField(
+                value = pass, onValueChange = { pass = it },
+                label = { Text("Password") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = accent, cursorColor = accent, focusedLabelColor = accent,
+                    unfocusedBorderColor = Hairline, focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
+                ),
+            )
+            Text(
+                "Leave blank only if your server has no authentication.",
+                color = TextFaint, fontSize = 11.sp, modifier = Modifier.padding(top = 6.dp).fillMaxWidth(),
+            )
+
+            Spacer(Modifier.height(28.dp))
 
             // Discovered servers.
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -91,7 +126,7 @@ fun OnboardingScreen(
             servers.forEach { s ->
                 Row(
                     Modifier.fillMaxWidth().padding(vertical = 5.dp).clip(RoundedCornerShape(15.dp)).background(Glass)
-                        .border(1.dp, HairlineSoft, RoundedCornerShape(15.dp)).clickable { viewModel.connectToServer(s.webSocketUrl) }.padding(15.dp),
+                        .border(1.dp, HairlineSoft, RoundedCornerShape(15.dp)).clickable { viewModel.connectToServer(s.webSocketUrl, user, pass) }.padding(15.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Box(Modifier.size(38.dp).clip(RoundedCornerShape(11.dp)).background(accent.a(0.14f)).border(1.dp, accent.a(0.35f), RoundedCornerShape(11.dp)), contentAlignment = Alignment.Center) {
@@ -128,7 +163,7 @@ fun OnboardingScreen(
             Spacer(Modifier.height(14.dp))
             Box(
                 Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp))
-                    .background(if (manual.isBlank()) Glass else accent).clickable(enabled = manual.isNotBlank()) { viewModel.connectToServer(manual) }
+                    .background(if (manual.isBlank()) Glass else accent).clickable(enabled = manual.isNotBlank()) { viewModel.connectToServer(manual, user, pass) }
                     .padding(vertical = 15.dp),
                 contentAlignment = Alignment.Center,
             ) {
