@@ -105,7 +105,7 @@ fun App() {
                     composable("library") { LibraryScreen() }
                     composable("speakers") { SpeakersScreen(onBack = { navController.popBackStack() }) }
                     composable("light_sync") { LightSyncScreen(onBack = { navController.popBackStack() }) }
-                    composable("settings") { SettingsScreen() }
+                    composable("settings") { SettingsScreen(viewModel = playerVm) }
                 }
             }
         }

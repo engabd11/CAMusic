@@ -34,9 +34,24 @@ class LightSyncViewModel(app: Application) : AndroidViewModel(app) {
         areas.firstOrNull { it.id == id } ?: areas.firstOrNull()
     }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
-    // Persisted HA fields for the inline connect form.
-    val haUrl: StateFlow<String> = settings.haUrl.stateIn(viewModelScope, SharingStarted.Eagerly, "")
+    // Persisted HA fields for the inline connect form. The URL defaults to the MA
+    // host on HA's standard port 8123 (HA usually lives next to Music Assistant),
+    // so the user typically only needs to paste a token.
+    val haUrl: StateFlow<String> = combine(settings.haUrl, settings.maBaseUrl) { ha, ma ->
+        ha.ifBlank { deriveHaUrl(ma) }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, "")
     val haToken: StateFlow<String> = settings.haToken.stateIn(viewModelScope, SharingStarted.Eagerly, "")
+
+    private fun deriveHaUrl(maBase: String): String {
+        if (maBase.isBlank()) return ""
+        return try {
+            val schemeEnd = maBase.indexOf("://").let { if (it >= 0) it + 3 else 0 }
+            val scheme = if (schemeEnd > 0) maBase.substring(0, schemeEnd) else "http://"
+            val hostPort = maBase.substring(schemeEnd).substringBefore('/')
+            val host = hostPort.substringBefore(':')
+            "$scheme$host:8123"
+        } catch (_: Exception) { "" }
+    }
 
     init {
         viewModelScope.launch {

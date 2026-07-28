@@ -47,15 +47,30 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     // On-screen handshake trace (for diagnosing connection issues without adb).
     private val _connectionLog = MutableStateFlow<List<String>>(emptyList()); val connectionLog: StateFlow<List<String>> = _connectionLog
 
-    // Saved MA credentials, for pre-filling the sign-in fields.
+    // Saved MA credentials + player name, for pre-filling the onboarding fields.
     val savedUsername: Flow<String> get() = settings.maUsername
     val savedPassword: Flow<String> get() = settings.maPassword
+    val savedPlayerName: Flow<String> get() = settings.playerName
 
     private var client: SendspinClient? = null
     private var engine: SendspinAudioEngine? = null
 
-    fun startDiscovery() = discovery.startDiscovery()
-    fun stopDiscovery() = discovery.stopDiscovery()
+    private var discoveryStop: kotlinx.coroutines.Job? = null
+
+    fun startDiscovery() {
+        discovery.startDiscovery()
+        // mDNS keeps running until stopped; cap it so the UI stops showing "Searching…".
+        discoveryStop?.cancel()
+        discoveryStop = viewModelScope.launch {
+            kotlinx.coroutines.delay(8_000)
+            discovery.stopDiscovery()
+        }
+    }
+
+    fun stopDiscovery() {
+        discoveryStop?.cancel()
+        discovery.stopDiscovery()
+    }
 
     /**
      * Connect the Sendspin player. When MA serves `/sendspin` on its main API port
@@ -63,23 +78,26 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
      * so we log into the MA API to get an access token and hand it to the handshake.
      * Blank credentials fall back to the saved ones (Settings / a previous connect).
      */
-    fun connectToServer(url: String, username: String = "", password: String = "") {
+    fun connectToServer(url: String, username: String = "", password: String = "", playerName: String = "") {
         disconnect()
         _serverUrl.value = url
         _connectionStatus.value = "Signing in…"
         viewModelScope.launch {
             val user = username.ifBlank { settings.maUsername.first() }
             val pass = password.ifBlank { settings.maPassword.first() }
+            val name = playerName.ifBlank { settings.playerName.first() }
+                .ifBlank { PlayerIdentity.getDefaultPlayerName() }
             val base = httpBase(url)
             // Persist for reconnects (Settings / discovered-server tap).
             settings.setMa(base, user, pass)
+            settings.setPlayerName(name)
             val hasCreds = user.isNotBlank() && pass.isNotBlank()
             val token = if (hasCreds) fetchMaToken(base, user, pass) else null
             if (hasCreds && token == null) {
                 _connectionStatus.value = "Sign-in failed — check username / password"
                 return@launch
             }
-            startSendspin(url, token)
+            startSendspin(url, token, name)
         }
     }
 
@@ -99,7 +117,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    private fun startSendspin(url: String, token: String?) {
+    private fun startSendspin(url: String, token: String?, name: String) {
         val c = SendspinClient(); client = c
         val eng = SendspinAudioEngine(c.clock); engine = eng
 
@@ -140,7 +158,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         }
         viewModelScope.launch { c.audioFrames.collect { bytes -> eng.submit(bytes) } }
 
-        c.connect(url, playerId, playerName, deviceInfo, FormatNegotiator.supportedFormats, token)
+        c.connect(url, playerId, name, deviceInfo, FormatNegotiator.supportedFormats, token)
     }
 
     /** Derive the MA API base (`http[s]://host:port`) from a Sendspin ws URL. */

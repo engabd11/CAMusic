@@ -25,6 +25,8 @@ class AppSettings(private val context: Context) {
         private val NAV_PASSWORD = stringPreferencesKey("nav_password")
         private val HA_URL = stringPreferencesKey("ha_url")                    // e.g. http://192.168.0.10:8123
         private val HA_TOKEN = stringPreferencesKey("ha_token")                // long-lived access token
+        private val PLAYER_NAME = stringPreferencesKey("player_name")          // Sendspin client/hello name
+        private val TARGET_PLAYER = stringPreferencesKey("target_player")      // MA player to play to / control ("" = this phone)
     }
 
     val backend: Flow<String> = context.dataStore.data.map { it[BACKEND] ?: "ma" }
@@ -36,6 +38,8 @@ class AppSettings(private val context: Context) {
     val navPassword: Flow<String> = context.dataStore.data.map { it[NAV_PASSWORD] ?: "" }
     val haUrl: Flow<String> = context.dataStore.data.map { it[HA_URL] ?: "" }
     val haToken: Flow<String> = context.dataStore.data.map { it[HA_TOKEN] ?: "" }
+    val playerName: Flow<String> = context.dataStore.data.map { it[PLAYER_NAME] ?: "" }
+    val targetPlayer: Flow<String> = context.dataStore.data.map { it[TARGET_PLAYER] ?: "" }
 
     suspend fun setBackend(value: String) {
         context.dataStore.edit { it[BACKEND] = value }
@@ -59,5 +63,13 @@ class AppSettings(private val context: Context) {
 
     suspend fun setHomeAssistant(url: String, token: String) {
         context.dataStore.edit { it[HA_URL] = url; it[HA_TOKEN] = token }
+    }
+
+    suspend fun setPlayerName(name: String) {
+        context.dataStore.edit { it[PLAYER_NAME] = name }
+    }
+
+    suspend fun setTargetPlayer(playerId: String) {
+        context.dataStore.edit { it[TARGET_PLAYER] = playerId }
     }
 }

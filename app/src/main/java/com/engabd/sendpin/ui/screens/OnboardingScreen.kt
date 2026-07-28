@@ -45,11 +45,13 @@ fun OnboardingScreen(
     var manual by remember { mutableStateOf("") }
     var user by remember { mutableStateOf("") }
     var pass by remember { mutableStateOf("") }
+    var name by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) {
         viewModel.startDiscovery()
         user = viewModel.savedUsername.first()
         pass = viewModel.savedPassword.first()
+        name = viewModel.savedPlayerName.first().ifBlank { viewModel.playerName }
     }
 
     Box(Modifier.fillMaxSize().background(Ink)) {
@@ -78,6 +80,15 @@ fun OnboardingScreen(
 
             // Sign-in (MA usually requires auth on its main port — same login you use in the MA app).
             Row(Modifier.fillMaxWidth()) { SectionLabel("Sign in") }
+            Spacer(Modifier.height(10.dp))
+            OutlinedTextField(
+                value = name, onValueChange = { name = it },
+                label = { Text("Player name") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = accent, cursorColor = accent, focusedLabelColor = accent,
+                    unfocusedBorderColor = Hairline, focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
+                ),
+            )
             Spacer(Modifier.height(10.dp))
             OutlinedTextField(
                 value = user, onValueChange = { user = it },
@@ -126,7 +137,7 @@ fun OnboardingScreen(
             servers.forEach { s ->
                 Row(
                     Modifier.fillMaxWidth().padding(vertical = 5.dp).clip(RoundedCornerShape(15.dp)).background(Glass)
-                        .border(1.dp, HairlineSoft, RoundedCornerShape(15.dp)).clickable { viewModel.connectToServer(s.webSocketUrl, user, pass) }.padding(15.dp),
+                        .border(1.dp, HairlineSoft, RoundedCornerShape(15.dp)).clickable { viewModel.connectToServer(s.webSocketUrl, user, pass, name) }.padding(15.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Box(Modifier.size(38.dp).clip(RoundedCornerShape(11.dp)).background(accent.a(0.14f)).border(1.dp, accent.a(0.35f), RoundedCornerShape(11.dp)), contentAlignment = Alignment.Center) {
@@ -163,7 +174,7 @@ fun OnboardingScreen(
             Spacer(Modifier.height(14.dp))
             Box(
                 Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp))
-                    .background(if (manual.isBlank()) Glass else accent).clickable(enabled = manual.isNotBlank()) { viewModel.connectToServer(manual, user, pass) }
+                    .background(if (manual.isBlank()) Glass else accent).clickable(enabled = manual.isNotBlank()) { viewModel.connectToServer(manual, user, pass, name) }
                     .padding(vertical = 15.dp),
                 contentAlignment = Alignment.Center,
             ) {

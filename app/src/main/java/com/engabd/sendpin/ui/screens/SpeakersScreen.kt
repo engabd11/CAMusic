@@ -60,12 +60,16 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
                 }
             }
 
-            if (error != null && !connected) {
+            if (error != null) {
                 ErrorRow(error!!)
             }
 
             LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(start = 18.dp, end = 18.dp, bottom = 96.dp)) {
-                item { GroupHeroCard(groupVolume, joined.size) { viewModel.setGroupVolume(it) } ; Spacer(Modifier.height(22.dp)) }
+                item {
+                    val targetName = joined.firstOrNull { it.isTarget }?.name ?: "This group"
+                    GroupHeroCard(groupVolume, joined.size, targetName) { viewModel.setGroupVolume(it) }
+                    Spacer(Modifier.height(22.dp))
+                }
 
                 item {
                     Row(Modifier.fillMaxWidth().padding(bottom = 10.dp), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -76,6 +80,7 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
                 items(joined, key = { it.id }) { p ->
                     JoinedCard(
                         p,
+                        onSelect = { viewModel.selectPlayer(p.id) },
                         onUnjoin = { viewModel.unjoin(p.id) },
                         onVol = { viewModel.setPlayerVolume(p.id, it) },
                         onOffset = { viewModel.changeOffset(p.id, it) },
@@ -86,7 +91,7 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
                 if (available.isNotEmpty()) {
                     item { Spacer(Modifier.height(10.dp)); SectionLabel("Available on this network"); Spacer(Modifier.height(10.dp)) }
                     items(available, key = { it.id }) { p ->
-                        FreeCard(p, onJoin = { viewModel.join(p.id) })
+                        FreeCard(p, onPlayHere = { viewModel.selectPlayer(p.id) }, onJoin = { viewModel.join(p.id) })
                         Spacer(Modifier.height(12.dp))
                     }
                 }
@@ -123,7 +128,7 @@ private fun ErrorRow(msg: String) {
 }
 
 @Composable
-private fun GroupHeroCard(master: Float, activeCount: Int, onMaster: (Float) -> Unit) {
+private fun GroupHeroCard(master: Float, activeCount: Int, title: String, onMaster: (Float) -> Unit) {
     val accent = LocalAccent.current
     GlassCard(radius = 22.dp) {
         Column(Modifier.padding(18.dp)) {
@@ -133,7 +138,7 @@ private fun GroupHeroCard(master: Float, activeCount: Int, onMaster: (Float) -> 
                 }
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
-                    Text("This group", color = TextPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(title, color = TextPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text("$activeCount ${if (activeCount == 1) "player" else "players"} synced", color = TextSecondary, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
                 }
                 Row(
@@ -157,7 +162,7 @@ private fun GroupHeroCard(master: Float, activeCount: Int, onMaster: (Float) -> 
 }
 
 @Composable
-private fun JoinedCard(p: SpeakerUi, onUnjoin: () -> Unit, onVol: (Float) -> Unit, onOffset: (Int) -> Unit) {
+private fun JoinedCard(p: SpeakerUi, onSelect: () -> Unit, onUnjoin: () -> Unit, onVol: (Float) -> Unit, onOffset: (Int) -> Unit) {
     val accent = LocalAccent.current
     Box(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(accent.a(0.08f)).border(1.dp, accent.a(0.28f), RoundedCornerShape(16.dp)).padding(14.dp),
@@ -166,11 +171,12 @@ private fun JoinedCard(p: SpeakerUi, onUnjoin: () -> Unit, onVol: (Float) -> Uni
             Row(verticalAlignment = Alignment.CenterVertically) {
                 PlayerIcon(p.isSelf, true)
                 Spacer(Modifier.width(11.dp))
-                Column(Modifier.weight(1f)) {
+                Column(Modifier.weight(1f).clickable(onClick = onSelect)) {
                     Text(p.name, color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(p.meta, color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
+                    Text(if (p.isTarget) "Playing here" else p.meta, color = if (p.isTarget) accent else TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
                 }
-                if (!p.isSelf) {
+                // The leader (active target) isn't unjoinable; members are.
+                if (!p.isTarget) {
                     Box(Modifier.clip(RoundedCornerShape(100)).background(Glass).border(1.dp, Hairline, RoundedCornerShape(100)).clickable(onClick = onUnjoin).padding(horizontal = 13.dp, vertical = 7.dp)) {
                         Text("Unjoin", color = TextSecondary, fontWeight = FontWeight.Bold, fontSize = 11.sp)
                     }
@@ -182,8 +188,8 @@ private fun JoinedCard(p: SpeakerUi, onUnjoin: () -> Unit, onVol: (Float) -> Uni
                 HSlider(p.volume, onVol, modifier = Modifier.weight(1f))
                 Text("${(p.volume * 100).toInt()}", color = TextSecondary, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 11.sp)
             }
-            // Sync offset only for non-self members (the phone is the reference clock).
-            if (!p.isSelf) {
+            // Sync offset only for members (the active/leader player is the reference clock).
+            if (!p.isTarget) {
                 Spacer(Modifier.height(10.dp))
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Sync offset", color = TextFaint, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, modifier = Modifier.weight(1f))
@@ -197,7 +203,7 @@ private fun JoinedCard(p: SpeakerUi, onUnjoin: () -> Unit, onVol: (Float) -> Uni
 }
 
 @Composable
-private fun FreeCard(p: SpeakerUi, onJoin: () -> Unit) {
+private fun FreeCard(p: SpeakerUi, onPlayHere: () -> Unit, onJoin: () -> Unit) {
     val accent = LocalAccent.current
     Row(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Glass).border(1.dp, HairlineSoft, RoundedCornerShape(16.dp)).padding(14.dp),
@@ -205,9 +211,10 @@ private fun FreeCard(p: SpeakerUi, onJoin: () -> Unit) {
     ) {
         PlayerIcon(p.isSelf, false)
         Spacer(Modifier.width(11.dp))
-        Column(Modifier.weight(1f)) {
+        // Tap the name to make this the active play-to player.
+        Column(Modifier.weight(1f).clickable(onClick = onPlayHere)) {
             Text(p.name, color = TextSecondary, fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(p.meta, color = TextFaint, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
+            Text("Tap to play here · ${p.meta}", color = TextFaint, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         Box(Modifier.clip(RoundedCornerShape(100)).background(accent.a(0.16f)).border(1.dp, accent.a(0.55f), RoundedCornerShape(100)).clickable(onClick = onJoin).padding(horizontal = 16.dp, vertical = 8.dp)) {
             Text("Join", color = accent, fontWeight = FontWeight.ExtraBold, fontSize = 11.sp)

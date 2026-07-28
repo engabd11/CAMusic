@@ -34,6 +34,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private val settings = AppSettings(app)
     val myPlayerId: String = PlayerIdentity.getPlayerId(app)
 
+    // The MA player to play to (blank = this phone). Kept in sync with the Speakers picker.
+    private val _targetPlayer = MutableStateFlow("")
+    private fun playTarget() = _targetPlayer.value.ifBlank { myPlayerId }
+
     private val maApi = MaApiClient()
     private val maRepo = MaRepository(maApi)
     private var subsonic: SubsonicClient? = null
@@ -68,6 +72,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             _backend.value = if (settings.backend.first() == "subsonic") Backend.SUBSONIC else Backend.MA
             if (currentUrl().isNotBlank()) connect()
         }
+        viewModelScope.launch { settings.targetPlayer.collect { _targetPlayer.value = it } }
         viewModelScope.launch {
             maApi.state.collect { st ->
                 if (_backend.value != Backend.MA) return@collect
@@ -147,7 +152,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 when (item.provider) {
                     "subsonic" -> subsonic?.let { localPlayer.play(it.streamUrl(item.itemId), item.name) }
                     DOWNLOAD -> item.uri?.let { localPlayer.play(it, item.name) }
-                    else -> item.uri?.let { maRepo.playMedia(myPlayerId, listOf(it), option) }
+                    else -> item.uri?.let { maRepo.playMedia(playTarget(), listOf(it), option) }
                 }
                 _toast.tryEmit(if (option == "add") "Added to queue" else "Playing ${item.name}")
             } catch (e: Exception) {
@@ -162,7 +167,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 if (_backend.value == Backend.MA) {
-                    maRepo.playMedia(myPlayerId, tracks.mapNotNull { it.uri }, "replace")
+                    maRepo.playMedia(playTarget(), tracks.mapNotNull { it.uri }, "replace")
                     _toast.tryEmit("Queued ${tracks.size} tracks")
                 } else {
                     play(tracks.first())   // local player has no queue yet
