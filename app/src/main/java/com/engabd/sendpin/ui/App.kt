@@ -4,79 +4,109 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LibraryMusic
-import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.Lightbulb
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.engabd.sendpin.ui.design.LocalAccent
+import com.engabd.sendpin.ui.design.rememberAlbumAccent
 import com.engabd.sendpin.ui.screens.LibraryScreen
+import com.engabd.sendpin.ui.screens.LightSyncScreen
 import com.engabd.sendpin.ui.screens.NowPlayingScreen
+import com.engabd.sendpin.ui.screens.OnboardingScreen
 import com.engabd.sendpin.ui.screens.SettingsScreen
+import com.engabd.sendpin.ui.screens.SpeakersScreen
 import com.engabd.sendpin.ui.theme.SendspinTheme
+import com.engabd.sendpin.ui.viewmodel.PlayerViewModel
+
+private data class Tab(val route: String, val label: String, val icon: ImageVector)
+
+private val Tabs = listOf(
+    Tab("now_playing", "Playing", Icons.Default.PlayArrow),
+    Tab("library", "Library", Icons.Default.LibraryMusic),
+    Tab("speakers", "Speakers", Icons.Default.Speaker),
+    Tab("light_sync", "Lights", Icons.Default.Lightbulb),
+    Tab("settings", "Settings", Icons.Default.Settings),
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun App() {
     SendspinTheme {
+        // One shared player VM at the app root so the album-derived accent flows to every screen.
+        val playerVm: PlayerViewModel = viewModel()
+        val art by playerVm.artworkUrl.collectAsState()
+        val accent = rememberAlbumAccent(art)
+
+        // First-run gate: show onboarding until a server connects (or the user opts to explore offline).
+        val connected by playerVm.connected.collectAsState()
+        var onboarded by rememberSaveable { mutableStateOf(false) }
+        LaunchedEffect(connected) { if (connected) onboarded = true }
+
+        if (!onboarded) {
+            CompositionLocalProvider(LocalAccent provides accent) {
+                OnboardingScreen(viewModel = playerVm, onSkip = { onboarded = true })
+            }
+            return@SendspinTheme
+        }
+
         val navController = rememberNavController()
         val navBackStackEntry by navController.currentBackStackEntryAsState()
         val currentRoute = navBackStackEntry?.destination?.route
 
-        Scaffold(
-            modifier = Modifier.fillMaxSize(),
-            bottomBar = {
-                NavigationBar {
-                    NavigationBarItem(
-                        icon = { Icon(Icons.Default.MusicNote, contentDescription = "Now Playing") },
-                        label = { Text("Now Playing") },
-                        selected = currentRoute == "now_playing",
-                        onClick = {
-                            if (currentRoute != "now_playing") {
-                                navController.navigate("now_playing") {
-                                    popUpTo("now_playing") { inclusive = true }
-                                }
-                            }
-                        }
-                    )
-                    NavigationBarItem(
-                        icon = { Icon(Icons.Default.LibraryMusic, contentDescription = "Library") },
-                        label = { Text("Library") },
-                        selected = currentRoute == "library",
-                        onClick = {
-                            if (currentRoute != "library") {
-                                navController.navigate("library") {
-                                    popUpTo("now_playing") { inclusive = false }
-                                }
-                            }
-                        }
-                    )
-                    NavigationBarItem(
-                        icon = { Icon(Icons.Default.Settings, contentDescription = "Settings") },
-                        label = { Text("Settings") },
-                        selected = currentRoute == "settings",
-                        onClick = {
-                            if (currentRoute != "settings") {
-                                navController.navigate("settings") {
-                                    popUpTo("now_playing") { inclusive = false }
-                                }
-                            }
-                        }
-                    )
+        fun go(route: String) {
+            if (currentRoute != route) {
+                navController.navigate(route) {
+                    popUpTo("now_playing") { inclusive = false }
+                    launchSingleTop = true
                 }
             }
-        ) { innerPadding ->
-            NavHost(
-                navController = navController,
-                startDestination = "now_playing",
-                modifier = Modifier.padding(innerPadding)
-            ) {
-                composable("now_playing") { NowPlayingScreen() }
-                composable("library") { LibraryScreen() }
-                composable("settings") { SettingsScreen() }
+        }
+
+        CompositionLocalProvider(LocalAccent provides accent) {
+            Scaffold(
+                modifier = Modifier.fillMaxSize(),
+                bottomBar = {
+                    NavigationBar {
+                        Tabs.forEach { tab ->
+                            NavigationBarItem(
+                                icon = { Icon(tab.icon, contentDescription = tab.label) },
+                                label = { Text(tab.label) },
+                                selected = currentRoute == tab.route,
+                                onClick = { go(tab.route) },
+                            )
+                        }
+                    }
+                },
+            ) { innerPadding ->
+                NavHost(
+                    navController = navController,
+                    startDestination = "now_playing",
+                    modifier = Modifier.padding(innerPadding),
+                ) {
+                    composable("now_playing") {
+                        NowPlayingScreen(
+                            viewModel = playerVm,
+                            onOpenSpeakers = { go("speakers") },
+                            onOpenLightSync = { go("light_sync") },
+                            onBrowse = { go("library") },
+                        )
+                    }
+                    composable("library") { LibraryScreen() }
+                    composable("speakers") { SpeakersScreen(onBack = { navController.popBackStack() }) }
+                    composable("light_sync") { LightSyncScreen(onBack = { navController.popBackStack() }) }
+                    composable("settings") { SettingsScreen() }
+                }
             }
         }
     }

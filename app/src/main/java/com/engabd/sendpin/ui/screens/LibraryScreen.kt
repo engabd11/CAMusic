@@ -17,11 +17,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ma.LibraryViewModel.Backend
 import com.engabd.sendpin.ma.MaItem
+import com.engabd.sendpin.ui.design.Pill
+import com.engabd.sendpin.ui.theme.Ink
+import com.engabd.sendpin.ui.theme.TextPrimary
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -33,7 +38,13 @@ fun LibraryScreen(viewModel: LibraryViewModel = viewModel()) {
     LaunchedEffect(Unit) { viewModel.toast.collect { snackbar.showSnackbar(it) } }
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text("Library") }) },
+        containerColor = Ink,
+        topBar = {
+            TopAppBar(
+                title = { Text("Library", fontWeight = FontWeight.ExtraBold, fontSize = 22.sp) },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = Ink, titleContentColor = TextPrimary),
+            )
+        },
         snackbarHost = { SnackbarHost(snackbar) },
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
@@ -46,11 +57,11 @@ fun LibraryScreen(viewModel: LibraryViewModel = viewModel()) {
 @Composable
 private fun BackendToggle(backend: Backend, onSelect: (Backend) -> Unit) {
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        FilterChip(selected = backend == Backend.MA, onClick = { onSelect(Backend.MA) }, label = { Text("Music Assistant") })
-        FilterChip(selected = backend == Backend.SUBSONIC, onClick = { onSelect(Backend.SUBSONIC) }, label = { Text("Navidrome") })
+        Pill("Music Assistant", backend == Backend.MA) { onSelect(Backend.MA) }
+        Pill("Navidrome", backend == Backend.SUBSONIC) { onSelect(Backend.SUBSONIC) }
     }
 }
 

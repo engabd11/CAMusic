@@ -1,48 +1,31 @@
 package com.engabd.sendpin.ui.theme
 
-import android.os.Build
-import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.material3.*
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 
-private val DarkColorScheme = darkColorScheme(
-    primary = Color(0xFF8AB4F8),
-    secondary = Color(0xFF9DB5DC),
-    tertiary = Color(0xFFCBB8E8),
-    background = Color(0xFF1A1C1E),
-    surface = Color(0xFF1A1C1E),
-    surfaceVariant = Color(0xFF2A2C2E),
-)
-
-private val LightColorScheme = lightColorScheme(
-    primary = Color(0xFF1A73E8),
-    secondary = Color(0xFF4A6572),
-    tertiary = Color(0xFF7C5CBF),
-    background = Color(0xFFF8F9FA),
-    surface = Color(0xFFF8F9FA),
-    surfaceVariant = Color(0xFFE8EAED),
+// Always OLED-dark (the Sendspin design is a pure-black player). Accent is applied
+// dynamically per-track via LocalAccent (see ui/design), not through the M3 scheme.
+private val OledScheme = darkColorScheme(
+    primary = DefaultAccent,
+    onPrimary = Ink,
+    secondary = DefaultAccent,
+    background = Ink,
+    onBackground = TextPrimary,
+    surface = Ink,
+    onSurface = TextPrimary,
+    surfaceVariant = GlassStrong,
+    onSurfaceVariant = TextMuted,
+    error = ErrorRed,
+    onError = Ink,
+    outline = Hairline,
 )
 
 @Composable
-fun SendspinTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
-    dynamicColor: Boolean = true,
-    content: @Composable () -> Unit
-) {
-    val colorScheme = when {
-        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            val context = LocalContext.current
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-        }
-        darkTheme -> DarkColorScheme
-        else -> LightColorScheme
-    }
-
+fun SendspinTheme(content: @Composable () -> Unit) {
     MaterialTheme(
-        colorScheme = colorScheme,
-        typography = Typography(),
-        content = content
+        colorScheme = OledScheme,
+        typography = AppTypography,
+        content = content,
     )
 }

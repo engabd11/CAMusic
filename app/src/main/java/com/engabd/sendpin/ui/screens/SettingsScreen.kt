@@ -13,8 +13,12 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.engabd.sendpin.ui.theme.Ink
+import com.engabd.sendpin.ui.theme.TextPrimary
 import com.engabd.sendpin.ui.viewmodel.PlayerViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -38,8 +42,12 @@ fun SettingsScreen(
     }
 
     Scaffold(
+        containerColor = Ink,
         topBar = {
-            TopAppBar(title = { Text("Settings") })
+            TopAppBar(
+                title = { Text("Settings", fontWeight = FontWeight.ExtraBold, fontSize = 22.sp) },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = Ink, titleContentColor = TextPrimary),
+            )
         }
     ) { padding ->
         LazyColumn(
@@ -250,18 +258,17 @@ fun SettingsScreen(
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text("Sendspin", style = MaterialTheme.typography.bodyLarge)
                         Text(
-                            "v0.1.0 — Hi-res audio player for Music Assistant\n\n" +
-                            "Built by Cyborg Automation AU\n" +
-                            "Open source under MIT License\n\n" +
-                            "Bit-perfect 24-bit audio via AAudio I24 Exclusive mode. " +
-                            "Supports FLAC 96/24, PCM 96/24, and automatic format negotiation.",
+                            "v0.1.0 — a Sendspin player & Navidrome client for Music Assistant\n\n" +
+                            "Plays FLAC / Opus 16-bit as an MA player, with Navidrome-direct " +
+                            "browse + offline downloads and Hue light-sync controls. " +
+                            "Bit-perfect 24-bit output is a later phase.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Spacer(Modifier.height(8.dp))
                         TextButton(
                             onClick = {
-                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/engabd11/sendspin-android"))
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/engabd11/sendspin-nowdroid"))
                                 context.startActivity(intent)
                             }
                         ) {
