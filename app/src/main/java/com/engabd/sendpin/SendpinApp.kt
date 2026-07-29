@@ -6,11 +6,19 @@ import coil.ImageLoader
 import coil.ImageLoaderFactory
 import coil.disk.DiskCache
 import coil.memory.MemoryCache
+import com.engabd.sendpin.ma.MaApiClient
 import com.engabd.sendpin.service.Playback
 
-/** Holds the process-scoped [Playback] connection so it outlives the Activity. */
+/** Holds the process-scoped [Playback] connection and the shared [MaApiClient] so they outlive the Activity. */
 class SendpinApp : Application(), ImageLoaderFactory {
     val playback: Playback by lazy { Playback(this) }
+
+    /**
+     * Shared Music Assistant API client — one WebSocket, one auth handshake, one
+     * reconnection loop for the entire app. ViewModels that need library browse /
+     * queue / transport use this instead of opening their own connection.
+     */
+    val maApi: MaApiClient by lazy { MaApiClient() }
 
     override fun onCreate() {
         super.onCreate()

@@ -3,6 +3,7 @@ package com.engabd.sendpin.ma
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.audio.LocalPlayer
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.PlayerIdentity
@@ -44,7 +45,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private val _targetPlayer = MutableStateFlow("")
     private fun playTarget() = _targetPlayer.value.ifBlank { myPlayerId }
 
-    private val maApi = MaApiClient()
+    private val maApi = (app as SendpinApp).maApi
     private val maRepo = MaRepository(maApi)
     private var subsonic: SubsonicClient? = null
 
@@ -431,7 +432,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         super.onCleared()
-        maApi.disconnect()
+        // Shared MaApiClient — don't disconnect it when one ViewModel is destroyed.
         localPlayer.stop()
         stopPreview()
     }

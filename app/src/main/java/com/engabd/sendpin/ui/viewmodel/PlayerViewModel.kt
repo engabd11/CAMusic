@@ -49,6 +49,9 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     fun logout() = pb.logout()
 
     fun onPlayPause() = pb.onPlayPause()
+    fun onMediaNext() = pb.onMediaNext()
+    fun onMediaPrevious() = pb.onMediaPrevious()
+    fun onMediaSeek(positionSec: Int) = pb.onMediaSeek(positionSec)
     fun onVolumeChange(vol: Float) = pb.onVolumeChange(vol)
     fun disconnect() = pb.disconnect()
 

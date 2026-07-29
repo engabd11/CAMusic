@@ -43,6 +43,16 @@ class SendspinAudioEngine(@Suppress("unused") private val clock: ClockSync) {
 
     private class Frame(val serverTsUs: Long, val payload: ByteArray)
 
+    /** A small pool of PCM output buffers to avoid per-frame allocation in the decode loop. */
+    private val pcmPool = ArrayDeque<ByteArray>()
+    private val pcmPoolLock = Any()
+    private fun obtainPcm(size: Int): ByteArray = synchronized(pcmPoolLock) {
+        pcmPool.removeFirstOrNull()?.let { if (it.size >= size) it else null } ?: ByteArray(size)
+    }
+    private fun recyclePcm(buf: ByteArray) = synchronized(pcmPoolLock) {
+        if (pcmPool.size < 8) pcmPool.addLast(buf)
+    }
+
     private val queue = LinkedBlockingQueue<Frame>(QUEUE_CAPACITY)
     @Volatile private var running = false
     private var worker: Thread? = null
@@ -129,10 +139,11 @@ class SendspinAudioEngine(@Suppress("unused") private val clock: ClockSync) {
                 while (outIdx >= 0) {
                     if (info.size > 0) {
                         c.getOutputBuffer(outIdx)?.let { out ->
-                            val pcm = ByteArray(info.size)
+                            val pcm = obtainPcm(info.size)
                             out.position(info.offset)
                             out.get(pcm, 0, info.size)
-                            t.write(pcm, 0, pcm.size)
+                            t.write(pcm, 0, info.size)
+                            recyclePcm(pcm)
                         }
                     }
                     c.releaseOutputBuffer(outIdx, false)

@@ -261,10 +261,30 @@ class MaRepository(val api: MaApiClient) {
     suspend fun ungroup(playerId: String) =
         api.sendCommand("players/cmd/ungroup", buildJsonObject { put("player_id", playerId) })
 
+    /** Remove several players from their groups in a single command (MA ≥ 2.9). */
+    suspend fun ungroupMany(playerIds: List<String>) =
+        api.sendCommand("players/cmd/ungroup_many", buildJsonObject {
+            put("player_ids", JsonArray(playerIds.map { JsonPrimitive(it) }))
+        })
+
     /** Group volume (fans out to members preserving ratios). [leaderId] = the group/leader. */
     suspend fun setGroupVolume(leaderId: String, level: Int) =
         api.sendCommand("players/cmd/group_volume", buildJsonObject {
             put("player_id", leaderId); put("volume_level", level.coerceIn(0, 100))
+        })
+
+    // --- queue transfer (cross-device handoff) ----------------------------
+
+    /**
+     * Transfer the entire queue (items, position, shuffle/repeat state) from one
+     * player to another — the "tap a speaker, music moves there" feature.
+     * [autoPlay] = start playback on the target immediately.
+     */
+    suspend fun transferQueue(sourceQueueId: String, targetQueueId: String, autoPlay: Boolean = true) =
+        api.sendCommand("player_queues/transfer", buildJsonObject {
+            put("source_queue_id", sourceQueueId)
+            put("target_queue_id", targetQueueId)
+            put("auto_play", autoPlay)
         })
 
     // --- per-player Sendspin sync-delay (player config) -------------------
