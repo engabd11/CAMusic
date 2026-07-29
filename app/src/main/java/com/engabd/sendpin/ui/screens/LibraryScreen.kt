@@ -413,7 +413,7 @@ private fun CoverTile(item: MaItem, onClick: () -> Unit) {
                 .border(1.dp, HairlineSoft, RoundedCornerShape(14.dp)),
             contentAlignment = Alignment.Center,
         ) {
-            val art = rememberArtRequest(item.image)
+            val art = rememberArtRequest(item.image, pixels = 200)
             if (art != null) {
                 AsyncImage(
                     model = art, contentDescription = item.name, contentScale = ContentScale.Crop,
@@ -468,7 +468,7 @@ private fun ItemRow(item: MaItem, viewModel: LibraryViewModel) {
             ) { Icon(categoryIcon(item.itemId), null, tint = accent, modifier = Modifier.size(20.dp)) }
 
             item.image != null -> {
-                val art = rememberArtRequest(item.image)
+                val art = rememberArtRequest(item.image, pixels = 120)
                 AsyncImage(
                     model = art, contentDescription = null, contentScale = ContentScale.Crop,
                     modifier = Modifier.size(46.dp).clip(RoundedCornerShape(11.dp)).background(Ink3),

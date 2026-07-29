@@ -146,6 +146,19 @@ fun NowPlayingScreen(
                     IconChip(Icons.Default.Lyrics, "Lyrics", active = showLyrics) {
                         showLyrics = !showLyrics
                     }
+                    // Sleep timer — cycles 0 → 15 → 30 → 45 → 60 → 0
+                    val sleepTimerMin by viewModel.sleepTimerMin.collectAsState()
+                    IconChip(
+                        Icons.Default.Bedtime,
+                        if (sleepTimerMin > 0) "Sleep timer: ${sleepTimerMin}m" else "Sleep timer",
+                        active = sleepTimerMin > 0,
+                        onClick = {
+                            val next = when (sleepTimerMin) {
+                                0 -> 15; 15 -> 30; 30 -> 45; 45 -> 60; else -> 0
+                            }
+                            viewModel.setSleepTimer(next)
+                        },
+                    )
                     IconChip(Icons.AutoMirrored.Filled.QueueMusic, "Queue", active = panel == Panel.QUEUE) {
                         panel = if (panel == Panel.QUEUE) null else Panel.QUEUE
                     }
@@ -213,9 +226,14 @@ fun NowPlayingScreen(
                 ) {
                     TransportIcon(Icons.Default.Shuffle, "Shuffle", 20.dp, st.shuffle) { viewModel.toggleShuffle() }
                     TransportIcon(Icons.Default.SkipPrevious, "Previous", 26.dp) { viewModel.previous() }
-                    PlayButton(st.isPlaying) { viewModel.playPause() }
-                    // Quality badge sits between play and next — the centre of attention.
-                    TappableQualityChip(playing = st.quality, source = st.sourceQuality)
+                    // Quality badge floats above the play button — the centre of attention.
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        TappableQualityChip(playing = st.quality, source = st.sourceQuality)
+                        PlayButton(st.isPlaying) { viewModel.playPause() }
+                    }
                     TransportIcon(Icons.Default.SkipNext, "Next", 26.dp) { viewModel.next() }
                     TransportIcon(
                         if (st.repeatMode == "one") Icons.Default.RepeatOne else Icons.Default.Repeat,

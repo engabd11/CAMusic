@@ -122,15 +122,29 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             hasTrack = live != null,
             idle = live == null,
             blank = np == null,
-            // `quality` is what's actually playing: when this phone is the player, the
-            // Sendspin stream format (what the decoder is producing); otherwise the
-            // queue's streamdetails (what the remote speaker is receiving).
+            // `quality` is what's actually coming out of the pipe right now:
+            // when this phone is the player, the Sendspin stream format (what the
+            // decoder is producing); otherwise the queue's streamdetails (what the
+            // remote speaker is receiving).
             quality = (if (isSelf) local else null) ?: queue?.quality,
-            // `sourceQuality` is the original library format — from the queue's streamdetails
-            // before any transcoding the server may have done for the player.
-            sourceQuality = queue?.quality,
+            // `sourceQuality` is the original library file's format — derived from
+            // the current item's provider_mappings audio_format, NOT the stream
+            // details (which reflect what the server is actually sending, after
+            // any transcoding). These genuinely differ when MA converts a 96/24
+            // FLAC to 48/16 for a player that can't handle hi-res.
+            sourceQuality = queue?.currentItem?.audioFormat?.let {
+                StreamQuality(it.codec, it.sampleRate, it.bitDepth)
+            },
             // Source: the currentItem's provider tells us where the track came from.
-            source = queue?.currentItem?.let { if (it.provider == "subsonic") "Navidrome" else "MA" } ?: "",
+            source = queue?.currentItem?.let {
+                when {
+                    it.provider == "subsonic" -> "Navidrome"
+                    it.provider.startsWith("spotify") -> "Spotify"
+                    it.provider.startsWith("youtube") -> "YouTube"
+                    it.provider == "library" || it.provider == "builtin" -> "MA"
+                    else -> "MA"
+                }
+            } ?: "",
             groupSize = 1 + (p?.groupChilds?.size ?: 0),
             shuffle = queue?.shuffleEnabled == true,
             repeatMode = queue?.repeatMode ?: "off",

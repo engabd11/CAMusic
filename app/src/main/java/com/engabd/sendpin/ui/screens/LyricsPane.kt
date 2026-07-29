@@ -68,6 +68,9 @@ fun LyricsPane(
                 val lyrics: MaLyrics? = l.value
                 if (lyrics == null || lyrics.lines.none { it.text.isNotBlank() }) {
                     Notice(Icons.Default.Lyrics, "No lyrics for this track.")
+                } else if (!lyrics.synced && lyrics.text.length < 20 && !lyrics.text.contains(" ")) {
+                    // A single short word is usually an error response, not lyrics.
+                    Notice(Icons.Default.Lyrics, "No lyrics for this track.")
                 } else {
                     SyncedLyrics(lyrics, positionMs, accent)
                 }

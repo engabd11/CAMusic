@@ -57,7 +57,11 @@ fun SettingsScreen(
     var playerName by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) {
-        viewModel.startDiscovery()
+        // Only start discovery if it's not already running — avoids re-scanning
+        // every time the user switches to the Settings tab.
+        if (!isDiscovering && discoveredServers.isEmpty()) {
+            viewModel.startDiscovery()
+        }
         haUrl = settings.haUrl.first()
         haToken = settings.haToken.first()
         playerName = settings.playerName.first()
@@ -126,17 +130,24 @@ fun SettingsScreen(
                     Spacer(Modifier.height(12.dp))
                     GlassCard(radius = 16.dp) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            OledField(playerName, { playerName = it }, "Player name", "e.g. Abdullah's phone", accent)
+                            // Player name is read-only while the player is enabled —
+                            // changing it live has no effect until a reconnect anyway.
+                            OledField(
+                                playerName,
+                                { if (!connected) playerName = it },
+                                "Player name",
+                                "e.g. Abdullah's phone",
+                                accent,
+                                enabled = !connected,
+                            )
                             Text(
-                                "Shown in Music Assistant. Applies when the player (re)connects.",
+                                if (connected) "Disconnect or disable the player to change the name."
+                                else "Shown in Music Assistant. Applies when the player connects.",
                                 color = TextFaint, fontSize = 11.sp,
                             )
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 if (connected) {
                                     OledButton("Disable", modifier = Modifier.weight(1f), accent = accent, outline = true) { viewModel.disablePlayer() }
-                                    OledButton("Apply", modifier = Modifier.weight(1f), accent = accent) {
-                                        scope.launch { settings.setPlayerName(playerName.trim()); viewModel.enablePlayer() }
-                                    }
                                 } else {
                                     OledButton("Enable player", modifier = Modifier.weight(1f), accent = accent) {
                                         scope.launch { settings.setPlayerName(playerName.trim()); viewModel.enablePlayer() }
@@ -334,16 +345,19 @@ private fun ServerRow(name: String, host: String, connected: Boolean, accent: Co
 private fun OledField(
     value: String, onChange: (String) -> Unit, label: String, placeholder: String, accent: Color,
     visualTransformation: VisualTransformation = VisualTransformation.None,
+    enabled: Boolean = true,
     trailingIcon: @Composable (() -> Unit)? = null,
 ) {
     OutlinedTextField(
         value = value, onValueChange = onChange,
         label = { Text(label) }, placeholder = { Text(placeholder) },
         singleLine = true, modifier = Modifier.fillMaxWidth(),
+        enabled = enabled,
         visualTransformation = visualTransformation,
         colors = OutlinedTextFieldDefaults.colors(
             focusedBorderColor = accent, cursorColor = accent, focusedLabelColor = accent,
             unfocusedBorderColor = Hairline, focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
+            disabledBorderColor = Hairline, disabledTextColor = TextMuted, disabledLabelColor = TextMuted,
         ),
         trailingIcon = trailingIcon,
     )

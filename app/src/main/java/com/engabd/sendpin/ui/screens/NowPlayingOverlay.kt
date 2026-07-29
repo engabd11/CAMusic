@@ -106,7 +106,7 @@ fun NowPlayingOverlay(
     val dragOffset = remember { Animatable(0f) }
 
     LaunchedEffect(expanded) {
-        if (expanded) dragOffset.animateTo(0f, tween(280))
+        if (expanded) dragOffset.animateTo(0f, tween(300))
     }
 
     CompositionLocalProvider(LocalAccent provides accent, LocalPalette provides palette) {
@@ -119,12 +119,13 @@ fun NowPlayingOverlay(
                         onDragEnd = {
                             // Animate first, collapse after — otherwise the parent drops
                             // this composable mid-slide and the gesture ends with a jump.
+                            // Lower threshold (0.25) makes it easier to minimize.
                             dragScope.launch {
-                                if (dragOffset.value > collapseOffset * 0.4f) {
-                                    dragOffset.animateTo(collapseOffset, tween(200))
+                                if (dragOffset.value > collapseOffset * 0.25f) {
+                                    dragOffset.animateTo(collapseOffset, tween(250))
                                     onCollapse()
                                 } else {
-                                    dragOffset.animateTo(0f, tween(200))
+                                    dragOffset.animateTo(0f, tween(250))
                                 }
                             }
                         },
@@ -253,8 +254,14 @@ fun NowPlayingOverlay(
                 ) {
                     TransportIcon(Icons.Default.Shuffle, "Shuffle", 20.dp, st.shuffle) { viewModel.toggleShuffle() }
                     TransportIcon(Icons.Default.SkipPrevious, "Previous", 26.dp) { viewModel.previous() }
-                    PlayButton(st.isPlaying) { viewModel.playPause() }
-                    TappableQualityChip(playing = st.quality, source = st.sourceQuality)
+                    // Quality badge floats above the play button.
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        TappableQualityChip(playing = st.quality, source = st.sourceQuality)
+                        PlayButton(st.isPlaying) { viewModel.playPause() }
+                    }
                     TransportIcon(Icons.Default.SkipNext, "Next", 26.dp) { viewModel.next() }
                     TransportIcon(
                         if (st.repeatMode == "one") Icons.Default.RepeatOne else Icons.Default.Repeat,
