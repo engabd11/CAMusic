@@ -41,6 +41,18 @@
             </intent-filter>
         </service>
 
+        <!-- The standalone (Navidrome / offline) player's own media notification.
+             Separate from SendspinService, which follows the Music Assistant
+             stream: the two track different state and are never both playing. -->
+        <service
+            android:name=".service.LocalPlaybackService"
+            android:foregroundServiceType="mediaPlayback"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </service>
+
         <!-- Routes headset / Bluetooth / steering-wheel media buttons into the
              MediaSession above. MediaButtonReceiver.handleIntent() is a no-op
              without this declaration. -->

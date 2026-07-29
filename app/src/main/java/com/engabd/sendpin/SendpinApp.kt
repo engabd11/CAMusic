@@ -6,8 +6,15 @@ import coil.ImageLoader
 import coil.ImageLoaderFactory
 import coil.disk.DiskCache
 import coil.memory.MemoryCache
+import com.engabd.sendpin.audio.LocalPlayer
+import com.engabd.sendpin.download.DownloadManager
 import com.engabd.sendpin.ma.MaApiClient
+import com.engabd.sendpin.service.LocalPlaybackService
 import com.engabd.sendpin.service.Playback
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import okhttp3.HttpUrl
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
@@ -28,9 +35,31 @@ class SendpinApp : Application(), ImageLoaderFactory {
      */
     val maApi: MaApiClient by lazy { MaApiClient() }
 
+    /**
+     * The standalone queue player (Navidrome-direct and offline downloads). Shared
+     * process-wide: the library fills it, Now Playing reflects and drives it, and
+     * [LocalPlaybackService] puts it in the notification shade. A per-ViewModel
+     * instance meant the phone could be playing something no other screen knew
+     * about — and that nothing but the Library tab could pause.
+     */
+    val localPlayer: LocalPlayer by lazy { LocalPlayer() }
+
+    /** The offline download index, shared for the same reason. */
+    val downloads: DownloadManager by lazy { DownloadManager(this) }
+
+    private val appScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+
     override fun onCreate() {
         super.onCreate()
         instance = this
+        // The media notification follows the local player's session rather than being
+        // started by whichever screen happened to press play.
+        appScope.launch {
+            localPlayer.active.collect { active ->
+                if (active) LocalPlaybackService.start(this@SendpinApp)
+                else LocalPlaybackService.stop(this@SendpinApp)
+            }
+        }
     }
 
     /**

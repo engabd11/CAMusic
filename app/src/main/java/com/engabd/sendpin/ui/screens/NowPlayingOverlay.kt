@@ -198,7 +198,7 @@ fun NowPlayingOverlay(
                     )
                 }
 
-                if (!connected) OfflineBanner()
+                if (!connected && !st.isLocalSession) OfflineBanner()
 
                 TopBar(
                     playerName = st.playerName,
