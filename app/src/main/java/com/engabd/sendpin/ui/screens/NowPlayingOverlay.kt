@@ -140,6 +140,14 @@ fun NowPlayingOverlay(
             // Album wash — always present, dimmed when idle.
             MeltBackdrop(st.artworkUrl, intensity = if (st.idle) 0.5f else 1f)
 
+            // Source badge at the top-right corner — MA or Navidrome.
+            if (st.source.isNotBlank()) {
+                SourceBadge(
+                    source = st.source,
+                    modifier = Modifier.align(Alignment.TopEnd).padding(top = 48.dp, end = 16.dp),
+                )
+            }
+
             Column(
                 Modifier
                     .fillMaxSize()
@@ -237,7 +245,7 @@ fun NowPlayingOverlay(
 
                 Spacer(Modifier.height(14.dp))
 
-                // Transport row.
+                // Transport row — quality badge sits between play and next.
                 Row(
                     Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -246,6 +254,7 @@ fun NowPlayingOverlay(
                     TransportIcon(Icons.Default.Shuffle, "Shuffle", 20.dp, st.shuffle) { viewModel.toggleShuffle() }
                     TransportIcon(Icons.Default.SkipPrevious, "Previous", 26.dp) { viewModel.previous() }
                     PlayButton(st.isPlaying) { viewModel.playPause() }
+                    TappableQualityChip(playing = st.quality, source = st.sourceQuality)
                     TransportIcon(Icons.Default.SkipNext, "Next", 26.dp) { viewModel.next() }
                     TransportIcon(
                         if (st.repeatMode == "one") Icons.Default.RepeatOne else Icons.Default.Repeat,
@@ -290,8 +299,6 @@ fun NowPlayingOverlay(
                     IconChip(Icons.AutoMirrored.Filled.QueueMusic, "Queue", active = panel == Panel.QUEUE) {
                         panel = if (panel == Panel.QUEUE) null else Panel.QUEUE
                     }
-                    // Quality badge
-                    QualityChip(st.quality)
                     // Playback speed + player options
                     IconChip(Icons.Default.Tune, "Player options", active = options) { options = !options }
                 }
@@ -469,12 +476,6 @@ private fun TopBar(playerName: String, isSelf: Boolean, groupSize: Int, onOpenSp
             ) { Icon(Icons.Default.Link, "Speakers", tint = Ink, modifier = Modifier.size(14.dp)) }
         }
     }
-}
-
-@Composable
-private fun QualityChip(q: StreamQuality?) {
-    if (q == null) QualityPill("—", lossless = false)
-    else QualityPill(q.label, hiRes = q.hiRes, lossless = q.lossless)
 }
 
 @Composable

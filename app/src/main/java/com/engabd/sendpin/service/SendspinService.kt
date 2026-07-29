@@ -1,6 +1,5 @@
 package com.engabd.sendpin.service
 
-import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -8,10 +7,8 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
-import android.os.PowerManager
 import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
@@ -36,12 +33,17 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
 /**
- * Foreground service that keeps the process (and the shared [Playback] connection)
- * alive in the background and shows a rich media notification backed by a
- * [MediaSessionCompat]. The notification carries album art, play/pause/skip/stop
- * actions, and a seek bar — the second-most-important surface after Now Playing.
+ * The **media** notification service — shows album art, transport controls, and a
+ * seek bar via a [MediaSessionCompat], but only while music is playing.
  *
- * It does NOT own the connection — it observes [SendpinApp.playback].
+ * This service does NOT own the WebSocket connection or hold wake/wifi locks — that
+ * is the job of [SendspinConnectionService], which stays alive permanently. This
+ * service comes and goes with playback: it starts when a stream starts and stops
+ * itself when playback ends, so the media notification is only present when there
+ * is something to control.
+ *
+ * Swiping this notification away (or stopping it) does NOT kill the connection —
+ * only the [SendspinConnectionService] notification's Stop action does that.
  */
 class SendspinService : Service() {
     companion object {
@@ -52,9 +54,24 @@ class SendspinService : Service() {
         const val ACTION_PLAY_PAUSE = "com.engabd.sendpin.PLAY_PAUSE"
         const val ACTION_NEXT = "com.engabd.sendpin.NEXT"
         const val ACTION_PREV = "com.engabd.sendpin.PREV"
+        const val ACTION_START_MEDIA = "com.engabd.sendpin.START_MEDIA"
+        const val ACTION_STOP_MEDIA = "com.engabd.sendpin.STOP_MEDIA"
 
-        /** Session/notification artwork edge, in px. Big enough to look sharp on a
-         *  lock screen, small enough to cross Binder without a TransactionTooLarge. */
+        /** Start the media notification (called when a stream starts). */
+        fun startMedia(context: android.content.Context) {
+            val intent = Intent(context, SendspinService::class.java).apply { action = ACTION_START_MEDIA }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        /** Stop the media notification (called when a stream ends). */
+        fun stopMedia(context: android.content.Context) {
+            context.stopService(Intent(context, SendspinService::class.java))
+        }
+
         private const val ART_PX = 512
     }
 
@@ -66,79 +83,50 @@ class SendspinService : Service() {
     private var mediaSession: MediaSessionCompat? = null
     private var cachedArtwork: android.graphics.Bitmap? = null
     private var loadedArtworkUrl: String? = null
-
-    private var wakeLock: PowerManager.WakeLock? = null
-    private var wifiLock: WifiManager.WifiLock? = null
+    @Volatile private var mediaActive = false
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
         setupMediaSession()
-        acquireLocks()
-    }
-
-    /**
-     * A foreground service keeps the *process* alive; it does not keep the CPU or
-     * the Wi-Fi radio awake. Without these an idle phone can doze between
-     * announcements, stalling the WebSocket's 5s keepalive and delaying — or
-     * dropping — the very TTS this service exists to receive.
-     *
-     * The cost is real: an always-reachable receiver is an always-on radio. That
-     * is the trade the Stop action in the notification exists to let the user make.
-     */
-    // WakelockTimeout: a timeout is exactly wrong here. There is no bounded amount
-    // of work to wait for — the point is to stay reachable indefinitely. The lock is
-    // bounded by the service's own lifetime instead, which the user ends with Stop.
-    @SuppressLint("WakelockTimeout")
-    private fun acquireLocks() {
-        if (wakeLock == null) {
-            wakeLock = (getSystemService(POWER_SERVICE) as PowerManager)
-                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "sendspin:receiver")
-                .apply { setReferenceCounted(false); acquire() }
-        }
-        if (wifiLock == null) {
-            wifiLock = (applicationContext.getSystemService(WIFI_SERVICE) as WifiManager)
-                .createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "sendspin:receiver")
-                .apply { setReferenceCounted(false); acquire() }
-        }
-    }
-
-    private fun releaseLocks() {
-        runCatching { wakeLock?.takeIf { it.isHeld }?.release() }
-        runCatching { wifiLock?.takeIf { it.isHeld }?.release() }
-        wakeLock = null
-        wifiLock = null
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            pb.disconnect(); stopSelf(); return START_NOT_STICKY
-        }
-        // Every other path must reach startForeground(): the system kills a service
-        // started with startForegroundService() that doesn't promote itself in time,
-        // and notification-action intents land here too.
-        startForegroundNow()
-        observe()
         when (intent?.action) {
+            ACTION_STOP, ACTION_STOP_MEDIA -> {
+                // Stop the media notification — NOT the connection.
+                stopForegroundAndSelf()
+                return START_NOT_STICKY
+            }
             ACTION_PLAY_PAUSE -> pb.onPlayPause()
             ACTION_NEXT -> pb.onMediaNext()
             ACTION_PREV -> pb.onMediaPrevious()
-            ACTION_CONNECT, null -> Unit          // just keep the service alive
+            ACTION_CONNECT, null, ACTION_START_MEDIA -> {
+                // Promote to foreground and start observing.
+                startForegroundNow()
+                observe()
+            }
             else -> MediaButtonReceiver.handleIntent(mediaSession, intent)
         }
         return START_STICKY
     }
 
+    private fun stopForegroundAndSelf() {
+        mediaActive = false
+        observeJob?.cancel()
+        artworkJob?.cancel()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
     private fun setupMediaSession() {
-        // FLAG_HANDLES_MEDIA_BUTTONS / FLAG_HANDLES_TRANSPORT_CONTROLS are implied
-        // since Lollipop and deprecated — setting them buys nothing.
         mediaSession = MediaSessionCompat(this, "Sendspin").apply {
             setCallback(object : MediaSessionCompat.Callback() {
                 override fun onPlay() = pb.onPlayPause()
                 override fun onPause() = pb.onPlayPause()
                 override fun onSkipToNext() = pb.onMediaNext()
                 override fun onSkipToPrevious() = pb.onMediaPrevious()
-                override fun onStop() { pb.disconnect() }
+                override fun onStop() { stopForegroundAndSelf() }
                 override fun onSeekTo(pos: Long) = pb.onMediaSeek((pos / 1000).toInt())
             })
             isActive = true
@@ -147,9 +135,8 @@ class SendspinService : Service() {
 
     private fun observe() {
         if (observeJob != null) return
+        mediaActive = true
         observeJob = scope.launch {
-            // Everything the notification renders, including connection state — the
-            // idle text says whether the receiver is actually reachable.
             combine(
                 listOf<Flow<Any?>>(
                     pb.trackTitle, pb.artist, pb.album, pb.isPlaying,
@@ -159,9 +146,6 @@ class SendspinService : Service() {
                 .distinctUntilChanged()
                 .collect { updateNotification() }
         }
-        // Update the MediaSession's playback state + metadata independently.
-        // Position has to be in here too, or the lock-screen scrubber freezes at
-        // wherever the track happened to be when play/pause last flipped.
         scope.launch {
             combine(pb.isPlaying, pb.positionMs) { isPlaying, pos -> isPlaying to pos }
                 .collect { (isPlaying, pos) -> updatePlaybackState(isPlaying, pos) }
@@ -173,11 +157,21 @@ class SendspinService : Service() {
                 MetadataBundle(title, artist, album, art, dur)
             }.distinctUntilChanged().collect { meta ->
                 updateMetadata(meta)
-                // Only refetch when the artwork itself changed — a duration tick
-                // must not restart the image load.
                 if (meta.artworkUrl != loadedArtworkUrl) {
                     loadedArtworkUrl = meta.artworkUrl
                     fetchArtwork(meta.artworkUrl)
+                }
+            }
+        }
+        // When playback stops entirely, the media notification is no longer needed.
+        // The connection service keeps the WebSocket alive.
+        scope.launch {
+            pb.isPlaying.collect { playing ->
+                if (!playing && !mediaActive) {
+                    // Already not showing — nothing to do.
+                } else if (!playing && mediaActive && pb.trackTitle.value.isBlank()) {
+                    // Nothing playing at all — retire the media notification.
+                    stopForegroundAndSelf()
                 }
             }
         }
@@ -193,8 +187,6 @@ class SendspinService : Service() {
 
     private fun updatePlaybackState(isPlaying: Boolean, posMs: Long = pb.playbackPositionMs) {
         val state = if (isPlaying) PlaybackStateCompat.STATE_PLAYING else PlaybackStateCompat.STATE_PAUSED
-        // Playback speed drives the system's own position extrapolation between
-        // updates — 0 while paused, or the scrubber keeps crawling.
         val speed = if (isPlaying) 1.0f else 0.0f
         val builder = PlaybackStateCompat.Builder()
             .setActions(
@@ -234,13 +226,11 @@ class SendspinService : Service() {
         }
         artworkJob = scope.launch {
             try {
-                // Coil's singleton loader (built by SendpinApp) — sharing it reuses the
-                // memory/disk cache instead of standing up a new loader per track.
                 val req = ImageRequest.Builder(this@SendspinService)
                     .data(url)
-                    .allowHardware(false)      // need a software bitmap to hand to the session
-                    .size(ART_PX)              // cover art is ~1200px; the session bitmap
-                    .build()                   // crosses Binder, so keep it small
+                    .allowHardware(false)
+                    .size(ART_PX)
+                    .build()
                 val result = imageLoader.execute(req)
                 if (result is SuccessResult) {
                     cachedArtwork = result.drawable.toBitmap()
@@ -261,6 +251,7 @@ class SendspinService : Service() {
     }
 
     private fun updateNotification() {
+        if (!mediaActive) return
         (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
             .notify(NOTIFICATION_ID, buildNotification())
     }
@@ -268,11 +259,8 @@ class SendspinService : Service() {
     private fun buildNotification(): Notification {
         val isPlaying = pb.isPlaying.value
         val title = pb.trackTitle.value.ifEmpty { "Sendspin" }
-        // With nothing playing this is not a dead notification — it is the receiver
-        // standing by, and saying so is what makes the persistent entry make sense.
         val text = pb.artist.value.ifEmpty {
-            if (pb.connected.value) "Ready — announcements will play here"
-            else pb.connectionStatus.value
+            if (pb.connected.value) "Ready" else pb.connectionStatus.value
         }
 
         val open = TaskStackBuilder.create(this)
@@ -298,7 +286,7 @@ class SendspinService : Service() {
             .setContentText(text)
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setContentIntent(open)
-            .setOngoing(true)
+            .setOngoing(false)   // the media notification is dismissible
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .addAction(android.R.drawable.ic_media_previous, "Previous", prev)
             .addAction(playPauseIcon, playPauseLabel, playPause)
@@ -306,15 +294,13 @@ class SendspinService : Service() {
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stop)
             .setPriority(NotificationCompat.PRIORITY_LOW)
 
-        // Album art — the single most important visual.
         cachedArtwork?.let { builder.setLargeIcon(it) }
 
-        // MediaStyle with the session + transport row (shows play/pause/skip on lock screen).
         mediaSession?.let { session ->
             builder.setStyle(
                 MediaStyle()
                     .setMediaSession(session.sessionToken)
-                    .setShowActionsInCompactView(0, 1, 2)   // prev, play/pause, next
+                    .setShowActionsInCompactView(0, 1, 2)
             )
         }
 
@@ -324,7 +310,7 @@ class SendspinService : Service() {
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(CHANNEL_ID, "Sendspin Playback", NotificationManager.IMPORTANCE_LOW).apply {
-                description = "Keeps the player connected and shows the current track"
+                description = "Shows the current track while music is playing"
                 setShowBadge(false)
                 setSound(null, null)
             }
@@ -332,22 +318,11 @@ class SendspinService : Service() {
         }
     }
 
-    /**
-     * Swiping the app out of Recents is not a request to go offline.
-     *
-     * This player exists to be *reachable* — Music Assistant pushes announcements
-     * and TTS to it whether or not music is playing, and it can only receive them
-     * while this service holds the connection open. Tearing down when idle meant
-     * the one state announcements matter most in was the one that killed the
-     * socket. The service now ends only on the notification's Stop action (or
-     * `Playback.disconnect()`, which is the same user intent from the UI).
-     */
     override fun onTaskRemoved(rootIntent: Intent?) {
         super.onTaskRemoved(rootIntent)
     }
 
     override fun onDestroy() {
-        releaseLocks()
         observeJob?.cancel()
         artworkJob?.cancel()
         mediaSession?.isActive = false

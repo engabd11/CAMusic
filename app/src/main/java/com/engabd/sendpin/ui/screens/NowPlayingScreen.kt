@@ -87,6 +87,14 @@ fun NowPlayingScreen(
             // rather than swapping the whole screen for an empty state.
             MeltBackdrop(st.artworkUrl, intensity = if (st.idle) 0.5f else 1f)
 
+            // Source badge at the top-right corner — MA or Navidrome.
+            if (st.source.isNotBlank()) {
+                SourceBadge(
+                    source = st.source,
+                    modifier = Modifier.align(Alignment.TopEnd).padding(top = 48.dp, end = 16.dp),
+                )
+            }
+
             Column(
                 Modifier
                     .fillMaxSize()
@@ -129,9 +137,8 @@ fun NowPlayingScreen(
 
                 Spacer(Modifier.height(16.dp))
 
-                // Secondary actions, with the quality badge sitting at the centre of them.
-                // Everything here is track- or player-scoped; the panels below carry
-                // the detail so this row stays one line.
+                // Secondary actions — track-scoped chips only; the quality badge
+                // has moved to the transport row (between play and the seek bar).
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(9.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -139,7 +146,6 @@ fun NowPlayingScreen(
                     IconChip(Icons.Default.Lyrics, "Lyrics", active = showLyrics) {
                         showLyrics = !showLyrics
                     }
-                    QualityChip(st.quality)
                     IconChip(Icons.AutoMirrored.Filled.QueueMusic, "Queue", active = panel == Panel.QUEUE) {
                         panel = if (panel == Panel.QUEUE) null else Panel.QUEUE
                     }
@@ -208,6 +214,8 @@ fun NowPlayingScreen(
                     TransportIcon(Icons.Default.Shuffle, "Shuffle", 20.dp, st.shuffle) { viewModel.toggleShuffle() }
                     TransportIcon(Icons.Default.SkipPrevious, "Previous", 26.dp) { viewModel.previous() }
                     PlayButton(st.isPlaying) { viewModel.playPause() }
+                    // Quality badge sits between play and next — the centre of attention.
+                    TappableQualityChip(playing = st.quality, source = st.sourceQuality)
                     TransportIcon(Icons.Default.SkipNext, "Next", 26.dp) { viewModel.next() }
                     TransportIcon(
                         if (st.repeatMode == "one") Icons.Default.RepeatOne else Icons.Default.Repeat,
@@ -311,6 +319,117 @@ private fun TopBar(playerName: String, isSelf: Boolean, groupSize: Int, onOpenSp
 private fun QualityChip(q: StreamQuality?) {
     if (q == null) QualityPill("—", lossless = false)
     else QualityPill(q.label, hiRes = q.hiRes, lossless = q.lossless)
+}
+
+/**
+ * The tappable quality badge: shows what's actually playing, and tapping reveals
+ * a popup with both the original source format and the playing (decoded) format.
+ */
+@Composable
+fun TappableQualityChip(playing: StreamQuality?, source: StreamQuality?) {
+    var showDetail by remember { mutableStateOf(false) }
+    val accent = LocalAccent.current
+
+    Box {
+        Box(Modifier.clickable { showDetail = true }) {
+            if (playing == null) QualityPill("—", lossless = false)
+            else QualityPill(playing.label, hiRes = playing.hiRes, lossless = playing.lossless)
+        }
+
+        if (showDetail) {
+            BackHandler { showDetail = false }
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) { showDetail = false }
+            )
+            QualityDetailPopup(
+                playing = playing,
+                source = source,
+                onDismiss = { showDetail = false },
+                modifier = Modifier.align(Alignment.Center),
+            )
+        }
+    }
+}
+
+/** A small popup showing both the original source and the playing format. */
+@Composable
+private fun QualityDetailPopup(
+    playing: StreamQuality?,
+    source: StreamQuality?,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val accent = LocalAccent.current
+    Column(
+        modifier
+            .clip(RoundedCornerShape(16.dp))
+            .background(Ink2)
+            .border(1.dp, Hairline, RoundedCornerShape(16.dp))
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text(
+            "Quality",
+            color = TextFaint, fontFamily = AppFont, fontWeight = FontWeight.Bold,
+            fontSize = 11.sp, letterSpacing = 1.sp,
+        )
+        QualityRow("Playing", playing, accent)
+        QualityRow("Source", source, accent)
+        if (playing != null && source != null && playing.label != source.label) {
+            Text(
+                "Transcoded from ${source.label} to ${playing.label}",
+                color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
+            )
+        }
+    }
+}
+
+@Composable
+private fun QualityRow(label: String, q: StreamQuality?, accent: Color) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Box(Modifier.size(6.dp).clip(CircleShape).background(if (q?.lossless == true) accent else TextMuted))
+        Text(
+            label,
+            color = TextMuted, fontFamily = AppFont, fontWeight = FontWeight.Bold,
+            fontSize = 12.sp, modifier = Modifier.width(50.dp),
+        )
+        Text(
+            q?.label ?: "—",
+            color = TextPrimary, fontFamily = MonoFont, fontWeight = FontWeight.Bold,
+            fontSize = 13.sp,
+        )
+    }
+}
+
+/** A small badge at the corner indicating the source (MA or Navidrome). */
+@Composable
+fun SourceBadge(source: String, modifier: Modifier = Modifier) {
+    val accent = LocalAccent.current
+    val isMa = source == "MA"
+    Row(
+        modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(Glass)
+            .border(1.dp, HairlineSoft, RoundedCornerShape(8.dp))
+            .padding(horizontal = 8.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        Box(
+            Modifier.size(5.dp).clip(CircleShape)
+                .background(if (isMa) accent else Color(0xFF5EC8C0))
+        )
+        Text(
+            source,
+            color = TextSecondary, fontFamily = AppFont, fontWeight = FontWeight.Bold,
+            fontSize = 10.sp,
+        )
+    }
 }
 
 @Composable
