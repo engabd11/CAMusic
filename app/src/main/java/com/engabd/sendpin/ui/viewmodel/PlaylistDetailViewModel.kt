@@ -36,7 +36,7 @@ class PlaylistDetailViewModel(
     private val myPlayerId: String = PlayerIdentity.getPlayerId(app)
     private val maApi = (app as SendpinApp).maApi
     private val maRepo = MaRepository(maApi)
-    private val localPlayer = com.engabd.sendpin.audio.LocalPlayer()
+    private val localPlayer = (app as SendpinApp).localPlayer
 
     private val _playlist = MutableStateFlow<MaItem?>(null)
     val playlist: StateFlow<MaItem?> = _playlist
@@ -146,6 +146,8 @@ class PlaylistDetailViewModel(
     private suspend fun playTrackLocal(track: MaItem) {
         val url = settings.navUrl.first().trim()
         if (url.isBlank()) { _toast.tryEmit("No Navidrome server"); return }
+        // Stop MA before playing locally — both can't own the speaker.
+        runCatching { maRepo.stop(playTarget()) }
         val sc = SubsonicClient(url, settings.navUsername.first(), settings.navPassword.first())
         localPlayer.play(sc.streamUrl(track.itemId), track.name)
         _toast.tryEmit("Playing ${track.name}")
@@ -153,7 +155,8 @@ class PlaylistDetailViewModel(
 
     override fun onCleared() {
         super.onCleared()
-        localPlayer.stop()
+        // The local player is process-scoped and shared — leaving the playlist screen
+        // must not stop the music the user just started from it.
     }
 }
 

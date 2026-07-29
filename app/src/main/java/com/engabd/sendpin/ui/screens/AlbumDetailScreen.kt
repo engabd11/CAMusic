@@ -290,7 +290,7 @@ internal fun TrackRow(
     index: Int,
     accent: Color,
     onPlay: () -> Unit,
-    onFavorite: () -> Unit,
+    onFavorite: (() -> Unit)? = null,
 ) {
     Row(
         Modifier
@@ -339,9 +339,11 @@ internal fun TrackRow(
 
         // Favorite
         if (track.favorite) {
+            val favModifier = if (onFavorite != null) Modifier.size(16.dp).clickable(onClick = onFavorite)
+            else Modifier.size(16.dp)
             Icon(
                 Icons.Default.Favorite, "Favorite",
-                tint = accent, modifier = Modifier.size(16.dp),
+                tint = accent, modifier = favModifier,
             )
         }
     }

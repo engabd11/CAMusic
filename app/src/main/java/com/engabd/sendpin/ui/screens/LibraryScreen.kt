@@ -276,7 +276,7 @@ private fun Browse(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         if (error != null) {
-            item(span = { full() }) { ErrorState(error!!) { viewModel.connect() } }
+            item(span = { full() }) { SearchErrorState(error!!) { viewModel.connect() } }
             return@LazyVerticalGrid
         }
         if (loading) {
@@ -290,7 +290,7 @@ private fun Browse(
             searchSection("Tracks", s.tracks, viewModel, onAlbumClick, onArtistClick, onPlaylistClick)
             searchSection("Playlists", s.playlists, viewModel, onAlbumClick, onArtistClick, onPlaylistClick)
             if (s.artists.isEmpty() && s.albums.isEmpty() && s.tracks.isEmpty() && s.playlists.isEmpty()) {
-                item(span = { full() }) { EmptyState() }
+                item(span = { full() }) { SearchEmptyState() }
             }
             return@LazyVerticalGrid
         }
@@ -341,7 +341,7 @@ private fun Browse(
         }
 
         if (node.items.isEmpty()) {
-            item(span = { full() }) { EmptyState() }
+            item(span = { full() }) { SearchEmptyState() }
             return@LazyVerticalGrid
         }
 
@@ -404,7 +404,7 @@ private fun androidx.compose.foundation.lazy.grid.LazyGridScope.downloadsSection
         items(jobs, span = { full() }, key = { "j_" + it.id }) { job -> DownloadJobRow(job, viewModel) }
     }
     if (items.isEmpty() && jobs.isEmpty()) {
-        item(span = { full() }) { EmptyState("Nothing downloaded", "Downloaded tracks play with the server off.") }
+        item(span = { full() }) { SearchEmptyState("Nothing downloaded", "Downloaded tracks play with the server off.") }
         return
     }
     if (items.isNotEmpty()) {
@@ -683,7 +683,7 @@ private fun SkeletonRow() {
 }
 
 @Composable
-private fun EmptyState(
+private fun SearchEmptyState(
     title: String = "No results",
     body: String = "Try a different search, or check your spelling.",
 ) {
@@ -707,7 +707,7 @@ private fun EmptyState(
 }
 
 @Composable
-private fun ErrorState(message: String, onRetry: () -> Unit) {
+private fun SearchErrorState(message: String, onRetry: () -> Unit) {
     Column(
         Modifier.fillMaxWidth().padding(vertical = 70.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
