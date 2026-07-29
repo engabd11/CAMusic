@@ -48,4 +48,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: lint-results
-          path: app/build/reports/lint-results/
+          # lintDebug writes lint-results-debug.{html,xml} as files, not a directory.
+          path: app/build/reports/lint-results-*
