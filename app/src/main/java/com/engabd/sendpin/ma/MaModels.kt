@@ -34,6 +34,14 @@ data class MaItem(
      * the bytes come from, which is what the source badge is asking about.
      */
     val providerDomains: List<String> = emptyList(),
+    /** Album release year (from album metadata). */
+    val year: Int? = null,
+    /** Genres associated with this item. */
+    val genres: List<String> = emptyList(),
+    /** Track number within an album (for tracks). */
+    val trackNumber: Int? = null,
+    /** Disc number for multi-disc albums (for tracks). */
+    val discNumber: Int? = null,
 ) {
     val browsable get() = mediaType in BROWSABLE
     val playable get() = uri != null && mediaType in PLAYABLE
@@ -202,6 +210,10 @@ object MaParse {
             favorite = o["favorite"]?.jsonPrimitive?.booleanOrNull ?: false,
             audioFormat = audioFormat(o),
             providerDomains = providerDomains(o),
+            year = o["year"]?.jsonPrimitive?.intOrNull,
+            genres = genreList(o),
+            trackNumber = o["track_number"]?.jsonPrimitive?.intOrNull,
+            discNumber = o["disc_number"]?.jsonPrimitive?.intOrNull,
         )
     }
 
@@ -326,6 +338,14 @@ object MaParse {
         val arr = o["artists"] as? JsonArray ?: return null
         val names = arr.mapNotNull { (it as? JsonObject)?.get("name")?.jsonPrimitive?.contentOrNull }
         return names.joinToString(", ").ifBlank { null }
+    }
+
+    /** Genres can arrive as a JSON array of strings, a comma-separated string, or a list of objects. */
+    private fun genreList(o: JsonObject): List<String> = when (val g = o["genres"]) {
+        is JsonArray -> g.mapNotNull { (it as? JsonObject)?.get("name")?.jsonPrimitive?.contentOrNull
+            ?: it.jsonPrimitive.contentOrNull }
+        is JsonPrimitive -> g.contentOrNull?.split(",")?.map { it.trim() }?.filter { it.isNotBlank() } ?: emptyList()
+        else -> emptyList()
     }
 
     /**

@@ -26,17 +26,21 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavGraph.Companion.findStartDestination
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
 import com.engabd.sendpin.ui.design.LocalAccent
 import com.engabd.sendpin.ui.design.LocalPalette
 import com.engabd.sendpin.ui.design.NavTab
 import com.engabd.sendpin.ui.design.SendspinNavBar
 import com.engabd.sendpin.ui.design.rememberAlbumPalette
 import com.engabd.sendpin.ma.LibraryViewModel
+import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
+import com.engabd.sendpin.ui.screens.AlbumDetailScreen
 import com.engabd.sendpin.ui.screens.LibraryScreen
 import com.engabd.sendpin.ui.screens.LightSyncScreen
 import com.engabd.sendpin.ui.screens.MiniPlayerBar
@@ -175,7 +179,37 @@ fun App() {
                             )
                         }
                     }
-                    composable("library") { LibraryScreen(libraryVm) }
+                    composable("library") {
+                        LibraryScreen(
+                            viewModel = libraryVm,
+                            onAlbumClick = { album ->
+                                val encodedName = android.net.Uri.encode(album.name)
+                                val encodedArt = album.image?.let { android.net.Uri.encode(it) } ?: ""
+                                navController.navigate("album/${android.net.Uri.encode(album.itemId)}/${android.net.Uri.encode(album.provider)}?name=$encodedName&art=$encodedArt")
+                            },
+                        )
+                    }
+                    composable(
+                        route = "album/{itemId}/{provider}?name={name}&art={art}",
+                        arguments = listOf(
+                            navArgument("itemId") { type = NavType.StringType },
+                            navArgument("provider") { type = NavType.StringType },
+                            navArgument("name") { type = NavType.StringType; defaultValue = "" },
+                            navArgument("art") { type = NavType.StringType; defaultValue = "" },
+                        ),
+                    ) { backStackEntry ->
+                        val aItemId = backStackEntry.arguments?.getString("itemId") ?: ""
+                        val aProvider = backStackEntry.arguments?.getString("provider") ?: ""
+                        val aName = backStackEntry.arguments?.getString("name") ?: ""
+                        val aArt = backStackEntry.arguments?.getString("art")?.takeIf { it.isNotBlank() }
+                        AlbumDetailScreen(
+                            itemId = aItemId,
+                            provider = aProvider,
+                            name = aName,
+                            artUrl = aArt,
+                            onBack = { navController.popBackStack() },
+                        )
+                    }
                     composable("speakers") { SpeakersScreen(onBack = { navController.popBackStack() }) }
                     composable("light_sync") { LightSyncScreen(onBack = { navController.popBackStack() }) }
                     composable("settings") { SettingsScreen(viewModel = playerVm) }
