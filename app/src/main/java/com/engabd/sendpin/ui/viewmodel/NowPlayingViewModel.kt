@@ -317,12 +317,13 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                 if (api.state.value == MaApiClient.State.CONNECTED) refresh()
             }
         }
-        // Refresh promptly on MA player/queue events.
+        // Refresh promptly on MA player/queue events — but debounce bursts so
+        // rapid skips (which emit multiple events) only trigger one refresh.
         viewModelScope.launch {
-            api.events.collect {
-                val type = it["event"]?.toString().orEmpty()
-                if ("player" in type || "queue" in type) refresh()
-            }
+            api.events
+                .filter { it["event"]?.toString()?.let { e -> "player" in e || "queue" in e } ?: false }
+                .debounce(150)   // coalesce event bursts from rapid skips/seek
+                .collect { refresh() }
         }
     }
 
@@ -338,8 +339,42 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     fun playPause() = act {
         if (state.value.isPlaying) repo.pause(targetId()) else repo.play(targetId())
     }
-    fun next() = act { repo.next(targetId()) }
-    fun previous() = act { repo.previous(targetId()) }
+
+    // In-flight guards prevent button-mash spam: rapid taps fire only one MA
+    // command, the rest are dropped. A short cooldown after the command lands
+    // prevents overlapping refresh coroutines.
+    private val nextInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val prevInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    fun next() {
+        if (!nextInFlight.compareAndSet(false, true)) return
+        // Optimistic: reset position immediately so the UI doesn't show the old
+        // track's position while waiting for the server to confirm the skip.
+        _positionMs.value = 0L
+        posBaseTime = 0L
+        posBaseTimestamp = System.currentTimeMillis()
+        viewModelScope.launch {
+            try { repo.next(targetId()) } catch (_: Exception) {}
+            finally {
+                delay(250)   // small cooldown for server to settle
+                nextInFlight.set(false)
+            }
+        }
+    }
+
+    fun previous() {
+        if (!prevInFlight.compareAndSet(false, true)) return
+        _positionMs.value = 0L
+        posBaseTime = 0L
+        posBaseTimestamp = System.currentTimeMillis()
+        viewModelScope.launch {
+            try { repo.previous(targetId()) } catch (_: Exception) {}
+            finally {
+                delay(400)   // 400ms cooldown — matches massdroid_native's prev cooldown
+                prevInFlight.set(false)
+            }
+        }
+    }
 
     fun toggleShuffle() = act { repo.setShuffle(streamQueueId(), !state.value.shuffle) }
 
