@@ -353,23 +353,28 @@ fun QualityPill(
     modifier: Modifier = Modifier,
     hiRes: Boolean = false,
     lossless: Boolean = true,
+    compact: Boolean = false,
 ) {
     val accent = LocalAccent.current
-    val shape = RoundedCornerShape(11.dp)
+    val shape = if (compact) RoundedCornerShape(50) else RoundedCornerShape(11.dp)
     val tint = if (lossless) accent else TextMuted
+    val hPad = if (compact) 8.dp else 13.dp
+    val vPad = if (compact) 5.dp else 9.dp
+    val dotSize = if (compact) 4.dp else 6.dp
+    val fontSize = if (compact) 9.sp else 11.sp
     Row(
         modifier
             .then(if (hiRes) Modifier.shadow(14.dp, shape, ambientColor = accent, spotColor = accent) else Modifier)
             .clip(shape)
             .background(if (lossless) tint.a(if (hiRes) 0.16f else 0.12f) else Glass)
             .border(1.dp, tint.a(if (hiRes) 0.55f else 0.35f), shape)
-            .padding(horizontal = 13.dp, vertical = 9.dp),
+            .padding(horizontal = hPad, vertical = vPad),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(7.dp),
+        horizontalArrangement = Arrangement.spacedBy(if (compact) 4.dp else 7.dp),
     ) {
         Box(
             Modifier
-                .size(6.dp)
+                .size(dotSize)
                 .then(if (hiRes) Modifier.shadow(8.dp, CircleShape, ambientColor = tint, spotColor = tint) else Modifier)
                 .clip(CircleShape)
                 .background(tint)
@@ -377,7 +382,7 @@ fun QualityPill(
         Text(
             text,
             color = if (lossless) Color.White.a(0.92f) else TextMuted,
-            fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 11.sp, maxLines = 1,
+            fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = fontSize, maxLines = 1,
         )
     }
 }

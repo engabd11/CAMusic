@@ -147,14 +147,14 @@ fun SettingsScreen(
                             )
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 if (connected) {
-                                    OledButton("Disable", modifier = Modifier.weight(1f), accent = accent, outline = true) { viewModel.disablePlayer() }
+                                    OledButton("Disable", modifier = Modifier.weight(1f), accent = accent) { viewModel.disablePlayer() }
                                 } else {
                                     OledButton("Enable player", modifier = Modifier.weight(1f), accent = accent) {
                                         scope.launch { settings.setPlayerName(playerName.trim()); viewModel.enablePlayer() }
                                     }
                                 }
                             }
-                            OledButton("Log out", accent = accent, outline = true) { viewModel.logout() }
+                            OledButton("Log out", accent = accent) { viewModel.logout() }
                         }
                     }
                 }

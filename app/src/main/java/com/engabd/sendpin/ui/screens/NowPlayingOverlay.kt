@@ -250,14 +250,14 @@ fun NowPlayingOverlay(
                 Row(
                     Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
+                    verticalAlignment = Alignment.Bottom,
                 ) {
                     TransportIcon(Icons.Default.Shuffle, "Shuffle", 20.dp, st.shuffle) { viewModel.toggleShuffle() }
                     TransportIcon(Icons.Default.SkipPrevious, "Previous", 26.dp) { viewModel.previous() }
                     // Quality badge floats above the play button.
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
                         TappableQualityChip(playing = st.quality, source = st.sourceQuality)
                         PlayButton(st.isPlaying) { viewModel.playPause() }
