@@ -16,8 +16,10 @@ import com.engabd.sendpin.ma.MaQueue
 import com.engabd.sendpin.ma.MaQueueItem
 import com.engabd.sendpin.ma.MaRepository
 import com.engabd.sendpin.ma.MaSimilarTrack
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
@@ -94,6 +96,75 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
      */
     private val _lastTrack = MutableStateFlow<MaNowPlaying?>(null)
 
+    // ── Server-anchored position engine ──────────────────────────────────────
+    // Instead of polling every 2s and snapping the bar to the server value, the
+    // position is driven by a local 500ms ticker that forward-projects from the
+    // last server anchor (positionBaseTime @ positionBaseTimestamp). The server
+    // only needs to nudge the anchor periodically — the bar is always smooth.
+    // Mirrors the approach used by massdroid_native + MA's own web UI.
+    @Volatile private var posBaseTime = 0L           // server-reported elapsed_ms
+    @Volatile private var posBaseTimestamp = 0L       // local wall-clock when captured
+    @Volatile private var posIsPlaying = false
+    @Volatile private var posDuration = 0L
+    @Volatile private var posSpeed = 1f               // playback speed (1.0 = normal)
+    @Volatile private var lastTrackId: String? = null  // detect track changes for immediate reset
+
+    private val _positionMs = MutableStateFlow(0L)
+    val positionMs: StateFlow<Long> = _positionMs.asStateFlow()
+
+    private var tickerJob: Job? = null
+
+    private fun startPositionTicker() {
+        tickerJob?.cancel()
+        tickerJob = viewModelScope.launch {
+            while (isActive) {
+                delay(500)
+                _positionMs.value = interpolatedPosition()
+            }
+        }
+    }
+
+    private fun stopPositionTicker() {
+        tickerJob?.cancel(); tickerJob = null
+    }
+
+    private fun interpolatedPosition(): Long {
+        if (!posIsPlaying) return posBaseTime.coerceIn(0L, posDuration)
+        val deltaMs = ((System.currentTimeMillis() - posBaseTimestamp) * posSpeed).toLong()
+        return (posBaseTime + deltaMs).coerceIn(0L, posDuration)
+    }
+
+    /**
+     * Re-anchor the position engine from a server poll or event.
+     * If the track has changed, position is reset to 0 immediately — before
+     * the new queue state even publishes — so the UI never flashes a stale
+     * "9:54 / 4:11" frame.
+     */
+    private fun reanchorPosition(
+        serverElapsedMs: Long,
+        isPlaying: Boolean,
+        duration: Long,
+        speed: Float,
+        trackId: String?,
+    ) {
+        val trackChanged = trackId != null && trackId != lastTrackId
+        if (trackChanged) {
+            posBaseTime = 0L
+            _positionMs.value = 0L
+            lastTrackId = trackId
+        } else {
+            posBaseTime = serverElapsedMs
+        }
+        posBaseTimestamp = System.currentTimeMillis()
+        val wasPlaying = posIsPlaying
+        posIsPlaying = isPlaying
+        posDuration = duration
+        posSpeed = speed
+        if (isPlaying && (trackChanged || !wasPlaying)) startPositionTicker()
+        else if (!isPlaying) stopPositionTicker()
+        if (!trackChanged) _positionMs.value = interpolatedPosition()
+    }
+
     private fun targetId() = _target.value.ifBlank { myPlayerId }
 
     val state: StateFlow<State> = combine(_players, _target, _queues, localQuality, _lastTrack) { players, target, queues, local, last ->
@@ -149,6 +220,30 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             canPower = p?.let { "power" in it.supportedFeatures } ?: false,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, State())
+
+    /** Track-id for [reanchorPosition] — resolved from the queue's current item. */
+    private fun currentTrackId(): String? {
+        val id = targetId()
+        val streamId = _players.value.firstOrNull { it.playerId == id }?.syncedTo ?: id
+        val q = _queues.value.firstOrNull { it.queueId == streamId }
+        return q?.currentQueueItemId ?: q?.currentItem?.uri
+    }
+
+    // Drive the position engine from the combined state. Each poll/event that
+    // changes players/queues flows through [state], which re-anchors the engine.
+    init {
+        viewModelScope.launch {
+            state.collect { st ->
+                reanchorPosition(
+                    serverElapsedMs = st.positionMs,
+                    isPlaying = st.isPlaying,
+                    duration = st.durationMs,
+                    speed = st.playbackSpeed,
+                    trackId = if (st.hasTrack) currentTrackId() else lastTrackId,
+                )
+            }
+        }
+    }
 
     /**
      * The library item behind what's playing, taken from the queue's `current_item`.
@@ -213,10 +308,12 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         viewModelScope.launch { api.state.collect { if (it == MaApiClient.State.CONNECTED) refresh() } }
-        // Poll for state (and interpolate position between polls in the UI if needed).
+        // Poll for metadata (track info, volume, queue state). Position is driven
+        // by the server-anchored ticker, so this can be relaxed — 5s is enough for
+        // metadata + as a fallback anchor for the position engine.
         viewModelScope.launch {
             while (true) {
-                delay(2_000)
+                delay(5_000)
                 if (api.state.value == MaApiClient.State.CONNECTED) refresh()
             }
         }
@@ -483,7 +580,10 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: Exception) {
                 if (toastOnError != null) _toast.tryEmit(e.message ?: toastOnError)
             }
-            delay(300); refresh()
+            // No delay(300) — the MA WebSocket pushes player/queue events which
+            // trigger refresh() and re-anchor the position engine. The 300ms wait
+            // was adding visible latency to every transport action.
+            refresh()
         }
     }
 

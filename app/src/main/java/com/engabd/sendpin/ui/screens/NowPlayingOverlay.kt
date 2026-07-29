@@ -83,15 +83,13 @@ fun NowPlayingOverlay(
     val palette = LocalPalette.current
     val accent = palette.accent
 
-    // Smoothly interpolate the position between 2s polls. `scrubbing` freezes the
-    // interpolation so a poll landing mid-drag can't fight the finger.
-    var pos by remember { mutableStateOf(0L) }
+    // Position is driven by the ViewModel's server-anchored ticker — no local
+    // interpolation loop needed. `scrubbing` freezes the bar so a poll landing
+    // mid-drag can't fight the finger.
     var scrubbing by remember { mutableStateOf(false) }
-    LaunchedEffect(st.positionMs, st.isPlaying, st.title, scrubbing) {
-        if (scrubbing) return@LaunchedEffect
-        pos = st.positionMs
-        while (st.isPlaying) { kotlinx.coroutines.delay(250); pos += 250 }
-    }
+    var scrubPos by remember { mutableStateOf(0L) }
+    val livePos by viewModel.positionMs.collectAsState()
+    val pos = if (scrubbing) scrubPos else livePos
     val dur = st.durationMs
     val progress = if (dur > 0) (pos.toFloat() / dur).coerceIn(0f, 1f) else 0f
 
@@ -235,8 +233,8 @@ fun NowPlayingOverlay(
                 // Progress bar.
                 HSlider(
                     progress,
-                    onChange = { f -> scrubbing = true; pos = (f * dur).toLong() },
-                    onCommit = { f -> pos = (f * dur).toLong(); scrubbing = false; viewModel.seekTo(f) },
+                    onChange = { f -> scrubbing = true; scrubPos = (f * dur).toLong() },
+                    onCommit = { f -> scrubPos = (f * dur).toLong(); scrubbing = false; viewModel.seekTo(f) },
                     label = { f -> fmtTime((f * dur).toLong()) },
                 )
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
