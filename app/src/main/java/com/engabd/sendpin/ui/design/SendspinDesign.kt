@@ -131,6 +131,11 @@ fun BoxScope.CastGlow(color: Color, shape: Shape, blurRadius: Dp, alpha: Float, 
  * The cover itself. Non-square art is letterboxed against a blurred, saturated
  * copy of itself rather than dead black, so the tile always reads as one object,
  * and a diagonal gloss sells it as glass under a light.
+ *
+ * Sized to the largest square that fits the slot it is given, measuring *both*
+ * axes. `aspectRatio()` alone only satisfies one of them: given a weighted row in
+ * a Column it takes the full width and returns a height to match, which silently
+ * overflows the slot and paints over whatever sits above it.
  */
 @Composable
 fun AlbumArt(
@@ -143,39 +148,43 @@ fun AlbumArt(
 ) {
     val shape = RoundedCornerShape(radius)
     val art = rememberArtRequest(url)
-    Box(modifier.aspectRatio(1f)) {
-        if (art != null) CastGlow(glow, shape, blurRadius = 40.dp, alpha = glowAlpha, offsetY = 22.dp)
-        Box(
-            Modifier
-                .matchParentSize()
-                .shadow(20.dp, shape)
-                .clip(shape)
-                .background(Ink2)
-                .border(1.dp, Hairline, shape),
-            contentAlignment = Alignment.Center,
-        ) {
-            if (art != null) {
-                AsyncImage(
-                    model = art, contentDescription = null, contentScale = ContentScale.Crop,
-                    colorFilter = saturate(1.4f),
-                    modifier = Modifier.matchParentSize().scale(1.2f).blur(28.dp).alpha(0.55f),
-                )
-                AsyncImage(
-                    model = art, contentDescription = "Album art", contentScale = ContentScale.Fit,
-                    modifier = Modifier.matchParentSize(),
-                )
-                Box(
-                    Modifier.matchParentSize().background(
-                        Brush.linearGradient(
-                            0f to Color.White.a(0.12f),
-                            0.44f to Color.Transparent,
-                            start = Offset.Zero,
-                            end = Offset(Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY),
+    BoxWithConstraints(modifier, contentAlignment = Alignment.Center) {
+        // An unbounded height (inside a scroller) leaves width as the only limit.
+        val side = if (maxHeight != Dp.Infinity) minOf(maxWidth, maxHeight) else maxWidth
+        Box(Modifier.size(side)) {
+            if (art != null) CastGlow(glow, shape, blurRadius = 40.dp, alpha = glowAlpha, offsetY = 22.dp)
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .shadow(20.dp, shape)
+                    .clip(shape)
+                    .background(Ink2)
+                    .border(1.dp, Hairline, shape),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (art != null) {
+                    AsyncImage(
+                        model = art, contentDescription = null, contentScale = ContentScale.Crop,
+                        colorFilter = saturate(1.4f),
+                        modifier = Modifier.matchParentSize().scale(1.2f).blur(28.dp).alpha(0.55f),
+                    )
+                    AsyncImage(
+                        model = art, contentDescription = "Album art", contentScale = ContentScale.Fit,
+                        modifier = Modifier.matchParentSize(),
+                    )
+                    Box(
+                        Modifier.matchParentSize().background(
+                            Brush.linearGradient(
+                                0f to Color.White.a(0.12f),
+                                0.44f to Color.Transparent,
+                                start = Offset.Zero,
+                                end = Offset(Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY),
+                            )
                         )
                     )
-                )
-            } else if (placeholder != null) {
-                Icon(placeholder, null, tint = TextFaint, modifier = Modifier.fillMaxSize(0.28f))
+                } else if (placeholder != null) {
+                    Icon(placeholder, null, tint = TextFaint, modifier = Modifier.fillMaxSize(0.28f))
+                }
             }
         }
     }
@@ -455,6 +464,15 @@ fun GradientAvatar(letter: String, index: Int, modifier: Modifier = Modifier, si
  * Horizontal slider (tap or drag). [value] and [onChange] are 0f..1f. The filled
  * track glows in the accent and the knob stays white, so the scrubber reads
  * against any album colour.
+ *
+ * [onChange] fires continuously and should only move local UI state. [onCommit],
+ * if given, fires once on release and is where a network seek belongs — sending
+ * one per touch-move made the scrubber fight the server's replies and snap
+ * backwards. While a drag is in progress the knob follows the finger and ignores
+ * [value] entirely, so a late poll can't yank it out from under the user.
+ *
+ * [label] turns on the magnifier: a bubble above the knob showing where a release
+ * would land, e.g. the timestamp being scrubbed to.
  */
 @Composable
 fun HSlider(
@@ -464,21 +482,45 @@ fun HSlider(
     trackHeight: Dp = 4.dp,
     knob: Dp = 13.dp,
     accented: Boolean = true,
+    onCommit: ((Float) -> Unit)? = null,
+    label: ((Float) -> String)? = null,
 ) {
     val accent = LocalAccent.current
     var width by remember { mutableStateOf(1) }
-    val v = value.coerceIn(0f, 1f)
+    var dragging by remember { mutableStateOf(false) }
+    var dragValue by remember { mutableFloatStateOf(0f) }
+
+    val v = (if (dragging) dragValue else value).coerceIn(0f, 1f)
+
+    fun commit(f: Float) {
+        val c = f.coerceIn(0f, 1f)
+        if (onCommit != null) onCommit(c) else onChange(c)
+    }
+
     Box(
         modifier
             .fillMaxWidth()
             .height(18.dp)
             .onSizeChanged { width = if (it.width > 0) it.width else 1 }
             .pointerInput(Unit) {
-                detectTapGestures { o -> onChange((o.x / width).coerceIn(0f, 1f)) }
+                detectTapGestures { o ->
+                    val f = (o.x / width).coerceIn(0f, 1f)
+                    onChange(f)
+                    commit(f)
+                }
             }
             .pointerInput(Unit) {
-                detectHorizontalDragGestures { change, _ ->
-                    onChange((change.position.x / width).coerceIn(0f, 1f))
+                detectHorizontalDragGestures(
+                    onDragStart = { o ->
+                        dragging = true
+                        dragValue = (o.x / width).coerceIn(0f, 1f)
+                        onChange(dragValue)
+                    },
+                    onDragEnd = { dragging = false; commit(dragValue) },
+                    onDragCancel = { dragging = false },
+                ) { change, _ ->
+                    dragValue = (change.position.x / width).coerceIn(0f, 1f)
+                    onChange(dragValue)
                 }
             },
         contentAlignment = Alignment.CenterStart,
@@ -497,7 +539,35 @@ fun HSlider(
             Modifier
                 .offset { IntOffset((v * width - knob.toPx() / 2f).roundToInt(), 0) }
                 .then(if (accented) Modifier.shadow(10.dp, CircleShape, ambientColor = accent, spotColor = accent) else Modifier)
-                .size(knob).clip(CircleShape).background(Color.White)
+                .size(if (dragging) knob * 1.35f else knob).clip(CircleShape).background(Color.White)
         )
+
+        // Magnifier — rides above the knob while dragging, clamped so it stays on
+        // screen at both ends of the track.
+        if (dragging && label != null) {
+            val text = label(v)
+            Box(
+                Modifier
+                    .offset {
+                        val half = BubbleWidth.toPx() / 2f
+                        val x = (v * width - half).coerceIn(0f, (width - BubbleWidth.toPx()).coerceAtLeast(0f))
+                        IntOffset(x.roundToInt(), -(BubbleLift.toPx()).roundToInt())
+                    }
+                    .width(BubbleWidth)
+                    .clip(RoundedCornerShape(9.dp))
+                    .background(Ink3)
+                    .border(1.dp, accent.a(0.55f), RoundedCornerShape(9.dp))
+                    .padding(vertical = 5.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text, color = TextPrimary, fontFamily = MonoFont,
+                    fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1,
+                )
+            }
+        }
     }
 }
+
+private val BubbleWidth = 62.dp
+private val BubbleLift = 34.dp

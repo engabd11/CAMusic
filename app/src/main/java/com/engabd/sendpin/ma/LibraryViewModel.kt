@@ -75,7 +75,18 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private val _node = MutableStateFlow(Node("Library", emptyList())); val node: StateFlow<Node> = _node
     private val _loading = MutableStateFlow(false); val loading: StateFlow<Boolean> = _loading
     private val _error = MutableStateFlow<String?>(null); val error: StateFlow<String?> = _error
-    private val _search = MutableStateFlow<MaSearchResults?>(null); val search: StateFlow<MaSearchResults?> = _search
+    private val _search = MutableStateFlow<MaSearchResults?>(null)
+    /**
+     * Results are kept while the user drills into one of them, so [searchOpen] —
+     * not the results themselves — decides whether the list is on screen.
+     */
+    private val _searchOpen = MutableStateFlow(false); val searchOpen: StateFlow<Boolean> = _searchOpen
+    val search: StateFlow<MaSearchResults?> = _search
+    /** Browse depth the current search was launched from; -1 when not searching. */
+    private var searchDepth = -1
+    /** The text in the search box, held here so a tab switch doesn't wipe it. */
+    private val _query = MutableStateFlow(""); val query: StateFlow<String> = _query
+    fun setQuery(v: String) { _query.value = v }
     private val _recent = MutableStateFlow<List<MaItem>>(emptyList()); val recent: StateFlow<List<MaItem>> = _recent
     private val _recentlyAdded = MutableStateFlow<List<MaItem>>(emptyList()); val recentlyAdded: StateFlow<List<MaItem>> = _recentlyAdded
     private val _recommendations = MutableStateFlow<List<MaItem>>(emptyList()); val recommendations: StateFlow<List<MaItem>> = _recommendations
@@ -158,14 +169,26 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         when {
             item.provider == CATEGORY -> openCategory(item.itemId, item.name)
             item.provider == DOWNLOAD -> item.uri?.let { localPlayer.play(it, item.name); _toast.tryEmit("Playing ${item.name}") }
-            item.browsable -> pushNode(item.name) { childrenOf(item) }
+            // Opening a result hides the result list but keeps it in memory, so
+            // Back returns to the same matches instead of an empty search box.
+            item.browsable -> { _searchOpen.value = false; pushNode(item.name) { childrenOf(item) } }
             item.playable -> play(item)
         }
     }
 
+    /**
+     * Back unwinds in the order the user built it: browse stack first, then back
+     * to the search results that led here, then out of search altogether.
+     */
     fun back(): Boolean {
-        if (_search.value != null) { _search.value = null; return true }
-        if (stack.isNotEmpty()) { _node.value = stack.removeLast(); _depth.value = stack.size; return true }
+        if (stack.isNotEmpty()) {
+            _node.value = stack.removeLast()
+            _depth.value = stack.size
+            // Returning to the depth the search was launched from puts the results back.
+            if (_search.value != null && stack.size == searchDepth) _searchOpen.value = true
+            return true
+        }
+        if (_search.value != null) { clearSearch(); return true }
         return false
     }
 
@@ -217,17 +240,26 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     fun dismissDownload(id: String) = downloadManager.dismissJob(id)
 
     fun doSearch(query: String) {
-        if (query.isBlank()) { _search.value = null; return }
+        if (query.isBlank()) { clearSearch(); return }
+        searchDepth = stack.size
+        _searchOpen.value = true
         viewModelScope.launch {
             _loading.value = true; _error.value = null
             try {
-                _search.value = if (_backend.value == Backend.MA) maRepo.search(query) else subsonic?.search(query)
+                val r = if (_backend.value == Backend.MA) maRepo.search(query) else subsonic?.search(query)
+                r?.let { rememberFavorites(it.artists + it.albums + it.tracks + it.playlists) }
+                _search.value = r
             } catch (e: Exception) { _error.value = e.message }
             _loading.value = false
         }
     }
 
-    fun clearSearch() { _search.value = null }
+    fun clearSearch() {
+        _search.value = null
+        _searchOpen.value = false
+        _query.value = ""
+        searchDepth = -1
+    }
 
     // --- internals --------------------------------------------------------
 

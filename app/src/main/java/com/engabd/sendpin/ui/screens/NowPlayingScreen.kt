@@ -63,11 +63,14 @@ fun NowPlayingScreen(
     val palette = rememberAlbumPalette(st.artworkUrl)
     val accent = palette.accent
 
-    // Smoothly interpolate the position between 2s polls.
+    // Smoothly interpolate the position between 2s polls. `scrubbing` freezes the
+    // interpolation so a poll landing mid-drag can't fight the finger.
     var pos by remember { mutableStateOf(0L) }
-    LaunchedEffect(st.positionMs, st.isPlaying, st.title) {
+    var scrubbing by remember { mutableStateOf(false) }
+    LaunchedEffect(st.positionMs, st.isPlaying, st.title, scrubbing) {
+        if (scrubbing) return@LaunchedEffect
         pos = st.positionMs
-        while (st.isPlaying) { kotlinx.coroutines.delay(500); pos += 500 }
+        while (st.isPlaying) { kotlinx.coroutines.delay(250); pos += 250 }
     }
     val dur = st.durationMs
     val progress = if (dur > 0) (pos.toFloat() / dur).coerceIn(0f, 1f) else 0f
@@ -174,7 +177,12 @@ fun NowPlayingScreen(
 
                 Spacer(Modifier.height(20.dp))
 
-                HSlider(progress, { f -> pos = (f * dur).toLong(); viewModel.seekTo(f) })
+                HSlider(
+                    progress,
+                    onChange = { f -> scrubbing = true; pos = (f * dur).toLong() },
+                    onCommit = { f -> pos = (f * dur).toLong(); scrubbing = false; viewModel.seekTo(f) },
+                    label = { f -> fmtTime((f * dur).toLong()) },
+                )
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     TimeText(fmtTime(pos))
                     TimeText(if (dur > 0) fmtTime(dur) else "--:--")

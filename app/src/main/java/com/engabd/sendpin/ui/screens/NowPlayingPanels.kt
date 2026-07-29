@@ -3,6 +3,7 @@ package com.engabd.sendpin.ui.screens
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -69,6 +70,12 @@ fun BoxScope.NowPlayingSheet(
             .align(Alignment.BottomCenter)
             .fillMaxWidth()
             .fillMaxHeight(0.78f)
+            // Swallow taps so the dismiss scrim behind the sheet only ever sees
+            // taps that actually landed outside it.
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+            ) { }
             .clip(RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp))
             .background(Ink2)
             .border(1.dp, Hairline, RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp)),

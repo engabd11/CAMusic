@@ -272,16 +272,47 @@ object MaParse {
         return names.joinToString(", ").ifBlank { null }
     }
 
-    private fun imageUrl(o: JsonObject, serverUrl: String?): String? {
-        val images = ((o["metadata"] as? JsonObject)?.get("images") as? JsonArray)
-            ?: (o["images"] as? JsonArray) ?: return null
-        val first = images.firstOrNull() as? JsonObject ?: return null
-        val path = first["path"]?.jsonPrimitive?.contentOrNull ?: return null
-        if (path.startsWith("http", ignoreCase = true)) return path
-        val base = serverUrl?.trimEnd('/') ?: return null
-        val provider = first["provider"]?.jsonPrimitive?.contentOrNull ?: "builtin"
-        val enc = URLEncoder.encode(path, "UTF-8")
-        return "$base/imageproxy?path=$enc&provider=$provider"
+    /**
+     * Resolve a media item's artwork.
+     *
+     * The server sends images in more than one shape and only the first was being
+     * handled, which is why most of the library came back blank:
+     *  - full items (Album/Artist/Track) carry `metadata.images[]`, but that field
+     *    is nullable and empty until a metadata scan has run;
+     *  - an `ItemMapping` — what search results and nested artist/album refs are —
+     *    carries a *single* `image` object instead, with no `metadata` at all;
+     *  - a track usually has no art of its own and inherits its album's.
+     *
+     * `remotely_accessible` marks a path that is already a public URL; everything
+     * else has to go through the server's `/imageproxy`.
+     */
+    private fun imageUrl(o: JsonObject, serverUrl: String?): String? =
+        imageFrom(o, serverUrl)
+            ?: imageFrom(o["album"] as? JsonObject, serverUrl)
+            ?: (o["artists"] as? JsonArray)?.firstNotNullOfOrNull {
+                imageFrom(it as? JsonObject, serverUrl)
+            }
+
+    /** Artwork carried directly by [o], ignoring anything it merely references. */
+    private fun imageFrom(o: JsonObject?, serverUrl: String?): String? {
+        if (o == null) return null
+        val candidates: List<JsonObject> = buildList {
+            ((o["metadata"] as? JsonObject)?.get("images") as? JsonArray)
+                ?.forEach { (it as? JsonObject)?.let(::add) }
+            (o["images"] as? JsonArray)?.forEach { (it as? JsonObject)?.let(::add) }
+            (o["image"] as? JsonObject)?.let(::add)
+        }
+        if (candidates.isEmpty()) return null
+        // Prefer a square thumb; the rest (fanart, banner, logo) crop badly in a tile.
+        val img = candidates.firstOrNull { it["type"]?.jsonPrimitive?.contentOrNull == "thumb" }
+            ?: candidates.first()
+        val path = img["path"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() } ?: return null
+        val remote = img["remotely_accessible"]?.jsonPrimitive?.booleanOrNull ?: false
+        if (remote || path.startsWith("http", ignoreCase = true)) return path
+        val base = serverUrl?.trimEnd('/')?.takeIf { it.isNotBlank() } ?: return null
+        val provider = img["provider"]?.jsonPrimitive?.contentOrNull ?: "builtin"
+        return "$base/imageproxy?path=${URLEncoder.encode(path, "UTF-8")}" +
+            "&provider=${URLEncoder.encode(provider, "UTF-8")}"
     }
 
     // --- queue items --------------------------------------------------------

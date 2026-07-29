@@ -70,20 +70,24 @@ fun LibraryScreen(viewModel: LibraryViewModel = viewModel()) {
     val node by viewModel.node.collectAsState()
     val depth by viewModel.depth.collectAsState()
     val search by viewModel.search.collectAsState()
+    val searchOpen by viewModel.searchOpen.collectAsState()
+    val query by viewModel.query.collectAsState()
     val palette = LocalPalette.current
     val snackbar = remember { SnackbarHostState() }
 
     LaunchedEffect(Unit) { viewModel.toast.collect { snackbar.showSnackbar(it) } }
-    BackHandler(enabled = depth > 0 || search != null) { viewModel.back() }
+    BackHandler(enabled = depth > 0 || searchOpen) { viewModel.back() }
 
     Box(Modifier.fillMaxSize().background(Ink)) {
         Bloom(palette.swatch(0), 520.dp, (-120).dp, (-260).dp, 0.30f)
 
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars)) {
             Header(
-                title = if (depth > 0 && search == null) node.title else "Library",
-                showBack = depth > 0 || search != null,
+                title = if (depth > 0 && !searchOpen) node.title else "Library",
+                showBack = depth > 0 || searchOpen,
                 backend = backend,
+                query = query,
+                onQuery = viewModel::setQuery,
                 onBack = { viewModel.back() },
                 onBackend = viewModel::setBackend,
                 onSearch = viewModel::doSearch,
@@ -115,6 +119,8 @@ private fun Header(
     title: String,
     showBack: Boolean,
     backend: Backend,
+    query: String,
+    onQuery: (String) -> Unit,
     onBack: () -> Unit,
     onBackend: (Backend) -> Unit,
     onSearch: (String) -> Unit,
@@ -140,13 +146,17 @@ private fun Header(
             selectedIndex = if (backend == Backend.SUBSONIC) 1 else 0,
         ) { onBackend(if (it == 1) Backend.SUBSONIC else Backend.MA) }
         Spacer(Modifier.height(12.dp))
-        SearchField(onSearch, onClearSearch)
+        SearchField(query, onQuery, onSearch, onClearSearch)
     }
 }
 
 @Composable
-private fun SearchField(onSearch: (String) -> Unit, onClear: () -> Unit) {
-    var query by remember { mutableStateOf("") }
+private fun SearchField(
+    query: String,
+    onQuery: (String) -> Unit,
+    onSearch: (String) -> Unit,
+    onClear: () -> Unit,
+) {
     val focus = LocalFocusManager.current
     Row(
         Modifier
@@ -168,7 +178,7 @@ private fun SearchField(onSearch: (String) -> Unit, onClear: () -> Unit) {
             }
             BasicTextField(
                 value = query,
-                onValueChange = { query = it; if (it.isBlank()) onClear() },
+                onValueChange = { onQuery(it); if (it.isBlank()) onClear() },
                 singleLine = true,
                 textStyle = TextStyle(color = TextPrimary, fontFamily = AppFont, fontSize = 14.sp),
                 cursorBrush = SolidColor(LocalAccent.current),
@@ -181,7 +191,7 @@ private fun SearchField(onSearch: (String) -> Unit, onClear: () -> Unit) {
             Icon(
                 Icons.Default.Close, "Clear", tint = TextMuted,
                 modifier = Modifier.size(16.dp).clip(CircleShape)
-                    .clickable { query = ""; onClear(); focus.clearFocus() },
+                    .clickable { onClear(); focus.clearFocus() },
             )
         }
     }
@@ -199,13 +209,14 @@ private fun Browse(viewModel: LibraryViewModel) {
     val loading by viewModel.loading.collectAsState()
     val error by viewModel.error.collectAsState()
     val search by viewModel.search.collectAsState()
+    val searchOpen by viewModel.searchOpen.collectAsState()
     val recent by viewModel.recent.collectAsState()
     val recentlyAdded by viewModel.recentlyAdded.collectAsState()
     val recommendations by viewModel.recommendations.collectAsState()
     val inProgress by viewModel.inProgress.collectAsState()
     val jobs by viewModel.downloadJobs.collectAsState()
 
-    val s = search
+    val s = if (searchOpen) search else null
     val isDownloads = node.items.any { it.provider == "__dl__" } || node.title == "Downloads"
 
     LazyVerticalGrid(

@@ -25,6 +25,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
@@ -114,11 +115,15 @@ fun App() {
         var overlayExpanded by rememberSaveable { mutableStateOf(false) }
 
         fun go(route: String) {
-            if (currentRoute != route) {
-                navController.navigate(route) {
-                    popUpTo(if (isOverlay) "library" else "now_playing") { inclusive = false }
-                    launchSingleTop = true
-                }
+            if (currentRoute == route) return
+            navController.navigate(route) {
+                // saveState/restoreState is what keeps each tab where the user left
+                // it. The previous popUpTo destroyed the destination outright, so
+                // every return re-ran the screen from scratch — the library lost its
+                // search and scroll position, and the other tabs reloaded on sight.
+                popUpTo(navController.graph.findStartDestination().id) { saveState = true }
+                launchSingleTop = true
+                restoreState = true
             }
         }
 

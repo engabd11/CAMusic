@@ -229,13 +229,23 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * The hero slider. `players/cmd/group_volume` is documented to take "a group
+     * player or syncleader" — a lone player is neither, so MA ignores the command
+     * and the slider appears dead. Fall back to that player's own volume whenever
+     * there is nothing grouped to fan out to.
+     */
     fun setGroupVolume(level01: Float) {
         val lvl = (level01 * 100).toInt().coerceIn(0, 100)
+        val leader = leaderId
+        val isGroup = joinedIds(_players.value, _joinIntent.value, leader).size > 1
         _groupVolumeIntent.value = Intent(lvl)
         groupVolJob?.cancel()
         groupVolJob = viewModelScope.launch {
             delay(180)
-            try { repo.setGroupVolume(leaderId, lvl) } catch (e: Exception) { _error.value = e.message }
+            try {
+                if (isGroup) repo.setGroupVolume(leader, lvl) else repo.setVolume(leader, lvl)
+            } catch (e: Exception) { _error.value = e.message }
         }
     }
 
