@@ -27,6 +27,7 @@ class AppSettings(private val context: Context) {
         private val HA_TOKEN = stringPreferencesKey("ha_token")                // long-lived access token
         private val PLAYER_NAME = stringPreferencesKey("player_name")          // Sendspin client/hello name
         private val TARGET_PLAYER = stringPreferencesKey("target_player")      // MA player to play to / control ("" = this phone)
+        private val NOW_PLAYING_LAYOUT = stringPreferencesKey("now_playing_layout") // "tab" (default) | "overlay"
     }
 
     val backend: Flow<String> = context.dataStore.data.map { it[BACKEND] ?: "ma" }
@@ -40,6 +41,7 @@ class AppSettings(private val context: Context) {
     val haToken: Flow<String> = context.dataStore.data.map { Crypto.decrypt(it[HA_TOKEN] ?: "") }
     val playerName: Flow<String> = context.dataStore.data.map { it[PLAYER_NAME] ?: "" }
     val targetPlayer: Flow<String> = context.dataStore.data.map { it[TARGET_PLAYER] ?: "" }
+    val nowPlayingLayout: Flow<String> = context.dataStore.data.map { it[NOW_PLAYING_LAYOUT] ?: "tab" }
 
     suspend fun setBackend(value: String) {
         context.dataStore.edit { it[BACKEND] = value }
@@ -71,5 +73,9 @@ class AppSettings(private val context: Context) {
 
     suspend fun setTargetPlayer(playerId: String) {
         context.dataStore.edit { it[TARGET_PLAYER] = playerId }
+    }
+
+    suspend fun setNowPlayingLayout(layout: String) {
+        context.dataStore.edit { it[NOW_PLAYING_LAYOUT] = layout }
     }
 }

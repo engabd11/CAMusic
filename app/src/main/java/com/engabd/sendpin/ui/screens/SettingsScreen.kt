@@ -148,6 +148,38 @@ fun SettingsScreen(
                     }
                 }
 
+                // ── Now Playing ─────────────────────────────────────────────
+                item {
+                    var npLayout by remember { mutableStateOf("tab") }
+                    LaunchedEffect(Unit) { npLayout = settings.nowPlayingLayout.first() }
+                    SectionHeader(Icons.Default.PlayArrow, "Now Playing", accent)
+                    Spacer(Modifier.height(12.dp))
+                    GlassCard(radius = 16.dp) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Text(
+                                "Layout style",
+                                color = TextPrimary, fontFamily = AppFont,
+                                fontWeight = FontWeight.Bold, fontSize = 14.sp,
+                            )
+                            Text(
+                                "Overlay: the cover slides over the app; swipe down to minimize into a bar. "
+                                "Tab: the classic full-screen player as a bottom tab.",
+                                color = TextFaint, fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp,
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                ToggleChip("Tab (classic)", npLayout == "tab") {
+                                    npLayout = "tab"
+                                    scope.launch { settings.setNowPlayingLayout("tab") }
+                                }
+                                ToggleChip("Overlay", npLayout == "overlay") {
+                                    npLayout = "overlay"
+                                    scope.launch { settings.setNowPlayingLayout("overlay") }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // ── Audio ───────────────────────────────────────────────────
                 item {
                     var prefer96k by remember { mutableStateOf(true) }
