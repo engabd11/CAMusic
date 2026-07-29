@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.audio.FormatNegotiator
+import com.engabd.sendpin.audio.LocalTrack
 import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.PlayerIdentity
@@ -69,6 +70,12 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         val powered: Boolean = true,
         /** The player exposes a power switch, so the control is worth showing. */
         val canPower: Boolean = false,
+        /**
+         * This phone is playing on its own (Navidrome-direct or offline) rather than
+         * reflecting a Music Assistant player. The MA connection being down is then
+         * not worth complaining about — nothing on screen depends on it.
+         */
+        val isLocalSession: Boolean = false,
     )
 
     /** A panel's load state — the UI has to tell "empty" from "not fetched yet". */
@@ -83,10 +90,43 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     private val myPlayerId = PlayerIdentity.getPlayerId(app)
     private val api = (app as SendpinApp).maApi
     private val repo = MaRepository(api)
+    /**
+     * The standalone queue player (Navidrome-direct / offline). While it has a
+     * session loaded it *is* what's playing on this phone, so it takes the screen
+     * over from the Music Assistant view — otherwise starting a Navidrome album
+     * left Now Playing showing whatever MA last had, with transport buttons that
+     * controlled something the user couldn't hear.
+     */
+    private val local = (app as SendpinApp).localPlayer
     /** This phone's own Sendspin stream — the authoritative format when we're the player. */
     private val localQuality = (app as SendpinApp).playback.streamQuality
     /** What this phone can put out on its own, for locally-decoded playback. */
     private val deviceQuality = FormatNegotiator.deviceOutputQuality()
+
+    /** Everything the local player exposes, folded into one value to combine with. */
+    private data class LocalSnap(
+        val active: Boolean = false,
+        val track: LocalTrack? = null,
+        val playing: Boolean = false,
+        val durationMs: Long = 0,
+        val queueSize: Int = 0,
+        val index: Int = -1,
+        val shuffle: Boolean = false,
+        val repeat: String = "off",
+        val speed: Float = 1f,
+    )
+
+    private val localSnap: StateFlow<LocalSnap> = combine(
+        local.active, local.current, local.playing, local.durationMs,
+        combine(local.queue, local.index, local.shuffle, local.repeatMode, local.speed) { q, i, s, r, sp ->
+            LocalSnap(queueSize = q.size, index = i, shuffle = s, repeat = r, speed = sp)
+        },
+    ) { active, track, playing, dur, queue ->
+        queue.copy(active = active, track = track, playing = playing, durationMs = dur)
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, LocalSnap())
+
+    /** True while the phone is playing on its own rather than through MA. */
+    private val isLocal get() = localSnap.value.active
 
     private val _target = MutableStateFlow("")
     private val _players = MutableStateFlow<List<MaPlayer>>(emptyList())
@@ -113,7 +153,16 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     @Volatile private var lastTrackId: String? = null  // detect track changes for immediate reset
 
     private val _positionMs = MutableStateFlow(0L)
-    val positionMs: StateFlow<Long> = _positionMs.asStateFlow()
+
+    /**
+     * Where the scrubber sits. The local player knows its own position exactly, so
+     * when it is the one playing there is nothing to project forward from a server
+     * anchor — the anchored engine below only applies to the MA-side player.
+     */
+    val positionMs: StateFlow<Long> =
+        combine(localSnap, _positionMs, local.positionMs) { l, server, here ->
+            if (l.active) here else server
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, 0L)
 
     private var tickerJob: Job? = null
 
@@ -170,7 +219,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun targetId() = _target.value.ifBlank { myPlayerId }
 
-    val state: StateFlow<State> = combine(_players, _target, _queues, localQuality, _lastTrack) { players, target, queues, local, last ->
+    private val maState: StateFlow<State> = combine(_players, _target, _queues, localQuality, _lastTrack) { players, target, queues, local, last ->
         val id = target.ifBlank { myPlayerId }
         val p = players.firstOrNull { it.playerId == id }
         val isSelf = id == myPlayerId
@@ -238,6 +287,48 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, State())
 
+    /**
+     * What the screen shows: the local player when it has a session, the Music
+     * Assistant view otherwise. There is no third state — the phone is either
+     * playing something itself or reflecting a player MA owns.
+     */
+    val state: StateFlow<State> = combine(maState, localSnap) { ma, l ->
+        if (!l.active) return@combine ma
+        val t = l.track
+        State(
+            playerName = "This phone",
+            isSelf = true,
+            title = t?.title.orEmpty(),
+            artist = t?.artist.orEmpty(),
+            album = t?.album.orEmpty(),
+            artworkUrl = t?.artUrl,
+            isPlaying = l.playing,
+            // The local player runs at the device volume; MA's per-player level
+            // means nothing here, so the slider stays where the system has it.
+            volume = ma.volume,
+            positionMs = 0,
+            durationMs = l.durationMs,
+            hasTrack = t != null,
+            idle = t == null,
+            blank = t == null,
+            // Decoded on this phone, so the phone's own output ceiling is the
+            // honest answer to "what is coming out of the pipe".
+            quality = deviceQuality,
+            sourceQuality = null,
+            source = if (t?.offline == true) "Offline" else "Navidrome",
+            groupSize = 1,
+            shuffle = l.shuffle,
+            repeatMode = l.repeat,
+            queueSize = l.queueSize,
+            currentQueueItemId = localQueueItemId(l.index, t?.id),
+            playbackSpeed = l.speed,
+            dontStopTheMusic = false,
+            powered = true,
+            canPower = false,
+            isLocalSession = true,
+        )
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, State())
+
     /** Track-id for [reanchorPosition] — resolved from the queue's current item. */
     private fun currentTrackId(): String? {
         val id = targetId()
@@ -251,6 +342,9 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     init {
         viewModelScope.launch {
             state.collect { st ->
+                // The local player reports its own position; projecting a server
+                // anchor forward on top of it would fight it.
+                if (isLocal) return@collect
                 reanchorPosition(
                     serverElapsedMs = st.positionMs,
                     isPlaying = st.isPlaying,
@@ -267,7 +361,11 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
      * Everything track-specific — the heart, lyrics, "more like this" — needs a real
      * `item_id` and provider, which the player's `current_media` doesn't carry.
      */
-    val currentItem: StateFlow<MaItem?> = combine(_queues, _players, _target) { queues, players, target ->
+    val currentItem: StateFlow<MaItem?> = combine(_queues, _players, _target, localSnap) { queues, players, target, l ->
+        // Nothing MA-side is playing while the local player holds the session, so
+        // the track-scoped controls (heart, lyrics, similar) have no handle to act
+        // on and correctly show as unavailable.
+        if (l.active) return@combine null
         val id = target.ifBlank { myPlayerId }
         val streamId = players.firstOrNull { it.playerId == id }?.syncedTo ?: id
         queues.firstOrNull { it.queueId == streamId }?.currentItem
@@ -324,6 +422,20 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                 if (_queueItems.value !is Load.Idle) loadQueue(silent = true)
             }
         }
+        // The local queue lives in memory and can change under an open panel — a
+        // track finishing, a "play next", a drag — so the panel follows it.
+        viewModelScope.launch {
+            local.queue.collect {
+                if (isLocal && _queueItems.value !is Load.Idle) _queueItems.value = Load.Ready(localQueueItems())
+            }
+        }
+        viewModelScope.launch {
+            local.current.collect {
+                if (!isLocal) return@collect
+                _lyrics.value = Load.Idle
+                _similar.value = Load.Idle
+            }
+        }
         viewModelScope.launch { api.state.collect { if (it == MaApiClient.State.CONNECTED) refresh() } }
         // Poll for metadata (track info, volume, queue state). Position is driven
         // by the server-anchored ticker, so this can be relaxed — 5s is enough for
@@ -353,8 +465,9 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
 
     // --- transport (act on the selected player) ---------------------------
 
-    fun playPause() = act {
-        if (state.value.isPlaying) repo.pause(targetId()) else repo.play(targetId())
+    fun playPause() {
+        if (isLocal) { local.toggle(); return }
+        act { if (state.value.isPlaying) repo.pause(targetId()) else repo.play(targetId()) }
     }
 
     // In-flight guards prevent button-mash spam: rapid taps fire only one MA
@@ -364,6 +477,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     private val prevInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
 
     fun next() {
+        if (isLocal) { local.next(); return }
         if (!nextInFlight.compareAndSet(false, true)) return
         // Optimistic: reset position immediately so the UI doesn't show the old
         // track's position while waiting for the server to confirm the skip.
@@ -380,6 +494,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun previous() {
+        if (isLocal) { local.previous(); return }
         if (!prevInFlight.compareAndSet(false, true)) return
         _positionMs.value = 0L
         posBaseTime = 0L
@@ -393,16 +508,22 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun toggleShuffle() = act { repo.setShuffle(streamQueueId(), !state.value.shuffle) }
+    fun toggleShuffle() {
+        if (isLocal) { local.setShuffle(!state.value.shuffle); return }
+        act { repo.setShuffle(streamQueueId(), !state.value.shuffle) }
+    }
 
     /** Cycles the way players conventionally do: off → all → one → off. */
-    fun cycleRepeat() = act {
-        val next = when (state.value.repeatMode) {
-            "off" -> "all"
-            "all" -> "one"
-            else -> "off"
+    fun cycleRepeat() {
+        if (isLocal) { local.cycleRepeat(); return }
+        act {
+            val next = when (state.value.repeatMode) {
+                "off" -> "all"
+                "all" -> "one"
+                else -> "off"
+            }
+            repo.setRepeat(streamQueueId(), next)
         }
-        repo.setRepeat(streamQueueId(), next)
     }
 
     /** Queue commands go to the group leader, since members share its queue. */
@@ -410,7 +531,16 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         val id = targetId()
         return _players.value.firstOrNull { it.playerId == id }?.syncedTo ?: id
     }
-    fun seekTo(fraction: Float) = act {
+    fun seekTo(fraction: Float) {
+        if (isLocal) {
+            val dur = state.value.durationMs
+            if (dur > 0) local.seekTo((fraction.coerceIn(0f, 1f) * dur).toLong())
+            return
+        }
+        seekOnServer(fraction)
+    }
+
+    private fun seekOnServer(fraction: Float) = act {
         val dur = state.value.durationMs
         if (dur > 0) {
             // Clamp to [0, duration - 1s] so MA doesn't interpret a seek-to-end
@@ -423,6 +553,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
 
     private var volJob: kotlinx.coroutines.Job? = null
     fun setVolume(level01: Float) {
+        if (isLocal) { local.setVolume(level01.coerceIn(0f, 1f)); return }
         val lvl = (level01 * 100).toInt().coerceIn(0, 100)
         _players.update { list -> list.map { if (it.playerId == targetId()) it.copy(volumeLevel = lvl) else it } }
         volJob?.cancel()
@@ -437,6 +568,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
 
     private var speedJob: kotlinx.coroutines.Job? = null
     fun setPlaybackSpeed(speed: Float) {
+        if (isLocal) { local.setSpeed(speed); return }
         val q = streamQueueId()
         _queues.update { list -> list.map { if (it.queueId == q) it.copy(playbackSpeed = speed) else it } }
         speedJob?.cancel()
@@ -447,6 +579,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun toggleDontStopTheMusic() {
+        if (isLocal) { _toast.tryEmit("Don't stop the music needs Music Assistant"); return }
         val q = streamQueueId()
         val next = !state.value.dontStopTheMusic
         _queues.update { list -> list.map { if (it.queueId == q) it.copy(dontStopTheMusic = next) else it } }
@@ -486,6 +619,9 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
      * already there and only its ordering might have moved.
      */
     fun loadQueue(silent: Boolean = false) {
+        // The local queue is already in memory — there is nothing to fetch, and a
+        // spinner in front of a list we are holding would be theatre.
+        if (isLocal) { _queueItems.value = Load.Ready(localQueueItems()); return }
         val q = streamQueueId()
         if (!silent || _queueItems.value !is Load.Ready) _queueItems.value = Load.Loading
         viewModelScope.launch {
@@ -507,6 +643,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
      * deliberately does not re-fetch the items.
      */
     fun playQueueIndex(index: Int) {
+        if (isLocal) { local.playAt(index); return }
         val q = streamQueueId()
         viewModelScope.launch {
             try {
@@ -519,14 +656,46 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun removeQueueItem(item: MaQueueItem) = queueAction { repo.deleteQueueItem(it, item.queueItemId) }
+    fun removeQueueItem(item: MaQueueItem) {
+        if (isLocal) { local.removeAt(item.index); loadQueue(); return }
+        queueAction { repo.deleteQueueItem(it, item.queueItemId) }
+    }
 
     /** [shift] is relative: -1 moves the item one place earlier, +1 one later. */
-    fun moveQueueItem(item: MaQueueItem, shift: Int) = queueAction { repo.moveQueueItem(it, item.queueItemId, shift) }
+    fun moveQueueItem(item: MaQueueItem, shift: Int) {
+        if (isLocal) { local.move(item.index, shift); loadQueue(); return }
+        queueAction { repo.moveQueueItem(it, item.queueItemId, shift) }
+    }
 
-    fun clearQueue() = queueAction { repo.clearQueue(it) }
+    fun clearQueue() {
+        if (isLocal) { local.clear(); loadQueue(); return }
+        queueAction { repo.clearQueue(it) }
+    }
+
+    /** The local queue as queue rows, so one panel renders either session. */
+    private fun localQueueItems(): List<MaQueueItem> =
+        local.queue.value.mapIndexed { i, t ->
+            MaQueueItem(
+                queueItemId = localQueueItemId(i, t.id) ?: "$i",
+                name = t.title,
+                duration = (t.durationMs / 1000).toInt().takeIf { it > 0 },
+                sortIndex = i,
+                mediaItem = null,
+                streamDetails = null,
+                index = i,
+                artist = t.artist,
+                image = t.artUrl,
+            )
+        }
+
+    /**
+     * A stable row key. The track id alone isn't enough — the same track can sit in
+     * the queue twice, and two rows sharing a key breaks the drag-reorder list.
+     */
+    private fun localQueueItemId(index: Int, id: String?): String? = id?.let { "$index-$it" }
 
     fun saveQueueAsPlaylist(name: String) {
+        if (isLocal) { _toast.tryEmit("Saving a playlist needs Music Assistant"); return }
         if (name.isBlank()) return
         val q = streamQueueId()
         viewModelScope.launch {
@@ -679,7 +848,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                 _sleepTimerRemainingMs.value = (deadline - System.currentTimeMillis()).coerceAtLeast(0)
                 delay(FADE_MS / steps)
             }
-            try { repo.pause(player) } catch (_: Exception) {}
+            if (isLocal) local.pause() else try { repo.pause(player) } catch (_: Exception) {}
             setVolume(startVol)   // restore so the user's volume isn't stuck at zero
             _sleepTimerMin.value = 0
             _sleepTimerRemainingMs.value = 0

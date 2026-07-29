@@ -141,7 +141,7 @@ fun NowPlayingScreen(
                     .padding(top = 8.dp, bottom = navBarInset() + 12.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                if (!connected) OfflineBanner()
+                if (!connected && !st.isLocalSession) OfflineBanner()
 
                 TopBar(
                     playerName = st.playerName,

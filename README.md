@@ -57,6 +57,21 @@ and controls Hue music-sync lighting through Home Assistant.
   plus the two album-art modes and the song-harmony mode
 - Pick which media player a zone follows, or leave it on Auto
 
+**Standalone (Navidrome / OpenSubsonic)**
+- Switch the Library tab to a direct Navidrome server in **Settings → Library** —
+  no Music Assistant in the path
+- Browse artists, albums, playlists, genres and starred items, and search all of it
+- Plays on the phone with a **real queue**: tap a track to play the list it's in, or
+  an album/playlist to play the whole thing, with shuffle, repeat, seek, reorder and
+  a lock-screen/Bluetooth media notification
+- Original files, never a transcode (`format=raw`), so a FLAC stays a FLAC
+- **Download** a track, album or playlist for offline — audio *and* cover art, so the
+  downloads keep their covers with the server gone
+- With the server unreachable the library drops into **Offline** and runs on what's on
+  the phone, downloads included
+- Stars are read and written back, and plays are scrobbled so Navidrome's own
+  "recently played" stays honest
+
 ## Requirements
 
 - Android 12+ (API 31)
@@ -64,8 +79,9 @@ and controls Hue music-sync lighting through Home Assistant.
   with the Sendspin player provider enabled
 - *Optional:* Home Assistant with the [syncoV2](https://github.com/engabd11/syncoV2)
   `hue_music_sync` integration, for the Light Sync tab
-- *Optional:* a Navidrome / OpenSubsonic server, as a direct library backend when MA
-  isn't reachable
+- *Optional:* a Navidrome / OpenSubsonic server, as a standalone library backend that
+  works when MA and Home Assistant are both down — and, once tracks are downloaded,
+  with no network at all
 
 ## Setup
 
@@ -111,9 +127,11 @@ Jetpack Compose UI  ·  OLED design system (true black, album-derived accent)
         ├── Home Assistant ─────  HaClient · LightSyncRepository
         │   (hue_music_sync entities + set_options service)
         │
-        └── OpenSubsonic ───────  SubsonicClient   (direct library fallback)
+        └── OpenSubsonic ───────  SubsonicClient · LocalPlayer · DownloadManager
+            (standalone library: browse, queue, offline downloads)
 
   SendspinService (foreground) keeps the process and connection alive
+  LocalPlaybackService (foreground) does the same for standalone playback
 ```
 
 Colour comes from the artwork: covers are clustered in CIELAB (the same approach syncoV2

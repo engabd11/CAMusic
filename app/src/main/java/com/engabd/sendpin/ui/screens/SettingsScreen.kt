@@ -31,11 +31,14 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.engabd.sendpin.BuildConfig
 import com.engabd.sendpin.data.AppSettings
+import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.PlayerViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun SettingsScreen(
@@ -59,6 +62,9 @@ fun SettingsScreen(
     var haTokenLocked by remember { mutableStateOf(false) }
     var playerName by remember { mutableStateOf("") }
     val backend by settings.backend.collectAsState(initial = "ma")
+    // The same activity-scoped instance the Library tab uses, so edits here land on
+    // the live client rather than on a copy that has to be restarted to be read.
+    val libraryVm: LibraryViewModel = viewModel()
 
     LaunchedEffect(Unit) {
         // Only start discovery if it's not already running — avoids re-scanning
@@ -195,6 +201,16 @@ fun SettingsScreen(
                         }
                     }
                 }
+
+                // ── Navidrome server ────────────────────────────────────────
+                // The server details used to be reachable only from the Library
+                // tab's connect form, which is hidden the moment a connection
+                // works — so a moved server or a changed password could not be
+                // fixed from inside the app at all.
+                item { NavidromeCard(libraryVm, accent) }
+
+                // ── Downloads ───────────────────────────────────────────────
+                item { DownloadsCard(libraryVm, accent) }
 
                 // ── Now Playing ─────────────────────────────────────────────
                 item {
@@ -389,6 +405,118 @@ fun SettingsScreen(
             }
         }
     }
+}
+
+/**
+ * The Navidrome / OpenSubsonic server, editable at any time. Saving reconnects
+ * immediately so the result — connected, or the server's own complaint — is
+ * visible right here instead of on a different tab.
+ */
+@Composable
+private fun NavidromeCard(vm: LibraryViewModel, accent: Color) {
+    val url by vm.navUrl.collectAsState()
+    val user by vm.navUser.collectAsState()
+    val pass by vm.navPass.collectAsState()
+    val connecting by vm.connecting.collectAsState()
+    val ready by vm.ready.collectAsState()
+    val offline by vm.offline.collectAsState()
+    val connError by vm.connError.collectAsState()
+    val onSubsonic by vm.backend.collectAsState()
+    var passVisible by remember { mutableStateOf(false) }
+
+    SectionHeader(Icons.Default.Storage, "Navidrome server", accent)
+    Spacer(Modifier.height(12.dp))
+    GlassCard(radius = 16.dp) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                "Browsing, playback on this phone, and offline downloads. Works with " +
+                    "Music Assistant and Home Assistant both down.",
+                color = TextMuted, fontSize = 13.sp,
+            )
+            OledField(url, vm::setNavUrl, "Server URL", "http://192.168.0.10:4533", accent)
+            OledField(user, vm::setNavUser, "Username", "", accent)
+            OledField(
+                pass, vm::setNavPass, "Password", "", accent,
+                visualTransformation = if (passVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                trailingIcon = {
+                    Box(Modifier.size(20.dp).clip(CircleShape).clickable { passVisible = !passVisible }) {
+                        Icon(
+                            if (passVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                            if (passVisible) "Hide" else "Show",
+                            tint = TextMuted, modifier = Modifier.size(20.dp),
+                        )
+                    }
+                },
+            )
+            OledButton(
+                if (connecting) "Connecting…" else "Save & connect",
+                enabled = url.isNotBlank() && !connecting,
+                accent = accent,
+            ) { vm.saveNavidrome() }
+
+            // Only the active backend can report a live state; saying "Connected"
+            // while the library is browsing MA would be a lie.
+            val status = when {
+                onSubsonic != LibraryViewModel.Backend.SUBSONIC -> "Saved — switch the library to Navidrome to use it"
+                connecting -> "Connecting…"
+                offline -> "Offline — playing downloads"
+                ready -> "Connected"
+                connError != null -> connError!!
+                url.isBlank() -> "Not set up"
+                else -> "Not connected"
+            }
+            Text(
+                status,
+                color = if (connError != null && onSubsonic == LibraryViewModel.Backend.SUBSONIC && !ready) ErrorRed else TextFaint,
+                fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp,
+            )
+        }
+    }
+}
+
+/** What's on the phone for offline listening, and the one way to get it back. */
+@Composable
+private fun DownloadsCard(vm: LibraryViewModel, accent: Color) {
+    val downloads by vm.downloads.collectAsState()
+    var confirming by remember { mutableStateOf(false) }
+    // Measuring means stat-ing every file, so it happens off the main thread and
+    // only when the list itself changes.
+    var bytes by remember { mutableStateOf(0L) }
+    LaunchedEffect(downloads) { bytes = withContext(Dispatchers.IO) { vm.downloadBytes() } }
+
+    SectionHeader(Icons.Default.Download, "Downloads", accent)
+    Spacer(Modifier.height(12.dp))
+    GlassCard(radius = 16.dp) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                "Original files, not transcodes — a downloaded track plays at the " +
+                    "quality it was stored at, with or without a network.",
+                color = TextMuted, fontSize = 13.sp,
+            )
+            Column(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Ink3).padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                StatusRow("Tracks", downloads.size.toString())
+                StatusRow("On disk", formatBytes(bytes))
+            }
+            if (downloads.isNotEmpty()) {
+                OledButton(
+                    if (confirming) "Tap again to delete all" else "Delete all downloads",
+                    accent = accent, danger = true,
+                ) {
+                    if (confirming) { vm.deleteAllDownloads(); confirming = false } else confirming = true
+                }
+            }
+        }
+    }
+}
+
+private fun formatBytes(bytes: Long): String = when {
+    bytes >= 1_000_000_000 -> "%.1f GB".format(bytes / 1_000_000_000.0)
+    bytes >= 1_000_000 -> "%.0f MB".format(bytes / 1_000_000.0)
+    bytes >= 1_000 -> "%.0f KB".format(bytes / 1_000.0)
+    else -> "$bytes B"
 }
 
 // ─── Reusable OLED design components for settings ──────────────────────────

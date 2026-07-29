@@ -66,6 +66,7 @@ fun AlbumDetailScreen(
     val tracks by viewModel.tracks.collectAsState()
     val loading by viewModel.loading.collectAsState()
     val error by viewModel.error.collectAsState()
+    val albumDownloaded by viewModel.allDownloaded.collectAsState()
     val accent = LocalAccent.current
     val snackbar = remember { SnackbarHostState() }
 
@@ -110,6 +111,8 @@ fun AlbumDetailScreen(
                             onPlayAll = viewModel::playAll,
                             onShuffle = viewModel::shuffleAll,
                             onAddToQueue = viewModel::addToQueue,
+                            onDownload = if (viewModel.canDownload) viewModel::downloadAll else null,
+                            downloaded = albumDownloaded,
                         )
                     }
 
@@ -183,6 +186,8 @@ private fun AlbumHero(
     onPlayAll: () -> Unit,
     onShuffle: () -> Unit,
     onAddToQueue: () -> Unit,
+    onDownload: (() -> Unit)? = null,
+    downloaded: Boolean = false,
 ) {
     val accent = LocalAccent.current
 
@@ -269,6 +274,15 @@ private fun AlbumHero(
             IconChip(Icons.Default.Shuffle, "Shuffle", onClick = onShuffle)
             // Add to queue
             IconChip(Icons.AutoMirrored.Filled.QueueMusic, "Add to queue", onClick = onAddToQueue)
+            // Offline. Navidrome only — Music Assistant streams rather than handing
+            // over the file, so there is nothing here to take with you.
+            onDownload?.let {
+                IconChip(
+                    if (downloaded) Icons.Default.DownloadDone else Icons.Default.Download,
+                    if (downloaded) "Downloaded" else "Download album",
+                    onClick = it,
+                )
+            }
         }
     }
 }

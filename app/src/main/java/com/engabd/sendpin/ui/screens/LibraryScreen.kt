@@ -257,6 +257,7 @@ private fun Browse(viewModel: LibraryViewModel, onAlbumClick: (MaItem) -> Unit) 
     val recommendations by viewModel.recommendations.collectAsState()
     val inProgress by viewModel.inProgress.collectAsState()
     val jobs by viewModel.downloadJobs.collectAsState()
+    val offline by viewModel.offline.collectAsState()
 
     val s = if (searchOpen) search else null
     val isDownloads = node.items.any { it.provider == "__dl__" } || node.title == "Downloads"
@@ -268,6 +269,11 @@ private fun Browse(viewModel: LibraryViewModel, onAlbumClick: (MaItem) -> Unit) 
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        // Running on downloads alone is a working state, not a failure — say so
+        // once, at the top, and let the rest of the screen behave normally.
+        if (offline) {
+            item(span = { full() }) { OfflineNotice { viewModel.connect() } }
+        }
         if (error != null) {
             item(span = { full() }) { ErrorState(error!!) { viewModel.connect() } }
             return@LazyVerticalGrid
@@ -343,7 +349,17 @@ private fun Browse(viewModel: LibraryViewModel, onAlbumClick: (MaItem) -> Unit) 
         } else {
             val tracks = node.items.filter { it.playable && it.mediaType == "track" }
             if (tracks.size > 1) {
-                item(span = { full() }) { PlayAllBar(tracks.size) { viewModel.playAll(tracks) } }
+                // Downloading a Navidrome album one row at a time was never a real
+                // answer, so the whole list is one tap from disk.
+                val downloadable = tracks.filter { it.provider == "subsonic" }
+                item(span = { full() }) {
+                    PlayAllBar(
+                        count = tracks.size,
+                        onPlayAll = { viewModel.playAll(tracks) },
+                        onDownloadAll = if (downloadable.isEmpty()) null
+                        else ({ viewModel.downloadAll(downloadable) }),
+                    )
+                }
             }
             items(node.items, span = { full() }) { entry ->
                 if (entry.mediaType == "album") ItemRow(entry, viewModel, onAlbumClick)
@@ -378,6 +394,9 @@ private fun androidx.compose.foundation.lazy.grid.LazyGridScope.downloadsSection
     }
     if (items.isNotEmpty()) {
         item(span = { full() }) { Shelf("On this device") }
+        if (items.size > 1) {
+            item(span = { full() }) { PlayAllBar(items.size, onPlayAll = { viewModel.playAll(items) }) }
+        }
         items(items, span = { full() }) { entry -> ItemRow(entry, viewModel) }
     }
 }
@@ -483,7 +502,14 @@ private fun ItemRow(item: MaItem, viewModel: LibraryViewModel, onAlbumClick: ((M
     val accent = LocalAccent.current
     val isCategory = item.provider == "__cat__"
     val isDownload = item.provider == "__dl__"
-    val isSubsonicTrack = item.provider == "subsonic" && item.mediaType == "track"
+    val isSubsonic = item.provider == "subsonic"
+    val isSubsonicTrack = isSubsonic && item.mediaType == "track"
+    // Artists and genres resolve to a lot of files; offering to download one by
+    // accident from a list row would be a nasty surprise, so only the things a
+    // user thinks of as "a download" get the button.
+    val downloadable = isSubsonic && item.mediaType in setOf("track", "album", "playlist")
+    val downloadedIds by viewModel.downloadedIds.collectAsState()
+    val onDisk = item.itemId in downloadedIds
 
     RowCard(onClick = {
         if (item.mediaType == "album" && onAlbumClick != null) onAlbumClick(item)
@@ -525,18 +551,22 @@ private fun ItemRow(item: MaItem, viewModel: LibraryViewModel, onAlbumClick: ((M
             }
         }
 
-        // MA tracks can be auditioned and favourited in place.
-        val isMaTrack = !isCategory && !isDownload && !isSubsonicTrack && item.mediaType == "track"
+        // MA tracks can be auditioned in place; Navidrome has no preview endpoint.
+        val isMaTrack = !isCategory && !isDownload && !isSubsonic && item.mediaType == "track"
         if (isMaTrack) {
             val previewing by viewModel.previewing.collectAsState()
-            val favorites by viewModel.favorites.collectAsState()
-            val isFav = item.itemId in favorites
             Icon(
                 if (previewing == item.itemId) Icons.Default.StopCircle else Icons.Default.Headphones,
                 if (previewing == item.itemId) "Stop preview" else "Preview",
                 tint = if (previewing == item.itemId) accent else TextMuted,
                 modifier = Modifier.size(20.dp).clip(CircleShape).clickable { viewModel.togglePreview(item) },
             )
+        }
+        // Favourites are a Navidrome star as much as an MA favourite, so the heart
+        // belongs on both backends rather than only one.
+        if (isMaTrack || (isSubsonic && item.mediaType in setOf("track", "album", "artist"))) {
+            val favorites by viewModel.favorites.collectAsState()
+            val isFav = item.itemId in favorites
             Icon(
                 if (isFav) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                 if (isFav) "Remove from favourites" else "Add to favourites",
@@ -546,15 +576,25 @@ private fun ItemRow(item: MaItem, viewModel: LibraryViewModel, onAlbumClick: ((M
         }
 
         when {
-            isSubsonicTrack -> Icon(
-                Icons.Default.Download, "Download", tint = TextMuted,
+            // A track already on disk says so instead of offering to fetch it again.
+            downloadable && onDisk -> Icon(
+                Icons.Default.DownloadDone, "Downloaded", tint = accent,
+                modifier = Modifier.size(20.dp),
+            )
+            downloadable -> Icon(
+                Icons.Default.Download,
+                if (item.mediaType == "track") "Download" else "Download all",
+                tint = TextMuted,
                 modifier = Modifier.size(20.dp).clip(CircleShape).clickable { viewModel.download(item) },
             )
             isDownload -> Icon(
                 Icons.Default.Delete, "Delete download", tint = TextMuted,
                 modifier = Modifier.size(20.dp).clip(CircleShape).clickable { viewModel.deleteDownload(item.itemId) },
             )
-            item.playable -> Icon(
+        }
+
+        if (item.playable || isDownload) {
+            Icon(
                 Icons.Default.Add, "Add to queue", tint = TextMuted,
                 modifier = Modifier.size(20.dp).clip(CircleShape).clickable { viewModel.play(item, "add") },
             )
@@ -606,7 +646,7 @@ private fun DownloadJobRow(job: DownloadJob, viewModel: LibraryViewModel) {
 }
 
 @Composable
-private fun PlayAllBar(count: Int, onPlayAll: () -> Unit) {
+private fun PlayAllBar(count: Int, onPlayAll: () -> Unit, onDownloadAll: (() -> Unit)? = null) {
     val accent = LocalAccent.current
     Row(
         Modifier
@@ -614,15 +654,63 @@ private fun PlayAllBar(count: Int, onPlayAll: () -> Unit) {
             .clip(RoundedCornerShape(14.dp))
             .background(accent.a(0.10f))
             .border(1.dp, accent.a(0.28f), RoundedCornerShape(14.dp))
-            .clickable(onClick = onPlayAll)
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Icon(Icons.Default.PlayArrow, null, tint = accent, modifier = Modifier.size(18.dp))
+        Row(
+            Modifier.weight(1f).clip(RoundedCornerShape(8.dp)).clickable(onClick = onPlayAll),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Icon(Icons.Default.PlayArrow, null, tint = accent, modifier = Modifier.size(18.dp))
+            Text(
+                "Play all $count tracks", color = accent, fontFamily = AppFont,
+                fontWeight = FontWeight.Bold, fontSize = 13.sp,
+            )
+        }
+        onDownloadAll?.let {
+            Icon(
+                Icons.Default.Download, "Download all", tint = accent,
+                modifier = Modifier.size(20.dp).clip(CircleShape).clickable(onClick = it),
+            )
+        }
+    }
+}
+
+/**
+ * The server is out of reach and the phone is running on its downloads. This is
+ * the feature working, not an error, so it reads as a state rather than a fault —
+ * with the one action that matters if the server is actually back.
+ */
+@Composable
+private fun OfflineNotice(onRetry: () -> Unit) {
+    val accent = LocalAccent.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(Color.White.a(0.04f))
+            .border(1.dp, HairlineSoft, RoundedCornerShape(14.dp))
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Icon(Icons.Default.CloudOff, null, tint = TextMuted, modifier = Modifier.size(18.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                "Offline", color = TextPrimary, fontFamily = AppFont,
+                fontWeight = FontWeight.Bold, fontSize = 13.sp,
+            )
+            Text(
+                "Navidrome isn't reachable — playing your downloads.",
+                color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
+            )
+        }
         Text(
-            "Play all $count tracks", color = accent, fontFamily = AppFont,
-            fontWeight = FontWeight.Bold, fontSize = 13.sp,
+            "Retry", color = accent, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 12.sp,
+            modifier = Modifier.clip(RoundedCornerShape(100)).clickable(onClick = onRetry)
+                .padding(horizontal = 10.dp, vertical = 6.dp),
         )
     }
 }

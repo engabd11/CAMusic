@@ -12,9 +12,12 @@ import com.engabd.sendpin.subsonic.SubsonicClient
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 /**
@@ -41,7 +44,19 @@ class AlbumDetailViewModel(
     private val myPlayerId: String = PlayerIdentity.getPlayerId(app)
     private val maApi = (app as SendpinApp).maApi
     private val maRepo = MaRepository(maApi)
-    private val localPlayer = com.engabd.sendpin.audio.LocalPlayer()
+    /**
+     * The process-scoped player and download index — *not* private instances. A
+     * player owned by this screen would be a second one running alongside the real
+     * one: invisible to Now Playing and the notification, and silenced the moment
+     * the user navigated away from the album they had just started.
+     */
+    private val localPlayer = (app as SendpinApp).localPlayer
+    private val downloads = (app as SendpinApp).downloads
+
+    /** Built once per load rather than per action. Null until the album resolves. */
+    private var subsonic: SubsonicClient? = null
+
+    private val isSubsonic get() = provider == SubsonicClient.PROVIDER
 
     private val _album = MutableStateFlow<MaItem?>(null)
     val album: StateFlow<MaItem?> = _album
@@ -79,11 +94,11 @@ class AlbumDetailViewModel(
             _loading.value = true
             _error.value = null
             try {
-                val isSubsonic = provider == "subsonic"
                 if (isSubsonic) {
                     val url = settings.navUrl.first().trim()
                     if (url.isBlank()) { _error.value = "No Navidrome server configured"; return@launch }
                     val sc = SubsonicClient(url, settings.navUsername.first(), settings.navPassword.first())
+                    subsonic = sc
                     val (albumMeta, trackList) = sc.albumDetail(itemId)
                     if (albumMeta != null) _album.value = albumMeta
                     _tracks.value = trackList
@@ -109,9 +124,9 @@ class AlbumDetailViewModel(
         if (uris.isEmpty()) return
         viewModelScope.launch {
             try {
-                if (provider == "subsonic") {
-                    // Subsonic: play first track locally (local player has no queue yet)
-                    _tracks.value.firstOrNull()?.let { playTrackLocal(it) }
+                if (isSubsonic) {
+                    localPlayer.setShuffle(false)
+                    localPlayer.setQueue(localTracks())
                 } else {
                     maRepo.playMedia(playTarget(), uris, "replace")
                 }
@@ -128,8 +143,11 @@ class AlbumDetailViewModel(
         if (uris.isEmpty()) return
         viewModelScope.launch {
             try {
-                if (provider == "subsonic") {
-                    _tracks.value.firstOrNull()?.let { playTrackLocal(it) }
+                if (isSubsonic) {
+                    // Shuffle on *before* the queue is set, so the play order is
+                    // built shuffled rather than starting on track 1 and jumping.
+                    localPlayer.setShuffle(true)
+                    localPlayer.setQueue(localTracks())
                 } else {
                     maRepo.playMedia(playTarget(), uris, "replace")
                     maRepo.setShuffle(playTarget(), true)
@@ -147,8 +165,9 @@ class AlbumDetailViewModel(
         if (uris.isEmpty()) return
         viewModelScope.launch {
             try {
-                if (provider == "subsonic") {
-                    _toast.tryEmit("Queue management needs Music Assistant")
+                if (isSubsonic) {
+                    localPlayer.addToQueue(localTracks())
+                    _toast.tryEmit("Added ${_tracks.value.size} tracks to queue")
                 } else {
                     maRepo.playMedia(playTarget(), uris, "add")
                     _toast.tryEmit("Added ${uris.size} tracks to queue")
@@ -159,12 +178,43 @@ class AlbumDetailViewModel(
         }
     }
 
+    /** Only Navidrome hands over the file; MA streams, so there is nothing to keep. */
+    val canDownload: Boolean get() = isSubsonic
+
+    /** Every track of this album is already on the phone. */
+    val allDownloaded: StateFlow<Boolean> = combine(_tracks, downloads.downloads) { tracks, index ->
+        tracks.isNotEmpty() && tracks.all { t -> index.any { it.id == t.itemId } }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /** Download the whole album for offline. */
+    fun downloadAll() {
+        val sc = subsonic
+        if (!isSubsonic || sc == null) { _toast.tryEmit("Only Navidrome albums can be downloaded"); return }
+        val pending = _tracks.value.filterNot { downloads.isDownloaded(it.itemId) }
+        if (pending.isEmpty()) { _toast.tryEmit("Already downloaded"); return }
+        viewModelScope.launch {
+            _toast.tryEmit("Downloading ${pending.size} tracks…")
+            val ok = downloads.downloadAll(pending, urlFor = { sc.downloadUrl(it.itemId) })
+            _toast.tryEmit(
+                when (ok) {
+                    pending.size -> "Downloaded ${_album.value?.name ?: "album"}"
+                    0 -> "Download failed"
+                    else -> "Downloaded $ok of ${pending.size}"
+                }
+            )
+        }
+    }
+
     /** Play a specific track from the album. */
     fun playTrack(track: MaItem) {
         viewModelScope.launch {
             try {
-                if (provider == "subsonic") {
-                    playTrackLocal(track)
+                if (isSubsonic) {
+                    // The album is the queue; the tapped track is where it starts.
+                    val start = _tracks.value.indexOfFirst { it.itemId == track.itemId }.coerceAtLeast(0)
+                    localPlayer.setQueue(localTracks(), start)
+                    _toast.tryEmit("Playing ${track.name}")
+                    return@launch
                 } else {
                     // Play the whole album starting from this track — MA's play_media
                     // with "replace" + the full URI list starts at index 0; to start
@@ -182,28 +232,31 @@ class AlbumDetailViewModel(
         }
     }
 
-    /** Subsonic direct playback via the local player. */
-    private suspend fun playTrackLocal(track: MaItem) {
-        val url = settings.navUrl.first().trim()
-        if (url.isBlank()) { _toast.tryEmit("No Navidrome server"); return }
-        val sc = SubsonicClient(url, settings.navUsername.first(), settings.navPassword.first())
-        localPlayer.play(sc.streamUrl(track.itemId), track.name)
-        _toast.tryEmit("Playing ${track.name}")
+    /** The album as a local queue, offline copies preferred over the stream. */
+    private fun localTracks() = _tracks.value.map {
+        downloads.toLocalTrack(it, streamUrl = subsonic?.streamUrl(it.itemId))
     }
 
     // --- favorites --------------------------------------------------------
 
     fun toggleFavorite(track: MaItem) {
-        if (provider == "subsonic") return  // Subsonic favorites not wired in this screen
+        val wanted = !track.favorite
+        // Flip locally first — the command is a round-trip and the heart should not
+        // sit still while it happens. Rolled back if the server refuses.
+        _tracks.value = _tracks.value.map { if (it.itemId == track.itemId) it.copy(favorite = wanted) else it }
         viewModelScope.launch {
             try {
-                val isFav = track.favorite
-                if (isFav) maRepo.removeFavorite(track)
-                else maRepo.addFavorite(track)
-                _tracks.value = _tracks.value.map {
-                    if (it.itemId == track.itemId) it.copy(favorite = !isFav) else it
+                val sc = subsonic
+                when {
+                    isSubsonic && sc != null -> sc.setStarred(track, wanted)
+                    isSubsonic -> throw IllegalStateException("Navidrome isn't connected")
+                    wanted -> maRepo.addFavorite(track)
+                    else -> maRepo.removeFavorite(track)
                 }
             } catch (e: Exception) {
+                _tracks.value = _tracks.value.map {
+                    if (it.itemId == track.itemId) it.copy(favorite = !wanted) else it
+                }
                 _toast.tryEmit(e.message ?: "Couldn't toggle favorite")
             }
         }
@@ -211,6 +264,7 @@ class AlbumDetailViewModel(
 
     override fun onCleared() {
         super.onCleared()
-        localPlayer.stop()
+        // The local player is process-scoped and shared — leaving the album screen
+        // must not stop the album the user just started from it.
     }
 }

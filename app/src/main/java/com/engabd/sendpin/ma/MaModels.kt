@@ -38,16 +38,24 @@ data class MaItem(
     val year: Int? = null,
     /** Genres associated with this item. */
     val genres: List<String> = emptyList(),
-    /** Track number within an album (for tracks). */
+    /** Track number within an album — also the sort order an offline album needs. */
     val trackNumber: Int? = null,
     /** Disc number for multi-disc albums (for tracks). */
     val discNumber: Int? = null,
+    /**
+     * The container this item sits in — a track's album id, an album's artist id.
+     * Subsonic gives these directly; MA addresses items by uri instead and leaves
+     * it null.
+     */
+    val parentId: String? = null,
+    /** Album name, when the item carries one of its own (a Subsonic song does). */
+    val album: String? = null,
 ) {
     val browsable get() = mediaType in BROWSABLE
     val playable get() = uri != null && mediaType in PLAYABLE
 
     companion object {
-        private val BROWSABLE = setOf("artist", "album", "playlist")
+        private val BROWSABLE = setOf("artist", "album", "playlist", "genre")
         private val PLAYABLE = setOf("track", "album", "playlist", "radio")
     }
 }
