@@ -1,5 +1,6 @@
 package com.engabd.sendpin.service
 
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -7,8 +8,10 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
@@ -27,6 +30,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
@@ -63,10 +67,47 @@ class SendspinService : Service() {
     private var cachedArtwork: android.graphics.Bitmap? = null
     private var loadedArtworkUrl: String? = null
 
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
+
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
         setupMediaSession()
+        acquireLocks()
+    }
+
+    /**
+     * A foreground service keeps the *process* alive; it does not keep the CPU or
+     * the Wi-Fi radio awake. Without these an idle phone can doze between
+     * announcements, stalling the WebSocket's 5s keepalive and delaying — or
+     * dropping — the very TTS this service exists to receive.
+     *
+     * The cost is real: an always-reachable receiver is an always-on radio. That
+     * is the trade the Stop action in the notification exists to let the user make.
+     */
+    // WakelockTimeout: a timeout is exactly wrong here. There is no bounded amount
+    // of work to wait for — the point is to stay reachable indefinitely. The lock is
+    // bounded by the service's own lifetime instead, which the user ends with Stop.
+    @SuppressLint("WakelockTimeout")
+    private fun acquireLocks() {
+        if (wakeLock == null) {
+            wakeLock = (getSystemService(POWER_SERVICE) as PowerManager)
+                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "sendspin:receiver")
+                .apply { setReferenceCounted(false); acquire() }
+        }
+        if (wifiLock == null) {
+            wifiLock = (applicationContext.getSystemService(WIFI_SERVICE) as WifiManager)
+                .createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "sendspin:receiver")
+                .apply { setReferenceCounted(false); acquire() }
+        }
+    }
+
+    private fun releaseLocks() {
+        runCatching { wakeLock?.takeIf { it.isHeld }?.release() }
+        runCatching { wifiLock?.takeIf { it.isHeld }?.release() }
+        wakeLock = null
+        wifiLock = null
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -107,10 +148,15 @@ class SendspinService : Service() {
     private fun observe() {
         if (observeJob != null) return
         observeJob = scope.launch {
-            // Observe everything that changes the notification — title, artist, art, playing state, position, duration.
+            // Everything the notification renders, including connection state — the
+            // idle text says whether the receiver is actually reachable.
             combine(
-                pb.trackTitle, pb.artist, pb.album, pb.isPlaying, pb.artworkUrl,
-            ) { _, _, _, _, _ -> Unit }
+                listOf<Flow<Any?>>(
+                    pb.trackTitle, pb.artist, pb.album, pb.isPlaying,
+                    pb.artworkUrl, pb.connected, pb.connectionStatus,
+                )
+            ) { it.toList() }
+                .distinctUntilChanged()
                 .collect { updateNotification() }
         }
         // Update the MediaSession's playback state + metadata independently.
@@ -220,9 +266,14 @@ class SendspinService : Service() {
     }
 
     private fun buildNotification(): Notification {
-        val title = pb.trackTitle.value.ifEmpty { "Sendspin" }
-        val text = pb.artist.value.ifEmpty { pb.connectionStatus.value }
         val isPlaying = pb.isPlaying.value
+        val title = pb.trackTitle.value.ifEmpty { "Sendspin" }
+        // With nothing playing this is not a dead notification — it is the receiver
+        // standing by, and saying so is what makes the persistent entry make sense.
+        val text = pb.artist.value.ifEmpty {
+            if (pb.connected.value) "Ready — announcements will play here"
+            else pb.connectionStatus.value
+        }
 
         val open = TaskStackBuilder.create(this)
             .addNextIntent(Intent(this, MainActivity::class.java))
@@ -281,13 +332,22 @@ class SendspinService : Service() {
         }
     }
 
+    /**
+     * Swiping the app out of Recents is not a request to go offline.
+     *
+     * This player exists to be *reachable* — Music Assistant pushes announcements
+     * and TTS to it whether or not music is playing, and it can only receive them
+     * while this service holds the connection open. Tearing down when idle meant
+     * the one state announcements matter most in was the one that killed the
+     * socket. The service now ends only on the notification's Stop action (or
+     * `Playback.disconnect()`, which is the same user intent from the UI).
+     */
     override fun onTaskRemoved(rootIntent: Intent?) {
-        // If the app is swiped away while not playing, stop the service + connection.
-        if (!pb.isPlaying.value) { pb.disconnect(); stopSelf() }
         super.onTaskRemoved(rootIntent)
     }
 
     override fun onDestroy() {
+        releaseLocks()
         observeJob?.cancel()
         artworkJob?.cancel()
         mediaSession?.isActive = false
