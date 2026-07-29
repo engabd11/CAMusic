@@ -1,24 +1,35 @@
-name: Release APK
+name: Build APK
 
-# Builds the installable debug APK and publishes it as a GitHub prerelease.
+# Builds the debug APK for a branch and uploads it as a workflow artifact, so a
+# branch can be checked for compile errors before anything is released.
 #
-# Debug rather than release on purpose: the release build is minified and unsigned,
-# so it cannot be installed on a phone without a signing key, while the debug build
-# is signed with the standard debug keystore and installs directly.
+# This workflow deliberately does NOT publish releases. "debug keystore" is not one
+# shared key: each machine generates its own at ~/.android/debug.keystore, and a CI
+# runner starts empty, so every run signs with a brand-new throwaway key. Android
+# refuses to update an installed app whose signer changed — "package conflicts with
+# an existing package" — so a CI-signed APK cannot install over a locally-signed one.
 #
-# A release is published when the version in `app/build.gradle.kts` has a matching
-# `docs/release-notes/v<version>.md` and no release exists for that tag yet — so
-# bumping the version and writing the notes *is* the release, and re-pushing the
-# branch afterwards is a no-op. The tag is created from the built commit. Pushing a
-# `v*` tag directly works too, and takes precedence.
+# That is exactly what broke v0.2.5: it was the first CI-published release, signed
+# 03cdee29… while v0.1.0-v0.2.4 were all built locally and signed 21b01f0f….
+#
+# Releases are therefore cut locally, where the keystore is stable:
+#
+#     ./gradlew assembleDebug
+#     gh release create vX.Y.Z --prerelease \
+#       --title "$(head -n1 docs/release-notes/vX.Y.Z.md)" \
+#       --notes-file <(tail -n +2 docs/release-notes/vX.Y.Z.md) \
+#       app/build/outputs/apk/debug/app-debug.apk
+#
+# To publish from CI instead, commit a dedicated keystore to GitHub Actions secrets
+# and add a signingConfig that uses it, so every build — local and CI — shares one
+# key. Until then, keep publishing local.
 on:
   push:
     branches: ['claude/**']
-    tags: ['v*']
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -42,46 +53,13 @@ jobs:
         id: name
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            tag="$GITHUB_REF_NAME"
-            version="${tag#v}"
-          else
-            version=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts)
-            tag="v${version}"
-          fi
+          version=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts)
           mkdir -p dist
           cp app/build/outputs/apk/debug/app-debug.apk "dist/sendspin-${version}-debug.apk"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: sendspin-${{ steps.name.outputs.version }}-debug-${{ github.sha }}
           path: dist/*.apk
-
-      # Release notes live in the repo so a release carries a written changelog
-      # rather than a list of commit subjects. First line is the release title.
-      - name: Publish release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ steps.name.outputs.tag }}
-        run: |
-          set -euo pipefail
-          notes="docs/release-notes/${TAG}.md"
-          if [[ ! -f "$notes" ]]; then
-            echo "No $notes — nothing to publish."
-            exit 0
-          fi
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "$TAG is already released — leaving it alone."
-            exit 0
-          fi
-          title=$(head -n 1 "$notes")
-          tail -n +2 "$notes" > /tmp/release-body.md
-          gh release create "$TAG" \
-            --target "$GITHUB_SHA" \
-            --prerelease \
-            --title "$title" \
-            --notes-file /tmp/release-body.md \
-            dist/*.apk
