@@ -29,6 +29,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.engabd.sendpin.BuildConfig
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
@@ -376,7 +377,12 @@ fun SettingsScreen(
                                 Icon(Icons.Default.Code, null, tint = accent, modifier = Modifier.size(16.dp))
                                 Text("GitHub Repository", color = TextSecondary, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                             }
-                            Text("v0.1.3 (code 4)", color = TextFaint, fontFamily = MonoFont, fontSize = 11.sp)
+                            // Read from the build rather than retyped here — the
+                            // hard-coded string had been stale since 0.1.3.
+                            Text(
+                                "v${BuildConfig.VERSION_NAME} (code ${BuildConfig.VERSION_CODE})",
+                                color = TextFaint, fontFamily = MonoFont, fontSize = 11.sp,
+                            )
                         }
                     }
                 }

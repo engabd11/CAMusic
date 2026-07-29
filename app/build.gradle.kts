@@ -13,8 +13,8 @@ android {
         applicationId = "com.engabd.sendpin"
         minSdk = 31
         targetSdk = 35
-        versionCode = 9
-        versionName = "0.2.4"
+        versionCode = 10
+        versionName = "0.2.5"
     }
 
     buildTypes {
@@ -31,7 +31,9 @@ android {
 
     kotlinOptions { jvmTarget = "17" }
 
-    buildFeatures { compose = true }
+    // buildConfig: the About screen reads the version from BuildConfig rather than
+    // carrying a hand-typed copy that goes stale between releases.
+    buildFeatures { compose = true; buildConfig = true }
 
     // The native AAudio-I24 / libFLAC pipeline (src/main/cpp) is kept for the
     // future bit-perfect 24-bit phase but is NOT built for now — M1 decodes with
