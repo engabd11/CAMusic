@@ -54,7 +54,10 @@ fun SettingsScreen(
     var haToken by remember { mutableStateOf("") }
     var haSaved by remember { mutableStateOf(false) }
     var haTokenVisible by remember { mutableStateOf(false) }
+    /** A saved token is sealed: shown as dots, not editable until explicitly replaced. */
+    var haTokenLocked by remember { mutableStateOf(false) }
     var playerName by remember { mutableStateOf("") }
+    val backend by settings.backend.collectAsState(initial = "ma")
 
     LaunchedEffect(Unit) {
         // Only start discovery if it's not already running — avoids re-scanning
@@ -64,6 +67,7 @@ fun SettingsScreen(
         }
         haUrl = settings.haUrl.first()
         haToken = settings.haToken.first()
+        haTokenLocked = haToken.isNotBlank()
         playerName = settings.playerName.first()
     }
 
@@ -118,7 +122,10 @@ fun SettingsScreen(
                                 accent = accent,
                             ) { viewModel.connectToServer(manualUrl) }
                             if (connected) {
-                                OledButton("Disconnect", accent = accent, outline = true) { viewModel.disconnect() }
+                                // Disconnecting drops the player out of Music
+                                // Assistant — that's a destructive action and it
+                                // should look like one rather than a spare grey chip.
+                                OledButton("Disconnect", accent = accent, danger = true) { viewModel.disconnect() }
                             }
                         }
                     }
@@ -155,6 +162,35 @@ fun SettingsScreen(
                                 }
                             }
                             OledButton("Log out", accent = accent) { viewModel.logout() }
+                        }
+                    }
+                }
+
+                // ── Library ─────────────────────────────────────────────────
+                item {
+                    SectionHeader(Icons.Default.LibraryMusic, "Library", accent)
+                    Spacer(Modifier.height(12.dp))
+                    GlassCard(radius = 16.dp) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Text(
+                                "Where the Library tab browses from",
+                                color = TextPrimary, fontFamily = AppFont,
+                                fontWeight = FontWeight.Bold, fontSize = 14.sp,
+                            )
+                            SegmentedToggle(
+                                options = listOf("Music Assistant", "Navidrome"),
+                                selectedIndex = if (backend == "subsonic") 1 else 0,
+                            ) { scope.launch { settings.setBackend(if (it == 1) "subsonic" else "ma") } }
+                            Text(
+                                if (backend == "subsonic")
+                                    "Navidrome plays on this phone only. Speaker grouping and Light Sync " +
+                                        "both run through Music Assistant, so those tabs are off while " +
+                                        "Navidrome is the library."
+                                else
+                                    "Music Assistant browses the whole library, plays to any speaker, and " +
+                                        "keeps grouping and Light Sync available.",
+                                color = TextFaint, fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp,
+                            )
                         }
                     }
                 }
@@ -253,25 +289,64 @@ fun SettingsScreen(
                                 color = TextMuted, fontSize = 13.sp,
                             )
                             OledField(haUrl, { haUrl = it; haSaved = false }, "HA URL", "http://192.168.0.10:8123", accent)
-                            OledField(
-                                haToken, { haToken = it; haSaved = false },
-                                "Long-lived access token", "eyJ…", accent,
-                                visualTransformation = if (haTokenVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                                trailingIcon = {
-                                    Box(Modifier.size(20.dp).clip(CircleShape).clickable { haTokenVisible = !haTokenVisible }) {
+                            if (haTokenLocked) {
+                                // A long-lived token is a house key. Once it's in and
+                                // working there is no reason to keep it on screen —
+                                // the field is sealed and can only be replaced whole.
+                                OledField(
+                                    "•".repeat(24), {}, "Long-lived access token", "", accent,
+                                    enabled = false,
+                                    trailingIcon = {
                                         Icon(
-                                            if (haTokenVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                            if (haTokenVisible) "Hide" else "Show",
-                                            tint = TextMuted, modifier = Modifier.size(20.dp),
+                                            Icons.Default.Lock, "Saved",
+                                            tint = TextMuted, modifier = Modifier.size(18.dp),
                                         )
+                                    },
+                                )
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    // The URL stays editable, so keep a way to save it
+                                    // without making the user re-paste the token.
+                                    OledButton(
+                                        if (haSaved) "Saved" else "Save",
+                                        enabled = haUrl.isNotBlank() && !haSaved,
+                                        accent = accent, modifier = Modifier.weight(1f),
+                                    ) {
+                                        scope.launch {
+                                            settings.setHomeAssistant(haUrl.trim(), haToken.trim()); haSaved = true
+                                        }
                                     }
-                                },
-                            )
-                            OledButton(
-                                if (haSaved) "Saved" else "Save",
-                                enabled = haUrl.isNotBlank() && haToken.isNotBlank(),
-                                accent = accent,
-                            ) { scope.launch { settings.setHomeAssistant(haUrl.trim(), haToken.trim()); haSaved = true } }
+                                    OledButton("Replace token", accent = accent, outline = true, modifier = Modifier.weight(1f)) {
+                                        haToken = ""; haTokenVisible = false; haSaved = false; haTokenLocked = false
+                                    }
+                                }
+                            } else {
+                                OledField(
+                                    haToken, { haToken = it; haSaved = false },
+                                    "Long-lived access token", "eyJ…", accent,
+                                    visualTransformation = if (haTokenVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                                    trailingIcon = {
+                                        Box(Modifier.size(20.dp).clip(CircleShape).clickable { haTokenVisible = !haTokenVisible }) {
+                                            Icon(
+                                                if (haTokenVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                                if (haTokenVisible) "Hide" else "Show",
+                                                tint = TextMuted, modifier = Modifier.size(20.dp),
+                                            )
+                                        }
+                                    },
+                                )
+                                OledButton(
+                                    if (haSaved) "Saved" else "Save",
+                                    enabled = haUrl.isNotBlank() && haToken.isNotBlank(),
+                                    accent = accent,
+                                ) {
+                                    scope.launch {
+                                        settings.setHomeAssistant(haUrl.trim(), haToken.trim())
+                                        haSaved = true
+                                        haTokenVisible = false
+                                        haTokenLocked = true
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -366,19 +441,36 @@ private fun OledField(
 @Composable
 private fun OledButton(
     text: String, accent: Color, enabled: Boolean = true, outline: Boolean = false,
-    modifier: Modifier = Modifier, onClick: () -> Unit,
+    danger: Boolean = false, modifier: Modifier = Modifier, onClick: () -> Unit,
 ) {
+    val fill = when {
+        !enabled -> Glass
+        danger -> ErrorRed.a(0.14f)
+        outline -> Glass
+        else -> accent
+    }
+    val border = when {
+        danger && enabled -> ErrorRed.a(0.55f)
+        outline -> Hairline
+        else -> Color.Transparent
+    }
+    val label = when {
+        !enabled -> TextMuted
+        danger -> ErrorRed
+        outline -> TextMuted
+        else -> Ink
+    }
     Box(
         modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(13.dp))
-            .background(if (outline || !enabled) Glass else accent)
-            .border(1.dp, if (outline) Hairline else androidx.compose.ui.graphics.Color.Transparent, RoundedCornerShape(13.dp))
+            .background(fill)
+            .border(1.dp, border, RoundedCornerShape(13.dp))
             .clickable(enabled = enabled, onClick = onClick)
             .padding(vertical = 13.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(text, color = if (outline || !enabled) TextMuted else Ink, fontFamily = AppFont, fontWeight = FontWeight.ExtraBold, fontSize = 13.sp)
+        Text(text, color = label, fontFamily = AppFont, fontWeight = FontWeight.ExtraBold, fontSize = 13.sp)
     }
 }
 

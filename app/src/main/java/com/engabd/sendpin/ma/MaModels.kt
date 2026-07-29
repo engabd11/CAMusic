@@ -27,6 +27,13 @@ data class MaItem(
     val duration: Int?,
     val favorite: Boolean = false,
     val audioFormat: MaAudioFormat? = null,
+    /**
+     * The provider domains that can actually supply this item, off
+     * `provider_mappings[].provider_domain`. A library item's own `provider` is
+     * always "library" — it says where Music Assistant filed the track, not where
+     * the bytes come from, which is what the source badge is asking about.
+     */
+    val providerDomains: List<String> = emptyList(),
 ) {
     val browsable get() = mediaType in BROWSABLE
     val playable get() = uri != null && mediaType in PLAYABLE
@@ -91,6 +98,13 @@ data class MaQueue(
     val currentQueueItemId: String? = null,
     val dontStopTheMusic: Boolean = false,
     val playbackSpeed: Float = 1f,
+    /**
+     * The provider actually streaming the current item, off
+     * `current_item.streamdetails.provider`. This is the honest answer to "where is
+     * this coming from" — the media item itself is filed under "library" no matter
+     * which backend holds the file.
+     */
+    val streamProvider: String? = null,
 )
 
 /** Grouped search hits. */
@@ -187,8 +201,20 @@ object MaParse {
             duration = o["duration"]?.jsonPrimitive?.let { it.intOrNull ?: it.doubleOrNull?.toInt() },
             favorite = o["favorite"]?.jsonPrimitive?.booleanOrNull ?: false,
             audioFormat = audioFormat(o),
+            providerDomains = providerDomains(o),
         )
     }
+
+    /** Which backends can supply this item, in the order the server listed them. */
+    private fun providerDomains(o: JsonObject): List<String> =
+        (o["provider_mappings"] as? JsonArray)
+            ?.mapNotNull { (it as? JsonObject) }
+            ?.mapNotNull {
+                it["provider_domain"]?.jsonPrimitive?.contentOrNull
+                    ?: it["provider_instance"]?.jsonPrimitive?.contentOrNull
+            }
+            ?.distinct()
+            ?: emptyList()
 
     /** The best (highest-rate) format any provider can supply this item in. */
     private fun audioFormat(o: JsonObject): MaAudioFormat? =
@@ -266,6 +292,8 @@ object MaParse {
                 currentQueueItemId = current?.get("queue_item_id")?.jsonPrimitive?.contentOrNull,
                 dontStopTheMusic = o["dont_stop_the_music_enabled"]?.jsonPrimitive?.booleanOrNull ?: false,
                 playbackSpeed = o["playback_speed"]?.jsonPrimitive?.floatOrNull ?: 1f,
+                streamProvider = (current?.get("streamdetails") as? JsonObject)
+                    ?.get("provider")?.jsonPrimitive?.contentOrNull,
             )
         }
     }
@@ -339,9 +367,41 @@ object MaParse {
         if (remote || path.startsWith("http", ignoreCase = true)) return path
         val base = serverUrl?.trimEnd('/')?.takeIf { it.isNotBlank() } ?: return null
         val provider = img["provider"]?.jsonPrimitive?.contentOrNull ?: "builtin"
-        return "$base/imageproxy?path=${URLEncoder.encode(path, "UTF-8")}" +
-            "&provider=${URLEncoder.encode(provider, "UTF-8")}"
+        return imageProxyUrl(base, provider, path)
     }
+
+    /**
+     * Music Assistant's own image-proxy URL shape, reproduced exactly:
+     *
+     * ```
+     * {base}/imageproxy?provider={provider}&size=0&fmt={fmt}&path={quote_plus(quote_plus(path))}
+     * ```
+     *
+     * The **double** encoding is not a mistake — the server encodes the path twice
+     * on the way out and unquotes it twice on the way in, so a singly-encoded path
+     * comes back mangled for anything containing a `%`, `+` or a nested URL. Sending
+     * it singly-encoded is what left every non-remote cover blank.
+     *
+     * [base] is the *API* base here; MA actually serves the proxy from its stream
+     * server, which usually sits on a different port. Rather than guess the port,
+     * the app's image loader ([com.engabd.sendpin.SendpinApp]) probes the handful of
+     * shapes MA has used and remembers whichever one the server answers.
+     */
+    fun imageProxyUrl(base: String, provider: String, path: String, size: Int = 0): String {
+        val encoded = URLEncoder.encode(URLEncoder.encode(path, "UTF-8"), "UTF-8")
+        return "${base.trimEnd('/')}/imageproxy?provider=${URLEncoder.encode(provider, "UTF-8")}" +
+            "&size=$size&fmt=${imageFormat(path)}&path=$encoded"
+    }
+
+    /** MA's `_detect_image_format`: read off the extension, PNG when in doubt. */
+    private fun imageFormat(path: String): String =
+        when (path.substringAfterLast('.', "").substringBefore('?').lowercase()) {
+            "jpg", "jpeg" -> "jpeg"
+            "gif" -> "gif"
+            "webp" -> "webp"
+            "svg" -> "svg"
+            else -> "png"
+        }
 
     // --- queue items --------------------------------------------------------
 

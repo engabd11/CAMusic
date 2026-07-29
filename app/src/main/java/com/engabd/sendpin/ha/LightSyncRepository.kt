@@ -151,20 +151,30 @@ class LightSyncRepository(private val ha: HaClient) {
             byDevice.getOrPut(dev) { mutableListOf() }.add(o)
         }
 
-        return byDevice.map { (deviceId, ents) ->
+        return byDevice.mapNotNull { (deviceId, ents) ->
             fun find(pred: (JsonObject) -> Boolean): JsonObject? = ents.firstOrNull(pred)
             fun key(o: JsonObject) = o["translation_key"]?.jsonPrimitive?.contentOrNull
             fun uid(o: JsonObject) = o["unique_id"]?.jsonPrimitive?.contentOrNull ?: ""
             fun eid(o: JsonObject?) = o?.get("entity_id")?.jsonPrimitive?.contentOrNull
 
-            val switch = find { it["entity_id"]?.jsonPrimitive?.contentOrNull?.startsWith("switch.") == true && uid(it).endsWith("_sync") }
+            fun isSwitch(o: JsonObject) =
+                o["entity_id"]?.jsonPrimitive?.contentOrNull?.startsWith("switch.") == true
+            // Prefer the canonical sync switch, but take any switch the device has
+            // rather than lose a real zone to a renamed unique_id.
+            val switch = find { isSwitch(it) && (uid(it).endsWith("_sync") || key(it) == "sync") }
+                ?: find { isSwitch(it) }
             val mode = find { key(it) == "mode" || uid(it).endsWith("_mode") }
             val effect = find { key(it) == "effect" || uid(it).endsWith("_effect") }
             val colour = find { key(it) == "colour" || uid(it).endsWith("_colour") }
             val brightness = find { key(it) == "brightness" || uid(it).endsWith("_brightness") }
             val timing = find { key(it) == "timing" || uid(it).endsWith("_timing") }
 
-            val switchEid = eid(switch)
+            // An entertainment zone is a device with a sync switch on it. The
+            // integration also registers service/diagnostic devices — the music
+            // library among them — under the same platform, and those were being
+            // listed as zones with every control dead, since there is nothing on
+            // them to enable, dim or colour.
+            val switchEid = eid(switch) ?: return@mapNotNull null
             val modeEid = eid(mode)
             val effectEid = eid(effect)
             val colourEid = eid(colour)

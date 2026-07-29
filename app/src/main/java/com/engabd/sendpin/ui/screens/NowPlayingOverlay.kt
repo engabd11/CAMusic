@@ -67,7 +67,6 @@ fun NowPlayingOverlay(
     val connected by viewModel.connected.collectAsState()
     val favorite by viewModel.favorite.collectAsState()
     val currentItem by viewModel.currentItem.collectAsState()
-    val sleepTimerMin by viewModel.sleepTimerMin.collectAsState()
     val context = LocalContext.current
 
     var panel by remember { mutableStateOf<Panel?>(null) }
@@ -103,6 +102,8 @@ fun NowPlayingOverlay(
         LocalConfiguration.current.screenHeightDp.dp.toPx()
     }
     val collapseOffset = screenHeightPx * 0.82f   // how far down before it's "minimized"
+    // How far up the cover has to travel before the queue is what you meant.
+    val queueRevealPx = screenHeightPx * 0.06f
     val dragOffset = remember { Animatable(0f) }
 
     LaunchedEffect(expanded) {
@@ -114,24 +115,40 @@ fun NowPlayingOverlay(
             Modifier
                 .fillMaxSize()
                 .offset { IntOffset(0, dragOffset.value.roundToInt()) }
-                .pointerInput(expanded) {
-                    if (expanded) detectVerticalDragGestures(
+                // The cover answers vertical swipes both ways: down minimizes it,
+                // up brings the queue over it. While a sheet is open the sheet owns
+                // the gesture instead — dragging the player out from under an open
+                // queue is never what the swipe meant.
+                .pointerInput(expanded, panel, options) {
+                    if (!expanded || panel != null || options) return@pointerInput
+                    detectVerticalDragGestures(
                         onDragEnd = {
                             // Animate first, collapse after — otherwise the parent drops
                             // this composable mid-slide and the gesture ends with a jump.
                             // Lower threshold (0.25) makes it easier to minimize.
                             dragScope.launch {
-                                if (dragOffset.value > collapseOffset * 0.25f) {
-                                    dragOffset.animateTo(collapseOffset, tween(250))
-                                    onCollapse()
-                                } else {
-                                    dragOffset.animateTo(0f, tween(250))
+                                when {
+                                    dragOffset.value > collapseOffset * 0.25f -> {
+                                        dragOffset.animateTo(collapseOffset, tween(250))
+                                        onCollapse()
+                                    }
+                                    dragOffset.value < -queueRevealPx -> {
+                                        dragOffset.animateTo(0f, tween(200))
+                                        panel = Panel.QUEUE
+                                    }
+                                    else -> dragOffset.animateTo(0f, tween(250))
                                 }
                             }
                         },
-                        onVerticalDrag = { _, dragAmount ->
+                        onDragCancel = { dragScope.launch { dragOffset.animateTo(0f, tween(200)) } },
+                        onVerticalDrag = { change, dragAmount ->
+                            change.consume()
                             dragScope.launch {
-                                dragOffset.snapTo((dragOffset.value + dragAmount).coerceAtLeast(0f))
+                                // Down is a real slide towards the mini bar; up only
+                                // lifts a little, as a hint that something is under it.
+                                dragOffset.snapTo(
+                                    (dragOffset.value + dragAmount).coerceAtLeast(-queueRevealPx * 1.6f)
+                                )
                             }
                         },
                     )
@@ -286,18 +303,7 @@ fun NowPlayingOverlay(
                         onClick = if (currentItem == null) null else ({ viewModel.toggleFavorite() }),
                     )
                     // Sleep timer
-                    IconChip(
-                        Icons.Default.Bedtime,
-                        if (sleepTimerMin > 0) "Sleep timer: ${sleepTimerMin}m" else "Sleep timer",
-                        active = sleepTimerMin > 0,
-                        onClick = {
-                            // Cycle through common presets: 0 → 15 → 30 → 45 → 60 → 0
-                            val next = when (sleepTimerMin) {
-                                0 -> 15; 15 -> 30; 30 -> 45; 45 -> 60; else -> 0
-                            }
-                            viewModel.setSleepTimer(next)
-                        },
-                    )
+                    SleepTimerChip(viewModel)
                     // Lyrics — swaps the cover for the words, in place.
                     IconChip(Icons.Default.Lyrics, "Lyrics", active = showLyrics) {
                         showLyrics = !showLyrics

@@ -121,11 +121,18 @@ fun App() {
         val layout by settings.nowPlayingLayout.collectAsState(initial = "tab")
         val isOverlay = layout == "overlay"
 
+        // Speaker grouping and Light Sync are Music Assistant features — grouping is
+        // an MA command and Light Sync drives an HA integration that follows MA
+        // players. On the Navidrome backend the phone plays on its own, so both tabs
+        // are shown greyed rather than offering controls that can't do anything.
+        val backend by settings.backend.collectAsState(initial = "ma")
+        val disabledRoutes = if (backend == "subsonic") setOf("speakers", "light_sync") else emptySet()
+
         // Overlay expand/collapse state.
         var overlayExpanded by rememberSaveable { mutableStateOf(false) }
 
         fun go(route: String) {
-            if (currentRoute == route) return
+            if (currentRoute == route || route in disabledRoutes) return
             navController.navigate(route) {
                 // saveState/restoreState is what keeps each tab where the user left
                 // it. The previous popUpTo destroyed the destination outright, so
@@ -134,6 +141,18 @@ fun App() {
                 popUpTo(navController.graph.findStartDestination().id) { saveState = true }
                 launchSingleTop = true
                 restoreState = true
+            }
+        }
+
+        // Switching the backend while standing on a tab that just went away would
+        // leave the user looking at dead controls, so walk them back to the library.
+        LaunchedEffect(disabledRoutes, currentRoute) {
+            if (currentRoute != null && currentRoute in disabledRoutes) {
+                navController.navigate("library") {
+                    popUpTo(navController.graph.findStartDestination().id) { saveState = true }
+                    launchSingleTop = true
+                    restoreState = true
+                }
             }
         }
 
@@ -176,6 +195,7 @@ fun App() {
                         SendspinNavBar(
                             tabs = tabs,
                             currentRoute = currentRoute,
+                            disabledRoutes = disabledRoutes,
                             onSelect = ::go,
                         )
                     }
@@ -197,6 +217,7 @@ fun App() {
                         tabs = tabs,
                         currentRoute = currentRoute,
                         modifier = Modifier.align(Alignment.BottomCenter),
+                        disabledRoutes = disabledRoutes,
                         onSelect = ::go,
                     )
                 }

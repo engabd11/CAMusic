@@ -45,6 +45,12 @@ fun SendspinNavBar(
     tabs: List<NavTab>,
     currentRoute: String?,
     modifier: Modifier = Modifier,
+    /**
+     * Routes that exist but aren't reachable right now — they stay in place, faded
+     * and inert, so the bar doesn't reshuffle under the user's thumb when the
+     * library backend changes.
+     */
+    disabledRoutes: Set<String> = emptySet(),
     onSelect: (String) -> Unit,
 ) {
     val accent = LocalAccent.current
@@ -71,8 +77,13 @@ fun SendspinNavBar(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             tabs.forEach { tab ->
-                val on = currentRoute == tab.route
-                val tint = if (on) accent else TextMuted
+                val off = tab.route in disabledRoutes
+                val on = currentRoute == tab.route && !off
+                val tint = when {
+                    off -> TextFaint.a(0.45f)
+                    on -> accent
+                    else -> TextMuted
+                }
                 Column(
                     Modifier
                         .weight(1f)
@@ -80,6 +91,7 @@ fun SendspinNavBar(
                         .clickable(
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null,
+                            enabled = !off,
                         ) { onSelect(tab.route) },
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,

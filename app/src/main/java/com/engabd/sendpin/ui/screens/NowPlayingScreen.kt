@@ -5,6 +5,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -22,12 +23,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.ui.design.*
@@ -80,8 +85,28 @@ fun NowPlayingScreen(
     val dur = st.durationMs
     val progress = if (dur > 0) (pos.toFloat() / dur).coerceIn(0f, 1f) else 0f
 
+    // How far up a swipe has to travel before it means "show me the queue".
+    val queueRevealPx = with(LocalDensity.current) { 56.dp.toPx() }
+
     CompositionLocalProvider(LocalAccent provides accent, LocalPalette provides palette) {
-        Box(Modifier.fillMaxSize().background(Ink)) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(Ink)
+                // Swipe up anywhere on the player to pull the queue over it. The
+                // sheets handle their own dismissal, so this stands down while one
+                // is open rather than reopening what the user just swiped away.
+                .pointerInput(panel, options) {
+                    if (panel != null || options) return@pointerInput
+                    var travelled = 0f
+                    detectVerticalDragGestures(
+                        onDragStart = { travelled = 0f },
+                        onDragCancel = { travelled = 0f },
+                        onDragEnd = { if (travelled < -queueRevealPx) panel = Panel.QUEUE },
+                        onVerticalDrag = { _, amount -> travelled += amount },
+                    )
+                }
+        ) {
             // The screen keeps its shape whether or not anything is playing: an
             // idle player shows the last track it had (dimmed, with a notice)
             // rather than swapping the whole screen for an empty state.
@@ -146,19 +171,7 @@ fun NowPlayingScreen(
                     IconChip(Icons.Default.Lyrics, "Lyrics", active = showLyrics) {
                         showLyrics = !showLyrics
                     }
-                    // Sleep timer — cycles 0 → 15 → 30 → 45 → 60 → 0
-                    val sleepTimerMin by viewModel.sleepTimerMin.collectAsState()
-                    IconChip(
-                        Icons.Default.Bedtime,
-                        if (sleepTimerMin > 0) "Sleep timer: ${sleepTimerMin}m" else "Sleep timer",
-                        active = sleepTimerMin > 0,
-                        onClick = {
-                            val next = when (sleepTimerMin) {
-                                0 -> 15; 15 -> 30; 30 -> 45; 45 -> 60; else -> 0
-                            }
-                            viewModel.setSleepTimer(next)
-                        },
-                    )
+                    SleepTimerChip(viewModel)
                     IconChip(Icons.AutoMirrored.Filled.QueueMusic, "Queue", active = panel == Panel.QUEUE) {
                         panel = if (panel == Panel.QUEUE) null else Panel.QUEUE
                     }
@@ -333,59 +346,41 @@ private fun TopBar(playerName: String, isSelf: Boolean, groupSize: Int, onOpenSp
     }
 }
 
-/** The quality badge, or a neutral placeholder until the stream reports itself. */
-@Composable
-private fun QualityChip(q: StreamQuality?) {
-    if (q == null) QualityPill("—", lossless = false)
-    else QualityPill(q.label, hiRes = q.hiRes, lossless = q.lossless)
-}
-
 /**
  * The tappable quality badge: shows what's actually playing, and tapping reveals
- * a popup with both the original source format and the playing (decoded) format.
+ * both the original source format and the playing (output) format.
+ *
+ * The detail is a real [Popup] — its own window, centred on the screen. Drawn
+ * inline it grew the badge's own Box, which shoved the transport row apart every
+ * time it opened; an info panel has no business moving the play button.
  */
 @Composable
 fun TappableQualityChip(playing: StreamQuality?, source: StreamQuality?) {
     var showDetail by remember { mutableStateOf(false) }
-    val accent = LocalAccent.current
 
-    Box {
-        Box(Modifier.clickable { showDetail = true }) {
-            if (playing == null) QualityPill("—", lossless = false, compact = true)
-            else QualityPill(playing.label, hiRes = playing.hiRes, lossless = playing.lossless, compact = true)
-        }
+    Box(Modifier.clickable { showDetail = true }) {
+        if (playing == null) QualityPill("—", lossless = false, compact = true)
+        else QualityPill(playing.label, hiRes = playing.hiRes, lossless = playing.lossless, compact = true)
+    }
 
-        if (showDetail) {
-            BackHandler { showDetail = false }
-            Box(
-                Modifier
-                    .matchParentSize()
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                    ) { showDetail = false }
-            )
-            QualityDetailPopup(
-                playing = playing,
-                source = source,
-                onDismiss = { showDetail = false },
-                modifier = Modifier.align(Alignment.Center),
-            )
+    if (showDetail) {
+        Popup(
+            popupPositionProvider = WindowCenterPosition,
+            onDismissRequest = { showDetail = false },
+            properties = PopupProperties(focusable = true),
+        ) {
+            QualityDetailCard(playing = playing, source = source)
         }
     }
 }
 
-/** A small popup showing both the original source and the playing format. */
+/** A small card showing both the original source and the playing format. */
 @Composable
-private fun QualityDetailPopup(
-    playing: StreamQuality?,
-    source: StreamQuality?,
-    onDismiss: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
+private fun QualityDetailCard(playing: StreamQuality?, source: StreamQuality?) {
     val accent = LocalAccent.current
     Column(
-        modifier
+        Modifier
+            .widthIn(max = 300.dp)
             .clip(RoundedCornerShape(16.dp))
             .background(Ink2)
             .border(1.dp, Hairline, RoundedCornerShape(16.dp))

@@ -3,6 +3,7 @@ package com.engabd.sendpin.ui.screens
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -28,12 +29,18 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
+import androidx.compose.ui.zIndex
 import coil.compose.AsyncImage
 import com.engabd.sendpin.ma.MaLyrics
 import com.engabd.sendpin.ma.MaQueueItem
@@ -71,6 +78,7 @@ fun BoxScope.NowPlayingSheet(
             .align(Alignment.BottomCenter)
             .fillMaxWidth()
             .fillMaxHeight(0.78f)
+            .dismissOnDragDown(onClose)
             // Swallow taps so the dismiss scrim behind the sheet only ever sees
             // taps that actually landed outside it.
             .clickable(
@@ -167,24 +175,96 @@ private fun ColumnScope.QueuePanel(viewModel: NowPlayingViewModel, accent: Color
             if (l.value.isEmpty()) {
                 PanelMessage(Icons.AutoMirrored.Filled.QueueMusic, "The queue is empty.")
             } else {
-                LazyColumn(
-                    Modifier.weight(1f).fillMaxWidth(),
-                    contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 4.dp, bottom = navBarInset() + 16.dp),
-                ) {
-                    itemsIndexed(l.value, key = { _, it -> it.queueItemId }) { i, item ->
-                        QueueRow(
-                            item = item,
-                            playing = item.queueItemId == st.currentQueueItemId,
-                            first = i == 0,
-                            last = i == l.value.lastIndex,
-                            onPlay = { viewModel.playQueueIndex(item.index) },
-                            onUp = { viewModel.moveQueueItem(item, -1) },
-                            onDown = { viewModel.moveQueueItem(item, 1) },
-                            onRemove = { viewModel.removeQueueItem(item) },
-                        )
-                    }
-                }
+                QueueList(l.value, st.currentQueueItemId, viewModel)
             }
+        }
+    }
+}
+
+/**
+ * The queue itself: a row is the track, so tapping one plays it. Reordering hangs
+ * off the grip on the right — press it and the row follows the finger, with the
+ * rest of the list opening up around it. Nothing is sent to the server until the
+ * finger lifts, and then it's a single move by however far the row travelled.
+ */
+@Composable
+private fun ColumnScope.QueueList(
+    items: List<MaQueueItem>,
+    currentId: String?,
+    viewModel: NowPlayingViewModel,
+) {
+    val listState = rememberLazyListState()
+
+    // The order shown right now. It tracks the server's list except while a drag is
+    // in flight, when the finger owns it.
+    var order by remember { mutableStateOf(items) }
+    var draggingId by remember { mutableStateOf<String?>(null) }
+    // How far the dragged row sits from the slot it currently occupies.
+    var dragOffset by remember { mutableFloatStateOf(0f) }
+    var dragStartIndex by remember { mutableIntStateOf(-1) }
+    var rowHeight by remember { mutableIntStateOf(0) }
+
+    // A server refresh mid-drag would yank the row out from under the finger.
+    LaunchedEffect(items) { if (draggingId == null) order = items }
+
+    fun endDrag() {
+        val id = draggingId ?: return
+        val from = dragStartIndex
+        val to = order.indexOfFirst { it.queueItemId == id }
+        draggingId = null
+        dragOffset = 0f
+        dragStartIndex = -1
+        if (to >= 0 && from >= 0 && to != from) {
+            items.firstOrNull { it.queueItemId == id }?.let { viewModel.moveQueueItem(it, to - from) }
+        }
+    }
+
+    LazyColumn(
+        Modifier.weight(1f).fillMaxWidth(),
+        state = listState,
+        contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 4.dp, bottom = navBarInset() + 16.dp),
+        // Scrolling and dragging a row are different jobs; let the grip have the
+        // gesture to itself rather than fighting the list for it.
+        userScrollEnabled = draggingId == null,
+    ) {
+        itemsIndexed(order, key = { _, it -> it.queueItemId }) { _, item ->
+            val dragging = item.queueItemId == draggingId
+            QueueRow(
+                item = item,
+                playing = item.queueItemId == currentId,
+                dragging = dragging,
+                modifier = Modifier
+                    .zIndex(if (dragging) 1f else 0f)
+                    .graphicsLayer { translationY = if (dragging) dragOffset else 0f }
+                    .onSizeChanged { if (it.height > 0) rowHeight = it.height },
+                onPlay = { viewModel.playQueueIndex(item.index) },
+                onRemove = { viewModel.removeQueueItem(item) },
+                onDragStart = {
+                    draggingId = item.queueItemId
+                    dragStartIndex = order.indexOfFirst { r -> r.queueItemId == item.queueItemId }
+                    dragOffset = 0f
+                },
+                onDrag = { dy ->
+                    dragOffset += dy
+                    val h = rowHeight
+                    if (h > 0) {
+                        var index = order.indexOfFirst { r -> r.queueItemId == draggingId }
+                        // Swap past a neighbour once the row has travelled half of
+                        // one, and hand that distance back so the offset stays small.
+                        while (dragOffset > h / 2f && index in 0 until order.lastIndex) {
+                            order = order.toMutableList().apply { add(index + 1, removeAt(index)) }
+                            dragOffset -= h
+                            index++
+                        }
+                        while (dragOffset < -h / 2f && index > 0) {
+                            order = order.toMutableList().apply { add(index - 1, removeAt(index)) }
+                            dragOffset += h
+                            index--
+                        }
+                    }
+                },
+                onDragEnd = { endDrag() },
+            )
         }
     }
 }
@@ -193,70 +273,182 @@ private fun ColumnScope.QueuePanel(viewModel: NowPlayingViewModel, accent: Color
 private fun QueueRow(
     item: MaQueueItem,
     playing: Boolean,
-    first: Boolean,
-    last: Boolean,
+    dragging: Boolean,
+    modifier: Modifier = Modifier,
     onPlay: () -> Unit,
-    onUp: () -> Unit,
-    onDown: () -> Unit,
     onRemove: () -> Unit,
+    onDragStart: () -> Unit,
+    onDrag: (Float) -> Unit,
+    onDragEnd: () -> Unit,
 ) {
     val accent = LocalAccent.current
-    var open by remember(item.queueItemId) { mutableStateOf(false) }
-    Column(
-        Modifier.fillMaxWidth().padding(vertical = 3.dp).clip(RoundedCornerShape(13.dp))
-            .background(if (playing) accent.a(0.10f) else Color.Transparent),
-    ) {
-        Row(
-            Modifier.fillMaxWidth().clickable { open = !open }.padding(9.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(Modifier.size(40.dp).clip(RoundedCornerShape(9.dp)).background(Glass), contentAlignment = Alignment.Center) {
-                if (item.image != null) {
-                    AsyncImage(model = item.image, contentDescription = null, modifier = Modifier.matchParentSize())
-                } else {
-                    Icon(Icons.Default.MusicNote, null, tint = TextFaint, modifier = Modifier.size(16.dp))
+    Row(
+        modifier
+            .fillMaxWidth()
+            .padding(vertical = 3.dp)
+            .clip(RoundedCornerShape(13.dp))
+            .background(
+                when {
+                    dragging -> GlassStrong
+                    playing -> accent.a(0.10f)
+                    else -> Color.Transparent
                 }
+            )
+            // The row is the track: tapping it plays it. Everything else on the row
+            // is a control with its own target.
+            .clickable(onClick = onPlay)
+            .padding(9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(40.dp).clip(RoundedCornerShape(9.dp)).background(Glass), contentAlignment = Alignment.Center) {
+            if (item.image != null) {
+                AsyncImage(model = item.image, contentDescription = null, modifier = Modifier.matchParentSize())
+            } else {
+                Icon(Icons.Default.MusicNote, null, tint = TextFaint, modifier = Modifier.size(16.dp))
             }
-            Spacer(Modifier.width(11.dp))
-            Column(Modifier.weight(1f)) {
+        }
+        Spacer(Modifier.width(11.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                item.name,
+                color = if (playing) accent else if (item.available) TextPrimary else TextFaint,
+                fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 13.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+            if (!item.artist.isNullOrBlank()) {
                 Text(
-                    item.name,
-                    color = if (playing) accent else if (item.available) TextPrimary else TextFaint,
-                    fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 13.sp,
+                    item.artist, color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
-                if (!item.artist.isNullOrBlank()) {
-                    Text(
-                        item.artist, color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    )
-                }
             }
-            item.duration?.takeIf { it > 0 }?.let {
-                Text(
-                    "%d:%02d".format(it / 60, it % 60),
-                    color = TextFaint, fontFamily = MonoFont, fontSize = 11.sp,
-                )
-            }
-            Spacer(Modifier.width(4.dp))
-            Icon(
-                if (open) Icons.Default.ExpandLess else Icons.Default.MoreVert, null,
-                tint = TextFaint, modifier = Modifier.size(16.dp),
+        }
+        item.duration?.takeIf { it > 0 }?.let {
+            Text(
+                "%d:%02d".format(it / 60, it % 60),
+                color = TextFaint, fontFamily = MonoFont, fontSize = 11.sp,
             )
         }
-        // Row actions stay folded away: a queue is mostly for reading.
-        if (open) {
-            Row(
-                Modifier.fillMaxWidth().padding(start = 60.dp, end = 12.dp, bottom = 10.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+        Spacer(Modifier.width(6.dp))
+        Icon(
+            Icons.Default.Close, "Remove from queue", tint = TextFaint,
+            modifier = Modifier.size(26.dp).clip(CircleShape).clickable(onClick = onRemove).padding(5.dp),
+        )
+        // The reorder grip. Dragging starts here and nowhere else, so a tap
+        // anywhere on the row is unambiguously "play this".
+        Box(
+            Modifier
+                .size(34.dp)
+                .clip(RoundedCornerShape(9.dp))
+                .pointerInput(item.queueItemId) {
+                    detectVerticalDragGestures(
+                        onDragStart = { onDragStart() },
+                        onDragEnd = { onDragEnd() },
+                        onDragCancel = { onDragEnd() },
+                        onVerticalDrag = { change, dy -> change.consume(); onDrag(dy) },
+                    )
+                }
+                // Swallow taps: the grip is something you hold, and letting a tap on
+                // it fall through to the row would play a track you meant to grab.
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) { },
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Default.DragHandle, "Reorder",
+                tint = if (dragging) accent else TextMuted,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+    }
+}
+
+// --- sleep timer ----------------------------------------------------------
+
+/**
+ * The sleep-timer control: the chip, a live countdown beside it, and the picker.
+ *
+ * The chip used to cycle silently through 15/30/45/60 with nothing on screen to
+ * show for it, so a running timer and a dead button looked exactly alike — which
+ * is why the timer read as doing nothing. It now says what it set and how long is
+ * left, and can be called off again.
+ */
+@Composable
+fun SleepTimerChip(viewModel: NowPlayingViewModel) {
+    val minutes by viewModel.sleepTimerMin.collectAsState()
+    val remainingMs by viewModel.sleepTimerRemainingMs.collectAsState()
+    val accent = LocalAccent.current
+    var picking by remember { mutableStateOf(false) }
+    val running = minutes > 0
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        IconChip(
+            Icons.Default.Bedtime,
+            if (running) "Sleep timer, ${countdown(remainingMs)} left" else "Sleep timer",
+            active = running,
+        ) { picking = true }
+        if (running) {
+            Text(
+                countdown(remainingMs), color = accent, fontFamily = MonoFont,
+                fontWeight = FontWeight.Bold, fontSize = 11.sp,
+            )
+        }
+    }
+
+    if (picking) {
+        Popup(
+            popupPositionProvider = WindowCenterPosition,
+            onDismissRequest = { picking = false },
+            properties = PopupProperties(focusable = true),
+        ) {
+            Column(
+                Modifier
+                    .widthIn(max = 320.dp)
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(Ink2)
+                    .border(1.dp, Hairline, RoundedCornerShape(20.dp))
+                    .padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                SmallAction(Icons.Default.PlayArrow, "Play") { onPlay() }
-                if (!first) SmallAction(Icons.Default.ArrowUpward, "Up") { onUp() }
-                if (!last) SmallAction(Icons.Default.ArrowDownward, "Down") { onDown() }
-                SmallAction(Icons.Default.Delete, "Remove") { onRemove() }
+                Text(
+                    "Sleep timer", color = TextPrimary, fontFamily = AppFont,
+                    fontWeight = FontWeight.ExtraBold, fontSize = 16.sp,
+                )
+                Text(
+                    if (running) "${countdown(remainingMs)} left — the music fades out over the last 10 seconds."
+                    else "Fades the music out, then pauses the player.",
+                    color = TextMuted, fontFamily = AppFont, fontSize = 12.sp, lineHeight = 16.sp,
+                )
+                viewModel.sleepTimerPresets.chunked(3).forEach { row ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        row.forEach { m ->
+                            Pill("${m}m", m == minutes, Modifier.weight(1f)) {
+                                viewModel.setSleepTimer(m); picking = false
+                            }
+                        }
+                        // Keep a short final row's columns lined up with the one above.
+                        repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+                    }
+                }
+                Pill(if (running) "Cancel timer" else "Off", false, Modifier.fillMaxWidth()) {
+                    viewModel.cancelSleepTimer(); picking = false
+                }
             }
         }
     }
+}
+
+/** mm:ss, or h:mm:ss once there's an hour on the clock. */
+private fun countdown(ms: Long): String {
+    val total = (ms / 1000).coerceAtLeast(0)
+    val h = total / 3600
+    val m = (total % 3600) / 60
+    val s = total % 60
+    return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
 }
 
 // --- shared bits ----------------------------------------------------------
