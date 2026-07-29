@@ -344,7 +344,7 @@ object MaParse {
     private fun genreList(o: JsonObject): List<String> = when (val g = o["genres"]) {
         is JsonArray -> g.mapNotNull { (it as? JsonObject)?.get("name")?.jsonPrimitive?.contentOrNull
             ?: it.jsonPrimitive.contentOrNull }
-        is JsonPrimitive -> g.contentOrNull?.split(",")?.map { it.trim() }?.filter { it.isNotBlank() }
+        is JsonPrimitive -> g.contentOrNull?.split(",")?.map { it.trim() }?.filter { it.isNotBlank() } ?: emptyList()
         else -> emptyList()
     }
 
