@@ -39,6 +39,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -142,49 +143,46 @@ fun AlbumArt(
     url: String?,
     glow: Color,
     modifier: Modifier = Modifier,
-    radius: Dp = 26.dp,
+    radius: Dp = 0.dp,
     glowAlpha: Float = 0.45f,
     placeholder: ImageVector? = null,
 ) {
-    val shape = RoundedCornerShape(radius)
     val art = rememberArtRequest(url)
-    BoxWithConstraints(modifier, contentAlignment = Alignment.Center) {
-        // An unbounded height (inside a scroller) leaves width as the only limit.
-        val side = if (maxHeight != Dp.Infinity) minOf(maxWidth, maxHeight) else maxWidth
-        Box(Modifier.size(side)) {
-            if (art != null) CastGlow(glow, shape, blurRadius = 40.dp, alpha = glowAlpha, offsetY = 22.dp)
+    // The cover sits right on the background — no rounded corner, no border, no
+    // forced square. Its aspect ratio is whatever the image itself has, so a
+    // tall album cover is tall and a wide one is wide. The hue melts into the
+    // backdrop without an outer frame.
+    Box(modifier, contentAlignment = Alignment.Center) {
+        if (art != null) {
+            // The blurred wash behind the art — fills the available space and
+            // bleeds past the art's edges so the colour melts into the background.
+            AsyncImage(
+                model = art, contentDescription = null, contentScale = ContentScale.Crop,
+                colorFilter = saturate(1.7f),
+                modifier = Modifier
+                    .matchParentSize()
+                    .scale(1.3f)
+                    .blur(64.dp, BlurredEdgeTreatment.Unbounded)
+                    .alpha(0.45f * glowAlpha.coerceIn(0f, 1f)),
+            )
+            // The actual cover — fit, not crop, so the full artwork is visible.
+            AsyncImage(
+                model = art, contentDescription = "Album art", contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight()
+                    .shadow(20.dp, RoundedCornerShape(radius)),
+            )
+        } else if (placeholder != null) {
             Box(
                 Modifier
-                    .matchParentSize()
-                    .shadow(20.dp, shape)
-                    .clip(shape)
-                    .background(Ink2)
-                    .border(1.dp, Hairline, shape),
+                    .fillMaxWidth()
+                    .fillMaxHeight()
+                    .clip(RoundedCornerShape(radius))
+                    .background(Ink2),
                 contentAlignment = Alignment.Center,
             ) {
-                if (art != null) {
-                    AsyncImage(
-                        model = art, contentDescription = null, contentScale = ContentScale.Crop,
-                        colorFilter = saturate(1.4f),
-                        modifier = Modifier.matchParentSize().scale(1.2f).blur(28.dp).alpha(0.55f),
-                    )
-                    AsyncImage(
-                        model = art, contentDescription = "Album art", contentScale = ContentScale.Fit,
-                        modifier = Modifier.matchParentSize(),
-                    )
-                    Box(
-                        Modifier.matchParentSize().background(
-                            Brush.linearGradient(
-                                0f to Color.White.a(0.12f),
-                                0.44f to Color.Transparent,
-                                start = Offset.Zero,
-                                end = Offset(Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY),
-                            )
-                        )
-                    )
-                } else if (placeholder != null) {
-                    Icon(placeholder, null, tint = TextFaint, modifier = Modifier.fillMaxSize(0.28f))
-                }
+                Icon(placeholder, null, tint = TextFaint, modifier = Modifier.fillMaxSize(0.28f))
             }
         }
     }
@@ -557,17 +555,18 @@ fun HSlider(
                     .clip(RoundedCornerShape(9.dp))
                     .background(Ink3)
                     .border(1.dp, accent.a(0.55f), RoundedCornerShape(9.dp))
-                    .padding(vertical = 5.dp),
+                    .padding(horizontal = 8.dp, vertical = 5.dp),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
                     text, color = TextPrimary, fontFamily = MonoFont,
-                    fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1,
+                    fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1,
+                    textAlign = TextAlign.Center,
                 )
             }
         }
     }
 }
 
-private val BubbleWidth = 62.dp
-private val BubbleLift = 34.dp
+private val BubbleWidth = 72.dp
+private val BubbleLift = 38.dp

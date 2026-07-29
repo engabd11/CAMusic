@@ -122,15 +122,21 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             hasTrack = live != null,
             idle = live == null,
             blank = np == null,
-            // `quality` is what's actually playing: when this phone is the player, the
-            // Sendspin stream format (what the decoder is producing); otherwise the
-            // queue's streamdetails (what the remote speaker is receiving).
+            // `quality` is what's actually coming out of the pipe right now:
+            // when this phone is the player, the Sendspin stream format (what the
+            // decoder is producing); otherwise the queue's streamdetails (what the
+            // remote speaker is receiving).
             quality = (if (isSelf) local else null) ?: queue?.quality,
-            // `sourceQuality` is the original library format — from the queue's streamdetails
-            // before any transcoding the server may have done for the player.
-            sourceQuality = queue?.quality,
+            // `sourceQuality` is the original library file's format — derived from
+            // the current item's provider_mappings audio_format, NOT the stream
+            // details (which reflect what the server is actually sending, after
+            // any transcoding). These genuinely differ when MA converts a 96/24
+            // FLAC to 48/16 for a player that can't handle hi-res.
+            sourceQuality = queue?.currentItem?.audioFormat?.let {
+                StreamQuality(it.codec, it.sampleRate, it.bitDepth)
+            },
             // Source: the currentItem's provider tells us where the track came from.
-            source = queue?.currentItem?.let { if (it.provider == "subsonic") "Navidrome" else "MA" } ?: "",
+            source = queue?.currentItem?.let { sourceLabel(it.provider) } ?: "",
             groupSize = 1 + (p?.groupChilds?.size ?: 0),
             shuffle = queue?.shuffleEnabled == true,
             repeatMode = queue?.repeatMode ?: "off",
@@ -483,5 +489,35 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     override fun onCleared() {
         super.onCleared()
         // Shared MaApiClient — don't disconnect it when one ViewModel is destroyed.
+    }
+
+    /**
+     * The badge text for where a track came from.
+     *
+     * Music Assistant identifies a provider either by its domain ("spotify") or by
+     * an instance id carrying a `--<hash>` suffix ("spotify--AbC123"), so match on
+     * the part in front of the suffix. Only MA's own library counts as "MA" — an
+     * unrecognised provider is named after itself rather than silently claimed,
+     * which is what made every track look like it came from MA.
+     */
+    private fun sourceLabel(provider: String): String {
+        val domain = provider.substringBefore("--").lowercase()
+        return when (domain) {
+            "subsonic", "opensubsonic" -> "Navidrome"
+            "library", "builtin" -> "MA"
+            "spotify" -> "Spotify"
+            "ytmusic", "youtube" -> "YouTube"
+            "tidal" -> "Tidal"
+            "qobuz" -> "Qobuz"
+            "deezer" -> "Deezer"
+            "apple_music" -> "Apple Music"
+            "soundcloud" -> "SoundCloud"
+            "radiobrowser" -> "Radio"
+            "filesystem_local", "filesystem_smb" -> "Files"
+            // "some_provider" → "Some Provider": better a rough name than a wrong one.
+            else -> domain.split('_').filter { it.isNotEmpty() }
+                .joinToString(" ") { w -> w.replaceFirstChar { it.uppercase() } }
+                .ifBlank { "MA" }
+        }
     }
 }

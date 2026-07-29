@@ -18,7 +18,7 @@ data class StreamQuality(
     /** Better than CD: the case worth lighting the badge up for. */
     val hiRes: Boolean get() = lossless && (sampleRateHz > 48_000 || bitDepth > 16)
 
-    /** The badge text, e.g. `FLAC · 96/24` or `OPUS · 320k`. */
+    /** The badge text, e.g. `FLAC · 96/24 · 1411k` or `OPUS · 320k`. */
     val label: String
         get() {
             val name = codec.uppercase()
@@ -29,7 +29,12 @@ data class StreamQuality(
                 bitrateKbps > 0 -> "${bitrateKbps}k"
                 else -> null
             }
-            return if (detail == null) name else "$name · $detail"
+            // The bitrate is a bonus on top of a rate/depth pair — never worth
+            // appending when `detail` fell back to being the bitrate itself.
+            val br = if (lossless && bitrateKbps > 0 && detail != null && detail != "${bitrateKbps}k") {
+                " · ${bitrateKbps}k"
+            } else ""
+            return if (detail == null) name else "$name · $detail$br"
         }
 
     companion object {
