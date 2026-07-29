@@ -85,11 +85,26 @@ fun NowPlayingOverlay(
 
     // Position is driven by the ViewModel's server-anchored ticker — no local
     // interpolation loop needed. `scrubbing` freezes the bar so a poll landing
-    // mid-drag can't fight the finger.
+    // mid-drag can't fight the finger. After release, `seekTarget` holds the
+    // target position until the server catches up (within 2s), preventing the
+    // bar from snapping back during the seek round-trip.
     var scrubbing by remember { mutableStateOf(false) }
     var scrubPos by remember { mutableStateOf(0L) }
+    var seekTarget by remember { mutableStateOf(-1L) }  // -1 = no hold
     val livePos by viewModel.positionMs.collectAsState()
-    val pos = if (scrubbing) scrubPos else livePos
+
+    // Release the hold once the server position catches up within 2 seconds.
+    LaunchedEffect(livePos, seekTarget) {
+        if (seekTarget >= 0 && !scrubbing && kotlin.math.abs(livePos - seekTarget) < 2_000L) {
+            seekTarget = -1L
+        }
+    }
+
+    val pos = when {
+        scrubbing -> scrubPos
+        seekTarget >= 0 -> seekTarget
+        else -> livePos
+    }
     val dur = st.durationMs
     val progress = if (dur > 0) (pos.toFloat() / dur).coerceIn(0f, 1f) else 0f
 
@@ -234,7 +249,12 @@ fun NowPlayingOverlay(
                 HSlider(
                     progress,
                     onChange = { f -> scrubbing = true; scrubPos = (f * dur).toLong() },
-                    onCommit = { f -> scrubPos = (f * dur).toLong(); scrubbing = false; viewModel.seekTo(f) },
+                    onCommit = { f ->
+                        scrubPos = (f * dur).toLong()
+                        seekTarget = scrubPos
+                        scrubbing = false
+                        viewModel.seekTo(f)
+                    },
                     label = { f -> fmtTime((f * dur).toLong()) },
                 )
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
