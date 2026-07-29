@@ -122,11 +122,12 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             hasTrack = live != null,
             idle = live == null,
             blank = np == null,
-            // `quality` is what's actually coming out of the pipe right now:
-            // when this phone is the player, the Sendspin stream format (what the
-            // decoder is producing); otherwise the queue's streamdetails (what the
-            // remote speaker is receiving).
-            quality = (if (isSelf) local else null) ?: queue?.quality,
+            // `quality` is what's actually coming out of the pipe right now.
+            // The queue's streamdetails is the authoritative source — it carries
+            // the bitrate alongside the codec/rate/depth, and it's what MA is
+            // actually sending to the player. The Sendspin stream format
+            // (`local`) is a fallback for when the queue hasn't reported yet.
+            quality = queue?.quality ?: (if (isSelf) local else null),
             // `sourceQuality` is the original library file's format — derived from
             // the current item's provider_mappings audio_format, NOT the stream
             // details (which reflect what the server is actually sending, after

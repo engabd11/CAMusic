@@ -222,14 +222,15 @@ fun NowPlayingScreen(
                 Row(
                     Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
+                    verticalAlignment = Alignment.Bottom,
                 ) {
                     TransportIcon(Icons.Default.Shuffle, "Shuffle", 20.dp, st.shuffle) { viewModel.toggleShuffle() }
                     TransportIcon(Icons.Default.SkipPrevious, "Previous", 26.dp) { viewModel.previous() }
-                    // Quality badge floats above the play button — the centre of attention.
+                    // Quality badge floats above the play button. The Column is
+                    // bottom-aligned so the play button lines up with the skip buttons.
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
                         TappableQualityChip(playing = st.quality, source = st.sourceQuality)
                         PlayButton(st.isPlaying) { viewModel.playPause() }
@@ -350,8 +351,8 @@ fun TappableQualityChip(playing: StreamQuality?, source: StreamQuality?) {
 
     Box {
         Box(Modifier.clickable { showDetail = true }) {
-            if (playing == null) QualityPill("—", lossless = false)
-            else QualityPill(playing.label, hiRes = playing.hiRes, lossless = playing.lossless)
+            if (playing == null) QualityPill("—", lossless = false, compact = true)
+            else QualityPill(playing.label, hiRes = playing.hiRes, lossless = playing.lossless, compact = true)
         }
 
         if (showDetail) {
