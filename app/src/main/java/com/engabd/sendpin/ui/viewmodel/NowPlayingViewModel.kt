@@ -470,6 +470,15 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         act { if (state.value.isPlaying) repo.pause(targetId()) else repo.play(targetId()) }
     }
 
+    /**
+     * Stop playback entirely — not just pause, but stop and clear the session.
+     * Works for both the local player (Navidrome/offline) and the MA player.
+     */
+    fun stop() {
+        if (isLocal) { local.stop(); return }
+        act { repo.stop(targetId()) }
+    }
+
     // In-flight guards prevent button-mash spam: rapid taps fire only one MA
     // command, the rest are dropped. A short cooldown after the command lands
     // prevents overlapping refresh coroutines.

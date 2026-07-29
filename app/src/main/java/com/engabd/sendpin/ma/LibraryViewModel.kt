@@ -178,6 +178,12 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * forever, because a StateFlow does not re-emit a value it is already holding.
      */
     private fun applyBackend(b: Backend) {
+        // Stop all playback before switching — neither backend knows about the
+        // other, so without this a song playing on the old backend keeps playing
+        // under whatever the new backend starts.
+        localPlayer.stop()
+        stopMaPlayback()
+
         _backend.value = b
         _ready.value = false
         _offline.value = false
@@ -283,6 +289,17 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     // --- browse / play ----------------------------------------------------
 
+    /**
+     * Stop Music Assistant playback on the target player. Fire-and-forget —
+     * if the API is down or the player doesn't respond, there's nothing more
+     * to do; the local player will claim audio focus regardless.
+     */
+    private fun stopMaPlayback() {
+        viewModelScope.launch {
+            runCatching { maRepo.stop(playTarget()) }
+        }
+    }
+
     fun open(item: MaItem) {
         when {
             item.provider == CATEGORY -> openCategory(item.itemId, item.name)
@@ -328,6 +345,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                     else -> {
                         val direct = if (option == "replace") navidromeDirectUrl(item) else null
                         if (direct != null) {
+                            // Playing a Navidrome stream directly stops MA — same
+                            // reason as playLocal: both can't own the speaker.
+                            if (option == "replace") stopMaPlayback()
                             localPlayer.setQueue(listOf(localTrack(item, streamUrl = direct)))
                             _toast.tryEmit("Playing ${item.name} — original file")
                             return@launch
@@ -350,6 +370,13 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     /** Hand a resolved list to the local player under the requested queue option. */
     private fun playLocal(context: PlayContext, option: String) {
         if (context.tracks.isEmpty()) { _toast.tryEmit("Nothing to play"); return }
+        // Stop Music Assistant playback before starting the local player —
+        // without this, MA keeps streaming on the Sendspin connection while
+        // the local player plays on top of it.
+        if (option == "replace") {
+            localPlayer.stop()
+            stopMaPlayback()
+        }
         when (option) {
             "add" -> {
                 localPlayer.addToQueue(context.tracks)
@@ -464,6 +491,8 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                     maRepo.playMedia(playTarget(), tracks.mapNotNull { it.uri }, "replace")
                     _toast.tryEmit("Queued ${tracks.size} tracks")
                 } else {
+                    // Local playback — stop MA first so both don't play at once.
+                    stopMaPlayback()
                     localPlayer.setQueue(tracks.map { localTrack(it) }, 0)
                     _toast.tryEmit("Playing ${tracks.size} tracks")
                 }

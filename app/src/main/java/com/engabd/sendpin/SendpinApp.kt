@@ -42,7 +42,7 @@ class SendpinApp : Application(), ImageLoaderFactory {
      * instance meant the phone could be playing something no other screen knew
      * about — and that nothing but the Library tab could pause.
      */
-    val localPlayer: LocalPlayer by lazy { LocalPlayer() }
+    val localPlayer: LocalPlayer by lazy { LocalPlayer(this) }
 
     /** The offline download index, shared for the same reason. */
     val downloads: DownloadManager by lazy { DownloadManager(this) }
