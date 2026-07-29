@@ -29,7 +29,11 @@ data class StreamQuality(
                 bitrateKbps > 0 -> "${bitrateKbps}k"
                 else -> null
             }
-            val br = if (bitrateKbps > 0 && lossless) " · ${bitrateKbps}k" else ""
+            // The bitrate is a bonus on top of a rate/depth pair — never worth
+            // appending when `detail` fell back to being the bitrate itself.
+            val br = if (lossless && bitrateKbps > 0 && detail != null && detail != "${bitrateKbps}k") {
+                " · ${bitrateKbps}k"
+            } else ""
             return if (detail == null) name else "$name · $detail$br"
         }
 
