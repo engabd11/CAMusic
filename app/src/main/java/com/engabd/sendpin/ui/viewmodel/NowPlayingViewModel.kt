@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.engabd.sendpin.SendpinApp
+import com.engabd.sendpin.audio.FormatNegotiator
 import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.PlayerIdentity
@@ -84,6 +85,8 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     private val repo = MaRepository(api)
     /** This phone's own Sendspin stream — the authoritative format when we're the player. */
     private val localQuality = (app as SendpinApp).playback.streamQuality
+    /** What this phone can put out on its own, for locally-decoded playback. */
+    private val deviceQuality = FormatNegotiator.deviceOutputQuality()
 
     private val _target = MutableStateFlow("")
     private val _players = MutableStateFlow<List<MaPlayer>>(emptyList())
@@ -174,6 +177,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         // A synced member plays the leader's stream, so read quality off the leader's queue.
         val streamId = p?.syncedTo ?: id
         val queue = queues.firstOrNull { it.queueId == streamId }
+        val queueQuality = queue?.quality
 
         val live = p?.nowPlaying?.takeIf { it.title.isNotBlank() }
         // Fall back to the last track so the screen keeps its shape when the
@@ -194,11 +198,24 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             idle = live == null,
             blank = np == null,
             // `quality` is what's actually coming out of the pipe right now.
-            // The queue's streamdetails is the authoritative source — it carries
-            // the bitrate alongside the codec/rate/depth, and it's what MA is
-            // actually sending to the player. The Sendspin stream format
-            // (`local`) is a fallback for when the queue hasn't reported yet.
-            quality = queue?.quality ?: (if (isSelf) local else null),
+            //
+            // When this phone is the player, the negotiated Sendspin stream format
+            // *is* the output — the same 48/16 the Settings screen reports — so it
+            // wins outright. The queue's streamdetails describes the file MA opened
+            // at its end, which is the source, not the output, and reading playing
+            // quality off it made the badge claim 96/24 while the phone was being
+            // handed 48/16. For a remote speaker we have no such handle, so the
+            // queue's details are the best available answer.
+            quality = when {
+                !isSelf -> queueQuality
+                local != null -> local
+                queueQuality != null -> queueQuality
+                // Nothing negotiated and no queue details, but something *is*
+                // playing: the file is being decoded here (a Navidrome stream
+                // played direct), so the phone's own ceiling is the answer.
+                live != null -> deviceQuality
+                else -> null
+            },
             // `sourceQuality` is the original library file's format — derived from
             // the current item's provider_mappings audio_format, NOT the stream
             // details (which reflect what the server is actually sending, after
@@ -207,8 +224,8 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             sourceQuality = queue?.currentItem?.audioFormat?.let {
                 StreamQuality(it.codec, it.sampleRate, it.bitDepth)
             },
-            // Source: the currentItem's provider tells us where the track came from.
-            source = queue?.currentItem?.let { sourceLabel(it.provider) } ?: "",
+            // Source: where the bytes are actually coming from. See [sourceOf].
+            source = queue?.let { sourceOf(it) } ?: "",
             groupSize = 1 + (p?.groupChilds?.size ?: 0),
             shuffle = queue?.shuffleEnabled == true,
             repeatMode = queue?.repeatMode ?: "off",
@@ -304,7 +321,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                 _lyrics.value = Load.Idle
                 _similar.value = Load.Idle
                 _favoriteOverride.value = null
-                if (_queueItems.value !is Load.Idle) loadQueue()
+                if (_queueItems.value !is Load.Idle) loadQueue(silent = true)
             }
         }
         viewModelScope.launch { api.state.collect { if (it == MaApiClient.State.CONNECTED) refresh() } }
@@ -458,20 +475,49 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
 
     // --- queue -------------------------------------------------------------
 
-    fun loadQueue() {
+    /**
+     * Fetch the queue's items.
+     *
+     * [silent] keeps whatever is already on screen while the new list is in flight.
+     * Dropping to [Load.Loading] tore the list out from under the user on every
+     * refresh — the panel flashed a spinner, lost its scroll position and came back
+     * re-collapsed, which is what made playing a track from the queue feel like it
+     * scrambled the list. There is nothing to show a spinner *for* when the list is
+     * already there and only its ordering might have moved.
+     */
+    fun loadQueue(silent: Boolean = false) {
         val q = streamQueueId()
-        _queueItems.value = Load.Loading
+        if (!silent || _queueItems.value !is Load.Ready) _queueItems.value = Load.Loading
         viewModelScope.launch {
-            _queueItems.value = try {
+            val next = try {
                 Load.Ready(repo.queueItems(q))
             } catch (e: Exception) {
                 Load.Failed(e.message ?: "Couldn't load the queue")
             }
+            // A silent refresh that failed leaves the good list up rather than
+            // replacing it with an error for a blip we can retry on the next poll.
+            if (silent && next is Load.Failed && _queueItems.value is Load.Ready) return@launch
+            _queueItems.value = next
         }
     }
 
-    /** Jump to a queue position. */
-    fun playQueueIndex(index: Int) = queueAction { repo.playIndex(it, index) }
+    /**
+     * Jump to a queue position. The queue's *contents* don't change, only which row
+     * is current — which the ordinary player poll already reports — so this
+     * deliberately does not re-fetch the items.
+     */
+    fun playQueueIndex(index: Int) {
+        val q = streamQueueId()
+        viewModelScope.launch {
+            try {
+                repo.playIndex(q, index)
+            } catch (e: Exception) {
+                _toast.tryEmit(e.message ?: "Couldn't play that")
+                return@launch
+            }
+            delay(350); refresh()
+        }
+    }
 
     fun removeQueueItem(item: MaQueueItem) = queueAction { repo.deleteQueueItem(it, item.queueItemId) }
 
@@ -502,8 +548,14 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                 _toast.tryEmit(e.message ?: "Queue command failed")
                 return@launch
             }
-            // MA rebuilds the queue asynchronously, so re-read rather than guess.
-            delay(350); refresh(); loadQueue()
+            // MA rebuilds the queue asynchronously, so re-read rather than guess —
+            // in place, so the panel doesn't blink out and back. Read twice: the
+            // first can land before the server has finished applying a move, and a
+            // stale read would visibly undo the row the user just dragged. The
+            // second is free when nothing changed, since an equal list is not
+            // re-emitted.
+            delay(350); refresh(); loadQueue(silent = true)
+            delay(900); loadQueue(silent = true)
         }
     }
 
@@ -564,7 +616,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                 repo.playMedia(q, listOf(uri), option)
                 _toast.tryEmit(if (option == "next") "Playing next" else "Added to queue")
                 delay(350); refresh()
-                if (_queueItems.value !is Load.Idle) loadQueue()
+                if (_queueItems.value !is Load.Idle) loadQueue(silent = true)
             } catch (e: Exception) {
                 _toast.tryEmit(e.message ?: "Couldn't queue that")
             }
@@ -581,38 +633,65 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     private val _sleepTimerMin = MutableStateFlow(0); val sleepTimerMin: StateFlow<Int> = _sleepTimerMin
 
     /**
+     * Milliseconds left on the running timer, ticking once a second — the chip had
+     * no readout at all before, so a timer that was quietly counting down looked
+     * exactly like a button that did nothing.
+     */
+    private val _sleepTimerRemainingMs = MutableStateFlow(0L)
+    val sleepTimerRemainingMs: StateFlow<Long> = _sleepTimerRemainingMs
+
+    /** The presets the sleep-timer sheet offers, in minutes. */
+    val sleepTimerPresets = listOf(5, 15, 30, 45, 60, 90)
+
+    /**
      * Start a sleep timer that fades playback to silence over the last 10 seconds,
      * then pauses. [minutes] = 0 cancels an existing timer.
+     *
+     * The countdown is driven off a wall-clock deadline rather than accumulated
+     * delays, so a timer stays honest across a doze or a long GC pause.
      */
     fun setSleepTimer(minutes: Int) {
         sleepTimerJob?.cancel()
         if (minutes <= 0) {
             _sleepTimerMin.value = 0
+            _sleepTimerRemainingMs.value = 0
             return
         }
         _sleepTimerMin.value = minutes
+        val totalMs = minutes * 60_000L
+        _sleepTimerRemainingMs.value = totalMs
+        _toast.tryEmit("Sleeping in ${minutes}m")
+
         sleepTimerJob = viewModelScope.launch {
-            val totalMs = minutes * 60_000L
-            val fadeStartMs = totalMs - 10_000L
-            delay(fadeStartMs.coerceAtLeast(0))
-            // Fade out over 10 seconds by stepping volume down.
+            val deadline = System.currentTimeMillis() + totalMs
+            while (true) {
+                val left = deadline - System.currentTimeMillis()
+                _sleepTimerRemainingMs.value = left.coerceAtLeast(0)
+                if (left <= FADE_MS) break
+                delay(minOf(1_000L, left - FADE_MS))
+            }
+            // Fade out over the last stretch by stepping the volume down.
             val player = targetId()
             val startVol = state.value.volume
             val steps = 20
             for (i in 1..steps) {
-                val frac = 1f - (i.toFloat() / steps)
-                setVolume(startVol * frac)
-                delay(500)
+                setVolume(startVol * (1f - i.toFloat() / steps))
+                _sleepTimerRemainingMs.value = (deadline - System.currentTimeMillis()).coerceAtLeast(0)
+                delay(FADE_MS / steps)
             }
-            // Stop playback.
             try { repo.pause(player) } catch (_: Exception) {}
             setVolume(startVol)   // restore so the user's volume isn't stuck at zero
             _sleepTimerMin.value = 0
+            _sleepTimerRemainingMs.value = 0
             _toast.tryEmit("Sleep timer ended")
         }
     }
 
-    fun cancelSleepTimer() = setSleepTimer(0)
+    fun cancelSleepTimer() {
+        val wasRunning = _sleepTimerMin.value > 0
+        setSleepTimer(0)
+        if (wasRunning) _toast.tryEmit("Sleep timer cancelled")
+    }
 
     private inline fun act(toastOnError: String? = null, crossinline block: suspend () -> Unit) {
         viewModelScope.launch {
@@ -633,8 +712,37 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         // Shared MaApiClient — don't disconnect it when one ViewModel is destroyed.
     }
 
+    private companion object {
+        /** How long the sleep timer spends fading out before it pauses. */
+        const val FADE_MS = 10_000L
+    }
+
     /**
-     * The badge text for where a track came from.
+     * Where the queue's current track is really streaming from.
+     *
+     * A library item's own `provider` is always `library` — that says Music
+     * Assistant catalogued it, not who holds the file — so reading the badge off it
+     * labelled every Navidrome track "MA". The honest answers, in order:
+     *
+     *  1. `streamdetails.provider` — the backend MA actually opened for this play;
+     *  2. the item's `provider_mappings` — who *could* supply it, which for a
+     *     single-backend library is the same thing;
+     *  3. the item's own provider, for a non-library (direct provider) item.
+     */
+    private fun sourceOf(queue: MaQueue): String {
+        val item = queue.currentItem
+        val provider = queue.streamProvider?.takeIf { it.isNotBlank() }
+            ?: item?.providerDomains?.firstOrNull { !it.isLibrary() }
+            ?: item?.provider
+            ?: return ""
+        return sourceLabel(provider)
+    }
+
+    private fun String.isLibrary(): Boolean =
+        substringBefore("--").lowercase() in setOf("library", "builtin")
+
+    /**
+     * The badge text for a provider.
      *
      * Music Assistant identifies a provider either by its domain ("spotify") or by
      * an instance id carrying a `--<hash>` suffix ("spotify--AbC123"), so match on

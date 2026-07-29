@@ -89,7 +89,6 @@ fun LibraryScreen(viewModel: LibraryViewModel = viewModel()) {
                 query = query,
                 onQuery = viewModel::setQuery,
                 onBack = { viewModel.back() },
-                onBackend = viewModel::setBackend,
                 onSearch = viewModel::doSearch,
                 onSonicSearch = viewModel::sonicSearch,
                 onClearSearch = viewModel::clearSearch,
@@ -123,7 +122,6 @@ private fun Header(
     query: String,
     onQuery: (String) -> Unit,
     onBack: () -> Unit,
-    onBackend: (Backend) -> Unit,
     onSearch: (String) -> Unit,
     onSonicSearch: (String) -> Unit,
     onClearSearch: () -> Unit,
@@ -140,13 +138,14 @@ private fun Header(
             Text(
                 title, color = TextPrimary, fontFamily = AppFont, fontWeight = FontWeight.ExtraBold,
                 fontSize = 26.sp, letterSpacing = (-0.5).sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
             )
+            Spacer(Modifier.width(10.dp))
+            // Which backend is on is a *setting* now, not a control that lives here —
+            // two places to change it meant the greyed-out Speakers and Lights tabs
+            // could disagree with what the library was actually browsing.
+            BackendTag(if (backend == Backend.SUBSONIC) "Navidrome" else "Music Assistant")
         }
-        Spacer(Modifier.height(14.dp))
-        SegmentedToggle(
-            options = listOf("Music Assistant", "Navidrome"),
-            selectedIndex = if (backend == Backend.SUBSONIC) 1 else 0,
-        ) { onBackend(if (it == 1) Backend.SUBSONIC else Backend.MA) }
         Spacer(Modifier.height(12.dp))
         SearchField(query, onQuery, onSearch, onClearSearch)
         // Sonic search: the same box, read as a description of a *sound* rather
@@ -159,6 +158,20 @@ private fun Header(
             }
         }
     }
+}
+
+/** A quiet read-only badge naming the library backend Settings has selected. */
+@Composable
+private fun BackendTag(label: String) {
+    Text(
+        label, color = TextFaint, fontFamily = AppFont, fontWeight = FontWeight.Bold,
+        fontSize = 10.sp, letterSpacing = 0.8.sp, maxLines = 1,
+        modifier = Modifier
+            .clip(RoundedCornerShape(100))
+            .background(Glass)
+            .border(1.dp, HairlineSoft, RoundedCornerShape(100))
+            .padding(horizontal = 10.dp, vertical = 5.dp),
+    )
 }
 
 /** A compact labelled action chip. */

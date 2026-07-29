@@ -108,6 +108,14 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             if (currentUrl().isNotBlank()) connect()
         }
         viewModelScope.launch { settings.targetPlayer.collect { _targetPlayer.value = it } }
+        // The backend now belongs to Settings, so follow it rather than owning it.
+        // [setBackend] no-ops on an unchanged value, so this doesn't feed back.
+        viewModelScope.launch {
+            settings.backend.collect { stored ->
+                if (!_booted.value) return@collect
+                setBackend(if (stored == "subsonic") Backend.SUBSONIC else Backend.MA)
+            }
+        }
         viewModelScope.launch {
             maApi.state.collect { st ->
                 if (_backend.value != Backend.MA) return@collect

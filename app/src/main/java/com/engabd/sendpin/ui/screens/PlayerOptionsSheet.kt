@@ -48,6 +48,7 @@ fun BoxScope.PlayerOptionsSheet(onClose: () -> Unit, viewModel: NowPlayingViewMo
             // Swallow taps. Without this, a tap on the sheet's own background
             // passes through to the dismiss scrim underneath and closes it —
             // including taps that merely miss a switch by a few dp.
+            .dismissOnDragDown(onClose)
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,

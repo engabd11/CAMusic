@@ -8,9 +8,14 @@ import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import com.engabd.sendpin.ma.MaApiClient
 import com.engabd.sendpin.service.Playback
+import okhttp3.HttpUrl
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import okhttp3.Response
+import java.io.IOException
+import java.net.URLDecoder
+import java.security.MessageDigest
+import java.util.concurrent.atomic.AtomicInteger
 
 /** Holds the process-scoped [Playback] connection and the shared [MaApiClient] so they outlive the Activity. */
 class SendpinApp : Application(), ImageLoaderFactory {
@@ -34,24 +39,41 @@ class SendpinApp : Application(), ImageLoaderFactory {
      * smooth gradients these covers are full of) and cache generously on disk, so
      * a re-opened album is instant and doesn't re-fetch through the MA proxy.
      *
-     * The OkHttp client carries an interceptor that adds the MA bearer token to
-     * any imageproxy request — without it the server returns 401 and every cover
-     * comes back blank, which is why artists and albums had no art while podcasts
-     * (which carry publicly-accessible URLs) did.
+     * Three interceptors sit under it:
+     *  - **auth** — the MA bearer token, for servers that gate the proxy;
+     *  - **imageproxy resolution** — see [imageProxyCandidates]; Music Assistant has
+     *    moved both the *host* and the *shape* of its image proxy between releases,
+     *    so the first cover probes the known forms and the winner is reused;
+     *  - **cache hardening** — MA answers the proxy with no cache headers at all, so
+     *    Coil re-fetched every cover on every scroll. They are content-addressed
+     *    URLs, so a long max-age is safe and the library stops flickering.
      */
     override fun newImageLoader(): ImageLoader {
         val authInterceptor = Interceptor { chain ->
             val req = chain.request()
-            val url = req.url.toString()
             val token = maApi.authToken
             // Only add auth to imageproxy requests that go to the MA server.
-            if (token != null && url.contains("/imageproxy")) {
+            if (token != null && req.url.encodedPath.contains("/imageproxy")) {
                 chain.proceed(req.newBuilder().addHeader("Authorization", "Bearer $token").build())
             } else {
                 chain.proceed(req)
             }
         }
-        val http = OkHttpClient.Builder().addInterceptor(authInterceptor).build()
+        val proxyInterceptor = Interceptor { chain -> resolveImageProxy(chain) }
+        val cacheInterceptor = Interceptor { chain ->
+            val res = chain.proceed(chain.request())
+            if (res.isSuccessful && chain.request().url.encodedPath.contains("/imageproxy")) {
+                res.newBuilder()
+                    .removeHeader("Pragma")
+                    .header("Cache-Control", "public, max-age=$ART_MAX_AGE_SEC")
+                    .build()
+            } else res
+        }
+        val http = OkHttpClient.Builder()
+            .addInterceptor(authInterceptor)
+            .addInterceptor(proxyInterceptor)
+            .addNetworkInterceptor(cacheInterceptor)
+            .build()
         return ImageLoader.Builder(this)
             .bitmapConfig(Bitmap.Config.ARGB_8888)
             .allowRgb565(false)
@@ -67,8 +89,105 @@ class SendpinApp : Application(), ImageLoaderFactory {
             .build()
     }
 
+    /** Which of [imageProxyCandidates] this server answered; -1 until one does. */
+    private val imageProxyVariant = AtomicInteger(-1)
+
+    /**
+     * Try the candidate proxy URLs until the server answers, then stick with it.
+     *
+     * Nothing else in the app can know which shape a given Music Assistant speaks:
+     * the proxy lives on the *stream* server (a different port from the API) in the
+     * 2.x line, and newer builds replaced the `?path=&provider=` query with an
+     * opaque `sha256("<provider>/<path>")` path segment. Probing costs one round of
+     * connection refusals on the first cover of a session and nothing afterwards.
+     */
+    private fun resolveImageProxy(chain: Interceptor.Chain): Response {
+        val req = chain.request()
+        if (!req.url.encodedPath.contains("/imageproxy")) return chain.proceed(req)
+        val candidates = imageProxyCandidates(req.url)
+        if (candidates.isEmpty()) return chain.proceed(req)
+
+        val known = imageProxyVariant.get()
+        val order = if (known in candidates.indices) {
+            listOf(known) + candidates.indices.filter { it != known }
+        } else {
+            candidates.indices.toList()
+        }
+
+        var lastResponse: Response? = null
+        var lastError: IOException? = null
+        for ((attempt, i) in order.withIndex()) {
+            lastResponse?.close()
+            lastResponse = null
+            try {
+                val res = chain.proceed(req.newBuilder().url(candidates[i]).build())
+                if (res.isSuccessful) {
+                    imageProxyVariant.set(i)
+                    return res
+                }
+                lastResponse = res
+                // A shape that is known to work and merely has no such image is a
+                // plain miss — don't re-probe every other shape for every cover.
+                if (attempt == 0 && known == i) return res
+            } catch (e: IOException) {
+                lastError = e
+            }
+        }
+        return lastResponse ?: throw (lastError ?: IOException("image proxy unreachable"))
+    }
+
+    /**
+     * Every image-proxy URL shape Music Assistant has served, most likely first.
+     *
+     * The app builds the 2.x query form against the API base (see
+     * `MaParse.imageProxyUrl`); from that one URL both the raw path and the provider
+     * can be recovered, which is everything the other shapes need.
+     */
+    private fun imageProxyCandidates(url: HttpUrl): List<HttpUrl> {
+        // Already once-decoded by OkHttp; MA encodes the path twice.
+        val once = url.queryParameter("path") ?: return emptyList()
+        val provider = url.queryParameter("provider") ?: "builtin"
+        val size = url.queryParameter("size") ?: "0"
+        val fmt = url.queryParameter("fmt") ?: "png"
+        val raw = try { URLDecoder.decode(once, "UTF-8") } catch (_: Exception) { once }
+        val id = sha256("$provider/$raw")
+        // The stream server is where the 2.x proxy lives; the API port is the
+        // fallback for add-on/reverse-proxy setups that put both behind one host.
+        val ports = linkedSetOf(MA_STREAM_PORT, url.port)
+
+        return buildList {
+            // 1. The query form, path double-encoded — MA 2.x.
+            for (port in ports) add(url.newBuilder().port(port).build())
+            // 2. The opaque id form — recent MA.
+            for (port in ports) {
+                add(
+                    HttpUrl.Builder()
+                        .scheme(url.scheme).host(url.host).port(port)
+                        .addPathSegment("imageproxy").addPathSegment(id)
+                        .addQueryParameter("size", size).addQueryParameter("fmt", fmt)
+                        .build()
+                )
+            }
+            // 3. The query form with a singly-encoded path — older servers that
+            //    unquote once rather than twice.
+            for (port in ports) {
+                add(url.newBuilder().port(port).setQueryParameter("path", raw).build())
+            }
+        }
+    }
+
+    private fun sha256(value: String): String =
+        MessageDigest.getInstance("SHA-256").digest(value.toByteArray())
+            .joinToString("") { "%02x".format(it) }
+
     companion object {
         lateinit var instance: SendpinApp
             private set
+
+        /** Music Assistant's default stream-server port, where the proxy lives. */
+        private const val MA_STREAM_PORT = 8097
+
+        /** Cover URLs are content-addressed, so a week is conservative. */
+        private const val ART_MAX_AGE_SEC = 7 * 24 * 60 * 60
     }
 }

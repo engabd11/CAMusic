@@ -1,0 +1,87 @@
+name: Release APK
+
+# Builds the installable debug APK and publishes it as a GitHub prerelease.
+#
+# Debug rather than release on purpose: the release build is minified and unsigned,
+# so it cannot be installed on a phone without a signing key, while the debug build
+# is signed with the standard debug keystore and installs directly.
+#
+# A release is published when the version in `app/build.gradle.kts` has a matching
+# `docs/release-notes/v<version>.md` and no release exists for that tag yet — so
+# bumping the version and writing the notes *is* the release, and re-pushing the
+# branch afterwards is a no-op. The tag is created from the built commit. Pushing a
+# `v*` tag directly works too, and takes precedence.
+on:
+  push:
+    branches: ['claude/**']
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build debug APK
+        run: ./gradlew assembleDebug
+
+      - name: Name the APK
+        id: name
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            tag="$GITHUB_REF_NAME"
+            version="${tag#v}"
+          else
+            version=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts)
+            tag="v${version}"
+          fi
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk "dist/sendspin-${version}-debug.apk"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sendspin-${{ steps.name.outputs.version }}-debug-${{ github.sha }}
+          path: dist/*.apk
+
+      # Release notes live in the repo so a release carries a written changelog
+      # rather than a list of commit subjects. First line is the release title.
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.name.outputs.tag }}
+        run: |
+          set -euo pipefail
+          notes="docs/release-notes/${TAG}.md"
+          if [[ ! -f "$notes" ]]; then
+            echo "No $notes — nothing to publish."
+            exit 0
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "$TAG is already released — leaving it alone."
+            exit 0
+          fi
+          title=$(head -n 1 "$notes")
+          tail -n +2 "$notes" > /tmp/release-body.md
+          gh release create "$TAG" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "$title" \
+            --notes-file /tmp/release-body.md \
+            dist/*.apk

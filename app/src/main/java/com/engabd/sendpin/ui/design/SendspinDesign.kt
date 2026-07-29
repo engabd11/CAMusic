@@ -1,12 +1,14 @@
 package com.engabd.sendpin.ui.design
 
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -38,16 +40,22 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.PopupPositionProvider
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import coil.size.Scale
 import com.engabd.sendpin.ui.theme.*
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 /** The current album-derived accent, provided down the tree. */
@@ -218,6 +226,66 @@ fun GlassCard(
             .background(fill)
             .border(1.dp, Hairline, RoundedCornerShape(radius)),
         content = content,
+    )
+}
+
+/**
+ * Drag-down-to-dismiss, for a sheet drawn inside another screen's own Box.
+ *
+ * The sheet has to *own* the gesture. It sits over a Now Playing cover that is
+ * itself draggable, and with nothing consuming the drag here a swipe aimed at the
+ * sheet pulled the whole player down behind it and left the sheet hanging. Drags
+ * the sheet's own content hasn't already taken — a list already at its top, or the
+ * grabber at the sheet's head — move the sheet and go no further.
+ */
+@Composable
+fun Modifier.dismissOnDragDown(onDismiss: () -> Unit, threshold: Dp = 110.dp): Modifier {
+    val scope = rememberCoroutineScope()
+    val offsetY = remember { Animatable(0f) }
+    val thresholdPx = with(LocalDensity.current) { threshold.toPx() }
+    return this
+        .offset { IntOffset(0, offsetY.value.roundToInt()) }
+        .pointerInput(Unit) {
+            val height = size.height.toFloat()
+            detectVerticalDragGestures(
+                onDragEnd = {
+                    scope.launch {
+                        if (offsetY.value > thresholdPx) {
+                            // Slide it the rest of the way out before the caller drops
+                            // it, so the sheet leaves rather than blinking away.
+                            offsetY.animateTo(height, tween(180))
+                            onDismiss()
+                        } else {
+                            offsetY.animateTo(0f, tween(180))
+                        }
+                    }
+                },
+                onDragCancel = { scope.launch { offsetY.animateTo(0f, tween(180)) } },
+                onVerticalDrag = { change, dy ->
+                    change.consume()
+                    scope.launch { offsetY.snapTo((offsetY.value + dy).coerceAtLeast(0f)) }
+                },
+            )
+        }
+}
+
+/**
+ * Positions a [androidx.compose.ui.window.Popup] in the middle of the window,
+ * wherever the thing that opened it happens to sit.
+ *
+ * Compose's alignment-based popups position against their *anchor*, which for a
+ * badge wedged into a transport row puts the panel half off the screen. An info
+ * popup belongs in the middle and owes nothing to what opened it.
+ */
+object WindowCenterPosition : PopupPositionProvider {
+    override fun calculatePosition(
+        anchorBounds: IntRect,
+        windowSize: IntSize,
+        layoutDirection: LayoutDirection,
+        popupContentSize: IntSize,
+    ): IntOffset = IntOffset(
+        x = (windowSize.width - popupContentSize.width) / 2,
+        y = (windowSize.height - popupContentSize.height) / 2,
     )
 }
 

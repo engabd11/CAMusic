@@ -88,4 +88,20 @@ object FormatNegotiator {
      */
     fun resolve(player: StreamStartPlayerInfo): NegotiatedFormat =
         NegotiatedFormat(player.codec, player.sampleRate, player.bitDepth, player.channels)
+
+    /**
+     * The ceiling this phone can actually put out — its mixer's native rate at the
+     * depth [SendspinAudioEngine] renders. This is the honest "playing at" answer
+     * when the file is decoded on the device itself (playing a Navidrome stream
+     * direct) rather than negotiated with Music Assistant, since nothing upstream
+     * gets a say in it.
+     */
+    fun deviceOutputQuality(): StreamQuality {
+        val rate = try {
+            android.media.AudioTrack.getNativeOutputSampleRate(android.media.AudioManager.STREAM_MUSIC)
+        } catch (_: Throwable) {
+            48_000
+        }
+        return StreamQuality(codec = "PCM", sampleRateHz = rate, bitDepth = MAX_BIT_DEPTH)
+    }
 }
