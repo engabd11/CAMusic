@@ -3,6 +3,7 @@ package com.engabd.sendpin.ui.viewmodel
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.PlayerIdentity
 import com.engabd.sendpin.ma.MaApiClient
@@ -55,7 +56,7 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
     private val settings = AppSettings(app)
     val myPlayerId: String = PlayerIdentity.getPlayerId(app)
 
-    private val api = MaApiClient()
+    private val api = (app as SendpinApp).maApi
     private val repo = MaRepository(api)
 
     /** What MA last told us. Never written to optimistically — see [Intent]. */
@@ -343,11 +344,16 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         super.onCleared()
-        api.disconnect()
+        // Shared MaApiClient — don't disconnect it when one ViewModel is destroyed.
     }
 }
 
-/** Ungroup several players (no batch command needed — MA ungroups each by id). */
+/** Ungroup several players via the batch command (MA ≥ 2.9), with a per-id fallback. */
 private suspend fun MaRepository.ungroup(playerIds: List<String>) {
-    for (id in playerIds) ungroup(id)
+    try {
+        ungroupMany(playerIds)
+    } catch (_: Exception) {
+        // Fallback for older servers without ungroup_many.
+        for (id in playerIds) ungroup(id)
+    }
 }

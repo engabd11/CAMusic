@@ -74,7 +74,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
 
     private val settings = AppSettings(app)
     private val myPlayerId = PlayerIdentity.getPlayerId(app)
-    private val api = MaApiClient()
+    private val api = (app as SendpinApp).maApi
     private val repo = MaRepository(api)
     /** This phone's own Sendspin stream — the authoritative format when we're the player. */
     private val localQuality = (app as SendpinApp).playback.streamQuality
@@ -418,6 +418,45 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun previewUrl(itemId: String, provider: String): String? =
         try { repo.trackPreview(itemId, provider) } catch (_: Exception) { null }
 
+    // --- sleep timer -------------------------------------------------------
+
+    private var sleepTimerJob: kotlinx.coroutines.Job? = null
+    private val _sleepTimerMin = MutableStateFlow(0); val sleepTimerMin: StateFlow<Int> = _sleepTimerMin
+
+    /**
+     * Start a sleep timer that fades playback to silence over the last 10 seconds,
+     * then pauses. [minutes] = 0 cancels an existing timer.
+     */
+    fun setSleepTimer(minutes: Int) {
+        sleepTimerJob?.cancel()
+        if (minutes <= 0) {
+            _sleepTimerMin.value = 0
+            return
+        }
+        _sleepTimerMin.value = minutes
+        sleepTimerJob = viewModelScope.launch {
+            val totalMs = minutes * 60_000L
+            val fadeStartMs = totalMs - 10_000L
+            delay(fadeStartMs.coerceAtLeast(0))
+            // Fade out over 10 seconds by stepping volume down.
+            val player = targetId()
+            val startVol = state.value.volume
+            val steps = 20
+            for (i in 1..steps) {
+                val frac = 1f - (i.toFloat() / steps)
+                setVolume(startVol * frac)
+                delay(500)
+            }
+            // Stop playback.
+            try { repo.pause(player) } catch (_: Exception) {}
+            setVolume(startVol)   // restore so the user's volume isn't stuck at zero
+            _sleepTimerMin.value = 0
+            _toast.tryEmit("Sleep timer ended")
+        }
+    }
+
+    fun cancelSleepTimer() = setSleepTimer(0)
+
     private inline fun act(toastOnError: String? = null, crossinline block: suspend () -> Unit) {
         viewModelScope.launch {
             try {
@@ -431,6 +470,6 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         super.onCleared()
-        api.disconnect()
+        // Shared MaApiClient — don't disconnect it when one ViewModel is destroyed.
     }
 }

@@ -9,7 +9,17 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.support.v4.media.MediaMetadataCompat
+import android.support.v4.media.session.MediaSessionCompat
+import android.support.v4.media.session.PlaybackStateCompat
 import androidx.core.app.NotificationCompat
+import androidx.core.app.TaskStackBuilder
+import androidx.core.graphics.drawable.toBitmap
+import androidx.media.app.NotificationCompat.MediaStyle
+import androidx.media.session.MediaButtonReceiver
+import coil.imageLoader
+import coil.request.ImageRequest
+import coil.request.SuccessResult
 import com.engabd.sendpin.MainActivity
 import com.engabd.sendpin.SendpinApp
 import kotlinx.coroutines.CoroutineScope
@@ -18,12 +28,16 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
 /**
  * Foreground service that keeps the process (and the shared [Playback] connection)
- * alive in the background and shows the now-playing notification. It does NOT own
- * the connection — it observes [SendpinApp.playback].
+ * alive in the background and shows a rich media notification backed by a
+ * [MediaSessionCompat]. The notification carries album art, play/pause/skip/stop
+ * actions, and a seek bar — the second-most-important surface after Now Playing.
+ *
+ * It does NOT own the connection — it observes [SendpinApp.playback].
  */
 class SendspinService : Service() {
     companion object {
@@ -31,32 +45,163 @@ class SendspinService : Service() {
         const val NOTIFICATION_ID = 1001
         const val ACTION_CONNECT = "com.engabd.sendpin.CONNECT"
         const val ACTION_STOP = "com.engabd.sendpin.STOP"
+        const val ACTION_PLAY_PAUSE = "com.engabd.sendpin.PLAY_PAUSE"
+        const val ACTION_NEXT = "com.engabd.sendpin.NEXT"
+        const val ACTION_PREV = "com.engabd.sendpin.PREV"
+
+        /** Session/notification artwork edge, in px. Big enough to look sharp on a
+         *  lock screen, small enough to cross Binder without a TransactionTooLarge. */
+        private const val ART_PX = 512
     }
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var observeJob: Job? = null
+    private var artworkJob: Job? = null
     private val pb get() = SendpinApp.instance.playback
+
+    private var mediaSession: MediaSessionCompat? = null
+    private var cachedArtwork: android.graphics.Bitmap? = null
+    private var loadedArtworkUrl: String? = null
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        setupMediaSession()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_STOP) {
+            pb.disconnect(); stopSelf(); return START_NOT_STICKY
+        }
+        // Every other path must reach startForeground(): the system kills a service
+        // started with startForegroundService() that doesn't promote itself in time,
+        // and notification-action intents land here too.
+        startForegroundNow()
+        observe()
         when (intent?.action) {
-            ACTION_STOP -> { pb.disconnect(); stopSelf(); return START_NOT_STICKY }
-            else -> { startForegroundNow(); observe() }
+            ACTION_PLAY_PAUSE -> pb.onPlayPause()
+            ACTION_NEXT -> pb.onMediaNext()
+            ACTION_PREV -> pb.onMediaPrevious()
+            ACTION_CONNECT, null -> Unit          // just keep the service alive
+            else -> MediaButtonReceiver.handleIntent(mediaSession, intent)
         }
         return START_STICKY
     }
 
-    override fun onBind(intent: Intent?): IBinder? = null
+    private fun setupMediaSession() {
+        // FLAG_HANDLES_MEDIA_BUTTONS / FLAG_HANDLES_TRANSPORT_CONTROLS are implied
+        // since Lollipop and deprecated — setting them buys nothing.
+        mediaSession = MediaSessionCompat(this, "Sendspin").apply {
+            setCallback(object : MediaSessionCompat.Callback() {
+                override fun onPlay() = pb.onPlayPause()
+                override fun onPause() = pb.onPlayPause()
+                override fun onSkipToNext() = pb.onMediaNext()
+                override fun onSkipToPrevious() = pb.onMediaPrevious()
+                override fun onStop() { pb.disconnect() }
+                override fun onSeekTo(pos: Long) = pb.onMediaSeek((pos / 1000).toInt())
+            })
+            isActive = true
+        }
+    }
 
     private fun observe() {
         if (observeJob != null) return
         observeJob = scope.launch {
-            combine(pb.trackTitle, pb.artist, pb.album, pb.isPlaying) { _, _, _, _ -> Unit }
+            // Observe everything that changes the notification — title, artist, art, playing state, position, duration.
+            combine(
+                pb.trackTitle, pb.artist, pb.album, pb.isPlaying, pb.artworkUrl,
+            ) { _, _, _, _, _ -> Unit }
                 .collect { updateNotification() }
+        }
+        // Update the MediaSession's playback state + metadata independently.
+        // Position has to be in here too, or the lock-screen scrubber freezes at
+        // wherever the track happened to be when play/pause last flipped.
+        scope.launch {
+            combine(pb.isPlaying, pb.positionMs) { isPlaying, pos -> isPlaying to pos }
+                .collect { (isPlaying, pos) -> updatePlaybackState(isPlaying, pos) }
+        }
+        scope.launch {
+            combine(
+                pb.trackTitle, pb.artist, pb.album, pb.artworkUrl, pb.durationMs,
+            ) { title, artist, album, art, dur ->
+                MetadataBundle(title, artist, album, art, dur)
+            }.distinctUntilChanged().collect { meta ->
+                updateMetadata(meta)
+                // Only refetch when the artwork itself changed — a duration tick
+                // must not restart the image load.
+                if (meta.artworkUrl != loadedArtworkUrl) {
+                    loadedArtworkUrl = meta.artworkUrl
+                    fetchArtwork(meta.artworkUrl)
+                }
+            }
+        }
+    }
+
+    private data class MetadataBundle(
+        val title: String,
+        val artist: String,
+        val album: String,
+        val artworkUrl: String?,
+        val durationMs: Long,
+    )
+
+    private fun updatePlaybackState(isPlaying: Boolean, posMs: Long = pb.playbackPositionMs) {
+        val state = if (isPlaying) PlaybackStateCompat.STATE_PLAYING else PlaybackStateCompat.STATE_PAUSED
+        // Playback speed drives the system's own position extrapolation between
+        // updates — 0 while paused, or the scrubber keeps crawling.
+        val speed = if (isPlaying) 1.0f else 0.0f
+        val builder = PlaybackStateCompat.Builder()
+            .setActions(
+                PlaybackStateCompat.ACTION_PLAY or
+                PlaybackStateCompat.ACTION_PAUSE or
+                PlaybackStateCompat.ACTION_PLAY_PAUSE or
+                PlaybackStateCompat.ACTION_SKIP_TO_NEXT or
+                PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS or
+                PlaybackStateCompat.ACTION_STOP or
+                PlaybackStateCompat.ACTION_SEEK_TO
+            )
+            .setState(state, posMs, speed)
+        mediaSession?.setPlaybackState(builder.build())
+    }
+
+    private fun updateMetadata(meta: MetadataBundle) {
+        val md = MediaMetadataCompat.Builder()
+            .putString(MediaMetadataCompat.METADATA_KEY_TITLE, meta.title.ifBlank { "Sendspin" })
+            .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, meta.artist)
+            .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, meta.album)
+            .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, meta.durationMs.coerceAtLeast(0))
+        cachedArtwork?.let { md.putBitmap(MediaMetadataCompat.METADATA_KEY_ART, it) }
+        mediaSession?.setMetadata(md.build())
+    }
+
+    private fun currentMetadata() = MetadataBundle(
+        pb.trackTitle.value, pb.artist.value, pb.album.value,
+        pb.artworkUrl.value, pb.durationMs.value,
+    )
+
+    private fun fetchArtwork(url: String?) {
+        artworkJob?.cancel()
+        if (url == null) {
+            cachedArtwork = null
+            updateMetadata(currentMetadata())
+            return
+        }
+        artworkJob = scope.launch {
+            try {
+                // Coil's singleton loader (built by SendpinApp) — sharing it reuses the
+                // memory/disk cache instead of standing up a new loader per track.
+                val req = ImageRequest.Builder(this@SendspinService)
+                    .data(url)
+                    .allowHardware(false)      // need a software bitmap to hand to the session
+                    .size(ART_PX)              // cover art is ~1200px; the session bitmap
+                    .build()                   // crosses Binder, so keep it small
+                val result = imageLoader.execute(req)
+                if (result is SuccessResult) {
+                    cachedArtwork = result.drawable.toBitmap()
+                    updateMetadata(currentMetadata())
+                    updateNotification()
+                }
+            } catch (_: Exception) { }
         }
     }
 
@@ -77,26 +222,52 @@ class SendspinService : Service() {
     private fun buildNotification(): Notification {
         val title = pb.trackTitle.value.ifEmpty { "Sendspin" }
         val text = pb.artist.value.ifEmpty { pb.connectionStatus.value }
+        val isPlaying = pb.isPlaying.value
 
-        val open = PendingIntent.getActivity(
-            this, 0, Intent(this, MainActivity::class.java),
+        val open = TaskStackBuilder.create(this)
+            .addNextIntent(Intent(this, MainActivity::class.java))
+            .getPendingIntent(0, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+
+        val playPauseIcon = if (isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play
+        val playPauseLabel = if (isPlaying) "Pause" else "Play"
+
+        fun pi(action: String, requestCode: Int) = PendingIntent.getService(
+            this, requestCode,
+            Intent(this, SendspinService::class.java).apply { this.action = action },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val stop = PendingIntent.getService(
-            this, 1, Intent(this, SendspinService::class.java).apply { action = ACTION_STOP },
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
 
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val stop = pi(ACTION_STOP, 1)
+        val playPause = pi(ACTION_PLAY_PAUSE, 2)
+        val next = pi(ACTION_NEXT, 3)
+        val prev = pi(ACTION_PREV, 4)
+
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(title)
             .setContentText(text)
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setContentIntent(open)
             .setOngoing(true)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .addAction(android.R.drawable.ic_media_previous, "Previous", prev)
+            .addAction(playPauseIcon, playPauseLabel, playPause)
+            .addAction(android.R.drawable.ic_media_next, "Next", next)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stop)
             .setPriority(NotificationCompat.PRIORITY_LOW)
-            .build()
+
+        // Album art — the single most important visual.
+        cachedArtwork?.let { builder.setLargeIcon(it) }
+
+        // MediaStyle with the session + transport row (shows play/pause/skip on lock screen).
+        mediaSession?.let { session ->
+            builder.setStyle(
+                MediaStyle()
+                    .setMediaSession(session.sessionToken)
+                    .setShowActionsInCompactView(0, 1, 2)   // prev, play/pause, next
+            )
+        }
+
+        return builder.build()
     }
 
     private fun createNotificationChannel() {
@@ -110,9 +281,21 @@ class SendspinService : Service() {
         }
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // If the app is swiped away while not playing, stop the service + connection.
+        if (!pb.isPlaying.value) { pb.disconnect(); stopSelf() }
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onDestroy() {
         observeJob?.cancel()
+        artworkJob?.cancel()
+        mediaSession?.isActive = false
+        mediaSession?.release()
+        mediaSession = null
         scope.cancel()
         super.onDestroy()
     }
+
+    override fun onBind(intent: Intent?): IBinder? = null
 }

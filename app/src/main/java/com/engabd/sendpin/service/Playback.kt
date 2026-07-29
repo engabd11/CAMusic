@@ -2,6 +2,10 @@ package com.engabd.sendpin.service
 
 import android.content.Context
 import android.content.Intent
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
+import android.os.Build
 import androidx.core.content.ContextCompat
 import com.engabd.sendpin.audio.FormatNegotiator
 import com.engabd.sendpin.audio.SendspinAudioEngine
@@ -9,7 +13,9 @@ import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.MaDiscovery
 import com.engabd.sendpin.discovery.PlayerIdentity
+import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.ma.MaApiClient
+import com.engabd.sendpin.ma.MaRepository
 import com.engabd.sendpin.protocol.SendspinClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -52,6 +58,12 @@ class Playback(private val app: Context) {
     private val _streamQuality = MutableStateFlow<StreamQuality?>(null); val streamQuality: StateFlow<StreamQuality?> = _streamQuality
     private val _serverUrl = MutableStateFlow(""); val serverUrl: StateFlow<String> = _serverUrl
     private val _connectionLog = MutableStateFlow<List<String>>(emptyList()); val connectionLog: StateFlow<List<String>> = _connectionLog
+    // Exposed as flows so the media notification's seek bar tracks the track instead
+    // of only refreshing when play/pause flips.
+    private val _positionMs = MutableStateFlow(0L); val positionMs: StateFlow<Long> = _positionMs
+    private val _durationMs = MutableStateFlow(0L); val durationMs: StateFlow<Long> = _durationMs
+    val playbackPositionMs: Long get() = _positionMs.value
+    val playbackDurationMs: Long get() = _durationMs.value
 
     val savedUsername: Flow<String> get() = settings.maUsername
     val savedPassword: Flow<String> get() = settings.maPassword
@@ -65,6 +77,69 @@ class Playback(private val app: Context) {
     private var engine: SendspinAudioEngine? = null
     private var discoveryStop: Job? = null
     private var volumeJob: Job? = null
+
+    // --- audio focus -------------------------------------------------------
+
+    private val audioManager by lazy { app.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
+    private var audioFocusRequest: AudioFocusRequest? = null
+    @Volatile private var holdsFocus = false
+
+    /**
+     * A Sendspin player@v1 is a *clock slave*: the server drives the timeline and we
+     * render it. Tearing the decoder down for a transient loss (a phone call) would
+     * desync us from the rest of the group with no way to resume — the server keeps
+     * streaming and we would simply go deaf. So transient losses attenuate to silence
+     * and keep decoding; only a permanent loss stops the engine.
+     *
+     * [_isPlaying] is deliberately left alone for transient losses: it mirrors what the
+     * *server* is doing, and the server is still playing.
+     */
+    private val focusListener = AudioManager.OnAudioFocusChangeListener { change ->
+        when (change) {
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> engine?.setVolume(volume.value * 0.3f)
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> engine?.setVolume(0f)
+            AudioManager.AUDIOFOCUS_GAIN -> engine?.setVolume(volume.value)
+            AudioManager.AUDIOFOCUS_LOSS -> {
+                // Another app took over media for good — stop and release.
+                engine?.stop()
+                _isPlaying.value = false
+                abandonAudioFocus()
+            }
+        }
+    }
+
+    private fun requestAudioFocus() {
+        if (holdsFocus) return   // already held — re-requesting would leak the old request
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val attrs = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                .build()
+            val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                .setAudioAttributes(attrs)
+                .setAcceptsDelayedFocusGain(false)
+                .setOnAudioFocusChangeListener(focusListener)
+                .build()
+            audioFocusRequest = req
+            audioManager.requestAudioFocus(req)
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager.requestAudioFocus(focusListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN)
+        }
+        holdsFocus = true
+    }
+
+    private fun abandonAudioFocus() {
+        if (!holdsFocus) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
+            audioFocusRequest = null
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager.abandonAudioFocus(focusListener)
+        }
+        holdsFocus = false
+    }
 
     init {
         scope.launch {
@@ -135,6 +210,8 @@ class Playback(private val app: Context) {
                 _artist.value = np?.artist ?: ""
                 _album.value = np?.album ?: ""
                 _artworkUrl.value = np?.artworkUrl
+                _durationMs.value = np?.durationMs ?: 0
+                _positionMs.value = np?.progressMs ?: 0
             }
         }
         scope.launch {
@@ -154,7 +231,10 @@ class Playback(private val app: Context) {
         scope.launch {
             c.streamEvents.collect { ev ->
                 when (ev) {
-                    is SendspinClient.StreamEvent.Start -> { eng.start(ev.format); _isPlaying.value = true }
+                    is SendspinClient.StreamEvent.Start -> {
+                        requestAudioFocus()
+                        eng.start(ev.format); _isPlaying.value = true
+                    }
                     SendspinClient.StreamEvent.End -> { eng.stop(); _isPlaying.value = false }
                     SendspinClient.StreamEvent.Clear -> eng.flush()
                 }
@@ -167,11 +247,41 @@ class Playback(private val app: Context) {
             action = SendspinService.ACTION_CONNECT
         })
 
-        c.connect(url, playerId, name, deviceInfo, FormatNegotiator.supportedFormats, token)
+        // The advertised format list is what stops the server converting: it may only
+        // stream something we listed. Built from the user's audio preferences, and sent
+        // once in the hello — which is why changing those settings needs a reconnect.
+        scope.launch {
+            val formats = FormatNegotiator.supportedFormats(
+                preferHiRes = settings.preferHiRes.first(),
+                preferFlac = settings.preferFlac.first(),
+            )
+            c.connect(url, playerId, name, deviceInfo, formats, token)
+        }
     }
 
-    /** Play/pause is server-driven for a Sendspin player@v1; kept for UI compatibility. */
-    fun onPlayPause() { /* no-op */ }
+    // --- transport ---------------------------------------------------------
+    //
+    // The Sendspin protocol itself carries no transport: the server decides what
+    // plays and when. Transport therefore goes back out over the Music Assistant
+    // API against *this phone's own player*, which is exactly what the Now Playing
+    // screen already does — so notification, lock screen and in-app controls all
+    // drive the same queue.
+
+    private val maRepo by lazy { MaRepository((app.applicationContext as SendpinApp).maApi) }
+
+    /** Fire-and-forget an MA player command; a disconnected client just no-ops. */
+    private fun transport(block: suspend (MaRepository) -> Unit) {
+        scope.launch { runCatching { block(maRepo) } }
+    }
+
+    fun onPlayPause() = transport { if (_isPlaying.value) it.pause(playerId) else it.play(playerId) }
+
+    fun onMediaNext() = transport { it.next(playerId) }
+
+    fun onMediaPrevious() = transport { it.previous(playerId) }
+
+    /** [positionSec] — seconds from the start of the current item, per `players/cmd/seek`. */
+    fun onMediaSeek(positionSec: Int) = transport { it.seek(playerId, positionSec) }
 
     fun onVolumeChange(vol: Float) {
         _volume.value = vol
@@ -193,6 +303,7 @@ class Playback(private val app: Context) {
     }
 
     fun disconnect(stopService: Boolean = true) {
+        abandonAudioFocus()
         engine?.stop(); engine = null
         client?.close(); client = null
         _connected.value = false
@@ -200,6 +311,8 @@ class Playback(private val app: Context) {
         _currentFormat.value = "—"
         _streamQuality.value = null
         _isPlaying.value = false
+        _positionMs.value = 0
+        _durationMs.value = 0
         if (stopService) app.stopService(Intent(app, SendspinService::class.java))
     }
 

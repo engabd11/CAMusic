@@ -57,7 +57,17 @@ class SubsonicClient(
         return sb.toString()
     }
 
-    fun streamUrl(id: String): String = restUrl("stream", mapOf("id" to id), jsonFmt = false)
+    /**
+     * `format=raw` tells Navidrome to hand back the stored file untouched. Without it
+     * the server applies whatever transcoding profile it has for this client, which
+     * would silently turn a FLAC into 192k MP3 — so it is not optional if playback is
+     * meant to be bit-perfect. `estimateContentLength` is off for the same reason: it
+     * only means anything for transcoded output.
+     */
+    fun streamUrl(id: String): String =
+        restUrl("stream", mapOf("id" to id, "format" to "raw"), jsonFmt = false)
+
+    /** `/download` is defined to return the original file, so it needs no format hint. */
     fun downloadUrl(id: String): String = restUrl("download", mapOf("id" to id), jsonFmt = false)
     /**
      * One URL for both list thumbnails and the full-bleed Now Playing cover:

@@ -29,6 +29,21 @@
         <service
             android:name=".service.SendspinService"
             android:foregroundServiceType="mediaPlayback"
-            android:exported="false" />
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </service>
+
+        <!-- Routes headset / Bluetooth / steering-wheel media buttons into the
+             MediaSession above. MediaButtonReceiver.handleIntent() is a no-op
+             without this declaration. -->
+        <receiver
+            android:name="androidx.media.session.MediaButtonReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

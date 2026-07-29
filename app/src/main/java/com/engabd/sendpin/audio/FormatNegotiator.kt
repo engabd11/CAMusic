@@ -10,21 +10,59 @@ data class NegotiatedFormat(
     val channels: Int,
 )
 
+/**
+ * Builds the format list we advertise to the server in `player@v1_support.supported_formats`.
+ *
+ * The server may only stream a format that appears in this list, so anything missing
+ * here is something Music Assistant is *forced* to convert. That is the whole reason
+ * 44.1 kHz is in the list: a Navidrome library is mostly CD rips, and a client that
+ * only offers 48 kHz makes the server resample every one of them.
+ */
 object FormatNegotiator {
+
     /**
-     * Formats we advertise to the server (`player@v1_support.supported_formats`).
-     * The server streams one of *these*, so it always matches. FLAC-first at
-     * 48 kHz / 16-bit — matches Music Assistant's default and keeps grouped sync
-     * stable (it is the server's fallback order; opus-first breaks grouped sync).
-     * The 24-bit entries are for the later hi-res phase.
+     * The Kotlin engine renders 16-bit PCM — see [SendspinAudioEngine], whose
+     * AudioTrack is built as `ENCODING_PCM_16BIT`. The native AAudio 24-bit path in
+     * `cpp/` is not wired up yet, and advertising a depth we cannot render only makes
+     * the server spend bandwidth on bits we truncate on arrival. Raise this to 24 in
+     * the same change that lands real 24-bit output.
      */
-    val supportedFormats: List<AudioFormatSpec> = listOf(
-        AudioFormatSpec("flac", 2, 48000, 16),
-        AudioFormatSpec("opus", 2, 48000, 16),
-        AudioFormatSpec("pcm", 2, 48000, 16),
-        AudioFormatSpec("flac", 2, 48000, 24),
-        AudioFormatSpec("flac", 2, 96000, 24),
-    )
+    const val MAX_BIT_DEPTH = 16
+
+    /** CD and DVD rate families — covers essentially every library file. */
+    private val RATES_STANDARD = listOf(48_000, 44_100)
+
+    /** Adds the hi-res member of each family (2× 48k and 2× 44.1k). */
+    private val RATES_HIRES = listOf(48_000, 44_100, 96_000, 88_200)
+
+    /**
+     * [preferHiRes] — also offer 88.2/96 kHz, so hi-res masters stream at their native
+     * rate instead of being downsampled to 48 kHz by the server.
+     * [preferFlac] — order lossless FLAC ahead of uncompressed PCM. Both are
+     * bit-identical; FLAC costs roughly half the bandwidth and a little decode CPU.
+     *
+     * 48 kHz stays first for compatibility: it is Music Assistant's own default and the
+     * ordering that grouped/multi-room sync was validated against. The added rates give
+     * the server an exact match to pick when the source is not 48 kHz.
+     */
+    fun supportedFormats(
+        preferHiRes: Boolean = true,
+        preferFlac: Boolean = true,
+    ): List<AudioFormatSpec> {
+        val rates = if (preferHiRes) RATES_HIRES else RATES_STANDARD
+        val losslessOrder = if (preferFlac) listOf("flac", "pcm") else listOf("pcm", "flac")
+        return buildList {
+            for (codec in losslessOrder) for (rate in rates) {
+                add(AudioFormatSpec(codec, 2, rate, MAX_BIT_DEPTH))
+            }
+            // Lossy, and last: only reached if the server can serve none of the above.
+            // Opus is 48 kHz only, and listing it first breaks grouped sync.
+            add(AudioFormatSpec("opus", 2, 48_000, MAX_BIT_DEPTH))
+        }
+    }
+
+    /** Defaults, for callers with no user settings to hand. */
+    val supportedFormats: List<AudioFormatSpec> get() = supportedFormats()
 
     /**
      * The server always streams a format we advertised, so accept the `stream/start`
@@ -32,7 +70,4 @@ object FormatNegotiator {
      */
     fun resolve(player: StreamStartPlayerInfo): NegotiatedFormat =
         NegotiatedFormat(player.codec, player.sampleRate, player.bitDepth, player.channels)
-
-    val preferredFormats: String
-        get() = supportedFormats.joinToString(", ") { "${it.codec}:${it.sampleRate}:${it.bitDepth}:${it.channels}" }
 }

@@ -129,10 +129,12 @@ class SendspinAudioEngine(@Suppress("unused") private val clock: ClockSync) {
                 while (outIdx >= 0) {
                     if (info.size > 0) {
                         c.getOutputBuffer(outIdx)?.let { out ->
-                            val pcm = ByteArray(info.size)
+                            // Hand the codec's own buffer straight to the track: no
+                            // intermediate ByteArray, so nothing to allocate, copy or
+                            // pool on the decode hot path (~112 KB/s at 900 kbps FLAC).
                             out.position(info.offset)
-                            out.get(pcm, 0, info.size)
-                            t.write(pcm, 0, pcm.size)
+                            out.limit(info.offset + info.size)
+                            t.write(out, info.size, AudioTrack.WRITE_BLOCKING)
                         }
                     }
                     c.releaseOutputBuffer(outIdx, false)
