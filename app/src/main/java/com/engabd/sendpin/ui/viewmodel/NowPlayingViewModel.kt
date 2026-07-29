@@ -360,7 +360,13 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     }
     fun seekTo(fraction: Float) = act {
         val dur = state.value.durationMs
-        if (dur > 0) repo.seek(targetId(), ((fraction.coerceIn(0f, 1f) * dur) / 1000).toInt())
+        if (dur > 0) {
+            // Clamp to [0, duration - 1s] so MA doesn't interpret a seek-to-end
+            // as "skip to next track". 1 second of headroom is enough.
+            val maxFraction = ((dur - 1000L).coerceAtLeast(0L).toFloat() / dur)
+            val clamped = fraction.coerceIn(0f, maxFraction)
+            repo.seek(targetId(), ((clamped * dur) / 1000).toInt())
+        }
     }
 
     private var volJob: kotlinx.coroutines.Job? = null
