@@ -1,12 +1,10 @@
 package com.engabd.sendpin.service
 
 import android.content.Context
-import android.content.Intent
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.os.Build
-import androidx.core.content.ContextCompat
 import com.engabd.sendpin.audio.FormatNegotiator
 import com.engabd.sendpin.audio.SendspinAudioEngine
 import com.engabd.sendpin.audio.StreamQuality
@@ -29,8 +27,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 /**
  * The player connection, held at **process scope** (by [com.engabd.sendpin.SendpinApp])
  * so it survives the Activity/ViewModel being destroyed. The UI observes it through
- * [com.engabd.sendpin.ui.viewmodel.PlayerViewModel]; [SendspinService] keeps the
- * process alive and shows the media notification while connected.
+ * [com.engabd.sendpin.ui.viewmodel.PlayerViewModel]; [SendspinConnectionService] keeps
+ * the process alive, and [SendspinService] shows the media notification while playing.
  */
 class Playback(private val app: Context) {
 
@@ -228,24 +226,31 @@ class Playback(private val app: Context) {
                 }
             }
         }
+        scope.launch { c.audioFrames.collect { bytes -> eng.submit(bytes) } }
+
+        // The persistent connection service keeps the process (and this WebSocket)
+        // alive in the background and shows a small "connected" notification with a
+        // Stop action. It survives idle periods so TTS/announcements still arrive.
+        SendspinConnectionService.start(app)
+
+        // The media notification service shows album art + transport + seek bar,
+        // but only while music is playing. It comes and goes; the connection stays.
         scope.launch {
             c.streamEvents.collect { ev ->
                 when (ev) {
                     is SendspinClient.StreamEvent.Start -> {
                         requestAudioFocus()
                         eng.start(ev.format); _isPlaying.value = true
+                        SendspinService.startMedia(app)
                     }
-                    SendspinClient.StreamEvent.End -> { eng.stop(); _isPlaying.value = false }
+                    SendspinClient.StreamEvent.End -> {
+                        eng.stop(); _isPlaying.value = false
+                        SendspinService.stopMedia(app)
+                    }
                     SendspinClient.StreamEvent.Clear -> eng.flush()
                 }
             }
         }
-        scope.launch { c.audioFrames.collect { bytes -> eng.submit(bytes) } }
-
-        // Foreground service keeps the process (and this connection) alive in the background.
-        ContextCompat.startForegroundService(app, Intent(app, SendspinService::class.java).apply {
-            action = SendspinService.ACTION_CONNECT
-        })
 
         // The advertised format list is what stops the server converting: it may only
         // stream something we listed. Built from the user's audio preferences, and sent
@@ -313,7 +318,10 @@ class Playback(private val app: Context) {
         _isPlaying.value = false
         _positionMs.value = 0
         _durationMs.value = 0
-        if (stopService) app.stopService(Intent(app, SendspinService::class.java))
+        if (stopService) {
+            SendspinService.stopMedia(app)
+            SendspinConnectionService.stop(app)
+        }
     }
 
     private fun sendspinUrlFrom(base: String): String {

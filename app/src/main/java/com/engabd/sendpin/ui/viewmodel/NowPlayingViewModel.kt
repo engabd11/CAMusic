@@ -48,8 +48,12 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         val idle: Boolean = true,
         /** Nothing has been seen playing yet, so there is not even a stale track. */
         val blank: Boolean = true,
-        /** Codec/rate/depth behind the quality badge; null while unknown. */
+        /** What is actually coming out of the pipe right now — the negotiated/decoded format. */
         val quality: StreamQuality? = null,
+        /** The original source format from the library (before any transcoding). */
+        val sourceQuality: StreamQuality? = null,
+        /** Where the track came from: "MA" (Music Assistant) or "Navidrome". */
+        val source: String = "",
         /** Players sharing this stream, when the target leads a sync group. */
         val groupSize: Int = 1,
         val shuffle: Boolean = false,
@@ -118,7 +122,15 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             hasTrack = live != null,
             idle = live == null,
             blank = np == null,
+            // `quality` is what's actually playing: when this phone is the player, the
+            // Sendspin stream format (what the decoder is producing); otherwise the
+            // queue's streamdetails (what the remote speaker is receiving).
             quality = (if (isSelf) local else null) ?: queue?.quality,
+            // `sourceQuality` is the original library format — from the queue's streamdetails
+            // before any transcoding the server may have done for the player.
+            sourceQuality = queue?.quality,
+            // Source: the currentItem's provider tells us where the track came from.
+            source = queue?.currentItem?.let { if (it.provider == "subsonic") "Navidrome" else "MA" } ?: "",
             groupSize = 1 + (p?.groupChilds?.size ?: 0),
             shuffle = queue?.shuffleEnabled == true,
             repeatMode = queue?.repeatMode ?: "off",

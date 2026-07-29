@@ -27,6 +27,12 @@
         </activity>
 
         <service
+            android:name=".service.SendspinConnectionService"
+            android:foregroundServiceType="mediaPlayback"
+            android:exported="false">
+        </service>
+
+        <service
             android:name=".service.SendspinService"
             android:foregroundServiceType="mediaPlayback"
             android:exported="false">
