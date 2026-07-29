@@ -1,5 +1,6 @@
 package com.engabd.sendpin.ui.screens
 
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -7,7 +8,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.*
@@ -19,6 +19,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -40,11 +41,21 @@ import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
 fun NowPlayingScreen(
     viewModel: NowPlayingViewModel = viewModel(),
     onOpenSpeakers: () -> Unit = {},
-    onOpenLightSync: () -> Unit = {},
     onBrowse: () -> Unit = {},
 ) {
     val st by viewModel.state.collectAsState()
     val connected by viewModel.connected.collectAsState()
+    val favorite by viewModel.favorite.collectAsState()
+    val currentItem by viewModel.currentItem.collectAsState()
+    val context = LocalContext.current
+
+    // Which overlay is open, if any. Null = just the player.
+    var panel by remember { mutableStateOf<Panel?>(null) }
+    var options by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        viewModel.toast.collect { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }
+    }
 
     // The palette follows the player being shown, which may differ from the app-wide one.
     val palette = rememberAlbumPalette(st.artworkUrl)
@@ -58,8 +69,6 @@ fun NowPlayingScreen(
     }
     val dur = st.durationMs
     val progress = if (dur > 0) (pos.toFloat() / dur).coerceIn(0f, 1f) else 0f
-
-    var liked by remember(st.title) { mutableStateOf(false) }
 
     CompositionLocalProvider(LocalAccent provides accent, LocalPalette provides palette) {
         Box(Modifier.fillMaxSize().background(Ink)) {
@@ -103,19 +112,32 @@ fun NowPlayingScreen(
                 Spacer(Modifier.height(16.dp))
 
                 // Secondary actions, with the quality badge sitting at the centre of them.
+                // Everything here is track- or player-scoped; the panels below carry
+                // the detail so this row stays one line.
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(9.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    IconChip(Icons.AutoMirrored.Filled.PlaylistAdd, "Add to playlist")
-                    IconChip(Icons.Default.Album, "Go to album")
+                    IconChip(Icons.Default.Lyrics, "Lyrics", active = panel == Panel.LYRICS) {
+                        panel = if (panel == Panel.LYRICS) null else Panel.LYRICS
+                    }
+                    IconChip(Icons.Default.GraphicEq, "Similar tracks", active = panel == Panel.SIMILAR) {
+                        panel = if (panel == Panel.SIMILAR) null else Panel.SIMILAR
+                    }
                     QualityChip(st.quality)
-                    IconChip(Icons.AutoMirrored.Filled.QueueMusic, "Queue")
-                    IconChip(Icons.Default.Lightbulb, "Light sync", active = true, onClick = onOpenLightSync)
+                    IconChip(Icons.AutoMirrored.Filled.QueueMusic, "Queue", active = panel == Panel.QUEUE) {
+                        panel = if (panel == Panel.QUEUE) null else Panel.QUEUE
+                    }
+                    IconChip(Icons.Default.Tune, "Player options", active = options) { options = !options }
+                    // Disabled until MA tells us which library item is playing —
+                    // without an item_id there is nothing to favourite.
                     IconChip(
-                        if (liked) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                        "Like", active = liked,
-                    ) { liked = !liked }
+                        if (favorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                        if (favorite) "Remove from favourites" else "Add to favourites",
+                        active = favorite,
+                        tint = if (currentItem == null) TextFaint else null,
+                        onClick = if (currentItem == null) null else ({ viewModel.toggleFavorite() }),
+                    )
                 }
 
                 Spacer(Modifier.height(14.dp))
@@ -191,6 +213,21 @@ fun NowPlayingScreen(
                         modifier = Modifier.width(22.dp), textAlign = TextAlign.End,
                     )
                 }
+            }
+
+            // The overlays sit in the same Box as the player, so the album wash
+            // still reads behind their top edge.
+            panel?.let { p ->
+                NowPlayingSheet(
+                    panel = p,
+                    onPanel = { panel = it },
+                    onClose = { panel = null },
+                    viewModel = viewModel,
+                    positionMs = pos,
+                )
+            }
+            if (options) {
+                PlayerOptionsSheet(onClose = { options = false }, viewModel = viewModel)
             }
         }
     }

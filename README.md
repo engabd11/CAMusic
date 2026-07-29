@@ -29,6 +29,18 @@ and controls Hue music-sync lighting through Home Assistant.
   whichever player is selected
 - Transport, seek, shuffle, repeat, volume, and the live codec/sample-rate/bit-depth of
   whatever is actually streaming
+- **Queue** — see it, jump to any track, reorder, remove, clear, or save the whole thing
+  as a playlist
+- **Lyrics** — LRC-timed where the provider has them, scrolling and highlighting in step
+  with playback; plain text otherwise
+- **Similar** — acoustically similar tracks to what's playing, or a natural-language
+  search over the sonic embeddings ("late night drive, warm synths"), queued as
+  *play next* or *add*
+- **Favourites** — the heart on Now Playing and on every library track row, read from
+  and written back to MA
+- **Preview** — audition a library track without touching the queue
+- **Player options** — power, playback speed (handy for audiobooks), and *Don't stop
+  the music*
 - Download tracks for offline playback
 
 **Speakers**

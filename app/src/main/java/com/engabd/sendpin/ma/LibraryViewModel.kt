@@ -357,6 +357,60 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     fun isFavorite(item: MaItem): Boolean = item.itemId in _favorites.value
 
+    // --- track preview -----------------------------------------------------
+
+    /** The track currently being auditioned, if any. */
+    private val _previewing = MutableStateFlow<String?>(null)
+    val previewing: StateFlow<String?> = _previewing
+
+    private var previewPlayer: android.media.MediaPlayer? = null
+
+    /**
+     * Audition a track without touching the queue: MA hands back a short preview
+     * URL, which plays locally on the phone. Tapping the same track again stops it,
+     * as does starting another one.
+     */
+    fun togglePreview(item: MaItem) {
+        if (_previewing.value == item.itemId) { stopPreview(); return }
+        stopPreview()
+        if (_backend.value != Backend.MA) return
+        _previewing.value = item.itemId
+        viewModelScope.launch {
+            val url = try { maRepo.trackPreview(item.itemId, item.provider) } catch (_: Exception) { null }
+            if (url.isNullOrBlank()) {
+                _previewing.value = null
+                _toast.tryEmit("No preview available for this track")
+                return@launch
+            }
+            // The user may have stopped it while the URL was in flight.
+            if (_previewing.value != item.itemId) return@launch
+            try {
+                previewPlayer = android.media.MediaPlayer().apply {
+                    setAudioAttributes(
+                        android.media.AudioAttributes.Builder()
+                            .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                            .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC)
+                            .build()
+                    )
+                    setDataSource(url)
+                    setOnCompletionListener { stopPreview() }
+                    setOnErrorListener { _, _, _ -> stopPreview(); true }
+                    setOnPreparedListener { start() }
+                    prepareAsync()
+                }
+            } catch (_: Exception) {
+                _previewing.value = null
+                _toast.tryEmit("Couldn't play the preview")
+            }
+        }
+    }
+
+    fun stopPreview() {
+        _previewing.value = null
+        previewPlayer?.let { p -> runCatching { p.stop() }; runCatching { p.release() } }
+        previewPlayer = null
+    }
+
 
     private fun rootItems(): List<MaItem> = buildList {
         if (_backend.value == Backend.MA) {
@@ -379,6 +433,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         super.onCleared()
         maApi.disconnect()
         localPlayer.stop()
+        stopPreview()
     }
 
     private companion object {

@@ -460,6 +460,26 @@ private fun ItemRow(item: MaItem, viewModel: LibraryViewModel) {
             }
         }
 
+        // MA tracks can be auditioned and favourited in place.
+        val isMaTrack = !isCategory && !isDownload && !isSubsonicTrack && item.mediaType == "track"
+        if (isMaTrack) {
+            val previewing by viewModel.previewing.collectAsState()
+            val favorites by viewModel.favorites.collectAsState()
+            val isFav = item.itemId in favorites
+            Icon(
+                if (previewing == item.itemId) Icons.Default.StopCircle else Icons.Default.Headphones,
+                if (previewing == item.itemId) "Stop preview" else "Preview",
+                tint = if (previewing == item.itemId) accent else TextMuted,
+                modifier = Modifier.size(20.dp).clip(CircleShape).clickable { viewModel.togglePreview(item) },
+            )
+            Icon(
+                if (isFav) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                if (isFav) "Remove from favourites" else "Add to favourites",
+                tint = if (isFav) accent else TextMuted,
+                modifier = Modifier.size(20.dp).clip(CircleShape).clickable { viewModel.toggleFavorite(item) },
+            )
+        }
+
         when {
             isSubsonicTrack -> Icon(
                 Icons.Default.Download, "Download", tint = TextMuted,

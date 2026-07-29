@@ -121,7 +121,6 @@ fun App() {
                         NowPlayingScreen(
                             viewModel = nowPlayingVm,
                             onOpenSpeakers = { go("speakers") },
-                            onOpenLightSync = { go("light_sync") },
                             onBrowse = { go("library") },
                         )
                     }

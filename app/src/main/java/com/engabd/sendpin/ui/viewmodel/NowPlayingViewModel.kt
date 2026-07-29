@@ -8,10 +8,14 @@ import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.PlayerIdentity
 import com.engabd.sendpin.ma.MaApiClient
+import com.engabd.sendpin.ma.MaItem
+import com.engabd.sendpin.ma.MaLyrics
 import com.engabd.sendpin.ma.MaNowPlaying
 import com.engabd.sendpin.ma.MaPlayer
 import com.engabd.sendpin.ma.MaQueue
+import com.engabd.sendpin.ma.MaQueueItem
 import com.engabd.sendpin.ma.MaRepository
+import com.engabd.sendpin.ma.MaSimilarTrack
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -21,6 +25,9 @@ import kotlinx.coroutines.launch
  * player (the Speakers "Play here" target, "" = this phone) via the Music Assistant
  * API, so the screen shows whatever that player is playing — title/artist/art,
  * playing/paused, position — not just this phone's own Sendspin stream.
+ *
+ * It also owns the three panels hung off that track — queue, lyrics and sonically
+ * similar tracks — which load on demand rather than on every poll.
  */
 class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -47,7 +54,23 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         val groupSize: Int = 1,
         val shuffle: Boolean = false,
         val repeatMode: String = "off",   // off | one | all
+        val queueSize: Int = 0,
+        /** Which queue row is playing. Matched by id, since indexes shift on edits. */
+        val currentQueueItemId: String? = null,
+        val playbackSpeed: Float = 1f,
+        val dontStopTheMusic: Boolean = false,
+        val powered: Boolean = true,
+        /** The player exposes a power switch, so the control is worth showing. */
+        val canPower: Boolean = false,
     )
+
+    /** A panel's load state — the UI has to tell "empty" from "not fetched yet". */
+    sealed interface Load<out T> {
+        data object Idle : Load<Nothing>
+        data object Loading : Load<Nothing>
+        data class Ready<T>(val value: T) : Load<T>
+        data class Failed(val message: String) : Load<Nothing>
+    }
 
     private val settings = AppSettings(app)
     private val myPlayerId = PlayerIdentity.getPlayerId(app)
@@ -99,8 +122,48 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             groupSize = 1 + (p?.groupChilds?.size ?: 0),
             shuffle = queue?.shuffleEnabled == true,
             repeatMode = queue?.repeatMode ?: "off",
+            queueSize = queue?.itemCount ?: 0,
+            currentQueueItemId = queue?.currentQueueItemId,
+            playbackSpeed = queue?.playbackSpeed ?: 1f,
+            dontStopTheMusic = queue?.dontStopTheMusic == true,
+            powered = p?.powered ?: true,
+            canPower = p?.let { "power" in it.supportedFeatures } ?: false,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, State())
+
+    /**
+     * The library item behind what's playing, taken from the queue's `current_item`.
+     * Everything track-specific — the heart, lyrics, "more like this" — needs a real
+     * `item_id` and provider, which the player's `current_media` doesn't carry.
+     */
+    val currentItem: StateFlow<MaItem?> = combine(_queues, _players, _target) { queues, players, target ->
+        val id = target.ifBlank { myPlayerId }
+        val streamId = players.firstOrNull { it.playerId == id }?.syncedTo ?: id
+        queues.firstOrNull { it.queueId == streamId }?.currentItem
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /** Un-acknowledged favourite flip: item id → wanted state. */
+    private val _favoriteOverride = MutableStateFlow<Pair<String, Boolean>?>(null)
+
+    val favorite: StateFlow<Boolean> = combine(currentItem, _favoriteOverride) { item, override ->
+        if (item == null) false
+        else if (override != null && override.first == item.itemId) override.second
+        else item.favorite
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    // --- panels (loaded on demand) ----------------------------------------
+
+    private val _queueItems = MutableStateFlow<Load<List<MaQueueItem>>>(Load.Idle)
+    val queueItems: StateFlow<Load<List<MaQueueItem>>> = _queueItems
+
+    private val _lyrics = MutableStateFlow<Load<MaLyrics?>>(Load.Idle)
+    val lyrics: StateFlow<Load<MaLyrics?>> = _lyrics
+
+    private val _similar = MutableStateFlow<Load<List<MaSimilarTrack>>>(Load.Idle)
+    val similar: StateFlow<Load<List<MaSimilarTrack>>> = _similar
+
+    private val _toast = MutableSharedFlow<String>(extraBufferCapacity = 8)
+    val toast: SharedFlow<String> = _toast.asSharedFlow()
 
     val connected: StateFlow<Boolean> = api.state
         .map { it == MaApiClient.State.CONNECTED }
@@ -120,6 +183,15 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                 val id = target.ifBlank { myPlayerId }
                 players.firstOrNull { it.playerId == id }?.nowPlaying
             }.collect { np -> if (np != null && np.title.isNotBlank()) _lastTrack.value = np }
+        }
+        // A new track invalidates whatever the panels were showing.
+        viewModelScope.launch {
+            currentItem.map { it?.itemId }.distinctUntilChanged().collect {
+                _lyrics.value = Load.Idle
+                _similar.value = Load.Idle
+                _favoriteOverride.value = null
+                if (_queueItems.value !is Load.Idle) loadQueue()
+            }
         }
         viewModelScope.launch { api.state.collect { if (it == MaApiClient.State.CONNECTED) refresh() } }
         // Poll for state (and interpolate position between polls in the UI if needed).
@@ -183,9 +255,176 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         volJob = viewModelScope.launch { delay(180); try { repo.setVolume(targetId(), lvl) } catch (_: Exception) {} }
     }
 
-    private inline fun act(crossinline block: suspend () -> Unit) {
+    // --- player + queue options -------------------------------------------
+
+    fun setPower(on: Boolean) = act(toastOnError = "Couldn't switch the player") {
+        repo.setPower(targetId(), on)
+    }
+
+    private var speedJob: kotlinx.coroutines.Job? = null
+    fun setPlaybackSpeed(speed: Float) {
+        val q = streamQueueId()
+        _queues.update { list -> list.map { if (it.queueId == q) it.copy(playbackSpeed = speed) else it } }
+        speedJob?.cancel()
+        speedJob = viewModelScope.launch {
+            delay(200)
+            try { repo.setPlaybackSpeed(q, speed) } catch (e: Exception) { _toast.tryEmit(e.message ?: "Couldn't set speed") }
+        }
+    }
+
+    fun toggleDontStopTheMusic() {
+        val q = streamQueueId()
+        val next = !state.value.dontStopTheMusic
+        _queues.update { list -> list.map { if (it.queueId == q) it.copy(dontStopTheMusic = next) else it } }
+        act(toastOnError = "Couldn't change Don't stop the music") { repo.setDontStopTheMusic(q, next) }
+    }
+
+    // --- favourite ---------------------------------------------------------
+
+    fun toggleFavorite() {
+        val item = currentItem.value ?: return
+        val wanted = !favorite.value
+        _favoriteOverride.value = item.itemId to wanted
         viewModelScope.launch {
-            try { block() } catch (_: Exception) {}
+            try {
+                if (wanted) repo.addFavorite(item) else repo.removeFavorite(item)
+                _toast.tryEmit(if (wanted) "Added to favourites" else "Removed from favourites")
+                // Let MA write it through before we trust `favorite` off the queue again.
+                delay(1_200); refresh(); delay(1_500)
+                _favoriteOverride.value = null
+            } catch (e: Exception) {
+                _favoriteOverride.value = null
+                _toast.tryEmit(e.message ?: "Couldn't change favourite")
+            }
+        }
+    }
+
+    // --- queue -------------------------------------------------------------
+
+    fun loadQueue() {
+        val q = streamQueueId()
+        _queueItems.value = Load.Loading
+        viewModelScope.launch {
+            _queueItems.value = try {
+                Load.Ready(repo.queueItems(q))
+            } catch (e: Exception) {
+                Load.Failed(e.message ?: "Couldn't load the queue")
+            }
+        }
+    }
+
+    /** Jump to a queue position. */
+    fun playQueueIndex(index: Int) = queueAction { repo.playIndex(it, index) }
+
+    fun removeQueueItem(item: MaQueueItem) = queueAction { repo.deleteQueueItem(it, item.queueItemId) }
+
+    /** [shift] is relative: -1 moves the item one place earlier, +1 one later. */
+    fun moveQueueItem(item: MaQueueItem, shift: Int) = queueAction { repo.moveQueueItem(it, item.queueItemId, shift) }
+
+    fun clearQueue() = queueAction { repo.clearQueue(it) }
+
+    fun saveQueueAsPlaylist(name: String) {
+        if (name.isBlank()) return
+        val q = streamQueueId()
+        viewModelScope.launch {
+            try {
+                repo.saveQueueAsPlaylist(q, name.trim())
+                _toast.tryEmit("Saved \"${name.trim()}\"")
+            } catch (e: Exception) {
+                _toast.tryEmit(e.message ?: "Couldn't save the playlist")
+            }
+        }
+    }
+
+    private inline fun queueAction(crossinline block: suspend (String) -> Unit) {
+        val q = streamQueueId()
+        viewModelScope.launch {
+            try {
+                block(q)
+            } catch (e: Exception) {
+                _toast.tryEmit(e.message ?: "Queue command failed")
+                return@launch
+            }
+            // MA rebuilds the queue asynchronously, so re-read rather than guess.
+            delay(350); refresh(); loadQueue()
+        }
+    }
+
+    // --- lyrics ------------------------------------------------------------
+
+    fun loadLyrics() {
+        val item = currentItem.value ?: run {
+            _lyrics.value = Load.Failed("Nothing playing")
+            return
+        }
+        _lyrics.value = Load.Loading
+        viewModelScope.launch {
+            _lyrics.value = try {
+                Load.Ready(repo.getLyrics(item))
+            } catch (e: Exception) {
+                Load.Failed(e.message ?: "Couldn't fetch lyrics")
+            }
+        }
+    }
+
+    // --- sonic similarity ---------------------------------------------------
+
+    /** Acoustically similar tracks to what's playing. */
+    fun loadSimilar() {
+        val item = currentItem.value ?: run {
+            _similar.value = Load.Failed("Nothing playing")
+            return
+        }
+        _similar.value = Load.Loading
+        viewModelScope.launch {
+            _similar.value = try {
+                Load.Ready(repo.similarTracks(item.itemId, item.provider))
+            } catch (e: Exception) {
+                Load.Failed(e.message ?: "Couldn't find similar tracks")
+            }
+        }
+    }
+
+    /** Natural-language search over the sonic embeddings ("rainy sunday piano"). */
+    fun sonicSearch(query: String) {
+        if (query.isBlank()) return loadSimilar()
+        _similar.value = Load.Loading
+        viewModelScope.launch {
+            _similar.value = try {
+                Load.Ready(repo.sonicTextSearch(query.trim()))
+            } catch (e: Exception) {
+                Load.Failed(e.message ?: "Search failed")
+            }
+        }
+    }
+
+    /** [option] is MA's QueueOption: `next` to play after this, `add` to append. */
+    fun enqueue(track: MaSimilarTrack, option: String) {
+        val uri = track.uri ?: "track://${track.provider}/${track.itemId}"
+        val q = streamQueueId()
+        viewModelScope.launch {
+            try {
+                repo.playMedia(q, listOf(uri), option)
+                _toast.tryEmit(if (option == "next") "Playing next" else "Added to queue")
+                delay(350); refresh()
+                if (_queueItems.value !is Load.Idle) loadQueue()
+            } catch (e: Exception) {
+                _toast.tryEmit(e.message ?: "Couldn't queue that")
+            }
+        }
+    }
+
+    /** A short preview of a track, without disturbing what's playing. */
+    suspend fun previewUrl(itemId: String, provider: String): String? =
+        try { repo.trackPreview(itemId, provider) } catch (_: Exception) { null }
+
+    private inline fun act(toastOnError: String? = null, crossinline block: suspend () -> Unit) {
+        viewModelScope.launch {
+            try {
+                block()
+            } catch (e: Exception) {
+                if (toastOnError != null) _toast.tryEmit(e.message ?: toastOnError)
+            }
             delay(300); refresh()
         }
     }

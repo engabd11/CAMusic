@@ -82,7 +82,7 @@ class MaRepository(val api: MaApiClient) {
     suspend fun players() = MaParse.players(api.sendCommand("players/all"))
 
     /** All player queues — carries the stream details behind the quality badge. */
-    suspend fun queues() = MaParse.queues(api.sendCommand("player_queues/all"))
+    suspend fun queues() = MaParse.queues(api.sendCommand("player_queues/all"), serverUrl)
 
     /** Play items to a player (queue_id == player_id). [option]: play|replace|next|add. */
     suspend fun playMedia(playerId: String, uris: List<String>, option: String = "replace") {
