@@ -27,8 +27,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 /**
  * The player connection, held at **process scope** (by [com.engabd.sendpin.SendpinApp])
  * so it survives the Activity/ViewModel being destroyed. The UI observes it through
- * [com.engabd.sendpin.ui.viewmodel.PlayerViewModel]; [SendspinService] keeps the
- * process alive and shows the media notification while connected.
+ * [com.engabd.sendpin.ui.viewmodel.PlayerViewModel]; [SendspinConnectionService] keeps
+ * the process alive, and [SendspinService] shows the media notification while playing.
  */
 class Playback(private val app: Context) {
 

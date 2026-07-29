@@ -1,5 +1,6 @@
 package com.engabd.sendpin.service
 
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -20,8 +21,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
 /**
@@ -34,7 +33,7 @@ import kotlinx.coroutines.launch
  *
  * The notification it shows is a *connection* notification: a small, quiet, ongoing
  * entry with a Stop action. It deliberately does NOT use MediaStyle or a
- * MediaSession — that belongs to [SendspinMediaService], which comes and goes with
+ * MediaSession — that belongs to [SendspinService], which comes and goes with
  * the music. This separation means:
  *
  *  - Swiping away the media notification does not kill the connection.
@@ -93,7 +92,7 @@ class SendspinConnectionService : Service() {
         return START_STICKY
     }
 
-    @androidx.annotation.SuppressLint("WakelockTimeout")
+    @SuppressLint("WakelockTimeout")
     private fun acquireLocks() {
         if (wakeLock == null) {
             wakeLock = (getSystemService(POWER_SERVICE) as PowerManager)
@@ -121,7 +120,7 @@ class SendspinConnectionService : Service() {
             pb.connectionStatus.collect { _ -> updateNotification() }
         }
         scope.launch {
-            pb.connected.distinctUntilChanged().collect { _ -> updateNotification() }
+            pb.connected.collect { _ -> updateNotification() }
         }
     }
 
