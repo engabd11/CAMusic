@@ -60,7 +60,10 @@ import com.engabd.sendpin.ui.theme.*
  * point of a music library.
  */
 @Composable
-fun LibraryScreen(viewModel: LibraryViewModel = viewModel()) {
+fun LibraryScreen(
+    viewModel: LibraryViewModel = viewModel(),
+    onAlbumClick: (MaItem) -> Unit = { viewModel.open(it) },
+) {
     val ready by viewModel.ready.collectAsState()
     val booted by viewModel.booted.collectAsState()
     val connecting by viewModel.connecting.collectAsState()
@@ -97,7 +100,7 @@ fun LibraryScreen(viewModel: LibraryViewModel = viewModel()) {
             // to. Showing it while a saved server is still handshaking made every
             // visit to this tab flash what looks like the onboarding screen.
             when {
-                ready -> Browse(viewModel)
+                ready -> Browse(viewModel, onAlbumClick)
                 booted && !connecting && (!hasServer || connError != null) -> ConnectForm(viewModel, backend)
                 else -> ConnectingState()
             }
@@ -242,7 +245,7 @@ private const val COLS = 6              // 6-col base: covers span 2, categories
 private fun full() = GridItemSpan(COLS)
 
 @Composable
-private fun Browse(viewModel: LibraryViewModel) {
+private fun Browse(viewModel: LibraryViewModel, onAlbumClick: (MaItem) -> Unit) {
     val node by viewModel.node.collectAsState()
     val depth by viewModel.depth.collectAsState()
     val loading by viewModel.loading.collectAsState()
@@ -275,10 +278,10 @@ private fun Browse(viewModel: LibraryViewModel) {
         }
 
         if (s != null) {
-            searchSection("Artists", s.artists, viewModel)
-            searchSection("Albums", s.albums, viewModel)
-            searchSection("Tracks", s.tracks, viewModel)
-            searchSection("Playlists", s.playlists, viewModel)
+            searchSection("Artists", s.artists, viewModel, onAlbumClick)
+            searchSection("Albums", s.albums, viewModel, onAlbumClick)
+            searchSection("Tracks", s.tracks, viewModel, onAlbumClick)
+            searchSection("Playlists", s.playlists, viewModel, onAlbumClick)
             if (s.artists.isEmpty() && s.albums.isEmpty() && s.tracks.isEmpty() && s.playlists.isEmpty()) {
                 item(span = { full() }) { EmptyState() }
             }
@@ -295,28 +298,31 @@ private fun Browse(viewModel: LibraryViewModel) {
             items(node.items, span = { GridItemSpan(3) }) { cat ->
                 CategoryCard(cat) { viewModel.open(cat) }
             }
+            val openItem: (MaItem) -> Unit = { item ->
+                if (item.mediaType == "album") onAlbumClick(item) else viewModel.open(item)
+            }
             if (inProgress.isNotEmpty()) {
                 item(span = { full() }) { Shelf("Continue listening") }
                 items(inProgress, span = { GridItemSpan(2) }) { it2 ->
-                    CoverTile(it2) { viewModel.open(it2) }
+                    CoverTile(it2) { openItem(it2) }
                 }
             }
             if (recentlyAdded.isNotEmpty()) {
                 item(span = { full() }) { Shelf("Recently added") }
                 items(recentlyAdded, span = { GridItemSpan(2) }) { it2 ->
-                    CoverTile(it2) { viewModel.open(it2) }
+                    CoverTile(it2) { openItem(it2) }
                 }
             }
             if (recommendations.isNotEmpty()) {
                 item(span = { full() }) { Shelf("For you") }
                 items(recommendations, span = { GridItemSpan(2) }) { it2 ->
-                    CoverTile(it2) { viewModel.open(it2) }
+                    CoverTile(it2) { openItem(it2) }
                 }
             }
             if (recent.isNotEmpty()) {
                 item(span = { full() }) { Shelf("Recently played") }
                 items(recent, span = { GridItemSpan(2) }) { it2 ->
-                    CoverTile(it2) { viewModel.open(it2) }
+                    CoverTile(it2) { openItem(it2) }
                 }
             }
             return@LazyVerticalGrid
@@ -331,7 +337,8 @@ private fun Browse(viewModel: LibraryViewModel) {
         val artful = node.items.count { it.image != null && it.mediaType in setOf("album", "playlist") }
         if (artful >= node.items.size / 2 && artful > 0) {
             items(node.items, span = { GridItemSpan(2) }) { entry ->
-                CoverTile(entry) { viewModel.open(entry) }
+                if (entry.mediaType == "album") CoverTile(entry) { onAlbumClick(entry) }
+                else CoverTile(entry) { viewModel.open(entry) }
             }
         } else {
             val tracks = node.items.filter { it.playable && it.mediaType == "track" }
@@ -339,7 +346,8 @@ private fun Browse(viewModel: LibraryViewModel) {
                 item(span = { full() }) { PlayAllBar(tracks.size) { viewModel.playAll(tracks) } }
             }
             items(node.items, span = { full() }) { entry ->
-                ItemRow(entry, viewModel)
+                if (entry.mediaType == "album") ItemRow(entry, viewModel, onAlbumClick)
+                else ItemRow(entry, viewModel)
             }
         }
     }
@@ -347,10 +355,14 @@ private fun Browse(viewModel: LibraryViewModel) {
 
 private fun androidx.compose.foundation.lazy.grid.LazyGridScope.searchSection(
     title: String, list: List<MaItem>, viewModel: LibraryViewModel,
+    onAlbumClick: (MaItem) -> Unit,
 ) {
     if (list.isEmpty()) return
     item(span = { full() }) { Shelf(title) }
-    items(list, span = { full() }) { entry -> ItemRow(entry, viewModel) }
+    items(list, span = { full() }) { entry ->
+        if (entry.mediaType == "album") ItemRow(entry, viewModel, onAlbumClick)
+        else ItemRow(entry, viewModel)
+    }
 }
 
 private fun androidx.compose.foundation.lazy.grid.LazyGridScope.downloadsSection(
@@ -467,13 +479,16 @@ private fun RowCard(onClick: (() -> Unit)? = null, content: @Composable RowScope
 }
 
 @Composable
-private fun ItemRow(item: MaItem, viewModel: LibraryViewModel) {
+private fun ItemRow(item: MaItem, viewModel: LibraryViewModel, onAlbumClick: ((MaItem) -> Unit)? = null) {
     val accent = LocalAccent.current
     val isCategory = item.provider == "__cat__"
     val isDownload = item.provider == "__dl__"
     val isSubsonicTrack = item.provider == "subsonic" && item.mediaType == "track"
 
-    RowCard(onClick = { viewModel.open(item) }) {
+    RowCard(onClick = {
+        if (item.mediaType == "album" && onAlbumClick != null) onAlbumClick(item)
+        else viewModel.open(item)
+    }) {
         when {
             isCategory -> Box(
                 Modifier.size(46.dp).clip(RoundedCornerShape(11.dp)).background(accent.a(0.12f)),

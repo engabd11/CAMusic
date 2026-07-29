@@ -51,6 +51,10 @@ class MaRepository(val api: MaApiClient) {
     suspend fun artistAlbums(item: MaItem) =
         MaParse.items(api.sendCommand("music/artists/artist_albums", itemRef(item)), serverUrl)
 
+    /** Full album metadata (year, genre, artists, etc.) from `music/albums/get`. */
+    suspend fun getAlbum(item: MaItem): MaItem? =
+        MaParse.item(api.sendCommand("music/albums/get", itemRef(item)), serverUrl)
+
     suspend fun albumTracks(item: MaItem) =
         MaParse.items(api.sendCommand("music/albums/album_tracks", itemRef(item)), serverUrl)
 

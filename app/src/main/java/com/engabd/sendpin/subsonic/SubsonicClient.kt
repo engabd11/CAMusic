@@ -113,11 +113,23 @@ class SubsonicClient(
         return albums.map { albumItem(it.jsonObject) }
     }
 
-    suspend fun albumTracks(id: String): List<MaItem> {
-        val songs = get("getAlbum", mapOf("id" to id))?.get("album")?.jsonObject?.get("song")?.jsonArray
-            ?: return emptyList()
-        return songs.map { songItem(it.jsonObject) }
+    /** Album metadata (year, genre, song count) + all tracks. */
+    suspend fun albumDetail(id: String): Pair<MaItem?, List<MaItem>> {
+        val albumObj = get("getAlbum", mapOf("id" to id))?.get("album")?.jsonObject
+            ?: return null to emptyList()
+        val album = MaItem(
+            itemId = albumObj.str("id") ?: id, provider = "subsonic",
+            name = albumObj.str("name") ?: albumObj.str("album") ?: "Unknown album",
+            uri = albumObj.str("id"), mediaType = "album",
+            subtitle = albumObj.str("artist"),
+            image = coverUrl(albumObj.str("coverArt") ?: albumObj.str("id")),
+            duration = albumObj.int("duration"),
+        )
+        val songs = albumObj["song"]?.jsonArray ?: emptyList()
+        return album to songs.map { songItem(it.jsonObject) }
     }
+
+    suspend fun albumTracks(id: String): List<MaItem> = albumDetail(id).second
 
     suspend fun playlists(): List<MaItem> {
         val pls = get("getPlaylists")?.get("playlists")?.jsonObject?.get("playlist")?.jsonArray ?: return emptyList()
@@ -170,12 +182,14 @@ class SubsonicClient(
         name = o.str("name") ?: o.str("album") ?: "Unknown album",
         uri = o.str("id"), mediaType = "album", subtitle = o.str("artist"),
         image = coverUrl(o.str("coverArt") ?: o.str("id")), duration = null,
+        year = o.int("year"),
     )
 
     private fun songItem(o: JsonObject) = MaItem(
         itemId = o.str("id") ?: "", provider = "subsonic", name = o.str("title") ?: "Unknown title",
         uri = o.str("id"), mediaType = "track", subtitle = o.str("artist"),
         image = coverUrl(o.str("coverArt") ?: o.str("albumId") ?: o.str("id")), duration = o.int("duration"),
+        trackNumber = o.int("track"), discNumber = o.int("discNumber"),
     )
 
     private fun playlistItem(o: JsonObject) = MaItem(
