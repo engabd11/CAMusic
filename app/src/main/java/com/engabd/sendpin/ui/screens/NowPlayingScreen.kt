@@ -1,9 +1,11 @@
 package com.engabd.sendpin.ui.screens
 
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -216,7 +218,20 @@ fun NowPlayingScreen(
             }
 
             // The overlays sit in the same Box as the player, so the album wash
-            // still reads behind their top edge.
+            // still reads behind their top edge. Anything still visible above a
+            // sheet dismisses it, and so does system Back — otherwise Back would
+            // leave the screen entirely with a panel open over it.
+            if (panel != null || options) {
+                BackHandler { panel = null; options = false }
+                Box(
+                    Modifier
+                        .matchParentSize()
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                        ) { panel = null; options = false }
+                )
+            }
             panel?.let { p ->
                 NowPlayingSheet(
                     panel = p,
