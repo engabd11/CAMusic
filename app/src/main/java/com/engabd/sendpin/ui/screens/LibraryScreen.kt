@@ -200,6 +200,9 @@ private fun Browse(viewModel: LibraryViewModel) {
     val error by viewModel.error.collectAsState()
     val search by viewModel.search.collectAsState()
     val recent by viewModel.recent.collectAsState()
+    val recentlyAdded by viewModel.recentlyAdded.collectAsState()
+    val recommendations by viewModel.recommendations.collectAsState()
+    val inProgress by viewModel.inProgress.collectAsState()
     val jobs by viewModel.downloadJobs.collectAsState()
 
     val s = search
@@ -238,9 +241,27 @@ private fun Browse(viewModel: LibraryViewModel) {
         }
 
         if (depth == 0) {
-            // Root shelf: the category grid, then a wall of recently played art.
+            // Root shelf: the category grid, then dynamic shelves of content.
             items(node.items, span = { GridItemSpan(3) }) { cat ->
                 CategoryCard(cat) { viewModel.open(cat) }
+            }
+            if (inProgress.isNotEmpty()) {
+                item(span = { full() }) { Shelf("Continue listening") }
+                items(inProgress, span = { GridItemSpan(2) }) { it2 ->
+                    CoverTile(it2) { viewModel.open(it2) }
+                }
+            }
+            if (recentlyAdded.isNotEmpty()) {
+                item(span = { full() }) { Shelf("Recently added") }
+                items(recentlyAdded, span = { GridItemSpan(2) }) { it2 ->
+                    CoverTile(it2) { viewModel.open(it2) }
+                }
+            }
+            if (recommendations.isNotEmpty()) {
+                item(span = { full() }) { Shelf("For you") }
+                items(recommendations, span = { GridItemSpan(2) }) { it2 ->
+                    CoverTile(it2) { viewModel.open(it2) }
+                }
             }
             if (recent.isNotEmpty()) {
                 item(span = { full() }) { Shelf("Recently played") }
@@ -437,6 +458,26 @@ private fun ItemRow(item: MaItem, viewModel: LibraryViewModel) {
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
             }
+        }
+
+        // MA tracks can be auditioned and favourited in place.
+        val isMaTrack = !isCategory && !isDownload && !isSubsonicTrack && item.mediaType == "track"
+        if (isMaTrack) {
+            val previewing by viewModel.previewing.collectAsState()
+            val favorites by viewModel.favorites.collectAsState()
+            val isFav = item.itemId in favorites
+            Icon(
+                if (previewing == item.itemId) Icons.Default.StopCircle else Icons.Default.Headphones,
+                if (previewing == item.itemId) "Stop preview" else "Preview",
+                tint = if (previewing == item.itemId) accent else TextMuted,
+                modifier = Modifier.size(20.dp).clip(CircleShape).clickable { viewModel.togglePreview(item) },
+            )
+            Icon(
+                if (isFav) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                if (isFav) "Remove from favourites" else "Add to favourites",
+                tint = if (isFav) accent else TextMuted,
+                modifier = Modifier.size(20.dp).clip(CircleShape).clickable { viewModel.toggleFavorite(item) },
+            )
         }
 
         when {

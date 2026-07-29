@@ -14,6 +14,7 @@ data class MaItem(
     val subtitle: String?,   // artist(s) / owner
     val image: String?,      // best-effort image URL
     val duration: Int?,
+    val favorite: Boolean = false,
 ) {
     val browsable get() = mediaType in BROWSABLE
     val playable get() = uri != null && mediaType in PLAYABLE
@@ -65,12 +66,19 @@ data class MaPlayer(
 /** A player's Sendspin sync-delay config value + the (variable) key it lives under. */
 data class SyncDelay(val key: String, val ms: Int)
 
-/** A player queue, reduced to the part the UI cares about: what's streaming. */
+/** A player queue: what's streaming, and how the queue itself is set up. */
 data class MaQueue(
     val queueId: String,
     val quality: StreamQuality?,
     val shuffleEnabled: Boolean = false,
     val repeatMode: String = "off",   // off | one | all
+    val currentIndex: Int? = null,
+    val itemCount: Int = 0,
+    /** The library item behind `current_item` — the handle for favourite/lyrics/similar. */
+    val currentItem: MaItem? = null,
+    val currentQueueItemId: String? = null,
+    val dontStopTheMusic: Boolean = false,
+    val playbackSpeed: Float = 1f,
 )
 
 /** Grouped search hits. */
@@ -79,6 +87,70 @@ data class MaSearchResults(
     val albums: List<MaItem>,
     val tracks: List<MaItem>,
     val playlists: List<MaItem>,
+)
+
+/** A single queue item with its stream details. */
+data class MaQueueItem(
+    val queueItemId: String,
+    val name: String,
+    val duration: Int?,
+    val sortIndex: Int,
+    val mediaItem: MaItem?,
+    val streamDetails: StreamQuality?,
+    /** Position in the queue — what `player_queues/play_index` takes. */
+    val index: Int = 0,
+    val artist: String? = null,
+    val image: String? = null,
+    val available: Boolean = true,
+)
+
+/** One timed line of an LRC lyric. */
+data class LyricLine(val atMs: Long, val text: String)
+
+/** Lyrics for a track, plain or LRC-timed. */
+data class MaLyrics(
+    val text: String,
+    val synced: Boolean = false,
+) {
+    /**
+     * The lyric as timed lines. Plain lyrics come back as one line per row with a
+     * timestamp of 0, so callers can render either kind the same way and simply
+     * not highlight when [synced] is false.
+     */
+    val lines: List<LyricLine> by lazy {
+        if (!synced) return@lazy text.lines().map { LyricLine(0, it.trim()) }
+        val out = mutableListOf<LyricLine>()
+        for (raw in text.lines()) {
+            val stamps = LRC_STAMP.findAll(raw).toList()
+            if (stamps.isEmpty()) continue
+            val body = raw.substring(stamps.last().range.last + 1).trim()
+            for (m in stamps) {
+                val (mm, ss, frac) = m.destructured
+                // The fraction is 2 or 3 digits (centi- or milliseconds).
+                val fracMs = when (frac.length) {
+                    0 -> 0L
+                    2 -> frac.toLong() * 10
+                    else -> frac.padEnd(3, '0').take(3).toLong()
+                }
+                out += LyricLine(mm.toLong() * 60_000 + ss.toLong() * 1_000 + fracMs, body)
+            }
+        }
+        out.sortedBy { it.atMs }
+    }
+
+    private companion object {
+        val LRC_STAMP = Regex("""\[(\d{1,3}):(\d{2})(?:[.:](\d{2,3}))?]""")
+    }
+}
+
+/** A track similar to the seed (from sonic_similarity or music/tracks/similar_tracks). */
+data class MaSimilarTrack(
+    val itemId: String,
+    val name: String,
+    val artist: String?,
+    val image: String?,
+    val uri: String?,
+    val provider: String,
 )
 
 object MaParse {
@@ -101,6 +173,7 @@ object MaParse {
             subtitle = artistString(o) ?: o["owner"]?.jsonPrimitive?.contentOrNull,
             image = imageUrl(o, serverUrl),
             duration = o["duration"]?.jsonPrimitive?.let { it.intOrNull ?: it.doubleOrNull?.toInt() },
+            favorite = o["favorite"]?.jsonPrimitive?.booleanOrNull ?: false,
         )
     }
 
@@ -120,7 +193,9 @@ object MaParse {
                 volumeLevel = o["volume_level"]?.jsonPrimitive?.intOrNull ?: 0,
                 groupVolume = o["group_volume"]?.jsonPrimitive?.intOrNull,
                 syncedTo = o["synced_to"]?.jsonPrimitive?.contentOrNull,
-                groupChilds = strList(o["group_childs"]),
+                // MA renamed this to `group_members`; older servers still send
+                // `group_childs`, so accept whichever one turns up.
+                groupChilds = strList(o["group_members"] ?: o["group_childs"]),
                 canGroupWith = strList(o["can_group_with"]),
                 supportedFeatures = strList(o["supported_features"]),
                 icon = o["icon"]?.jsonPrimitive?.contentOrNull,
@@ -146,16 +221,23 @@ object MaParse {
         )
     }
 
-    fun queues(result: JsonElement?): List<MaQueue> {
+    fun queues(result: JsonElement?, serverUrl: String? = null): List<MaQueue> {
         val arr = result as? JsonArray ?: return emptyList()
         return arr.mapNotNull { el ->
             val o = el as? JsonObject ?: return@mapNotNull null
             val id = o["queue_id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+            val current = o["current_item"] as? JsonObject
             MaQueue(
                 queueId = id,
-                quality = quality(o["current_item"]),
+                quality = quality(current),
                 shuffleEnabled = o["shuffle_enabled"]?.jsonPrimitive?.booleanOrNull ?: false,
                 repeatMode = o["repeat_mode"]?.jsonPrimitive?.contentOrNull ?: "off",
+                currentIndex = o["current_index"]?.jsonPrimitive?.intOrNull,
+                itemCount = o["items"]?.jsonPrimitive?.intOrNull ?: 0,
+                currentItem = item(current?.get("media_item"), serverUrl),
+                currentQueueItemId = current?.get("queue_item_id")?.jsonPrimitive?.contentOrNull,
+                dontStopTheMusic = o["dont_stop_the_music_enabled"]?.jsonPrimitive?.booleanOrNull ?: false,
+                playbackSpeed = o["playback_speed"]?.jsonPrimitive?.floatOrNull ?: 1f,
             )
         }
     }
@@ -200,5 +282,91 @@ object MaParse {
         val provider = first["provider"]?.jsonPrimitive?.contentOrNull ?: "builtin"
         val enc = URLEncoder.encode(path, "UTF-8")
         return "$base/imageproxy?path=$enc&provider=$provider"
+    }
+
+    // --- queue items --------------------------------------------------------
+
+    fun queueItems(result: JsonElement?, serverUrl: String?): List<MaQueueItem> {
+        val arr = result as? JsonArray ?: return emptyList()
+        return arr.mapIndexedNotNull { i, el ->
+            val o = el as? JsonObject ?: return@mapIndexedNotNull null
+            val id = o["queue_item_id"]?.jsonPrimitive?.contentOrNull ?: return@mapIndexedNotNull null
+            val media = item(o["media_item"], serverUrl)
+            MaQueueItem(
+                queueItemId = id,
+                name = o["name"]?.jsonPrimitive?.contentOrNull ?: media?.name ?: "?",
+                duration = o["duration"]?.jsonPrimitive?.intOrNull,
+                sortIndex = o["sort_index"]?.jsonPrimitive?.intOrNull ?: 0,
+                mediaItem = media,
+                streamDetails = quality(o),
+                // `index` is the queue position play_index takes; fall back to the
+                // array order, which is the same thing for a full page-0 fetch.
+                index = o["index"]?.jsonPrimitive?.intOrNull ?: i,
+                artist = media?.subtitle,
+                image = media?.image
+                    ?: ((o["image"] as? JsonObject)?.let { imageUrl(JsonObject(mapOf("images" to JsonArray(listOf(it)))), serverUrl) }),
+                available = o["available"]?.jsonPrimitive?.booleanOrNull ?: true,
+            )
+        }
+    }
+
+    // --- lyrics ------------------------------------------------------------
+
+    fun lyrics(result: JsonElement?): MaLyrics? {
+        // MA returns a (lyrics, lrc_lyrics) tuple — a 2-element array where [0] is
+        // plain text and [1] is LRC-synced text (or null). It can also come back as
+        // a bare string for older endpoints.
+        when (result) {
+            is JsonArray -> {
+                if (result.size < 1) return null
+                val lrc = result.getOrNull(1)?.jsonPrimitive?.contentOrNull
+                val plain = result.getOrNull(0)?.jsonPrimitive?.contentOrNull
+                val text = lrc ?: plain ?: return null
+                return MaLyrics(text = text, synced = lrc != null)
+            }
+            is JsonObject -> {
+                val text = result["lyrics"]?.jsonPrimitive?.contentOrNull
+                    ?: result["text"]?.jsonPrimitive?.contentOrNull ?: return null
+                return MaLyrics(
+                    text = text,
+                    synced = result["synced"]?.jsonPrimitive?.booleanOrNull ?: false,
+                )
+            }
+            is JsonPrimitive -> {
+                val text = result.contentOrNull ?: return null
+                return MaLyrics(text = text, synced = false)
+            }
+            else -> return null
+        }
+    }
+
+    // --- similar tracks ----------------------------------------------------
+
+    fun similarTracks(result: JsonElement?, serverUrl: String?): List<MaSimilarTrack> {
+        // music/tracks/similar_tracks → Array of Track; sonic_similarity/text_search
+        // → object with string keys and Any values (a dict of matches). Both carry
+        // item_id / name / artists at the leaf level.
+        val arr = when (result) {
+            is JsonArray -> result
+            is JsonObject -> {
+                // text_search returns a dict; try common result-wrapper keys, else treat values.
+                (result["matches"] as? JsonArray)
+                    ?: (result["result"] as? JsonArray)
+                    ?: JsonArray(result.values.filter { it is JsonObject || it is JsonArray })
+            }
+            else -> return emptyList()
+        }
+        return arr.mapNotNull { el ->
+            val o = el as? JsonObject ?: return@mapNotNull null
+            val id = o["item_id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+            MaSimilarTrack(
+                itemId = id,
+                name = o["name"]?.jsonPrimitive?.contentOrNull ?: "?",
+                artist = artistString(o),
+                image = imageUrl(o, serverUrl),
+                uri = o["uri"]?.jsonPrimitive?.contentOrNull,
+                provider = o["provider"]?.jsonPrimitive?.contentOrNull ?: "library",
+            )
+        }
     }
 }

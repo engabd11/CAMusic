@@ -35,9 +35,10 @@ fun navBarInset(): Dp =
 data class NavTab(val route: String, val label: String, val icon: ImageVector)
 
 /**
- * The tab bar. Instead of a solid surface it is a gradient that fades the art
- * into pure black — Compose has no backdrop blur, and on an OLED panel a fade
- * to #000 melts better than a translucent slab would anyway.
+ * The tab bar. A gradient that goes opaque within its top few dp, so scrolling
+ * content is cut off well above the icons rather than sliding visibly behind
+ * them — but the very top edge still feathers, so on OLED the bar has no seam,
+ * it just stops emitting.
  */
 @Composable
 fun SendspinNavBar(
@@ -53,9 +54,8 @@ fun SendspinNavBar(
             .drawBehind {
                 drawRect(
                     Brush.verticalGradient(
-                        0f to Color.Transparent,
-                        0.32f to Ink.a(0.86f),
-                        0.62f to Ink,
+                        0f to Ink.a(0.5f),
+                        0.16f to Ink,
                         1f to Ink,
                     )
                 )

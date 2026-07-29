@@ -3,7 +3,25 @@ package com.engabd.sendpin.ha
 import kotlinx.serialization.json.*
 
 /** A selectable media player the area can follow. */
-data class HaMediaPlayer(val entityId: String, val name: String)
+data class HaMediaPlayer(
+    val entityId: String,
+    val name: String,
+    val state: String = "idle",       // playing | paused | idle | off | …
+    val nowPlaying: String? = null,   // "Artist — Title" when something is on
+) {
+    val isPlaying get() = state == "playing"
+}
+
+/**
+ * One of the integration's selectable colour schemes.
+ *
+ * [colours] are the palette's real anchor colours, converted from the HSV
+ * anchors in syncoV2's `color/palette.py` — the same colours the bulbs will
+ * actually cycle through, so a swatch previews the scheme rather than standing
+ * in for it. Schemes are gradients, not single colours: Rainbow is seven stops
+ * and Honolulu four, and a one-colour dot can't tell them apart.
+ */
+data class ColourScheme(val key: String, val label: String, val colours: List<Long>)
 
 /** One Hue Synco entertainment area (an HA device) with its controllable entities. */
 data class LightArea(
@@ -42,11 +60,39 @@ class LightSyncRepository(private val ha: HaClient) {
 
     companion object {
         const val PLATFORM = "hue_music_sync"
-        // Colour swatches surfaced as dots in the UI (subset of the ColorScheme enum).
-        val PALETTE_SWATCHES = listOf(
-            "sunset", "ocean", "forest", "lavender", "ember", "rainbow",
+
+        /**
+         * The 16 preset schemes from `ColorScheme` in syncoV2's const.py, with the
+         * real anchor colours from its `_SCHEMES` table (HSV → sRGB). The three
+         * dynamic schemes (album art v1/v2, song) are separate: they have no fixed
+         * colours, so the UI shows them as live sources rather than swatches.
+         */
+        val PALETTES = listOf(
+            ColourScheme("sunset", "Sunset", listOf(0xFFB62BD9, 0xFFFF268E, 0xFFFF2633, 0xFFFF6126, 0xFFFFA133, 0xFFFFCD4D)),
+            ColourScheme("ocean", "Ocean", listOf(0xFF40FFD1, 0xFF26FFFF, 0xFF19BAFF, 0xFF1975FF, 0xFF2445F2)),
+            ColourScheme("forest", "Forest", listOf(0xFF90FF4D, 0xFF37FF33, 0xFF24F25E, 0xFF30F2AC)),
+            ColourScheme("lavender", "Lavender", listOf(0xFFA073FF, 0xFFC059FF, 0xFFFC66FF, 0xFFFF73C7)),
+            ColourScheme("ember", "Ember", listOf(0xFFFF1927, 0xFFFF3519, 0xFFFF5E19, 0xFFFF9B26, 0xFFFFC633)),
+            ColourScheme("aurora", "Aurora", listOf(0xFF33FFC2, 0xFF40FF5E, 0xFF33C2FF, 0xFF7D40FF, 0xFFFF59D1)),
+            ColourScheme("rainbow", "Rainbow", listOf(0xFFFF1919, 0xFFFF8C19, 0xFFFFFF19, 0xFF27FF26, 0xFF26FFFF, 0xFF2726FF, 0xFFFF26FF)),
+            ColourScheme("tropical", "Tropical", listOf(0xFFFF3395, 0xFFFF47ED, 0xFFFF334B, 0xFFFF602E, 0xFFFFB84D)),
+            ColourScheme("savanna", "Savanna", listOf(0xFFFF3326, 0xFFFF6726, 0xFFFF8E26, 0xFFFFBA33, 0xFFFFD952)),
+            ColourScheme("blossom", "Blossom", listOf(0xFFFF94B4, 0xFFFFB59E, 0xFFFFECAB, 0xFFE3A8FF, 0xFFB8EAFF)),
+            ColourScheme("honolulu", "Honolulu", listOf(0xFFFF2667, 0xFFFF5A26, 0xFFD633FF, 0xFF33FFFF)),
+            ColourScheme("galaxy", "Galaxy", listOf(0xFF1923FF, 0xFF6C26FF, 0xFFBA26FF, 0xFFFF38DF)),
+            ColourScheme("neon", "Neon", listOf(0xFF0FF5FC, 0xFFFF2EF0, 0xFF27FF14, 0xFFFF2E73)),
+            ColourScheme("peacock", "Peacock", listOf(0xFF1ED4E6, 0xFF1F78FF, 0xFF16D993, 0xFFFFC633)),
+            ColourScheme("citrus", "Citrus", listOf(0xFFFFEC3D, 0xFF98EB2F, 0xFFFF971C, 0xFFFF615C)),
+            ColourScheme("rosegold", "Rose gold", listOf(0xFFFFD0C2, 0xFFFF9A8C, 0xFFE07D5E, 0xFFF5CA5D)),
         )
+
         const val ALBUM_COLOUR = "album_art_v2"
+        const val ALBUM_COLOUR_V1 = "album_art"
+        const val SONG_COLOUR = "song"
+
+        /** Every dynamic (runtime-derived) scheme, so the UI can recognise one. */
+        val DYNAMIC_COLOURS = setOf(ALBUM_COLOUR, ALBUM_COLOUR_V1, SONG_COLOUR)
+
         // Advanced live tunables (keys + labels match const.TUNABLE_KEYS in the integration).
         val TUNABLE_DEFS = listOf(
             "reactivity" to "Reactivity", "glow" to "Glow", "movement" to "Movement",
@@ -54,6 +100,23 @@ class LightSyncRepository(private val ha: HaClient) {
         )
         // The intensity rungs Auto may pick from (const.INTENSITY_LADDER).
         val AUTO_RUNGS = listOf("subtle", "medium", "high", "intense", "extreme")
+
+        /** One-line summaries of each rung, from `SyncMode` in const.py. */
+        val MODE_BLURBS = mapOf(
+            "auto" to "Picks a level live from the music",
+            "subtle" to "Seamless — steady level, colour just flows",
+            "medium" to "Gentle club — visible dimming, soft flashes",
+            "high" to "The band — kicks, guitar and vocals split across lamps",
+            "intense" to "Club — the room follows energy, colour jumps on beats",
+            "extreme" to "Max club — dark room, fast beats chase side to side",
+        )
+
+        /** From `SyncEffect` in const.py. */
+        val EFFECT_BLURBS = mapOf(
+            "music" to "Beat and frequency choreography",
+            "movies" to "Calm — brightness follows the soundtrack",
+            "fireworks" to "Bursts ignite on big beats, then fade",
+        )
     }
 
     suspend fun discover(): List<LightArea> {
@@ -145,16 +208,32 @@ class LightSyncRepository(private val ha: HaClient) {
         }
     }
 
-    /** Media players the areas can follow (active players + a friendly name). */
+    /**
+     * Media players the areas can follow. Carries each player's state and what it
+     * is playing, and puts whatever is playing at the front — a house with a dozen
+     * `media_player` entities is otherwise an unordered wall of identical pills.
+     */
     suspend fun mediaPlayers(): List<HaMediaPlayer> = ha.getStates().mapNotNull { s ->
         val o = s as? JsonObject ?: return@mapNotNull null
         val eid = o["entity_id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
         if (!eid.startsWith("media_player.")) return@mapNotNull null
-        val state = o["state"]?.jsonPrimitive?.contentOrNull
+        val state = o["state"]?.jsonPrimitive?.contentOrNull ?: "idle"
         if (state == "unavailable") return@mapNotNull null
-        val name = (o["attributes"] as? JsonObject)?.get("friendly_name")?.jsonPrimitive?.contentOrNull ?: eid
-        HaMediaPlayer(eid, name)
-    }
+        val attrs = o["attributes"] as? JsonObject ?: JsonObject(emptyMap())
+        fun attr(k: String) = attrs[k]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+        val title = attr("media_title")
+        val artist = attr("media_artist")
+        HaMediaPlayer(
+            entityId = eid,
+            name = attr("friendly_name") ?: eid,
+            state = state,
+            nowPlaying = when {
+                title == null -> null
+                artist == null -> title
+                else -> "$artist — $title"
+            },
+        )
+    }.sortedWith(compareByDescending<HaMediaPlayer> { it.isPlaying }.thenBy { it.name.lowercase() })
 
     private fun optionsOf(entry: Pair<String?, JsonObject>?): List<String> =
         (entry?.second?.get("options") as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList()
