@@ -1,6 +1,7 @@
 package com.engabd.sendpin.data
 
 import android.content.Context
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -28,6 +29,8 @@ class AppSettings(private val context: Context) {
         private val PLAYER_NAME = stringPreferencesKey("player_name")          // Sendspin client/hello name
         private val TARGET_PLAYER = stringPreferencesKey("target_player")      // MA player to play to / control ("" = this phone)
         private val NOW_PLAYING_LAYOUT = stringPreferencesKey("now_playing_layout") // "tab" (default) | "overlay"
+        private val PREFER_HI_RES = booleanPreferencesKey("prefer_hi_res")      // advertise 88.2/96 kHz too
+        private val PREFER_FLAC = booleanPreferencesKey("prefer_flac")          // FLAC ahead of uncompressed PCM
     }
 
     val backend: Flow<String> = context.dataStore.data.map { it[BACKEND] ?: "ma" }
@@ -42,6 +45,8 @@ class AppSettings(private val context: Context) {
     val playerName: Flow<String> = context.dataStore.data.map { it[PLAYER_NAME] ?: "" }
     val targetPlayer: Flow<String> = context.dataStore.data.map { it[TARGET_PLAYER] ?: "" }
     val nowPlayingLayout: Flow<String> = context.dataStore.data.map { it[NOW_PLAYING_LAYOUT] ?: "tab" }
+    val preferHiRes: Flow<Boolean> = context.dataStore.data.map { it[PREFER_HI_RES] ?: true }
+    val preferFlac: Flow<Boolean> = context.dataStore.data.map { it[PREFER_FLAC] ?: true }
 
     suspend fun setBackend(value: String) {
         context.dataStore.edit { it[BACKEND] = value }
@@ -77,5 +82,14 @@ class AppSettings(private val context: Context) {
 
     suspend fun setNowPlayingLayout(layout: String) {
         context.dataStore.edit { it[NOW_PLAYING_LAYOUT] = layout }
+    }
+
+    /** Takes effect on the next connect — the format list is sent in the hello. */
+    suspend fun setPreferHiRes(value: Boolean) {
+        context.dataStore.edit { it[PREFER_HI_RES] = value }
+    }
+
+    suspend fun setPreferFlac(value: Boolean) {
+        context.dataStore.edit { it[PREFER_FLAC] = value }
     }
 }

@@ -162,8 +162,8 @@ fun SettingsScreen(
                                 fontWeight = FontWeight.Bold, fontSize = 14.sp,
                             )
                             Text(
-                                "Overlay: the cover slides over the app; swipe down to minimize into a bar. "
-                                "Tab: the classic full-screen player as a bottom tab.",
+                                "Overlay: the cover slides over the app; swipe down to minimize into a bar. " +
+                                    "Tab: the classic full-screen player as a bottom tab.",
                                 color = TextFaint, fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp,
                             )
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -182,14 +182,32 @@ fun SettingsScreen(
 
                 // ── Audio ───────────────────────────────────────────────────
                 item {
-                    var prefer96k by remember { mutableStateOf(true) }
+                    var preferHiRes by remember { mutableStateOf(true) }
                     var preferFlac by remember { mutableStateOf(true) }
+                    LaunchedEffect(Unit) {
+                        preferHiRes = settings.preferHiRes.first()
+                        preferFlac = settings.preferFlac.first()
+                    }
                     SectionHeader(Icons.Default.GraphicEq, "Audio", accent)
                     Spacer(Modifier.height(12.dp))
                     GlassCard(radius = 16.dp) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            ToggleRow("Prefer 96kHz", "Use hi-res 96/24 instead of 48/24", prefer96k, accent) { prefer96k = it }
-                            ToggleRow("Prefer FLAC", "Bandwidth-efficient lossless — same bit-perfect quality", preferFlac, accent) { preferFlac = it }
+                            ToggleRow(
+                                "Offer hi-res rates",
+                                "Also accept 88.2/96 kHz so hi-res masters aren't downsampled to 48 kHz",
+                                preferHiRes, accent,
+                            ) { preferHiRes = it; scope.launch { settings.setPreferHiRes(it) } }
+                            ToggleRow(
+                                "Prefer FLAC over PCM",
+                                "Lossless either way — FLAC uses about half the bandwidth",
+                                preferFlac, accent,
+                            ) { preferFlac = it; scope.launch { settings.setPreferFlac(it) } }
+                            Text(
+                                "Music Assistant may only send a format this phone advertises. " +
+                                    "44.1 and 48 kHz are always offered, so CD-rate files stream " +
+                                    "untouched. Output is 16-bit. Reconnect to apply.",
+                                color = TextFaint, fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp,
+                            )
                             // Status readout
                             Column(
                                 Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))

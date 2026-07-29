@@ -15,6 +15,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -27,6 +28,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -38,6 +40,7 @@ import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 /**
@@ -87,34 +90,42 @@ fun NowPlayingOverlay(
     val progress = if (dur > 0) (pos.toFloat() / dur).coerceIn(0f, 1f) else 0f
 
     // Drag-to-minimize: the overlay tracks the finger's vertical offset and snaps
-    // to expanded or collapsed when released.
-    val screenHeight = LocalConfiguration.current.screenHeightDp.dp
-    val collapseOffset = screenHeight.value * 0.82f   // how far down before it's "minimized"
+    // to expanded or collapsed when released. The offset is kept in *pixels* so the
+    // drag delta (already px) needs no conversion.
+    val dragScope = rememberCoroutineScope()
+    val screenHeightPx = with(LocalDensity.current) {
+        LocalConfiguration.current.screenHeightDp.dp.toPx()
+    }
+    val collapseOffset = screenHeightPx * 0.82f   // how far down before it's "minimized"
     val dragOffset = remember { Animatable(0f) }
 
     LaunchedEffect(expanded) {
         if (expanded) dragOffset.animateTo(0f, tween(280))
     }
 
-    val fractionCollapsed = (dragOffset.value / collapseOffset).coerceIn(0f, 1f)
-
     CompositionLocalProvider(LocalAccent provides accent, LocalPalette provides palette) {
         Box(
             Modifier
                 .fillMaxSize()
-                .offset { IntOffset(0, (dragOffset.value * density(context)).roundToInt()) }
+                .offset { IntOffset(0, dragOffset.value.roundToInt()) }
                 .pointerInput(expanded) {
                     if (expanded) detectVerticalDragGestures(
                         onDragEnd = {
-                            val target = if (dragOffset.value > collapseOffset * 0.4f) {
-                                onCollapse()
-                                collapseOffset
-                            } else 0f
-                            dragOffset.animateTo(target, tween(200))
-                            if (target == 0f) dragOffset.animateTo(0f, tween(200))
+                            // Animate first, collapse after — otherwise the parent drops
+                            // this composable mid-slide and the gesture ends with a jump.
+                            dragScope.launch {
+                                if (dragOffset.value > collapseOffset * 0.4f) {
+                                    dragOffset.animateTo(collapseOffset, tween(200))
+                                    onCollapse()
+                                } else {
+                                    dragOffset.animateTo(0f, tween(200))
+                                }
+                            }
                         },
                         onVerticalDrag = { _, dragAmount ->
-                            dragOffset.snapTo((dragOffset.value + dragAmount / density(context)).coerceAtLeast(0f))
+                            dragScope.launch {
+                                dragOffset.snapTo((dragOffset.value + dragAmount).coerceAtLeast(0f))
+                            }
                         },
                     )
                 }
@@ -508,7 +519,3 @@ private fun IdleNotice(playerName: String, blank: Boolean, onBrowse: () -> Unit)
         )
     }
 }
-
-/** Convert dp to pixels for drag offset. */
-private fun density(context: android.content.Context) =
-    context.resources.displayMetrics.density
