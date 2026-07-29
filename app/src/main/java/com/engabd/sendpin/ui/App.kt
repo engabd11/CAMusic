@@ -41,12 +41,14 @@ import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
 import com.engabd.sendpin.ui.screens.AlbumDetailScreen
+import com.engabd.sendpin.ui.screens.ArtistDetailScreen
 import com.engabd.sendpin.ui.screens.LibraryScreen
 import com.engabd.sendpin.ui.screens.LightSyncScreen
 import com.engabd.sendpin.ui.screens.MiniPlayerBar
 import com.engabd.sendpin.ui.screens.NowPlayingOverlay
 import com.engabd.sendpin.ui.screens.NowPlayingScreen
 import com.engabd.sendpin.ui.screens.OnboardingScreen
+import com.engabd.sendpin.ui.screens.PlaylistDetailScreen
 import com.engabd.sendpin.ui.screens.SettingsScreen
 import com.engabd.sendpin.ui.screens.SpeakersScreen
 import com.engabd.sendpin.ui.theme.Ink
@@ -180,13 +182,16 @@ fun App() {
                         }
                     }
                     composable("library") {
+                        val navToDetail: (String, MaItem) -> Unit = { route, item ->
+                            val n = android.net.Uri.encode(item.name)
+                            val a = item.image?.let { android.net.Uri.encode(it) } ?: ""
+                            navController.navigate("$route/${android.net.Uri.encode(item.itemId)}/${android.net.Uri.encode(item.provider)}?name=$n&art=$a")
+                        }
                         LibraryScreen(
                             viewModel = libraryVm,
-                            onAlbumClick = { album ->
-                                val encodedName = android.net.Uri.encode(album.name)
-                                val encodedArt = album.image?.let { android.net.Uri.encode(it) } ?: ""
-                                navController.navigate("album/${android.net.Uri.encode(album.itemId)}/${android.net.Uri.encode(album.provider)}?name=$encodedName&art=$encodedArt")
-                            },
+                            onAlbumClick = { navToDetail("album", it) },
+                            onArtistClick = { navToDetail("artist", it) },
+                            onPlaylistClick = { navToDetail("playlist", it) },
                         )
                     }
                     composable(
@@ -207,6 +212,58 @@ fun App() {
                             provider = aProvider,
                             name = aName,
                             artUrl = aArt,
+                            onBack = { navController.popBackStack() },
+                            onArtistClick = { artistName, artistProvider, artistDisplay, artistArt ->
+                                val n = android.net.Uri.encode(artistDisplay)
+                                val a = artistArt?.let { android.net.Uri.encode(it) } ?: ""
+                                navController.navigate("artist/${android.net.Uri.encode(artistName)}/${android.net.Uri.encode(artistProvider)}?name=$n&art=$a")
+                            },
+                        )
+                    }
+                    composable(
+                        route = "artist/{itemId}/{provider}?name={name}&art={art}",
+                        arguments = listOf(
+                            navArgument("itemId") { type = NavType.StringType },
+                            navArgument("provider") { type = NavType.StringType },
+                            navArgument("name") { type = NavType.StringType; defaultValue = "" },
+                            navArgument("art") { type = NavType.StringType; defaultValue = "" },
+                        ),
+                    ) { backStackEntry ->
+                        val aItemId = backStackEntry.arguments?.getString("itemId") ?: ""
+                        val aProvider = backStackEntry.arguments?.getString("provider") ?: ""
+                        val aName = backStackEntry.arguments?.getString("name") ?: ""
+                        val aArt = backStackEntry.arguments?.getString("art")?.takeIf { it.isNotBlank() }
+                        ArtistDetailScreen(
+                            itemId = aItemId,
+                            provider = aProvider,
+                            name = aName,
+                            artUrl = aArt,
+                            onBack = { navController.popBackStack() },
+                            onAlbumClick = { album ->
+                                val n = android.net.Uri.encode(album.name)
+                                val a = album.image?.let { android.net.Uri.encode(it) } ?: ""
+                                navController.navigate("album/${android.net.Uri.encode(album.itemId)}/${android.net.Uri.encode(album.provider)}?name=$n&art=$a")
+                            },
+                        )
+                    }
+                    composable(
+                        route = "playlist/{itemId}/{provider}?name={name}&art={art}",
+                        arguments = listOf(
+                            navArgument("itemId") { type = NavType.StringType },
+                            navArgument("provider") { type = NavType.StringType },
+                            navArgument("name") { type = NavType.StringType; defaultValue = "" },
+                            navArgument("art") { type = NavType.StringType; defaultValue = "" },
+                        ),
+                    ) { backStackEntry ->
+                        val pItemId = backStackEntry.arguments?.getString("itemId") ?: ""
+                        val pProvider = backStackEntry.arguments?.getString("provider") ?: ""
+                        val pName = backStackEntry.arguments?.getString("name") ?: ""
+                        val pArt = backStackEntry.arguments?.getString("art")?.takeIf { it.isNotBlank() }
+                        PlaylistDetailScreen(
+                            itemId = pItemId,
+                            provider = pProvider,
+                            name = pName,
+                            artUrl = pArt,
                             onBack = { navController.popBackStack() },
                         )
                     }

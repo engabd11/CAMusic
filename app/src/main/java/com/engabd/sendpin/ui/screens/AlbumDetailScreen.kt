@@ -53,6 +53,7 @@ fun AlbumDetailScreen(
     name: String,
     artUrl: String?,
     onBack: () -> Unit,
+    onArtistClick: (String, String, String, String?) -> Unit = { _, _, _, _ -> },
 ) {
     val context = LocalContext.current
     val viewModel: AlbumDetailViewModel = viewModel(
@@ -110,6 +111,7 @@ fun AlbumDetailScreen(
                             onPlayAll = viewModel::playAll,
                             onShuffle = viewModel::shuffleAll,
                             onAddToQueue = viewModel::addToQueue,
+                            onArtistClick = onArtistClick,
                         )
                     }
 
@@ -183,6 +185,7 @@ private fun AlbumHero(
     onPlayAll: () -> Unit,
     onShuffle: () -> Unit,
     onAddToQueue: () -> Unit,
+    onArtistClick: (String, String, String, String?) -> Unit = { _, _, _, _ -> },
 ) {
     val accent = LocalAccent.current
 
@@ -228,7 +231,7 @@ private fun AlbumHero(
             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
         )
 
-        // Artist
+        // Artist — tappable to navigate to the artist detail screen
         album?.subtitle?.let { artist ->
             if (artist.isNotBlank()) {
                 Spacer(Modifier.height(4.dp))
@@ -237,6 +240,12 @@ private fun AlbumHero(
                     color = accent, fontFamily = AppFont,
                     fontWeight = FontWeight.Bold, fontSize = 15.sp,
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.clickable {
+                        // We don't have the artist's itemId from the album subtitle,
+                        // but the provider is the same. Pass the artist name for
+                        // the search-based fallback in the artist screen.
+                        onArtistClick(artist, album.provider, artist, null)
+                    },
                 )
             }
         }
@@ -276,7 +285,7 @@ private fun AlbumHero(
 // --- track row ------------------------------------------------------------
 
 @Composable
-private fun TrackRow(
+internal fun TrackRow(
     track: MaItem,
     index: Int,
     accent: Color,
@@ -341,7 +350,7 @@ private fun TrackRow(
 // --- states ---------------------------------------------------------------
 
 @Composable
-private fun SkeletonTrackRow() {
+internal fun SkeletonTrackRow() {
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -356,7 +365,7 @@ private fun SkeletonTrackRow() {
 }
 
 @Composable
-private fun EmptyState(title: String, body: String) {
+internal fun EmptyState(title: String, body: String) {
     Column(
         Modifier.fillMaxWidth().padding(vertical = 60.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -374,7 +383,7 @@ private fun EmptyState(title: String, body: String) {
 }
 
 @Composable
-private fun ErrorState(message: String, onRetry: () -> Unit) {
+internal fun ErrorState(message: String, onRetry: () -> Unit) {
     Column(
         Modifier.fillMaxWidth().padding(vertical = 60.dp),
         horizontalAlignment = Alignment.CenterHorizontally,

@@ -107,11 +107,23 @@ class SubsonicClient(
         }
     }
 
-    suspend fun artistAlbums(id: String): List<MaItem> {
-        val albums = get("getArtist", mapOf("id" to id))?.get("artist")?.jsonObject?.get("album")?.jsonArray
-            ?: return emptyList()
-        return albums.map { albumItem(it.jsonObject) }
+    /** Artist metadata + their albums. */
+    suspend fun artistDetail(id: String): Pair<MaItem?, List<MaItem>> {
+        val artistObj = get("getArtist", mapOf("id" to id))?.get("artist")?.jsonObject
+            ?: return null to emptyList()
+        val artist = MaItem(
+            itemId = artistObj.str("id") ?: id, provider = "subsonic",
+            name = artistObj.str("name") ?: "Unknown artist",
+            uri = artistObj.str("id"), mediaType = "artist",
+            subtitle = artistObj.int("albumCount")?.let { "$it albums" },
+            image = coverUrl(artistObj.str("coverArt") ?: artistObj.str("id")),
+            duration = null,
+        )
+        val albums = artistObj["album"]?.jsonArray ?: emptyList()
+        return artist to albums.map { albumItem(it.jsonObject) }
     }
+
+    suspend fun artistAlbums(id: String): List<MaItem> = artistDetail(id).second
 
     /** Album metadata (year, genre, song count) + all tracks. */
     suspend fun albumDetail(id: String): Pair<MaItem?, List<MaItem>> {

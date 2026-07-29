@@ -51,6 +51,22 @@ class MaRepository(val api: MaApiClient) {
     suspend fun artistAlbums(item: MaItem) =
         MaParse.items(api.sendCommand("music/artists/artist_albums", itemRef(item)), serverUrl)
 
+    /** Full artist metadata (biography, genres, image) from `music/artists/get`. */
+    suspend fun getArtist(item: MaItem): MaItem? =
+        MaParse.item(api.sendCommand("music/artists/get", itemRef(item)), serverUrl)
+
+    /** All tracks by an artist. */
+    suspend fun artistTracks(item: MaItem) =
+        MaParse.items(api.sendCommand("music/artists/artist_tracks", itemRef(item)), serverUrl)
+
+    /** An artist's top tracks (MA's play-count ranking). */
+    suspend fun topTracks(item: MaItem, limit: Int = 10) =
+        MaParse.items(api.sendCommand("music/artists/top_tracks", buildJsonObject {
+            put("item_id", item.itemId)
+            put("provider_instance_id_or_domain", item.provider)
+            put("limit", limit)
+        }), serverUrl)
+
     /** Full album metadata (year, genre, artists, etc.) from `music/albums/get`. */
     suspend fun getAlbum(item: MaItem): MaItem? =
         MaParse.item(api.sendCommand("music/albums/get", itemRef(item)), serverUrl)
