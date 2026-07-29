@@ -154,7 +154,7 @@ The Sendspin protocol client and audio engine are modelled on
 app (Apache-2.0). Light Sync targets the
 [syncoV2](https://github.com/engabd11/syncoV2) `hue_music_sync` integration.
 
-Built by **Cyborg Automation AU** (engabd.com.au)
+Built by **Cyborg Automation AU** (cyborgautomation.com.au)
 
 ## License
 
