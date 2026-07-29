@@ -333,6 +333,11 @@ fun NowPlayingOverlay(
  * A compact bar that sits above the nav bar showing what's playing, with
  * play/pause and a tap-to-expand action. The album art is a small thumbnail,
  * the title/artist is one line, and the play button is inline.
+ *
+ * It stays put when nothing is playing, showing an idle label instead. In overlay
+ * mode this bar is the *only* way into the full player — there is no Playing tab —
+ * so hiding it would strand the speaker picker and the idle browse prompt behind a
+ * screen the user can no longer open.
  */
 @Composable
 fun MiniPlayerBar(
@@ -340,7 +345,6 @@ fun MiniPlayerBar(
     onExpand: () -> Unit,
 ) {
     val st by viewModel.state.collectAsState()
-    if (st.blank) return   // nothing to show
 
     val palette = rememberAlbumPalette(st.artworkUrl)
     val accent = palette.accent
@@ -378,30 +382,37 @@ fun MiniPlayerBar(
             // Title + artist.
             Column(Modifier.weight(1f)) {
                 Text(
-                    st.title, color = TextPrimary, fontFamily = AppFont,
+                    if (st.blank) "Nothing playing" else st.title,
+                    color = if (st.blank) TextSecondary else TextPrimary,
+                    fontFamily = AppFont,
                     fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                if (st.artist.isNotBlank()) {
+                // Falls back to the player name so an idle bar still says *where*.
+                val sub = if (st.blank) st.playerName else st.artist
+                if (sub.isNotBlank()) {
                     Text(
-                        st.artist, color = TextMuted, fontFamily = AppFont,
+                        sub, color = TextMuted, fontFamily = AppFont,
                         fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
                 }
             }
 
-            // Play/pause.
-            Box(
-                Modifier.size(32.dp).clip(CircleShape)
-                    .background(Glass)
-                    .clickable { viewModel.playPause() },
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    if (st.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                    if (st.isPlaying) "Pause" else "Play",
-                    tint = accent, modifier = Modifier.size(18.dp),
-                )
+            // Play/pause — nothing to toggle when the queue is empty, so the bar
+            // becomes a plain tap-to-open target instead of offering a dead button.
+            if (!st.blank) {
+                Box(
+                    Modifier.size(32.dp).clip(CircleShape)
+                        .background(Glass)
+                        .clickable { viewModel.playPause() },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        if (st.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        if (st.isPlaying) "Pause" else "Play",
+                        tint = accent, modifier = Modifier.size(18.dp),
+                    )
+                }
             }
         }
     }
