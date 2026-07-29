@@ -115,6 +115,7 @@ class MaRepository(val api: MaApiClient) {
 
     suspend fun play(playerId: String) = cmd("play", playerId)
     suspend fun pause(playerId: String) = cmd("pause", playerId)
+    suspend fun stop(playerId: String) = cmd("stop", playerId)
     suspend fun next(playerId: String) = cmd("next", playerId)
     suspend fun previous(playerId: String) = cmd("previous", playerId)
 
