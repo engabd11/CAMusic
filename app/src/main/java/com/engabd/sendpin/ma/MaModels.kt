@@ -5,6 +5,17 @@ import kotlinx.serialization.json.*
 import java.net.URLEncoder
 
 /** A Music Assistant media item (artist / album / track / playlist / radio). */
+/**
+ * The source file's own format, off `provider_mappings[].audio_format`. Used to
+ * decide whether Music Assistant would have to convert a track to stream it — see
+ * [com.engabd.sendpin.audio.FormatNegotiator].
+ */
+data class MaAudioFormat(
+    val codec: String,
+    val sampleRate: Int,
+    val bitDepth: Int,
+)
+
 data class MaItem(
     val itemId: String,
     val provider: String,
@@ -15,6 +26,7 @@ data class MaItem(
     val image: String?,      // best-effort image URL
     val duration: Int?,
     val favorite: Boolean = false,
+    val audioFormat: MaAudioFormat? = null,
 ) {
     val browsable get() = mediaType in BROWSABLE
     val playable get() = uri != null && mediaType in PLAYABLE
@@ -174,8 +186,24 @@ object MaParse {
             image = imageUrl(o, serverUrl),
             duration = o["duration"]?.jsonPrimitive?.let { it.intOrNull ?: it.doubleOrNull?.toInt() },
             favorite = o["favorite"]?.jsonPrimitive?.booleanOrNull ?: false,
+            audioFormat = audioFormat(o),
         )
     }
+
+    /** The best (highest-rate) format any provider can supply this item in. */
+    private fun audioFormat(o: JsonObject): MaAudioFormat? =
+        (o["provider_mappings"] as? JsonArray)
+            ?.mapNotNull { (it as? JsonObject)?.get("audio_format") as? JsonObject }
+            ?.mapNotNull { f ->
+                val rate = f["sample_rate"]?.jsonPrimitive?.intOrNull ?: return@mapNotNull null
+                MaAudioFormat(
+                    codec = f["content_type"]?.jsonPrimitive?.contentOrNull
+                        ?: f["codec_type"]?.jsonPrimitive?.contentOrNull ?: "?",
+                    sampleRate = rate,
+                    bitDepth = f["bit_depth"]?.jsonPrimitive?.intOrNull ?: 16,
+                )
+            }
+            ?.maxByOrNull { it.sampleRate.toLong() * 100 + it.bitDepth }
 
     fun players(result: JsonElement?): List<MaPlayer> {
         val arr = result as? JsonArray ?: return emptyList()

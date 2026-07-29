@@ -16,6 +16,7 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -54,13 +55,17 @@ fun NowPlayingScreen(
     // Which overlay is open, if any. Null = just the player.
     var panel by remember { mutableStateOf<Panel?>(null) }
     var options by remember { mutableStateOf(false) }
+    // Lyrics are a *mode* of the player, not an overlay: they take the cover's place.
+    var showLyrics by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         viewModel.toast.collect { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }
     }
 
-    // The palette follows the player being shown, which may differ from the app-wide one.
-    val palette = rememberAlbumPalette(st.artworkUrl)
+    // App.kt already derives the palette from this same artwork and provides it to
+    // the whole tree, so the rest of the app is tinted to match. Re-extracting here
+    // would just do the same clustering work twice.
+    val palette = LocalPalette.current
     val accent = palette.accent
 
     // Smoothly interpolate the position between 2s polls. `scrubbing` freezes the
@@ -103,16 +108,24 @@ fun NowPlayingScreen(
 
                 // Album art fills the available space, shrinking on small screens
                 // and growing on large ones — no scroll needed.
-                AlbumArt(
-                    url = st.artworkUrl,
-                    glow = palette.swatch(0),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .alpha(if (st.idle) 0.55f else 1f),
-                    glowAlpha = if (st.idle) 0.18f else 0.45f,
-                    placeholder = Icons.AutoMirrored.Filled.QueueMusic,
-                )
+                if (showLyrics) {
+                    LyricsPane(
+                        viewModel = viewModel,
+                        positionMs = pos,
+                        modifier = Modifier.fillMaxWidth().weight(1f),
+                    )
+                } else {
+                    AlbumArt(
+                        url = st.artworkUrl,
+                        glow = palette.swatch(0),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .alpha(if (st.idle) 0.55f else 1f),
+                        glowAlpha = if (st.idle) 0.18f else 0.45f,
+                        placeholder = Icons.AutoMirrored.Filled.QueueMusic,
+                    )
+                }
 
                 Spacer(Modifier.height(16.dp))
 
@@ -123,11 +136,8 @@ fun NowPlayingScreen(
                     horizontalArrangement = Arrangement.spacedBy(9.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    IconChip(Icons.Default.Lyrics, "Lyrics", active = panel == Panel.LYRICS) {
-                        panel = if (panel == Panel.LYRICS) null else Panel.LYRICS
-                    }
-                    IconChip(Icons.Default.GraphicEq, "Similar tracks", active = panel == Panel.SIMILAR) {
-                        panel = if (panel == Panel.SIMILAR) null else Panel.SIMILAR
+                    IconChip(Icons.Default.Lyrics, "Lyrics", active = showLyrics) {
+                        showLyrics = !showLyrics
                     }
                     QualityChip(st.quality)
                     IconChip(Icons.AutoMirrored.Filled.QueueMusic, "Queue", active = panel == Panel.QUEUE) {
@@ -240,14 +250,8 @@ fun NowPlayingScreen(
                         ) { panel = null; options = false }
                 )
             }
-            panel?.let { p ->
-                NowPlayingSheet(
-                    panel = p,
-                    onPanel = { panel = it },
-                    onClose = { panel = null },
-                    viewModel = viewModel,
-                    positionMs = pos,
-                )
+            if (panel != null) {
+                NowPlayingSheet(onClose = { panel = null }, viewModel = viewModel)
             }
             if (options) {
                 PlayerOptionsSheet(onClose = { options = false }, viewModel = viewModel)

@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.engabd.sendpin.SendpinApp
+import com.engabd.sendpin.audio.FormatNegotiator
 import com.engabd.sendpin.audio.LocalPlayer
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.PlayerIdentity
@@ -198,13 +199,61 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 when (item.provider) {
                     "subsonic" -> subsonic?.let { localPlayer.play(it.streamUrl(item.itemId), item.name) }
                     DOWNLOAD -> item.uri?.let { localPlayer.play(it, item.name) }
-                    else -> item.uri?.let { maRepo.playMedia(playTarget(), listOf(it), option) }
+                    else -> {
+                        val direct = if (option == "replace") navidromeDirectUrl(item) else null
+                        if (direct != null) {
+                            localPlayer.play(direct, item.name)
+                            _toast.tryEmit("Playing ${item.name} — original file")
+                            return@launch
+                        }
+                        item.uri?.let { maRepo.playMedia(playTarget(), listOf(it), option) }
+                    }
                 }
                 _toast.tryEmit(if (option == "add") "Added to queue" else "Playing ${item.name}")
             } catch (e: Exception) {
                 _toast.tryEmit(e.message ?: "Couldn't play")
             }
         }
+    }
+
+    /**
+     * "Play at original quality": when Music Assistant would have to convert a
+     * track to hand it to this phone, fetch the untouched file from Navidrome
+     * instead and decode it locally.
+     *
+     * Returns null — meaning "just use MA" — unless every condition holds:
+     *  - the setting is on;
+     *  - the target is this phone (routing to a speaker has to go through MA, and
+     *    the local player has no queue and no multi-room);
+     *  - Navidrome is configured and can be matched to this track;
+     *  - MA could *not* have streamed it untouched anyway. There is no point
+     *    losing the queue for a 44.1/16 file the server would have passed through.
+     */
+    private suspend fun navidromeDirectUrl(item: MaItem): String? {
+        if (!settings.preferOriginal.first()) return null
+        if (_backend.value != Backend.MA) return null
+        if (item.mediaType != "track") return null
+        if (_targetPlayer.value.isNotBlank() && _targetPlayer.value != myPlayerId) return null
+
+        val fmt = item.audioFormat ?: return null
+        val hiRes = settings.preferHiRes.first()
+        if (FormatNegotiator.canStreamUntouched(fmt.sampleRate, fmt.bitDepth, hiRes)) return null
+
+        val sc = subsonic ?: navidromeClient() ?: return null
+        // MA and Navidrome have different ids for the same file, so match by name.
+        val match = try {
+            sc.search("${item.name} ${item.subtitle.orEmpty()}".trim()).tracks
+                .firstOrNull { it.name.equals(item.name, ignoreCase = true) }
+        } catch (_: Exception) { null } ?: return null
+        return sc.streamUrl(match.itemId)
+    }
+
+    /** Build (and cache) a Navidrome client from saved settings, if there is one. */
+    private suspend fun navidromeClient(): SubsonicClient? {
+        val url = settings.navUrl.first().trim()
+        if (url.isBlank()) return null
+        return SubsonicClient(url, settings.navUsername.first(), settings.navPassword.first())
+            .also { subsonic = it }
     }
 
     fun playAll(items: List<MaItem>) {
@@ -260,6 +309,44 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         _query.value = ""
         searchDepth = -1
     }
+
+    // --- sonic similarity --------------------------------------------------
+
+    /**
+     * Natural-language search over MA's CLAP embeddings ("late night drive, warm
+     * synths"). This is a way of *finding* music, so it lives here in the library
+     * next to ordinary search rather than behind the player's queue button.
+     *
+     * Results are pushed onto the browse stack as a normal node, so they play,
+     * queue and navigate exactly like any other list.
+     */
+    fun sonicSearch(query: String) {
+        val q = query.trim()
+        if (q.isBlank()) return
+        if (_backend.value != Backend.MA) {
+            _toast.tryEmit("Sonic search needs the Music Assistant backend")
+            return
+        }
+        _searchOpen.value = false
+        pushNode("Sounds like \"$q\"") {
+            maRepo.sonicTextSearch(q, limit = 40).map { it.toItem() }
+        }
+    }
+
+    /** Acoustically similar tracks to a specific library track. */
+    fun similarTo(item: MaItem) {
+        if (_backend.value != Backend.MA) {
+            _toast.tryEmit("Sonic similarity needs the Music Assistant backend")
+            return
+        }
+        _searchOpen.value = false
+        pushNode("Similar to ${item.name}") {
+            maRepo.similarTracks(item.itemId, item.provider, limit = 40).map { it.toItem() }
+        }
+    }
+
+    private fun MaSimilarTrack.toItem() =
+        MaItem(itemId, provider, name, uri, "track", artist, image, null)
 
     // --- internals --------------------------------------------------------
 

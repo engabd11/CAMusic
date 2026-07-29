@@ -91,6 +91,7 @@ fun LibraryScreen(viewModel: LibraryViewModel = viewModel()) {
                 onBack = { viewModel.back() },
                 onBackend = viewModel::setBackend,
                 onSearch = viewModel::doSearch,
+                onSonicSearch = viewModel::sonicSearch,
                 onClearSearch = viewModel::clearSearch,
             )
             // Only offer the connect form once we know there's nothing to connect
@@ -124,6 +125,7 @@ private fun Header(
     onBack: () -> Unit,
     onBackend: (Backend) -> Unit,
     onSearch: (String) -> Unit,
+    onSonicSearch: (String) -> Unit,
     onClearSearch: () -> Unit,
 ) {
     Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 14.dp)) {
@@ -147,6 +149,30 @@ private fun Header(
         ) { onBackend(if (it == 1) Backend.SUBSONIC else Backend.MA) }
         Spacer(Modifier.height(12.dp))
         SearchField(query, onQuery, onSearch, onClearSearch)
+        // Sonic search: the same box, read as a description of a *sound* rather
+        // than a name. Finding music belongs in the library, not behind the
+        // player's queue button.
+        if (query.isNotBlank() && backend == Backend.MA) {
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SmallChip(Icons.Default.GraphicEq, "Sounds like this") { onSonicSearch(query) }
+            }
+        }
+    }
+}
+
+/** A compact labelled action chip. */
+@Composable
+private fun SmallChip(icon: ImageVector, label: String, onClick: () -> Unit) {
+    Row(
+        Modifier.clip(RoundedCornerShape(100)).background(Glass)
+            .border(1.dp, Hairline, RoundedCornerShape(100))
+            .clickable(onClick = onClick).padding(horizontal = 12.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(7.dp),
+    ) {
+        Icon(icon, null, tint = LocalAccent.current, modifier = Modifier.size(14.dp))
+        Text(label, color = TextSecondary, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 11.sp)
     }
 }
 

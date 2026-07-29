@@ -184,9 +184,11 @@ fun SettingsScreen(
                 item {
                     var preferHiRes by remember { mutableStateOf(true) }
                     var preferFlac by remember { mutableStateOf(true) }
+                    var preferOriginal by remember { mutableStateOf(false) }
                     LaunchedEffect(Unit) {
                         preferHiRes = settings.preferHiRes.first()
                         preferFlac = settings.preferFlac.first()
+                        preferOriginal = settings.preferOriginal.first()
                     }
                     SectionHeader(Icons.Default.GraphicEq, "Audio", accent)
                     Spacer(Modifier.height(12.dp))
@@ -202,6 +204,12 @@ fun SettingsScreen(
                                 "Lossless either way — FLAC uses about half the bandwidth",
                                 preferFlac, accent,
                             ) { preferFlac = it; scope.launch { settings.setPreferFlac(it) } }
+                            ToggleRow(
+                                "Play at original quality",
+                                "Stream straight from Navidrome when Music Assistant would have " +
+                                    "to resample. Plays on this phone only — no queue, no grouping.",
+                                preferOriginal, accent,
+                            ) { preferOriginal = it; scope.launch { settings.setPreferOriginal(it) } }
                             Text(
                                 "Music Assistant may only send a format this phone advertises. " +
                                     "44.1 and 48 kHz are always offered, so CD-rate files stream " +

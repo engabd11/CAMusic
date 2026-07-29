@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -71,13 +72,15 @@ fun NowPlayingOverlay(
 
     var panel by remember { mutableStateOf<Panel?>(null) }
     var options by remember { mutableStateOf(false) }
+    // Lyrics are a *mode* of the player, not an overlay: they take the cover's place.
+    var showLyrics by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         viewModel.toast.collect { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }
     }
 
-    // The palette follows the player being shown, which may differ from the app-wide one.
-    val palette = rememberAlbumPalette(st.artworkUrl)
+    // Provided by App.kt from this same artwork, so every other screen matches.
+    val palette = LocalPalette.current
     val accent = palette.accent
 
     // Smoothly interpolate the position between 2s polls. `scrubbing` freezes the
@@ -168,16 +171,24 @@ fun NowPlayingOverlay(
                 Spacer(Modifier.height(4.dp))
 
                 // Album art fills the available space.
-                AlbumArt(
-                    url = st.artworkUrl,
-                    glow = palette.swatch(0),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .alpha(if (st.idle) 0.55f else 1f),
-                    glowAlpha = if (st.idle) 0.18f else 0.45f,
-                    placeholder = Icons.AutoMirrored.Filled.QueueMusic,
-                )
+                if (showLyrics) {
+                    LyricsPane(
+                        viewModel = viewModel,
+                        positionMs = pos,
+                        modifier = Modifier.fillMaxWidth().weight(1f),
+                    )
+                } else {
+                    AlbumArt(
+                        url = st.artworkUrl,
+                        glow = palette.swatch(0),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .alpha(if (st.idle) 0.55f else 1f),
+                        glowAlpha = if (st.idle) 0.18f else 0.45f,
+                        placeholder = Icons.AutoMirrored.Filled.QueueMusic,
+                    )
+                }
 
                 Spacer(Modifier.height(16.dp))
 
@@ -271,13 +282,9 @@ fun NowPlayingOverlay(
                             viewModel.setSleepTimer(next)
                         },
                     )
-                    // Lyrics
-                    IconChip(Icons.Default.Lyrics, "Lyrics", active = panel == Panel.LYRICS) {
-                        panel = if (panel == Panel.LYRICS) null else Panel.LYRICS
-                    }
-                    // Similar tracks
-                    IconChip(Icons.Default.GraphicEq, "Similar tracks", active = panel == Panel.SIMILAR) {
-                        panel = if (panel == Panel.SIMILAR) null else Panel.SIMILAR
+                    // Lyrics — swaps the cover for the words, in place.
+                    IconChip(Icons.Default.Lyrics, "Lyrics", active = showLyrics) {
+                        showLyrics = !showLyrics
                     }
                     // Queue
                     IconChip(Icons.AutoMirrored.Filled.QueueMusic, "Queue", active = panel == Panel.QUEUE) {
@@ -322,14 +329,8 @@ fun NowPlayingOverlay(
                         ) { panel = null; options = false }
                 )
             }
-            panel?.let { p ->
-                NowPlayingSheet(
-                    panel = p,
-                    onPanel = { panel = it },
-                    onClose = { panel = null },
-                    viewModel = viewModel,
-                    positionMs = pos,
-                )
+            if (panel != null) {
+                NowPlayingSheet(onClose = { panel = null }, viewModel = viewModel)
             }
             if (options) {
                 PlayerOptionsSheet(onClose = { options = false }, viewModel = viewModel)
@@ -357,10 +358,9 @@ fun MiniPlayerBar(
 ) {
     val st by viewModel.state.collectAsState()
 
-    val palette = rememberAlbumPalette(st.artworkUrl)
-    val accent = palette.accent
+    val accent = LocalAccent.current
 
-    CompositionLocalProvider(LocalAccent provides accent) {
+    run {
         Row(
             Modifier
                 .fillMaxWidth()

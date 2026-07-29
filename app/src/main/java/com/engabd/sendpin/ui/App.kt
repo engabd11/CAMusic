@@ -72,9 +72,11 @@ private val OverlayTabs = listOf(
 fun App() {
     SendspinTheme {
         val playerVm: PlayerViewModel = viewModel()
-        val art by playerVm.artworkUrl.collectAsState()
-        val palette = rememberAlbumPalette(art)
-        val accent = palette.accent
+        // Boot/onboarding run before the Now Playing VM exists, so they colour
+        // themselves from this phone's own stream.
+        val localArt by playerVm.artworkUrl.collectAsState()
+        val bootPalette = rememberAlbumPalette(localArt)
+        val accent = bootPalette.accent
 
         val connected by playerVm.connected.collectAsState()
         val hasSavedServer by playerVm.hasSavedServer.collectAsState()
@@ -92,7 +94,7 @@ fun App() {
         }
 
         if (!hasSavedServer && !connected && !skipped) {
-            CompositionLocalProvider(LocalAccent provides accent, LocalPalette provides palette) {
+            CompositionLocalProvider(LocalAccent provides accent, LocalPalette provides bootPalette) {
                 OnboardingScreen(viewModel = playerVm, onSkip = { skipped = true })
             }
             return@SendspinTheme
@@ -104,6 +106,14 @@ fun App() {
 
         val nowPlayingVm: NowPlayingViewModel = viewModel()
         val libraryVm: LibraryViewModel = viewModel()
+
+        // The whole app is tinted by whatever the *controlled player* is playing —
+        // which is not necessarily this phone. Deriving the app palette from the
+        // local Sendspin stream meant that casting to a speaker left every screen
+        // but Now Playing on the default accent.
+        val npState by nowPlayingVm.state.collectAsState()
+        val appPalette = rememberAlbumPalette(npState.artworkUrl ?: localArt)
+        val appAccent = appPalette.accent
 
         // Read the now-playing layout preference.
         val context = LocalContext.current
@@ -127,7 +137,7 @@ fun App() {
             }
         }
 
-        CompositionLocalProvider(LocalAccent provides accent, LocalPalette provides palette) {
+        CompositionLocalProvider(LocalAccent provides appAccent, LocalPalette provides appPalette) {
             Box(Modifier.fillMaxSize().background(Ink)) {
                 val tabs = if (isOverlay) OverlayTabs else TabTabs
                 val startDest = if (isOverlay) "library" else "now_playing"

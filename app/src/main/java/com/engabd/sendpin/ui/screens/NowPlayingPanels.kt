@@ -43,8 +43,12 @@ import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel.Load
 
-/** Which panel the sheet is showing. */
-enum class Panel(val label: String) { QUEUE("Queue"), LYRICS("Lyrics"), SIMILAR("Similar") }
+/**
+ * Which panel the sheet is showing. Lyrics moved into the player itself (it takes
+ * the album art's place) and sonic similarity moved to the Library, where finding
+ * something to play belongs — neither was ever really "the queue button".
+ */
+enum class Panel(val label: String) { QUEUE("Queue") }
 
 /**
  * The panel sheet: everything about the *track* that doesn't belong on the
@@ -57,11 +61,8 @@ enum class Panel(val label: String) { QUEUE("Queue"), LYRICS("Lyrics"), SIMILAR(
  */
 @Composable
 fun BoxScope.NowPlayingSheet(
-    panel: Panel,
-    onPanel: (Panel) -> Unit,
     onClose: () -> Unit,
     viewModel: NowPlayingViewModel,
-    positionMs: Long,
 ) {
     val accent = LocalAccent.current
 
@@ -89,22 +90,18 @@ fun BoxScope.NowPlayingSheet(
                 Modifier.fillMaxWidth().padding(start = 16.dp, end = 10.dp, top = 14.dp, bottom = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Panel.entries.forEach { p ->
-                        Pill(p.label, p == panel) { onPanel(p) }
-                    }
-                }
+                Text(
+                    "Queue", color = TextPrimary, fontFamily = AppFont,
+                    fontWeight = FontWeight.ExtraBold, fontSize = 17.sp,
+                    modifier = Modifier.weight(1f),
+                )
                 Box(
                     Modifier.size(32.dp).clip(CircleShape).background(Glass).clickable(onClick = onClose),
                     contentAlignment = Alignment.Center,
                 ) { Icon(Icons.Default.Close, "Close", tint = TextSecondary, modifier = Modifier.size(16.dp)) }
             }
 
-            when (panel) {
-                Panel.QUEUE -> QueuePanel(viewModel, accent)
-                Panel.LYRICS -> LyricsPanel(viewModel, positionMs)
-                Panel.SIMILAR -> SimilarPanel(viewModel)
-            }
+            QueuePanel(viewModel, accent)
         }
     }
 }
@@ -257,176 +254,6 @@ private fun QueueRow(
                 if (!first) SmallAction(Icons.Default.ArrowUpward, "Up") { onUp() }
                 if (!last) SmallAction(Icons.Default.ArrowDownward, "Down") { onDown() }
                 SmallAction(Icons.Default.Delete, "Remove") { onRemove() }
-            }
-        }
-    }
-}
-
-// --- lyrics ---------------------------------------------------------------
-
-@Composable
-private fun ColumnScope.LyricsPanel(viewModel: NowPlayingViewModel, positionMs: Long) {
-    val load by viewModel.lyrics.collectAsState()
-    val accent = LocalAccent.current
-
-    LaunchedEffect(Unit) { if (load is Load.Idle) viewModel.loadLyrics() }
-
-    when (val l = load) {
-        is Load.Loading, Load.Idle -> PanelSpinner()
-        is Load.Failed -> PanelMessage(Icons.Default.CloudOff, l.message)
-        is Load.Ready -> {
-            val lyrics: MaLyrics? = l.value
-            if (lyrics == null || lyrics.lines.none { it.text.isNotBlank() }) {
-                PanelMessage(Icons.Default.Lyrics, "No lyrics for this track.")
-            } else {
-                val lines = lyrics.lines
-                // The line in force right now: the last one whose timestamp has passed.
-                val active = if (!lyrics.synced) -1
-                else lines.indexOfLast { it.atMs <= positionMs }.coerceAtLeast(0)
-
-                val listState = rememberLazyListState()
-                LaunchedEffect(active) {
-                    // Keep the sung line a third of the way down, not pinned to the top.
-                    if (active >= 0) listState.animateScrollToItem(maxOf(0, active - 3))
-                }
-
-                LazyColumn(
-                    Modifier.weight(1f).fillMaxWidth(),
-                    state = listState,
-                    contentPadding = PaddingValues(start = 22.dp, end = 22.dp, top = 8.dp, bottom = navBarInset() + 60.dp),
-                ) {
-                    itemsIndexed(lines) { i, line ->
-                        if (line.text.isBlank()) {
-                            Spacer(Modifier.height(10.dp))
-                        } else {
-                            Text(
-                                line.text,
-                                color = when {
-                                    !lyrics.synced -> TextSecondary
-                                    i == active -> accent
-                                    else -> TextFaint
-                                },
-                                fontFamily = AppFont,
-                                fontWeight = if (i == active && lyrics.synced) FontWeight.ExtraBold else FontWeight.SemiBold,
-                                fontSize = if (i == active && lyrics.synced) 17.sp else 15.sp,
-                                lineHeight = 26.sp,
-                                modifier = Modifier.padding(vertical = 5.dp),
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-// --- similar --------------------------------------------------------------
-
-@Composable
-private fun ColumnScope.SimilarPanel(viewModel: NowPlayingViewModel) {
-    val load by viewModel.similar.collectAsState()
-    val accent = LocalAccent.current
-    var query by remember { mutableStateOf("") }
-
-    LaunchedEffect(Unit) { if (load is Load.Idle) viewModel.loadSimilar() }
-
-    Column(Modifier.padding(horizontal = 16.dp)) {
-        OutlinedTextField(
-            value = query,
-            onValueChange = { query = it },
-            label = { Text("Describe a mood") },
-            placeholder = { Text("late night drive, warm synths") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-            keyboardActions = KeyboardActions(onSearch = { viewModel.sonicSearch(query) }),
-            trailingIcon = {
-                Icon(
-                    Icons.Default.Search, "Search",
-                    tint = accent,
-                    modifier = Modifier.clickable { viewModel.sonicSearch(query) }.padding(8.dp).size(18.dp),
-                )
-            },
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = accent, cursorColor = accent, focusedLabelColor = accent,
-                unfocusedBorderColor = Hairline, focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
-            ),
-        )
-        Spacer(Modifier.height(6.dp))
-        Text(
-            if (query.isBlank()) "Tracks that sound like what's playing." else "Matched on how the music sounds, not its tags.",
-            color = TextFaint, fontFamily = AppFont, fontSize = 11.sp,
-        )
-        Spacer(Modifier.height(8.dp))
-    }
-
-    when (val l = load) {
-        is Load.Loading, Load.Idle -> PanelSpinner()
-        is Load.Failed -> PanelMessage(Icons.Default.CloudOff, l.message)
-        is Load.Ready -> {
-            if (l.value.isEmpty()) {
-                PanelMessage(
-                    Icons.Default.GraphicEq,
-                    "Nothing came back. Sonic similarity needs the Audio Analysis provider enabled in Music Assistant.",
-                )
-            } else {
-                LazyColumn(
-                    Modifier.weight(1f).fillMaxWidth(),
-                    contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = navBarInset() + 16.dp),
-                ) {
-                    itemsIndexed(l.value, key = { _, t -> t.itemId }) { _, t ->
-                        SimilarRow(
-                            t,
-                            onNext = { viewModel.enqueue(t, "next") },
-                            onAdd = { viewModel.enqueue(t, "add") },
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SimilarRow(track: MaSimilarTrack, onNext: () -> Unit, onAdd: () -> Unit) {
-    var open by remember(track.itemId) { mutableStateOf(false) }
-    Column(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
-        Row(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(13.dp)).clickable { open = !open }.padding(9.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(Modifier.size(40.dp).clip(RoundedCornerShape(9.dp)).background(Glass), contentAlignment = Alignment.Center) {
-                if (track.image != null) {
-                    AsyncImage(model = track.image, contentDescription = null, modifier = Modifier.matchParentSize())
-                } else {
-                    Icon(Icons.Default.GraphicEq, null, tint = TextFaint, modifier = Modifier.size(16.dp))
-                }
-            }
-            Spacer(Modifier.width(11.dp))
-            Column(Modifier.weight(1f)) {
-                Text(
-                    track.name, color = TextPrimary, fontFamily = AppFont, fontWeight = FontWeight.Bold,
-                    fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                )
-                if (!track.artist.isNullOrBlank()) {
-                    Text(
-                        track.artist, color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-            Icon(
-                if (open) Icons.Default.ExpandLess else Icons.Default.Add, null,
-                tint = TextFaint, modifier = Modifier.size(16.dp),
-            )
-        }
-        if (open) {
-            Row(
-                Modifier.fillMaxWidth().padding(start = 60.dp, bottom = 10.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                SmallAction(Icons.AutoMirrored.Filled.PlaylistPlay, "Play next") { onNext(); open = false }
-                SmallAction(Icons.AutoMirrored.Filled.PlaylistAddCheck, "Add to queue") { onAdd(); open = false }
             }
         }
     }

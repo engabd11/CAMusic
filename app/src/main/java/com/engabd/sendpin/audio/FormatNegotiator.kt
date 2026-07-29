@@ -65,6 +65,24 @@ object FormatNegotiator {
     val supportedFormats: List<AudioFormatSpec> get() = supportedFormats()
 
     /**
+     * Could Music Assistant stream a source at [sampleRate]/[bitDepth] without
+     * touching it?
+     *
+     * True only when the rate is one we advertise (so no resampling) and the depth
+     * is one we can render (so no requantising). Anything else means the server
+     * has to convert somewhere between the file and this phone — which is exactly
+     * when "play at original quality" should go direct to the source instead.
+     */
+    fun canStreamUntouched(
+        sampleRate: Int,
+        bitDepth: Int,
+        preferHiRes: Boolean = true,
+    ): Boolean {
+        val rates = if (preferHiRes) RATES_HIRES else RATES_STANDARD
+        return sampleRate in rates && bitDepth <= MAX_BIT_DEPTH
+    }
+
+    /**
      * The server always streams a format we advertised, so accept the `stream/start`
      * player info directly.
      */
