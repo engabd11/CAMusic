@@ -59,10 +59,17 @@ data class LocalTrack(
  * Process-scoped (see `SendpinApp.localPlayer`): Now Playing, the library and the
  * media notification all drive the same instance.
  *
- * **Audio focus**: the local player requests focus on `USAGE_MEDIA` before playing,
- * and abandons it when stopped. This is what tells Android to pause the Sendspin
- * stream (the MA-backed player) when a Navidrome track starts, and vice-versa —
- * without it, both backends play on top of each other.
+ * **Audio focus**: the local player requests focus on `USAGE_MEDIA` before playing
+ * and abandons it when it stops, so it plays by the same rules as every other media
+ * app on the phone — it gets out of the way for a call, and other players get out of
+ * its way when it starts.
+ *
+ * Focus does *not* police the two backends against each other:
+ * [com.engabd.sendpin.audio.SendspinAudioEngine] writes to its `AudioTrack` without
+ * ever registering a focus listener, so Android has no way to tell it to stop.
+ * Keeping MA and the local player off each other's toes is
+ * [com.engabd.sendpin.ma.LibraryViewModel]'s job, and it does it by sending MA an
+ * explicit stop.
  */
 class LocalPlayer(private val context: Context) {
 
@@ -78,12 +85,25 @@ class LocalPlayer(private val context: Context) {
     private var audioFocusRequest: AudioFocusRequest? = null
     @Volatile private var holdsFocus = false
 
+    /**
+     * Playback was stopped by a focus loss rather than by the user, so regaining
+     * focus should start it again. Without this the music stays dead after a phone
+     * call or a navigation prompt until someone taps play.
+     */
+    @Volatile private var pausedByFocusLoss = false
+
     private val focusListener = AudioManager.OnAudioFocusChangeListener { change ->
         when (change) {
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> mp?.setVolume(0.3f, 0.3f)
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> { mp?.let { runCatching { if (it.isPlaying) it.pause() } } }
-            AudioManager.AUDIOFOCUS_GAIN -> mp?.setVolume(1f, 1f)
-            AudioManager.AUDIOFOCUS_LOSS -> stop()
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> if (_playing.value) { pausedByFocusLoss = true; pause() }
+            AudioManager.AUDIOFOCUS_GAIN -> {
+                mp?.setVolume(1f, 1f)
+                if (pausedByFocusLoss) { pausedByFocusLoss = false; resume() }
+            }
+            // A permanent loss pauses; it does not clear. The queue the user built
+            // is not another app's to throw away, and they may come straight back
+            // to it — [resume] re-claims focus when they do.
+            AudioManager.AUDIOFOCUS_LOSS -> { pause(); abandonAudioFocus() }
         }
     }
 
@@ -108,6 +128,7 @@ class LocalPlayer(private val context: Context) {
     }
 
     private fun abandonAudioFocus() {
+        pausedByFocusLoss = false
         if (!holdsFocus) return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
@@ -273,6 +294,12 @@ class LocalPlayer(private val context: Context) {
             return
         }
         if (preparing) return
+        // Focus can have been taken away while we sat paused — a call, another
+        // player — so claim it back before making sound again.
+        if (!requestAudioFocus()) {
+            _error.tryEmit("Can't play — another app owns audio")
+            return
+        }
         if (!p.isPlaying) { p.start(); _playing.value = true; startTicker() }
     }
 
@@ -290,7 +317,9 @@ class LocalPlayer(private val context: Context) {
 
     fun next() {
         val nxt = step(+1)
-        if (nxt == null) { stopInternal(); _positionMs.value = 0 } else playAt(nxt)
+        // Running off the end of the queue is the end of the session, so let go of
+        // focus — holding it leaves every other player on the phone ducked forever.
+        if (nxt == null) { stopInternal(); _positionMs.value = 0; abandonAudioFocus() } else playAt(nxt)
     }
 
     fun seekTo(ms: Long) {
