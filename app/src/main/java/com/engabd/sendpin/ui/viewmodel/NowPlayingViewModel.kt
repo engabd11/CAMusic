@@ -250,37 +250,34 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             hasTrack = live != null,
             idle = live == null,
             blank = np == null,
-            // `quality` is what's actually coming out of the pipe right now.
-            //
-            // When this phone is the player, the negotiated Sendspin stream format
-            // *is* the output — the same 48/16 the Settings screen reports — so it
-            // wins outright. The queue's streamdetails describes the file MA opened
-            // at its end, which is the source, not the output, and reading playing
-            // quality off it made the badge claim 96/24 while the phone was being
-            // handed 48/16. For a remote speaker we have no such handle, so the
-            // queue's details are the best available answer.
+            // `quality` is Playing: what this device is actually putting out, and the
+            // same reading the Settings screen prints under "Format". When this phone
+            // is the player that is the negotiated Sendspin stream and nothing else —
+            // falling back to the queue's stream details here is what made the badge
+            // disagree with Settings on the very same track. A remote speaker gives us
+            // no output handle at all, so there the queue's details are all there is.
             quality = when {
                 !isSelf -> queueQuality
                 local != null -> local
-                queueQuality != null -> queueQuality
-                // Nothing negotiated and no queue details, but something *is*
-                // playing: the file is being decoded here (a Navidrome stream
-                // played direct), so the phone's own ceiling is the answer.
+                // Nothing negotiated but something *is* playing: the file is being
+                // decoded here (a Navidrome stream played direct), so the phone's own
+                // output ceiling is the honest answer.
                 live != null -> deviceQuality
                 else -> null
             },
-            // `sourceQuality` is the original library file's format — derived from
-            // the current item's provider_mappings audio_format, NOT the stream
-            // details (which reflect what the server is actually sending, after
-            // any transcoding). These genuinely differ when MA converts a 96/24
-            // FLAC to 48/16 for a player that can't handle hi-res.
-            sourceQuality = queue?.currentItem?.audioFormat?.let {
+            // `sourceQuality` is Source: what is arriving, before this device decodes
+            // it. The queue's stream details are exactly that — the format MA opened
+            // the file in and is sending — with the library file's own
+            // `provider_mappings.audio_format` as the fallback for a queue that hasn't
+            // reported details yet. (audio_format alone used to be the only source,
+            // and it is null for most providers, which is why the row was blank.)
+            sourceQuality = queueQuality ?: queue?.currentItem?.audioFormat?.let {
                 StreamQuality(it.codec, it.sampleRate, it.bitDepth)
             },
-            // Source: where the bytes are actually coming from. See [sourceOf]. With
-            // no queue yet there is nothing to read a provider off, but the backend
-            // in charge is still MA — so the badge names it rather than vanishing.
-            source = queue?.let { sourceOf(it) }?.ifBlank { null } ?: "MA",
+            // The badge names the player, not the track's provider: anything MA is
+            // driving is "MA", however MA got hold of the file. The local-player
+            // branch below is the Navidrome/offline case.
+            source = "MA",
             groupSize = 1 + (p?.groupChilds?.size ?: 0),
             shuffle = queue?.shuffleEnabled == true,
             repeatMode = queue?.repeatMode ?: "off",
@@ -318,9 +315,12 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             idle = t == null,
             blank = t == null,
             // Decoded on this phone, so the phone's own output ceiling is the
-            // honest answer to "what is coming out of the pipe".
+            // honest answer to "what is coming out of the pipe" — and Source is the
+            // file being fed to it, when the library said what it is.
             quality = deviceQuality,
-            sourceQuality = null,
+            sourceQuality = t?.sourceQuality,
+            // This phone is playing on its own, which only ever means the Navidrome
+            // library (or a downloaded copy of it).
             source = if (t?.offline == true) "Offline" else "Navidrome",
             groupSize = 1,
             shuffle = l.shuffle,
@@ -653,19 +653,37 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Jump to a queue position. The queue's *contents* don't change, only which row
-     * is current — which the ordinary player poll already reports — so this
+     * Jump to the tapped queue row. The queue's *contents* don't change, only which
+     * row is current — which the ordinary player poll already reports — so this
      * deliberately does not re-fetch the items.
+     *
+     * Addressed by **queue item id**, not by position. `player_queues/items` is a
+     * paged read and its array order is not promised to be the play order MA counts
+     * positions in, so a row's place in the list is not a reliable index — sending
+     * one played the wrong track, or restarted the queue from the top. MA's
+     * `play_index` takes `int | str` and resolves a string as a queue_item_id, which
+     * cannot be off by one. The local player is matched by the same id.
      */
-    fun playQueueIndex(index: Int) {
-        if (isLocal) { local.playAt(index); return }
+    fun playQueueItem(item: MaQueueItem) {
+        if (isLocal) {
+            val at = localQueueItems().indexOfFirst { it.queueItemId == item.queueItemId }
+            local.playAt(if (at >= 0) at else item.index)
+            return
+        }
         val q = streamQueueId()
         viewModelScope.launch {
             try {
-                repo.playIndex(q, index)
+                repo.playQueueItem(q, item.queueItemId)
             } catch (e: Exception) {
-                _toast.tryEmit(e.message ?: "Couldn't play that")
-                return@launch
+                // A server that types `index` as an int rather than `int | str`
+                // rejects the id. Fall back to the position rather than doing
+                // nothing at all.
+                try {
+                    repo.playQueueIndex(q, item.index)
+                } catch (_: Exception) {
+                    _toast.tryEmit(e.message ?: "Couldn't play that")
+                    return@launch
+                }
             }
             delay(350); refresh()
         }
@@ -896,59 +914,5 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     private companion object {
         /** How long the sleep timer spends fading out before it pauses. */
         const val FADE_MS = 10_000L
-    }
-
-    /**
-     * Where the queue's current track is really streaming from.
-     *
-     * A library item's own `provider` is always `library` — that says Music
-     * Assistant catalogued it, not who holds the file — so reading the badge off it
-     * labelled every Navidrome track "MA". The honest answers, in order:
-     *
-     *  1. `streamdetails.provider` — the backend MA actually opened for this play;
-     *  2. the item's `provider_mappings` — who *could* supply it, which for a
-     *     single-backend library is the same thing;
-     *  3. the item's own provider, for a non-library (direct provider) item.
-     */
-    private fun sourceOf(queue: MaQueue): String {
-        val item = queue.currentItem
-        val provider = queue.streamProvider?.takeIf { it.isNotBlank() }
-            ?: item?.providerDomains?.firstOrNull { !it.isLibrary() }
-            ?: item?.provider
-            ?: return ""
-        return sourceLabel(provider)
-    }
-
-    private fun String.isLibrary(): Boolean =
-        substringBefore("--").lowercase() in setOf("library", "builtin")
-
-    /**
-     * The badge text for a provider.
-     *
-     * Music Assistant identifies a provider either by its domain ("spotify") or by
-     * an instance id carrying a `--<hash>` suffix ("spotify--AbC123"), so match on
-     * the part in front of the suffix. Only MA's own library counts as "MA" — an
-     * unrecognised provider is named after itself rather than silently claimed,
-     * which is what made every track look like it came from MA.
-     */
-    private fun sourceLabel(provider: String): String {
-        val domain = provider.substringBefore("--").lowercase()
-        return when (domain) {
-            "subsonic", "opensubsonic" -> "Navidrome"
-            "library", "builtin" -> "MA"
-            "spotify" -> "Spotify"
-            "ytmusic", "youtube" -> "YouTube"
-            "tidal" -> "Tidal"
-            "qobuz" -> "Qobuz"
-            "deezer" -> "Deezer"
-            "apple_music" -> "Apple Music"
-            "soundcloud" -> "SoundCloud"
-            "radiobrowser" -> "Radio"
-            "filesystem_local", "filesystem_smb" -> "Files"
-            // "some_provider" → "Some Provider": better a rough name than a wrong one.
-            else -> domain.split('_').filter { it.isNotEmpty() }
-                .joinToString(" ") { w -> w.replaceFirstChar { it.uppercase() } }
-                .ifBlank { "MA" }
-        }
     }
 }

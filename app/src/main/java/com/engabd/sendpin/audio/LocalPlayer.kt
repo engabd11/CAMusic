@@ -35,6 +35,12 @@ data class LocalTrack(
     val artUrl: String? = null,
     val streamUrl: String? = null,
     val localPath: String? = null,
+    /**
+     * The file's own format, when the library reported one — the "Source" half of the
+     * quality badge. Null on a server that doesn't say (plain Subsonic sends no
+     * `samplingRate`), in which case the badge shows Playing alone.
+     */
+    val sourceQuality: StreamQuality? = null,
 ) {
     /**
      * There is a downloaded copy to play from. Deliberately *not* a `File.exists()`

@@ -13,15 +13,18 @@ import com.engabd.sendpin.subsonic.SubsonicClient
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 /**
  * Backs [com.engabd.sendpin.ui.screens.ArtistDetailScreen]. Loads the artist's
- * metadata, albums, and top tracks — then exposes play / shuffle / queue actions
- * for both the album grid and the top-tracks list.
+ * metadata and albums, then exposes the hero's play / shuffle / queue / download
+ * actions over the artist's whole catalogue.
  *
  * Mirrors [AlbumDetailViewModel] in structure: the artist's identity is passed in
  * from the navigation route, the header renders immediately, and data loads in the
@@ -76,9 +79,6 @@ class ArtistDetailViewModel(
     private val _albums = MutableStateFlow<List<MaItem>>(emptyList())
     val albums: StateFlow<List<MaItem>> = _albums
 
-    private val _topTracks = MutableStateFlow<List<MaItem>>(emptyList())
-    val topTracks: StateFlow<List<MaItem>> = _topTracks
-
     private val _loading = MutableStateFlow(true)
     val loading: StateFlow<Boolean> = _loading
 
@@ -112,20 +112,14 @@ class ArtistDetailViewModel(
                     val (artistMeta, albumList) = sc.artistDetail(ref.itemId)
                     if (artistMeta != null) { ref = artistMeta; _artist.value = artistMeta }
                     _albums.value = albumList.distinctBy { it.itemId }
-                    // Subsonic's getTopSongs needs Last.fm wired into Navidrome, so the
-                    // top-tracks section simply doesn't appear on this backend.
                 } else {
                     if (!resolveRef()) return@launch
                     val artistMeta = maRepo.getArtist(ref)
                     if (artistMeta != null) { ref = artistMeta; _artist.value = artistMeta }
-                    // De-duplicated by id: MA answers an artist's albums and top
-                    // tracks per provider mapping and concatenates the results, so an
-                    // artist held by two providers comes back with every row twice.
+                    // De-duplicated by id: MA answers an artist's albums per provider
+                    // mapping and concatenates the results, so an artist held by two
+                    // providers comes back with every album twice.
                     _albums.value = maRepo.artistAlbums(ref).distinctBy { it.itemId }
-                    // Top tracks are best-effort — not all MA providers support it.
-                    _topTracks.value = try {
-                        maRepo.topTracks(ref, limit = 10).distinctBy { it.itemId }
-                    } catch (_: Exception) { emptyList() }
                 }
             } catch (e: Exception) {
                 _error.value = e.message ?: "Failed to load artist"
@@ -163,45 +157,15 @@ class ArtistDetailViewModel(
 
     // --- playback actions -------------------------------------------------
 
-    fun playTrack(track: MaItem) {
-        viewModelScope.launch {
-            try {
-                if (isSubsonic) {
-                    // The list the track was tapped in *is* the queue; the tapped
-                    // track is only where it starts.
-                    val list = _topTracks.value.ifEmpty { listOf(track) }
-                    val start = list.indexOfFirst { it.itemId == track.itemId }.coerceAtLeast(0)
-                    stopMaPlayback()
-                    localPlayer.setShuffle(false)
-                    localPlayer.setQueue(localTracks(list), start)
-                } else {
-                    // MA's play_media + "replace" always starts at index 0, so play the
-                    // tapped track and append the rest of the list behind it.
-                    track.uri?.let { maRepo.playMedia(playTarget(), listOf(it), "replace") }
-                    val rest = _topTracks.value.mapNotNull { it.uri }.filter { it != track.uri }
-                    if (rest.isNotEmpty()) maRepo.playMedia(playTarget(), rest, "add")
-                }
-                _toast.tryEmit("Playing ${track.name}")
-            } catch (e: Exception) { _toast.tryEmit(e.message ?: "Couldn't play") }
-        }
-    }
-
-    /** Resolved once per screen — see [catalogue]. */
-    private var catalogueCache: List<MaItem>? = null
-
     /**
      * Everything by this artist, in album order — what the hero's Play / Shuffle /
-     * Add to Queue act on.
-     *
-     * Not the top-tracks list: MA only fills that in for providers that rank plays,
-     * and Navidrome's `getTopSongs` needs Last.fm wired in, so the section is simply
-     * absent there. Hero buttons reading it therefore did *nothing at all* on
-     * Navidrome and nothing on an MA provider without rankings — they returned early
-     * on an empty list, with no queue and no message. Cached, since the Subsonic path
-     * costs a round-trip per album.
+     * Add to Queue and the download button all act on. Empty until first use, then
+     * held: the Subsonic path costs a round-trip per album.
      */
+    private val _catalogue = MutableStateFlow<List<MaItem>>(emptyList())
+
     private suspend fun catalogue(): List<MaItem> {
-        catalogueCache?.let { return it }
+        _catalogue.value.takeIf { it.isNotEmpty() }?.let { return it }
         val all = try {
             val sc = subsonic
             when {
@@ -212,9 +176,8 @@ class ArtistDetailViewModel(
                 else -> maRepo.artistTracks(ref)
             }
         } catch (_: Exception) { emptyList() }
-        // Fall back to whatever the screen is showing rather than nothing at all.
-        val tracks = all.ifEmpty { _topTracks.value }.distinctBy { it.itemId }
-        catalogueCache = tracks
+        val tracks = all.distinctBy { it.itemId }
+        _catalogue.value = tracks
         return tracks
     }
 
@@ -272,6 +235,44 @@ class ArtistDetailViewModel(
     /** A track list as a local queue, offline copies preferred over the stream. */
     private fun localTracks(list: List<MaItem>) = list.map {
         downloads.toLocalTrack(it, streamUrl = subsonic?.streamUrl(it.itemId))
+    }
+
+    // --- offline ----------------------------------------------------------
+
+    /** Only Navidrome hands over the file; MA streams, so there is nothing to keep. */
+    val canDownload: Boolean get() = isSubsonic
+
+    /**
+     * Every track by this artist is already on the phone.
+     *
+     * False until the catalogue has been resolved once — the track ids simply aren't
+     * known before that, and walking every album of every artist on the off-chance
+     * the user might tap Download would be a round-trip per album per screen.
+     */
+    val allDownloaded: StateFlow<Boolean> =
+        combine(_catalogue, downloads.downloads) { tracks, index ->
+            tracks.isNotEmpty() && tracks.all { t -> index.any { it.id == t.itemId } }
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /** Download the artist's whole discography for offline. */
+    fun downloadAll() {
+        val sc = subsonic
+        if (!isSubsonic || sc == null) { _toast.tryEmit("Only Navidrome albums can be downloaded"); return }
+        viewModelScope.launch {
+            val tracks = catalogue()
+            if (tracks.isEmpty()) { _toast.tryEmit("No tracks for ${ref.name}"); return@launch }
+            val pending = tracks.filterNot { downloads.isDownloaded(it.itemId) }
+            if (pending.isEmpty()) { _toast.tryEmit("Already downloaded"); return@launch }
+            _toast.tryEmit("Downloading ${pending.size} tracks…")
+            val ok = downloads.downloadAll(pending, urlFor = { sc.downloadUrl(it.itemId) })
+            _toast.tryEmit(
+                when (ok) {
+                    pending.size -> "Downloaded ${ref.name}"
+                    0 -> "Download failed"
+                    else -> "Downloaded $ok of ${pending.size}"
+                }
+            )
+        }
     }
 
     /**

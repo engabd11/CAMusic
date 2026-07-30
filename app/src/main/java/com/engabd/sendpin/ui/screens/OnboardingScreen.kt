@@ -51,7 +51,7 @@ fun OnboardingScreen(
         viewModel.startDiscovery()
         user = viewModel.savedUsername.first()
         pass = viewModel.savedPassword.first()
-        name = viewModel.savedPlayerName.first().ifBlank { viewModel.playerName }
+        name = viewModel.savedPlayerName.first().ifBlank { viewModel.deviceName }
     }
 
     Box(Modifier.fillMaxSize().background(Ink)) {

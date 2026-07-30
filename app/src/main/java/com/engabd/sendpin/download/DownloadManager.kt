@@ -2,6 +2,7 @@ package com.engabd.sendpin.download
 
 import android.content.Context
 import com.engabd.sendpin.audio.LocalTrack
+import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.ma.MaItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -101,6 +102,9 @@ class DownloadManager(
             artUrl = dl?.artUri ?: item.image,
             streamUrl = streamUrl,
             localPath = dl?.filePath ?: localPathFallback,
+            sourceQuality = item.audioFormat?.let {
+                StreamQuality(it.codec, it.sampleRate, it.bitDepth)
+            },
         )
     }
 

@@ -70,7 +70,7 @@ fun ArtistDetailScreen(
 
     val artist by viewModel.artist.collectAsState()
     val albums by viewModel.albums.collectAsState()
-    val topTracks by viewModel.topTracks.collectAsState()
+    val downloaded by viewModel.allDownloaded.collectAsState()
     val loading by viewModel.loading.collectAsState()
     val error by viewModel.error.collectAsState()
     val snackbar = remember { SnackbarHostState() }
@@ -118,10 +118,12 @@ fun ArtistDetailScreen(
                             onPlayAll = viewModel::playAll,
                             onShuffle = viewModel::shuffleAll,
                             onAddToQueue = viewModel::addToQueue,
+                            onDownload = if (viewModel.canDownload) viewModel::downloadAll else null,
+                            downloaded = downloaded,
                         )
                     }
 
-                    if (loading && albums.isEmpty() && topTracks.isEmpty()) {
+                    if (loading && albums.isEmpty()) {
                         items(4) { SkeletonTrackRow() }
                         return@LazyColumn
                     }
@@ -131,32 +133,15 @@ fun ArtistDetailScreen(
                         return@LazyColumn
                     }
 
-                    // Top tracks
-                    //
-                    // Keys are namespaced by section *and* index. A bare `itemId` was
-                    // a crash: Music Assistant numbers library items per media type,
-                    // so a track and an album can both be item 7, and this one
-                    // LazyColumn holds both lists — "key was already used" took the
-                    // screen down on any artist where the ids happened to collide.
-                    if (topTracks.isNotEmpty()) {
-                        item { Shelf("Top tracks") }
-                        itemsIndexed(topTracks, key = { i, t -> "track:$i:${t.itemId}" }) { index, track ->
-                            TrackRow(
-                                track = track,
-                                index = index,
-                                accent = artistPalette.accent,
-                                onPlay = { viewModel.playTrack(track) },
-                            )
-                        }
-                    }
-
-                    // Albums
+                    // Albums. Keyed by index as well as id: MA numbers library items
+                    // per media type and can answer the same album twice, and a
+                    // duplicate key is a hard crash in a lazy list.
                     if (albums.isNotEmpty()) {
                         item { Shelf("Albums") }
                         itemsIndexed(albums, key = { i, a -> "album:$i:${a.itemId}" }) { _, album ->
                             AlbumRow(album = album, accent = artistPalette.accent, onClick = { onAlbumClick(album) })
                         }
-                    } else if (!loading && topTracks.isEmpty()) {
+                    } else if (!loading) {
                         item { EmptyState("No albums", "This artist has no albums in your library.") }
                     }
                 }
@@ -183,6 +168,9 @@ private fun ArtistHero(
     onPlayAll: () -> Unit = {},
     onShuffle: () -> Unit = {},
     onAddToQueue: () -> Unit = {},
+    /** Null on Music Assistant, which streams rather than handing over the file. */
+    onDownload: (() -> Unit)? = null,
+    downloaded: Boolean = false,
 ) {
     val accent = LocalAccent.current
 
@@ -238,6 +226,14 @@ private fun ArtistHero(
             PlayButton(playing = false, size = 56.dp, onClick = onPlayAll)
             IconChip(Icons.Default.Shuffle, "Shuffle", onClick = onShuffle)
             IconChip(Icons.AutoMirrored.Filled.QueueMusic, "Add to queue", onClick = onAddToQueue)
+            // Every album this artist has, taken offline in one go.
+            onDownload?.let {
+                IconChip(
+                    if (downloaded) Icons.Default.DownloadDone else Icons.Default.Download,
+                    if (downloaded) "Downloaded" else "Download discography",
+                    onClick = it,
+                )
+            }
         }
     }
 }
