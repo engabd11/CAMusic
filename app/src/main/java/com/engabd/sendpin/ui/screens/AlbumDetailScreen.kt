@@ -53,6 +53,7 @@ fun AlbumDetailScreen(
     name: String,
     artUrl: String?,
     onBack: () -> Unit,
+    onArtistClick: (String, String) -> Unit = { _, _ -> },
 ) {
     val context = LocalContext.current
     val viewModel: AlbumDetailViewModel = viewModel(
@@ -111,6 +112,7 @@ fun AlbumDetailScreen(
                             onPlayAll = viewModel::playAll,
                             onShuffle = viewModel::shuffleAll,
                             onAddToQueue = viewModel::addToQueue,
+                            onArtistClick = onArtistClick,
                             onDownload = if (viewModel.canDownload) viewModel::downloadAll else null,
                             downloaded = albumDownloaded,
                         )
@@ -186,6 +188,7 @@ private fun AlbumHero(
     onPlayAll: () -> Unit,
     onShuffle: () -> Unit,
     onAddToQueue: () -> Unit,
+    onArtistClick: (String, String) -> Unit = { _, _ -> },
     onDownload: (() -> Unit)? = null,
     downloaded: Boolean = false,
 ) {
@@ -233,7 +236,7 @@ private fun AlbumHero(
             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
         )
 
-        // Artist
+        // Artist — tappable to navigate to the artist detail screen
         album?.subtitle?.let { artist ->
             if (artist.isNotBlank()) {
                 Spacer(Modifier.height(4.dp))
@@ -242,6 +245,13 @@ private fun AlbumHero(
                     color = accent, fontFamily = AppFont,
                     fontWeight = FontWeight.Bold, fontSize = 15.sp,
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.clickable {
+                        // The subtitle is a display credit, not an id — and a joined
+                        // one ("Wilco, Billy Bragg") when an album has several
+                        // artists. Hand over the first name; the artist screen
+                        // searches for it, since MaItem carries no artist id.
+                        onArtistClick(artist.substringBefore(",").trim(), album.provider)
+                    },
                 )
             }
         }
@@ -290,12 +300,12 @@ private fun AlbumHero(
 // --- track row ------------------------------------------------------------
 
 @Composable
-private fun TrackRow(
+internal fun TrackRow(
     track: MaItem,
     index: Int,
     accent: Color,
     onPlay: () -> Unit,
-    onFavorite: () -> Unit,
+    onFavorite: (() -> Unit)? = null,
 ) {
     Row(
         Modifier
@@ -344,9 +354,11 @@ private fun TrackRow(
 
         // Favorite
         if (track.favorite) {
+            val favModifier = if (onFavorite != null) Modifier.size(16.dp).clickable(onClick = onFavorite)
+            else Modifier.size(16.dp)
             Icon(
                 Icons.Default.Favorite, "Favorite",
-                tint = accent, modifier = Modifier.size(16.dp),
+                tint = accent, modifier = favModifier,
             )
         }
     }
@@ -355,7 +367,7 @@ private fun TrackRow(
 // --- states ---------------------------------------------------------------
 
 @Composable
-private fun SkeletonTrackRow() {
+internal fun SkeletonTrackRow() {
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -370,7 +382,7 @@ private fun SkeletonTrackRow() {
 }
 
 @Composable
-private fun EmptyState(title: String, body: String) {
+internal fun EmptyState(title: String, body: String) {
     Column(
         Modifier.fillMaxWidth().padding(vertical = 60.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -388,7 +400,7 @@ private fun EmptyState(title: String, body: String) {
 }
 
 @Composable
-private fun ErrorState(message: String, onRetry: () -> Unit) {
+internal fun ErrorState(message: String, onRetry: () -> Unit) {
     Column(
         Modifier.fillMaxWidth().padding(vertical = 60.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
