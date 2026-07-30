@@ -669,7 +669,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 val sc = subsonic ?: throw IllegalStateException("Navidrome isn't connected")
                 when (id) {
                     "artists" -> sc.artists()
-                    "albums" -> sc.albumList("alphabeticalByName", size = 500)
+                    "albums" -> sc.albumList("alphabeticalByName", size = 5000)
                     "newest" -> sc.albumList("newest", size = 200)
                     "playlists" -> sc.playlists()
                     "genres" -> sc.genres()
@@ -863,7 +863,11 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 add(category("random", "Shuffle all"))
             }
         }
-        add(category("downloads", "Downloads"))
+        // Downloads only make sense for the Navidrome backend — MA streams
+        // everything from its providers, and there is no file to download.
+        if (_backend.value == Backend.SUBSONIC || _offline.value) {
+            add(category("downloads", "Downloads"))
+        }
     }
 
     private fun category(id: String, name: String) =

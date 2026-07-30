@@ -12,6 +12,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -88,7 +89,7 @@ fun ArtistDetailScreen(
         Box(Modifier.fillMaxSize().background(Ink)) {
             MeltBackdrop(artistArt, intensity = 0.5f)
 
-            Column(Modifier.fillMaxSize()) {
+            Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars)) {
                 // Header
                 Row(
                     Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 4.dp),
@@ -112,7 +113,14 @@ fun ArtistDetailScreen(
                     contentPadding = PaddingValues(bottom = navBarInset() + 24.dp),
                 ) {
                     // Artist hero
-                    item { ArtistHero(artist = artist, artUrl = artistArt, albumCount = albums.size) }
+                    item {
+                        ArtistHero(
+                            artist = artist, artUrl = artistArt, albumCount = albums.size,
+                            onPlayAll = viewModel::playAll,
+                            onShuffle = viewModel::shuffleAll,
+                            onAddToQueue = viewModel::addToQueue,
+                        )
+                    }
 
                     if (loading && albums.isEmpty() && topTracks.isEmpty()) {
                         items(4) { SkeletonTrackRow() }
@@ -127,16 +135,6 @@ fun ArtistDetailScreen(
                     // Top tracks
                     if (topTracks.isNotEmpty()) {
                         item { Shelf("Top tracks") }
-                        item {
-                            Row(
-                                Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
-                                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                PlayButton(playing = false, size = 48.dp, onClick = viewModel::shuffleTopTracks)
-                                Text("Shuffle top tracks", color = TextSecondary, fontFamily = AppFont, fontSize = 13.sp)
-                            }
-                        }
                         itemsIndexed(topTracks, key = { _, t -> t.itemId }) { index, track ->
                             TrackRow(
                                 track = track,
@@ -173,7 +171,14 @@ fun ArtistDetailScreen(
 }
 
 @Composable
-private fun ArtistHero(artist: MaItem?, artUrl: String?, albumCount: Int) {
+private fun ArtistHero(
+    artist: MaItem?,
+    artUrl: String?,
+    albumCount: Int,
+    onPlayAll: () -> Unit = {},
+    onShuffle: () -> Unit = {},
+    onAddToQueue: () -> Unit = {},
+) {
     val accent = LocalAccent.current
 
     Column(
@@ -218,6 +223,16 @@ private fun ArtistHero(artist: MaItem?, artUrl: String?, albumCount: Int) {
                 color = TextMuted, fontFamily = AppFont,
                 fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
+        }
+
+        Spacer(Modifier.height(20.dp))
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            PlayButton(playing = false, size = 56.dp, onClick = onPlayAll)
+            IconChip(Icons.Default.Shuffle, "Shuffle", onClick = onShuffle)
+            IconChip(Icons.AutoMirrored.Filled.QueueMusic, "Add to queue", onClick = onAddToQueue)
         }
     }
 }

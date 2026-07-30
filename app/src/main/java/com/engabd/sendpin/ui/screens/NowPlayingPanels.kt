@@ -405,6 +405,7 @@ fun SleepTimerChip(viewModel: NowPlayingViewModel) {
             onDismissRequest = { picking = false },
             properties = PopupProperties(focusable = true),
         ) {
+            var sliderMinutes by remember { mutableStateOf(minutes.coerceAtLeast(5)) }
             Column(
                 Modifier
                     .widthIn(max = 320.dp)
@@ -423,19 +424,31 @@ fun SleepTimerChip(viewModel: NowPlayingViewModel) {
                     else "Fades the music out, then pauses the player.",
                     color = TextMuted, fontFamily = AppFont, fontSize = 12.sp, lineHeight = 16.sp,
                 )
-                viewModel.sleepTimerPresets.chunked(3).forEach { row ->
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        row.forEach { m ->
-                            Pill("${m}m", m == minutes, Modifier.weight(1f)) {
-                                viewModel.setSleepTimer(m); picking = false
-                            }
-                        }
-                        // Keep a short final row's columns lined up with the one above.
-                        repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
-                    }
+                // Slider: 1–120 minutes, snapping to 1-minute steps.
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Text(
+                        "${sliderMinutes}m",
+                        color = accent, fontFamily = MonoFont, fontWeight = FontWeight.Bold,
+                        fontSize = 18.sp, modifier = Modifier.width(48.dp),
+                    )
+                    Slider(
+                        value = sliderMinutes.toFloat(),
+                        onValueChange = { sliderMinutes = it.toInt().coerceIn(1, 120) },
+                        valueRange = 1f..120f,
+                        steps = 118,   // 120 - 2 = 118 intermediate steps → 1-minute snaps
+                        modifier = Modifier.weight(1f),
+                    )
                 }
-                Pill(if (running) "Cancel timer" else "Off", false, Modifier.fillMaxWidth()) {
-                    viewModel.cancelSleepTimer(); picking = false
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Pill(if (running) "Cancel timer" else "Off", false, Modifier.weight(1f)) {
+                        viewModel.cancelSleepTimer(); picking = false
+                    }
+                    Pill("Start", true, Modifier.weight(1f)) {
+                        viewModel.setSleepTimer(sliderMinutes); picking = false
+                    }
                 }
             }
         }

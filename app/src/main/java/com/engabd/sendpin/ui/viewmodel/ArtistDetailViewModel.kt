@@ -181,7 +181,28 @@ class ArtistDetailViewModel(
         }
     }
 
-    fun shuffleTopTracks() {
+    fun shuffleTopTracks() = shuffleAll()
+
+    /** Play all top tracks in order. */
+    fun playAll() {
+        val tracks = _topTracks.value
+        if (tracks.isEmpty()) return
+        viewModelScope.launch {
+            try {
+                if (isSubsonic) {
+                    stopMaPlayback()
+                    localPlayer.setShuffle(false)
+                    localPlayer.setQueue(localTracks(tracks))
+                } else {
+                    maRepo.playMedia(playTarget(), tracks.mapNotNull { it.uri }, "replace")
+                }
+                _toast.tryEmit("Playing top tracks")
+            } catch (e: Exception) { _toast.tryEmit(e.message ?: "Couldn't play") }
+        }
+    }
+
+    /** Shuffle and play all top tracks. */
+    fun shuffleAll() {
         val tracks = _topTracks.value
         if (tracks.isEmpty()) return
         viewModelScope.launch {
@@ -198,6 +219,23 @@ class ArtistDetailViewModel(
                 }
                 _toast.tryEmit("Shuffling top tracks")
             } catch (e: Exception) { _toast.tryEmit(e.message ?: "Couldn't shuffle") }
+        }
+    }
+
+    /** Add all top tracks to the end of the queue. */
+    fun addToQueue() {
+        val tracks = _topTracks.value
+        if (tracks.isEmpty()) return
+        viewModelScope.launch {
+            try {
+                if (isSubsonic) {
+                    localPlayer.addToQueue(localTracks(tracks))
+                    _toast.tryEmit("Added ${tracks.size} tracks to queue")
+                } else {
+                    maRepo.playMedia(playTarget(), tracks.mapNotNull { it.uri }, "add")
+                    _toast.tryEmit("Added ${tracks.size} tracks to queue")
+                }
+            } catch (e: Exception) { _toast.tryEmit(e.message ?: "Couldn't add to queue") }
         }
     }
 
