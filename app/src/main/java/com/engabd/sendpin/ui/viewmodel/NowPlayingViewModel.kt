@@ -675,8 +675,15 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 repo.playQueueItem(q, item.queueItemId)
             } catch (e: Exception) {
-                _toast.tryEmit(e.message ?: "Couldn't play that")
-                return@launch
+                // A server that types `index` as an int rather than `int | str`
+                // rejects the id. Fall back to the position rather than doing
+                // nothing at all.
+                try {
+                    repo.playQueueIndex(q, item.index)
+                } catch (_: Exception) {
+                    _toast.tryEmit(e.message ?: "Couldn't play that")
+                    return@launch
+                }
             }
             delay(350); refresh()
         }

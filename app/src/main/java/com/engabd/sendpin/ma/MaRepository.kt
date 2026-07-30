@@ -170,6 +170,12 @@ class MaRepository(val api: MaApiClient) {
             put("queue_id", queueId); put("index", queueItemId)
         })
 
+    /** The positional form of [playQueueItem], for a server that won't take an id. */
+    suspend fun playQueueIndex(queueId: String, index: Int) =
+        api.sendCommand("player_queues/play_index", buildJsonObject {
+            put("queue_id", queueId); put("index", index)
+        })
+
     // --- favorites ---------------------------------------------------------
 
     /**
