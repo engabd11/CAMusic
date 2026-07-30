@@ -1,7 +1,11 @@
 package com.engabd.sendpin.audio
 
+import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.media.MediaPlayer
+import android.os.Build
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -54,8 +58,20 @@ data class LocalTrack(
  *
  * Process-scoped (see `SendpinApp.localPlayer`): Now Playing, the library and the
  * media notification all drive the same instance.
+ *
+ * **Audio focus**: the local player requests focus on `USAGE_MEDIA` before playing
+ * and abandons it when it stops, so it plays by the same rules as every other media
+ * app on the phone — it gets out of the way for a call, and other players get out of
+ * its way when it starts.
+ *
+ * Focus does *not* police the two backends against each other:
+ * [com.engabd.sendpin.audio.SendspinAudioEngine] writes to its `AudioTrack` without
+ * ever registering a focus listener, so Android has no way to tell it to stop.
+ * Keeping MA and the local player off each other's toes is
+ * [com.engabd.sendpin.ma.LibraryViewModel]'s job, and it does it by sending MA an
+ * explicit stop.
  */
-class LocalPlayer {
+class LocalPlayer(private val context: Context) {
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var mp: MediaPlayer? = null
@@ -63,6 +79,66 @@ class LocalPlayer {
 
     /** True between `prepareAsync()` and `onPrepared`, when the player has no valid state. */
     @Volatile private var preparing = false
+
+    // --- audio focus ------------------------------------------------------
+    private val audioManager by lazy { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
+    private var audioFocusRequest: AudioFocusRequest? = null
+    @Volatile private var holdsFocus = false
+
+    /**
+     * Playback was stopped by a focus loss rather than by the user, so regaining
+     * focus should start it again. Without this the music stays dead after a phone
+     * call or a navigation prompt until someone taps play.
+     */
+    @Volatile private var pausedByFocusLoss = false
+
+    private val focusListener = AudioManager.OnAudioFocusChangeListener { change ->
+        when (change) {
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> mp?.setVolume(0.3f, 0.3f)
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> if (_playing.value) { pausedByFocusLoss = true; pause() }
+            AudioManager.AUDIOFOCUS_GAIN -> {
+                mp?.setVolume(1f, 1f)
+                if (pausedByFocusLoss) { pausedByFocusLoss = false; resume() }
+            }
+            // A permanent loss pauses; it does not clear. The queue the user built
+            // is not another app's to throw away, and they may come straight back
+            // to it — [resume] re-claims focus when they do.
+            AudioManager.AUDIOFOCUS_LOSS -> { pause(); abandonAudioFocus() }
+        }
+    }
+
+    private fun requestAudioFocus(): Boolean {
+        if (holdsFocus) return true
+        val attrs = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_MEDIA)
+            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+            .build()
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                .setAudioAttributes(attrs)
+                .setAcceptsDelayedFocusGain(false)
+                .setOnAudioFocusChangeListener(focusListener)
+                .build()
+            audioFocusRequest = req
+            audioManager.requestAudioFocus(req) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager.requestAudioFocus(focusListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        }.also { if (it) holdsFocus = true }
+    }
+
+    private fun abandonAudioFocus() {
+        pausedByFocusLoss = false
+        if (!holdsFocus) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
+            audioFocusRequest = null
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager.abandonAudioFocus(focusListener)
+        }
+        holdsFocus = false
+    }
 
     private val _queue = MutableStateFlow<List<LocalTrack>>(emptyList())
     val queue: StateFlow<List<LocalTrack>> = _queue
@@ -175,6 +251,7 @@ class LocalPlayer {
 
     fun clear() {
         stopInternal()
+        abandonAudioFocus()
         _queue.value = emptyList()
         order = emptyList()
         _index.value = -1
@@ -217,6 +294,12 @@ class LocalPlayer {
             return
         }
         if (preparing) return
+        // Focus can have been taken away while we sat paused — a call, another
+        // player — so claim it back before making sound again.
+        if (!requestAudioFocus()) {
+            _error.tryEmit("Can't play — another app owns audio")
+            return
+        }
         if (!p.isPlaying) { p.start(); _playing.value = true; startTicker() }
     }
 
@@ -234,7 +317,9 @@ class LocalPlayer {
 
     fun next() {
         val nxt = step(+1)
-        if (nxt == null) { stopInternal(); _positionMs.value = 0 } else playAt(nxt)
+        // Running off the end of the queue is the end of the session, so let go of
+        // focus — holding it leaves every other player on the phone ducked forever.
+        if (nxt == null) { stopInternal(); _positionMs.value = 0; abandonAudioFocus() } else playAt(nxt)
     }
 
     fun seekTo(ms: Long) {
@@ -294,6 +379,12 @@ class LocalPlayer {
         val source = track.localPath?.takeIf { File(it).exists() } ?: track.streamUrl
         if (source == null) {
             _error.tryEmit("\"${track.title}\" isn't downloaded and the server is unreachable")
+            return
+        }
+        // Claim audio focus before opening — this is what tells the Sendspin stream
+        // (or any other media app) to get out of the way.
+        if (!requestAudioFocus()) {
+            _error.tryEmit("Can't play — another app owns audio")
             return
         }
         preparing = true

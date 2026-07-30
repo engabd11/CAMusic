@@ -125,6 +125,7 @@ class AlbumDetailViewModel(
         viewModelScope.launch {
             try {
                 if (isSubsonic) {
+                    stopMaPlayback()
                     localPlayer.setShuffle(false)
                     localPlayer.setQueue(localTracks())
                 } else {
@@ -144,6 +145,7 @@ class AlbumDetailViewModel(
         viewModelScope.launch {
             try {
                 if (isSubsonic) {
+                    stopMaPlayback()
                     // Shuffle on *before* the queue is set, so the play order is
                     // built shuffled rather than starting on track 1 and jumping.
                     localPlayer.setShuffle(true)
@@ -212,6 +214,7 @@ class AlbumDetailViewModel(
                 if (isSubsonic) {
                     // The album is the queue; the tapped track is where it starts.
                     val start = _tracks.value.indexOfFirst { it.itemId == track.itemId }.coerceAtLeast(0)
+                    stopMaPlayback()
                     localPlayer.setQueue(localTracks(), start)
                     _toast.tryEmit("Playing ${track.name}")
                     return@launch
@@ -230,6 +233,16 @@ class AlbumDetailViewModel(
                 _toast.tryEmit(e.message ?: "Couldn't play")
             }
         }
+    }
+
+    /**
+     * Hand the speaker over before the local player takes it — the two backends know
+     * nothing about each other, so starting an album here while MA is streaming to
+     * this phone would play both at once. Fire-and-forget: if MA is down or idle
+     * there is nothing on it to stop.
+     */
+    private fun stopMaPlayback() {
+        viewModelScope.launch { runCatching { maRepo.stop(playTarget()) } }
     }
 
     /** The album as a local queue, offline copies preferred over the stream. */
