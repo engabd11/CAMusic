@@ -126,19 +126,16 @@ fun NowPlayingScreen(
             MeltBackdrop(st.artworkUrl, intensity = if (st.idle) 0.5f else 1f)
 
             // Source badge at the top-right corner — MA or Navidrome.
-            {
-                val badgeSource = if (st.isLocalSession) {
+            SourceBadge(
+                source = if (st.isLocalSession) {
                     if (st.source == "Offline") "Offline" else "Navidrome"
                 } else if (st.source.isNotBlank()) {
                     st.source
                 } else {
                     "MA"
-                }
-                SourceBadge(
-                    source = badgeSource,
-                    modifier = Modifier.align(Alignment.TopEnd).padding(top = 48.dp, end = 16.dp),
-                )
-            }
+                },
+                modifier = Modifier.align(Alignment.TopEnd).padding(top = 48.dp, end = 16.dp),
+            )
 
             Column(
                 Modifier
