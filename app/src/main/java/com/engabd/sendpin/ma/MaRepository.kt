@@ -14,16 +14,16 @@ class MaRepository(val api: MaApiClient) {
 
     // --- library browse ---------------------------------------------------
 
-    suspend fun artists(offset: Int = 0, limit: Int = 500) =
+    suspend fun artists(offset: Int = 0, limit: Int = 5000) =
         MaParse.items(api.sendCommand("music/artists/library_items", libraryArgs(offset, limit)), serverUrl)
 
-    suspend fun albums(offset: Int = 0, limit: Int = 500) =
+    suspend fun albums(offset: Int = 0, limit: Int = 5000) =
         MaParse.items(api.sendCommand("music/albums/library_items", libraryArgs(offset, limit)), serverUrl)
 
-    suspend fun tracks(offset: Int = 0, limit: Int = 500) =
+    suspend fun tracks(offset: Int = 0, limit: Int = 5000) =
         MaParse.items(api.sendCommand("music/tracks/library_items", libraryArgs(offset, limit)), serverUrl)
 
-    suspend fun playlists(offset: Int = 0, limit: Int = 500) =
+    suspend fun playlists(offset: Int = 0, limit: Int = 5000) =
         MaParse.items(api.sendCommand("music/playlists/library_items", libraryArgs(offset, limit)), serverUrl)
 
     /** Feeds the library's "Recently played" shelf. */

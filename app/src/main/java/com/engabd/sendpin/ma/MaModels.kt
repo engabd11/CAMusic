@@ -350,8 +350,10 @@ object MaParse {
 
     /** Genres can arrive as a JSON array of strings, a comma-separated string, or a list of objects. */
     private fun genreList(o: JsonObject): List<String> = when (val g = o["genres"]) {
-        is JsonArray -> g.mapNotNull { (it as? JsonObject)?.get("name")?.jsonPrimitive?.contentOrNull
-            ?: it.jsonPrimitive.contentOrNull }
+        is JsonArray -> g.mapNotNull { item ->
+            (item as? JsonObject)?.get("name")?.jsonPrimitive?.contentOrNull
+                ?: (item as? JsonPrimitive)?.contentOrNull
+        }
         is JsonPrimitive -> g.contentOrNull?.split(",")?.map { it.trim() }?.filter { it.isNotBlank() } ?: emptyList()
         else -> emptyList()
     }

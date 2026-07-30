@@ -76,7 +76,7 @@ fun PlaylistDetailScreen(
         Box(Modifier.fillMaxSize().background(Ink)) {
             MeltBackdrop(playlistArt, intensity = 0.5f)
 
-            Column(Modifier.fillMaxSize()) {
+            Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars)) {
                 // Header
                 Row(
                     Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 4.dp),

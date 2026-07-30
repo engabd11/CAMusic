@@ -83,10 +83,9 @@ fun AlbumDetailScreen(
         LocalPalette provides albumPalette,
     ) {
         Box(Modifier.fillMaxSize().background(Ink)) {
-            // Melt backdrop: the cover blown up, blurred, over-saturated — melts into OLED black.
             MeltBackdrop(albumArt, intensity = 0.7f)
 
-            Column(Modifier.fillMaxSize()) {
+            Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars)) {
                 // Header
                 AlbumHeader(
                     albumName = album?.name ?: name,
