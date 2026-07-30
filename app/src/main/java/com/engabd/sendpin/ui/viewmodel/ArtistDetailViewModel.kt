@@ -111,16 +111,21 @@ class ArtistDetailViewModel(
                     if (!resolveRef()) return@launch
                     val (artistMeta, albumList) = sc.artistDetail(ref.itemId)
                     if (artistMeta != null) { ref = artistMeta; _artist.value = artistMeta }
-                    _albums.value = albumList
+                    _albums.value = albumList.distinctBy { it.itemId }
                     // Subsonic's getTopSongs needs Last.fm wired into Navidrome, so the
                     // top-tracks section simply doesn't appear on this backend.
                 } else {
                     if (!resolveRef()) return@launch
                     val artistMeta = maRepo.getArtist(ref)
                     if (artistMeta != null) { ref = artistMeta; _artist.value = artistMeta }
-                    _albums.value = maRepo.artistAlbums(ref)
+                    // De-duplicated by id: MA answers an artist's albums and top
+                    // tracks per provider mapping and concatenates the results, so an
+                    // artist held by two providers comes back with every row twice.
+                    _albums.value = maRepo.artistAlbums(ref).distinctBy { it.itemId }
                     // Top tracks are best-effort — not all MA providers support it.
-                    _topTracks.value = try { maRepo.topTracks(ref, limit = 10) } catch (_: Exception) { emptyList() }
+                    _topTracks.value = try {
+                        maRepo.topTracks(ref, limit = 10).distinctBy { it.itemId }
+                    } catch (_: Exception) { emptyList() }
                 }
             } catch (e: Exception) {
                 _error.value = e.message ?: "Failed to load artist"
@@ -181,62 +186,87 @@ class ArtistDetailViewModel(
         }
     }
 
-    fun shuffleTopTracks() = shuffleAll()
+    /** Resolved once per screen — see [catalogue]. */
+    private var catalogueCache: List<MaItem>? = null
 
-    /** Play all top tracks in order. */
-    fun playAll() {
-        val tracks = _topTracks.value
-        if (tracks.isEmpty()) return
+    /**
+     * Everything by this artist, in album order — what the hero's Play / Shuffle /
+     * Add to Queue act on.
+     *
+     * Not the top-tracks list: MA only fills that in for providers that rank plays,
+     * and Navidrome's `getTopSongs` needs Last.fm wired in, so the section is simply
+     * absent there. Hero buttons reading it therefore did *nothing at all* on
+     * Navidrome and nothing on an MA provider without rankings — they returned early
+     * on an empty list, with no queue and no message. Cached, since the Subsonic path
+     * costs a round-trip per album.
+     */
+    private suspend fun catalogue(): List<MaItem> {
+        catalogueCache?.let { return it }
+        val all = try {
+            val sc = subsonic
+            when {
+                // The albums are already loaded, so walk those rather than asking
+                // for the artist's albums a second time.
+                isSubsonic && sc != null -> _albums.value.flatMap { sc.albumTracks(it.itemId) }
+                isSubsonic -> emptyList()
+                else -> maRepo.artistTracks(ref)
+            }
+        } catch (_: Exception) { emptyList() }
+        // Fall back to whatever the screen is showing rather than nothing at all.
+        val tracks = all.ifEmpty { _topTracks.value }.distinctBy { it.itemId }
+        catalogueCache = tracks
+        return tracks
+    }
+
+    /** Runs [block] over the artist's catalogue, or says why it can't. */
+    private fun onCatalogue(verb: String, block: suspend (List<MaItem>) -> Unit) {
         viewModelScope.launch {
             try {
-                if (isSubsonic) {
-                    stopMaPlayback()
-                    localPlayer.setShuffle(false)
-                    localPlayer.setQueue(localTracks(tracks))
-                } else {
-                    maRepo.playMedia(playTarget(), tracks.mapNotNull { it.uri }, "replace")
+                val tracks = catalogue()
+                if (tracks.isEmpty()) {
+                    _toast.tryEmit("No tracks for ${ref.name}")
+                    return@launch
                 }
-                _toast.tryEmit("Playing top tracks")
-            } catch (e: Exception) { _toast.tryEmit(e.message ?: "Couldn't play") }
+                block(tracks)
+            } catch (e: Exception) { _toast.tryEmit(e.message ?: "Couldn't $verb") }
         }
     }
 
-    /** Shuffle and play all top tracks. */
-    fun shuffleAll() {
-        val tracks = _topTracks.value
-        if (tracks.isEmpty()) return
-        viewModelScope.launch {
-            try {
-                if (isSubsonic) {
-                    stopMaPlayback()
-                    // Shuffle on *before* the queue is set, so the play order is built
-                    // shuffled rather than starting on track 1 and jumping.
-                    localPlayer.setShuffle(true)
-                    localPlayer.setQueue(localTracks(tracks))
-                } else {
-                    maRepo.playMedia(playTarget(), tracks.mapNotNull { it.uri }.shuffled(), "replace")
-                    maRepo.setShuffle(playTarget(), true)
-                }
-                _toast.tryEmit("Shuffling top tracks")
-            } catch (e: Exception) { _toast.tryEmit(e.message ?: "Couldn't shuffle") }
+    /** Play everything by this artist, in order. */
+    fun playAll() = onCatalogue("play") { tracks ->
+        if (isSubsonic) {
+            stopMaPlayback()
+            localPlayer.setShuffle(false)
+            localPlayer.setQueue(localTracks(tracks))
+        } else {
+            maRepo.playMedia(playTarget(), tracks.mapNotNull { it.uri }, "replace")
         }
+        _toast.tryEmit("Playing ${ref.name}")
     }
 
-    /** Add all top tracks to the end of the queue. */
-    fun addToQueue() {
-        val tracks = _topTracks.value
-        if (tracks.isEmpty()) return
-        viewModelScope.launch {
-            try {
-                if (isSubsonic) {
-                    localPlayer.addToQueue(localTracks(tracks))
-                    _toast.tryEmit("Added ${tracks.size} tracks to queue")
-                } else {
-                    maRepo.playMedia(playTarget(), tracks.mapNotNull { it.uri }, "add")
-                    _toast.tryEmit("Added ${tracks.size} tracks to queue")
-                }
-            } catch (e: Exception) { _toast.tryEmit(e.message ?: "Couldn't add to queue") }
+    /** Shuffle and play everything by this artist. */
+    fun shuffleAll() = onCatalogue("shuffle") { tracks ->
+        if (isSubsonic) {
+            stopMaPlayback()
+            // Shuffle on *before* the queue is set, so the play order is built
+            // shuffled rather than starting on track 1 and jumping.
+            localPlayer.setShuffle(true)
+            localPlayer.setQueue(localTracks(tracks))
+        } else {
+            maRepo.playMedia(playTarget(), tracks.mapNotNull { it.uri }.shuffled(), "replace")
+            maRepo.setShuffle(playTarget(), true)
         }
+        _toast.tryEmit("Shuffling ${ref.name}")
+    }
+
+    /** Add everything by this artist to the end of the queue. */
+    fun addToQueue() = onCatalogue("add to queue") { tracks ->
+        if (isSubsonic) {
+            localPlayer.addToQueue(localTracks(tracks))
+        } else {
+            maRepo.playMedia(playTarget(), tracks.mapNotNull { it.uri }, "add")
+        }
+        _toast.tryEmit("Added ${tracks.size} tracks to queue")
     }
 
     /** A track list as a local queue, offline copies preferred over the stream. */

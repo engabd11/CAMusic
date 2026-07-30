@@ -13,7 +13,26 @@ data class StreamQuality(
     val bitDepth: Int = 0,
     val bitrateKbps: Int = 0,
 ) {
-    val lossless: Boolean get() = codec.lowercase() in LOSSLESS
+    val lossless: Boolean get() = normalizedCodec in LOSSLESS
+
+    /**
+     * Whether two readings describe the same audio, i.e. nothing was transcoded
+     * between them.
+     *
+     * Bitrate is deliberately excluded. The two sides come from different places —
+     * the playing format carries a bitrate from the queue's stream details, the
+     * source format is derived from `provider_mappings.audio_format`, which has no
+     * bitrate field at all — so comparing [label] strings said "transcoded" for
+     * every single track, which is what kept the Source row on screen. Codec, rate
+     * and depth are what a transcode actually changes.
+     */
+    fun sameFormatAs(other: StreamQuality): Boolean =
+        normalizedCodec == other.normalizedCodec &&
+            sampleRateHz == other.sampleRateHz &&
+            bitDepth == other.bitDepth
+
+    /** `audio/flac` and `FLAC` are the same codec — MA sends both spellings. */
+    private val normalizedCodec: String get() = codec.substringAfterLast('/').lowercase().trim()
 
     /** Better than CD: the case worth lighting the badge up for. */
     val hiRes: Boolean get() = lossless && (sampleRateHz > 48_000 || bitDepth > 16)

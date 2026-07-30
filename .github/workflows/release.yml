@@ -46,6 +46,11 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      # assembleDebug never touches the test sources, so a branch could go green
+      # with tests that don't even compile. Run them here too.
+      - name: Run unit tests
+        run: ./gradlew :app:testDebugUnitTest
+
       - name: Build debug APK
         run: ./gradlew assembleDebug
 

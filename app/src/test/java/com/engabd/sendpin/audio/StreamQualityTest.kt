@@ -45,6 +45,39 @@ class StreamQualityTest {
         assertEquals("FLAC · 44.1/16", StreamQuality("flac", 44_100, 16).label)
     }
 
+    /**
+     * The two readings the quality popup compares come from different places: the
+     * playing format is read off the queue's stream details and carries a bitrate,
+     * the source format comes from `provider_mappings.audio_format` and never does.
+     * Comparing labels therefore reported a transcode for every track, which is what
+     * kept the redundant Source row on screen.
+     */
+    @Test
+    fun `the same audio matches even when only one side knows its bitrate`() {
+        val playing = StreamQuality("flac", 44_100, 16, bitrateKbps = 1411)
+        val source = StreamQuality("flac", 44_100, 16)
+        assertTrue(playing.sameFormatAs(source))
+        assertTrue(source.sameFormatAs(playing))
+    }
+
+    @Test
+    fun `a mime type and a bare codec name are the same codec`() {
+        assertTrue(StreamQuality("audio/flac", 48_000, 24).sameFormatAs(StreamQuality("FLAC", 48_000, 24)))
+    }
+
+    @Test
+    fun `a real transcode does not match`() {
+        val playing = StreamQuality("flac", 48_000, 16)
+        assertFalse(playing.sameFormatAs(StreamQuality("flac", 96_000, 24)))  // resampled
+        assertFalse(playing.sameFormatAs(StreamQuality("mp3", 48_000, 16)))   // re-encoded
+        assertFalse(playing.sameFormatAs(StreamQuality("flac", 48_000, 24)))  // requantised
+    }
+
+    @Test
+    fun `a mime type still resolves as lossless`() {
+        assertTrue(StreamQuality("audio/flac", 44_100, 16).lossless)
+    }
+
     @Test
     fun `hi-res needs better than CD from a lossless codec`() {
         assertTrue(StreamQuality("flac", 96_000, 24).hiRes)

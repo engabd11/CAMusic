@@ -125,7 +125,10 @@ fun AlbumDetailScreen(
                     } else if (tracks.isEmpty()) {
                         item { EmptyState("No tracks", "This album appears to be empty.") }
                     } else {
-                        itemsIndexed(tracks, key = { _, t -> t.itemId }) { index, track ->
+                        // Index in the key, not the item id alone: an id repeated in
+                        // the list is a hard crash in a lazy list, and a track mapped
+                        // through two providers comes back twice.
+                        itemsIndexed(tracks, key = { i, t -> "track:$i:${t.itemId}" }) { index, track ->
                             TrackRow(
                                 track = track,
                                 index = index,

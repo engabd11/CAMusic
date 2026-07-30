@@ -125,15 +125,10 @@ fun NowPlayingScreen(
             // rather than swapping the whole screen for an empty state.
             MeltBackdrop(st.artworkUrl, intensity = if (st.idle) 0.5f else 1f)
 
-            // Source badge at the top-right corner — MA or Navidrome.
+            // Source badge at the top-right corner — MA, Navidrome, Offline, or the
+            // streaming provider the track came from. Never blank: see State.source.
             SourceBadge(
-                source = if (st.isLocalSession) {
-                    if (st.source == "Offline") "Offline" else "Navidrome"
-                } else if (st.source.isNotBlank()) {
-                    st.source
-                } else {
-                    "MA"
-                },
+                source = st.source,
                 modifier = Modifier.align(Alignment.TopEnd).padding(top = 48.dp, end = 16.dp),
             )
 
@@ -400,9 +395,11 @@ fun TappableQualityChip(playing: StreamQuality?, source: StreamQuality?) {
 @Composable
 private fun QualityDetailCard(playing: StreamQuality?, source: StreamQuality?) {
     val accent = LocalAccent.current
-    // Don't show "Source" when it's identical to what's playing — there's nothing
-    // to tell the user when no transcoding happened.
-    val effectiveSource = if (source != null && playing != null && source.label == playing.label) null else source
+    // Don't show "Source" when it's the same audio as what's playing — there's
+    // nothing to tell the user when no transcoding happened. Compared on codec,
+    // rate and depth rather than on the printed label: the source reading carries
+    // no bitrate, so label equality was never true and the row never went away.
+    val effectiveSource = source?.takeUnless { playing != null && it.sameFormatAs(playing) }
     Column(
         Modifier
             .widthIn(max = 300.dp)
@@ -418,8 +415,8 @@ private fun QualityDetailCard(playing: StreamQuality?, source: StreamQuality?) {
             fontSize = 11.sp, letterSpacing = 1.sp,
         )
         QualityRow("Playing", playing, accent)
-        QualityRow("Source", effectiveSource, accent)
-        if (playing != null && effectiveSource != null && playing.label != effectiveSource.label) {
+        if (effectiveSource != null) QualityRow("Source", effectiveSource, accent)
+        if (playing != null && effectiveSource != null) {
             Text(
                 "Transcoded from ${effectiveSource.label} to ${playing.label}",
                 color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
