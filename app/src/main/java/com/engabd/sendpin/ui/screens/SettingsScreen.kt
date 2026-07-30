@@ -155,8 +155,8 @@ fun SettingsScreen(
                                 enabled = !connected,
                             )
                             Text(
-                                if (connected) "Disconnect or disable the player to change the name."
-                                else "Shown in Music Assistant. Applies when the player connects.",
+                                if (connected) "Disable the player to rename it, then enable it again."
+                                else "Shown in Music Assistant. Applied when the player is enabled.",
                                 color = TextFaint, fontSize = 11.sp,
                             )
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -164,11 +164,10 @@ fun SettingsScreen(
                                     OledButton("Disable", modifier = Modifier.weight(1f), accent = accent) { viewModel.disablePlayer() }
                                 } else {
                                     OledButton("Enable player", modifier = Modifier.weight(1f), accent = accent) {
-                                        scope.launch { settings.setPlayerName(playerName.trim()); viewModel.enablePlayer() }
+                                        viewModel.enablePlayer(playerName.trim())
                                     }
                                 }
                             }
-                            OledButton("Log out", accent = accent) { viewModel.logout() }
                         }
                     }
                 }
@@ -289,7 +288,8 @@ fun SettingsScreen(
                                 StatusRow("Connection", if (connected) "Connected" else "Disconnected")
                                 StatusRow("Format", currentFormat)
                                 StatusRow("Player ID", viewModel.playerId.take(12) + "…")
-                                StatusRow("Device", viewModel.playerName)
+                                StatusRow("Player name", playerName.ifBlank { viewModel.deviceName })
+                                StatusRow("Device", viewModel.deviceName)
                             }
                         }
                     }

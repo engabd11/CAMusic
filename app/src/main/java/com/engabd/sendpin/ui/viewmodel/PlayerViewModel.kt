@@ -17,7 +17,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     val isDiscovering = pb.isDiscovering
 
     val playerId get() = pb.playerId
-    val playerName get() = pb.playerName
+    /** What the hardware is, not what the player is called — see [savedPlayerName]. */
+    val deviceName get() = pb.deviceName
 
     // Connection + playback state
     val connected = pb.connected
@@ -44,9 +45,9 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     fun connectToServer(url: String, username: String = "", password: String = "", playerName: String = "") =
         pb.connectToServer(url, username, password, playerName)
 
-    fun enablePlayer() = pb.enablePlayer()
+    /** [name] blank keeps the saved one. */
+    fun enablePlayer(name: String = "") = pb.enablePlayer(name)
     fun disablePlayer() = pb.disablePlayer()
-    fun logout() = pb.logout()
 
     fun onPlayPause() = pb.onPlayPause()
     fun onMediaNext() = pb.onMediaNext()

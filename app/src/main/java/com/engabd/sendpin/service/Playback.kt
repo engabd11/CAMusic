@@ -37,7 +37,13 @@ class Playback(private val app: Context) {
     private val discovery = MaDiscovery(app)
 
     val playerId: String = PlayerIdentity.getPlayerId(app)
-    val playerName: String = PlayerIdentity.getDefaultPlayerName()
+    /**
+     * The hardware's name ("Samsung SM-S911B"), which is only the *fallback* for the
+     * player's name. It used to be exposed as `playerName` and printed in Settings
+     * under that heading, so a renamed player still read as the phone's model and the
+     * rename looked like it had done nothing.
+     */
+    val deviceName: String = PlayerIdentity.getDefaultPlayerName()
     private val deviceInfo = PlayerIdentity.getDeviceInfo()
 
     val discoveredServers = discovery.discoveredServers
@@ -295,17 +301,20 @@ class Playback(private val app: Context) {
         volumeJob = scope.launch { delay(180); client?.sendClientState(volume = (vol * 100).toInt()) }
     }
 
-    fun enablePlayer() = scope.launch {
+    /**
+     * Bring the player back up, optionally under a new [name].
+     *
+     * The name is saved *here*, before the connection is opened, because the hello is
+     * the only place it's announced — a rename that lands after the socket is up is a
+     * rename the server never hears about.
+     */
+    fun enablePlayer(name: String = "") = scope.launch {
+        if (name.isNotBlank()) settings.setPlayerName(name)
         val base = settings.maBaseUrl.first()
         if (base.isNotBlank()) connectToServer(sendspinUrlFrom(base))
     }
 
     fun disablePlayer() = disconnect()
-
-    fun logout() {
-        disconnect()
-        scope.launch { settings.setMa("", "", "") }
-    }
 
     fun disconnect(stopService: Boolean = true) {
         abandonAudioFocus()

@@ -59,14 +59,6 @@ class MaRepository(val api: MaApiClient) {
     suspend fun artistTracks(item: MaItem) =
         MaParse.items(api.sendCommand("music/artists/artist_tracks", itemRef(item)), serverUrl)
 
-    /** An artist's top tracks (MA's play-count ranking). */
-    suspend fun topTracks(item: MaItem, limit: Int = 10) =
-        MaParse.items(api.sendCommand("music/artists/top_tracks", buildJsonObject {
-            put("item_id", item.itemId)
-            put("provider_instance_id_or_domain", item.provider)
-            put("limit", limit)
-        }), serverUrl)
-
     /** Full album metadata (year, genre, artists, etc.) from `music/albums/get`. */
     suspend fun getAlbum(item: MaItem): MaItem? =
         MaParse.item(api.sendCommand("music/albums/get", itemRef(item)), serverUrl)
@@ -168,10 +160,14 @@ class MaRepository(val api: MaApiClient) {
             put("queue_id", queueId); put("name", name)
         })
 
-    /** Play a specific item at an index in the queue. */
-    suspend fun playIndex(queueId: String, index: Int) =
+    /**
+     * Jump to a queue row. `play_index` takes `index: int | str` and resolves a
+     * string as a **queue_item_id** — which is what callers should use: an id can't
+     * drift out of step with the server's play order the way a position can.
+     */
+    suspend fun playQueueItem(queueId: String, queueItemId: String) =
         api.sendCommand("player_queues/play_index", buildJsonObject {
-            put("queue_id", queueId); put("index", index)
+            put("queue_id", queueId); put("index", queueItemId)
         })
 
     // --- favorites ---------------------------------------------------------

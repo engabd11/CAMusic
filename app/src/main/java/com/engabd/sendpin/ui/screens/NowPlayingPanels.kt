@@ -238,7 +238,7 @@ private fun ColumnScope.QueueList(
                     .zIndex(if (dragging) 1f else 0f)
                     .graphicsLayer { translationY = if (dragging) dragOffset else 0f }
                     .onSizeChanged { if (it.height > 0) rowHeight = it.height },
-                onPlay = { viewModel.playQueueIndex(item.index) },
+                onPlay = { viewModel.playQueueItem(item) },
                 onRemove = { viewModel.removeQueueItem(item) },
                 onDragStart = {
                     draggingId = item.queueItemId
@@ -425,21 +425,22 @@ fun SleepTimerChip(viewModel: NowPlayingViewModel) {
                     else "Fades the music out, then pauses the player.",
                     color = TextMuted, fontFamily = AppFont, fontSize = 12.sp, lineHeight = 16.sp,
                 )
-                // Slider: 1–120 minutes, snapping to 1-minute steps.
+                // Slider: 1–360 minutes (six hours), snapping to 5-minute steps past
+                // the first hour — a 1-minute snap across six hours is a pixel per
+                // step and impossible to land on.
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     Text(
-                        "${sliderMinutes}m",
+                        sleepLabel(sliderMinutes),
                         color = accent, fontFamily = MonoFont, fontWeight = FontWeight.Bold,
-                        fontSize = 18.sp, modifier = Modifier.width(48.dp),
+                        fontSize = 18.sp, modifier = Modifier.width(68.dp),
                     )
                     Slider(
                         value = sliderMinutes.toFloat(),
-                        onValueChange = { sliderMinutes = it.toInt().coerceIn(1, 120) },
-                        valueRange = 1f..120f,
-                        steps = 118,   // 120 - 2 = 118 intermediate steps → 1-minute snaps
+                        onValueChange = { sliderMinutes = snapSleepMinutes(it) },
+                        valueRange = 1f..360f,
                         modifier = Modifier.weight(1f),
                     )
                 }
@@ -454,6 +455,23 @@ fun SleepTimerChip(viewModel: NowPlayingViewModel) {
             }
         }
     }
+}
+
+/**
+ * Where the sleep slider lands: every minute up to an hour, then every five. Fine
+ * control is what you want for "stop after this album"; nobody sets a five-hour
+ * timer to the minute.
+ */
+private fun snapSleepMinutes(raw: Float): Int {
+    val m = raw.toInt().coerceIn(1, 360)
+    return if (m <= 60) m else (Math.round(m / 5f) * 5).coerceAtMost(360)
+}
+
+/** `45m` under the hour, `2h 30m` over it — `150m` tells the user nothing. */
+private fun sleepLabel(minutes: Int): String = when {
+    minutes < 60 -> "${minutes}m"
+    minutes % 60 == 0 -> "${minutes / 60}h"
+    else -> "${minutes / 60}h ${minutes % 60}m"
 }
 
 /** mm:ss, or h:mm:ss once there's an hour on the clock. */
