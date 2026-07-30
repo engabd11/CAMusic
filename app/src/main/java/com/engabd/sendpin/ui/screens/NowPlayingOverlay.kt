@@ -171,13 +171,12 @@ fun NowPlayingOverlay(
             // Album wash — always present, dimmed when idle.
             MeltBackdrop(st.artworkUrl, intensity = if (st.idle) 0.5f else 1f)
 
-            // Source badge at the top-right corner — MA or Navidrome.
-            if (st.source.isNotBlank()) {
-                SourceBadge(
-                    source = st.source,
-                    modifier = Modifier.align(Alignment.TopEnd).padding(top = 48.dp, end = 16.dp),
-                )
-            }
+            // Source badge at the top-right corner — MA, Navidrome, Offline, or the
+            // streaming provider the track came from. Never blank: see State.source.
+            SourceBadge(
+                source = st.source,
+                modifier = Modifier.align(Alignment.TopEnd).padding(top = 48.dp, end = 16.dp),
+            )
 
             Column(
                 Modifier

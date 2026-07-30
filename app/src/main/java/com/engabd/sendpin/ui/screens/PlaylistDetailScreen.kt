@@ -119,7 +119,10 @@ fun PlaylistDetailScreen(
                     } else if (tracks.isEmpty()) {
                         item { EmptyState("No tracks", "This playlist is empty.") }
                     } else {
-                        itemsIndexed(tracks, key = { _, t -> t.itemId }) { index, track ->
+                        // Index in the key, not the item id alone: a playlist is
+                        // allowed to hold the same track twice, and a duplicate key
+                        // is a hard crash in a lazy list.
+                        itemsIndexed(tracks, key = { i, t -> "track:$i:${t.itemId}" }) { index, track ->
                             TrackRow(
                                 track = track,
                                 index = index,

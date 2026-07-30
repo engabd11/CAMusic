@@ -6,7 +6,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -133,9 +132,15 @@ fun ArtistDetailScreen(
                     }
 
                     // Top tracks
+                    //
+                    // Keys are namespaced by section *and* index. A bare `itemId` was
+                    // a crash: Music Assistant numbers library items per media type,
+                    // so a track and an album can both be item 7, and this one
+                    // LazyColumn holds both lists — "key was already used" took the
+                    // screen down on any artist where the ids happened to collide.
                     if (topTracks.isNotEmpty()) {
                         item { Shelf("Top tracks") }
-                        itemsIndexed(topTracks, key = { _, t -> t.itemId }) { index, track ->
+                        itemsIndexed(topTracks, key = { i, t -> "track:$i:${t.itemId}" }) { index, track ->
                             TrackRow(
                                 track = track,
                                 index = index,
@@ -148,7 +153,7 @@ fun ArtistDetailScreen(
                     // Albums
                     if (albums.isNotEmpty()) {
                         item { Shelf("Albums") }
-                        items(albums, key = { it.itemId }) { album ->
+                        itemsIndexed(albums, key = { i, a -> "album:$i:${a.itemId}" }) { _, album ->
                             AlbumRow(album = album, accent = artistPalette.accent, onClick = { onAlbumClick(album) })
                         }
                     } else if (!loading && topTracks.isEmpty()) {

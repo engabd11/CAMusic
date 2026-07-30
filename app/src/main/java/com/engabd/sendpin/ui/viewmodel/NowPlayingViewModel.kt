@@ -56,8 +56,12 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         val quality: StreamQuality? = null,
         /** The original source format from the library (before any transcoding). */
         val sourceQuality: StreamQuality? = null,
-        /** Where the track came from: "MA" (Music Assistant) or "Navidrome". */
-        val source: String = "",
+        /**
+         * Where the track came from: "MA", "Navidrome", "Offline", or the streaming
+         * provider MA pulled it from. Never blank — the badge tells the user which
+         * backend owns playback, and that is knowable even before a queue exists.
+         */
+        val source: String = "MA",
         /** Players sharing this stream, when the target leads a sync group. */
         val groupSize: Int = 1,
         val shuffle: Boolean = false,
@@ -273,8 +277,10 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             sourceQuality = queue?.currentItem?.audioFormat?.let {
                 StreamQuality(it.codec, it.sampleRate, it.bitDepth)
             },
-            // Source: where the bytes are actually coming from. See [sourceOf].
-            source = queue?.let { sourceOf(it) } ?: "",
+            // Source: where the bytes are actually coming from. See [sourceOf]. With
+            // no queue yet there is nothing to read a provider off, but the backend
+            // in charge is still MA — so the badge names it rather than vanishing.
+            source = queue?.let { sourceOf(it) }?.ifBlank { null } ?: "MA",
             groupSize = 1 + (p?.groupChilds?.size ?: 0),
             shuffle = queue?.shuffleEnabled == true,
             repeatMode = queue?.repeatMode ?: "off",
@@ -817,9 +823,6 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
      */
     private val _sleepTimerRemainingMs = MutableStateFlow(0L)
     val sleepTimerRemainingMs: StateFlow<Long> = _sleepTimerRemainingMs
-
-    /** The presets the sleep-timer sheet offers, in minutes. */
-    val sleepTimerPresets = listOf(5, 15, 30, 45, 60, 90)
 
     /**
      * Start a sleep timer that fades playback to silence over the last 10 seconds,

@@ -339,21 +339,26 @@ object MaParse {
         )
     }
 
+    /**
+     * A string field, read without assuming its shape. `.jsonPrimitive` *throws* on
+     * an object or an array rather than returning null, so a field the server sends
+     * in an unexpected shape would take down whatever was parsing it — which is
+     * exactly the crash that showed up browsing artists.
+     */
+    private fun str(el: JsonElement?): String? = (el as? JsonPrimitive)?.contentOrNull
+
     private fun strList(el: JsonElement?): List<String> =
-        (el as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList()
+        (el as? JsonArray)?.mapNotNull { str(it) } ?: emptyList()
 
     private fun artistString(o: JsonObject): String? {
         val arr = o["artists"] as? JsonArray ?: return null
-        val names = arr.mapNotNull { (it as? JsonObject)?.get("name")?.jsonPrimitive?.contentOrNull }
+        val names = arr.mapNotNull { str((it as? JsonObject)?.get("name")) }
         return names.joinToString(", ").ifBlank { null }
     }
 
     /** Genres can arrive as a JSON array of strings, a comma-separated string, or a list of objects. */
     private fun genreList(o: JsonObject): List<String> = when (val g = o["genres"]) {
-        is JsonArray -> g.mapNotNull { item ->
-            (item as? JsonObject)?.get("name")?.jsonPrimitive?.contentOrNull
-                ?: (item as? JsonPrimitive)?.contentOrNull
-        }
+        is JsonArray -> g.mapNotNull { item -> str((item as? JsonObject)?.get("name")) ?: str(item) }
         is JsonPrimitive -> g.contentOrNull?.split(",")?.map { it.trim() }?.filter { it.isNotBlank() } ?: emptyList()
         else -> emptyList()
     }
