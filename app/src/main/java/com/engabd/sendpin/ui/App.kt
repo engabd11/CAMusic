@@ -213,31 +213,38 @@ fun App() {
                             name = aName,
                             artUrl = aArt,
                             onBack = { navController.popBackStack() },
-                            onArtistClick = { artistName, artistProvider, artistDisplay, artistArt ->
-                                val n = android.net.Uri.encode(artistDisplay)
-                                val a = artistArt?.let { android.net.Uri.encode(it) } ?: ""
-                                navController.navigate("artist/${android.net.Uri.encode(artistName)}/${android.net.Uri.encode(artistProvider)}?name=$n&art=$a")
+                            // An album knows its artist's *name* and nothing else —
+                            // MaItem carries no artist id — so the route travels with
+                            // `byName`, and the artist screen looks the id up. The id
+                            // slot is a placeholder: a name in a path segment breaks on
+                            // the likes of "AC/DC".
+                            onArtistClick = { artistName, artistProvider ->
+                                val n = android.net.Uri.encode(artistName)
+                                navController.navigate("artist/-/${android.net.Uri.encode(artistProvider)}?name=$n&byName=true")
                             },
                         )
                     }
                     composable(
-                        route = "artist/{itemId}/{provider}?name={name}&art={art}",
+                        route = "artist/{itemId}/{provider}?name={name}&art={art}&byName={byName}",
                         arguments = listOf(
                             navArgument("itemId") { type = NavType.StringType },
                             navArgument("provider") { type = NavType.StringType },
                             navArgument("name") { type = NavType.StringType; defaultValue = "" },
                             navArgument("art") { type = NavType.StringType; defaultValue = "" },
+                            navArgument("byName") { type = NavType.BoolType; defaultValue = false },
                         ),
                     ) { backStackEntry ->
                         val aItemId = backStackEntry.arguments?.getString("itemId") ?: ""
                         val aProvider = backStackEntry.arguments?.getString("provider") ?: ""
                         val aName = backStackEntry.arguments?.getString("name") ?: ""
                         val aArt = backStackEntry.arguments?.getString("art")?.takeIf { it.isNotBlank() }
+                        val aByName = backStackEntry.arguments?.getBoolean("byName") ?: false
                         ArtistDetailScreen(
                             itemId = aItemId,
                             provider = aProvider,
                             name = aName,
                             artUrl = aArt,
+                            resolveByName = aByName,
                             onBack = { navController.popBackStack() },
                             onAlbumClick = { album ->
                                 val n = android.net.Uri.encode(album.name)

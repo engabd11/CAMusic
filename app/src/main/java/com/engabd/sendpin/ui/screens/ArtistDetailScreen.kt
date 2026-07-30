@@ -57,12 +57,14 @@ fun ArtistDetailScreen(
     artUrl: String?,
     onBack: () -> Unit,
     onAlbumClick: (MaItem) -> Unit,
+    /** [itemId] is a placeholder and [name] is the real key — see the album screen. */
+    resolveByName: Boolean = false,
 ) {
     val context = LocalContext.current
     val viewModel: ArtistDetailViewModel = viewModel(
         factory = ArtistDetailViewModelFactory(
             context.applicationContext as Application,
-            itemId, provider, name, artUrl,
+            itemId, provider, name, artUrl, resolveByName,
         )
     )
 

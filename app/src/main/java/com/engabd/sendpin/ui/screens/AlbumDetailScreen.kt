@@ -53,7 +53,7 @@ fun AlbumDetailScreen(
     name: String,
     artUrl: String?,
     onBack: () -> Unit,
-    onArtistClick: (String, String, String, String?) -> Unit = { _, _, _, _ -> },
+    onArtistClick: (String, String) -> Unit = { _, _ -> },
 ) {
     val context = LocalContext.current
     val viewModel: AlbumDetailViewModel = viewModel(
@@ -188,7 +188,7 @@ private fun AlbumHero(
     onPlayAll: () -> Unit,
     onShuffle: () -> Unit,
     onAddToQueue: () -> Unit,
-    onArtistClick: (String, String, String, String?) -> Unit = { _, _, _, _ -> },
+    onArtistClick: (String, String) -> Unit = { _, _ -> },
     onDownload: (() -> Unit)? = null,
     downloaded: Boolean = false,
 ) {
@@ -246,10 +246,11 @@ private fun AlbumHero(
                     fontWeight = FontWeight.Bold, fontSize = 15.sp,
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.clickable {
-                        // We don't have the artist's itemId from the album subtitle,
-                        // but the provider is the same. Pass the artist name for
-                        // the search-based fallback in the artist screen.
-                        onArtistClick(artist, album.provider, artist, null)
+                        // The subtitle is a display credit, not an id — and a joined
+                        // one ("Wilco, Billy Bragg") when an album has several
+                        // artists. Hand over the first name; the artist screen
+                        // searches for it, since MaItem carries no artist id.
+                        onArtistClick(artist.substringBefore(",").trim(), album.provider)
                     },
                 )
             }

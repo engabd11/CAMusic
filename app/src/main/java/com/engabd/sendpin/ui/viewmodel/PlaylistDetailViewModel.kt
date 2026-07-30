@@ -19,10 +19,13 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
- * Backs [com.engabd.sendpin.ui.screens.PlaylistDetailScreen]. Loads the
- * playlist's tracks and exposes play / shuffle / queue actions.
+ * Backs [com.engabd.sendpin.ui.screens.PlaylistDetailScreen]. Loads the playlist's
+ * tracks and exposes play / shuffle / queue actions.
  *
- * Same dual-backend pattern as [AlbumDetailViewModel].
+ * Same dual-backend pattern as [AlbumDetailViewModel], including what that buys on
+ * Navidrome: the playlist becomes a real local queue with downloaded copies
+ * preferred, so Play plays the whole thing, Shuffle actually shuffles, and Add to
+ * queue works with Music Assistant switched off entirely.
  */
 class PlaylistDetailViewModel(
     app: Application,
@@ -36,7 +39,14 @@ class PlaylistDetailViewModel(
     private val myPlayerId: String = PlayerIdentity.getPlayerId(app)
     private val maApi = (app as SendpinApp).maApi
     private val maRepo = MaRepository(maApi)
+    /** Process-scoped, not owned by this screen — see the note in [AlbumDetailViewModel]. */
     private val localPlayer = (app as SendpinApp).localPlayer
+    private val downloads = (app as SendpinApp).downloads
+
+    /** Built once per load rather than per action. Null until the playlist resolves. */
+    private var subsonic: SubsonicClient? = null
+
+    private val isSubsonic get() = provider == SubsonicClient.PROVIDER
 
     private val _playlist = MutableStateFlow<MaItem?>(null)
     val playlist: StateFlow<MaItem?> = _playlist
@@ -72,10 +82,11 @@ class PlaylistDetailViewModel(
             _error.value = null
             try {
                 val ref = MaItem(itemId, provider, initialName, null, "playlist", null, initialArt, null)
-                if (provider == "subsonic") {
+                if (isSubsonic) {
                     val url = settings.navUrl.first().trim()
                     if (url.isBlank()) { _error.value = "No Navidrome server configured"; return@launch }
                     val sc = SubsonicClient(url, settings.navUsername.first(), settings.navPassword.first())
+                    subsonic = sc
                     _tracks.value = sc.playlistTracks(itemId)
                 } else {
                     _tracks.value = maRepo.playlistTracks(ref)
@@ -87,15 +98,18 @@ class PlaylistDetailViewModel(
         }
     }
 
+    // --- playback actions -------------------------------------------------
+
     fun playAll() {
-        val uris = _tracks.value.mapNotNull { it.uri }
-        if (uris.isEmpty()) return
+        if (_tracks.value.isEmpty()) return
         viewModelScope.launch {
             try {
-                if (provider == "subsonic") {
-                    _tracks.value.firstOrNull()?.let { playTrackLocal(it) }
+                if (isSubsonic) {
+                    stopMaPlayback()
+                    localPlayer.setShuffle(false)
+                    localPlayer.setQueue(localTracks())
                 } else {
-                    maRepo.playMedia(playTarget(), uris, "replace")
+                    maRepo.playMedia(playTarget(), _tracks.value.mapNotNull { it.uri }, "replace")
                 }
                 _toast.tryEmit("Playing ${_playlist.value?.name ?: "playlist"}")
             } catch (e: Exception) { _toast.tryEmit(e.message ?: "Couldn't play") }
@@ -103,14 +117,17 @@ class PlaylistDetailViewModel(
     }
 
     fun shuffleAll() {
-        val uris = _tracks.value.mapNotNull { it.uri }.shuffled()
-        if (uris.isEmpty()) return
+        if (_tracks.value.isEmpty()) return
         viewModelScope.launch {
             try {
-                if (provider == "subsonic") {
-                    _tracks.value.firstOrNull()?.let { playTrackLocal(it) }
+                if (isSubsonic) {
+                    stopMaPlayback()
+                    // Shuffle on *before* the queue is set, so the play order is built
+                    // shuffled rather than starting on track 1 and jumping.
+                    localPlayer.setShuffle(true)
+                    localPlayer.setQueue(localTracks())
                 } else {
-                    maRepo.playMedia(playTarget(), uris, "replace")
+                    maRepo.playMedia(playTarget(), _tracks.value.mapNotNull { it.uri }.shuffled(), "replace")
                     maRepo.setShuffle(playTarget(), true)
                 }
                 _toast.tryEmit("Shuffling ${_playlist.value?.name ?: "playlist"}")
@@ -119,16 +136,13 @@ class PlaylistDetailViewModel(
     }
 
     fun addToQueue() {
-        val uris = _tracks.value.mapNotNull { it.uri }
-        if (uris.isEmpty()) return
+        val tracks = _tracks.value
+        if (tracks.isEmpty()) return
         viewModelScope.launch {
             try {
-                if (provider == "subsonic") {
-                    _toast.tryEmit("Queue management needs Music Assistant")
-                } else {
-                    maRepo.playMedia(playTarget(), uris, "add")
-                    _toast.tryEmit("Added ${uris.size} tracks to queue")
-                }
+                if (isSubsonic) localPlayer.addToQueue(localTracks())
+                else maRepo.playMedia(playTarget(), tracks.mapNotNull { it.uri }, "add")
+                _toast.tryEmit("Added ${tracks.size} tracks to queue")
             } catch (e: Exception) { _toast.tryEmit(e.message ?: "Couldn't add to queue") }
         }
     }
@@ -136,21 +150,35 @@ class PlaylistDetailViewModel(
     fun playTrack(track: MaItem) {
         viewModelScope.launch {
             try {
-                if (provider == "subsonic") playTrackLocal(track)
-                else track.uri?.let { maRepo.playMedia(playTarget(), listOf(it), "replace") }
+                if (isSubsonic) {
+                    // The playlist is the queue; the tapped track is where it starts.
+                    val start = _tracks.value.indexOfFirst { it.itemId == track.itemId }.coerceAtLeast(0)
+                    stopMaPlayback()
+                    localPlayer.setShuffle(false)
+                    localPlayer.setQueue(localTracks(), start)
+                } else {
+                    // MA's play_media + "replace" always starts at index 0, so play the
+                    // tapped track and append the rest of the playlist behind it.
+                    track.uri?.let { maRepo.playMedia(playTarget(), listOf(it), "replace") }
+                    val rest = _tracks.value.mapNotNull { it.uri }.filter { it != track.uri }
+                    if (rest.isNotEmpty()) maRepo.playMedia(playTarget(), rest, "add")
+                }
                 _toast.tryEmit("Playing ${track.name}")
             } catch (e: Exception) { _toast.tryEmit(e.message ?: "Couldn't play") }
         }
     }
 
-    private suspend fun playTrackLocal(track: MaItem) {
-        val url = settings.navUrl.first().trim()
-        if (url.isBlank()) { _toast.tryEmit("No Navidrome server"); return }
-        // Stop MA before playing locally — both can't own the speaker.
-        runCatching { maRepo.stop(playTarget()) }
-        val sc = SubsonicClient(url, settings.navUsername.first(), settings.navPassword.first())
-        localPlayer.play(sc.streamUrl(track.itemId), track.name)
-        _toast.tryEmit("Playing ${track.name}")
+    /** The playlist as a local queue, offline copies preferred over the stream. */
+    private fun localTracks() = _tracks.value.map {
+        downloads.toLocalTrack(it, streamUrl = subsonic?.streamUrl(it.itemId))
+    }
+
+    /**
+     * Hand the speaker over before the local player takes it. Fire-and-forget: if MA
+     * is down or idle there is nothing on it to stop.
+     */
+    private fun stopMaPlayback() {
+        viewModelScope.launch { runCatching { maRepo.stop(playTarget()) } }
     }
 
     override fun onCleared() {

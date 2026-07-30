@@ -358,6 +358,7 @@ private fun Browse(
                 CoverTile(entry) {
                     when (entry.mediaType) {
                         "album" -> onAlbumClick(entry)
+                        "artist" -> onArtistClick(entry)
                         "playlist" -> onPlaylistClick(entry)
                         else -> viewModel.open(entry)
                     }
