@@ -71,6 +71,9 @@ fun NowPlayingOverlay(
 
     var panel by remember { mutableStateOf<Panel?>(null) }
     var options by remember { mutableStateOf(false) }
+    // The output picker. Local state rather than a nav route: switching speaker
+    // should not take the user off the screen showing what's playing.
+    var speakers by remember { mutableStateOf(false) }
     // Lyrics are a *mode* of the player, not an overlay: they take the cover's place.
     var showLyrics by rememberSaveable { mutableStateOf(false) }
 
@@ -110,6 +113,14 @@ fun NowPlayingOverlay(
     // Drag-to-minimize: the overlay tracks the finger's vertical offset and snaps
     // to expanded or collapsed when released. The offset is kept in *pixels* so the
     // drag delta (already px) needs no conversion.
+    //
+    // The live drag offset is plain state, mutated synchronously in the gesture
+    // callback. It used to be an `Animatable` written with `snapTo` from a coroutine
+    // launched per pointer sample — and `Animatable` serialises through a
+    // `MutatorMutex`, so each sample cancelled the one before it and read a value
+    // captured at coroutine-start rather than at event time. Deltas were dropped and
+    // double-counted, which is the jitter under a fast flick. The `Animatable` is now
+    // only used for the release settle, where there really is one animation at a time.
     val dragScope = rememberCoroutineScope()
     val screenHeightPx = with(LocalDensity.current) {
         LocalConfiguration.current.screenHeightDp.dp.toPx()
@@ -117,52 +128,73 @@ fun NowPlayingOverlay(
     val collapseOffset = screenHeightPx * 0.82f   // how far down before it's "minimized"
     // How far up the cover has to travel before the queue is what you meant.
     val queueRevealPx = screenHeightPx * 0.06f
-    val dragOffset = remember { Animatable(0f) }
+    var dragPx by remember { mutableFloatStateOf(0f) }
+    val settle = remember { Animatable(0f) }
+    var settling by remember { mutableStateOf(false) }
+    val offsetPx = if (settling) settle.value else dragPx
+
+    // Read through a snapshot so the gesture detector doesn't have to be re-created
+    // when a sheet opens — tearing it down mid-gesture loses the release event.
+    val gestureBlocked by rememberUpdatedState(!expanded || panel != null || options || speakers)
 
     LaunchedEffect(expanded) {
-        if (expanded) dragOffset.animateTo(0f, tween(300))
+        if (expanded) { dragPx = 0f; settling = false }
+    }
+
+    suspend fun settleTo(target: Float, durationMs: Int) {
+        settle.snapTo(dragPx)
+        settling = true
+        settle.animateTo(target, tween(durationMs))
+        dragPx = target
+        settling = false
     }
 
     CompositionLocalProvider(LocalAccent provides accent, LocalPalette provides palette) {
         Box(
             Modifier
                 .fillMaxSize()
-                .offset { IntOffset(0, dragOffset.value.roundToInt()) }
+                .offset { IntOffset(0, offsetPx.roundToInt()) }
                 // The cover answers vertical swipes both ways: down minimizes it,
                 // up brings the queue over it. While a sheet is open the sheet owns
                 // the gesture instead — dragging the player out from under an open
                 // queue is never what the swipe meant.
-                .pointerInput(expanded, panel, options) {
-                    if (!expanded || panel != null || options) return@pointerInput
+                .pointerInput(Unit) {
                     detectVerticalDragGestures(
+                        onDragStart = { if (!gestureBlocked) dragPx = 0f },
                         onDragEnd = {
-                            // Animate first, collapse after — otherwise the parent drops
-                            // this composable mid-slide and the gesture ends with a jump.
-                            // Lower threshold (0.25) makes it easier to minimize.
+                            if (gestureBlocked) return@detectVerticalDragGestures
                             dragScope.launch {
                                 when {
-                                    dragOffset.value > collapseOffset * 0.25f -> {
-                                        dragOffset.animateTo(collapseOffset, tween(250))
+                                    // Animate first, collapse after — otherwise the parent
+                                    // drops this composable mid-slide and the gesture ends
+                                    // with a jump. Lower threshold (0.25) makes it easier
+                                    // to minimize.
+                                    dragPx > collapseOffset * 0.25f -> {
+                                        settleTo(collapseOffset, 250)
                                         onCollapse()
                                     }
-                                    dragOffset.value < -queueRevealPx -> {
-                                        dragOffset.animateTo(0f, tween(200))
+                                    dragPx < -queueRevealPx -> {
+                                        // Show the queue *first*, then drop the cover back.
+                                        // Awaiting a 200ms slide down before setting the
+                                        // panel is what read as "snaps up, bounces back,
+                                        // then the queue appears". The sheet is what should
+                                        // animate in; the cover just returns to rest.
                                         panel = Panel.QUEUE
+                                        dragPx = 0f
+                                        settling = false
                                     }
-                                    else -> dragOffset.animateTo(0f, tween(250))
+                                    else -> settleTo(0f, 250)
                                 }
                             }
                         },
-                        onDragCancel = { dragScope.launch { dragOffset.animateTo(0f, tween(200)) } },
+                        onDragCancel = { dragScope.launch { settleTo(0f, 200) } },
                         onVerticalDrag = { change, dragAmount ->
+                            if (gestureBlocked) return@detectVerticalDragGestures
                             change.consume()
-                            dragScope.launch {
-                                // Down is a real slide towards the mini bar; up only
-                                // lifts a little, as a hint that something is under it.
-                                dragOffset.snapTo(
-                                    (dragOffset.value + dragAmount).coerceAtLeast(-queueRevealPx * 1.6f)
-                                )
-                            }
+                            settling = false
+                            // Down is a real slide towards the mini bar; up only
+                            // lifts a little, as a hint that something is under it.
+                            dragPx = (dragPx + dragAmount).coerceAtLeast(-queueRevealPx * 1.6f)
                         },
                     )
                 }
@@ -203,7 +235,7 @@ fun NowPlayingOverlay(
                     playerName = st.playerName,
                     isSelf = st.isSelf,
                     groupSize = st.groupSize,
-                    onOpenSpeakers = onOpenSpeakers,
+                    onOpenSpeakers = { speakers = true },
                 )
 
                 Spacer(Modifier.height(4.dp))
@@ -355,15 +387,15 @@ fun NowPlayingOverlay(
             }
 
             // Panels + options sheets — same as the tab version.
-            if (panel != null || options) {
-                BackHandler { panel = null; options = false }
+            if (panel != null || options || speakers) {
+                BackHandler { panel = null; options = false; speakers = false }
                 Box(
                     Modifier
                         .matchParentSize()
                         .clickable(
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null,
-                        ) { panel = null; options = false }
+                        ) { panel = null; options = false; speakers = false }
                 )
             }
             if (panel != null) {
@@ -371,6 +403,12 @@ fun NowPlayingOverlay(
             }
             if (options) {
                 PlayerOptionsSheet(onClose = { options = false }, viewModel = viewModel)
+            }
+            if (speakers) {
+                SpeakerPickerSheet(
+                    onClose = { speakers = false },
+                    onManageGroups = { speakers = false; onOpenSpeakers() },
+                )
             }
         }
     }

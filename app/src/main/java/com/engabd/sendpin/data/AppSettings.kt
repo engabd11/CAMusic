@@ -32,6 +32,8 @@ class AppSettings(private val context: Context) {
         private val PREFER_HI_RES = booleanPreferencesKey("prefer_hi_res")      // advertise 88.2/96 kHz too
         private val PREFER_FLAC = booleanPreferencesKey("prefer_flac")          // FLAC ahead of uncompressed PCM
         private val PREFER_ORIGINAL = booleanPreferencesKey("prefer_original")  // bypass MA when it would convert
+        private val SENDSPIN_CODEC = stringPreferencesKey("sendspin_codec")     // "auto" | "flac" | "pcm" | "opus"
+        private val NAV_STREAM_FORMAT = stringPreferencesKey("nav_stream_format") // Subsonic `format=` ("raw" = original)
     }
 
     val backend: Flow<String> = context.dataStore.data.map { it[BACKEND] ?: "ma" }
@@ -49,6 +51,22 @@ class AppSettings(private val context: Context) {
     val preferHiRes: Flow<Boolean> = context.dataStore.data.map { it[PREFER_HI_RES] ?: true }
     val preferFlac: Flow<Boolean> = context.dataStore.data.map { it[PREFER_FLAC] ?: true }
     val preferOriginal: Flow<Boolean> = context.dataStore.data.map { it[PREFER_ORIGINAL] ?: false }
+
+    /**
+     * Which codec this phone advertises to Music Assistant. "auto" offers all three in
+     * preference order and lets the server pick; naming one narrows the advertised
+     * list to that codec alone, which is the only way to *make* the server use it —
+     * the server may only stream a format the client listed. Same lever the official
+     * MA app pulls with its codec preference.
+     */
+    val sendspinCodec: Flow<String> = context.dataStore.data.map { it[SENDSPIN_CODEC] ?: "auto" }
+
+    /**
+     * What Navidrome should send for a direct stream. "raw" is the stored file
+     * untouched; anything else asks the server to transcode, which is worth it on a
+     * slow connection and wasteful on a fast one.
+     */
+    val navStreamFormat: Flow<String> = context.dataStore.data.map { it[NAV_STREAM_FORMAT] ?: "raw" }
 
     suspend fun setBackend(value: String) {
         context.dataStore.edit { it[BACKEND] = value }
@@ -97,5 +115,15 @@ class AppSettings(private val context: Context) {
 
     suspend fun setPreferOriginal(value: Boolean) {
         context.dataStore.edit { it[PREFER_ORIGINAL] = value }
+    }
+
+    /** Takes effect on the next connect — the format list is sent in the hello. */
+    suspend fun setSendspinCodec(value: String) {
+        context.dataStore.edit { it[SENDSPIN_CODEC] = value }
+    }
+
+    /** Applies to the next track: the format is a query parameter on the stream URL. */
+    suspend fun setNavStreamFormat(value: String) {
+        context.dataStore.edit { it[NAV_STREAM_FORMAT] = value }
     }
 }

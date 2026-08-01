@@ -27,6 +27,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -56,6 +57,16 @@ class SendspinService : Service() {
         const val ACTION_PREV = "com.engabd.sendpin.PREV"
         const val ACTION_START_MEDIA = "com.engabd.sendpin.START_MEDIA"
         const val ACTION_STOP_MEDIA = "com.engabd.sendpin.STOP_MEDIA"
+        const val ACTION_IDLE_MEDIA = "com.engabd.sendpin.IDLE_MEDIA"
+
+        /**
+         * How long the notification survives with nothing playing.
+         *
+         * The Sendspin server ends the stream between *every* track, so a skip looks
+         * exactly like the end of listening for a second or two. Waiting a minute
+         * before retiring the notification is what tells them apart.
+         */
+        const val IDLE_GRACE_MS = 60_000L
 
         /** Start the media notification (called when a stream starts). */
         fun startMedia(context: android.content.Context) {
@@ -67,7 +78,22 @@ class SendspinService : Service() {
             }
         }
 
-        /** Stop the media notification (called when a stream ends). */
+        /**
+         * Nothing is streaming — start the grace period.
+         *
+         * Deliberately an intent to the running service rather than `stopService`: a
+         * `stopService` from outside cannot be taken back, so the countdown has to
+         * live inside the service where the next `stream/start` can cancel it. It also
+         * keeps the service up across the gap, which avoids rebuilding the session and
+         * re-fetching the artwork — and avoids restarting a foreground service from
+         * the background, which Android 12+ restricts.
+         */
+        fun idleMedia(context: android.content.Context) {
+            val intent = Intent(context, SendspinService::class.java).apply { action = ACTION_IDLE_MEDIA }
+            runCatching { context.startService(intent) }
+        }
+
+        /** Retire the media notification now (an explicit stop, or a disconnect). */
         fun stopMedia(context: android.content.Context) {
             context.stopService(Intent(context, SendspinService::class.java))
         }
@@ -78,6 +104,8 @@ class SendspinService : Service() {
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var observeJob: Job? = null
     private var artworkJob: Job? = null
+    /** The countdown started by [armIdleTimeout]; non-null while the grace period runs. */
+    private var idleJob: Job? = null
     private val pb get() = SendpinApp.instance.playback
 
     private var mediaSession: MediaSessionCompat? = null
@@ -98,11 +126,13 @@ class SendspinService : Service() {
                 stopForegroundAndSelf()
                 return START_NOT_STICKY
             }
+            ACTION_IDLE_MEDIA -> armIdleTimeout()
             ACTION_PLAY_PAUSE -> pb.onPlayPause()
             ACTION_NEXT -> pb.onMediaNext()
             ACTION_PREV -> pb.onMediaPrevious()
             ACTION_CONNECT, null, ACTION_START_MEDIA -> {
                 // Promote to foreground and start observing.
+                cancelIdleTimeout()
                 startForegroundNow()
                 observe()
             }
@@ -111,8 +141,30 @@ class SendspinService : Service() {
         return START_STICKY
     }
 
+    /**
+     * Begin the countdown to retiring the notification, unless one is already running.
+     *
+     * The notification is detached from the foreground rather than removed, so it stays
+     * on screen (dismissible, showing the paused track) for the whole grace period —
+     * which is the point. [cancelIdleTimeout] on the next stream puts it back.
+     */
+    private fun armIdleTimeout() {
+        if (!mediaActive || idleJob != null) return
+        idleJob = scope.launch {
+            delay(IDLE_GRACE_MS)
+            idleJob = null
+            stopForegroundAndSelf()
+        }
+    }
+
+    private fun cancelIdleTimeout() {
+        idleJob?.cancel()
+        idleJob = null
+    }
+
     private fun stopForegroundAndSelf() {
         mediaActive = false
+        cancelIdleTimeout()
         observeJob?.cancel()
         artworkJob?.cancel()
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -163,16 +215,15 @@ class SendspinService : Service() {
                 }
             }
         }
-        // When playback stops entirely, the media notification is no longer needed.
-        // The connection service keeps the WebSocket alive.
+        // When playback stops entirely the media notification is eventually no longer
+        // needed — but "stopped" and "between tracks" look identical from here, and
+        // the title goes blank in both. So this arms the grace period rather than
+        // tearing down, and playback resuming cancels it. The connection service keeps
+        // the WebSocket alive either way.
         scope.launch {
             pb.isPlaying.collect { playing ->
-                if (!playing && !mediaActive) {
-                    // Already not showing — nothing to do.
-                } else if (!playing && mediaActive && pb.trackTitle.value.isBlank()) {
-                    // Nothing playing at all — retire the media notification.
-                    stopForegroundAndSelf()
-                }
+                if (!mediaActive) return@collect
+                if (playing) cancelIdleTimeout() else armIdleTimeout()
             }
         }
     }

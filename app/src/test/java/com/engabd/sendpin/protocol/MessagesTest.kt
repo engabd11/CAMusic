@@ -32,6 +32,19 @@ class MessagesTest {
         assertTrue("\"sample_rate\":48000" in s)
         assertTrue("\"bit_depth\":16" in s)
         assertTrue("\"product_name\":\"Pixel\"" in s)
+        // The player's *name* rides in `payload.name`. It was never asserted, and it
+        // is the field Music Assistant registers a new player under.
+        assertTrue("\"name\":\"Phone\"" in s, s)
+    }
+
+    @Test
+    fun `device info carries the client, not the hardware`() {
+        // Music Assistant composes a new player's name from what the client announces,
+        // so sending Build.MODEL here is what made every rename read back as the
+        // phone's model. Both reference clients send a constant; so do we.
+        val info = com.engabd.sendpin.discovery.PlayerIdentity.getDeviceInfo()
+        assertEquals("Sendpin", info.productName)
+        assertEquals("Sendpin", info.manufacturer)
     }
 
     @Test

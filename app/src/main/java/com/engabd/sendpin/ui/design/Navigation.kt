@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -24,13 +25,34 @@ import com.engabd.sendpin.ui.theme.*
 val NavBarHeight = 62.dp
 
 /**
- * Bottom padding a screen needs so its last row clears the floating tab bar.
+ * How much room the mini player bar takes above the tab bar: a 40.dp thumbnail with
+ * 8.dp of padding either side, plus the 4.dp its wrapper adds top and bottom.
+ *
+ * Keep in step with `MiniPlayerBar` and the `Box` that wraps it in `App.kt`.
+ */
+val MiniBarHeight = 64.dp
+
+/**
+ * The mini player's height when it is on screen, 0 otherwise.
+ *
+ * Provided by `App.kt`, which is the only place that knows whether the overlay layout
+ * is in use. Screens don't read it directly — [navBarInset] folds it in, so a screen
+ * that already reserves space for the tab bar reserves space for the mini bar too.
+ */
+val LocalMiniBarInset = compositionLocalOf { 0.dp }
+
+/**
+ * Bottom padding a screen needs so its last row clears the floating bottom chrome.
  * The bar overlays content rather than displacing it, so the album wash runs
  * behind it all the way to the bottom of the panel.
+ *
+ * In the overlay layout the mini player sits above the tab bar and is part of that
+ * chrome; leaving it out is what hid the last row of every scrollable screen.
  */
 @Composable
 fun navBarInset(): Dp =
-    NavBarHeight + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    NavBarHeight + LocalMiniBarInset.current +
+        WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
 
 data class NavTab(val route: String, val label: String, val icon: ImageVector)
 

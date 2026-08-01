@@ -11,9 +11,12 @@ import com.engabd.sendpin.download.DownloadManager
 import com.engabd.sendpin.ma.MaApiClient
 import com.engabd.sendpin.service.LocalPlaybackService
 import com.engabd.sendpin.service.Playback
+import com.engabd.sendpin.service.SendspinService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import okhttp3.HttpUrl
 import okhttp3.Interceptor
@@ -54,10 +57,24 @@ class SendpinApp : Application(), ImageLoaderFactory {
         instance = this
         // The media notification follows the local player's session rather than being
         // started by whichever screen happened to press play.
+        //
+        // Ending the session holds the notification for a grace period first: a queue
+        // rolling between tracks briefly clears it, and retiring the notification on
+        // that made it blink on every skip. A real stop still costs the wait, which is
+        // the right trade — a notification that lingers a minute is a much smaller
+        // annoyance than one that flickers on every track.
         appScope.launch {
+            var retire: Job? = null
             localPlayer.active.collect { active ->
-                if (active) LocalPlaybackService.start(this@SendpinApp)
-                else LocalPlaybackService.stop(this@SendpinApp)
+                retire?.cancel(); retire = null
+                if (active) {
+                    LocalPlaybackService.start(this@SendpinApp)
+                } else {
+                    retire = appScope.launch {
+                        delay(SendspinService.IDLE_GRACE_MS)
+                        LocalPlaybackService.stop(this@SendpinApp)
+                    }
+                }
             }
         }
     }

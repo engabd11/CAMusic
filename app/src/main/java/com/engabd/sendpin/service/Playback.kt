@@ -251,7 +251,11 @@ class Playback(private val app: Context) {
                     }
                     SendspinClient.StreamEvent.End -> {
                         eng.stop(); _isPlaying.value = false
-                        SendspinService.stopMedia(app)
+                        // Not a stop: the server ends the stream between every track,
+                        // so tearing the notification down here made it blink on every
+                        // skip. The service holds it for a minute and cancels that on
+                        // the next stream/start.
+                        SendspinService.idleMedia(app)
                     }
                     SendspinClient.StreamEvent.Clear -> eng.flush()
                 }
@@ -262,11 +266,56 @@ class Playback(private val app: Context) {
         // stream something we listed. Built from the user's audio preferences, and sent
         // once in the hello — which is why changing those settings needs a reconnect.
         scope.launch {
+            val codec = settings.sendspinCodec.first()
             val formats = FormatNegotiator.supportedFormats(
                 preferHiRes = settings.preferHiRes.first(),
                 preferFlac = settings.preferFlac.first(),
+                codec = codec.takeIf { it != "auto" },
             )
             c.connect(url, playerId, name, deviceInfo, formats, token)
+            // The hello only *registers* a name; a player Music Assistant already
+            // knows keeps whatever it was first registered under until its config is
+            // changed. Push both the name and the format preference over the MA API
+            // once the socket is up, so a rename sticks and MA's own per-player
+            // setting agrees with what we just advertised.
+            syncPlayerConfig(name, codec)
+        }
+    }
+
+    /**
+     * Tell Music Assistant what this player is called and what it should be sent.
+     *
+     * Best-effort and deliberately quiet: an older server without these config keys
+     * ignores the save, and there is nothing the user could do about a failure here
+     * that they haven't already done by setting the value.
+     */
+    private suspend fun syncPlayerConfig(name: String, codec: String) {
+        val base = settings.maBaseUrl.first()
+        if (base.isBlank()) return
+        val api = MaApiClient()
+        try {
+            api.connect(
+                base,
+                token = null,
+                username = settings.maUsername.first().ifBlank { null },
+                password = settings.maPassword.first().ifBlank { null },
+            )
+            val ready = withTimeoutOrNull(12_000) {
+                api.state.first { it == MaApiClient.State.CONNECTED || it == MaApiClient.State.ERROR }
+            }
+            if (ready != MaApiClient.State.CONNECTED) return
+            val repo = MaRepository(api)
+            // Give MA a moment to register the player the hello just introduced;
+            // saving config for a player it hasn't seen yet is a no-op.
+            delay(1_500)
+            runCatching { repo.renamePlayer(playerId, name) }
+            runCatching {
+                repo.setPreferredSendspinFormat(playerId, if (codec == "auto") "automatic" else codec)
+            }
+        } catch (_: Exception) {
+            // Nothing actionable — the name still shows correctly in this app.
+        } finally {
+            api.disconnect()
         }
     }
 
@@ -308,10 +357,23 @@ class Playback(private val app: Context) {
      * the only place it's announced — a rename that lands after the socket is up is a
      * rename the server never hears about.
      */
-    fun enablePlayer(name: String = "") = scope.launch {
+    fun enablePlayer(name: String = "", codec: String = "") = scope.launch {
         if (name.isNotBlank()) settings.setPlayerName(name)
+        if (codec.isNotBlank()) settings.setSendspinCodec(codec)
         val base = settings.maBaseUrl.first()
         if (base.isNotBlank()) connectToServer(sendspinUrlFrom(base))
+    }
+
+    /**
+     * Rename a connected player without dropping the socket.
+     *
+     * The hello can't be re-sent on a live connection, but MA's player config is what
+     * actually decides the displayed name, so a rename is just a config write.
+     */
+    fun renamePlayer(name: String) = scope.launch {
+        if (name.isBlank()) return@launch
+        settings.setPlayerName(name)
+        syncPlayerConfig(name, settings.sendspinCodec.first())
     }
 
     fun disablePlayer() = disconnect()

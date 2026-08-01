@@ -50,6 +50,28 @@ class SubsonicUrlTest {
     }
 
     @Test
+    fun `the configured format is what the stream url asks for`() {
+        val c = client("192.168.0.10:4533")
+        c.streamFormat = "flac"
+        val flac = c.streamUrl("tr-42")
+        assertTrue("format=flac" in flac, flac)
+        // Lossless output: a bitrate cap would mean nothing.
+        assertFalse("maxBitRate" in flac, "lossless needs no bitrate cap: $flac")
+
+        c.streamFormat = "mp3-320"
+        val mp3 = c.streamUrl("tr-42")
+        assertTrue("format=mp3" in mp3, mp3)
+        assertTrue("maxBitRate=320" in mp3, mp3)
+    }
+
+    @Test
+    fun `an explicit format argument overrides the configured one`() {
+        val c = client("192.168.0.10:4533")
+        c.streamFormat = "mp3-192"
+        assertTrue("format=raw" in c.streamUrl("tr-42", format = "raw"))
+    }
+
+    @Test
     fun `each call gets a fresh salt`() {
         val c = client("192.168.0.10:4533")
         fun salt(u: String) = Regex("[?&]s=([0-9a-f]{8})").find(u)?.groupValues?.get(1)

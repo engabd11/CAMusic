@@ -124,6 +124,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             _booted.value = true
         }
         viewModelScope.launch { settings.targetPlayer.collect { _targetPlayer.value = it } }
+        // This client outlives any one screen, so a format change made in Settings
+        // has to reach it rather than waiting for a reconnect.
+        viewModelScope.launch { settings.navStreamFormat.collect { subsonic?.streamFormat = it } }
         // The backend belongs to Settings, so follow it rather than owning it.
         // [setBackend] no-ops on an unchanged value, so this doesn't feed back.
         viewModelScope.launch {
@@ -259,6 +262,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             _connecting.value = true
             val sc = SubsonicClient(url, _navUser.value, _navPass.value); subsonic = sc
             viewModelScope.launch {
+                sc.streamFormat = settings.navStreamFormat.first()
                 val err = sc.pingError()
                 _connecting.value = false
                 if (err == null) {
@@ -482,28 +486,45 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         val url = settings.navUrl.first().trim()
         if (url.isBlank()) return null
         return SubsonicClient(url, settings.navUsername.first(), settings.navPassword.first())
-            .also { subsonic = it }
+            .also { it.streamFormat = settings.navStreamFormat.first(); subsonic = it }
     }
 
-    fun playAll(items: List<MaItem>) {
+    /**
+     * [option] follows Music Assistant's queue options: `replace` (the default — play
+     * these instead), `next`, or `add`. The enqueue options deliberately do *not* stop
+     * the other player or reset the queue; adding to what's playing is the whole point.
+     */
+    fun playAll(items: List<MaItem>, option: String = "replace") {
         val tracks = items.filter { it.playable || it.provider == DOWNLOAD }
         if (tracks.isEmpty()) return
+        val replacing = option == "replace"
         viewModelScope.launch {
             try {
                 if (_backend.value == Backend.MA && tracks.none { it.provider == DOWNLOAD }) {
-                    localPlayer.stop()
-                    maRepo.playMedia(playTarget(), tracks.mapNotNull { it.uri }, "replace")
-                    _toast.tryEmit("Queued ${tracks.size} tracks")
+                    if (replacing) localPlayer.stop()
+                    maRepo.playMedia(playTarget(), tracks.mapNotNull { it.uri }, option)
+                    _toast.tryEmit(queuedMessage(option, tracks.size))
                 } else {
                     // Local playback — stop MA first so both don't play at once.
-                    stopMaPlayback()
-                    localPlayer.setQueue(tracks.map { localTrack(it) }, 0)
-                    _toast.tryEmit("Playing ${tracks.size} tracks")
+                    if (replacing) stopMaPlayback()
+                    val local = tracks.map { localTrack(it) }
+                    when (option) {
+                        "next" -> localPlayer.playNext(local)
+                        "add" -> localPlayer.addToQueue(local)
+                        else -> localPlayer.setQueue(local, 0)
+                    }
+                    _toast.tryEmit(queuedMessage(option, tracks.size))
                 }
             } catch (e: Exception) {
                 _toast.tryEmit(e.message ?: "Couldn't play")
             }
         }
+    }
+
+    private fun queuedMessage(option: String, n: Int) = when (option) {
+        "next" -> if (n == 1) "Playing next" else "$n tracks playing next"
+        "add" -> if (n == 1) "Added to queue" else "Added $n tracks to queue"
+        else -> "Playing $n tracks"
     }
 
     // --- downloads ---------------------------------------------------------
@@ -661,10 +682,20 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             _depth.value = stack.size
             return
         }
-        pushNode(title) {
-            if (_backend.value == Backend.MA) when (id) {
-                "artists" -> maRepo.artists(); "albums" -> maRepo.albums()
-                "tracks" -> maRepo.tracks(); "playlists" -> maRepo.playlists(); else -> emptyList()
+        pushNode(title) { onPartial ->
+            if (_backend.value == Backend.MA) {
+                // Paged, and published as the pages land: a large library used to be a
+                // single 5000-item request that simply timed out, showing an error
+                // instead of a library. Now the first 500 are on screen in a moment and
+                // the rest fill in behind them.
+                val page: suspend (Int, Int) -> List<MaItem> = when (id) {
+                    "artists" -> { o, l -> maRepo.artists(o, l) }
+                    "albums" -> { o, l -> maRepo.albums(o, l) }
+                    "tracks" -> { o, l -> maRepo.tracks(o, l) }
+                    "playlists" -> { o, l -> maRepo.playlists(o, l) }
+                    else -> return@pushNode emptyList()
+                }
+                maRepo.allLibraryItems(page, onPage = onPartial)
             } else {
                 val sc = subsonic ?: throw IllegalStateException("Navidrome isn't connected")
                 when (id) {
@@ -681,16 +712,40 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun pushNode(title: String, loader: suspend () -> List<MaItem>) {
+    /**
+     * Open a node, showing partial results as they arrive.
+     *
+     * [loader] is handed an `onPartial` callback it may call with each running batch;
+     * a loader that reads in one shot simply ignores it. The node is pushed on the
+     * first batch so the screen changes immediately, and updated in place afterwards —
+     * a paged library therefore appears at once and fills in, rather than showing a
+     * spinner until every page is home.
+     */
+    private fun pushNode(
+        title: String,
+        loader: suspend ((List<MaItem>) -> Unit) -> List<MaItem>,
+    ) {
         viewModelScope.launch {
             _loading.value = true; _error.value = null
-            try {
-                val items = loader()
+            var pushed = false
+            fun publish(items: List<MaItem>) {
                 rememberFavorites(items)
-                stack.addLast(_node.value)
+                if (!pushed) {
+                    stack.addLast(_node.value)
+                    pushed = true
+                    _depth.value = stack.size
+                }
                 _node.value = Node(title, items)
-                _depth.value = stack.size
-            } catch (e: Exception) { _error.value = e.message ?: "Failed to load" }
+            }
+            try {
+                val items = loader { partial -> if (partial.isNotEmpty()) publish(partial) }
+                publish(items)
+            } catch (e: Exception) {
+                // A partial result is better than an error page: keep what did arrive
+                // and say what went wrong alongside it.
+                _error.value = e.message ?: "Failed to load"
+                if (!pushed) publish(emptyList())
+            }
             _loading.value = false
         }
     }

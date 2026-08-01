@@ -114,6 +114,21 @@ data class MaQueue(
     val currentQueueItemId: String? = null,
     val dontStopTheMusic: Boolean = false,
     val playbackSpeed: Float = 1f,
+    /** The queue's own playhead, which the player object doesn't always agree with. */
+    val elapsedMs: Long? = null,
+    /**
+     * Unix epoch **seconds** when the server last recomputed [elapsedMs].
+     *
+     * The staleness gate. For a remote speaker MA reports whatever it last scraped
+     * from that provider, so `elapsed_time` on its own says nothing about how old it
+     * is — two polls a second apart can carry the same reading. Comparing this stamp
+     * is what tells a fresh reading from a repeat, and lets an out-of-order response
+     * be dropped instead of dragging the bar back to a finished track.
+     *
+     * Null on a server that doesn't send it; callers must treat null as "can't tell"
+     * rather than "stale", or a missing field would silently stop all updates.
+     */
+    val elapsedTimeLastUpdated: Double? = null,
     /**
      * The provider actually streaming the current item, off
      * `current_item.streamdetails.provider`. This is the honest answer to "where is
@@ -312,6 +327,8 @@ object MaParse {
                 currentQueueItemId = current?.get("queue_item_id")?.jsonPrimitive?.contentOrNull,
                 dontStopTheMusic = o["dont_stop_the_music_enabled"]?.jsonPrimitive?.booleanOrNull ?: false,
                 playbackSpeed = o["playback_speed"]?.jsonPrimitive?.floatOrNull ?: 1f,
+                elapsedMs = o["elapsed_time"]?.jsonPrimitive?.doubleOrNull?.let { (it * 1000).toLong() },
+                elapsedTimeLastUpdated = o["elapsed_time_last_updated"]?.jsonPrimitive?.doubleOrNull,
                 streamProvider = (current?.get("streamdetails") as? JsonObject)
                     ?.get("provider")?.jsonPrimitive?.contentOrNull,
             )

@@ -18,6 +18,7 @@ import com.engabd.sendpin.ma.MaQueue
 import com.engabd.sendpin.ma.MaQueueItem
 import com.engabd.sendpin.ma.MaRepository
 import com.engabd.sendpin.ma.MaSimilarTrack
+import com.engabd.sendpin.subsonic.SubsonicClient
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
@@ -107,6 +108,29 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     /** What this phone can put out on its own, for locally-decoded playback. */
     private val deviceQuality = FormatNegotiator.deviceOutputQuality()
 
+    /**
+     * The Navidrome transcode currently asked for, or null when streaming the stored
+     * file. Held as plain state rather than read per frame — it changes rarely and the
+     * badge is rebuilt on every poll.
+     */
+    @Volatile private var navFormat: String? = null
+
+    /**
+     * The format a Navidrome transcode token describes, for the Source row. Rates and
+     * depths are the codecs' own defaults — the token only pins codec and bitrate, and
+     * claiming a sample rate the server never promised would be worse than omitting it.
+     */
+    private fun transcodeQuality(token: String): StreamQuality? {
+        val codec = token.substringBefore('-')
+        val kbps = token.substringAfter('-', "").toIntOrNull() ?: 0
+        return when (codec) {
+            "flac" -> StreamQuality("FLAC", 0, 16)
+            "mp3" -> StreamQuality("MP3", 0, 0, kbps)
+            "opus" -> StreamQuality("OPUS", 48_000, 0, kbps)
+            else -> null
+        }
+    }
+
     /** Everything the local player exposes, folded into one value to combine with. */
     private data class LocalSnap(
         val active: Boolean = false,
@@ -144,24 +168,25 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     private val _lastTrack = MutableStateFlow<MaNowPlaying?>(null)
 
     // ── Server-anchored position engine ──────────────────────────────────────
-    // Instead of polling every 2s and snapping the bar to the server value, the
-    // position is driven by a local 500ms ticker that forward-projects from the
-    // last server anchor (positionBaseTime @ positionBaseTimestamp). The server
-    // only needs to nudge the anchor periodically — the bar is always smooth.
-    // Mirrors the approach used by massdroid_native + MA's own web UI.
-    @Volatile private var posBaseTime = 0L           // server-reported elapsed_ms
-    @Volatile private var posBaseTimestamp = 0L       // local wall-clock when captured
-    @Volatile private var posIsPlaying = false
-    @Volatile private var posDuration = 0L
-    @Volatile private var posSpeed = 1f               // playback speed (1.0 = normal)
-    @Volatile private var lastTrackId: String? = null  // detect track changes for immediate reset
+    // The bar is not snapped to whatever the last poll said; it is projected
+    // forward from an anchor by [PlayerPositionTracker], a port of the official
+    // Music Assistant app's tracker. See that file for why the shape matters —
+    // in short, a seek or a skip freezes the anchor until audio is confirmed, and
+    // server readings are only accepted when they are demonstrably fresher.
+    private val positions = PlayerPositionTracker()
+
+    /** Which queue the tracker is keyed on: the group leader, since members share it. */
+    private fun positionKey(): String = streamQueueId()
+
+    /** Identity of the current track, for detecting a change between polls. */
+    @Volatile private var lastTrackId: String? = null
 
     private val _positionMs = MutableStateFlow(0L)
 
     /**
      * Where the scrubber sits. The local player knows its own position exactly, so
      * when it is the one playing there is nothing to project forward from a server
-     * anchor — the anchored engine below only applies to the MA-side player.
+     * anchor — the anchored engine only applies to the MA-side player.
      */
     val positionMs: StateFlow<Long> =
         combine(localSnap, _positionMs, local.positionMs) { l, server, here ->
@@ -170,55 +195,29 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
 
     private var tickerJob: Job? = null
 
-    private fun startPositionTicker() {
+    /**
+     * Republish the tracker's projection into [_positionMs] for [positionKey].
+     *
+     * Restarted whenever the key changes; the tracker's own [PlayerPositionTracker.observe]
+     * is cold and stops ticking on its own when the queue is paused or frozen.
+     */
+    private fun followPosition(queueId: String) {
         tickerJob?.cancel()
         tickerJob = viewModelScope.launch {
-            while (isActive) {
-                delay(500)
-                _positionMs.value = interpolatedPosition()
+            var lastEndPoll = 0L
+            positions.observe(queueId).collect { ms ->
+                _positionMs.value = ms
+                // The projection has run out the track but no fresh anchor arrived —
+                // the server has almost certainly moved on. Ask, rather than sitting
+                // pinned at the duration until the next 5s poll. Rate-limited: the
+                // ticker keeps emitting while pinned, and one poll per second is
+                // plenty to catch a boundary.
+                if (positions.isAtEnd(queueId)) {
+                    val now = android.os.SystemClock.elapsedRealtime()
+                    if (now - lastEndPoll > 1_000L) { lastEndPoll = now; refresh() }
+                }
             }
         }
-    }
-
-    private fun stopPositionTicker() {
-        tickerJob?.cancel(); tickerJob = null
-    }
-
-    private fun interpolatedPosition(): Long {
-        if (!posIsPlaying) return posBaseTime.coerceIn(0L, posDuration)
-        val deltaMs = ((System.currentTimeMillis() - posBaseTimestamp) * posSpeed).toLong()
-        return (posBaseTime + deltaMs).coerceIn(0L, posDuration)
-    }
-
-    /**
-     * Re-anchor the position engine from a server poll or event.
-     * If the track has changed, position is reset to 0 immediately — before
-     * the new queue state even publishes — so the UI never flashes a stale
-     * "9:54 / 4:11" frame.
-     */
-    private fun reanchorPosition(
-        serverElapsedMs: Long,
-        isPlaying: Boolean,
-        duration: Long,
-        speed: Float,
-        trackId: String?,
-    ) {
-        val trackChanged = trackId != null && trackId != lastTrackId
-        if (trackChanged) {
-            posBaseTime = 0L
-            _positionMs.value = 0L
-            lastTrackId = trackId
-        } else {
-            posBaseTime = serverElapsedMs
-        }
-        posBaseTimestamp = System.currentTimeMillis()
-        val wasPlaying = posIsPlaying
-        posIsPlaying = isPlaying
-        posDuration = duration
-        posSpeed = speed
-        if (isPlaying && (trackChanged || !wasPlaying)) startPositionTicker()
-        else if (!isPlaying) stopPositionTicker()
-        if (!trackChanged) _positionMs.value = interpolatedPosition()
     }
 
     private fun targetId() = _target.value.ifBlank { myPlayerId }
@@ -265,15 +264,20 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                 live != null -> deviceQuality
                 else -> null
             },
-            // `sourceQuality` is Source: what is arriving, before this device decodes
-            // it. The queue's stream details are exactly that — the format MA opened
-            // the file in and is sending — with the library file's own
-            // `provider_mappings.audio_format` as the fallback for a queue that hasn't
-            // reported details yet. (audio_format alone used to be the only source,
-            // and it is null for most providers, which is why the row was blank.)
-            sourceQuality = queueQuality ?: queue?.currentItem?.audioFormat?.let {
+            // `sourceQuality` is Source: the library file's own format, before anything
+            // touched it.
+            //
+            // The library item's `provider_mappings.audio_format` comes first because it
+            // is the only reading that genuinely describes the *file*; the queue's
+            // stream details describe what MA opened, which is a fallback for a track
+            // whose mappings didn't come through. Reading both off `queueQuality` —
+            // which is what the previous ordering did whenever stream details existed —
+            // handed Playing and Source the same object, and the popup's
+            // "hide Source when it matches Playing" rule then dropped the row on every
+            // MA track. Two independent readings is what makes the row mean something.
+            sourceQuality = queue?.currentItem?.audioFormat?.let {
                 StreamQuality(it.codec, it.sampleRate, it.bitDepth)
-            },
+            } ?: queueQuality,
             // The badge names the player, not the track's provider: anything MA is
             // driving is "MA", however MA got hold of the file. The local-player
             // branch below is the Navidrome/offline case.
@@ -315,10 +319,14 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             idle = t == null,
             blank = t == null,
             // Decoded on this phone, so the phone's own output ceiling is the
-            // honest answer to "what is coming out of the pipe" — and Source is the
-            // file being fed to it, when the library said what it is.
+            // honest answer to "what is coming out of the pipe".
             quality = deviceQuality,
-            sourceQuality = t?.sourceQuality,
+            // Source is what arrives. Normally that is the library file itself, but
+            // when Navidrome has been asked to transcode (Settings → Navidrome
+            // quality) the file's own format is no longer what reaches this phone —
+            // showing it there would claim a fidelity the stream doesn't have.
+            sourceQuality = if (t?.offline == true) t.sourceQuality
+                else navFormat?.let { transcodeQuality(it) } ?: t?.sourceQuality,
             // This phone is playing on its own, which only ever means the Navidrome
             // library (or a downloaded copy of it).
             source = if (t?.offline == true) "Offline" else "Navidrome",
@@ -335,31 +343,146 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, State())
 
-    /** Track-id for [reanchorPosition] — resolved from the queue's current item. */
+    /**
+     * Identity of the queue's current track.
+     *
+     * `queue_item_id` is the real answer, but a server that omits it would make track
+     * changes structurally undetectable — and the old engine's `trackId != null` guard
+     * turned that into "the bar never resets". Title/artist/duration is a coarse but
+     * always-available fallback.
+     */
     private fun currentTrackId(): String? {
-        val id = targetId()
-        val streamId = _players.value.firstOrNull { it.playerId == id }?.syncedTo ?: id
-        val q = _queues.value.firstOrNull { it.queueId == streamId }
-        return q?.currentQueueItemId ?: q?.currentItem?.uri
+        val q = _queues.value.firstOrNull { it.queueId == streamQueueId() }
+        q?.currentQueueItemId?.let { return it }
+        q?.currentItem?.uri?.let { return it }
+        val np = _players.value.firstOrNull { it.playerId == targetId() }?.nowPlaying ?: return null
+        if (np.title.isBlank()) return null
+        return "${np.title}|${np.artist}|${np.durationMs}"
     }
 
-    // Drive the position engine from the combined state. Each poll/event that
-    // changes players/queues flows through [state], which re-anchors the engine.
+    // ── Optimistic freeze bookkeeping ────────────────────────────────────────
+    // A freeze makes the tracker ignore server readings, which is exactly what we
+    // want right after a seek or a skip — and exactly what must not wedge. Every
+    // freeze is therefore paired with a watchdog that force-confirms, so a server
+    // that never catches up costs a stuck second, not a stuck bar.
+    private var freezeWatchdog: Job? = null
+    @Volatile private var pendingSeekMs: Long? = null
+    @Volatile private var pendingSkipFromTrack: String? = null
+
+    private fun freezeForSeek(target: Long) {
+        val key = positionKey()
+        pendingSeekMs = target
+        pendingSkipFromTrack = null
+        positions.setOptimisticSeek(key, target, state.value.durationMs.takeIf { it > 0 })
+        armFreezeWatchdog(key)
+    }
+
+    private fun freezeForTrackChange() {
+        val key = positionKey()
+        pendingSeekMs = null
+        pendingSkipFromTrack = lastTrackId
+        positions.setOptimisticTrackChange(key)
+        armFreezeWatchdog(key)
+    }
+
+    private fun armFreezeWatchdog(key: String) {
+        freezeWatchdog?.cancel()
+        freezeWatchdog = viewModelScope.launch {
+            delay(FREEZE_TIMEOUT_MS)
+            releaseFreeze(key)
+        }
+    }
+
+    private fun releaseFreeze(key: String) {
+        pendingSeekMs = null
+        pendingSkipFromTrack = null
+        freezeWatchdog?.cancel(); freezeWatchdog = null
+        positions.confirmPlaying(key)
+    }
+
+    // Drive the position engine off the raw player/queue state rather than the
+    // derived [state], because the staleness stamp doesn't survive that projection.
     init {
         viewModelScope.launch {
-            state.collect { st ->
+            combine(_players, _queues, _target) { players, queues, _ ->
+                Triple(players, queues, Unit)
+            }.collect { (players, queues, _) ->
                 // The local player reports its own position; projecting a server
                 // anchor forward on top of it would fight it.
                 if (isLocal) return@collect
-                reanchorPosition(
-                    serverElapsedMs = st.positionMs,
-                    isPlaying = st.isPlaying,
-                    duration = st.durationMs,
-                    speed = st.playbackSpeed,
-                    trackId = if (st.hasTrack) currentTrackId() else lastTrackId,
-                )
+                anchorFromServer(players, queues)
             }
         }
+        // Keep the republishing ticker pointed at whichever queue is current.
+        viewModelScope.launch {
+            combine(_players, _target) { _, _ -> streamQueueId() }
+                .distinctUntilChanged()
+                .collect { followPosition(it) }
+        }
+    }
+
+    /** Last `elapsed_time_last_updated` accepted, per queue — the staleness gate. */
+    private val lastStamp = mutableMapOf<String, Double>()
+
+    private fun anchorFromServer(players: List<MaPlayer>, queues: List<MaQueue>) {
+        val id = targetId()
+        val p = players.firstOrNull { it.playerId == id }
+        val key = p?.syncedTo ?: id
+        val q = queues.firstOrNull { it.queueId == key }
+
+        val live = p?.nowPlaying?.takeIf { it.title.isNotBlank() }
+        val isPlaying = live != null && p.isPlaying
+        val duration = live?.durationMs ?: 0L
+        // The queue's own playhead is the better reading — the player object can lag
+        // it — but not every server fills it in.
+        val elapsed = q?.elapsedMs ?: live?.elapsedMs ?: 0L
+
+        val trackId = currentTrackId()
+        val trackChanged = trackId != null && trackId != lastTrackId
+        if (trackId != null) lastTrackId = trackId
+
+        // Release an optimistic freeze once the server corroborates it.
+        if (positions.isFrozen(key)) {
+            val seekTarget = pendingSeekMs
+            val skipFrom = pendingSkipFromTrack
+            val confirmed = when {
+                // A skip is confirmed by the server naming a different track.
+                skipFrom != null -> trackId != null && trackId != skipFrom
+                // A seek is confirmed when the server's clock lands near the target.
+                // Deliberately not gated on isPlaying: a seek while paused stays
+                // paused (see [seekOnServer]) and still has to release.
+                seekTarget != null -> kotlin.math.abs(elapsed - seekTarget) < SEEK_CONFIRM_MS
+                else -> true
+            }
+            if (!confirmed) return
+            releaseFreeze(key)
+        }
+
+        val speed = q?.playbackSpeed ?: 1f
+
+        // A track change is news no matter what the clock says: anchor at zero.
+        if (trackChanged) {
+            lastStamp.remove(key)
+            q?.elapsedTimeLastUpdated?.let { lastStamp[key] = it }
+            positions.setAnchor(key, 0L, isPlaying = isPlaying, durationMs = duration, speed = speed)
+            return
+        }
+
+        // Staleness gate. A repeated `elapsed_time_last_updated` means the server has
+        // not recomputed the playhead — for a remote speaker that is most polls — so
+        // re-anchoring on it would keep re-applying however stale the reading was,
+        // dragging the bar backwards on every poll. Let the projection carry on.
+        val stamp = q?.elapsedTimeLastUpdated
+        val staleReading = stamp != null && lastStamp[key]?.let { stamp <= it } == true
+        if (staleReading) {
+            // The clock is old news, but a play/pause is not — and [setPlaying]
+            // snapshots the projection rather than trusting the stale number.
+            positions.setPlaying(key, isPlaying)
+            return
+        }
+        if (stamp != null) lastStamp[key] = stamp
+
+        positions.setAnchor(key, elapsed, isPlaying = isPlaying, durationMs = duration, speed = speed)
     }
 
     /**
@@ -412,6 +535,9 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             if (url.isNotBlank()) api.connect(url, token = null, username = user.ifBlank { null }, password = pass.ifBlank { null })
         }
         viewModelScope.launch { settings.targetPlayer.collect { _target.value = it } }
+        viewModelScope.launch {
+            settings.navStreamFormat.collect { navFormat = it.takeIf { f -> f != "raw" } }
+        }
         // Remember whatever the selected player last had loaded.
         viewModelScope.launch {
             combine(_players, _target) { players, target ->
@@ -452,20 +578,54 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                 if (api.state.value == MaApiClient.State.CONNECTED) refresh()
             }
         }
-        // Refresh promptly on MA player/queue events — but debounce bursts so
-        // rapid skips (which emit multiple events) only trigger one refresh.
+        // Refresh promptly on MA player/queue events, at a bounded rate.
+        //
+        // Deliberately `sample`, not `debounce`: MA emits `queue_time_updated` about
+        // once a second per active queue and bursts during skips, and debounce only
+        // emits after a gap of silence — a busy server starved it completely, leaving
+        // the 5s poll as the only refresh. Sample fires on a cadence regardless.
         viewModelScope.launch {
             api.events
                 .filter { it["event"]?.toString()?.let { e -> "player" in e || "queue" in e } ?: false }
-                .debounce(150)   // coalesce event bursts from rapid skips/seek
+                .sample(300)
                 .collect { refresh() }
         }
     }
 
+    /** Only one refresh in flight; requests arriving during one collapse into a re-run. */
+    private val refreshing = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val refreshQueued = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * Re-read players and queues.
+     *
+     * Serialised on purpose. Four call sites drive this (connect, the 5s poll, the
+     * event stream, and every transport command), and overlapping responses used to
+     * land out of order — a slow earlier read overwriting a newer one pinned the UI
+     * to the previous track until something forced another poll.
+     *
+     * An empty result is also not accepted while the socket is down: [MaApiClient]
+     * completes pending requests with `null` on a drop, which parses to an empty
+     * list, and adopting that blanks the screen mid-track.
+     */
     private fun refresh() {
+        // Requests that arrive mid-flight are not dropped — they set a flag and the
+        // running pass loops once more, so a poll landing during a transport command's
+        // refresh can't leave the UI a round behind.
+        if (!refreshing.compareAndSet(false, true)) { refreshQueued.set(true); return }
         viewModelScope.launch {
-            try { _players.value = repo.players() } catch (_: Exception) {}
-            try { _queues.value = repo.queues() } catch (_: Exception) {}
+            try {
+                do {
+                    refreshQueued.set(false)
+                    val players = runCatching { repo.players() }.getOrNull()
+                    val queues = runCatching { repo.queues() }.getOrNull()
+                    val connected = api.state.value == MaApiClient.State.CONNECTED
+                    if (players != null && (players.isNotEmpty() || connected)) _players.value = players
+                    if (queues != null && (queues.isNotEmpty() || connected)) _queues.value = queues
+                } while (refreshQueued.get())
+            } finally {
+                refreshing.set(false)
+            }
         }
     }
 
@@ -494,11 +654,11 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     fun next() {
         if (isLocal) { local.next(); return }
         if (!nextInFlight.compareAndSet(false, true)) return
-        // Optimistic: reset position immediately so the UI doesn't show the old
-        // track's position while waiting for the server to confirm the skip.
-        _positionMs.value = 0L
-        posBaseTime = 0L
-        posBaseTimestamp = System.currentTimeMillis()
+        // Optimistic, and *held*: MA keeps reporting the outgoing track's position
+        // for a beat after the skip, so simply zeroing the bar would let the next
+        // poll drag it straight back. The freeze holds zero until the server names
+        // a different track.
+        freezeForTrackChange()
         viewModelScope.launch {
             try { repo.next(targetId()) } catch (_: Exception) {}
             finally {
@@ -511,9 +671,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     fun previous() {
         if (isLocal) { local.previous(); return }
         if (!prevInFlight.compareAndSet(false, true)) return
-        _positionMs.value = 0L
-        posBaseTime = 0L
-        posBaseTimestamp = System.currentTimeMillis()
+        freezeForTrackChange()
         viewModelScope.launch {
             try { repo.previous(targetId()) } catch (_: Exception) {}
             finally {
@@ -555,14 +713,36 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         seekOnServer(fraction)
     }
 
+    /**
+     * Seek the MA player.
+     *
+     * Two server behaviours have to be worked around here:
+     *
+     *  - `players/cmd/seek` resolves into `play_index(..., seek_position=)`, which
+     *    **starts** the queue. Seeking while paused therefore begins playback, which
+     *    is not what dropping the scrubber means. Re-pause afterwards when that's the
+     *    state the user was in.
+     *  - The seek takes a moment to land, and until it does MA reports the *old*
+     *    position. [freezeForSeek] holds the bar at the target so it doesn't snap
+     *    back before jumping forward again.
+     */
     private fun seekOnServer(fraction: Float) = act {
         val dur = state.value.durationMs
-        if (dur > 0) {
-            // Clamp to [0, duration - 1s] so MA doesn't interpret a seek-to-end
-            // as "skip to next track". 1 second of headroom is enough.
-            val maxFraction = ((dur - 1000L).coerceAtLeast(0L).toFloat() / dur)
-            val clamped = fraction.coerceIn(0f, maxFraction)
-            repo.seek(targetId(), ((clamped * dur) / 1000).toInt())
+        if (dur <= 0) return@act
+        // Clamp to [0, duration - 1s] so MA doesn't interpret a seek-to-end
+        // as "skip to next track". 1 second of headroom is enough.
+        val maxFraction = ((dur - 1000L).coerceAtLeast(0L).toFloat() / dur)
+        val clamped = fraction.coerceIn(0f, maxFraction)
+        val targetMs = (clamped * dur).toLong()
+        val wasPlaying = state.value.isPlaying
+
+        freezeForSeek(targetMs)
+        repo.seek(targetId(), (targetMs / 1000).toInt())
+        if (!wasPlaying) {
+            // The seek restarted it. Put it back where it was — after a beat, or the
+            // pause races the play the seek just issued.
+            delay(250)
+            runCatching { repo.pause(targetId()) }
         }
     }
 
@@ -671,6 +851,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         val q = streamQueueId()
+        freezeForTrackChange()
         viewModelScope.launch {
             try {
                 repo.playQueueItem(q, item.queueItemId)
@@ -811,6 +992,23 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
 
     /** [option] is MA's QueueOption: `next` to play after this, `add` to append. */
     fun enqueue(track: MaSimilarTrack, option: String) {
+        // The local player has its own queue; sending this to Music Assistant while
+        // Navidrome is what's actually playing put the track somewhere the user
+        // couldn't hear and reported success. There is no MA URI to hand over either —
+        // a local track is a Subsonic id — so this branch has to build one.
+        if (isLocal) {
+            viewModelScope.launch {
+                val queued = localTrackFor(track)
+                if (queued == null) {
+                    _toast.tryEmit("Can't queue that here")
+                    return@launch
+                }
+                if (option == "next") local.playNext(listOf(queued)) else local.addToQueue(listOf(queued))
+                _toast.tryEmit(if (option == "next") "Playing next" else "Added to queue")
+                if (_queueItems.value !is Load.Idle) _queueItems.value = Load.Ready(localQueueItems())
+            }
+            return
+        }
         val uri = track.uri ?: "track://${track.provider}/${track.itemId}"
         val q = streamQueueId()
         viewModelScope.launch {
@@ -823,6 +1021,36 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                 _toast.tryEmit(e.message ?: "Couldn't queue that")
             }
         }
+    }
+
+    /** Built on demand for the local-queue path; null when no Navidrome is configured. */
+    private var subsonic: SubsonicClient? = null
+
+    private suspend fun subsonicClient(): SubsonicClient? {
+        subsonic?.let { return it }
+        val url = settings.navUrl.first().trim()
+        if (url.isBlank()) return null
+        return SubsonicClient(url, settings.navUsername.first(), settings.navPassword.first())
+            .also { it.streamFormat = settings.navStreamFormat.first(); subsonic = it }
+    }
+
+    /**
+     * A [LocalTrack] for a similar-track suggestion, when one can be made.
+     *
+     * Only a Subsonic-provided suggestion can be: an MA-only track has no URL this
+     * phone could fetch on its own, and there is nothing honest to queue.
+     */
+    private suspend fun localTrackFor(track: MaSimilarTrack): LocalTrack? {
+        if (track.provider != SubsonicClient.PROVIDER) return null
+        val sc = subsonicClient() ?: return null
+        return LocalTrack(
+            id = track.itemId,
+            title = track.name,
+            artist = track.artist.orEmpty(),
+            album = "",
+            artUrl = track.image,
+            streamUrl = sc.streamUrl(track.itemId),
+        )
     }
 
     /** A short preview of a track, without disturbing what's playing. */
@@ -914,5 +1142,16 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     private companion object {
         /** How long the sleep timer spends fading out before it pauses. */
         const val FADE_MS = 10_000L
+
+        /**
+         * How long an optimistic seek/skip may ignore the server before it gives up
+         * and accepts whatever the server says. A freeze that never releases would
+         * wedge the bar permanently, so this is the liveness backstop, not a tuning
+         * knob — keep it comfortably longer than a slow round trip.
+         */
+        const val FREEZE_TIMEOUT_MS = 6_000L
+
+        /** How close the server's clock must land to a seek target to count as landed. */
+        const val SEEK_CONFIRM_MS = 3_000L
     }
 }

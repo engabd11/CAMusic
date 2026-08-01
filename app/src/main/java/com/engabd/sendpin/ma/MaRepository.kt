@@ -14,17 +14,74 @@ class MaRepository(val api: MaApiClient) {
 
     // --- library browse ---------------------------------------------------
 
-    suspend fun artists(offset: Int = 0, limit: Int = 5000) =
-        MaParse.items(api.sendCommand("music/artists/library_items", libraryArgs(offset, limit)), serverUrl)
+    companion object {
+        /**
+         * How many library items to ask for at once.
+         *
+         * The whole library used to be one request for 5000 items against a 30-second
+         * deadline, on a socket shared with everything else the app is doing — a big
+         * collection on a modest server simply ran out of time and the user saw
+         * "Request timed out" with nothing loaded. Pages are individually cheap, and a
+         * slow page costs one retry rather than the whole library.
+         */
+        const val PAGE_SIZE = 500
 
-    suspend fun albums(offset: Int = 0, limit: Int = 5000) =
-        MaParse.items(api.sendCommand("music/albums/library_items", libraryArgs(offset, limit)), serverUrl)
+        /**
+         * A generous deadline for library reads specifically.
+         *
+         * The default 30s is sized for a control command, where a slow answer means
+         * something is wrong. A library page on a cold server that is still building
+         * its response is just slow, and failing it turns a wait into an error.
+         */
+        private const val LIBRARY_TIMEOUT_MS = 60_000L
+    }
 
-    suspend fun tracks(offset: Int = 0, limit: Int = 5000) =
-        MaParse.items(api.sendCommand("music/tracks/library_items", libraryArgs(offset, limit)), serverUrl)
+    suspend fun artists(offset: Int = 0, limit: Int = PAGE_SIZE) =
+        libraryPage("music/artists/library_items", offset, limit)
 
-    suspend fun playlists(offset: Int = 0, limit: Int = 5000) =
-        MaParse.items(api.sendCommand("music/playlists/library_items", libraryArgs(offset, limit)), serverUrl)
+    suspend fun albums(offset: Int = 0, limit: Int = PAGE_SIZE) =
+        libraryPage("music/albums/library_items", offset, limit)
+
+    suspend fun tracks(offset: Int = 0, limit: Int = PAGE_SIZE) =
+        libraryPage("music/tracks/library_items", offset, limit)
+
+    suspend fun playlists(offset: Int = 0, limit: Int = PAGE_SIZE) =
+        libraryPage("music/playlists/library_items", offset, limit)
+
+    private suspend fun libraryPage(command: String, offset: Int, limit: Int) =
+        MaParse.items(
+            api.sendCommand(command, libraryArgs(offset, limit), timeoutMs = LIBRARY_TIMEOUT_MS, retries = 2),
+            serverUrl,
+        )
+
+    /**
+     * Read a whole library category, a page at a time.
+     *
+     * [onPage] is called with the running total after each page, so the grid fills as
+     * the pages land instead of staying empty until the last one. Stops when a short
+     * page comes back — the server has no more — or at [cap], which is a backstop
+     * against a server that ignores `offset` and hands back the same page forever.
+     */
+    suspend fun allLibraryItems(
+        page: suspend (offset: Int, limit: Int) -> List<MaItem>,
+        cap: Int = 20_000,
+        onPage: (List<MaItem>) -> Unit = {},
+    ): List<MaItem> {
+        val all = mutableListOf<MaItem>()
+        val seen = mutableSetOf<String>()
+        var offset = 0
+        while (offset < cap) {
+            val batch = page(offset, PAGE_SIZE)
+            if (batch.isEmpty()) break
+            val fresh = batch.filter { seen.add(it.itemId + "|" + it.provider) }
+            if (fresh.isEmpty()) break          // the server is repeating itself
+            all += fresh
+            onPage(all.toList())
+            if (batch.size < PAGE_SIZE) break
+            offset += PAGE_SIZE
+        }
+        return all
+    }
 
     /** Feeds the library's "Recently played" shelf. */
     suspend fun recentlyPlayed(limit: Int = 12) =
@@ -338,6 +395,38 @@ class MaRepository(val api: MaApiClient) {
         is JsonObject -> this["value"]?.jsonPrimitive?.intOrNull
         else -> null
     }
+
+    // --- player identity + Sendspin format (player config) ----------------
+
+    /**
+     * Rename a player as far as Music Assistant is concerned.
+     *
+     * The Sendspin `client/hello` announces a name, but MA only uses it to *register*
+     * a player it has never seen. After that the per-player config's `name` — which
+     * MA surfaces as `display_name` and which [MaParse.players] already prefers — wins
+     * for good, so a rename that only goes out in a fresh hello reads back as whatever
+     * the player was first registered under. This is the same call both reference
+     * clients make (`config/players/save` with `values: {"name": …}`).
+     */
+    suspend fun renamePlayer(playerId: String, name: String) =
+        api.sendCommand("config/players/save", buildJsonObject {
+            put("player_id", playerId)
+            put("values", buildJsonObject { put("name", name) })
+        })
+
+    /**
+     * MA's own per-player preference for what Sendspin should stream. Kept in step
+     * with the codec this client advertises so the two can't disagree; `"automatic"`
+     * is MA's wording for "no preference".
+     *
+     * Best-effort: servers without the key ignore the save, which is why nothing
+     * depends on the result.
+     */
+    suspend fun setPreferredSendspinFormat(playerId: String, format: String) =
+        api.sendCommand("config/players/save", buildJsonObject {
+            put("player_id", playerId)
+            put("values", buildJsonObject { put("preferred_sendspin_format", format) })
+        })
 
     // --- args -------------------------------------------------------------
 

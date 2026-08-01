@@ -45,9 +45,12 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     fun connectToServer(url: String, username: String = "", password: String = "", playerName: String = "") =
         pb.connectToServer(url, username, password, playerName)
 
-    /** [name] blank keeps the saved one. */
-    fun enablePlayer(name: String = "") = pb.enablePlayer(name)
+    /** Blank [name] or [codec] keeps the saved one. Both are announced in the hello. */
+    fun enablePlayer(name: String = "", codec: String = "") = pb.enablePlayer(name, codec)
     fun disablePlayer() = pb.disablePlayer()
+
+    /** Rename without a reconnect — the displayed name is player config, not the hello. */
+    fun renamePlayer(name: String) = pb.renamePlayer(name)
 
     fun onPlayPause() = pb.onPlayPause()
     fun onMediaNext() = pb.onMediaNext()

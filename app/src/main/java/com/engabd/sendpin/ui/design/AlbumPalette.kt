@@ -49,19 +49,38 @@ val LocalPalette = compositionLocalOf { AlbumPalette() }
 
 private const val SAMPLE = 64      // decode artwork to 64×64 before clustering (matches syncoV2)
 
-// Swatch classification thresholds (from syncoV2 const.py / album_art.py)
-private const val ACCENT_SAT = 0.35f      // vivid clusters need s >= this
-private const val ACCENT_VAL = 0.35f     // vivid clusters need v >= this
-private const val NEUTRAL_SAT = 0.12f    // below this a swatch is a tinted white
-private const val BASE_MIN_POP = 0.10f   // a base must be >= 10% of the cover
-private const val VALUE_FLOOR = 0.15f    // keep even the darkest swatch faintly visible
-private const val HUE_MIN_SEP = 0.055f   // ~20°: reject near-duplicate accent hues
+private const val CLUSTERS = 8           // k-means++ separates hues, so fewer are needed
+private const val KMEANS_ITERS = 16
 
-// Tinted whites for near-neutral theme swatches (from syncoV2 album_art.py)
-private val WARM_WHITE = floatArrayOf(1.0f, 0.84f, 0.60f)
-private val COOL_WHITE = floatArrayOf(0.78f, 0.86f, 1.0f)
-private val PLAIN_WHITE = floatArrayOf(1.0f, 0.92f, 0.82f)
-private val NEUTRAL_WHITE = floatArrayOf(1.0f, 0.86f, 0.70f)
+/**
+ * Chroma (CIELAB `hypot(a, b)`) below which a colour is genuinely grey.
+ *
+ * Everything about the "gold everywhere" problem comes down to this line being drawn
+ * in the wrong place, or in the wrong space. Saturation in HSV is not perceptual — a
+ * dark navy and a pale cream can share it — so the old fixed `s >= 0.35` gate threw
+ * real colours into the neutral bucket, where they were rendered as a *warm* white and
+ * then had their saturation forced back up to 0.5, arriving as gold.
+ */
+private const val ACHROMATIC_C = 6f
+
+/** A cluster needs at least this much chroma to be an accent, whatever the image. */
+private const val MIN_ACCENT_C = 12f
+
+/**
+ * …and at least this fraction of the image's own strongest chroma. Adaptive because a
+ * muted, tasteful sleeve has real colour that a fixed threshold calls grey, while a
+ * neon one has so much that a fixed threshold calls everything an accent.
+ */
+private const val ACCENT_C_FRACTION = 0.42f
+
+private const val VALUE_FLOOR = 0.15f    // keep even the darkest swatch faintly visible
+private const val HUE_MIN_SEP_DEG = 22f  // reject near-duplicate accent hues
+private const val MAX_ACCENTS = 4        // leave a slot for a populous muted tone
+
+/** Tinted whites for the genuinely-colourless case (from syncoV2 album_art.py). */
+private val WARM_WHITE = floatArrayOf(1.0f, 0.93f, 0.86f)
+private val COOL_WHITE = floatArrayOf(0.86f, 0.92f, 1.0f)
+private val PLAIN_WHITE = floatArrayOf(0.96f, 0.96f, 0.96f)
 
 // ─── Colour space conversions ────────────────────────────────────────────
 
@@ -134,78 +153,138 @@ private fun hueDistance(a: Float, b: Float): Float {
 // ─── K-means in CIELAB ─────────────────────────────────────────────────────
 
 private data class Cluster(
-    val meanRgb: FloatArray,     // mean RGB (0..1) of members
-    val meanHsv: FloatArray,     // mean HSV of members
-    val population: Float,      // fraction of total pixels
+    /** The colour that *represents* this cluster — see [representative]. */
+    val rgb: FloatArray,
+    val hsv: FloatArray,
+    /** The representative's CIELAB chroma: how colourful this cluster really is. */
+    val chroma: Float,
+    /** Fraction of the sampled pixels. */
+    val population: Float,
 )
 
-/** Deterministic k-means in CIELAB space. Returns labelled clusters. */
-private fun kmeansClusters(pixels: List<FloatArray>, k: Int): List<Cluster> {
+/** CIELAB chroma — distance from the neutral axis, i.e. colourfulness. */
+private fun chromaOf(lab: FloatArray): Float = kotlin.math.sqrt(lab[1] * lab[1] + lab[2] * lab[2])
+
+/**
+ * The colour that stands for a cluster: the mean of its **most chromatic quarter**,
+ * not the mean of all of it.
+ *
+ * A plain mean is what washed multi-coloured covers out. Even with good clustering a
+ * cluster spans a range, and averaging across it pulls toward grey — average a red
+ * highlight with the shadow beside it and the answer is brown. Averaging only the
+ * colourful quarter keeps a cluster that *has* a colour vivid, and leaves a cluster
+ * that genuinely is grey exactly where it was.
+ */
+private fun representative(members: List<FloatArray>, labs: List<FloatArray>): FloatArray {
+    if (members.size <= 3) {
+        return floatArrayOf(
+            members.map { it[0] }.average().toFloat(),
+            members.map { it[1] }.average().toFloat(),
+            members.map { it[2] }.average().toFloat(),
+        )
+    }
+    val cutoff = labs.map { chromaOf(it) }.sorted()[(labs.size * 3) / 4]
+    val top = members.indices.filter { chromaOf(labs[it]) >= cutoff }
+    val pick = if (top.isEmpty()) members.indices.toList() else top
+    var r = 0f; var g = 0f; var b = 0f
+    for (i in pick) { r += members[i][0]; g += members[i][1]; b += members[i][2] }
+    val n = pick.size.toFloat()
+    return floatArrayOf(r / n, g / n, b / n)
+}
+
+/**
+ * Deterministic k-means in CIELAB, seeded with **k-means++**.
+ *
+ * The seeding is the whole point. Centroids used to be spread along the lightness
+ * axis alone, which makes k-means converge to brightness bands: a cover's red and its
+ * blue land in the same "mid-tone" cluster, whose mean is grey. k-means++ picks each
+ * seed with probability proportional to its squared distance from the seeds already
+ * chosen, in full L/a/b — so distinct hues get their own clusters and survive to be
+ * ranked. [rng] is seeded from the pixels, so a given cover always yields the same
+ * palette.
+ */
+private fun kmeansClusters(pixels: List<FloatArray>, k: Int, rng: kotlin.random.Random): List<Cluster> {
     val n = pixels.size
     if (n == 0) return emptyList()
     val kk = min(k, n)
 
-    // Convert all pixels to LAB
-    val lab = pixels.map { rgbToLab(it[0], it[1], it[2]) }.toTypedArray()
+    val lab = pixels.map { rgbToLab(it[0], it[1], it[2]) }
 
-    // Seed centroids spread along lightness (first LAB axis) for stability
-    val order = lab.indices.sortedBy { lab[it][0] }
-    val seeds = (0 until kk).map { i ->
-        val idx = (i.toFloat() / (kk - 1).coerceAtLeast(1) * (n - 1)).toInt()
-        order[idx]
+    // ── k-means++ seeding ────────────────────────────────────────────────
+    val centroids = ArrayList<FloatArray>(kk)
+    centroids.add(lab[rng.nextInt(n)].copyOf())
+    val best = FloatArray(n) { Float.MAX_VALUE }
+    while (centroids.size < kk) {
+        var total = 0.0
+        val last = centroids.last()
+        for (i in 0 until n) {
+            val d = sqDist(lab[i], last)
+            if (d < best[i]) best[i] = d
+            total += best[i].toDouble()
+        }
+        if (total <= 0.0) break
+        var target = rng.nextDouble() * total
+        var chosen = n - 1
+        for (i in 0 until n) {
+            target -= best[i].toDouble()
+            if (target <= 0.0) { chosen = i; break }
+        }
+        centroids.add(lab[chosen].copyOf())
     }
-    var centroids = seeds.map { lab[it].copyOf() }.toTypedArray()
-    var labels = IntArray(n)
 
-    for (iter in 0 until 14) {
+    // ── Lloyd iterations ─────────────────────────────────────────────────
+    val kFinal = centroids.size
+    val labels = IntArray(n)
+    for (iter in 0 until KMEANS_ITERS) {
         var moved = false
-        // Assign
         for (i in 0 until n) {
             var bestJ = 0; var bestD = Float.MAX_VALUE
-            for (j in 0 until kk) {
-                val dl = lab[i][0] - centroids[j][0]
-                val da = lab[i][1] - centroids[j][1]
-                val db = lab[i][2] - centroids[j][2]
-                val d = dl * dl + da * da + db * db
+            for (j in 0 until kFinal) {
+                val d = sqDist(lab[i], centroids[j])
                 if (d < bestD) { bestD = d; bestJ = j }
             }
             if (labels[i] != bestJ) { labels[i] = bestJ; moved = true }
         }
         if (!moved && iter > 0) break
-        // Update centroids
-        for (j in 0 until kk) {
+        for (j in 0 until kFinal) {
             var cnt = 0; var sumL = 0f; var sumA = 0f; var sumB = 0f
             for (i in 0 until n) {
-                if (labels[i] == j) {
-                    cnt++; sumL += lab[i][0]; sumA += lab[i][1]; sumB += lab[i][2]
-                }
+                if (labels[i] == j) { cnt++; sumL += lab[i][0]; sumA += lab[i][1]; sumB += lab[i][2] }
             }
-            if (cnt > 0) {
-                val nc = floatArrayOf(sumL / cnt, sumA / cnt, sumB / cnt)
-                if (!nc.contentEquals(centroids[j])) moved = true
-                centroids[j] = nc
-            }
+            if (cnt > 0) centroids[j] = floatArrayOf(sumL / cnt, sumA / cnt, sumB / cnt)
         }
     }
 
-    // Build clusters with mean RGB + HSV, in one accumulation pass over the pixels.
-    val counts = IntArray(kk)
-    val sums = Array(kk) { FloatArray(3) }
-    for (i in 0 until n) {
-        val j = labels[i]
-        counts[j]++
-        sums[j][0] += pixels[i][0]; sums[j][1] += pixels[i][1]; sums[j][2] += pixels[i][2]
-    }
+    // ── Build the clusters ───────────────────────────────────────────────
+    val buckets = Array(kFinal) { mutableListOf<Int>() }
+    for (i in 0 until n) buckets[labels[i]].add(i)
     val total = n.toFloat()
-    return (0 until kk).mapNotNull { j ->
-        val cnt = counts[j]
-        if (cnt == 0) return@mapNotNull null
-        val rgb = floatArrayOf(sums[j][0] / cnt, sums[j][1] / cnt, sums[j][2] / cnt)
-        Cluster(rgb, rgbToHsv(rgb[0], rgb[1], rgb[2]), cnt / total)
+    return (0 until kFinal).mapNotNull { j ->
+        val idx = buckets[j]
+        if (idx.isEmpty()) return@mapNotNull null
+        val rgb = representative(idx.map { pixels[it] }, idx.map { lab[it] })
+        Cluster(
+            rgb = rgb,
+            hsv = rgbToHsv(rgb[0], rgb[1], rgb[2]),
+            chroma = chromaOf(rgbToLab(rgb[0], rgb[1], rgb[2])),
+            population = idx.size / total,
+        )
     }
 }
 
-/** A near-neutral swatch as a white tinted by its own colour cast. */
+private fun sqDist(a: FloatArray, b: FloatArray): Float {
+    val dl = a[0] - b[0]; val da = a[1] - b[1]; val db = a[2] - b[2]
+    return dl * dl + da * da + db * db
+}
+
+/**
+ * A genuinely colourless cover, rendered as a white carrying its own faint cast.
+ *
+ * Only reached when the *whole image* is achromatic. It used to be reached whenever a
+ * cluster's HSV saturation came out low, which on a washed-out mean was most of them —
+ * and the tints were strongly warm, so the accent lift turned them into gold. They are
+ * near-white now, and the lift leaves a neutral lead neutral.
+ */
 private fun tintedWhite(rgb: FloatArray, v: Float): FloatArray {
     val r = rgb[0]; val b = rgb[2]
     val tint = if (r - b > 0.02f) WARM_WHITE
@@ -215,36 +294,39 @@ private fun tintedWhite(rgb: FloatArray, v: Float): FloatArray {
     return floatArrayOf(tint[0] * vv, tint[1] * vv, tint[2] * vv)
 }
 
+/**
+ * The extraction's answers: the colour the cover *leads* with, the companion set, and
+ * whether the cover had any real colour at all.
+ *
+ * [achromatic] exists so the accent lift can tell "this is grey because the sleeve is
+ * grey" from "this is muted but real". Boosting the first into a hue is how a
+ * black-and-white photo used to come out gold.
+ */
+internal class Extraction(
+    val lead: FloatArray,
+    val swatches: List<FloatArray>,
+    val achromatic: Boolean = false,
+)
+
 /** Faithful fallback for covers with almost no colour. */
 private fun lowColourFallback(pixels: List<FloatArray>): Extraction {
-    // Find colourful pixels (sat >= 0.12)
-    val colourful = pixels.filter { rgbToHsv(it[0], it[1], it[2])[1] >= 0.12f }
-    val only = if (colourful.size >= 4) {
-        val meanR = colourful.map { it[0] }.average().toFloat()
-        val meanG = colourful.map { it[1] }.average().toFloat()
-        val meanB = colourful.map { it[2] }.average().toFloat()
-        val hsv = rgbToHsv(meanR, meanG, meanB)
-        hsvToRgb(hsv[0], max(hsv[1], 0.40f), max(0.3f, hsv[2]))
-    } else {
-        NEUTRAL_WHITE
-    }
-    return Extraction(only, listOf(only))
+    val mean = floatArrayOf(
+        pixels.map { it[0] }.average().toFloat(),
+        pixels.map { it[1] }.average().toFloat(),
+        pixels.map { it[2] }.average().toFloat(),
+    )
+    val v = rgbToHsv(mean[0], mean[1], mean[2])[2]
+    val only = tintedWhite(mean, max(0.55f, v))
+    return Extraction(only, listOf(only), achromatic = true)
 }
 
 /**
- * The extraction's two answers: the single colour the cover *leads* with, and the
- * companion set. syncoV2 only needs the set (it spreads it round a room as a
- * cyclic gradient, hue-ordered so neighbouring bulbs relate); the app also needs
- * one lead colour for controls, and that has to be the most vivid swatch rather
- * than whichever happens to sit lowest on the hue wheel.
- */
-private class Extraction(val lead: FloatArray, val swatches: List<FloatArray>)
-
-/**
  * Extract up to [k] theme-faithful colours from RGB pixels using CIELAB k-means.
- * Ported from syncoV2's `_kmeans_palette` (album_art.py).
+ *
+ * `internal` rather than private so the selection can be exercised from a JVM unit
+ * test — [paletteOf] takes an Android `Bitmap` and can't be.
  */
-private fun kmeansPalette(pixels: List<FloatArray>, k: Int = 5): Extraction? {
+internal fun kmeansPalette(pixels: List<FloatArray>, k: Int = 5): Extraction? {
     if (pixels.isEmpty()) return null
 
     // Drop only the true extremes (matte black, paper white); keep greys and dark tones
@@ -254,56 +336,69 @@ private fun kmeansPalette(pixels: List<FloatArray>, k: Int = 5): Extraction? {
     }
     if (body.size < 6) return lowColourFallback(pixels)
 
-    val nClusters = min(14, body.size)
-    val clusters = kmeansClusters(body, nClusters)
-
-    val accents = mutableListOf<Triple<Float, FloatArray, FloatArray>>()  // (score, hsv, rgb)
-    val bases = mutableListOf<Pair<Float, Cluster>>()  // (population, cluster)
-
-    for (c in clusters) {
-        val s = c.meanHsv[1]; val v = c.meanHsv[2]; val pop = c.population
-        if (s >= ACCENT_SAT && v >= ACCENT_VAL) {
-            // Vividness-weighted population: a small vivid splash can outrank a large dull field
-            accents.add(Triple(pop * (0.25f + 0.75f * s), c.meanHsv, c.meanRgb))
-        } else {
-            bases.add(pop to c)
-        }
+    // Deterministic per cover: the same art must always give the same palette, or the
+    // whole app's accent would drift between launches.
+    val seed = body.fold(17L) { acc, p ->
+        acc * 31 + ((p[0] * 255).toInt() shl 16 or ((p[1] * 255).toInt() shl 8) or (p[2] * 255).toInt())
     }
+    val clusters = kmeansClusters(body, min(CLUSTERS, body.size), kotlin.random.Random(seed))
+    if (clusters.isEmpty()) return lowColourFallback(pixels)
 
-    // Theme bases first: the dominant muted/dark swatches that set the mood
-    bases.sortByDescending { it.first }
-    val baseOut = mutableListOf<FloatArray>()
-    for ((pop, cluster) in bases) {
-        if (baseOut.size >= 2 || pop < BASE_MIN_POP) break
-        val s = cluster.meanHsv[1]; val v = cluster.meanHsv[2]
-        if (s < NEUTRAL_SAT) {
-            baseOut.add(tintedWhite(cluster.meanRgb, v))
-        } else {
-            baseOut.add(hsvToRgb(cluster.meanHsv[0], s, max(VALUE_FLOOR, v)))
-        }
-    }
+    // How colourful is this cover at its most colourful? Everything else is judged
+    // relative to that, so a muted sleeve keeps its muted colours and a neon one
+    // doesn't have every last cluster promoted to "accent".
+    val peakChroma = clusters.maxOf { it.chroma }
+    if (peakChroma < ACHROMATIC_C) return lowColourFallback(body)
 
-    // Vivid accents fill remaining slots, hue-diverse
-    accents.sortByDescending { it.first }
-    val accentOut = mutableListOf<FloatArray>()
+    val accentFloor = max(MIN_ACCENT_C, peakChroma * ACCENT_C_FRACTION)
+
+    // Rank by colourfulness weighted by how much of the cover it is. The square root
+    // keeps a small vivid splash competitive with a large field without letting a
+    // handful of stray pixels win outright.
+    val ranked = clusters
+        .filter { it.chroma >= accentFloor }
+        .sortedByDescending { it.chroma * kotlin.math.sqrt(it.population) }
+
+    val accents = mutableListOf<FloatArray>()
     val pickedHues = mutableListOf<Float>()
-    for ((_, hsv, _) in accents) {
-        if (baseOut.size + accentOut.size >= k) break
-        val h = hsv[0]
-        if (pickedHues.all { hueDistance(h, it) >= HUE_MIN_SEP * 360f }) {
+    for (c in ranked) {
+        if (accents.size >= MAX_ACCENTS) break
+        val h = c.hsv[0]
+        // Distinct hues only, so a cover with three real colours yields three rather
+        // than three shades of the loudest one.
+        if (pickedHues.all { hueDistance(h, it) >= HUE_MIN_SEP_DEG }) {
             pickedHues.add(h)
-            accentOut.add(hsvToRgb(h, hsv[1], max(VALUE_FLOOR, hsv[2])))
+            accents.add(hsvToRgb(h, c.hsv[1], max(VALUE_FLOOR, c.hsv[2])))
         }
     }
 
-    val out = baseOut + accentOut
-    if (out.isEmpty()) return lowColourFallback(pixels)
+    // Fill the remaining slots with the most populous non-accent clusters: the muted
+    // and dark tones that set the mood. They come *after* the accents rather than
+    // before, so a colourful cover spends its slots on its colours.
+    val bases = clusters
+        .filter { it.chroma < accentFloor }
+        .sortedByDescending { it.population }
+        .take((k - accents.size).coerceAtLeast(0))
+        .map { c ->
+            if (c.chroma < ACHROMATIC_C) tintedWhite(c.rgb, c.hsv[2])
+            else hsvToRgb(c.hsv[0], c.hsv[1], max(VALUE_FLOOR, c.hsv[2]))
+        }
 
-    // The lead is the top-scoring vivid accent; a cover with none (a sepia photo,
-    // a monochrome sleeve) leads with its dominant base instead.
-    val lead = accentOut.firstOrNull() ?: baseOut.first()
+    val out = accents + bases
+    if (out.isEmpty()) return lowColourFallback(body)
+
+    // The lead is the top-ranked accent. With none, the most *chromatic* cluster leads
+    // rather than the most populous — on a sleeve whose colour is a small detail
+    // against a big flat field, the field is not what the cover is about.
+    val lead = accents.firstOrNull()
+        ?: clusters.maxByOrNull { it.chroma }!!.let { hsvToRgb(it.hsv[0], it.hsv[1], max(VALUE_FLOOR, it.hsv[2])) }
+
     // The set is hue-ordered so the cyclic gradient drifts between related hues.
-    return Extraction(lead, out.sortedBy { rgbToHsv(it[0], it[1], it[2])[0] })
+    return Extraction(
+        lead = lead,
+        swatches = out.sortedBy { rgbToHsv(it[0], it[1], it[2])[0] },
+        achromatic = accents.isEmpty(),
+    )
 }
 
 /** Bin [bmp] via CIELAB k-means and return the ranked palette, or null if it has no usable colour. */
@@ -325,24 +420,42 @@ internal fun paletteOf(bmp: Bitmap): AlbumPalette? {
     }
 
     val extracted = kmeansPalette(pixels, k = 5) ?: return null
+    return liftedPalette(extracted)
+}
 
-    // The accent is pushed brighter and more saturated than the art so it stays
-    // legible as a control colour against true black.
+/**
+ * Turn an [Extraction] into the app's palette: legible against true black, without
+ * inventing colour that isn't on the cover.
+ *
+ * The saturation floor is the second half of the gold problem. Forcing every lead to
+ * at least 0.50 saturation is fine for a colour that *has* a hue and catastrophic for
+ * one that doesn't — a grey with a faint warm cast becomes vivid amber, which is
+ * exactly the "everything falls back to gold" symptom. So the floor applies only when
+ * the extraction found real chroma; a colourless cover is lifted in lightness alone
+ * and stays a soft silver.
+ */
+internal fun liftedPalette(extracted: Extraction): AlbumPalette {
     val leadHsl = rgbToHsl(extracted.lead[0], extracted.lead[1], extracted.lead[2])
-    val accent = hslColor(
-        leadHsl[0],
-        (leadHsl[1] + 0.24f).coerceIn(0.5f, 0.72f),
-        (leadHsl[2] + 0.12f).coerceIn(0.58f, 0.70f),
-    )
+    val accent = if (extracted.achromatic) {
+        hslColor(leadHsl[0], leadHsl[1].coerceAtMost(0.10f), (leadHsl[2] + 0.18f).coerceIn(0.66f, 0.78f))
+    } else {
+        hslColor(
+            leadHsl[0],
+            (leadHsl[1] + 0.24f).coerceIn(0.5f, 0.72f),
+            (leadHsl[2] + 0.12f).coerceIn(0.58f, 0.70f),
+        )
+    }
 
     // Companions keep the cover's hue order (so gradients drift rather than jump)
     // but are lifted to the same legible band. The lead leads the list: swatch(0)
-    // is what the glows are built from.
+    // is what the glows are built from. A companion that is itself near-grey keeps
+    // its low saturation rather than being pushed into a hue of its own.
     val companions = extracted.swatches
         .filter { it !== extracted.lead }
         .map { rgb ->
             val hsl = rgbToHsl(rgb[0], rgb[1], rgb[2])
-            hslColor(hsl[0], (hsl[1] + 0.1f).coerceIn(0.36f, 0.58f), (hsl[2] + 0.16f).coerceIn(0.58f, 0.72f))
+            val sat = if (hsl[1] < 0.08f) hsl[1] else (hsl[1] + 0.1f).coerceIn(0.36f, 0.58f)
+            hslColor(hsl[0], sat, (hsl[2] + 0.16f).coerceIn(0.58f, 0.72f))
         }
 
     return AlbumPalette(accent = accent, swatches = listOf(accent) + companions)

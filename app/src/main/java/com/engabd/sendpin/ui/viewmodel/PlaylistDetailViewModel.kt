@@ -86,6 +86,7 @@ class PlaylistDetailViewModel(
                     val url = settings.navUrl.first().trim()
                     if (url.isBlank()) { _error.value = "No Navidrome server configured"; return@launch }
                     val sc = SubsonicClient(url, settings.navUsername.first(), settings.navPassword.first())
+                    sc.streamFormat = settings.navStreamFormat.first()
                     subsonic = sc
                     _tracks.value = sc.playlistTracks(itemId)
                 } else {
@@ -144,6 +145,23 @@ class PlaylistDetailViewModel(
                 else maRepo.playMedia(playTarget(), tracks.mapNotNull { it.uri }, "add")
                 _toast.tryEmit("Added ${tracks.size} tracks to queue")
             } catch (e: Exception) { _toast.tryEmit(e.message ?: "Couldn't add to queue") }
+        }
+    }
+
+    /** One track onto the queue — the long-press alternative to "play now". */
+    fun enqueueTrack(track: MaItem, option: String) {
+        viewModelScope.launch {
+            try {
+                if (isSubsonic) {
+                    val one = localTracks().filter { it.id == track.itemId }
+                    if (one.isEmpty()) { _toast.tryEmit("Couldn't queue that"); return@launch }
+                    if (option == "next") localPlayer.playNext(one) else localPlayer.addToQueue(one)
+                } else {
+                    val uri = track.uri ?: run { _toast.tryEmit("Couldn't queue that"); return@launch }
+                    maRepo.playMedia(playTarget(), listOf(uri), option)
+                }
+                _toast.tryEmit(if (option == "next") "Playing next" else "Added to queue")
+            } catch (e: Exception) { _toast.tryEmit(e.message ?: "Couldn't queue that") }
         }
     }
 

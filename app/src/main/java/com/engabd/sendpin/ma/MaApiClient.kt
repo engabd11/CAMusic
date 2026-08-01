@@ -2,6 +2,7 @@ package com.engabd.sendpin.ma
 
 import android.util.Log
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -180,11 +181,32 @@ class MaApiClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
         args: JsonObject? = null,
         awaitResponse: Boolean = true,
         timeoutMs: Long = 30_000,
+        /**
+         * Extra attempts on a timeout or a dropped socket. Zero for control commands —
+         * re-sending a "next track" that did land would skip twice — but worth having
+         * for reads, where a retry is free of consequence and a single unlucky request
+         * otherwise leaves the user staring at an error.
+         */
+        retries: Int = 0,
     ): JsonElement? {
-        if (!isAuth(command) && _state.value != State.CONNECTED) {
-            try { withTimeout(5_000) { state.first { it == State.CONNECTED } } } catch (_: Exception) { return null }
+        var attempt = 0
+        while (true) {
+            if (!isAuth(command) && _state.value != State.CONNECTED) {
+                // Wait longer between retries: a reconnect in progress is the most
+                // likely reason the state isn't CONNECTED yet.
+                val wait = if (attempt == 0) 5_000L else 15_000L
+                try { withTimeout(wait) { state.first { it == State.CONNECTED } } } catch (_: Exception) {
+                    if (attempt++ >= retries) return null
+                    continue
+                }
+            }
+            try {
+                return sendRaw(command, args, awaitResponse, timeoutMs)
+            } catch (e: MaApiException) {
+                if (attempt++ >= retries) throw e
+                delay(500L * attempt)
+            }
         }
-        return sendRaw(command, args, awaitResponse, timeoutMs)
     }
 
     private suspend fun sendRaw(

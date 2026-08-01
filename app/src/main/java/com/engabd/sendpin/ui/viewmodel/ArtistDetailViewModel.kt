@@ -107,6 +107,7 @@ class ArtistDetailViewModel(
                     val url = settings.navUrl.first().trim()
                     if (url.isBlank()) { _error.value = "No Navidrome server configured"; return@launch }
                     val sc = SubsonicClient(url, settings.navUsername.first(), settings.navPassword.first())
+                    sc.streamFormat = settings.navStreamFormat.first()
                     subsonic = sc
                     if (!resolveRef()) return@launch
                     val (artistMeta, albumList) = sc.artistDetail(ref.itemId)

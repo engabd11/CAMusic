@@ -35,11 +35,19 @@ object FormatNegotiator {
     /** Adds the hi-res member of each family (2× 48k and 2× 44.1k). */
     private val RATES_HIRES = listOf(48_000, 44_100, 96_000, 88_200)
 
+    /** Every codec [SendspinAudioEngine] can decode, in the order "auto" offers them. */
+    val CODECS = listOf("flac", "pcm", "opus")
+
     /**
      * [preferHiRes] — also offer 88.2/96 kHz, so hi-res masters stream at their native
      * rate instead of being downsampled to 48 kHz by the server.
      * [preferFlac] — order lossless FLAC ahead of uncompressed PCM. Both are
      * bit-identical; FLAC costs roughly half the bandwidth and a little decode CPU.
+     * Only consulted when [codec] is null.
+     * [codec] — advertise this codec *alone*. The server may only stream a format the
+     * client listed, so narrowing the list is the one way to make a choice stick
+     * rather than express a preference the server is free to ignore. This is how the
+     * official Music Assistant app implements its codec setting.
      *
      * 48 kHz stays first for compatibility: it is Music Assistant's own default and the
      * ordering that grouped/multi-room sync was validated against. The added rates give
@@ -48,18 +56,26 @@ object FormatNegotiator {
     fun supportedFormats(
         preferHiRes: Boolean = true,
         preferFlac: Boolean = true,
+        codec: String? = null,
     ): List<AudioFormatSpec> {
         val rates = if (preferHiRes) RATES_HIRES else RATES_STANDARD
+        val only = codec?.lowercase()?.takeIf { it in CODECS }
+        if (only != null) return ratesFor(only, rates).map { AudioFormatSpec(only, 2, it, MAX_BIT_DEPTH) }
+
         val losslessOrder = if (preferFlac) listOf("flac", "pcm") else listOf("pcm", "flac")
         return buildList {
-            for (codec in losslessOrder) for (rate in rates) {
-                add(AudioFormatSpec(codec, 2, rate, MAX_BIT_DEPTH))
+            for (c in losslessOrder) for (rate in rates) {
+                add(AudioFormatSpec(c, 2, rate, MAX_BIT_DEPTH))
             }
             // Lossy, and last: only reached if the server can serve none of the above.
             // Opus is 48 kHz only, and listing it first breaks grouped sync.
             add(AudioFormatSpec("opus", 2, 48_000, MAX_BIT_DEPTH))
         }
     }
+
+    /** Opus is 48 kHz only; the lossless codecs take whatever the rate list offers. */
+    private fun ratesFor(codec: String, rates: List<Int>): List<Int> =
+        if (codec == "opus") listOf(48_000) else rates
 
     /** Defaults, for callers with no user settings to hand. */
     val supportedFormats: List<AudioFormatSpec> get() = supportedFormats()

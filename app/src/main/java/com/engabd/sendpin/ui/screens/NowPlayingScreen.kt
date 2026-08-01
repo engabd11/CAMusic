@@ -60,6 +60,9 @@ fun NowPlayingScreen(
     // Which overlay is open, if any. Null = just the player.
     var panel by remember { mutableStateOf<Panel?>(null) }
     var options by remember { mutableStateOf(false) }
+    // The output picker. Local state rather than a nav route: switching speaker
+    // should not take the user off the screen showing what's playing.
+    var speakers by remember { mutableStateOf(false) }
     // Lyrics are a *mode* of the player, not an overlay: they take the cover's place.
     var showLyrics by rememberSaveable { mutableStateOf(false) }
 
@@ -109,8 +112,8 @@ fun NowPlayingScreen(
                 // Swipe up anywhere on the player to pull the queue over it. The
                 // sheets handle their own dismissal, so this stands down while one
                 // is open rather than reopening what the user just swiped away.
-                .pointerInput(panel, options) {
-                    if (panel != null || options) return@pointerInput
+                .pointerInput(panel, options, speakers) {
+                    if (panel != null || options || speakers) return@pointerInput
                     var travelled = 0f
                     detectVerticalDragGestures(
                         onDragStart = { travelled = 0f },
@@ -146,7 +149,7 @@ fun NowPlayingScreen(
                     playerName = st.playerName,
                     isSelf = st.isSelf,
                     groupSize = st.groupSize,
-                    onOpenSpeakers = onOpenSpeakers,
+                    onOpenSpeakers = { speakers = true },
                 )
 
                 Spacer(Modifier.height(4.dp))
@@ -296,15 +299,15 @@ fun NowPlayingScreen(
             // still reads behind their top edge. Anything still visible above a
             // sheet dismisses it, and so does system Back — otherwise Back would
             // leave the screen entirely with a panel open over it.
-            if (panel != null || options) {
-                BackHandler { panel = null; options = false }
+            if (panel != null || options || speakers) {
+                BackHandler { panel = null; options = false; speakers = false }
                 Box(
                     Modifier
                         .matchParentSize()
                         .clickable(
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null,
-                        ) { panel = null; options = false }
+                        ) { panel = null; options = false; speakers = false }
                 )
             }
             if (panel != null) {
@@ -312,6 +315,12 @@ fun NowPlayingScreen(
             }
             if (options) {
                 PlayerOptionsSheet(onClose = { options = false }, viewModel = viewModel)
+            }
+            if (speakers) {
+                SpeakerPickerSheet(
+                    onClose = { speakers = false },
+                    onManageGroups = { speakers = false; onOpenSpeakers() },
+                )
             }
         }
     }
@@ -395,11 +404,11 @@ fun TappableQualityChip(playing: StreamQuality?, source: StreamQuality?) {
 @Composable
 private fun QualityDetailCard(playing: StreamQuality?, source: StreamQuality?) {
     val accent = LocalAccent.current
-    // Don't show "Source" when it's the same audio as what's playing — there's
-    // nothing to tell the user when no transcoding happened. Compared on codec,
-    // rate and depth rather than on the printed label: the source reading carries
-    // no bitrate, so label equality was never true and the row never went away.
-    val effectiveSource = source?.takeUnless { playing != null && it.sameFormatAs(playing) }
+    // Both rows always render when both readings exist, and the line underneath says
+    // whether they differ. Hiding "Source" on a match was the old behaviour, and it
+    // meant the common case — a direct, untranscoded stream — showed a single
+    // unexplained row that read as the card having failed to load the other one.
+    val transcoded = playing != null && source != null && !source.sameFormatAs(playing)
     Column(
         Modifier
             .widthIn(max = 300.dp)
@@ -415,10 +424,11 @@ private fun QualityDetailCard(playing: StreamQuality?, source: StreamQuality?) {
             fontSize = 11.sp, letterSpacing = 1.sp,
         )
         QualityRow("Playing", playing, accent)
-        if (effectiveSource != null) QualityRow("Source", effectiveSource, accent)
-        if (playing != null && effectiveSource != null) {
+        if (source != null) QualityRow("Source", source, accent)
+        if (playing != null && source != null) {
             Text(
-                "Transcoded from ${effectiveSource.label} to ${playing.label}",
+                if (transcoded) "Transcoded from ${source.label} to ${playing.label}"
+                else "Direct — no transcoding",
                 color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
             )
         }

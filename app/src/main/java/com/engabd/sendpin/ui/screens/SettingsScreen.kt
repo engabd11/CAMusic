@@ -61,6 +61,8 @@ fun SettingsScreen(
     /** A saved token is sealed: shown as dots, not editable until explicitly replaced. */
     var haTokenLocked by remember { mutableStateOf(false) }
     var playerName by remember { mutableStateOf("") }
+    var sendspinCodec by remember { mutableStateOf("auto") }
+    var navFormat by remember { mutableStateOf("raw") }
     val backend by settings.backend.collectAsState(initial = "ma")
     // The same activity-scoped instance the Library tab uses, so edits here land on
     // the live client rather than on a copy that has to be restarted to be read.
@@ -76,6 +78,8 @@ fun SettingsScreen(
         haToken = settings.haToken.first()
         haTokenLocked = haToken.isNotBlank()
         playerName = settings.playerName.first()
+        sendspinCodec = settings.sendspinCodec.first()
+        navFormat = settings.navStreamFormat.first()
     }
 
     Box(Modifier.fillMaxSize().background(Ink)) {
@@ -144,29 +148,66 @@ fun SettingsScreen(
                     Spacer(Modifier.height(12.dp))
                     GlassCard(radius = 16.dp) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            // Player name is read-only while the player is enabled —
-                            // changing it live has no effect until a reconnect anyway.
+                            // The name is editable at any time: it is Music Assistant's
+                            // per-player config that decides the displayed name, not the
+                            // hello, so a rename is a config write and needs no reconnect.
                             OledField(
                                 playerName,
-                                { if (!connected) playerName = it },
+                                { playerName = it },
                                 "Player name",
                                 "e.g. Abdullah's phone",
                                 accent,
-                                enabled = !connected,
                             )
                             Text(
-                                if (connected) "Disable the player to rename it, then enable it again."
-                                else "Shown in Music Assistant. Applied when the player is enabled.",
+                                "Shown in Music Assistant.",
                                 color = TextFaint, fontSize = 11.sp,
                             )
+
+                            // Stream codec. Sits here rather than under Audio because it
+                            // is announced in the same hello as the name.
+                            Text(
+                                "Stream format",
+                                color = TextSecondary, fontFamily = AppFont,
+                                fontWeight = FontWeight.Bold, fontSize = 12.sp,
+                            )
+                            SegmentedToggle(
+                                options = CodecLabels,
+                                selectedIndex = CodecValues.indexOf(sendspinCodec).coerceAtLeast(0),
+                                modifier = Modifier.fillMaxWidth(),
+                            ) { i ->
+                                sendspinCodec = CodecValues[i]
+                                scope.launch { settings.setSendspinCodec(CodecValues[i]) }
+                            }
+                            Text(
+                                when (sendspinCodec) {
+                                    "flac" -> "Lossless, about half the bandwidth of PCM. Music Assistant " +
+                                        "must send FLAC — it is the only format offered."
+                                    "pcm" -> "Lossless and uncompressed. Highest bandwidth, no decode cost."
+                                    "opus" -> "Compressed. Lowest bandwidth, 48 kHz only."
+                                    else -> "Offer all three and let Music Assistant choose — FLAC first, " +
+                                        "then PCM, then Opus."
+                                },
+                                color = TextFaint, fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp,
+                            )
+
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 if (connected) {
+                                    OledButton("Save name", modifier = Modifier.weight(1f), accent = accent) {
+                                        viewModel.renamePlayer(playerName.trim())
+                                    }
                                     OledButton("Disable", modifier = Modifier.weight(1f), accent = accent) { viewModel.disablePlayer() }
                                 } else {
                                     OledButton("Enable player", modifier = Modifier.weight(1f), accent = accent) {
-                                        viewModel.enablePlayer(playerName.trim())
+                                        viewModel.enablePlayer(playerName.trim(), sendspinCodec)
                                     }
                                 }
+                            }
+                            if (connected) {
+                                Text(
+                                    "A format change needs the player disabled and enabled again — " +
+                                        "it is only announced when the connection opens.",
+                                    color = TextFaint, fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp,
+                                )
                             }
                         }
                     }
@@ -207,6 +248,46 @@ fun SettingsScreen(
                 // works — so a moved server or a changed password could not be
                 // fixed from inside the app at all.
                 item { NavidromeCard(libraryVm, accent) }
+
+                // ── Navidrome stream format ─────────────────────────────────
+                // Navidrome can transcode on the way out; the app used to pin
+                // `format=raw`, so there was no choice to make and the badge always
+                // read PCM (the phone's own output) no matter what arrived.
+                item {
+                    SectionHeader(Icons.Default.GraphicEq, "Navidrome quality", accent)
+                    Spacer(Modifier.height(12.dp))
+                    GlassCard(radius = 16.dp) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Text(
+                                "Stream format",
+                                color = TextSecondary, fontFamily = AppFont,
+                                fontWeight = FontWeight.Bold, fontSize = 12.sp,
+                            )
+                            SegmentedToggle(
+                                options = NavFormatLabels,
+                                selectedIndex = NavFormatValues.indexOf(navFormat).coerceAtLeast(0),
+                                modifier = Modifier.fillMaxWidth(),
+                            ) { i ->
+                                navFormat = NavFormatValues[i]
+                                scope.launch { settings.setNavStreamFormat(NavFormatValues[i]) }
+                            }
+                            Text(
+                                when (navFormat) {
+                                    "raw" -> "The stored file, untouched. Best quality; needs the bandwidth " +
+                                        "the file was encoded at."
+                                    "flac" -> "Transcoded to FLAC. Still lossless, and a predictable size " +
+                                        "even when the library holds huge hi-res masters."
+                                    else -> "Transcoded, lossy. Worth it on a slow or metered connection."
+                                },
+                                color = TextFaint, fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp,
+                            )
+                            Text(
+                                "Applies to the next track. Downloads always take the original file.",
+                                color = TextFaint, fontFamily = AppFont, fontSize = 11.sp,
+                            )
+                        }
+                    }
+                }
 
                 // ── Downloads ───────────────────────────────────────────────
                 item { DownloadsCard(libraryVm, accent) }
@@ -629,6 +710,21 @@ private fun ToggleRow(title: String, subtitle: String, checked: Boolean, accent:
         ) { Box(Modifier.size(18.dp).clip(CircleShape).background(if (checked) Ink else TextMuted)) }
     }
 }
+
+/**
+ * What this phone tells Music Assistant it can decode. "Auto" offers all three;
+ * naming one narrows the advertised list to it alone, which is what actually forces
+ * the server's hand — see `FormatNegotiator.supportedFormats`.
+ */
+private val CodecValues = listOf("auto", "flac", "pcm", "opus")
+private val CodecLabels = listOf("Auto", "FLAC", "PCM", "Opus")
+
+/**
+ * What Navidrome should send for a direct stream, as `format` (and `maxBitRate` where
+ * the codec is lossy) on `/rest/stream`. "raw" hands back the stored file untouched.
+ */
+private val NavFormatValues = listOf("raw", "flac", "mp3-320", "mp3-192", "opus-128")
+private val NavFormatLabels = listOf("Original", "FLAC", "MP3 320", "MP3 192", "Opus 128")
 
 @Composable
 private fun StatusRow(label: String, value: String) {

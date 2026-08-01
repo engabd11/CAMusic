@@ -61,6 +61,17 @@ class SubsonicClient(
     /** The normalised server root, e.g. `http://192.168.0.10:4533`. */
     val serverUrl: String get() = base()
 
+    /**
+     * What [streamUrl] asks the server for, as the token described there
+     * (`"raw"`, `"flac"`, `"mp3-320"`, …).
+     *
+     * A mutable property rather than a constructor argument because the client is
+     * long-lived and shared, and the setting can change under it — rebuilding the
+     * client on a format change would drop the connection state with it.
+     */
+    @Volatile
+    var streamFormat: String = "raw"
+
     // --- URL building -----------------------------------------------------
 
     /**
@@ -93,14 +104,28 @@ class SubsonicClient(
     }
 
     /**
-     * `format=raw` tells Navidrome to hand back the stored file untouched. Without it
-     * the server applies whatever transcoding profile it has for this client, which
-     * would silently turn a FLAC into 192k MP3 — so it is not optional if playback is
-     * meant to be bit-perfect. `estimateContentLength` is off for the same reason: it
-     * only means anything for transcoded output.
+     * A stream URL for [id] in [format].
+     *
+     * `format` is always sent explicitly. Omitting it lets the server apply whatever
+     * transcoding profile it has for this client, which would silently turn a FLAC
+     * into 192k MP3 — so `"raw"` (the default, meaning the stored file untouched) is
+     * not optional if playback is meant to be bit-perfect.
+     *
+     * The lossy options carry the bitrate in the same token (`"mp3-320"`), because
+     * Subsonic wants it as a separate `maxBitRate` parameter and keeping the pair
+     * together stops the two drifting apart. `maxBitRate` is meaningless for lossless
+     * output and is left off there.
      */
-    fun streamUrl(id: String): String =
-        restUrl("stream", mapOf("id" to id, "format" to "raw"), jsonFmt = false)
+    fun streamUrl(id: String, format: String = streamFormat): String {
+        val codec = format.substringBefore('-').ifBlank { "raw" }
+        val bitrate = format.substringAfter('-', "").toIntOrNull()
+        val params = buildMap {
+            put("id", id)
+            put("format", codec)
+            bitrate?.let { put("maxBitRate", it.toString()) }
+        }
+        return restUrl("stream", params, jsonFmt = false)
+    }
 
     /** `/download` is defined to return the original file, so it needs no format hint. */
     fun downloadUrl(id: String): String = restUrl("download", mapOf("id" to id), jsonFmt = false)

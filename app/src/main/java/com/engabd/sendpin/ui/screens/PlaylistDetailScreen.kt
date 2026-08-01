@@ -62,6 +62,8 @@ fun PlaylistDetailScreen(
     val loading by viewModel.loading.collectAsState()
     val error by viewModel.error.collectAsState()
     val snackbar = remember { SnackbarHostState() }
+    // The track whose long-press menu is open, if any.
+    var actionsFor by remember { mutableStateOf<MaItem?>(null) }
 
     LaunchedEffect(Unit) { viewModel.toast.collect { snackbar.showSnackbar(it) } }
     BackHandler { onBack() }
@@ -128,6 +130,7 @@ fun PlaylistDetailScreen(
                                 index = index,
                                 accent = playlistPalette.accent,
                                 onPlay = { viewModel.playTrack(track) },
+                                onLongPress = { actionsFor = track },
                             )
                         }
                     }
@@ -142,6 +145,17 @@ fun PlaylistDetailScreen(
                 Snackbar(containerColor = Ink3, contentColor = TextPrimary, shape = RoundedCornerShape(14.dp)) {
                     Text(data.visuals.message, fontFamily = AppFont, fontSize = 13.sp)
                 }
+            }
+
+            // Long-press on a track: queue it without losing what's playing.
+            actionsFor?.let { picked ->
+                TrackActionsSheet(
+                    track = picked,
+                    onClose = { actionsFor = null },
+                    onPlayNow = { viewModel.playTrack(picked) },
+                    onPlayNext = { viewModel.enqueueTrack(picked, "next") },
+                    onAddToQueue = { viewModel.enqueueTrack(picked, "add") },
+                )
             }
         }
     }

@@ -4,7 +4,9 @@ import android.app.Application
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -70,6 +72,8 @@ fun AlbumDetailScreen(
     val albumDownloaded by viewModel.allDownloaded.collectAsState()
     val accent = LocalAccent.current
     val snackbar = remember { SnackbarHostState() }
+    // The track whose long-press menu is open, if any.
+    var actionsFor by remember { mutableStateOf<MaItem?>(null) }
 
     LaunchedEffect(Unit) { viewModel.toast.collect { snackbar.showSnackbar(it) } }
     BackHandler { onBack() }
@@ -135,6 +139,7 @@ fun AlbumDetailScreen(
                                 accent = albumPalette.accent,
                                 onPlay = { viewModel.playTrack(track) },
                                 onFavorite = { viewModel.toggleFavorite(track) },
+                                onLongPress = { actionsFor = track },
                             )
                         }
                     }
@@ -151,6 +156,17 @@ fun AlbumDetailScreen(
                     containerColor = Ink3, contentColor = TextPrimary,
                     shape = RoundedCornerShape(14.dp),
                 ) { Text(data.visuals.message, fontFamily = AppFont, fontSize = 13.sp) }
+            }
+
+            // Long-press on a track: queue it without losing what's playing.
+            actionsFor?.let { picked ->
+                TrackActionsSheet(
+                    track = picked,
+                    onClose = { actionsFor = null },
+                    onPlayNow = { viewModel.playTrack(picked) },
+                    onPlayNext = { viewModel.enqueueTrack(picked, "next") },
+                    onAddToQueue = { viewModel.enqueueTrack(picked, "add") },
+                )
             }
         }
     }
@@ -301,6 +317,7 @@ private fun AlbumHero(
 
 // --- track row ------------------------------------------------------------
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun TrackRow(
     track: MaItem,
@@ -308,11 +325,13 @@ internal fun TrackRow(
     accent: Color,
     onPlay: () -> Unit,
     onFavorite: (() -> Unit)? = null,
+    /** Long-press opens the queue actions. Null leaves the row tap-only. */
+    onLongPress: (() -> Unit)? = null,
 ) {
     Row(
         Modifier
             .fillMaxWidth()
-            .clickable(onClick = onPlay)
+            .combinedClickable(onClick = onPlay, onLongClick = onLongPress)
             .padding(horizontal = 20.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(14.dp),

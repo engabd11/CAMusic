@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -33,6 +34,8 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.engabd.sendpin.ui.design.LocalAccent
+import com.engabd.sendpin.ui.design.LocalMiniBarInset
+import com.engabd.sendpin.ui.design.MiniBarHeight
 import com.engabd.sendpin.ui.design.LocalPalette
 import com.engabd.sendpin.ui.design.NavTab
 import com.engabd.sendpin.ui.design.SendspinNavBar
@@ -162,7 +165,15 @@ fun App() {
             }
         }
 
-        CompositionLocalProvider(LocalAccent provides appAccent, LocalPalette provides appPalette) {
+        // The mini player bar is bottom chrome the same way the tab bar is, and only
+        // exists in the overlay layout. Publishing its height here is what lets every
+        // screen's `navBarInset()` reserve room for it without any of them knowing the
+        // layout is in play.
+        CompositionLocalProvider(
+            LocalAccent provides appAccent,
+            LocalPalette provides appPalette,
+            LocalMiniBarInset provides if (isOverlay) MiniBarHeight else 0.dp,
+        ) {
             Box(Modifier.fillMaxSize().background(Ink)) {
                 val tabs = if (isOverlay) OverlayTabs else TabTabs
                 val startDest = if (isOverlay) "library" else "now_playing"
@@ -286,8 +297,14 @@ fun App() {
                         Modifier
                             .align(Alignment.BottomCenter)
                     ) {
-                        // Mini player bar above the nav bar.
-                        Box(Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
+                        // Mini player bar above the nav bar. Pinned to [MiniBarHeight]
+                        // rather than measured, so the space `navBarInset()` reserves
+                        // for it can't drift out of step with what it actually takes.
+                        Box(
+                            Modifier
+                                .height(MiniBarHeight)
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                        ) {
                             MiniPlayerBar(viewModel = nowPlayingVm, onExpand = { overlayExpanded = true })
                         }
                         SendspinNavBar(

@@ -615,10 +615,17 @@ fun HSlider(
 
         // Magnifier — rides above the knob while dragging, clamped so it stays on
         // screen at both ends of the track.
+        //
+        // `wrapContentSize(unbounded = true)` is load-bearing. This Box's parent is the
+        // slider, which is a fixed 18.dp tall, and Box hands that down as a maximum: the
+        // bubble was squashed to 18.dp, its 5.dp padding left the text an 8.dp band, and
+        // the rounded clip cut the glyphs into stubs that read as underscores. The
+        // `offset` only moves the bubble up; it grants it no height.
         if (dragging && label != null) {
             val text = label(v)
             Box(
                 Modifier
+                    .wrapContentSize(align = Alignment.BottomStart, unbounded = true)
                     .offset {
                         val half = BubbleWidth.toPx() / 2f
                         val x = (v * width - half).coerceIn(0f, (width - BubbleWidth.toPx()).coerceAtLeast(0f))
