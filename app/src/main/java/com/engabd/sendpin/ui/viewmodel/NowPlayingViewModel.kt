@@ -726,6 +726,15 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Queue commands go to the group leader, since members share its queue. */
+    /**
+     * The queue behind the current target, resolved locally from `synced_to`.
+     *
+     * A synchronous best guess, because this is read on every state emission. The
+     * server's own answer (`player_queues/get_active_queue`) is authoritative and is
+     * what [MaRepository.playOn] uses for anything that *changes* the queue; this is
+     * only for reading and for keying the position tracker, where being one poll
+     * behind on a group change costs nothing.
+     */
     private fun streamQueueId(): String {
         val id = targetId()
         return _players.value.firstOrNull { it.playerId == id }?.syncedTo ?: id
@@ -1039,7 +1048,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         val q = streamQueueId()
         viewModelScope.launch {
             try {
-                repo.playMedia(q, listOf(uri), option)
+                repo.playOn(targetId(), listOf(uri), option)
                 _toast.tryEmit(if (option == "next") "Playing next" else "Added to queue")
                 delay(350); refresh()
                 if (_queueItems.value !is Load.Idle) loadQueue(silent = true)

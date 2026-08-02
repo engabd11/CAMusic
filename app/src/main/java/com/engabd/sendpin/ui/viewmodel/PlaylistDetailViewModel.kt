@@ -110,7 +110,7 @@ class PlaylistDetailViewModel(
                     localPlayer.setShuffle(false)
                     localPlayer.setQueue(localTracks())
                 } else {
-                    maRepo.playMedia(playTarget(), _tracks.value.mapNotNull { it.uri }, "replace")
+                    maRepo.playOn(playTarget(), _tracks.value.mapNotNull { it.uri }, "replace")
                 }
                 _toast.tryEmit("Playing ${_playlist.value?.name ?: "playlist"}")
             } catch (e: Exception) { _toast.tryEmit(e.message ?: "Couldn't play") }
@@ -128,7 +128,7 @@ class PlaylistDetailViewModel(
                     localPlayer.setShuffle(true)
                     localPlayer.setQueue(localTracks())
                 } else {
-                    maRepo.playMedia(playTarget(), _tracks.value.mapNotNull { it.uri }.shuffled(), "replace")
+                    maRepo.playOn(playTarget(), _tracks.value.mapNotNull { it.uri }.shuffled(), "replace")
                     maRepo.setShuffle(playTarget(), true)
                 }
                 _toast.tryEmit("Shuffling ${_playlist.value?.name ?: "playlist"}")
@@ -177,9 +177,9 @@ class PlaylistDetailViewModel(
                 } else {
                     // MA's play_media + "replace" always starts at index 0, so play the
                     // tapped track and append the rest of the playlist behind it.
-                    track.uri?.let { maRepo.playMedia(playTarget(), listOf(it), "replace") }
+                    track.uri?.let { maRepo.playOn(playTarget(), listOf(it), "replace") }
                     val rest = _tracks.value.mapNotNull { it.uri }.filter { it != track.uri }
-                    if (rest.isNotEmpty()) maRepo.playMedia(playTarget(), rest, "add")
+                    if (rest.isNotEmpty()) maRepo.playOn(playTarget(), rest, "add")
                 }
                 _toast.tryEmit("Playing ${track.name}")
             } catch (e: Exception) { _toast.tryEmit(e.message ?: "Couldn't play") }

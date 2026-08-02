@@ -5,8 +5,9 @@ import kotlinx.serialization.json.*
 /**
  * High-level Music Assistant library + control, on top of [MaApiClient]. Command
  * names and argument shapes follow the MA WS API (see the massdroid MaCommands
- * contracts, MIT). A player's queue id equals its player id, so playing to *this*
- * phone means `playMedia(ourClientId, …)`.
+ * contracts, MIT). Queue commands address a **queue**, not a player: use
+ * [activeQueueId] (or [playOn], which does it for you) rather than assuming the two
+ * ids are the same — for a synced player they are not.
  */
 class MaRepository(val api: MaApiClient) {
 
@@ -153,9 +154,39 @@ class MaRepository(val api: MaApiClient) {
     /** All player queues — carries the stream details behind the quality badge. */
     suspend fun queues() = MaParse.queues(api.sendCommand("player_queues/all"), serverUrl)
 
-    /** Play items to a player (queue_id == player_id). [option]: play|replace|next|add. */
     /**
-     * Append [uris] to a player's queue.
+     * The queue a player is actually playing from.
+     *
+     * **Not** the same thing as the player id, which is what every queue command in
+     * this app used to be given. The `player_queues` commands address a *queue*, and a
+     * player that is synced to another plays the leader's queue — so a queue command
+     * aimed at the member's own id lands on a queue nobody is listening to. That is
+     * why "add to queue" appeared to do nothing unless the queue happened to be empty:
+     * the items really were added, to the wrong queue, and only became audible when
+     * playing it made that queue the active one.
+     *
+     * `player_queues/get_active_queue` is Music Assistant's own answer to the question,
+     * so it is used in preference to guessing from `synced_to`.
+     */
+    suspend fun activeQueueId(playerId: String): String {
+        val res = runCatching {
+            api.sendCommand("player_queues/get_active_queue", buildJsonObject { put("player_id", playerId) })
+        }.getOrNull()?.jsonObject
+        return res?.get("queue_id")?.jsonPrimitive?.contentOrNull ?: playerId
+    }
+
+    /** A single player's state, or null when the server doesn't know it. */
+    suspend fun getPlayer(playerId: String): MaPlayer? {
+        val res = runCatching {
+            api.sendCommand("players/get", buildJsonObject {
+                put("player_id", playerId); put("raise_unavailable", false)
+            })
+        }.getOrNull() ?: return null
+        return MaParse.players(JsonArray(listOf(res))).firstOrNull()
+    }
+
+    /**
+     * Append [uris] to a player's queue, addressed by its **active** queue.
      *
      * Kept as a distinct entry point from [playMedia] so the enqueue path can't drift
      * from what the reference client sends. Counting the queue either side of the call
@@ -164,7 +195,16 @@ class MaRepository(val api: MaApiClient) {
      * nothing useful about whether the request itself landed.
      */
     suspend fun enqueue(playerId: String, uris: List<String>, option: String) =
-        playMedia(playerId, uris, option)
+        playOn(playerId, uris, option)
+
+    /**
+     * Play [uris] on whatever queue [playerId] is actually using.
+     *
+     * The entry point every screen should use. [playMedia] takes a raw `queue_id` and
+     * is left exposed only for callers that already hold one.
+     */
+    suspend fun playOn(playerId: String, uris: List<String>, option: String = "replace") =
+        playMedia(activeQueueId(playerId), uris, option)
 
     /**
      * `player_queues/play_media`, argument-for-argument as the official Music

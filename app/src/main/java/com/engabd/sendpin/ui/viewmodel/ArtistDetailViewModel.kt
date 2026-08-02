@@ -203,7 +203,7 @@ class ArtistDetailViewModel(
             localPlayer.setShuffle(false)
             localPlayer.setQueue(localTracks(tracks))
         } else {
-            maRepo.playMedia(playTarget(), tracks.mapNotNull { it.uri }, "replace")
+            maRepo.playOn(playTarget(), tracks.mapNotNull { it.uri }, "replace")
         }
         _toast.tryEmit("Playing ${ref.name}")
     }
@@ -217,7 +217,7 @@ class ArtistDetailViewModel(
             localPlayer.setShuffle(true)
             localPlayer.setQueue(localTracks(tracks))
         } else {
-            maRepo.playMedia(playTarget(), tracks.mapNotNull { it.uri }.shuffled(), "replace")
+            maRepo.playOn(playTarget(), tracks.mapNotNull { it.uri }.shuffled(), "replace")
             maRepo.setShuffle(playTarget(), true)
         }
         _toast.tryEmit("Shuffling ${ref.name}")
@@ -228,7 +228,7 @@ class ArtistDetailViewModel(
         if (isSubsonic) {
             localPlayer.addToQueue(localTracks(tracks))
         } else {
-            maRepo.playMedia(playTarget(), tracks.mapNotNull { it.uri }, "add")
+            maRepo.playOn(playTarget(), tracks.mapNotNull { it.uri }, "add")
         }
         _toast.tryEmit("Added ${tracks.size} tracks to queue")
     }

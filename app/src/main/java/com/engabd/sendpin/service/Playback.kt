@@ -313,13 +313,15 @@ class Playback(private val app: Context) {
      */
     private suspend fun syncPlayerConfig(name: String, codec: String) {
         if (settings.maBaseUrl.first().isBlank()) return
-        // MA has to have seen the hello before there is a player to configure. A miss
+        // MA has to have seen the hello before there is a player to configure. Asked
+        // directly with `players/get` rather than scanning `players/all`, whose default
+        // filters exclude unavailable and protocol players. A miss
         // here is not worth reporting: the hello already carried the right name, so a
         // freshly-registered player is correct with or without this call. Saying
         // "hasn't registered this player yet" after a rename that plainly worked was
         // just wrong.
         val known = withTimeoutOrNull(20_000) {
-            while (maRepo.players().none { it.playerId == playerId }) delay(750)
+            while (maRepo.getPlayer(playerId) == null) delay(750)
             true
         }
         if (known != true) return

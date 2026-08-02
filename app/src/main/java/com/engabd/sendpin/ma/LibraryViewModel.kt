@@ -366,7 +366,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                         // buttons keep driving) a player that is no longer the one
                         // making the sound.
                         if (option == "replace") localPlayer.stop()
-                        item.uri?.let { maRepo.playMedia(playTarget(), listOf(it), option) }
+                        item.uri?.let { maRepo.playOn(playTarget(), listOf(it), option) }
                         _toast.tryEmit(if (option == "replace") "Playing ${item.name}" else "Added to queue")
                     }
                 }
@@ -502,7 +502,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 if (_backend.value == Backend.MA && tracks.none { it.provider == DOWNLOAD }) {
                     if (replacing) localPlayer.stop()
-                    maRepo.playMedia(playTarget(), tracks.mapNotNull { it.uri }, option)
+                    maRepo.playOn(playTarget(), tracks.mapNotNull { it.uri }, option)
                     _toast.tryEmit(queuedMessage(option, tracks.size))
                 } else {
                     // Local playback — stop MA first so both don't play at once.

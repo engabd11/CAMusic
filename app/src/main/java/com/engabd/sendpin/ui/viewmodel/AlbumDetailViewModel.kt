@@ -130,7 +130,7 @@ class AlbumDetailViewModel(
                     localPlayer.setShuffle(false)
                     localPlayer.setQueue(localTracks())
                 } else {
-                    maRepo.playMedia(playTarget(), uris, "replace")
+                    maRepo.playOn(playTarget(), uris, "replace")
                 }
                 _toast.tryEmit("Playing ${_album.value?.name ?: "album"}")
             } catch (e: Exception) {
@@ -152,7 +152,7 @@ class AlbumDetailViewModel(
                     localPlayer.setShuffle(true)
                     localPlayer.setQueue(localTracks())
                 } else {
-                    maRepo.playMedia(playTarget(), uris, "replace")
+                    maRepo.playOn(playTarget(), uris, "replace")
                     maRepo.setShuffle(playTarget(), true)
                 }
                 _toast.tryEmit("Shuffling ${_album.value?.name ?: "album"}")
@@ -248,10 +248,10 @@ class AlbumDetailViewModel(
                     // Play the whole album starting from this track — MA's play_media
                     // with "replace" + the full URI list starts at index 0; to start
                     // from a specific track, we play just that track, then add the rest.
-                    track.uri?.let { maRepo.playMedia(playTarget(), listOf(it), "replace") }
+                    track.uri?.let { maRepo.playOn(playTarget(), listOf(it), "replace") }
                     val rest = _tracks.value.mapNotNull { it.uri }
                         .filter { it != track.uri }
-                    if (rest.isNotEmpty()) maRepo.playMedia(playTarget(), rest, "add")
+                    if (rest.isNotEmpty()) maRepo.playOn(playTarget(), rest, "add")
                     maRepo.play(playTarget())
                 }
                 _toast.tryEmit("Playing ${track.name}")
