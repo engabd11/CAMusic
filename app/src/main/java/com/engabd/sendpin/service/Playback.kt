@@ -36,7 +36,13 @@ class Playback(private val app: Context) {
     private val settings = AppSettings(app)
     private val discovery = MaDiscovery(app)
 
-    val playerId: String = PlayerIdentity.getPlayerId(app)
+    /**
+     * This player's Sendspin `client_id`. Not a `val`: [reregister] mints a new one,
+     * which is the only way to shake off a name Music Assistant has already committed
+     * to for an existing player.
+     */
+    var playerId: String = PlayerIdentity.getPlayerId(app)
+        private set
     /**
      * The hardware's name ("Samsung SM-S911B"), which is only the *fallback* for the
      * player's name. It used to be exposed as `playerName` and printed in Settings
@@ -376,6 +382,26 @@ class Playback(private val app: Context) {
     fun enablePlayer(name: String = "", codec: String = "") = scope.launch {
         if (name.isNotBlank()) settings.setPlayerName(name)
         if (codec.isNotBlank()) settings.setSendspinCodec(codec)
+        val base = settings.maBaseUrl.first()
+        if (base.isNotBlank()) connectToServer(sendspinUrlFrom(base))
+    }
+
+    /**
+     * Register with Music Assistant as a brand-new player, under [name].
+     *
+     * The last resort for a stuck name. MA keys a Sendspin player on its `client_id`
+     * and keeps whatever name it first registered under — the protocol has no rename
+     * message, and the official app has no rename call at all because its users pick a
+     * name before the player ever registers. When the server-side config edit is
+     * refused, arriving as someone new is the only move left, and it always works. The
+     * old player stays in MA as an unavailable entry for the user to delete.
+     */
+    fun reregister(name: String) = scope.launch {
+        if (name.isNotBlank()) settings.setPlayerName(name)
+        disconnect(stopService = false)
+        PlayerIdentity.newIdentity(app)
+        playerId = PlayerIdentity.getPlayerId(app)
+        _configStatus.value = ""
         val base = settings.maBaseUrl.first()
         if (base.isNotBlank()) connectToServer(sendspinUrlFrom(base))
     }

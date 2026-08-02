@@ -172,16 +172,8 @@ class AlbumDetailViewModel(
                     localPlayer.addToQueue(localTracks())
                     _toast.tryEmit("Added ${_tracks.value.size} tracks to queue")
                 } else {
-                    // Verified: MA answers play_media with nothing at all, so a queue
-                    // that refused the items looked exactly like one that took them.
-                    val added = maRepo.enqueueVerified(playTarget(), uris, "add")
-                    _toast.tryEmit(
-                        when (added) {
-                            0 -> "Music Assistant didn't add those — is the player powered on?"
-                            null -> "Added ${uris.size} tracks to queue"
-                            else -> "Added $added tracks to queue"
-                        }
-                    )
+                    maRepo.enqueue(playTarget(), uris, "add")
+                    _toast.tryEmit("Added ${uris.size} tracks to queue")
                 }
             } catch (e: Exception) {
                 _toast.tryEmit(e.message ?: "Couldn't add to queue")
@@ -205,10 +197,7 @@ class AlbumDetailViewModel(
                     if (option == "next") localPlayer.playNext(one) else localPlayer.addToQueue(one)
                 } else {
                     val uri = track.uri ?: run { _toast.tryEmit("Couldn't queue that"); return@launch }
-                    if (maRepo.enqueueVerified(playTarget(), listOf(uri), option) == 0) {
-                        _toast.tryEmit("Music Assistant didn't add that — is the player powered on?")
-                        return@launch
-                    }
+                    maRepo.enqueue(playTarget(), listOf(uri), option)
                 }
                 _toast.tryEmit(if (option == "next") "Playing next" else "Added to queue")
             } catch (e: Exception) {

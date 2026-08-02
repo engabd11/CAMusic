@@ -55,6 +55,9 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     /** Rename without a reconnect — the displayed name is player config, not the hello. */
     fun renamePlayer(name: String) = pb.renamePlayer(name)
 
+    /** Arrive in Music Assistant as a new player, when the old one's name won't budge. */
+    fun reregister(name: String) = pb.reregister(name)
+
     fun onPlayPause() = pb.onPlayPause()
     fun onMediaNext() = pb.onMediaNext()
     fun onMediaPrevious() = pb.onMediaPrevious()

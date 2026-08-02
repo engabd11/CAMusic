@@ -142,10 +142,7 @@ class PlaylistDetailViewModel(
         viewModelScope.launch {
             try {
                 if (isSubsonic) localPlayer.addToQueue(localTracks())
-                else if (maRepo.enqueueVerified(playTarget(), tracks.mapNotNull { it.uri }, "add") == 0) {
-                    _toast.tryEmit("Music Assistant didn't add those — is the player powered on?")
-                    return@launch
-                }
+                else maRepo.enqueue(playTarget(), tracks.mapNotNull { it.uri }, "add")
                 _toast.tryEmit("Added ${tracks.size} tracks to queue")
             } catch (e: Exception) { _toast.tryEmit(e.message ?: "Couldn't add to queue") }
         }
@@ -161,10 +158,7 @@ class PlaylistDetailViewModel(
                     if (option == "next") localPlayer.playNext(one) else localPlayer.addToQueue(one)
                 } else {
                     val uri = track.uri ?: run { _toast.tryEmit("Couldn't queue that"); return@launch }
-                    if (maRepo.enqueueVerified(playTarget(), listOf(uri), option) == 0) {
-                        _toast.tryEmit("Music Assistant didn't add that — is the player powered on?")
-                        return@launch
-                    }
+                    maRepo.enqueue(playTarget(), listOf(uri), option)
                 }
                 _toast.tryEmit(if (option == "next") "Playing next" else "Added to queue")
             } catch (e: Exception) { _toast.tryEmit(e.message ?: "Couldn't queue that") }

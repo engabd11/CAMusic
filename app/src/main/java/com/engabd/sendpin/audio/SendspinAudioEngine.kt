@@ -74,6 +74,12 @@ class SendspinAudioEngine(private val clock: ClockSync) {
     private var codec: MediaCodec? = null
     private var track: AudioTrack? = null
     private var isPcm = false
+    /**
+     * The next frame is the head of a stream and should be held until its scheduled
+     * moment. Cleared once that frame is released; set again by [start] and [flush],
+     * which are the two points where playback restarts from a known position.
+     */
+    @Volatile private var awaitStart = false
     @Volatile private var volume = 1.0f
 
     @Synchronized
@@ -87,6 +93,7 @@ class SendspinAudioEngine(private val clock: ClockSync) {
             else -> null   // pcm or unknown -> passthrough / silence
         }
         track = createTrack(format.sampleRate, channels).also { it.setVolume(volume); it.play() }
+        awaitStart = true
         running = true
         worker = thread(name = "sendspin-audio", isDaemon = true) { runLoop() }
         Log.d(TAG, "start ${format.codec} ${format.sampleRate}/${format.bitDepth} ch=$channels")
@@ -102,6 +109,9 @@ class SendspinAudioEngine(private val clock: ClockSync) {
     /** stream/clear — a seek or track jump: drop buffered audio and reset. */
     fun flush() {
         queue.clear()
+        // A seek or track jump restarts from a known point, so the next frame is a
+        // head-of-stream again and gets scheduled like one.
+        awaitStart = true
         try { codec?.flush(); codec?.start() } catch (_: Exception) {}
         try { track?.pause(); track?.flush(); track?.play() } catch (_: Exception) {}
     }
@@ -135,9 +145,20 @@ class SendspinAudioEngine(private val clock: ClockSync) {
             } ?: continue
             val t = track ?: continue
 
-            // Hold the frame until the instant the server said it should be heard.
-            // Skipped frames are already in the past and are dropped, per the spec.
-            if (!awaitFrameTime(frame.serverTsUs)) continue
+            // Only the *first* frame of a stream is scheduled; after that the
+            // AudioTrack paces playback itself at the stream's sample rate.
+            //
+            // Scheduling every frame was wrong and audible: the clock filter needs a
+            // few round-trips to converge, so early frames played immediately (unsynced)
+            // and then, a second or two in, `isSynced()` flipped and the loop suddenly
+            // started blocking on frames whose scheduled time had already been consumed
+            // by the unscheduled head start. That transition is a stall the listener
+            // hears as a skip. Deciding once, at the head of the stream, cannot do that:
+            // either the whole stream is scheduled or none of it is.
+            if (awaitStart) {
+                awaitStart = false
+                if (!awaitFrameTime(frame.serverTsUs)) continue
+            }
 
             if (isPcm) {
                 t.write(frame.payload, 0, frame.payload.size)   // s16le passthrough
@@ -178,7 +199,7 @@ class SendspinAudioEngine(private val clock: ClockSync) {
      * Block until [serverTsUs] — the instant the server wants this chunk heard —
      * arrives on the local clock. Returns false if the frame is too late to play.
      *
-     * This is the piece that was missing. The Sendspin spec is explicit: "Binary audio
+     * Called for the head of a stream only — see the call site. The spec is explicit: "Binary audio
      * messages contain timestamps in the server's time domain indicating when the
      * audio should be played… Clients must translate this server timestamp to their
      * local clock using the offset computed from clock synchronization", and "Audio

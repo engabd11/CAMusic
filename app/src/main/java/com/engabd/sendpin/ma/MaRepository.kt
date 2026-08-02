@@ -155,38 +155,39 @@ class MaRepository(val api: MaApiClient) {
 
     /** Play items to a player (queue_id == player_id). [option]: play|replace|next|add. */
     /**
-     * Append [uris] to a player's queue, and confirm the server actually took them.
+     * Append [uris] to a player's queue.
      *
-     * `play_media` answers with no result, so a queue that quietly refuses the items —
-     * the player isn't powered, the queue isn't active, the option isn't understood —
-     * is indistinguishable from success. Counting the queue either side is the only
-     * way to know, and "added to queue" was being reported when nothing had been.
-     *
-     * Returns the number of items the queue gained, or null when the count couldn't be
-     * read (in which case the caller should assume it worked rather than cry wolf).
+     * Kept as a distinct entry point from [playMedia] so the enqueue path can't drift
+     * from what the reference client sends. Counting the queue either side of the call
+     * to "verify" it was a mistake: Music Assistant tops the queue up on its own (radio
+     * mode, "don't stop the music"), so the delta reported items nobody added and said
+     * nothing useful about whether the request itself landed.
      */
-    suspend fun enqueueVerified(playerId: String, uris: List<String>, option: String): Int? {
-        val before = queueItemCount(playerId)
+    suspend fun enqueue(playerId: String, uris: List<String>, option: String) =
         playMedia(playerId, uris, option)
-        if (before == null) return null
-        // The queue is updated asynchronously; give it a moment before counting.
-        repeat(6) {
-            kotlinx.coroutines.delay(400)
-            val after = queueItemCount(playerId) ?: return null
-            if (after > before) return after - before
-        }
-        return 0
-    }
 
-    /** How many items a player's queue holds, or null if the server didn't say. */
-    private suspend fun queueItemCount(playerId: String): Int? =
-        queues().firstOrNull { it.queueId == playerId }?.itemCount
-
-    suspend fun playMedia(playerId: String, uris: List<String>, option: String = "replace") {
+    /**
+     * `player_queues/play_media`, argument-for-argument as the official Music
+     * Assistant app sends it (`api/Request.kt: Player.play`).
+     *
+     * `radio_mode` is sent **explicitly**. Leaving it out is what broke enqueueing:
+     * with the flag absent Music Assistant fell back to the queue's own radio setting,
+     * and on a queue that already had items the added tracks were discarded in favour
+     * of its generated ones — which is exactly the reported behaviour, that "add" only
+     * worked when the queue was empty. It is a defaulted parameter server-side, so
+     * omitting it looked harmless; it isn't.
+     */
+    suspend fun playMedia(
+        playerId: String,
+        uris: List<String>,
+        option: String = "replace",
+        radioMode: Boolean = false,
+    ) {
         api.sendCommand("player_queues/play_media", buildJsonObject {
-            put("queue_id", playerId)
             put("media", JsonArray(uris.map { JsonPrimitive(it) }))
             put("option", option)
+            put("radio_mode", radioMode)
+            put("queue_id", playerId)
         })
     }
 

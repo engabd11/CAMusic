@@ -217,6 +217,24 @@ fun SettingsScreen(
                                     color = TextFaint, fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp,
                                 )
                             }
+
+                            // Last resort for a name Music Assistant won't let go of.
+                            // MA keys a player on its client id and keeps the name it
+                            // was first registered under; the protocol has no rename
+                            // message, so when the config edit is refused, arriving as
+                            // a new player is the only thing left.
+                            Spacer(Modifier.height(2.dp))
+                            Box(Modifier.fillMaxWidth().height(1.dp).background(HairlineSoft))
+                            Text(
+                                "Still showing the old name? Music Assistant keeps the name a player " +
+                                    "was first registered under. Registering again arrives as a new " +
+                                    "player under the name above — the old entry stays in Music " +
+                                    "Assistant, greyed out, for you to delete.",
+                                color = TextFaint, fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp,
+                            )
+                            OledButton("Register again as a new player", accent = accent) {
+                                viewModel.reregister(playerName.trim())
+                            }
                         }
                     }
                 }
