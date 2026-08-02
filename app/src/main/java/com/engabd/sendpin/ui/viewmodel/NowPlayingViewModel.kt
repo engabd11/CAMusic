@@ -258,12 +258,16 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             // disagree with Settings on the very same track. A remote speaker gives us
             // no output handle at all, so there the queue's details are all there is.
             quality = when {
+                // A remote speaker decodes on its own hardware and Music Assistant is
+                // the only thing that knows what it was handed. This phone's output
+                // format says nothing about it — reporting `deviceQuality` here claimed
+                // every speaker was playing whatever this phone would have played.
                 !isSelf -> queueQuality
+                // This phone is the player: the negotiated Sendspin stream *is* the
+                // output, and it is the same reading Settings prints under "Format".
                 local != null -> local
-                // Nothing negotiated but something *is* playing: the file is being
-                // decoded here (a Navidrome stream played direct), so the phone's own
-                // output ceiling is the honest answer.
-                live != null -> deviceQuality
+                // Nothing negotiated yet. Better to show nothing than to invent the
+                // phone's output ceiling and have the badge disagree with Settings.
                 else -> null
             },
             // `sourceQuality` is Source: the library file's own format, before anything

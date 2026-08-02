@@ -129,6 +129,12 @@ fun NowPlayingOverlay(
     // How far up the cover has to travel before the queue is what you meant.
     val queueRevealPx = screenHeightPx * 0.06f
     var dragPx by remember { mutableFloatStateOf(0f) }
+    /**
+     * How far this gesture has travelled upward. Tracked separately from [dragPx]
+     * because an upward swipe must not move the cover at all — it only decides whether
+     * the queue should come up on release.
+     */
+    var upTravel by remember { mutableFloatStateOf(0f) }
     val settle = remember { Animatable(0f) }
     var settling by remember { mutableStateOf(false) }
     val offsetPx = if (settling) settle.value else dragPx
@@ -160,7 +166,7 @@ fun NowPlayingOverlay(
                 // queue is never what the swipe meant.
                 .pointerInput(Unit) {
                     detectVerticalDragGestures(
-                        onDragStart = { if (!gestureBlocked) dragPx = 0f },
+                        onDragStart = { if (!gestureBlocked) { dragPx = 0f; upTravel = 0f } },
                         onDragEnd = {
                             if (gestureBlocked) return@detectVerticalDragGestures
                             dragScope.launch {
@@ -173,7 +179,7 @@ fun NowPlayingOverlay(
                                         settleTo(collapseOffset, 250)
                                         onCollapse()
                                     }
-                                    dragPx < -queueRevealPx -> {
+                                    upTravel < -queueRevealPx -> {
                                         // Show the queue *first*, then drop the cover back.
                                         // Awaiting a 200ms slide down before setting the
                                         // panel is what read as "snaps up, bounces back,
@@ -181,6 +187,7 @@ fun NowPlayingOverlay(
                                         // animate in; the cover just returns to rest.
                                         panel = Panel.QUEUE
                                         dragPx = 0f
+                                        upTravel = 0f
                                         settling = false
                                     }
                                     else -> settleTo(0f, 250)
@@ -192,9 +199,13 @@ fun NowPlayingOverlay(
                             if (gestureBlocked) return@detectVerticalDragGestures
                             change.consume()
                             settling = false
-                            // Down is a real slide towards the mini bar; up only
-                            // lifts a little, as a hint that something is under it.
-                            dragPx = (dragPx + dragAmount).coerceAtLeast(-queueRevealPx * 1.6f)
+                            // Down is a real slide towards the mini bar. Up moves
+                            // nothing: the cover staying put while the queue rises over
+                            // it is the whole effect, and lifting it as a "hint" just
+                            // read as the screen jumping. The upward travel is still
+                            // accumulated below so the release threshold can use it.
+                            upTravel = (upTravel + dragAmount).coerceAtMost(0f)
+                            dragPx = (dragPx + dragAmount).coerceAtLeast(0f)
                         },
                     )
                 }
@@ -405,10 +416,7 @@ fun NowPlayingOverlay(
                 PlayerOptionsSheet(onClose = { options = false }, viewModel = viewModel)
             }
             if (speakers) {
-                SpeakerPickerSheet(
-                    onClose = { speakers = false },
-                    onManageGroups = { speakers = false; onOpenSpeakers() },
-                )
+                SpeakerPickerSheet(onClose = { speakers = false })
             }
         }
     }

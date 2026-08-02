@@ -45,8 +45,9 @@ import com.engabd.sendpin.ui.viewmodel.SpeakersViewModel
  * switched screens to do something the user wanted done *without* leaving what they
  * were looking at (and on the Navidrome backend the Speakers route is disabled, so it
  * did nothing at all). This does the two things that need to be one tap away —
- * switch output, change that speaker's volume — and hands off to the Speakers screen
- * for grouping and sync offsets.
+ * switch output, change that speaker's volume — and nothing else. Grouping and sync
+ * offsets stay on the Speakers tab; a second way in from here was just another layer
+ * to read past.
  *
  * Not a `ModalBottomSheet`, for the same reason `NowPlayingSheet` isn't: it is drawn
  * inside the screen's own Box so the album wash reads through the top edge, which a
@@ -55,7 +56,6 @@ import com.engabd.sendpin.ui.viewmodel.SpeakersViewModel
 @Composable
 fun BoxScope.SpeakerPickerSheet(
     onClose: () -> Unit,
-    onManageGroups: () -> Unit,
     viewModel: SpeakersViewModel = viewModel(),
 ) {
     val accent = LocalAccent.current
@@ -123,24 +123,6 @@ fun BoxScope.SpeakerPickerSheet(
                 }
             }
 
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 10.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .clickable(onClick = onManageGroups)
-                    .padding(horizontal = 8.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    "Manage groups", color = accent, fontFamily = AppFont,
-                    fontWeight = FontWeight.Bold, fontSize = 13.sp, modifier = Modifier.weight(1f),
-                )
-                Icon(
-                    Icons.AutoMirrored.Filled.ArrowForward, null,
-                    tint = accent, modifier = Modifier.size(16.dp),
-                )
-            }
         }
     }
 }

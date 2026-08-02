@@ -313,26 +313,26 @@ class Playback(private val app: Context) {
      */
     private suspend fun syncPlayerConfig(name: String, codec: String) {
         if (settings.maBaseUrl.first().isBlank()) return
-        // MA has to have seen the hello before there is a player to configure.
-        val known = withTimeoutOrNull(15_000) {
+        // MA has to have seen the hello before there is a player to configure. A miss
+        // here is not worth reporting: the hello already carried the right name, so a
+        // freshly-registered player is correct with or without this call. Saying
+        // "hasn't registered this player yet" after a rename that plainly worked was
+        // just wrong.
+        val known = withTimeoutOrNull(20_000) {
             while (maRepo.players().none { it.playerId == playerId }) delay(750)
             true
         }
-        if (known != true) {
-            _configStatus.value = "Music Assistant hasn't registered this player yet"
-            return
-        }
+        if (known != true) return
+        // It registered, so the hello's name is what MA has. Remember it, so enabling
+        // again with the same name doesn't needlessly mint another identity.
+        settings.setRegisteredPlayerName(name)
+        _configStatus.value = ""
         try {
+            // Only meaningful for a player MA already knew under another name; a
+            // brand-new registration already carries the right one.
             maRepo.renamePlayer(playerId, name)
-            val applied = maRepo.playerConfigName(playerId)
-            _configStatus.value = when {
-                applied == null -> "Renamed, but the server didn't report the name back"
-                applied == name -> ""
-                else -> "Music Assistant kept the name \"$applied\""
-            }
-        } catch (e: Exception) {
-            _configStatus.value = "Couldn't rename on the server: ${e.message ?: "unknown error"}"
-            return
+        } catch (_: Exception) {
+            // Refused (it is an admin command) — but the registration name stands.
         }
         // Best-effort by contrast: not every server build has this key, and the
         // advertised format list already decides what we actually receive.
@@ -379,9 +379,25 @@ class Playback(private val app: Context) {
      * the only place it's announced — a rename that lands after the socket is up is a
      * rename the server never hears about.
      */
+    /**
+     * Bring the player up under [name], registering afresh if the name has changed.
+     *
+     * Music Assistant keys a Sendspin player on its `client_id` and keeps the name it
+     * was **first registered under** — the protocol has no rename message, and the
+     * official app has no rename call at all, because there a name is chosen before
+     * the player ever registers. So a name that differs from the one we last
+     * successfully registered can only take effect by arriving as a new player, and
+     * doing that here means enabling is all the user has to do. The old entry is left
+     * in MA, unavailable, for them to delete.
+     */
     fun enablePlayer(name: String = "", codec: String = "") = scope.launch {
         if (name.isNotBlank()) settings.setPlayerName(name)
         if (codec.isNotBlank()) settings.setSendspinCodec(codec)
+        val wanted = settings.playerName.first()
+        if (wanted.isNotBlank() && wanted != settings.registeredPlayerName.first()) {
+            PlayerIdentity.newIdentity(app)
+            playerId = PlayerIdentity.getPlayerId(app)
+        }
         val base = settings.maBaseUrl.first()
         if (base.isNotBlank()) connectToServer(sendspinUrlFrom(base))
     }

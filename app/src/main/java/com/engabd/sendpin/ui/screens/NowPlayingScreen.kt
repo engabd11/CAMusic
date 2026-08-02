@@ -317,10 +317,7 @@ fun NowPlayingScreen(
                 PlayerOptionsSheet(onClose = { options = false }, viewModel = viewModel)
             }
             if (speakers) {
-                SpeakerPickerSheet(
-                    onClose = { speakers = false },
-                    onManageGroups = { speakers = false; onOpenSpeakers() },
-                )
+                SpeakerPickerSheet(onClose = { speakers = false })
             }
         }
     }
@@ -390,12 +387,34 @@ fun TappableQualityChip(playing: StreamQuality?, source: StreamQuality?) {
     }
 
     if (showDetail) {
+        BackHandler { showDetail = false }
+        // Deliberately NOT a focusable popup. A focusable popup takes window focus,
+        // which puts the activity through its soft-input resize path — the album art
+        // behind visibly shrank the moment the badge was tapped. This popup never takes
+        // focus; the scrim below is what closes it, and BackHandler covers the back
+        // gesture that focusability would otherwise have given us.
         Popup(
             popupPositionProvider = WindowCenterPosition,
-            onDismissRequest = { showDetail = false },
-            properties = PopupProperties(focusable = true),
+            properties = PopupProperties(focusable = false, dismissOnClickOutside = false),
         ) {
-            QualityDetailCard(playing = playing, source = source)
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) { showDetail = false },
+                contentAlignment = Alignment.Center,
+            ) {
+                // Swallow taps on the card itself so it doesn't dismiss under its own
+                // content.
+                Box(
+                    Modifier.clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) { }
+                ) { QualityDetailCard(playing = playing, source = source) }
+            }
         }
     }
 }

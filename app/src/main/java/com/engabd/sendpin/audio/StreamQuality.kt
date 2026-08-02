@@ -34,13 +34,31 @@ data class StreamQuality(
     /** `audio/flac` and `FLAC` are the same codec — MA sends both spellings. */
     private val normalizedCodec: String get() = codec.substringAfterLast('/').lowercase().trim()
 
+    /**
+     * The codec as a listener would name it.
+     *
+     * Music Assistant reports a track's `content_type`, which is the *container or
+     * MIME* name rather than the codec people know: an MP3 comes back as `mpeg`
+     * (from `audio/mpeg`), Vorbis as `ogg`, ALAC sometimes as `m4a`. Uppercasing that
+     * verbatim produced a badge reading "MPEG" on an ordinary MP3.
+     */
+    private val displayCodec: String
+        get() = when (val c = normalizedCodec) {
+            "mpeg", "mp3", "mpga" -> "MP3"
+            "mp4", "m4a", "aac", "mp4a" -> "AAC"
+            "ogg", "vorbis" -> "Vorbis"
+            "x-flac" -> "FLAC"
+            "wave", "x-wav" -> "WAV"
+            else -> c.uppercase()
+        }
+
     /** Better than CD: the case worth lighting the badge up for. */
     val hiRes: Boolean get() = lossless && (sampleRateHz > 48_000 || bitDepth > 16)
 
     /** The badge text, e.g. `FLAC · 96/24 · 1411k` or `OPUS · 320k`. */
     val label: String
         get() {
-            val name = codec.uppercase()
+            val name = displayCodec
             val detail = when {
                 lossless && bitDepth > 0 && sampleRateHz > 0 -> "${khz(sampleRateHz)}/$bitDepth"
                 sampleRateHz > 0 && bitrateKbps > 0 && !lossless -> "${bitrateKbps}k"

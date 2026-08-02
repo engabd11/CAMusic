@@ -32,6 +32,7 @@ class AppSettings(private val context: Context) {
         private val PREFER_HI_RES = booleanPreferencesKey("prefer_hi_res")      // advertise 88.2/96 kHz too
         private val PREFER_FLAC = booleanPreferencesKey("prefer_flac")          // FLAC ahead of uncompressed PCM
         private val PREFER_ORIGINAL = booleanPreferencesKey("prefer_original")  // bypass MA when it would convert
+        private val REGISTERED_NAME = stringPreferencesKey("registered_player_name")
         private val SENDSPIN_CODEC = stringPreferencesKey("sendspin_codec")     // "auto" | "flac" | "pcm" | "opus"
         private val NAV_STREAM_FORMAT = stringPreferencesKey("nav_stream_format") // Subsonic `format=` ("raw" = original)
     }
@@ -59,6 +60,13 @@ class AppSettings(private val context: Context) {
      * the server may only stream a format the client listed. Same lever the official
      * MA app pulls with its codec preference.
      */
+    /**
+     * The name this player was last successfully registered with. Music Assistant
+     * keeps the name a player first registered under, so a change here is what tells
+     * [com.engabd.sendpin.service.Playback.enablePlayer] it has to register anew.
+     */
+    val registeredPlayerName: Flow<String> = context.dataStore.data.map { it[REGISTERED_NAME] ?: "" }
+
     val sendspinCodec: Flow<String> = context.dataStore.data.map { it[SENDSPIN_CODEC] ?: "auto" }
 
     /**
@@ -115,6 +123,10 @@ class AppSettings(private val context: Context) {
 
     suspend fun setPreferOriginal(value: Boolean) {
         context.dataStore.edit { it[PREFER_ORIGINAL] = value }
+    }
+
+    suspend fun setRegisteredPlayerName(name: String) {
+        context.dataStore.edit { it[REGISTERED_NAME] = name }
     }
 
     /** Takes effect on the next connect — the format list is sent in the hello. */
