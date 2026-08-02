@@ -123,6 +123,13 @@ class SubsonicClient(
             put("id", id)
             put("format", codec)
             bitrate?.let { put("maxBitRate", it.toString()) }
+            // A transcode is streamed chunked with no Content-Length, and MediaPlayer
+            // probes such a source with byte `Range` requests that Navidrome then
+            // resolves into a *time* offset — which is how a track opened two or
+            // three seconds in. Asking the server to estimate the length makes the
+            // response seekable by byte, so a range means what the player thinks it
+            // means. Meaningless for `raw`, which is served from the stored file.
+            if (codec != "raw") put("estimateContentLength", "true")
         }
         return restUrl("stream", params, jsonFmt = false)
     }
@@ -337,11 +344,29 @@ class SubsonicClient(
     /**
      * Report a play so Navidrome's play counts, "recently played" and any connected
      * scrobbler stay honest — without this the Recently played shelf never moves.
+     *
+     * The spec gives `submission` a precise meaning that the app was getting backwards:
+     * `false` is a *now playing* notification, sent when a track starts, and `true` is
+     * a **completed** play. This used to send `submission=true` the instant a track
+     * started, so every track skipped after a second still counted as a full play and
+     * Navidrome's counts drifted upwards. There is no default any more — the caller
+     * has to say which one it means.
+     *
+     * [timeMs] is when the play *started*, in Unix epoch milliseconds, which is what
+     * lets a submission arriving minutes later be filed at the right moment.
+     *
      * Best-effort: a server that refuses it must not break playback.
      */
-    suspend fun scrobble(id: String, submission: Boolean = true) {
+    suspend fun scrobble(id: String, submission: Boolean, timeMs: Long? = null) {
         try {
-            get("scrobble", mapOf("id" to id, "submission" to submission.toString()))
+            get(
+                "scrobble",
+                buildMap {
+                    put("id", id)
+                    put("submission", submission.toString())
+                    timeMs?.let { put("time", it.toString()) }
+                },
+            )
         } catch (_: SubsonicException) {
         }
     }
@@ -388,16 +413,20 @@ class SubsonicClient(
     )
 
     /**
-     * The stored file's own format, for the quality badge. `samplingRate` and
-     * `bitDepth` are OpenSubsonic fields; a plain Subsonic server sends neither, so
-     * an unknown rate is left at 0 rather than guessed at 44.1.
+     * The stored file's own format, for the quality badge. `samplingRate`,
+     * `bitDepth`, `bitRate` and `channelCount` are OpenSubsonic fields; a plain
+     * Subsonic server sends none of them, so what it doesn't say is left at 0 rather
+     * than guessed. The depth used to default to 16, which made every track on a
+     * plain Subsonic server claim CD depth it had never reported.
      */
     private fun audioFormat(o: JsonObject): MaAudioFormat? {
         val codec = o.str("suffix") ?: o.str("contentType")?.substringAfterLast('/') ?: return null
         return MaAudioFormat(
             codec = codec,
             sampleRate = o.int("samplingRate") ?: 0,
-            bitDepth = o.int("bitDepth") ?: 16,
+            bitDepth = o.int("bitDepth") ?: 0,
+            bitRate = o.int("bitRate") ?: 0,
+            channels = o.int("channelCount") ?: 2,
         )
     }
 

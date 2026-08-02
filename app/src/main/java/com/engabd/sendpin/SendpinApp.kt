@@ -10,6 +10,7 @@ import com.engabd.sendpin.audio.LocalPlayer
 import com.engabd.sendpin.download.DownloadManager
 import com.engabd.sendpin.ma.MaApiClient
 import com.engabd.sendpin.service.LocalPlaybackService
+import com.engabd.sendpin.service.MaNowPlaying
 import com.engabd.sendpin.service.Playback
 import com.engabd.sendpin.service.SendspinService
 import kotlinx.coroutines.CoroutineScope
@@ -17,6 +18,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import okhttp3.HttpUrl
 import okhttp3.Interceptor
@@ -50,6 +53,15 @@ class SendpinApp : Application(), ImageLoaderFactory {
     /** The offline download index, shared for the same reason. */
     val downloads: DownloadManager by lazy { DownloadManager(this) }
 
+    /**
+     * What the *selected* Music Assistant player is playing, at process scope.
+     *
+     * The media notification has to outlive the Activity, and the Now Playing screen's
+     * ViewModel does not — which is why the shade used to claim the phone was merely
+     * "ready for announcements" while a speaker was playing an album.
+     */
+    val maNowPlaying: MaNowPlaying by lazy { MaNowPlaying(this) }
+
     private val appScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
     override fun onCreate() {
@@ -76,6 +88,25 @@ class SendpinApp : Application(), ImageLoaderFactory {
                     }
                 }
             }
+        }
+        // A remote speaker playing is as much a reason for a media notification as
+        // this phone's own stream is — it is the one the user is actually listening
+        // to. `idleMedia` rather than `stopMedia` so the same grace period covers the
+        // gap between tracks; `MaNowPlaying` nulls itself out while the local player
+        // owns the phone, so this and LocalPlaybackService can't both post.
+        appScope.launch {
+            maNowPlaying.now
+                .map { it != null && it.title.isNotBlank() }
+                .distinctUntilChanged()
+                .collect { active ->
+                    // Starting a foreground service from the background is restricted
+                    // on Android 12+. SendspinConnectionService is normally already up
+                    // and exempts this, but a refusal must not take the process down.
+                    runCatching {
+                        if (active) SendspinService.startMedia(this@SendpinApp)
+                        else SendspinService.idleMedia(this@SendpinApp)
+                    }
+                }
         }
     }
 

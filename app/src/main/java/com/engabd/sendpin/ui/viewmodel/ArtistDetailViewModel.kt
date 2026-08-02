@@ -233,6 +233,97 @@ class ArtistDetailViewModel(
         _toast.tryEmit("Added ${tracks.size} tracks to queue")
     }
 
+    /**
+     * Play or queue one of this artist's albums, from the long-press sheet.
+     *
+     * [option] is Music Assistant's own vocabulary — `replace` | `next` | `add` —
+     * and MA takes an album uri on `play_media` exactly as it takes a track's. On
+     * Navidrome the album has to be resolved to its tracks first, because the local
+     * player is a track queue.
+     */
+    fun playAlbum(album: MaItem, option: String) {
+        viewModelScope.launch {
+            try {
+                if (isSubsonic) {
+                    val sc = subsonic ?: throw IllegalStateException("Navidrome isn't connected")
+                    val tracks = localTracks(sc.albumTracks(album.itemId))
+                    if (tracks.isEmpty()) { _toast.tryEmit("Nothing to play"); return@launch }
+                    when (option) {
+                        "next" -> localPlayer.playNext(tracks)
+                        "add" -> localPlayer.addToQueue(tracks)
+                        else -> {
+                            stopMaPlayback()
+                            localPlayer.setShuffle(false)
+                            localPlayer.setQueue(tracks)
+                        }
+                    }
+                } else {
+                    val uri = album.uri ?: run { _toast.tryEmit("Couldn't play that"); return@launch }
+                    maRepo.playOn(playTarget(), listOf(uri), option)
+                }
+                _toast.tryEmit(
+                    when (option) {
+                        "next" -> "Playing next"
+                        "add" -> "Added to queue"
+                        else -> "Playing ${album.name}"
+                    }
+                )
+            } catch (e: Exception) { _toast.tryEmit(e.message ?: "Couldn't play") }
+        }
+    }
+
+    /** Take one album offline, from the long-press sheet. */
+    fun downloadAlbum(album: MaItem) {
+        val sc = subsonic
+        if (!isSubsonic || sc == null) { _toast.tryEmit("Only Navidrome albums can be downloaded"); return }
+        viewModelScope.launch {
+            try {
+                val tracks = sc.albumTracks(album.itemId)
+                val pending = tracks.filterNot { downloads.isDownloaded(it.itemId) }
+                if (pending.isEmpty()) { _toast.tryEmit("Already downloaded"); return@launch }
+                _toast.tryEmit("Downloading ${pending.size} tracks…")
+                val ok = downloads.downloadAll(pending, urlFor = { sc.downloadUrl(it.itemId) })
+                _toast.tryEmit(
+                    when (ok) {
+                        pending.size -> "Downloaded ${album.name}"
+                        0 -> "Download failed"
+                        else -> "Downloaded $ok of ${pending.size}"
+                    }
+                )
+            } catch (e: Exception) { _toast.tryEmit(e.message ?: "Couldn't download") }
+        }
+    }
+
+    /**
+     * Favourite (or unfavourite) the artist.
+     *
+     * Flipped locally first — the command is a round-trip and the heart should not
+     * sit still while it happens — and rolled back if the server refuses. Both
+     * backends already take an artist: MA's `favorites/add_item` accepts any media
+     * item's uri, and Subsonic's `star` has an `artistId` parameter.
+     */
+    fun toggleFavorite() {
+        val current = _artist.value ?: return
+        val wanted = !current.favorite
+        _artist.value = current.copy(favorite = wanted)
+        viewModelScope.launch {
+            try {
+                val sc = subsonic
+                when {
+                    isSubsonic && sc != null -> sc.setStarred(current, wanted)
+                    isSubsonic -> throw IllegalStateException("Navidrome isn't connected")
+                    wanted -> maRepo.addFavorite(current)
+                    else -> maRepo.removeFavorite(current)
+                }
+                ref = ref.copy(favorite = wanted)
+                _toast.tryEmit(if (wanted) "Added to favorites" else "Removed from favorites")
+            } catch (e: Exception) {
+                _artist.value = _artist.value?.copy(favorite = !wanted)
+                _toast.tryEmit(e.message ?: "Couldn't toggle favorite")
+            }
+        }
+    }
+
     /** A track list as a local queue, offline copies preferred over the stream. */
     private fun localTracks(list: List<MaItem>) = list.map {
         downloads.toLocalTrack(it, streamUrl = subsonic?.streamUrl(it.itemId))

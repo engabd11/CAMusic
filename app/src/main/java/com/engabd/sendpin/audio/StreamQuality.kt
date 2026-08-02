@@ -78,7 +78,7 @@ data class StreamQuality(
         private val LOSSLESS = setOf("flac", "alac", "wav", "aiff", "pcm", "dsf", "dff", "ape", "wavpack")
 
         /** 44100 → "44.1", 96000 → "96". */
-        private fun khz(hz: Int): String {
+        internal fun khz(hz: Int): String {
             val k = hz / 1000.0
             return if (k == Math.floor(k)) k.toInt().toString() else String.format("%.1f", k)
         }

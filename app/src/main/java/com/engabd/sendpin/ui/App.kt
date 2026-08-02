@@ -3,6 +3,7 @@ package com.engabd.sendpin.ui
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
@@ -33,7 +34,9 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.engabd.sendpin.ui.design.BottomChromeState
 import com.engabd.sendpin.ui.design.LocalAccent
+import com.engabd.sendpin.ui.design.LocalBottomChrome
 import com.engabd.sendpin.ui.design.LocalMiniBarInset
 import com.engabd.sendpin.ui.design.MiniBarHeight
 import com.engabd.sendpin.ui.design.LocalPalette
@@ -169,10 +172,17 @@ fun App() {
         // exists in the overlay layout. Publishing its height here is what lets every
         // screen's `navBarInset()` reserve room for it without any of them knowing the
         // layout is in play.
+        // A sheet is drawn inside its own screen, which is a NavHost sibling below the
+        // bottom chrome — so the tab bar painted over it. The chrome stands down while
+        // a sheet is open rather than every sheet being re-parented out of the screen
+        // that provides its palette.
+        val bottomChrome = remember { BottomChromeState() }
+
         CompositionLocalProvider(
             LocalAccent provides appAccent,
             LocalPalette provides appPalette,
             LocalMiniBarInset provides if (isOverlay) MiniBarHeight else 0.dp,
+            LocalBottomChrome provides bottomChrome,
         ) {
             Box(Modifier.fillMaxSize().background(Ink)) {
                 val tabs = if (isOverlay) OverlayTabs else TabTabs
@@ -293,6 +303,7 @@ fun App() {
                 // In overlay mode, the mini player bar sits above the nav bar.
                 // Tapping it expands the full-screen cover.
                 if (isOverlay) {
+                    BottomChrome(bottomChrome) {
                     Column(
                         Modifier
                             .align(Alignment.BottomCenter)
@@ -314,6 +325,7 @@ fun App() {
                             onSelect = ::go,
                         )
                     }
+                    }
 
                     // The full-screen cover overlay — slides over everything when expanded.
                     if (overlayExpanded) {
@@ -328,15 +340,31 @@ fun App() {
                         )
                     }
                 } else {
-                    SendspinNavBar(
-                        tabs = tabs,
-                        currentRoute = currentRoute,
-                        modifier = Modifier.align(Alignment.BottomCenter),
-                        disabledRoutes = disabledRoutes,
-                        onSelect = ::go,
-                    )
+                    BottomChrome(bottomChrome) {
+                        SendspinNavBar(
+                            tabs = tabs,
+                            currentRoute = currentRoute,
+                            modifier = Modifier.align(Alignment.BottomCenter),
+                            disabledRoutes = disabledRoutes,
+                            onSelect = ::go,
+                        )
+                    }
                 }
             }
         }
     }
+}
+
+/**
+ * The bottom chrome — mini player and tab bar — unless a sheet is up.
+ *
+ * Its own composable so the `openSheets` read lands in this recompose scope rather
+ * than the whole app's.
+ */
+@Composable
+private fun BoxScope.BottomChrome(
+    state: BottomChromeState,
+    content: @Composable BoxScope.() -> Unit,
+) {
+    if (state.openSheets == 0) content()
 }

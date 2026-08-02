@@ -99,6 +99,8 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private val _query = MutableStateFlow(""); val query: StateFlow<String> = _query
     fun setQuery(v: String) { _query.value = v }
     private val _recent = MutableStateFlow<List<MaItem>>(emptyList()); val recent: StateFlow<List<MaItem>> = _recent
+    private val _favoriteAlbums = MutableStateFlow<List<MaItem>>(emptyList()); val favoriteAlbums: StateFlow<List<MaItem>> = _favoriteAlbums
+    private val _favoriteArtists = MutableStateFlow<List<MaItem>>(emptyList()); val favoriteArtists: StateFlow<List<MaItem>> = _favoriteArtists
     private val _recentlyAdded = MutableStateFlow<List<MaItem>>(emptyList()); val recentlyAdded: StateFlow<List<MaItem>> = _recentlyAdded
     private val _recommendations = MutableStateFlow<List<MaItem>>(emptyList()); val recommendations: StateFlow<List<MaItem>> = _recommendations
     private val _inProgress = MutableStateFlow<List<MaItem>>(emptyList()); val inProgress: StateFlow<List<MaItem>> = _inProgress
@@ -145,9 +147,19 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         }
         // A local track that actually started is a play worth reporting, so
         // Navidrome's play counts and its "recently played" shelf stay honest.
+        //
+        // Two reports per track, which is what the Subsonic spec actually asks for:
+        // a "now playing" ping the moment it starts, and a completed play once it has
+        // been listened to. Sending the completion at track start — which is what the
+        // app used to do — counted every one-second skip as a full play.
         viewModelScope.launch {
             localPlayer.started.collect { track ->
-                if (_backend.value == Backend.SUBSONIC) subsonic?.scrobble(track.id)
+                if (_backend.value != Backend.SUBSONIC) return@collect
+                val sc = subsonic ?: return@collect
+                val startedAtMs = System.currentTimeMillis()
+                sc.scrobble(track.id, submission = false)
+                submissionJob?.cancel()
+                submissionJob = viewModelScope.launch { submitWhenPlayed(sc, track.id, startedAtMs) }
             }
         }
         viewModelScope.launch { localPlayer.errors.collect { _toast.tryEmit(it) } }
@@ -201,6 +213,8 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         _depth.value = 0
         _node.value = Node("Library", emptyList())
         _recent.value = emptyList()
+        _favoriteAlbums.value = emptyList()
+        _favoriteArtists.value = emptyList()
         _recentlyAdded.value = emptyList()
         _recommendations.value = emptyList()
         _inProgress.value = emptyList()
@@ -700,7 +714,11 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 val sc = subsonic ?: throw IllegalStateException("Navidrome isn't connected")
                 when (id) {
                     "artists" -> sc.artists()
-                    "albums" -> sc.albumList("alphabeticalByName", size = 5000)
+                    // Paged, not one 5000-item request: the spec caps `getAlbumList2`
+                    // at 500 per call, and a server that enforces it answered the old
+                    // request with an error rather than a truncated list. Batches are
+                    // published as they land, so the wall of art fills in.
+                    "albums" -> allAlbums(sc, onPartial)
                     "newest" -> sc.albumList("newest", size = 200)
                     "playlists" -> sc.playlists()
                     "genres" -> sc.genres()
@@ -710,6 +728,35 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
+    }
+
+    /**
+     * Every album on a Navidrome server, a page at a time.
+     *
+     * `getAlbumList2` documents a maximum `size` of 500, so the whole library has to
+     * be walked with `offset`. [cap] backstops a server that ignores `offset` and
+     * hands back the same page for ever.
+     */
+    private suspend fun allAlbums(
+        sc: SubsonicClient,
+        onPartial: (List<MaItem>) -> Unit,
+        cap: Int = 20_000,
+    ): List<MaItem> {
+        val all = mutableListOf<MaItem>()
+        val seen = mutableSetOf<String>()
+        var offset = 0
+        while (offset < cap) {
+            val page = sc.albumList("alphabeticalByName", size = SUBSONIC_PAGE, offset = offset)
+            if (page.isEmpty()) break
+            val fresh = page.filterNot { it.itemId in seen }
+            fresh.forEach { seen += it.itemId }
+            if (fresh.isEmpty()) break          // the server is repeating itself
+            all += fresh
+            onPartial(all.toList())
+            if (page.size < SUBSONIC_PAGE) break
+            offset += SUBSONIC_PAGE
+        }
+        return all
     }
 
     /**
@@ -755,6 +802,8 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         _search.value = null
         _node.value = Node("Library", rootItems())
         _depth.value = 0
+        loadFavoriteAlbums()
+        loadFavoriteArtists()
         loadRecent()
         loadRecentlyAdded()
         loadRecommendations()
@@ -769,6 +818,60 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 if (_backend.value == Backend.MA) maRepo.recentlyPlayed()
                 else subsonic?.albumList("recent", size = 12).orEmpty()
             } catch (_: Exception) { emptyList() }
+            // The only loader that used to skip this, which is why "Recently played"
+            // was the one shelf whose hearts never came up filled.
+            rememberFavorites(_recent.value)
+        }
+    }
+
+    /** The pending "this track was actually played" report; cancelled by the next track. */
+    private var submissionJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * Wait until [id] has been listened to, then report the completed play.
+     *
+     * The conventional threshold, and the one Last.fm and Navidrome both use: half the
+     * track, or four minutes, whichever comes first. Bails if the user moved on — a
+     * track that was skipped is not a play, which is the whole point of splitting this
+     * off from the "now playing" ping.
+     */
+    private suspend fun submitWhenPlayed(sc: SubsonicClient, id: String, startedAtMs: Long) {
+        // Both conditions are watched together rather than one after the other: the
+        // position stops emitting the moment playback ends, so waiting on it alone
+        // would leave this suspended for ever on a queue that simply ran out.
+        val played = combine(
+            localPlayer.positionMs,
+            localPlayer.durationMs,
+            localPlayer.current,
+        ) { position, duration, current ->
+            when {
+                current?.id != id -> false                                  // moved on: not a play
+                duration > 0 && position >= minOf(duration / 2, SCROBBLE_MAX_MS) -> true
+                else -> null                                                // still listening
+            }
+        }.first { it != null }
+        if (played == true) sc.scrobble(id, submission = true, timeMs = startedAtMs)
+    }
+
+    private fun loadFavoriteAlbums() {
+        if (_offline.value) { _favoriteAlbums.value = emptyList(); return }
+        viewModelScope.launch {
+            _favoriteAlbums.value = try {
+                if (_backend.value == Backend.MA) maRepo.favoriteAlbums()
+                else subsonic?.albumList("starred", size = 12).orEmpty()
+            } catch (_: Exception) { emptyList() }
+            rememberFavorites(_favoriteAlbums.value)
+        }
+    }
+
+    private fun loadFavoriteArtists() {
+        if (_offline.value) { _favoriteArtists.value = emptyList(); return }
+        viewModelScope.launch {
+            _favoriteArtists.value = try {
+                if (_backend.value == Backend.MA) maRepo.favoriteArtists()
+                else subsonic?.starred()?.artists?.take(12).orEmpty()
+            } catch (_: Exception) { emptyList() }
+            rememberFavorites(_favoriteArtists.value)
         }
     }
 
@@ -954,5 +1057,11 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         const val CATEGORY = "__cat__"
         const val DOWNLOAD = "__dl__"
         const val DOWNLOADS_TITLE = "Downloads"
+
+        /** Four minutes in: a play, however long the track. The usual convention. */
+        const val SCROBBLE_MAX_MS = 4 * 60 * 1000L
+
+        /** `getAlbumList2`'s documented maximum `size`. */
+        const val SUBSONIC_PAGE = 500
     }
 }

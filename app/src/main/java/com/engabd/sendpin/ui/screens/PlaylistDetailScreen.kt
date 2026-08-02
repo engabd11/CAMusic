@@ -30,6 +30,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.engabd.sendpin.ma.MaItem
+import com.engabd.sendpin.subsonic.SubsonicClient
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.PlaylistDetailViewModel
@@ -111,6 +112,9 @@ fun PlaylistDetailScreen(
                             onPlayAll = viewModel::playAll,
                             onShuffle = viewModel::shuffleAll,
                             onAddToQueue = viewModel::addToQueue,
+                            onFavorite = if (provider == SubsonicClient.PROVIDER) null
+                            else viewModel::togglePlaylistFavorite,
+                            favorite = playlist?.favorite == true,
                         )
                     }
 
@@ -130,6 +134,7 @@ fun PlaylistDetailScreen(
                                 index = index,
                                 accent = playlistPalette.accent,
                                 onPlay = { viewModel.playTrack(track) },
+                                onFavorite = { viewModel.toggleFavorite(track) },
                                 onLongPress = { actionsFor = track },
                             )
                         }
@@ -149,8 +154,8 @@ fun PlaylistDetailScreen(
 
             // Long-press on a track: queue it without losing what's playing.
             actionsFor?.let { picked ->
-                TrackActionsSheet(
-                    track = picked,
+                MediaActionsSheet(
+                    item = picked,
                     onClose = { actionsFor = null },
                     onPlayNow = { viewModel.playTrack(picked) },
                     onPlayNext = { viewModel.enqueueTrack(picked, "next") },
@@ -170,6 +175,9 @@ private fun PlaylistHero(
     onPlayAll: () -> Unit,
     onShuffle: () -> Unit,
     onAddToQueue: () -> Unit,
+    /** Null on Navidrome, whose `star` has no playlist parameter. */
+    onFavorite: (() -> Unit)? = null,
+    favorite: Boolean = false,
 ) {
     val accent = LocalAccent.current
 
@@ -219,6 +227,13 @@ private fun PlaylistHero(
             PlayButton(playing = false, size = 56.dp, onClick = onPlayAll)
             IconChip(Icons.Default.Shuffle, "Shuffle", onClick = onShuffle)
             IconChip(Icons.AutoMirrored.Filled.QueueMusic, "Add to queue", onClick = onAddToQueue)
+            onFavorite?.let {
+                IconChip(
+                    if (favorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                    if (favorite) "Remove from favourites" else "Add to favourites",
+                    onClick = it,
+                )
+            }
         }
     }
 }

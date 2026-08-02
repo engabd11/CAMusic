@@ -301,6 +301,34 @@ class AlbumDetailViewModel(
         }
     }
 
+    /**
+     * Favourite (or unfavourite) the album itself, not one of its tracks.
+     *
+     * Same optimistic flip as [toggleFavorite]. Both backends already take an album:
+     * MA's `favorites/add_item` accepts any media item's uri, and Subsonic's `star`
+     * has an `albumId` parameter.
+     */
+    fun toggleAlbumFavorite() {
+        val current = _album.value ?: return
+        val wanted = !current.favorite
+        _album.value = current.copy(favorite = wanted)
+        viewModelScope.launch {
+            try {
+                val sc = subsonic
+                when {
+                    isSubsonic && sc != null -> sc.setStarred(current, wanted)
+                    isSubsonic -> throw IllegalStateException("Navidrome isn't connected")
+                    wanted -> maRepo.addFavorite(current)
+                    else -> maRepo.removeFavorite(current)
+                }
+                _toast.tryEmit(if (wanted) "Added to favorites" else "Removed from favorites")
+            } catch (e: Exception) {
+                _album.value = _album.value?.copy(favorite = !wanted)
+                _toast.tryEmit(e.message ?: "Couldn't toggle favorite")
+            }
+        }
+    }
+
     override fun onCleared() {
         super.onCleared()
         // The local player is process-scoped and shared — leaving the album screen

@@ -22,5 +22,10 @@ class ClockSync {
     fun isSynced(): Boolean = filter.isSynced()
     fun currentOffsetUs(): Long = filter.currentOffsetUs()
     fun nowUs(): Long = filter.nowMonotonicUs()
+
+    /** How far the offset estimate might be out, for diagnostics. */
+    fun errorUs(): Long = filter.errorUs()
+    fun sampleCount(): Int = filter.sampleCount
+    fun lastRttUs(): Long = filter.lastRttUs()
     fun reset() = filter.reset()
 }

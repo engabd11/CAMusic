@@ -65,6 +65,20 @@ class SubsonicUrlTest {
     }
 
     @Test
+    fun `a transcode asks the server to estimate its length, the original does not`() {
+        // Without this a transcode is chunked with no Content-Length, and
+        // MediaPlayer's own byte-Range probes get resolved into a *time* offset —
+        // which is how a track opened two or three seconds in.
+        val c = client("192.168.0.10:4533")
+        assertFalse("estimateContentLength" in c.streamUrl("tr-42"), "raw is served from the stored file")
+
+        c.streamFormat = "flac"
+        assertTrue("estimateContentLength=true" in c.streamUrl("tr-42"))
+        c.streamFormat = "mp3-320"
+        assertTrue("estimateContentLength=true" in c.streamUrl("tr-42"))
+    }
+
+    @Test
     fun `an explicit format argument overrides the configured one`() {
         val c = client("192.168.0.10:4533")
         c.streamFormat = "mp3-192"

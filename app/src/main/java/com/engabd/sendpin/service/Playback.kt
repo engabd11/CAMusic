@@ -226,7 +226,11 @@ class Playback(private val app: Context) {
         }
         scope.launch {
             c.streamFormat.collect { f ->
-                _currentFormat.value = f?.let { "${it.sampleRate / 1000}kHz / ${it.bitDepth}-bit / ${it.codec.uppercase()}" } ?: "—"
+                // `StreamQuality.khz` rather than integer division, which rendered a
+                // 44.1kHz stream as "44kHz" in the Settings readout.
+                _currentFormat.value = f?.let {
+                    "${StreamQuality.khz(it.sampleRate)}kHz / ${it.bitDepth}-bit / ${it.codec.uppercase()}"
+                } ?: "—"
                 _streamQuality.value = f?.let { StreamQuality(it.codec, it.sampleRate, it.bitDepth) }
             }
         }

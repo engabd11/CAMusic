@@ -2,8 +2,10 @@ package com.engabd.sendpin.ui.screens
 
 import android.app.Application
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -74,6 +76,7 @@ fun ArtistDetailScreen(
     val loading by viewModel.loading.collectAsState()
     val error by viewModel.error.collectAsState()
     val snackbar = remember { SnackbarHostState() }
+    var actionsFor by remember { mutableStateOf<MaItem?>(null) }
 
     LaunchedEffect(Unit) { viewModel.toast.collect { snackbar.showSnackbar(it) } }
     BackHandler { onBack() }
@@ -120,6 +123,7 @@ fun ArtistDetailScreen(
                             onAddToQueue = viewModel::addToQueue,
                             onDownload = if (viewModel.canDownload) viewModel::downloadAll else null,
                             downloaded = downloaded,
+                            onFavorite = viewModel::toggleFavorite,
                         )
                     }
 
@@ -139,7 +143,12 @@ fun ArtistDetailScreen(
                     if (albums.isNotEmpty()) {
                         item { Shelf("Albums") }
                         itemsIndexed(albums, key = { i, a -> "album:$i:${a.itemId}" }) { _, album ->
-                            AlbumRow(album = album, accent = artistPalette.accent, onClick = { onAlbumClick(album) })
+                            AlbumRow(
+                                album = album,
+                                accent = artistPalette.accent,
+                                onClick = { onAlbumClick(album) },
+                                onLongPress = { actionsFor = album },
+                            )
                         }
                     } else if (!loading) {
                         item { EmptyState("No albums", "This artist has no albums in your library.") }
@@ -156,6 +165,20 @@ fun ArtistDetailScreen(
                     Text(data.visuals.message, fontFamily = AppFont, fontSize = 13.sp)
                 }
             }
+
+            // Long-press an album: queue it without leaving the artist.
+            actionsFor?.let { picked ->
+                MediaActionsSheet(
+                    item = picked,
+                    onClose = { actionsFor = null },
+                    onPlayNow = { viewModel.playAlbum(picked, "replace") },
+                    onPlayNext = { viewModel.playAlbum(picked, "next") },
+                    onAddToQueue = { viewModel.playAlbum(picked, "add") },
+                    onDownload = if (viewModel.canDownload) {
+                        { viewModel.downloadAlbum(picked) }
+                    } else null,
+                )
+            }
         }
     }
 }
@@ -171,6 +194,7 @@ private fun ArtistHero(
     /** Null on Music Assistant, which streams rather than handing over the file. */
     onDownload: (() -> Unit)? = null,
     downloaded: Boolean = false,
+    onFavorite: () -> Unit = {},
 ) {
     val accent = LocalAccent.current
 
@@ -226,6 +250,13 @@ private fun ArtistHero(
             PlayButton(playing = false, size = 56.dp, onClick = onPlayAll)
             IconChip(Icons.Default.Shuffle, "Shuffle", onClick = onShuffle)
             IconChip(Icons.AutoMirrored.Filled.QueueMusic, "Add to queue", onClick = onAddToQueue)
+            // Both backends can favourite an artist — MA takes the uri on
+            // `favorites/add_item`, Subsonic takes `artistId` on `star`.
+            IconChip(
+                if (artist?.favorite == true) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                if (artist?.favorite == true) "Remove from favourites" else "Add to favourites",
+                onClick = onFavorite,
+            )
             // Every album this artist has, taken offline in one go.
             onDownload?.let {
                 IconChip(
@@ -238,10 +269,18 @@ private fun ArtistHero(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun AlbumRow(album: MaItem, accent: Color, onClick: () -> Unit) {
+private fun AlbumRow(album: MaItem, accent: Color, onClick: () -> Unit, onLongPress: (() -> Unit)? = null) {
     Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick)
+        Modifier.fillMaxWidth()
+            .then(
+                if (onLongPress != null) {
+                    Modifier.combinedClickable(onClick = onClick, onLongClick = onLongPress)
+                } else {
+                    Modifier.clickable(onClick = onClick)
+                }
+            )
             .padding(horizontal = 20.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(14.dp),

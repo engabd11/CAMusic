@@ -10,6 +10,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -24,30 +25,40 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.engabd.sendpin.ma.MaItem
+import com.engabd.sendpin.ui.design.HideBottomChrome
 import com.engabd.sendpin.ui.design.LocalAccent
 import com.engabd.sendpin.ui.design.dismissOnDragDown
-import com.engabd.sendpin.ui.design.navBarInset
+import com.engabd.sendpin.ui.design.systemNavInset
 import com.engabd.sendpin.ui.theme.*
 
 /**
- * What to do with one track, on long-press.
+ * What to do with one library item, on long-press.
  *
- * Tapping a track has always meant "play this now", which replaces the queue — so
- * queueing a track up without losing what's playing had no gesture at all. The album
- * and artist screens grew "add to queue" chips for the *whole* release; this is the
- * per-track equivalent, on the one gesture a list row has spare.
+ * Tapping anything has always meant "play this now", which replaces the queue — so
+ * queueing something up without losing what's playing had no gesture at all. The
+ * album and artist screens grew "add to queue" chips for the release they were
+ * showing; this is the same three choices on the one gesture a list row has spare,
+ * for any media type.
+ *
+ * Music Assistant takes an artist, album or playlist uri on `play_media` exactly as
+ * it takes a track's, so all three actions mean the same thing whatever [item] is;
+ * only the wording changes. On Navidrome the library resolves a container to its
+ * tracks first.
  *
  * Drawn the same way as the other sheets in this app (`NowPlayingSheet`,
  * `PlayerOptionsSheet`) rather than as a `ModalBottomSheet`, so it matches.
  */
 @Composable
-fun BoxScope.TrackActionsSheet(
-    track: MaItem,
+fun BoxScope.MediaActionsSheet(
+    item: MaItem,
     onClose: () -> Unit,
     onPlayNow: () -> Unit,
     onPlayNext: () -> Unit,
     onAddToQueue: () -> Unit,
+    /** Null leaves the row out — nothing on the MA backend can be downloaded. */
+    onDownload: (() -> Unit)? = null,
 ) {
+    HideBottomChrome()
     BackHandler(onBack = onClose)
 
     // Dismiss scrim. Sits inside the caller's Box, so it covers the screen behind.
@@ -73,34 +84,64 @@ fun BoxScope.TrackActionsSheet(
             .background(Ink2)
             .border(1.dp, Hairline, RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp)),
     ) {
-        Column(Modifier.fillMaxWidth().padding(bottom = navBarInset() + 12.dp)) {
+        // The system inset only: the sheet is drawn over the tab bar and the mini
+        // player, and `HideBottomChrome` takes them off screen while it is up.
+        Column(Modifier.fillMaxWidth().padding(bottom = systemNavInset() + 12.dp)) {
             Box(Modifier.fillMaxWidth().padding(top = 10.dp), contentAlignment = Alignment.Center) {
                 Box(Modifier.size(width = 36.dp, height = 4.dp).clip(RoundedCornerShape(100)).background(Hairline))
             }
             Column(Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, top = 14.dp, bottom = 6.dp)) {
                 Text(
-                    track.name, color = TextPrimary, fontFamily = AppFont,
+                    item.name, color = TextPrimary, fontFamily = AppFont,
                     fontWeight = FontWeight.ExtraBold, fontSize = 16.sp,
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
-                track.subtitle?.takeIf { it.isNotBlank() }?.let {
+                // The type is worth saying out loud: an album and its title track
+                // often share a name, and the three actions mean rather different
+                // amounts of music depending on which one this is.
+                val caption = listOfNotNull(
+                    typeLabel(item.mediaType),
+                    item.subtitle?.takeIf { it.isNotBlank() },
+                ).joinToString(" · ")
+                if (caption.isNotBlank()) {
                     Text(
-                        it, color = TextMuted, fontFamily = AppFont, fontSize = 12.sp,
+                        caption, color = TextMuted, fontFamily = AppFont, fontSize = 12.sp,
                         maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
                 }
             }
-            ActionRow(Icons.Default.PlayArrow, "Play now", "Replaces the queue") {
-                onClose(); onPlayNow()
-            }
-            ActionRow(Icons.AutoMirrored.Filled.PlaylistAdd, "Play next", "After the current track") {
-                onClose(); onPlayNext()
-            }
-            ActionRow(Icons.AutoMirrored.Filled.QueueMusic, "Add to queue", "At the end") {
-                onClose(); onAddToQueue()
+
+            val whole = item.mediaType != "track" && item.mediaType != "radio"
+            ActionRow(
+                Icons.Default.PlayArrow, "Play now",
+                if (whole) "Replaces the queue with all of it" else "Replaces the queue",
+            ) { onClose(); onPlayNow() }
+            ActionRow(
+                Icons.AutoMirrored.Filled.PlaylistAdd, "Play next",
+                "After the current track",
+            ) { onClose(); onPlayNext() }
+            ActionRow(
+                Icons.AutoMirrored.Filled.QueueMusic, "Add to queue",
+                "At the end",
+            ) { onClose(); onAddToQueue() }
+            onDownload?.let { dl ->
+                ActionRow(
+                    Icons.Default.Download, "Download",
+                    if (whole) "Every track, for offline" else "For offline",
+                ) { onClose(); dl() }
             }
         }
     }
+}
+
+/** How a listener would name a media type, or null for one not worth captioning. */
+private fun typeLabel(mediaType: String): String? = when (mediaType) {
+    "album" -> "Album"
+    "artist" -> "Artist"
+    "playlist" -> "Playlist"
+    "radio" -> "Radio"
+    "track" -> null          // a row in a track list is obviously a track
+    else -> null
 }
 
 @Composable

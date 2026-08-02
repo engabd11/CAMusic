@@ -7,8 +7,13 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
@@ -53,6 +58,50 @@ val LocalMiniBarInset = compositionLocalOf { 0.dp }
 fun navBarInset(): Dp =
     NavBarHeight + LocalMiniBarInset.current +
         WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+
+/**
+ * Only what the *system* navigation bar takes — no app chrome.
+ *
+ * What a bottom sheet needs. A sheet is drawn over the tab bar and the mini player,
+ * so reserving room for them left a band of dead sheet-coloured space at the bottom
+ * — 98dp in the tab layout, 186dp in the overlay one, close enough to a third of the
+ * sheet to read as a box sitting on top of it. Sheets pair this with
+ * [HideBottomChrome]; screens keep [navBarInset].
+ */
+@Composable
+fun systemNavInset(): Dp = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+
+/**
+ * How many sheets are open right now.
+ *
+ * A sheet lives inside its own screen's Box, which in the tab layout is a `NavHost`
+ * sibling *below* [SendspinNavBar] — so the bar's opaque black rect, hairline and
+ * all, paints over the bottom of the sheet. Rather than re-parent every sheet out of
+ * the screens that provide their palette, the chrome stands down while one is up.
+ * The bar overlays content and never displaced it, so nothing reflows.
+ *
+ * A counter rather than a flag: two sheets briefly overlapping during a transition
+ * must not leave the chrome hidden when the first one closes.
+ */
+class BottomChromeState {
+    var openSheets by mutableIntStateOf(0)
+        private set
+
+    fun acquire() { openSheets++ }
+    fun release() { openSheets = (openSheets - 1).coerceAtLeast(0) }
+}
+
+val LocalBottomChrome = staticCompositionLocalOf { BottomChromeState() }
+
+/** Hide the mini player and tab bar for as long as the caller is composed. */
+@Composable
+fun HideBottomChrome() {
+    val chrome = LocalBottomChrome.current
+    DisposableEffect(chrome) {
+        chrome.acquire()
+        onDispose { chrome.release() }
+    }
+}
 
 data class NavTab(val route: String, val label: String, val icon: ImageVector)
 

@@ -38,6 +38,7 @@ private val SpeedPresets = listOf(0.75f, 1f, 1.25f, 1.5f, 2f)
  */
 @Composable
 fun BoxScope.PlayerOptionsSheet(onClose: () -> Unit, viewModel: NowPlayingViewModel) {
+    HideBottomChrome()
     val st by viewModel.state.collectAsState()
     val accent = LocalAccent.current
 
@@ -57,7 +58,7 @@ fun BoxScope.PlayerOptionsSheet(onClose: () -> Unit, viewModel: NowPlayingViewMo
             .background(Ink2)
             .border(1.dp, Hairline, RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp)),
     ) {
-        Column(Modifier.fillMaxWidth().padding(bottom = navBarInset() + 12.dp)) {
+        Column(Modifier.fillMaxWidth().padding(bottom = systemNavInset() + 12.dp)) {
             Box(Modifier.fillMaxWidth().padding(top = 10.dp), contentAlignment = Alignment.Center) {
                 Box(Modifier.size(width = 36.dp, height = 4.dp).clip(RoundedCornerShape(100)).background(Hairline))
             }

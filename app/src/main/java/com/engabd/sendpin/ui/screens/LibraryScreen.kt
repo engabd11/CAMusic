@@ -1,9 +1,11 @@
 package com.engabd.sendpin.ui.screens
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -50,6 +52,7 @@ import com.engabd.sendpin.download.DownloadJob
 import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ma.LibraryViewModel.Backend
 import com.engabd.sendpin.ma.MaItem
+import com.engabd.sendpin.subsonic.SubsonicClient
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
 
@@ -79,6 +82,9 @@ fun LibraryScreen(
     val query by viewModel.query.collectAsState()
     val palette = LocalPalette.current
     val snackbar = remember { SnackbarHostState() }
+    // Long-press target. Hoisted to the screen so the sheet is a sibling of the
+    // grid rather than a child of a row that scrolls out from under it.
+    var actionsFor by remember { mutableStateOf<MaItem?>(null) }
 
     LaunchedEffect(Unit) { viewModel.toast.collect { snackbar.showSnackbar(it) } }
     BackHandler(enabled = depth > 0 || searchOpen) { viewModel.back() }
@@ -102,7 +108,10 @@ fun LibraryScreen(
             // to. Showing it while a saved server is still handshaking made every
             // visit to this tab flash what looks like the onboarding screen.
             when {
-                ready -> Browse(viewModel, onAlbumClick, onArtistClick, onPlaylistClick)
+                ready -> Browse(
+                    viewModel, onAlbumClick, onArtistClick, onPlaylistClick,
+                    onLongPress = { actionsFor = it },
+                )
                 booted && !connecting && (!hasServer || connError != null) -> ConnectForm(viewModel, backend)
                 else -> ConnectingState()
             }
@@ -115,6 +124,23 @@ fun LibraryScreen(
             Snackbar(containerColor = Ink3, contentColor = TextPrimary, shape = RoundedCornerShape(14.dp)) {
                 Text(data.visuals.message, fontFamily = AppFont, fontSize = 13.sp)
             }
+        }
+
+        // Long-press: play or queue anything without losing what's playing, and take
+        // a whole album offline in one gesture.
+        actionsFor?.let { picked ->
+            MediaActionsSheet(
+                item = picked,
+                onClose = { actionsFor = null },
+                onPlayNow = { viewModel.play(picked, "replace") },
+                onPlayNext = { viewModel.play(picked, "next") },
+                onAddToQueue = { viewModel.play(picked, "add") },
+                // Downloads are a Navidrome feature; the ViewModel says so itself for
+                // an MA item, so the row is only offered where it can work.
+                onDownload = if (picked.provider == SubsonicClient.PROVIDER) {
+                    { viewModel.download(picked) }
+                } else null,
+            )
         }
     }
 }
@@ -252,6 +278,9 @@ private fun Browse(
     onAlbumClick: (MaItem) -> Unit,
     onArtistClick: (MaItem) -> Unit,
     onPlaylistClick: (MaItem) -> Unit,
+    // A parameter rather than composition state: the sections below are LazyGridScope
+    // extensions, which are not composable and can't read a CompositionLocal.
+    onLongPress: (MaItem) -> Unit,
 ) {
     val node by viewModel.node.collectAsState()
     val depth by viewModel.depth.collectAsState()
@@ -260,6 +289,8 @@ private fun Browse(
     val search by viewModel.search.collectAsState()
     val searchOpen by viewModel.searchOpen.collectAsState()
     val recent by viewModel.recent.collectAsState()
+    val favoriteAlbums by viewModel.favoriteAlbums.collectAsState()
+    val favoriteArtists by viewModel.favoriteArtists.collectAsState()
     val recentlyAdded by viewModel.recentlyAdded.collectAsState()
     val recommendations by viewModel.recommendations.collectAsState()
     val inProgress by viewModel.inProgress.collectAsState()
@@ -291,10 +322,10 @@ private fun Browse(
         }
 
         if (s != null) {
-            searchSection("Artists", s.artists, viewModel, onAlbumClick, onArtistClick, onPlaylistClick)
-            searchSection("Albums", s.albums, viewModel, onAlbumClick, onArtistClick, onPlaylistClick)
-            searchSection("Tracks", s.tracks, viewModel, onAlbumClick, onArtistClick, onPlaylistClick)
-            searchSection("Playlists", s.playlists, viewModel, onAlbumClick, onArtistClick, onPlaylistClick)
+            searchSection("Artists", s.artists, viewModel, onAlbumClick, onArtistClick, onPlaylistClick, onLongPress)
+            searchSection("Albums", s.albums, viewModel, onAlbumClick, onArtistClick, onPlaylistClick, onLongPress)
+            searchSection("Tracks", s.tracks, viewModel, onAlbumClick, onArtistClick, onPlaylistClick, onLongPress)
+            searchSection("Playlists", s.playlists, viewModel, onAlbumClick, onArtistClick, onPlaylistClick, onLongPress)
             if (s.artists.isEmpty() && s.albums.isEmpty() && s.tracks.isEmpty() && s.playlists.isEmpty()) {
                 item(span = { full() }) { SearchEmptyState() }
             }
@@ -319,30 +350,14 @@ private fun Browse(
                     else -> viewModel.open(item)
                 }
             }
-            if (inProgress.isNotEmpty()) {
-                item(span = { full() }) { Shelf("Continue listening") }
-                items(inProgress, span = { GridItemSpan(2) }) { it2 ->
-                    CoverTile(it2) { openItem(it2) }
-                }
-            }
-            if (recentlyAdded.isNotEmpty()) {
-                item(span = { full() }) { Shelf("Recently added") }
-                items(recentlyAdded, span = { GridItemSpan(2) }) { it2 ->
-                    CoverTile(it2) { openItem(it2) }
-                }
-            }
-            if (recommendations.isNotEmpty()) {
-                item(span = { full() }) { Shelf("For you") }
-                items(recommendations, span = { GridItemSpan(2) }) { it2 ->
-                    CoverTile(it2) { openItem(it2) }
-                }
-            }
-            if (recent.isNotEmpty()) {
-                item(span = { full() }) { Shelf("Recently played") }
-                items(recent, span = { GridItemSpan(2) }) { it2 ->
-                    CoverTile(it2) { openItem(it2) }
-                }
-            }
+            // Favourites lead: what you chose to keep is a better front page than
+            // whatever the scanner saw last. The rest keep their old order behind them.
+            shelf("Favourite albums", favoriteAlbums, openItem, onLongPress)
+            shelf("Favourite artists", favoriteArtists, openItem, onLongPress)
+            shelf("Continue listening", inProgress, openItem, onLongPress)
+            shelf("Recently added", recentlyAdded, openItem, onLongPress)
+            shelf("For you", recommendations, openItem, onLongPress)
+            shelf("Recently played", recent, openItem, onLongPress)
             return@LazyVerticalGrid
         }
 
@@ -355,7 +370,7 @@ private fun Browse(
         val artful = node.items.count { it.image != null && it.mediaType in setOf("album", "playlist") }
         if (artful >= node.items.size / 2 && artful > 0) {
             items(node.items, span = { GridItemSpan(2) }) { entry ->
-                CoverTile(entry) {
+                CoverTile(entry, onLongPress = { onLongPress(entry) }) {
                     when (entry.mediaType) {
                         "album" -> onAlbumClick(entry)
                         "artist" -> onArtistClick(entry)
@@ -386,10 +401,23 @@ private fun Browse(
                     "playlist" -> { { onPlaylistClick(entry) } }
                     else -> null
                 }
-                if (click != null) ItemRow(entry, viewModel, click)
-                else ItemRow(entry, viewModel)
+                ItemRow(entry, viewModel, click, onLongPress)
             }
         }
+    }
+}
+
+/** One titled row of cover tiles, hidden when the shelf has nothing in it. */
+private fun androidx.compose.foundation.lazy.grid.LazyGridScope.shelf(
+    title: String,
+    list: List<MaItem>,
+    onOpen: (MaItem) -> Unit,
+    onLongPress: (MaItem) -> Unit,
+) {
+    if (list.isEmpty()) return
+    item(span = { full() }) { Shelf(title) }
+    items(list, span = { GridItemSpan(2) }) { entry ->
+        CoverTile(entry, onLongPress = { onLongPress(entry) }) { onOpen(entry) }
     }
 }
 
@@ -398,6 +426,7 @@ private fun androidx.compose.foundation.lazy.grid.LazyGridScope.searchSection(
     onAlbumClick: (MaItem) -> Unit,
     onArtistClick: (MaItem) -> Unit,
     onPlaylistClick: (MaItem) -> Unit,
+    onLongPress: (MaItem) -> Unit,
 ) {
     if (list.isEmpty()) return
     item(span = { full() }) { Shelf(title) }
@@ -408,8 +437,7 @@ private fun androidx.compose.foundation.lazy.grid.LazyGridScope.searchSection(
             "playlist" -> { { onPlaylistClick(entry) } }
             else -> null
         }
-        if (click != null) ItemRow(entry, viewModel, click)
-        else ItemRow(entry, viewModel)
+        ItemRow(entry, viewModel, click, onLongPress)
     }
 }
 
@@ -476,9 +504,16 @@ private fun categoryIcon(id: String): ImageVector = when (id) {
     else -> Icons.AutoMirrored.Filled.QueueMusic
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun CoverTile(item: MaItem, onClick: () -> Unit) {
-    Column(Modifier.clickable(onClick = onClick)) {
+private fun CoverTile(item: MaItem, onLongPress: (() -> Unit)? = null, onClick: () -> Unit) {
+    Column(
+        if (onLongPress != null) {
+            Modifier.combinedClickable(onClick = onClick, onLongClick = onLongPress)
+        } else {
+            Modifier.clickable(onClick = onClick)
+        }
+    ) {
         Box(
             Modifier
                 .fillMaxWidth()
@@ -513,15 +548,27 @@ private fun CoverTile(item: MaItem, onClick: () -> Unit) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun RowCard(onClick: (() -> Unit)? = null, content: @Composable RowScope.() -> Unit) {
+private fun RowCard(
+    onClick: (() -> Unit)? = null,
+    onLongClick: (() -> Unit)? = null,
+    content: @Composable RowScope.() -> Unit,
+) {
     Row(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
             .background(Color.White.a(0.03f))
             .border(1.dp, HairlineSoft, RoundedCornerShape(14.dp))
-            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .then(
+                when {
+                    onLongClick != null ->
+                        Modifier.combinedClickable(onClick = onClick ?: {}, onLongClick = onLongClick)
+                    onClick != null -> Modifier.clickable(onClick = onClick)
+                    else -> Modifier
+                }
+            )
             .padding(horizontal = 12.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -530,7 +577,12 @@ private fun RowCard(onClick: (() -> Unit)? = null, content: @Composable RowScope
 }
 
 @Composable
-private fun ItemRow(item: MaItem, viewModel: LibraryViewModel, onClick: (() -> Unit)? = null) {
+private fun ItemRow(
+    item: MaItem,
+    viewModel: LibraryViewModel,
+    onClick: (() -> Unit)? = null,
+    onLongPress: ((MaItem) -> Unit)? = null,
+) {
     val accent = LocalAccent.current
     val isCategory = item.provider == "__cat__"
     val isDownload = item.provider == "__dl__"
@@ -543,10 +595,20 @@ private fun ItemRow(item: MaItem, viewModel: LibraryViewModel, onClick: (() -> U
     val downloadedIds by viewModel.downloadedIds.collectAsState()
     val onDisk = item.itemId in downloadedIds
 
-    RowCard(onClick = {
-        if (onClick != null) onClick()
-        else viewModel.open(item)
-    }) {
+    // A category card opens a list and a download row is already on the phone —
+    // neither has anything the actions sheet could offer.
+    val longPressable = !isCategory && !isDownload &&
+        item.mediaType in setOf("track", "album", "artist", "playlist", "radio")
+
+    RowCard(
+        onClick = {
+            if (onClick != null) onClick()
+            else viewModel.open(item)
+        },
+        onLongClick = if (longPressable && onLongPress != null) {
+            { onLongPress(item) }
+        } else null,
+    ) {
         when {
             isCategory -> Box(
                 Modifier.size(46.dp).clip(RoundedCornerShape(11.dp)).background(accent.a(0.12f)),
@@ -595,8 +657,18 @@ private fun ItemRow(item: MaItem, viewModel: LibraryViewModel, onClick: (() -> U
             )
         }
         // Favourites are a Navidrome star as much as an MA favourite, so the heart
-        // belongs on both backends rather than only one.
-        if (isMaTrack || (isSubsonic && item.mediaType in setOf("track", "album", "artist"))) {
+        // belongs on both backends rather than only one — and on albums and artists
+        // as much as tracks. `music/favorites/add_item` takes any media item's uri
+        // and Subsonic's `star` has an `albumId`/`artistId` for exactly this; the
+        // heart was gated to MA *tracks* for no reason either server imposed.
+        //
+        // Subsonic's `star` has no playlist parameter, so that one really is
+        // backend-specific.
+        val favouritable = !isCategory && !isDownload && when {
+            isSubsonic -> item.mediaType in setOf("track", "album", "artist")
+            else -> item.mediaType in setOf("track", "album", "artist", "playlist")
+        }
+        if (favouritable) {
             val favorites by viewModel.favorites.collectAsState()
             val isFav = item.itemId in favorites
             Icon(

@@ -122,6 +122,10 @@ class SendspinConnectionService : Service() {
         scope.launch {
             pb.connected.collect { _ -> updateNotification() }
         }
+        // The selected speaker starting or stopping changes what this says.
+        scope.launch {
+            SendpinApp.instance.maNowPlaying.now.collect { _ -> updateNotification() }
+        }
     }
 
     private fun startForegroundNow() {
@@ -141,11 +145,15 @@ class SendspinConnectionService : Service() {
     private fun buildNotification(): Notification {
         val connected = pb.connected.value
         val title = if (connected) "Sendspin" else "Sendspin — reconnecting"
-        val text = if (connected) {
-            if (pb.isPlaying.value) "Connected — ${pb.trackTitle.value.ifEmpty { "playing" }}"
-            else "Ready — announcements will play here"
-        } else {
-            pb.connectionStatus.value
+        // `pb.isPlaying` is this phone's own Sendspin stream and nothing else, so
+        // driving a speaker left this reading "Ready — announcements will play here"
+        // while an album was playing. The selected player is the missing case.
+        val remote = SendpinApp.instance.maNowPlaying.now.value
+        val text = when {
+            !connected -> pb.connectionStatus.value
+            pb.isPlaying.value -> "Playing here — ${pb.trackTitle.value.ifEmpty { "…" }}"
+            remote?.isPlaying == true -> "Playing on ${remote.playerName}"
+            else -> "Ready — announcements will play here"
         }
 
         val open = TaskStackBuilder.create(this)

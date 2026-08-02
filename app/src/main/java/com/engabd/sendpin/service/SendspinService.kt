@@ -31,6 +31,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /**
@@ -107,6 +108,62 @@ class SendspinService : Service() {
     /** The countdown started by [armIdleTimeout]; non-null while the grace period runs. */
     private var idleJob: Job? = null
     private val pb get() = SendpinApp.instance.playback
+    private val ma get() = SendpinApp.instance.maNowPlaying
+
+    /**
+     * What the shade is currently reflecting.
+     *
+     * This phone's own Sendspin stream wins — when it is receiving audio it *is* the
+     * thing making the sound. Otherwise the selected Music Assistant player, which is
+     * what the user is listening to and what the transport buttons should address.
+     */
+    private data class Shade(
+        val title: String,
+        val artist: String,
+        val album: String,
+        val artworkUrl: String?,
+        val durationMs: Long,
+        val isPlaying: Boolean,
+        /** True when this is this phone's own Sendspin stream. */
+        val local: Boolean,
+        /** The remote player's name; null when [local]. */
+        val playerName: String?,
+    )
+
+    /** The precedence rule, in one place so the notification and the session agree. */
+    private fun currentShade(): Shade {
+        val remote = ma.now.value
+        // `isPlaying` is the Sendspin stream flowing, which is the only thing that
+        // makes this phone the source. A stale title from a finished stream must not
+        // outrank a speaker that is actually playing.
+        if (pb.isPlaying.value || remote == null || remote.isSelf) {
+            return Shade(
+                title = pb.trackTitle.value,
+                artist = pb.artist.value,
+                album = pb.album.value,
+                artworkUrl = pb.artworkUrl.value,
+                durationMs = pb.durationMs.value,
+                isPlaying = pb.isPlaying.value,
+                local = true,
+                playerName = null,
+            )
+        }
+        return Shade(
+            title = remote.title,
+            artist = remote.artist,
+            album = remote.album,
+            artworkUrl = remote.artworkUrl,
+            durationMs = remote.durationMs,
+            isPlaying = remote.isPlaying,
+            local = false,
+            playerName = remote.playerName,
+        )
+    }
+
+    /** Route a transport action to whichever player the shade is showing. */
+    private fun route(localAction: () -> Unit, remoteAction: () -> Unit) {
+        if (currentShade().local) localAction() else remoteAction()
+    }
 
     private var mediaSession: MediaSessionCompat? = null
     private var cachedArtwork: android.graphics.Bitmap? = null
@@ -127,9 +184,11 @@ class SendspinService : Service() {
                 return START_NOT_STICKY
             }
             ACTION_IDLE_MEDIA -> armIdleTimeout()
-            ACTION_PLAY_PAUSE -> pb.onPlayPause()
-            ACTION_NEXT -> pb.onMediaNext()
-            ACTION_PREV -> pb.onMediaPrevious()
+            // Routed the same way the session callbacks are — the notification's own
+            // buttons must not address a different player from the lock screen's.
+            ACTION_PLAY_PAUSE -> route({ pb.onPlayPause() }, { ma.playPause() })
+            ACTION_NEXT -> route({ pb.onMediaNext() }, { ma.next() })
+            ACTION_PREV -> route({ pb.onMediaPrevious() }, { ma.previous() })
             ACTION_CONNECT, null, ACTION_START_MEDIA -> {
                 // Promote to foreground and start observing.
                 cancelIdleTimeout()
@@ -171,15 +230,23 @@ class SendspinService : Service() {
         stopSelf()
     }
 
+    /**
+     * Transport goes to whatever the shade is showing.
+     *
+     * These used to go unconditionally to `Playback.playerId` — this phone — so a
+     * headset button pressed while a speaker was playing paused the phone, which was
+     * not the thing making any sound.
+     */
     private fun setupMediaSession() {
         mediaSession = MediaSessionCompat(this, "Sendspin").apply {
             setCallback(object : MediaSessionCompat.Callback() {
-                override fun onPlay() = pb.onPlayPause()
-                override fun onPause() = pb.onPlayPause()
-                override fun onSkipToNext() = pb.onMediaNext()
-                override fun onSkipToPrevious() = pb.onMediaPrevious()
+                override fun onPlay() = route({ pb.onPlayPause() }, { ma.playPause() })
+                override fun onPause() = route({ pb.onPlayPause() }, { ma.playPause() })
+                override fun onSkipToNext() = route({ pb.onMediaNext() }, { ma.next() })
+                override fun onSkipToPrevious() = route({ pb.onMediaPrevious() }, { ma.previous() })
                 override fun onStop() { stopForegroundAndSelf() }
-                override fun onSeekTo(pos: Long) = pb.onMediaSeek((pos / 1000).toInt())
+                override fun onSeekTo(pos: Long) =
+                    route({ pb.onMediaSeek((pos / 1000).toInt()) }, { ma.seekTo(pos) })
             })
             isActive = true
         }
@@ -188,25 +255,29 @@ class SendspinService : Service() {
     private fun observe() {
         if (observeJob != null) return
         mediaActive = true
+        // One flow for both sources, recomputed whenever either moves — so the shade
+        // never shows the phone's stale last track while a speaker is playing.
+        val shade: Flow<Shade> = combine(
+            listOf<Flow<Any?>>(
+                pb.trackTitle, pb.artist, pb.album, pb.isPlaying,
+                pb.artworkUrl, pb.durationMs, pb.connected, pb.connectionStatus,
+                ma.now,
+            )
+        ) { currentShade() }.distinctUntilChanged()
+
         observeJob = scope.launch {
-            combine(
-                listOf<Flow<Any?>>(
-                    pb.trackTitle, pb.artist, pb.album, pb.isPlaying,
-                    pb.artworkUrl, pb.connected, pb.connectionStatus,
-                )
-            ) { it.toList() }
-                .distinctUntilChanged()
-                .collect { updateNotification() }
+            shade.collect { updateNotification(it) }
         }
         scope.launch {
-            combine(pb.isPlaying, pb.positionMs) { isPlaying, pos -> isPlaying to pos }
-                .collect { (isPlaying, pos) -> updatePlaybackState(isPlaying, pos) }
+            // Position comes from whichever side owns the shade: the Sendspin stream's
+            // own playhead, or the projected position of the selected MA player.
+            combine(shade, pb.positionMs, ma.positionMs) { s, localPos, remotePos ->
+                Triple(s.isPlaying, if (s.local) localPos else remotePos, s)
+            }.collect { (isPlaying, pos, _) -> updatePlaybackState(isPlaying, pos) }
         }
         scope.launch {
-            combine(
-                pb.trackTitle, pb.artist, pb.album, pb.artworkUrl, pb.durationMs,
-            ) { title, artist, album, art, dur ->
-                MetadataBundle(title, artist, album, art, dur)
+            shade.map {
+                MetadataBundle(it.title, it.artist, it.album, it.artworkUrl, it.durationMs)
             }.distinctUntilChanged().collect { meta ->
                 updateMetadata(meta)
                 if (meta.artworkUrl != loadedArtworkUrl) {
@@ -221,7 +292,7 @@ class SendspinService : Service() {
         // tearing down, and playback resuming cancels it. The connection service keeps
         // the WebSocket alive either way.
         scope.launch {
-            pb.isPlaying.collect { playing ->
+            shade.map { it.isPlaying }.distinctUntilChanged().collect { playing ->
                 if (!mediaActive) return@collect
                 if (playing) cancelIdleTimeout() else armIdleTimeout()
             }
@@ -263,10 +334,9 @@ class SendspinService : Service() {
         mediaSession?.setMetadata(md.build())
     }
 
-    private fun currentMetadata() = MetadataBundle(
-        pb.trackTitle.value, pb.artist.value, pb.album.value,
-        pb.artworkUrl.value, pb.durationMs.value,
-    )
+    private fun currentMetadata() = currentShade().let {
+        MetadataBundle(it.title, it.artist, it.album, it.artworkUrl, it.durationMs)
+    }
 
     private fun fetchArtwork(url: String?) {
         artworkJob?.cancel()
@@ -301,17 +371,21 @@ class SendspinService : Service() {
         }
     }
 
-    private fun updateNotification() {
+    private fun updateNotification(shade: Shade = currentShade()) {
         if (!mediaActive) return
         (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
-            .notify(NOTIFICATION_ID, buildNotification())
+            .notify(NOTIFICATION_ID, buildNotification(shade))
     }
 
-    private fun buildNotification(): Notification {
-        val isPlaying = pb.isPlaying.value
-        val title = pb.trackTitle.value.ifEmpty { "Sendspin" }
-        val text = pb.artist.value.ifEmpty {
-            if (pb.connected.value) "Ready" else pb.connectionStatus.value
+    private fun buildNotification(shade: Shade = currentShade()): Notification {
+        val isPlaying = shade.isPlaying
+        val title = shade.title.ifEmpty { "Sendspin" }
+        val text = shade.artist.ifEmpty {
+            when {
+                shade.playerName != null -> "Playing on ${shade.playerName}"
+                pb.connected.value -> "Ready"
+                else -> pb.connectionStatus.value
+            }
         }
 
         val open = TaskStackBuilder.create(this)
@@ -344,6 +418,9 @@ class SendspinService : Service() {
             .addAction(android.R.drawable.ic_media_next, "Next", next)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stop)
             .setPriority(NotificationCompat.PRIORITY_LOW)
+
+        // Name the speaker, so it's obvious the controls aren't driving the phone.
+        shade.playerName?.let { builder.setSubText(it) }
 
         cachedArtwork?.let { builder.setLargeIcon(it) }
 

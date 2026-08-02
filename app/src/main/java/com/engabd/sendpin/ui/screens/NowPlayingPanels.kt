@@ -72,6 +72,7 @@ fun BoxScope.NowPlayingSheet(
     onClose: () -> Unit,
     viewModel: NowPlayingViewModel,
 ) {
+    HideBottomChrome()
     val accent = LocalAccent.current
 
     Box(
@@ -223,7 +224,7 @@ private fun ColumnScope.QueueList(
     LazyColumn(
         Modifier.weight(1f).fillMaxWidth(),
         state = listState,
-        contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 4.dp, bottom = navBarInset() + 16.dp),
+        contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 4.dp, bottom = systemNavInset() + 16.dp),
         // Scrolling and dragging a row are different jobs; let the grip have the
         // gesture to itself rather than fighting the list for it.
         userScrollEnabled = draggingId == null,

@@ -2,6 +2,7 @@ package com.engabd.sendpin.protocol
 
 import kotlin.math.abs
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -42,6 +43,38 @@ class ClockKalmanFilterTest {
         val localNow = 5_000_000L
         val recovered = f.serverToLocalUs(localNow + offset)
         assertTrue(abs(recovered - localNow) < 2_000, "serverToLocal off by ${recovered - localNow}us")
+    }
+
+    /**
+     * The contract the audio engine's head-of-stream gate now depends on.
+     *
+     * `isSynced()` is true after a *single* round-trip, and scheduling the head of a
+     * stream against an offset that raw is what made tracks start a couple of seconds
+     * in. `isReadyForPlaybackStart()` is the stricter test the engine gates on now, so
+     * it has to stay strict.
+     */
+    @Test
+    fun `readiness needs more than one sample, unlike synced`() {
+        val f = ClockKalmanFilter()
+        var localSend = 0L
+        feed(f, localSend, offsetUs = 1_000_000L, rttUs = 4_000, procUs = 1_000)
+        assertTrue(f.isSynced(), "one round-trip is enough to be 'synced'")
+        assertFalse(f.isReadyForPlaybackStart(), "one round-trip must not be enough to schedule against")
+
+        // Seven in total: still short of the eight the filter asks for.
+        repeat(6) {
+            localSend += 300_000L
+            feed(f, localSend, offsetUs = 1_000_000L, rttUs = 4_000, procUs = 1_000)
+        }
+        assertEquals(7, f.sampleCount)
+        assertFalse(f.isReadyForPlaybackStart(), "seven samples is still short")
+
+        localSend += 300_000L
+        feed(f, localSend, offsetUs = 1_000_000L, rttUs = 4_000, procUs = 1_000)
+        assertTrue(
+            f.isReadyForPlaybackStart(),
+            "eight converged samples should be ready: err=${f.errorUs()}us",
+        )
     }
 
     @Test

@@ -14,6 +14,9 @@ data class MaAudioFormat(
     val codec: String,
     val sampleRate: Int,
     val bitDepth: Int,
+    /** kbps, off MA's `AudioFormat.bit_rate`. 0 when the provider didn't say. */
+    val bitRate: Int = 0,
+    val channels: Int = 2,
 )
 
 data class MaItem(
@@ -104,7 +107,24 @@ data class SyncDelay(val key: String, val ms: Int)
 /** A player queue: what's streaming, and how the queue itself is set up. */
 data class MaQueue(
     val queueId: String,
-    val quality: StreamQuality?,
+    /**
+     * What Music Assistant *opened*, off `current_item.streamdetails.audio_format`.
+     *
+     * This is the stream job's **input** — the file as the provider hands it over —
+     * not what any speaker is fed. The app used to label it "Playing", which is why
+     * the codec badge always agreed with the source no matter how much converting
+     * MA did on the way out. See [outputFormats].
+     */
+    val inputFormat: StreamQuality? = null,
+    /**
+     * What each player is actually fed, keyed by player_id, off
+     * `current_item.streamdetails.dsp[<player_id>].output_format`.
+     *
+     * MA runs a per-player DSP pipeline and reports its output format there; that —
+     * and only that — is the honest answer to "what is this speaker receiving".
+     * Resolve it with [outputFor] rather than indexing directly.
+     */
+    val outputFormats: Map<String, StreamQuality> = emptyMap(),
     val shuffleEnabled: Boolean = false,
     val repeatMode: String = "off",   // off | one | all
     val currentIndex: Int? = null,
@@ -136,7 +156,23 @@ data class MaQueue(
      * which backend holds the file.
      */
     val streamProvider: String? = null,
-)
+) {
+    /**
+     * The format [playerId] is being fed, falling back until something is knowable.
+     *
+     * A synced member decodes on its own hardware and MA can hand it a different
+     * format from the leader's, so its own entry wins. Failing that: the leader's
+     * (some servers only file one entry, under the queue's own id), then a lone
+     * entry when there is no ambiguity to resolve, and finally the input format —
+     * which is at least honest about the file, if not about the wire.
+     */
+    fun outputFor(playerId: String, leaderId: String? = null): StreamQuality? =
+        outputFormats[playerId]
+            ?: leaderId?.let { outputFormats[it] }
+            ?: outputFormats[queueId]
+            ?: outputFormats.values.singleOrNull()
+            ?: inputFormat
+}
 
 /** Grouped search hits. */
 data class MaSearchResults(
@@ -200,6 +236,36 @@ data class MaLyrics(
     }
 }
 
+/**
+ * One event pushed by Music Assistant on the authenticated socket.
+ *
+ * The app used to decide what an event meant by looking for the substrings "player"
+ * or "queue" anywhere in the frame's JSON. Every event matched the same branch, so
+ * `queue_items_updated` — the one that says the queue's *contents* changed — was
+ * indistinguishable from the `queue_time_updated` MA emits about once a second.
+ * That is why adding an album left an open queue panel showing the old list.
+ *
+ * [objectId] is the player_id or queue_id the event is about.
+ */
+data class MaEvent(
+    val name: String,
+    val objectId: String?,
+    val data: JsonElement? = null,
+) {
+    /** Anything about a player or a queue — the metadata refresh trigger. */
+    val isPlayerOrQueue: Boolean get() = name.startsWith("player") || name.startsWith("queue")
+
+    /**
+     * The set of items in a queue changed, as opposed to where in it we are.
+     *
+     * `queue_items_updated` is MA's own signal for this and fires whoever did the
+     * adding, which is what lets the panel follow a "play album" issued from a
+     * different screen without any wiring between their ViewModels.
+     */
+    val changesQueueContents: Boolean
+        get() = name == "queue_items_updated" || name == "queue_added"
+}
+
 /** A track similar to the seed (from sonic_similarity or music/tracks/similar_tracks). */
 data class MaSimilarTrack(
     val itemId: String,
@@ -211,6 +277,38 @@ data class MaSimilarTrack(
 )
 
 object MaParse {
+
+    /**
+     * A provider instance id or domain as a listener would name it.
+     *
+     * MA reports the streaming provider as an instance id (`spotify--AbC123`) or a
+     * bare domain; the badge wants the brand. Anything unrecognised falls back to
+     * "MA", which is what the badge said unconditionally before.
+     */
+    fun providerLabel(instanceOrDomain: String?): String =
+        when (instanceOrDomain?.substringBefore("--")?.lowercase()) {
+            null, "" -> "MA"
+            "opensubsonic", "subsonic" -> "Subsonic"
+            "filesystem_local", "filesystem_smb", "filesystem" -> "Local"
+            "spotify" -> "Spotify"
+            "tidal" -> "Tidal"
+            "qobuz" -> "Qobuz"
+            "deezer" -> "Deezer"
+            "apple_music" -> "Apple Music"
+            "ytmusic", "youtube_music" -> "YT Music"
+            "soundcloud" -> "SoundCloud"
+            "radiobrowser", "tunein" -> "Radio"
+            "plex" -> "Plex"
+            "jellyfin" -> "Jellyfin"
+            "builtin" -> "MA"
+            else -> "MA"
+        }
+
+    /** One pushed event frame, or null if it isn't one. */
+    fun event(o: JsonObject): MaEvent? {
+        val name = (o["event"] as? JsonPrimitive)?.contentOrNull ?: return null
+        return MaEvent(name, (o["object_id"] as? JsonPrimitive)?.contentOrNull, o["data"])
+    }
 
     fun items(result: JsonElement?, serverUrl: String?): List<MaItem> = when (result) {
         is JsonArray -> result.mapNotNull { item(it, serverUrl) }
@@ -257,11 +355,14 @@ object MaParse {
             ?.mapNotNull { (it as? JsonObject)?.get("audio_format") as? JsonObject }
             ?.mapNotNull { f ->
                 val rate = f["sample_rate"]?.jsonPrimitive?.intOrNull ?: return@mapNotNull null
+                val br = (f["bit_rate"] as? JsonPrimitive)?.intOrNull ?: 0
                 MaAudioFormat(
                     codec = f["content_type"]?.jsonPrimitive?.contentOrNull
                         ?: f["codec_type"]?.jsonPrimitive?.contentOrNull ?: "?",
                     sampleRate = rate,
                     bitDepth = f["bit_depth"]?.jsonPrimitive?.intOrNull ?: 16,
+                    bitRate = if (br > 10_000) br / 1000 else br,
+                    channels = (f["channels"] as? JsonPrimitive)?.intOrNull ?: 2,
                 )
             }
             ?.maxByOrNull { it.sampleRate.toLong() * 100 + it.bitDepth }
@@ -316,9 +417,11 @@ object MaParse {
             val o = el as? JsonObject ?: return@mapNotNull null
             val id = o["queue_id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
             val current = o["current_item"] as? JsonObject
+            val (inputFormat, outputFormats) = streamFormats(current)
             MaQueue(
                 queueId = id,
-                quality = quality(current),
+                inputFormat = inputFormat,
+                outputFormats = outputFormats,
                 shuffleEnabled = o["shuffle_enabled"]?.jsonPrimitive?.booleanOrNull ?: false,
                 repeatMode = o["repeat_mode"]?.jsonPrimitive?.contentOrNull ?: "off",
                 currentIndex = o["current_index"]?.jsonPrimitive?.intOrNull,
@@ -336,24 +439,54 @@ object MaParse {
     }
 
     /**
-     * Pull codec/rate/depth out of a queue item's `streamdetails`. MA has moved
-     * these between the stream details root and a nested `audio_format` across
-     * versions, so both shapes are accepted — and the *output* format is
-     * preferred over the source, since that's what the speaker actually receives.
+     * One MA `AudioFormat` object → a [StreamQuality], or null when it says nothing
+     * worth showing.
      */
-    private fun quality(currentItem: JsonElement?): StreamQuality? {
-        val sd = (currentItem as? JsonObject)?.get("streamdetails") as? JsonObject ?: return null
-        val fmt = (sd["audio_format"] as? JsonObject) ?: sd
-        val codec = fmt["content_type"]?.jsonPrimitive?.contentOrNull
-            ?: fmt["codec"]?.jsonPrimitive?.contentOrNull
+    private fun audioFormatQuality(f: JsonObject?): StreamQuality? {
+        if (f == null) return null
+        val codec = str(f["content_type"])
+            ?: str(f["codec_type"])
+            // Older servers, and the legacy flat streamdetails shape.
+            ?: str(f["codec"])
             ?: return null
-        if (codec.isBlank() || codec.equals("unknown", ignoreCase = true)) return null
+        if (codec.isBlank() || codec.equals("unknown", ignoreCase = true) || codec == "?") return null
+        // MA documents bit_rate in kbps, but a provider that fills it in bits per
+        // second would otherwise render as "1411000k" on the badge.
+        val br = (f["bit_rate"] as? JsonPrimitive)?.intOrNull ?: 0
         return StreamQuality(
             codec = codec,
-            sampleRateHz = fmt["sample_rate"]?.jsonPrimitive?.intOrNull ?: 0,
-            bitDepth = fmt["bit_depth"]?.jsonPrimitive?.intOrNull ?: 0,
-            bitrateKbps = fmt["bit_rate"]?.jsonPrimitive?.intOrNull ?: 0,
+            sampleRateHz = (f["sample_rate"] as? JsonPrimitive)?.intOrNull ?: 0,
+            bitDepth = (f["bit_depth"] as? JsonPrimitive)?.intOrNull ?: 0,
+            bitrateKbps = if (br > 10_000) br / 1000 else br,
         )
+    }
+
+    /**
+     * A queue item's `streamdetails`, split into what MA read and what each player
+     * is fed.
+     *
+     * `streamdetails.audio_format` is the stream job's **input**. The per-player
+     * **output** lives in `streamdetails.dsp`, a map of player_id → `DSPDetails`
+     * whose `output_format` is what actually goes down the wire. Reading only the
+     * former is why the codec badge always matched the source file.
+     *
+     * A `dsp` entry whose `state` is disabled still carries an output format, and
+     * that is still the honest answer — no filtering on state.
+     */
+    private fun streamFormats(currentItem: JsonElement?): Pair<StreamQuality?, Map<String, StreamQuality>> {
+        val sd = (currentItem as? JsonObject)?.get("streamdetails") as? JsonObject
+            ?: return null to emptyMap()
+        // MA has moved these between the streamdetails root and a nested
+        // `audio_format` across versions, so both shapes are accepted.
+        val input = audioFormatQuality(sd["audio_format"] as? JsonObject) ?: audioFormatQuality(sd)
+        val dsp = sd["dsp"] as? JsonObject ?: return input to emptyMap()
+        val outputs = buildMap {
+            for ((playerId, entry) in dsp) {
+                val o = entry as? JsonObject ?: continue
+                audioFormatQuality(o["output_format"] as? JsonObject)?.let { put(playerId, it) }
+            }
+        }
+        return input to outputs
     }
 
     /**
@@ -457,7 +590,12 @@ object MaParse {
 
     // --- queue items --------------------------------------------------------
 
-    fun queueItems(result: JsonElement?, serverUrl: String?): List<MaQueueItem> {
+    /**
+     * [indexOffset] is the `offset` the page was fetched with. It only matters for a
+     * server that omits `index`: without it, every page's fallback index restarts at
+     * zero and `player_queues/play_index` plays the wrong track past the first page.
+     */
+    fun queueItems(result: JsonElement?, serverUrl: String?, indexOffset: Int = 0): List<MaQueueItem> {
         val arr = result as? JsonArray ?: return emptyList()
         return arr.mapIndexedNotNull { i, el ->
             val o = el as? JsonObject ?: return@mapIndexedNotNull null
@@ -469,10 +607,12 @@ object MaParse {
                 duration = o["duration"]?.jsonPrimitive?.intOrNull,
                 sortIndex = o["sort_index"]?.jsonPrimitive?.intOrNull ?: 0,
                 mediaItem = media,
-                streamDetails = quality(o),
+                // The item's input format. A per-player output only exists for the
+                // item currently streaming, and that lives on the queue.
+                streamDetails = streamFormats(o).first,
                 // `index` is the queue position play_index takes; fall back to the
-                // array order, which is the same thing for a full page-0 fetch.
-                index = o["index"]?.jsonPrimitive?.intOrNull ?: i,
+                // array order, offset by the page this row came from.
+                index = o["index"]?.jsonPrimitive?.intOrNull ?: (indexOffset + i),
                 artist = media?.subtitle,
                 image = media?.image
                     ?: ((o["image"] as? JsonObject)?.let { imageUrl(JsonObject(mapOf("images" to JsonArray(listOf(it)))), serverUrl) }),

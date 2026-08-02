@@ -65,6 +65,43 @@ class SendspinAudioEngine(private val clock: ClockSync) {
         const val MAX_LEAD_US = 15_000_000L
     }
 
+    /**
+     * What to do with the frame at the head of a stream.
+     *
+     * Split out as a pure function because it is the whole of the fix for tracks that
+     * began a couple of seconds in, and the engine around it is welded to [AudioTrack]
+     * and [MediaCodec] — there is no other way to test the decision.
+     */
+    internal object HeadGate {
+        /**
+         * How long the head of a stream may be held back waiting for the clock filter
+         * to converge before we give up and play it unscheduled.
+         *
+         * `client/time` runs fast enough that eight converged samples cost a couple of
+         * seconds from a cold connect, and nothing at all on a connection that has been
+         * up for a while. Past this the offset is not going to arrive, and indefinite
+         * silence is worse than a stream that is merely out of step.
+         */
+        const val MAX_STALL_MS = 4_000L
+
+        enum class Decision {
+            /** Schedule normally: the clock is trustworthy. */
+            SCHEDULE,
+
+            /** Drop this frame and stay armed — the clock isn't ready yet. */
+            HOLD,
+
+            /** Give up waiting and play it now, unscheduled. */
+            PLAY_NOW,
+        }
+
+        fun decide(clockReady: Boolean, stalledMs: Long, maxStallMs: Long = MAX_STALL_MS): Decision = when {
+            clockReady -> Decision.SCHEDULE
+            stalledMs >= maxStallMs -> Decision.PLAY_NOW
+            else -> Decision.HOLD
+        }
+    }
+
     private class Frame(val serverTsUs: Long, val payload: ByteArray)
 
     private val queue = LinkedBlockingQueue<Frame>(QUEUE_CAPACITY)
@@ -74,13 +111,24 @@ class SendspinAudioEngine(private val clock: ClockSync) {
     private var codec: MediaCodec? = null
     private var track: AudioTrack? = null
     private var isPcm = false
+    /** What the AudioTrack was built for, to check the decoder against. */
+    private var trackSampleRate = 0
+    private var trackChannels = 0
     /**
      * The next frame is the head of a stream and should be held until its scheduled
      * moment. Cleared once that frame is released; set again by [start] and [flush],
      * which are the two points where playback restarts from a known position.
      */
     @Volatile private var awaitStart = false
+    /** When the current head-of-stream wait began, for the give-up deadline. */
+    @Volatile private var headArmedAtMs = 0L
     @Volatile private var volume = 1.0f
+
+    /** Arm the head-of-stream gate and restart its deadline. */
+    private fun armHead() {
+        awaitStart = true
+        headArmedAtMs = android.os.SystemClock.elapsedRealtime()
+    }
 
     @Synchronized
     fun start(format: StreamStartPlayerInfo) {
@@ -92,8 +140,10 @@ class SendspinAudioEngine(private val clock: ClockSync) {
             "flac" -> createFlacDecoder(format.sampleRate, channels, format.bitDepth, format.codecHeader)
             else -> null   // pcm or unknown -> passthrough / silence
         }
+        trackSampleRate = format.sampleRate
+        trackChannels = channels
         track = createTrack(format.sampleRate, channels).also { it.setVolume(volume); it.play() }
-        awaitStart = true
+        armHead()
         running = true
         worker = thread(name = "sendspin-audio", isDaemon = true) { runLoop() }
         Log.d(TAG, "start ${format.codec} ${format.sampleRate}/${format.bitDepth} ch=$channels")
@@ -111,7 +161,7 @@ class SendspinAudioEngine(private val clock: ClockSync) {
         queue.clear()
         // A seek or track jump restarts from a known point, so the next frame is a
         // head-of-stream again and gets scheduled like one.
-        awaitStart = true
+        armHead()
         try { codec?.flush(); codec?.start() } catch (_: Exception) {}
         try { track?.pause(); track?.flush(); track?.play() } catch (_: Exception) {}
     }
@@ -150,14 +200,35 @@ class SendspinAudioEngine(private val clock: ClockSync) {
             //
             // Scheduling every frame was wrong and audible: the clock filter needs a
             // few round-trips to converge, so early frames played immediately (unsynced)
-            // and then, a second or two in, `isSynced()` flipped and the loop suddenly
-            // started blocking on frames whose scheduled time had already been consumed
-            // by the unscheduled head start. That transition is a stall the listener
-            // hears as a skip. Deciding once, at the head of the stream, cannot do that:
-            // either the whole stream is scheduled or none of it is.
+            // and then, a second or two in, the loop suddenly started blocking on frames
+            // whose scheduled time had already been consumed by the unscheduled head
+            // start. That transition is a stall the listener hears as a skip. Deciding
+            // once, at the head of the stream, cannot do that: either the whole stream
+            // is scheduled or none of it is.
+            //
+            // The gate stays armed until a frame is actually released. Clearing it
+            // *before* the check — which is what this used to do — meant one dropped
+            // head frame disabled scheduling for the rest of the stream, and the
+            // server's multi-second read-ahead went straight into the track.
             if (awaitStart) {
-                awaitStart = false
-                if (!awaitFrameTime(frame.serverTsUs)) continue
+                val stalledMs = android.os.SystemClock.elapsedRealtime() - headArmedAtMs
+                // `isSynced()` is true after a *single* round-trip, long before the
+                // filter has converged, so scheduling on it meant scheduling against
+                // an offset still seconds wide: the head was either held in silence
+                // while the server ran on, or dropped as "late". Playback start has
+                // its own, stricter readiness test — this is what it was for.
+                when (HeadGate.decide(clockReady = clock.isReadyForPlaybackStart(), stalledMs = stalledMs)) {
+                    HeadGate.Decision.HOLD -> continue
+                    HeadGate.Decision.PLAY_NOW -> {
+                        Log.w(TAG, "head: clock never converged in ${stalledMs}ms — playing unscheduled")
+                        awaitStart = false
+                    }
+                    HeadGate.Decision.SCHEDULE -> {
+                        if (!awaitFrameTime(frame.serverTsUs)) continue   // stays armed
+                        Log.i(TAG, "head released: err=${clock.errorUs()}us stall=${stalledMs}ms")
+                        awaitStart = false
+                    }
+                }
             }
 
             if (isPcm) {
@@ -175,6 +246,21 @@ class SendspinAudioEngine(private val clock: ClockSync) {
                     }
                 }
                 var outIdx = c.dequeueOutputBuffer(info, DEQUEUE_TIMEOUT_US)
+                // The decoder's own answer about what it is producing. The AudioTrack
+                // was built from the server's `stream/start` claim, so a mismatch here
+                // means the badge is lying and playback is pitched wrong. Log only —
+                // rebuilding the track mid-stream is a bigger change than this earns.
+                if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    runCatching {
+                        val f = c.outputFormat
+                        val rate = f.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                        val ch = f.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                        if (rate != trackSampleRate || ch != trackChannels) {
+                            Log.w(TAG, "decoder output $rate/${ch}ch != track $trackSampleRate/${trackChannels}ch")
+                        }
+                    }
+                    outIdx = c.dequeueOutputBuffer(info, DEQUEUE_TIMEOUT_US)
+                }
                 while (outIdx >= 0) {
                     if (info.size > 0) {
                         c.getOutputBuffer(outIdx)?.let { out ->
@@ -212,16 +298,21 @@ class SendspinAudioEngine(private val clock: ClockSync) {
      * itself and the phone could never stay in step with another speaker. [ClockSync]
      * was built for exactly this and had no reader.
      *
-     * Waiting is bounded: a timestamp implausibly far ahead means the clock filter
-     * hasn't converged (or the server's epoch isn't what we think), and sleeping on it
-     * would stall playback outright — better to play immediately and let the next
-     * frames settle.
+     * Waiting is bounded: a timestamp implausibly far ahead means the server's epoch
+     * isn't what we think, and sleeping on it would stall playback outright — better
+     * to play immediately and let the next frames settle.
+     *
+     * Whether the clock is trustworthy enough to schedule against at all is the
+     * caller's decision, via [HeadGate] — this only converts and waits.
      */
     private fun awaitFrameTime(serverTsUs: Long): Boolean {
-        if (serverTsUs <= 0L || !clock.isSynced()) return true    // nothing to schedule against
+        if (serverTsUs <= 0L) return true                         // nothing to schedule against
         val localUs = clock.serverTimeToLocal(serverTsUs) - staticDelayMs * 1_000L
         var waitUs = localUs - clock.nowUs()
-        if (waitUs < -LATE_TOLERANCE_US) return false             // too late to be useful
+        if (waitUs < -LATE_TOLERANCE_US) {                        // too late to be useful
+            Log.d(TAG, "head late by ${-waitUs / 1000}ms — dropped")
+            return false
+        }
         if (waitUs > MAX_LEAD_US) return true                     // implausible: don't stall on it
         while (running && waitUs > 0) {
             // Sleep in slices so stop()/flush() are still responsive mid-wait.

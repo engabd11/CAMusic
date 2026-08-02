@@ -32,8 +32,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.engabd.sendpin.ui.design.HSlider
 import com.engabd.sendpin.ui.design.LocalAccent
 import com.engabd.sendpin.ui.design.a
+import com.engabd.sendpin.ui.design.HideBottomChrome
 import com.engabd.sendpin.ui.design.dismissOnDragDown
-import com.engabd.sendpin.ui.design.navBarInset
+import com.engabd.sendpin.ui.design.systemNavInset
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.SpeakersViewModel
 
@@ -58,6 +59,7 @@ fun BoxScope.SpeakerPickerSheet(
     onClose: () -> Unit,
     viewModel: SpeakersViewModel = viewModel(),
 ) {
+    HideBottomChrome()
     val accent = LocalAccent.current
     val joined by viewModel.joined.collectAsState()
     val available by viewModel.available.collectAsState()
@@ -81,7 +83,9 @@ fun BoxScope.SpeakerPickerSheet(
             .background(Ink2)
             .border(1.dp, Hairline, RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp)),
     ) {
-        Column(Modifier.fillMaxWidth().padding(bottom = navBarInset() + 12.dp)) {
+        // The system inset only: the sheet is drawn over the tab bar and the mini
+        // player, and `HideBottomChrome` takes them off screen while it is up.
+        Column(Modifier.fillMaxWidth().padding(bottom = systemNavInset() + 12.dp)) {
             Box(Modifier.fillMaxWidth().padding(top = 10.dp), contentAlignment = Alignment.Center) {
                 Box(Modifier.size(width = 36.dp, height = 4.dp).clip(RoundedCornerShape(100)).background(Hairline))
             }

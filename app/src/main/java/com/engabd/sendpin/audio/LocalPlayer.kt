@@ -6,6 +6,7 @@ import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.MediaPlayer
 import android.os.Build
+import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -406,6 +407,13 @@ class LocalPlayer(private val context: Context) {
                 // MediaPlayer knows the real duration; the library's metadata is only
                 // ever a rounded second count, and downloads may carry none at all.
                 if (it.duration > 0) _durationMs.value = it.duration.toLong()
+                // A freshly prepared source should sit at zero. If the demuxer resynced
+                // part-way in — which a chunked transcode with no Content-Length can
+                // cause — start the track where the listener expects it.
+                if (it.currentPosition > 1_000) {
+                    Log.w(TAG, "opened at ${it.currentPosition}ms — seeking to 0")
+                    runCatching { it.seekTo(0) }
+                }
                 it.start()
                 if (_speed.value != 1f) applySpeed()
                 _playing.value = true
@@ -500,6 +508,8 @@ class LocalPlayer(private val context: Context) {
     }
 
     private companion object {
+        const val TAG = "LocalPlayer"
+
         /** Past this into a track, Previous restarts it instead of going back one. */
         const val RESTART_THRESHOLD_MS = 4_000L
     }

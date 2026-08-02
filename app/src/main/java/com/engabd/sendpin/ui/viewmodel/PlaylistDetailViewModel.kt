@@ -186,6 +186,59 @@ class PlaylistDetailViewModel(
         }
     }
 
+    // --- favorites --------------------------------------------------------
+
+    /**
+     * Favourite one of the playlist's tracks.
+     *
+     * Optimistic flip with rollback, the same shape as
+     * [AlbumDetailViewModel.toggleFavorite] — the row's heart shouldn't sit still
+     * across a round-trip.
+     */
+    fun toggleFavorite(track: MaItem) {
+        val wanted = !track.favorite
+        _tracks.value = _tracks.value.map { if (it.itemId == track.itemId) it.copy(favorite = wanted) else it }
+        viewModelScope.launch {
+            try {
+                val sc = subsonic
+                when {
+                    isSubsonic && sc != null -> sc.setStarred(track, wanted)
+                    isSubsonic -> throw IllegalStateException("Navidrome isn't connected")
+                    wanted -> maRepo.addFavorite(track)
+                    else -> maRepo.removeFavorite(track)
+                }
+            } catch (e: Exception) {
+                _tracks.value = _tracks.value.map {
+                    if (it.itemId == track.itemId) it.copy(favorite = !wanted) else it
+                }
+                _toast.tryEmit(e.message ?: "Couldn't toggle favorite")
+            }
+        }
+    }
+
+    /**
+     * Favourite the playlist itself.
+     *
+     * Music Assistant only: Subsonic's `star` takes an `id`, an `albumId` or an
+     * `artistId` and has no notion of starring a playlist, so saying so is better
+     * than sending something Navidrome will reject.
+     */
+    fun togglePlaylistFavorite() {
+        val current = _playlist.value ?: return
+        if (isSubsonic) { _toast.tryEmit("Navidrome can't star playlists"); return }
+        val wanted = !current.favorite
+        _playlist.value = current.copy(favorite = wanted)
+        viewModelScope.launch {
+            try {
+                if (wanted) maRepo.addFavorite(current) else maRepo.removeFavorite(current)
+                _toast.tryEmit(if (wanted) "Added to favorites" else "Removed from favorites")
+            } catch (e: Exception) {
+                _playlist.value = _playlist.value?.copy(favorite = !wanted)
+                _toast.tryEmit(e.message ?: "Couldn't toggle favorite")
+            }
+        }
+    }
+
     /** The playlist as a local queue, offline copies preferred over the stream. */
     private fun localTracks() = _tracks.value.map {
         downloads.toLocalTrack(it, streamUrl = subsonic?.streamUrl(it.itemId))

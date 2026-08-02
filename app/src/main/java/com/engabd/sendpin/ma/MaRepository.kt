@@ -84,6 +84,36 @@ class MaRepository(val api: MaApiClient) {
         return all
     }
 
+    /** Feeds the library's "Favourite albums" shelf. */
+    suspend fun favoriteAlbums(limit: Int = 12, orderBy: String? = null) =
+        MaParse.items(
+            api.sendCommand(
+                "music/albums/library_items",
+                libraryArgs(0, limit, favorite = true, orderBy = orderBy),
+                timeoutMs = LIBRARY_TIMEOUT_MS,
+            ),
+            serverUrl,
+        )
+
+    /**
+     * Feeds the library's "Favourite artists" shelf.
+     *
+     * `album_artists_only` keeps one-off featured credits out of a shelf that is
+     * meant to read as "the artists you follow".
+     */
+    suspend fun favoriteArtists(limit: Int = 12, orderBy: String? = null, albumArtistsOnly: Boolean = true) =
+        MaParse.items(
+            api.sendCommand(
+                "music/artists/library_items",
+                buildJsonObject {
+                    libraryArgs(0, limit, favorite = true, orderBy = orderBy).forEach { (k, v) -> put(k, v) }
+                    put("album_artists_only", albumArtistsOnly)
+                },
+                timeoutMs = LIBRARY_TIMEOUT_MS,
+            ),
+            serverUrl,
+        )
+
     /** Feeds the library's "Recently played" shelf. */
     suspend fun recentlyPlayed(limit: Int = 12) =
         MaParse.items(api.sendCommand("music/recently_played_items", buildJsonObject { put("limit", limit) }), serverUrl)
@@ -260,9 +290,36 @@ class MaRepository(val api: MaApiClient) {
 
     // --- queue management --------------------------------------------------
 
-    /** Full queue items for a player. */
-    suspend fun queueItems(queueId: String) =
-        MaParse.queueItems(api.sendCommand("player_queues/items", buildJsonObject { put("queue_id", queueId) }), serverUrl)
+    /**
+     * One page of a queue's items.
+     *
+     * `limit`/`offset` are sent explicitly: the command defaults to `limit=500`, so a
+     * longer queue was silently truncated to its first 500 rows.
+     */
+    suspend fun queueItems(queueId: String, offset: Int = 0, limit: Int = PAGE_SIZE) =
+        MaParse.queueItems(
+            api.sendCommand("player_queues/items", buildJsonObject {
+                put("queue_id", queueId); put("limit", limit); put("offset", offset)
+            }, timeoutMs = LIBRARY_TIMEOUT_MS),
+            serverUrl,
+            indexOffset = offset,
+        )
+
+    /**
+     * A queue in full, a page at a time. [cap] is a backstop against a server that
+     * ignores `offset` and hands back the same page for ever.
+     */
+    suspend fun allQueueItems(queueId: String, cap: Int = 5_000): List<MaQueueItem> {
+        val all = mutableListOf<MaQueueItem>()
+        var offset = 0
+        while (offset < cap) {
+            val page = queueItems(queueId, offset)
+            all += page
+            if (page.size < PAGE_SIZE) break
+            offset += PAGE_SIZE
+        }
+        return all
+    }
 
     /** Remove an item from the queue by index or item id. */
     suspend fun deleteQueueItem(queueId: String, itemIdOrIndex: String) =
@@ -550,8 +607,25 @@ class MaRepository(val api: MaApiClient) {
 
     // --- args -------------------------------------------------------------
 
-    private fun libraryArgs(offset: Int, limit: Int) = buildJsonObject {
+    /**
+     * Args for a `library_items` read.
+     *
+     * [favorite] and [orderBy] are the server's own filters — the app used to pull
+     * whole categories back and sift them on the phone. [orderBy] is left unsent by
+     * default: a value an older server doesn't recognise fails the whole command,
+     * and these reads are best-effort.
+     */
+    private fun libraryArgs(
+        offset: Int,
+        limit: Int,
+        favorite: Boolean? = null,
+        orderBy: String? = null,
+        search: String? = null,
+    ) = buildJsonObject {
         put("limit", limit); put("offset", offset)
+        favorite?.let { put("favorite", it) }
+        orderBy?.let { put("order_by", it) }
+        search?.let { put("search", it) }
     }
 
     private fun itemRef(item: MaItem) = buildJsonObject {

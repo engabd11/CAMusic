@@ -118,6 +118,7 @@ fun AlbumDetailScreen(
                             onArtistClick = onArtistClick,
                             onDownload = if (viewModel.canDownload) viewModel::downloadAll else null,
                             downloaded = albumDownloaded,
+                            onFavorite = viewModel::toggleAlbumFavorite,
                         )
                     }
 
@@ -160,8 +161,8 @@ fun AlbumDetailScreen(
 
             // Long-press on a track: queue it without losing what's playing.
             actionsFor?.let { picked ->
-                TrackActionsSheet(
-                    track = picked,
+                MediaActionsSheet(
+                    item = picked,
                     onClose = { actionsFor = null },
                     onPlayNow = { viewModel.playTrack(picked) },
                     onPlayNext = { viewModel.enqueueTrack(picked, "next") },
@@ -209,6 +210,7 @@ private fun AlbumHero(
     onArtistClick: (String, String) -> Unit = { _, _ -> },
     onDownload: (() -> Unit)? = null,
     downloaded: Boolean = false,
+    onFavorite: () -> Unit = {},
 ) {
     val accent = LocalAccent.current
 
@@ -302,6 +304,13 @@ private fun AlbumHero(
             IconChip(Icons.Default.Shuffle, "Shuffle", onClick = onShuffle)
             // Add to queue
             IconChip(Icons.AutoMirrored.Filled.QueueMusic, "Add to queue", onClick = onAddToQueue)
+            // The album itself, not its tracks. MA's `favorites/add_item` takes any
+            // media item's uri and Subsonic's `star` has an `albumId`.
+            IconChip(
+                if (album?.favorite == true) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                if (album?.favorite == true) "Remove from favourites" else "Add to favourites",
+                onClick = onFavorite,
+            )
             // Offline. Navidrome only — Music Assistant streams rather than handing
             // over the file, so there is nothing here to take with you.
             onDownload?.let {
@@ -373,13 +382,15 @@ internal fun TrackRow(
             }
         }
 
-        // Favorite
-        if (track.favorite) {
-            val favModifier = if (onFavorite != null) Modifier.size(16.dp).clickable(onClick = onFavorite)
-            else Modifier.size(16.dp)
+        // Favorite. Shown hollow when it isn't one: rendering the heart only for a
+        // track already favourited meant the handler was reachable to *un*-favourite
+        // and nothing else, so a track could never be favourited from this screen.
+        onFavorite?.let { fav ->
             Icon(
-                Icons.Default.Favorite, "Favorite",
-                tint = accent, modifier = favModifier,
+                if (track.favorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                if (track.favorite) "Remove from favourites" else "Add to favourites",
+                tint = if (track.favorite) accent else TextMuted,
+                modifier = Modifier.size(16.dp).clip(CircleShape).clickable(onClick = fav),
             )
         }
     }

@@ -13,6 +13,7 @@ import com.engabd.sendpin.ma.MaApiClient
 import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ma.MaLyrics
 import com.engabd.sendpin.ma.MaNowPlaying
+import com.engabd.sendpin.ma.MaParse
 import com.engabd.sendpin.ma.MaPlayer
 import com.engabd.sendpin.ma.MaQueue
 import com.engabd.sendpin.ma.MaQueueItem
@@ -231,7 +232,9 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         // A synced member plays the leader's stream, so read quality off the leader's queue.
         val streamId = p?.syncedTo ?: id
         val queue = queues.firstOrNull { it.queueId == streamId }
-        val queueQuality = queue?.quality
+        // The *target's* own dsp entry first: a synced member decodes on its own
+        // hardware and MA can hand it a different format from the leader's.
+        val outputQuality = queue?.outputFor(playerId = id, leaderId = streamId)
 
         val live = p?.nowPlaying?.takeIf { it.title.isNotBlank() }
         // Fall back to the last track so the screen keeps its shape when the
@@ -262,7 +265,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                 // the only thing that knows what it was handed. This phone's output
                 // format says nothing about it — reporting `deviceQuality` here claimed
                 // every speaker was playing whatever this phone would have played.
-                !isSelf -> queueQuality
+                !isSelf -> outputQuality
                 // This phone is the player: the negotiated Sendspin stream *is* the
                 // output, and it is the same reading Settings prints under "Format".
                 local != null -> local
@@ -270,24 +273,23 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                 // phone's output ceiling and have the badge disagree with Settings.
                 else -> null
             },
-            // `sourceQuality` is Source: the library file's own format, before anything
+            // `sourceQuality` is Source: the format before the per-player pipeline
             // touched it.
             //
-            // The library item's `provider_mappings.audio_format` comes first because it
-            // is the only reading that genuinely describes the *file*; the queue's
-            // stream details describe what MA opened, which is a fallback for a track
-            // whose mappings didn't come through. Reading both off `queueQuality` —
-            // which is what the previous ordering did whenever stream details existed —
-            // handed Playing and Source the same object, and the popup's
-            // "hide Source when it matches Playing" rule then dropped the row on every
-            // MA track. Two independent readings is what makes the row mean something.
-            sourceQuality = queue?.currentItem?.audioFormat?.let {
-                StreamQuality(it.codec, it.sampleRate, it.bitDepth)
-            } ?: queueQuality,
-            // The badge names the player, not the track's provider: anything MA is
-            // driving is "MA", however MA got hold of the file. The local-player
-            // branch below is the Navidrome/offline case.
-            source = "MA",
+            // `streamdetails.audio_format` comes first now — it is what MA actually
+            // opened for *this* playback, and pairs with `outputQuality` off the same
+            // streamdetails object, so "Transcoded from X to Y" compares two readings
+            // of one stream rather than a stream against a catalogue entry. The media
+            // item's `provider_mappings.audio_format` stays as the fallback for a
+            // server that sends no stream details.
+            sourceQuality = queue?.inputFormat
+                ?: queue?.currentItem?.audioFormat?.let {
+                    StreamQuality(it.codec, it.sampleRate, it.bitDepth, it.bitRate)
+                },
+            // Where the bytes are coming from, off `streamdetails.provider`. The media
+            // item's own provider is always "library" — it says where MA filed the
+            // track, not which backend is streaming it.
+            source = MaParse.providerLabel(queue?.streamProvider),
             groupSize = 1 + (p?.groupChilds?.size ?: 0),
             shuffle = queue?.shuffleEnabled == true,
             repeatMode = queue?.repeatMode ?: "off",
@@ -540,6 +542,16 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         .map { it == MaApiClient.State.CONNECTED }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
+    /**
+     * MA's pushed events, parsed by name. Shared so the collectors in [init] each see
+     * every event rather than competing over one cold flow.
+     *
+     * Declared before [init] deliberately — property initialisers run in source order.
+     */
+    private val maEvents = api.events
+        .mapNotNull { MaParse.event(it) }
+        .shareIn(viewModelScope, SharingStarted.Eagerly)
+
     init {
         viewModelScope.launch {
             val url = settings.maBaseUrl.first()
@@ -611,10 +623,32 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         // emits after a gap of silence — a busy server starved it completely, leaving
         // the 5s poll as the only refresh. Sample fires on a cadence regardless.
         viewModelScope.launch {
-            api.events
-                .filter { it["event"]?.toString()?.let { e -> "player" in e || "queue" in e } ?: false }
-                .sample(300)
-                .collect { refresh() }
+            maEvents.filter { it.isPlayerOrQueue }.sample(300).collect { refresh() }
+        }
+        // The queue's *contents* changed.
+        //
+        // A separate collector on purpose: `sample` drops events, and a
+        // `queue_items_updated` lost behind a burst of `queue_time_updated` is exactly
+        // the "added an album, the open panel never showed it" report. Matching by
+        // event name rather than by substring over the whole frame is what makes the
+        // two distinguishable at all.
+        viewModelScope.launch {
+            maEvents
+                .filter { it.changesQueueContents }
+                .filter { it.objectId == null || it.objectId == streamQueueId() }
+                .sample(400)
+                .collect { if (_queueItems.value !is Load.Idle) loadQueue(silent = true) }
+        }
+        // Belt and braces for a server that doesn't emit `queue_items_updated`: the
+        // item count moving is itself proof the list on screen is stale. This is also
+        // what covers "add to queue" issued from the library and the detail screens,
+        // whose ViewModels have no handle on this one.
+        viewModelScope.launch {
+            combine(_queues, _target, _players) { queues, _, _ ->
+                queues.firstOrNull { it.queueId == streamQueueId() }?.itemCount ?: 0
+            }.distinctUntilChanged().drop(1).collect {
+                if (_queueItems.value !is Load.Idle) loadQueue(silent = true)
+            }
         }
     }
 
@@ -856,7 +890,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         if (!silent || _queueItems.value !is Load.Ready) _queueItems.value = Load.Loading
         viewModelScope.launch {
             val next = try {
-                Load.Ready(repo.queueItems(q))
+                Load.Ready(repo.allQueueItems(q))
             } catch (e: Exception) {
                 Load.Failed(e.message ?: "Couldn't load the queue")
             }
