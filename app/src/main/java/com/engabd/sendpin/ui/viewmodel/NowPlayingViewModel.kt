@@ -105,6 +105,8 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     private val local = (app as SendpinApp).localPlayer
     /** This phone's own Sendspin stream — the authoritative format when we're the player. */
     private val localQuality = (app as SendpinApp).playback.streamQuality
+    /** True while this phone's Sendspin stream is actually running. */
+    private val sendspinPlaying = (app as SendpinApp).playback.isPlaying
     /** What this phone can put out on its own, for locally-decoded playback. */
     private val deviceQuality = FormatNegotiator.deviceOutputQuality()
 
@@ -318,15 +320,22 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             hasTrack = t != null,
             idle = t == null,
             blank = t == null,
-            // Decoded on this phone, so the phone's own output ceiling is the
-            // honest answer to "what is coming out of the pipe".
-            quality = deviceQuality,
-            // Source is what arrives. Normally that is the library file itself, but
-            // when Navidrome has been asked to transcode (Settings → Navidrome
-            // quality) the file's own format is no longer what reaches this phone —
-            // showing it there would claim a fidelity the stream doesn't have.
-            sourceQuality = if (t?.offline == true) t.sourceQuality
-                else navFormat?.let { transcodeQuality(it) } ?: t?.sourceQuality,
+            // Playing is what this phone is being fed and decoding.
+            //
+            // It used to be `deviceQuality`, which is hard-coded "PCM" — the
+            // AudioTrack's own encoding — so the badge read PCM no matter what
+            // Navidrome had been asked for, and choosing a format looked like it did
+            // nothing. A downloaded file plays from disk untouched; a requested
+            // transcode is what arrives; otherwise it is the library file itself, and
+            // only when the library said nothing at all do we fall back to describing
+            // the output.
+            quality = when {
+                t == null -> null
+                t.offline -> t.sourceQuality ?: deviceQuality
+                else -> navFormat?.let { transcodeQuality(it) } ?: t.sourceQuality ?: deviceQuality
+            },
+            // Source stays the library file, so a transcode shows as one.
+            sourceQuality = t?.sourceQuality,
             // This phone is playing on its own, which only ever means the Navidrome
             // library (or a downloaded copy of it).
             source = if (t?.offline == true) "Offline" else "Navidrome",
@@ -537,6 +546,19 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { settings.targetPlayer.collect { _target.value = it } }
         viewModelScope.launch {
             settings.navStreamFormat.collect { navFormat = it.takeIf { f -> f != "raw" } }
+        }
+        // When this phone *is* the Music Assistant player, the Sendspin stream starting
+        // is proof that audio is flowing — which is exactly what releases an optimistic
+        // freeze in the official app, rather than a guess made from polled state. A
+        // remote speaker gives us no such signal and still relies on the poll
+        // corroborating the skip (see [anchorFromServer]).
+        viewModelScope.launch {
+            sendspinPlaying.collect { playing ->
+                if (playing && !isLocal) {
+                    val key = positionKey()
+                    if (positions.isFrozen(key)) releaseFreeze(key)
+                }
+            }
         }
         // Remember whatever the selected player last had loaded.
         viewModelScope.launch {

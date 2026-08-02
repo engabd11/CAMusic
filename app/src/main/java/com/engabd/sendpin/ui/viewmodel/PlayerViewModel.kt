@@ -39,6 +39,9 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     val hasSavedServer = pb.hasSavedServer
     val bootChecked = pb.bootChecked
 
+    /** Why the last rename didn't take, or blank when it did. */
+    val configStatus = pb.configStatus
+
     fun startDiscovery() = pb.startDiscovery()
     fun stopDiscovery() = pb.stopDiscovery()
 

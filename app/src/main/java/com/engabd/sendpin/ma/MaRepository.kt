@@ -154,6 +154,34 @@ class MaRepository(val api: MaApiClient) {
     suspend fun queues() = MaParse.queues(api.sendCommand("player_queues/all"), serverUrl)
 
     /** Play items to a player (queue_id == player_id). [option]: play|replace|next|add. */
+    /**
+     * Append [uris] to a player's queue, and confirm the server actually took them.
+     *
+     * `play_media` answers with no result, so a queue that quietly refuses the items —
+     * the player isn't powered, the queue isn't active, the option isn't understood —
+     * is indistinguishable from success. Counting the queue either side is the only
+     * way to know, and "added to queue" was being reported when nothing had been.
+     *
+     * Returns the number of items the queue gained, or null when the count couldn't be
+     * read (in which case the caller should assume it worked rather than cry wolf).
+     */
+    suspend fun enqueueVerified(playerId: String, uris: List<String>, option: String): Int? {
+        val before = queueItemCount(playerId)
+        playMedia(playerId, uris, option)
+        if (before == null) return null
+        // The queue is updated asynchronously; give it a moment before counting.
+        repeat(6) {
+            kotlinx.coroutines.delay(400)
+            val after = queueItemCount(playerId) ?: return null
+            if (after > before) return after - before
+        }
+        return 0
+    }
+
+    /** How many items a player's queue holds, or null if the server didn't say. */
+    private suspend fun queueItemCount(playerId: String): Int? =
+        queues().firstOrNull { it.queueId == playerId }?.itemCount
+
     suspend fun playMedia(playerId: String, uris: List<String>, option: String = "replace") {
         api.sendCommand("player_queues/play_media", buildJsonObject {
             put("queue_id", playerId)
@@ -415,6 +443,22 @@ class MaRepository(val api: MaApiClient) {
         })
 
     /**
+     * The name Music Assistant currently has for a player, straight from its config.
+     *
+     * `name` is a **top-level** field of `PlayerConfig` (alongside `enabled` and
+     * `default_name`) rather than one of the `values` config entries — `values` is a
+     * map of `ConfigEntry` objects. `config/players/save` still takes the change
+     * inside `values`, because MA's `PlayerConfig.update` lifts `name` and `enabled`
+     * out of it; reading it back has to look at the top level.
+     */
+    suspend fun playerConfigName(playerId: String): String? {
+        val res = api.sendCommand("config/players/get", buildJsonObject { put("player_id", playerId) })
+            ?.jsonObject ?: return null
+        return res["name"]?.jsonPrimitive?.contentOrNull
+            ?: res["default_name"]?.jsonPrimitive?.contentOrNull
+    }
+
+    /**
      * MA's own per-player preference for what Sendspin should stream. Kept in step
      * with the codec this client advertises so the two can't disagree; `"automatic"`
      * is MA's wording for "no preference".
@@ -422,11 +466,46 @@ class MaRepository(val api: MaApiClient) {
      * Best-effort: servers without the key ignore the save, which is why nothing
      * depends on the result.
      */
-    suspend fun setPreferredSendspinFormat(playerId: String, format: String) =
+    /**
+     * Point MA's own per-player format preference at [codec] (`"automatic"` for none).
+     *
+     * The value is **not** a bare codec name. `preferred_sendspin_format` is a
+     * `ConfigEntry` whose `options` the server declares, and they carry the rate and
+     * depth too (`flac_48000_16`, …) — which is why massdroid reads the options list
+     * and matches by prefix rather than sending `"flac"`. Sending a value that isn't
+     * one of the declared options is rejected, so the whole save is a no-op.
+     *
+     * Returns the option actually written, or null when the server has no such key
+     * (older builds) or offers nothing matching.
+     */
+    suspend fun setPreferredSendspinFormat(playerId: String, codec: String): String? {
+        val entry = playerConfigEntry(playerId, "preferred_sendspin_format") ?: return null
+        val options = (entry["options"] as? JsonArray)
+            ?.mapNotNull { (it as? JsonObject)?.get("value")?.jsonPrimitive?.contentOrNull }
+            .orEmpty()
+        val wanted = if (codec == "auto") "automatic" else codec
+        // Exact match first (a server that does use bare names), then the prefixed
+        // form, preferring the highest rate/depth the server lists for that codec.
+        val chosen = options.firstOrNull { it == wanted }
+            ?: options.filter { it.startsWith("${wanted}_") }.maxByOrNull { it.length }
+            ?: return null
         api.sendCommand("config/players/save", buildJsonObject {
             put("player_id", playerId)
-            put("values", buildJsonObject { put("preferred_sendspin_format", format) })
+            put("values", buildJsonObject { put("preferred_sendspin_format", chosen) })
         })
+        return chosen
+    }
+
+    /** One `ConfigEntry` from a player's config, by key. */
+    private suspend fun playerConfigEntry(playerId: String, key: String): JsonObject? {
+        val res = api.sendCommand("config/players/get", buildJsonObject { put("player_id", playerId) })
+            ?.jsonObject ?: return null
+        val values = res["values"]?.jsonObject ?: return null
+        // The key is sometimes protocol-wrapped ("<sub>||protocol||<key>"), the same
+        // way the sync-delay key is — so match on the suffix rather than exactly.
+        val match = values.keys.firstOrNull { it == key || it.endsWith("||$key") || it.endsWith(key) }
+        return values[match]?.jsonObject
+    }
 
     // --- args -------------------------------------------------------------
 

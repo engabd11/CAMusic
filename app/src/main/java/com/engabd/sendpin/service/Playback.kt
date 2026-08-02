@@ -283,39 +283,55 @@ class Playback(private val app: Context) {
     }
 
     /**
+     * What the last attempt to write this player's Music Assistant config did.
+     * Surfaced in Settings — a rename that silently fails is indistinguishable from
+     * one that never happened, which is exactly how the previous attempt at this
+     * looked from the outside.
+     */
+    private val _configStatus = MutableStateFlow("")
+    val configStatus: StateFlow<String> = _configStatus.asStateFlow()
+
+    /**
      * Tell Music Assistant what this player is called and what it should be sent.
      *
-     * Best-effort and deliberately quiet: an older server without these config keys
-     * ignores the save, and there is nothing the user could do about a failure here
-     * that they haven't already done by setting the value.
+     * The Sendspin hello only *registers* a name — the spec is explicit that the
+     * protocol "provides no mechanism for updating the client name post-connection" —
+     * so after first contact the display name lives in MA's per-player config and
+     * nothing but this call can change it.
+     *
+     * Uses the app's own authenticated connection ([maRepo]), not a throwaway one.
+     * The previous version opened a second, separately-authenticated client and
+     * wrapped every call in a bare `runCatching`: `config/players/save` is an **ADMIN**
+     * command, so on a server where that client wasn't an admin the save was refused
+     * and the error was swallowed. The result is verified by reading the config back.
      */
     private suspend fun syncPlayerConfig(name: String, codec: String) {
-        val base = settings.maBaseUrl.first()
-        if (base.isBlank()) return
-        val api = MaApiClient()
+        if (settings.maBaseUrl.first().isBlank()) return
+        // MA has to have seen the hello before there is a player to configure.
+        val known = withTimeoutOrNull(15_000) {
+            while (maRepo.players().none { it.playerId == playerId }) delay(750)
+            true
+        }
+        if (known != true) {
+            _configStatus.value = "Music Assistant hasn't registered this player yet"
+            return
+        }
         try {
-            api.connect(
-                base,
-                token = null,
-                username = settings.maUsername.first().ifBlank { null },
-                password = settings.maPassword.first().ifBlank { null },
-            )
-            val ready = withTimeoutOrNull(12_000) {
-                api.state.first { it == MaApiClient.State.CONNECTED || it == MaApiClient.State.ERROR }
+            maRepo.renamePlayer(playerId, name)
+            val applied = maRepo.playerConfigName(playerId)
+            _configStatus.value = when {
+                applied == null -> "Renamed, but the server didn't report the name back"
+                applied == name -> ""
+                else -> "Music Assistant kept the name \"$applied\""
             }
-            if (ready != MaApiClient.State.CONNECTED) return
-            val repo = MaRepository(api)
-            // Give MA a moment to register the player the hello just introduced;
-            // saving config for a player it hasn't seen yet is a no-op.
-            delay(1_500)
-            runCatching { repo.renamePlayer(playerId, name) }
-            runCatching {
-                repo.setPreferredSendspinFormat(playerId, if (codec == "auto") "automatic" else codec)
-            }
-        } catch (_: Exception) {
-            // Nothing actionable — the name still shows correctly in this app.
-        } finally {
-            api.disconnect()
+        } catch (e: Exception) {
+            _configStatus.value = "Couldn't rename on the server: ${e.message ?: "unknown error"}"
+            return
+        }
+        // Best-effort by contrast: not every server build has this key, and the
+        // advertised format list already decides what we actually receive.
+        runCatching {
+            maRepo.setPreferredSendspinFormat(playerId, if (codec == "auto") "automatic" else codec)
         }
     }
 

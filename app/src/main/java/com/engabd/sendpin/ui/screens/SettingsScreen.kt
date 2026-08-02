@@ -62,6 +62,7 @@ fun SettingsScreen(
     var haTokenLocked by remember { mutableStateOf(false) }
     var playerName by remember { mutableStateOf("") }
     var sendspinCodec by remember { mutableStateOf("auto") }
+    val configStatus by viewModel.configStatus.collectAsState()
     var navFormat by remember { mutableStateOf("raw") }
     val backend by settings.backend.collectAsState(initial = "ma")
     // The same activity-scoped instance the Library tab uses, so edits here land on
@@ -162,6 +163,13 @@ fun SettingsScreen(
                                 "Shown in Music Assistant.",
                                 color = TextFaint, fontSize = 11.sp,
                             )
+                            // A rename can only be refused by the server —
+                            // `config/players/save` is an admin command — and a refusal
+                            // used to be swallowed, so the name simply stayed wrong with
+                            // no explanation.
+                            configStatus.takeIf { it.isNotBlank() }?.let {
+                                Text(it, color = WarnAmber, fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp)
+                            }
 
                             // Stream codec. Sits here rather than under Audio because it
                             // is announced in the same hello as the name.
@@ -247,46 +255,15 @@ fun SettingsScreen(
                 // tab's connect form, which is hidden the moment a connection
                 // works — so a moved server or a changed password could not be
                 // fixed from inside the app at all.
-                item { NavidromeCard(libraryVm, accent) }
-
-                // ── Navidrome stream format ─────────────────────────────────
-                // Navidrome can transcode on the way out; the app used to pin
-                // `format=raw`, so there was no choice to make and the badge always
-                // read PCM (the phone's own output) no matter what arrived.
                 item {
-                    SectionHeader(Icons.Default.GraphicEq, "Navidrome quality", accent)
-                    Spacer(Modifier.height(12.dp))
-                    GlassCard(radius = 16.dp) {
-                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Text(
-                                "Stream format",
-                                color = TextSecondary, fontFamily = AppFont,
-                                fontWeight = FontWeight.Bold, fontSize = 12.sp,
-                            )
-                            SegmentedToggle(
-                                options = NavFormatLabels,
-                                selectedIndex = NavFormatValues.indexOf(navFormat).coerceAtLeast(0),
-                                modifier = Modifier.fillMaxWidth(),
-                            ) { i ->
-                                navFormat = NavFormatValues[i]
-                                scope.launch { settings.setNavStreamFormat(NavFormatValues[i]) }
-                            }
-                            Text(
-                                when (navFormat) {
-                                    "raw" -> "The stored file, untouched. Best quality; needs the bandwidth " +
-                                        "the file was encoded at."
-                                    "flac" -> "Transcoded to FLAC. Still lossless, and a predictable size " +
-                                        "even when the library holds huge hi-res masters."
-                                    else -> "Transcoded, lossy. Worth it on a slow or metered connection."
-                                },
-                                color = TextFaint, fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp,
-                            )
-                            Text(
-                                "Applies to the next track. Downloads always take the original file.",
-                                color = TextFaint, fontFamily = AppFont, fontSize = 11.sp,
-                            )
-                        }
-                    }
+                    // Quality lives in this card rather than a section of its own:
+                    // it is a property of the Navidrome connection, not of the app.
+                    NavidromeCard(
+                        vm = libraryVm,
+                        accent = accent,
+                        format = navFormat,
+                        onFormat = { navFormat = it; scope.launch { settings.setNavStreamFormat(it) } },
+                    )
                 }
 
                 // ── Downloads ───────────────────────────────────────────────
@@ -494,7 +471,12 @@ fun SettingsScreen(
  * visible right here instead of on a different tab.
  */
 @Composable
-private fun NavidromeCard(vm: LibraryViewModel, accent: Color) {
+private fun NavidromeCard(
+    vm: LibraryViewModel,
+    accent: Color,
+    format: String,
+    onFormat: (String) -> Unit,
+) {
     val url by vm.navUrl.collectAsState()
     val user by vm.navUser.collectAsState()
     val pass by vm.navPass.collectAsState()
@@ -550,6 +532,33 @@ private fun NavidromeCard(vm: LibraryViewModel, accent: Color) {
                 status,
                 color = if (connError != null && onSubsonic == LibraryViewModel.Backend.SUBSONIC && !ready) ErrorRed else TextFaint,
                 fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp,
+            )
+
+            Spacer(Modifier.height(2.dp))
+            Box(Modifier.fillMaxWidth().height(1.dp).background(HairlineSoft))
+            Text(
+                "Stream quality",
+                color = TextSecondary, fontFamily = AppFont,
+                fontWeight = FontWeight.Bold, fontSize = 12.sp,
+            )
+            SegmentedToggle(
+                options = NavFormatLabels,
+                selectedIndex = NavFormatValues.indexOf(format).coerceAtLeast(0),
+                modifier = Modifier.fillMaxWidth(),
+            ) { onFormat(NavFormatValues[it]) }
+            Text(
+                when (format) {
+                    "raw" -> "The stored file, untouched. Best quality; needs the bandwidth " +
+                        "the file was encoded at."
+                    "flac" -> "Transcoded to FLAC. Still lossless, and a predictable size " +
+                        "even when the library holds huge hi-res masters."
+                    else -> "Transcoded, lossy. Worth it on a slow or metered connection."
+                },
+                color = TextFaint, fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp,
+            )
+            Text(
+                "Applies to the next track. Downloads always take the original file.",
+                color = TextFaint, fontFamily = AppFont, fontSize = 11.sp,
             )
         }
     }

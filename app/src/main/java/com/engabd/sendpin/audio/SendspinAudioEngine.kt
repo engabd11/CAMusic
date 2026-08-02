@@ -26,10 +26,20 @@ import kotlin.math.max
  * Each binary WebSocket frame is
  * `[type:uint8 = 4][server_ts_us: int64 big-endian][payload…]`.
  *
- * The [clock] is held for the later drift-correcting multi-room sync; a solo
- * player is paced naturally by the AudioTrack at the stream's sample rate.
+ * Frames are **scheduled**, not played on arrival: each carries the server-clock
+ * instant it should be heard, and [clock] maps that onto the local clock. See
+ * [awaitFrameTime] — without it the server's read-ahead buffer (several seconds) is
+ * poured straight into the track, so a track starts part-way in and can never stay in
+ * step with another speaker.
  */
-class SendspinAudioEngine(@Suppress("unused") private val clock: ClockSync) {
+class SendspinAudioEngine(private val clock: ClockSync) {
+
+    /**
+     * The server-side `sendspin_static_delay` this player is configured with, in ms.
+     * Subtracted from every frame's scheduled time, per the spec. Zero until the
+     * server tells us otherwise.
+     */
+    @Volatile var staticDelayMs: Int = 0
 
     private companion object {
         const val TAG = "SendspinAudio"
@@ -39,6 +49,20 @@ class SendspinAudioEngine(@Suppress("unused") private val clock: ClockSync) {
         const val FLAC_MAX_INPUT = 256 * 1024
         const val DEQUEUE_TIMEOUT_US = 10_000L
         const val QUEUE_CAPACITY = 2048
+
+        /**
+         * How late a frame may be and still be worth playing. Below this the audio is
+         * already behind and playing it only pushes everything after it further out;
+         * the spec says to drop it.
+         */
+        const val LATE_TOLERANCE_US = 120_000L
+
+        /**
+         * A scheduled time further ahead than this is not believed. The clock filter
+         * needs a few round-trips to converge, and sleeping on a bad offset would
+         * stall playback completely — so an implausible lead plays now instead.
+         */
+        const val MAX_LEAD_US = 15_000_000L
     }
 
     private class Frame(val serverTsUs: Long, val payload: ByteArray)
@@ -111,6 +135,10 @@ class SendspinAudioEngine(@Suppress("unused") private val clock: ClockSync) {
             } ?: continue
             val t = track ?: continue
 
+            // Hold the frame until the instant the server said it should be heard.
+            // Skipped frames are already in the past and are dropped, per the spec.
+            if (!awaitFrameTime(frame.serverTsUs)) continue
+
             if (isPcm) {
                 t.write(frame.payload, 0, frame.payload.size)   // s16le passthrough
                 continue
@@ -144,6 +172,47 @@ class SendspinAudioEngine(@Suppress("unused") private val clock: ClockSync) {
                 Log.w(TAG, "codec error: ${e.message}")
             }
         }
+    }
+
+    /**
+     * Block until [serverTsUs] — the instant the server wants this chunk heard —
+     * arrives on the local clock. Returns false if the frame is too late to play.
+     *
+     * This is the piece that was missing. The Sendspin spec is explicit: "Binary audio
+     * messages contain timestamps in the server's time domain indicating when the
+     * audio should be played… Clients must translate this server timestamp to their
+     * local clock using the offset computed from clock synchronization", and "Audio
+     * chunks may arrive with timestamps in the past… clients should drop these late
+     * chunks to maintain sync."
+     *
+     * The loop used to write every frame the moment it arrived. Since the server
+     * streams as far ahead as `buffer_capacity` allows — several seconds — the whole
+     * prefetched buffer was played out immediately, so a track began some seconds into
+     * itself and the phone could never stay in step with another speaker. [ClockSync]
+     * was built for exactly this and had no reader.
+     *
+     * Waiting is bounded: a timestamp implausibly far ahead means the clock filter
+     * hasn't converged (or the server's epoch isn't what we think), and sleeping on it
+     * would stall playback outright — better to play immediately and let the next
+     * frames settle.
+     */
+    private fun awaitFrameTime(serverTsUs: Long): Boolean {
+        if (serverTsUs <= 0L || !clock.isSynced()) return true    // nothing to schedule against
+        val localUs = clock.serverTimeToLocal(serverTsUs) - staticDelayMs * 1_000L
+        var waitUs = localUs - clock.nowUs()
+        if (waitUs < -LATE_TOLERANCE_US) return false             // too late to be useful
+        if (waitUs > MAX_LEAD_US) return true                     // implausible: don't stall on it
+        while (running && waitUs > 0) {
+            // Sleep in slices so stop()/flush() are still responsive mid-wait.
+            val slice = waitUs.coerceAtMost(20_000L)
+            try {
+                Thread.sleep(slice / 1_000L, ((slice % 1_000L) * 1_000L).toInt())
+            } catch (_: InterruptedException) {
+                return false
+            }
+            waitUs = localUs - clock.nowUs()
+        }
+        return running
     }
 
     // --- codec / track creation (derived from the massdroid engine) -------
