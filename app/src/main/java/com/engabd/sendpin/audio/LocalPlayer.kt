@@ -37,6 +37,13 @@ data class LocalTrack(
     val streamUrl: String? = null,
     val localPath: String? = null,
     /**
+     * The Navidrome song id to report plays against, when this track came from
+     * there. Separate from [id] because "play at original quality" plays a Music
+     * Assistant item through a Navidrome stream — same song, two different ids, and
+     * scrobbling MA's would name a track Navidrome has never heard of.
+     */
+    val scrobbleId: String? = null,
+    /**
      * The file's own format, when the library reported one — the "Source" half of the
      * quality badge. Null on a server that doesn't say (plain Subsonic sends no
      * `samplingRate`), in which case the badge shows Playing alone.

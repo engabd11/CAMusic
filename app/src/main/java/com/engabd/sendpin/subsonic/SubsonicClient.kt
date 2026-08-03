@@ -22,7 +22,52 @@ import java.util.concurrent.TimeUnit
  * identical — a blank shelf and no explanation. Everything here throws instead,
  * and the ViewModel turns that into an error the user can act on.
  */
-class SubsonicException(message: String) : IOException(message)
+class SubsonicException(
+    message: String,
+    /**
+     * The Subsonic error code, when the server got far enough to give one.
+     * [SubsonicError] has the meanings; null means the request never reached a
+     * Subsonic server at all.
+     */
+    val code: Int? = null,
+) : IOException(message)
+
+/**
+ * The Subsonic error codes, and what to tell someone about them.
+ *
+ * These were being interpolated into a string and never looked at, so a wrong
+ * password and a missing album produced the same shrug — and the connect screen
+ * reported bad credentials and an unreachable host identically, which is the one
+ * place the difference actually decides what the user should do next.
+ */
+object SubsonicError {
+    const val GENERIC = 0
+    const val MISSING_PARAM = 10
+    const val CLIENT_TOO_OLD = 20
+    const val SERVER_TOO_OLD = 30
+    const val BAD_CREDENTIALS = 40
+    const val TOKEN_AUTH_UNSUPPORTED = 41
+    const val NOT_AUTHORIZED = 50
+    const val TRIAL_EXPIRED = 60
+    const val NOT_FOUND = 70
+
+    /** True when re-entering the password is the fix. */
+    fun isAuth(code: Int?) = code == BAD_CREDENTIALS || code == TOKEN_AUTH_UNSUPPORTED
+
+    fun explain(code: Int?, serverMessage: String?): String = when (code) {
+        BAD_CREDENTIALS -> "That username or password was rejected"
+        // Navidrome only hits this for LDAP users; the fix is a real one, so say it.
+        TOKEN_AUTH_UNSUPPORTED ->
+            "This account can't use token authentication — it needs a password-auth client"
+        NOT_AUTHORIZED -> "That account isn't allowed to do this"
+        NOT_FOUND -> "The server doesn't have that"
+        SERVER_TOO_OLD -> "The server is too old for this app"
+        CLIENT_TOO_OLD -> "The server wants a newer client than this"
+        TRIAL_EXPIRED -> "The server's trial period has expired"
+        else -> serverMessage?.takeIf { it.isNotBlank() }
+            ?: "The server refused the request${code?.let { " (code $it)" }.orEmpty()}"
+    }
+}
 
 /**
  * Direct OpenSubsonic / Navidrome client — browse/search/stream straight from the
@@ -39,13 +84,27 @@ class SubsonicClient(
     private val baseUrl: String,
     private val username: String,
     private val password: String,
-    private val http: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS).readTimeout(20, TimeUnit.SECONDS).build(),
+    private val http: OkHttpClient = shared,
     private val json: Json = Json { ignoreUnknownKeys = true },
 ) {
     companion object {
         /** The provider tag every item from this client carries. */
         const val PROVIDER = "subsonic"
+
+        /**
+         * One client for every Subsonic call in the app.
+         *
+         * Each view model used to build its own, so six connection pools and six
+         * dispatcher thread pools existed against a single server, none of them
+         * reusing each other's sockets. OkHttp is designed to be shared — the whole
+         * point of the pool is that it outlives any one caller.
+         */
+        private val shared: OkHttpClient by lazy {
+            OkHttpClient.Builder()
+                .connectTimeout(10, TimeUnit.SECONDS)
+                .readTimeout(20, TimeUnit.SECONDS)
+                .build()
+        }
 
         private const val CLIENT = "sendpin"
         private const val API_VERSION = "1.16.1"
@@ -170,20 +229,30 @@ class SubsonicClient(
 
             if (root["status"]?.jsonPrimitive?.contentOrNull == "failed") {
                 val err = root["error"]?.jsonObject
+                val code = err?.get("code")?.jsonPrimitive?.intOrNull
                 throw SubsonicException(
-                    err?.get("message")?.jsonPrimitive?.contentOrNull
-                        ?: "The server refused the request (code ${err?.get("code")?.jsonPrimitive?.contentOrNull ?: "?"})"
+                    SubsonicError.explain(code, err?.get("message")?.jsonPrimitive?.contentOrNull),
+                    code = code,
                 )
             }
             root
         }
 
-    /** Reachability + credentials probe. Returns null when fine, else why not. */
-    suspend fun pingError(): String? = try {
+    /**
+     * Reachability + credentials probe. Returns null when fine, else why not.
+     *
+     * The distinction matters to the caller, not just to the message: a rejected
+     * password is worth re-prompting for, an unreachable host is worth falling back
+     * to downloads for. See [pingResult].
+     */
+    suspend fun pingError(): String? = pingResult()?.message
+
+    /** As [pingError], but keeping the code so the caller can tell the cases apart. */
+    suspend fun pingResult(): SubsonicException? = try {
         get("ping")
         null
     } catch (e: SubsonicException) {
-        e.message
+        e
     }
 
     // --- browse -----------------------------------------------------------

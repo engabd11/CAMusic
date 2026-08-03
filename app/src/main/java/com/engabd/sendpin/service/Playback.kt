@@ -170,6 +170,48 @@ class Playback(private val app: Context) {
         holdsFocus = false
     }
 
+    // --- becoming noisy ----------------------------------------------------
+
+    /**
+     * Headphones unplugged, or a Bluetooth link dropped.
+     *
+     * Nothing handled this on either path, so pulling the jack moved the music to
+     * the phone's own speaker at whatever volume it was at — the behaviour every
+     * media app is expected to prevent, and the one people notice in public.
+     *
+     * A Sendspin player is a clock slave, so this asks the *server* to pause: the
+     * queue belongs to Music Assistant, and silencing the phone locally would leave
+     * the rest of a group playing on. Muting the engine as well makes the stop
+     * immediate rather than waiting out the round trip.
+     */
+    private val noisyReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(c: Context?, intent: android.content.Intent?) {
+            if (intent?.action != AudioManager.ACTION_AUDIO_BECOMING_NOISY) return
+            if (!_isPlaying.value) return
+            engine?.setVolume(0f)
+            transport { it.pause(playerId) }
+        }
+    }
+
+    private var noisyRegistered = false
+
+    private fun registerNoisyReceiver() {
+        if (noisyRegistered) return
+        runCatching {
+            app.registerReceiver(
+                noisyReceiver,
+                android.content.IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY),
+            )
+            noisyRegistered = true
+        }
+    }
+
+    private fun unregisterNoisyReceiver() {
+        if (!noisyRegistered) return
+        runCatching { app.unregisterReceiver(noisyReceiver) }
+        noisyRegistered = false
+    }
+
     init {
         scope.launch {
             val base = settings.maBaseUrl.first()
@@ -361,6 +403,7 @@ class Playback(private val app: Context) {
         // alive in the background and shows a small "connected" notification with a
         // Stop action. It survives idle periods so TTS/announcements still arrive.
         SendspinConnectionService.start(app)
+        registerNoisyReceiver()
 
         // The advertised format list is what stops the server converting: it may only
         // stream something we listed. Built from the user's audio preferences, and sent
@@ -638,6 +681,7 @@ class Playback(private val app: Context) {
      */
     fun disconnect(stopService: Boolean = true, reason: String = "user_request") {
         abandonAudioFocus()
+        unregisterNoisyReceiver()
         engine?.release(); engine = null
         client?.close(reason); client = null
         idleJob?.cancel(); idleJob = null
