@@ -1,6 +1,11 @@
 package com.engabd.sendpin.ui.screens
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -35,6 +40,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -80,6 +86,7 @@ fun LibraryScreen(
     val search by viewModel.search.collectAsState()
     val searchOpen by viewModel.searchOpen.collectAsState()
     val query by viewModel.query.collectAsState()
+    val refreshing by viewModel.refreshing.collectAsState()
     val palette = LocalPalette.current
     val snackbar = remember { SnackbarHostState() }
     // Long-press target. Hoisted to the screen so the sheet is a sibling of the
@@ -103,6 +110,10 @@ fun LibraryScreen(
                 onSearch = viewModel::doSearch,
                 onSonicSearch = viewModel::sonicSearch,
                 onClearSearch = viewModel::clearSearch,
+                refreshing = refreshing,
+                // Only offer it once there is a library to re-read; on the connect
+                // form it would just be a button that does nothing.
+                onRefresh = if (ready) viewModel::refresh else null,
             )
             // Only offer the connect form once we know there's nothing to connect
             // to. Showing it while a saved server is still handshaking made every
@@ -156,6 +167,8 @@ private fun Header(
     onSearch: (String) -> Unit,
     onSonicSearch: (String) -> Unit,
     onClearSearch: () -> Unit,
+    refreshing: Boolean = false,
+    onRefresh: (() -> Unit)? = null,
 ) {
     Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 14.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -166,16 +179,26 @@ private fun Header(
                 )
                 Spacer(Modifier.width(12.dp))
             }
-            Text(
-                title, color = TextPrimary, fontFamily = AppFont, fontWeight = FontWeight.ExtraBold,
-                fontSize = 26.sp, letterSpacing = (-0.5).sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false),
-            )
-            Spacer(Modifier.width(10.dp))
-            // Which backend is on is a *setting* now, not a control that lives here —
-            // two places to change it meant the greyed-out Speakers and Lights tabs
-            // could disagree with what the library was actually browsing.
-            BackendTag(if (backend == Backend.SUBSONIC) "Navidrome" else "Music Assistant")
+            // Title and backend tag share the slack inside their own row, so the tag
+            // keeps hugging the title and Refresh still lands in the corner. Giving
+            // the title and a spacer a weight each in the outer row would have capped
+            // a long node title at half the width to make room for whitespace.
+            Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    title, color = TextPrimary, fontFamily = AppFont, fontWeight = FontWeight.ExtraBold,
+                    fontSize = 26.sp, letterSpacing = (-0.5).sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                Spacer(Modifier.width(10.dp))
+                // Which backend is on is a *setting* now, not a control that lives
+                // here — two places to change it meant the greyed-out Speakers and
+                // Lights tabs could disagree with what the library was browsing.
+                BackendTag(if (backend == Backend.SUBSONIC) "Navidrome" else "Music Assistant")
+            }
+            onRefresh?.let {
+                Spacer(Modifier.width(10.dp))
+                RefreshButton(refreshing = refreshing, onClick = it)
+            }
         }
         Spacer(Modifier.height(12.dp))
         SearchField(query, onQuery, onSearch, onClearSearch)
@@ -189,6 +212,34 @@ private fun Header(
             }
         }
     }
+}
+
+/**
+ * Re-read the library from the server.
+ *
+ * Spins while the fetch is in flight and ignores taps until it lands, so a user who
+ * doesn't see an instant change can't stack up half a dozen identical requests.
+ */
+@Composable
+private fun RefreshButton(refreshing: Boolean, onClick: () -> Unit) {
+    val spin = rememberInfiniteTransition(label = "refresh")
+    val angle by spin.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(tween(900, easing = LinearEasing)),
+        label = "refreshAngle",
+    )
+    Icon(
+        Icons.Default.Refresh,
+        contentDescription = "Refresh library",
+        tint = if (refreshing) LocalAccent.current else TextSecondary,
+        modifier = Modifier
+            .size(34.dp)
+            .clip(CircleShape)
+            .clickable(enabled = !refreshing, onClick = onClick)
+            .padding(6.dp)
+            .graphicsLayer { rotationZ = if (refreshing) angle else 0f },
+    )
 }
 
 /** A quiet read-only badge naming the library backend Settings has selected. */

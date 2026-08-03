@@ -63,6 +63,13 @@ class SendspinAudioEngine(private val clock: ClockSync) {
          * stall playback completely — so an implausible lead plays now instead.
          */
         const val MAX_LEAD_US = 15_000_000L
+
+        /**
+         * How long the decode loop naps between re-asking the clock while the head
+         * gate holds. Short enough that the head is released promptly once the filter
+         * converges — that delay is dead air at the start of the track.
+         */
+        const val HOLD_POLL_MS = 25L
     }
 
     /**
@@ -77,18 +84,26 @@ class SendspinAudioEngine(private val clock: ClockSync) {
          * How long the head of a stream may be held back waiting for the clock filter
          * to converge before we give up and play it unscheduled.
          *
-         * `client/time` runs fast enough that eight converged samples cost a couple of
-         * seconds from a cold connect, and nothing at all on a connection that has been
-         * up for a while. Past this the offset is not going to arrive, and indefinite
-         * silence is worse than a stream that is merely out of step.
+         * `client/time` runs at a 300 ms cadence until 50 samples are in, and
+         * `isReadyForPlaybackStart()` wants eight low-error ones — about 2.4 s from a
+         * cold connect, and nothing at all on a connection that has been up a while,
+         * which is the normal case since the connection service keeps the socket open
+         * whether or not music is playing. Three seconds clears the cold-start case
+         * with margin; past that the offset is not coming, and indefinite silence is
+         * worse than a stream that is merely out of step.
          */
-        const val MAX_STALL_MS = 4_000L
+        const val MAX_STALL_MS = 3_000L
 
         enum class Decision {
             /** Schedule normally: the clock is trustworthy. */
             SCHEDULE,
 
-            /** Drop this frame and stay armed — the clock isn't ready yet. */
+            /**
+             * Leave the queue alone and ask again — the clock isn't ready yet.
+             *
+             * Emphatically *not* "drop this frame". Holding means the audio waits; it
+             * does not mean it is thrown away. See the call site.
+             */
             HOLD,
 
             /** Give up waiting and play it now, unscheduled. */
@@ -153,7 +168,14 @@ class SendspinAudioEngine(private val clock: ClockSync) {
         if (!running) return
         if (frame.size <= HEADER_SIZE || (frame[0].toInt() and 0xFF) != TYPE_PLAYER_AUDIO) return
         val f = Frame(parseTimestampUs(frame), frame.copyOfRange(HEADER_SIZE, frame.size))
-        if (!queue.offer(f)) { queue.poll(); queue.offer(f) }   // drop oldest under pressure
+        if (queue.offer(f)) return
+        // Full. Which end to sacrifice depends on what the queue is holding: normally
+        // the oldest frame is the most stale and goes, but while the head gate is
+        // armed the oldest frame is the *start of the track* the gate exists to
+        // protect — dropping it there would reintroduce the bug from the other side.
+        if (awaitStart) return
+        queue.poll()
+        queue.offer(f)
     }
 
     /** stream/clear — a seek or track jump: drop buffered audio and reset. */
@@ -188,13 +210,8 @@ class SendspinAudioEngine(private val clock: ClockSync) {
     private fun runLoop() {
         val info = MediaCodec.BufferInfo()
         while (running) {
-            val frame = try {
-                queue.poll(200, TimeUnit.MILLISECONDS)
-            } catch (_: InterruptedException) {
-                break
-            } ?: continue
-            val t = track ?: continue
-
+            // ── Head-of-stream gate ────────────────────────────────────────────
+            //
             // Only the *first* frame of a stream is scheduled; after that the
             // AudioTrack paces playback itself at the stream's sample rate.
             //
@@ -206,10 +223,18 @@ class SendspinAudioEngine(private val clock: ClockSync) {
             // once, at the head of the stream, cannot do that: either the whole stream
             // is scheduled or none of it is.
             //
-            // The gate stays armed until a frame is actually released. Clearing it
-            // *before* the check — which is what this used to do — meant one dropped
-            // head frame disabled scheduling for the rest of the stream, and the
-            // server's multi-second read-ahead went straight into the track.
+            // The decision is made *before* touching the queue, and that ordering is
+            // the whole fix for "the track starts a few seconds in" and "no audio for
+            // the first few seconds". This used to poll a frame first and then
+            // `continue` on HOLD, which threw that frame away — so every frame that
+            // arrived while the clock was converging was silently destroyed. The
+            // server streams several seconds ahead, so by the time the offset landed
+            // the head of the queue was already seconds into the song; and if the
+            // clock never converged at all, the audio was simply gone.
+            //
+            // Holding without polling lets the frames pile up instead. Whenever the
+            // gate opens, the head of the queue is still the head of the *track*.
+            var scheduleHead = false
             if (awaitStart) {
                 val stalledMs = android.os.SystemClock.elapsedRealtime() - headArmedAtMs
                 // `isSynced()` is true after a *single* round-trip, long before the
@@ -218,16 +243,38 @@ class SendspinAudioEngine(private val clock: ClockSync) {
                 // while the server ran on, or dropped as "late". Playback start has
                 // its own, stricter readiness test — this is what it was for.
                 when (HeadGate.decide(clockReady = clock.isReadyForPlaybackStart(), stalledMs = stalledMs)) {
-                    HeadGate.Decision.HOLD -> continue
-                    HeadGate.Decision.PLAY_NOW -> {
+                    HeadGate.Decision.HOLD -> {
+                        // Don't touch the queue. Let it fill.
+                        try { Thread.sleep(HOLD_POLL_MS) } catch (_: InterruptedException) { break }
+                        continue
+                    }
+                    HeadGate.Decision.PLAY_NOW ->
                         Log.w(TAG, "head: clock never converged in ${stalledMs}ms — playing unscheduled")
-                        awaitStart = false
-                    }
-                    HeadGate.Decision.SCHEDULE -> {
-                        if (!awaitFrameTime(frame.serverTsUs)) continue   // stays armed
-                        Log.i(TAG, "head released: err=${clock.errorUs()}us stall=${stalledMs}ms")
-                        awaitStart = false
-                    }
+                    HeadGate.Decision.SCHEDULE -> scheduleHead = true
+                }
+            }
+
+            val frame = try {
+                queue.poll(200, TimeUnit.MILLISECONDS)
+            } catch (_: InterruptedException) {
+                break
+            } ?: continue                      // nothing yet — the gate re-decides next pass
+            val t = track ?: continue
+
+            if (awaitStart) {
+                // A frame is in hand, so the gate has actually done its job and can
+                // close. Disarming any earlier would have let a pass that polled
+                // nothing leave the rest of the stream unscheduled.
+                awaitStart = false
+                if (scheduleHead && !awaitFrameTime(frame.serverTsUs)) {
+                    // Its moment has passed — which for the head of a stream means we
+                    // spent the wait converging, not that this audio is stale. The
+                    // spec's "drop late chunks" is about staying in sync mid-stream;
+                    // applying it here deletes the start of the song, which is the bug
+                    // being fixed. Play it, and accept being a beat behind the group.
+                    Log.d(TAG, "head late but earliest available — playing unscheduled")
+                } else if (scheduleHead) {
+                    Log.i(TAG, "head released: err=${clock.errorUs()}us")
                 }
             }
 

@@ -14,6 +14,7 @@ import com.engabd.sendpin.discovery.PlayerIdentity
 import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.ma.MaApiClient
 import com.engabd.sendpin.ma.MaRepository
+import com.engabd.sendpin.protocol.ProgressProjection
 import com.engabd.sendpin.protocol.SendspinClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -158,6 +159,26 @@ class Playback(private val app: Context) {
             if (base.isNotBlank() && user.isNotBlank()) connectToServer(sendspinUrlFrom(base))
             _bootChecked.value = true
         }
+        // Project the playhead between `server/state` messages, so the bar moves
+        // smoothly instead of stepping whenever the server happens to speak.
+        //
+        // Deliberately here and not in [startSendspin]: this watches `_isPlaying`,
+        // which belongs to *this* object rather than to any one client, so launching
+        // it per connection would stack a fresh collector — and a fresh ticker — on
+        // every reconnect, each overwriting the single [positionTicker] handle and
+        // leaking the one before it.
+        scope.launch {
+            _isPlaying.collect { playing ->
+                positionTicker?.cancel()
+                republishPosition()
+                positionTicker = if (!playing) null else scope.launch {
+                    while (true) {
+                        delay(POSITION_TICK_MS)
+                        republishPosition()
+                    }
+                }
+            }
+        }
     }
 
     // --- discovery --------------------------------------------------------
@@ -221,7 +242,7 @@ class Playback(private val app: Context) {
                 _album.value = np?.album ?: ""
                 _artworkUrl.value = np?.artworkUrl
                 _durationMs.value = np?.durationMs ?: 0
-                _positionMs.value = np?.progressMs ?: 0
+                anchorProgress(c, np)
             }
         }
         scope.launch {
@@ -291,6 +312,61 @@ class Playback(private val app: Context) {
             syncPlayerConfig(name, codec)
         }
     }
+
+    // --- playhead ----------------------------------------------------------
+    //
+    // The Sendspin server pushes `server/state` on every change and stamps it with the
+    // server-clock instant it was true at. That is a far better basis for the position
+    // bar than Music Assistant's five-second poll: it needs no polling, it arrives the
+    // moment anything happens, and — because the timestamp shares the audio frames'
+    // time domain — the clock filter can say exactly how old the reading is instead of
+    // the app assuming it describes the moment it was parsed.
+    //
+    // Assuming that is what made the bar jitter: a reading a second old was rendered as
+    // "now", so the bar ran ahead, and the next message pulled it back.
+
+    @Volatile private var progressAnchor: ProgressProjection.Anchor? = null
+    private var positionTicker: Job? = null
+
+    /**
+     * Take a `server/state` progress reading, dated by the server's own clock.
+     *
+     * `metadata.timestamp` is in server time, so [ClockSync.serverTimeToLocal] converts
+     * it to the instant on *this* phone's clock that the reading described. Sanity
+     * checked before it is trusted: a server that sends a timestamp from a different
+     * epoch (or one that arrives before the filter has anything useful to say) would
+     * otherwise anchor the bar somewhere absurd. Falling back to "now" is what the app
+     * did unconditionally before, so the fallback is no worse than the old behaviour.
+     */
+    private fun anchorProgress(c: SendspinClient, np: com.engabd.sendpin.protocol.NowPlaying?) {
+        val position = np?.progressMs
+        if (position == null) {
+            progressAnchor = null
+            _positionMs.value = 0
+            return
+        }
+        val nowUs = c.clock.nowUs()
+        val stampedLocalUs = np.progressAtServerUs
+            ?.takeIf { it > 0L && c.clock.isSynced() }
+            ?.let { c.clock.serverTimeToLocal(it) }
+            ?.takeIf { kotlin.math.abs(nowUs - it) <= MAX_ANCHOR_AGE_US }
+        progressAnchor = ProgressProjection.Anchor(
+            positionMs = position,
+            atLocalUs = stampedLocalUs ?: nowUs,
+            speedMilli = np.speedMilli,
+            durationMs = np.durationMs ?: 0L,
+        )
+        republishPosition()
+    }
+
+    /** Publish the anchor projected to now — see [ProgressProjection]. */
+    private fun republishPosition() {
+        val a = progressAnchor
+        _positionMs.value =
+            if (a == null) 0L else ProgressProjection.project(a, clockNowUs(), _isPlaying.value)
+    }
+
+    private fun clockNowUs(): Long = client?.clock?.nowUs() ?: (System.nanoTime() / 1000)
 
     /**
      * What the last attempt to write this player's Music Assistant config did.
@@ -446,6 +522,8 @@ class Playback(private val app: Context) {
         abandonAudioFocus()
         engine?.stop(); engine = null
         client?.close(); client = null
+        positionTicker?.cancel(); positionTicker = null
+        progressAnchor = null
         _connected.value = false
         _connectionStatus.value = "Disconnected"
         _currentFormat.value = "—"
@@ -463,6 +541,18 @@ class Playback(private val app: Context) {
         val ws = base.trim().replace("https://", "wss://").replace("http://", "ws://")
             .let { if (it.startsWith("ws")) it else "ws://$it" }.trimEnd('/')
         return "$ws/sendspin"
+    }
+
+    private companion object {
+        /** How often the projected playhead is republished while playing. */
+        const val POSITION_TICK_MS = 250L
+
+        /**
+         * How far a `server/state` timestamp may sit from now and still be believed.
+         * Beyond this the server is not speaking the clock we think it is, and the
+         * arrival time is the safer anchor.
+         */
+        const val MAX_ANCHOR_AGE_US = 30_000_000L
     }
 
     private fun httpBase(url: String): String {

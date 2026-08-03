@@ -279,17 +279,24 @@ data class MaSimilarTrack(
 object MaParse {
 
     /**
-     * A provider instance id or domain as a listener would name it.
+     * The *upstream* music provider MA is pulling the bytes from, as a listener would
+     * name it — "Subsonic", "Spotify", "Plex" — or null when there is nothing useful
+     * to say.
      *
-     * MA reports the streaming provider as an instance id (`spotify--AbC123`) or a
-     * bare domain; the badge wants the brand. Anything unrecognised falls back to
-     * "MA", which is what the badge said unconditionally before.
+     * MA reports this as an instance id (`spotify--AbC123`) or a bare domain. It
+     * answers "where did this file come from", which is **not** the same question as
+     * "what is playing this", and conflating the two is what put "Subsonic" in the
+     * corner badge while Music Assistant was plainly the thing playing. The badge
+     * names the backend; this names the shelf the backend took the track off, and
+     * belongs with the rest of the stream detail.
+     *
+     * Null rather than a fallback: an unrecognised or absent provider has no brand
+     * worth printing, and inventing one would be the same mistake in a smaller font.
      */
-    fun providerLabel(instanceOrDomain: String?): String =
+    fun streamProviderLabel(instanceOrDomain: String?): String? =
         when (instanceOrDomain?.substringBefore("--")?.lowercase()) {
-            null, "" -> "MA"
             "opensubsonic", "subsonic" -> "Subsonic"
-            "filesystem_local", "filesystem_smb", "filesystem" -> "Local"
+            "filesystem_local", "filesystem_smb", "filesystem" -> "Local files"
             "spotify" -> "Spotify"
             "tidal" -> "Tidal"
             "qobuz" -> "Qobuz"
@@ -300,8 +307,7 @@ object MaParse {
             "radiobrowser", "tunein" -> "Radio"
             "plex" -> "Plex"
             "jellyfin" -> "Jellyfin"
-            "builtin" -> "MA"
-            else -> "MA"
+            else -> null
         }
 
     /** One pushed event frame, or null if it isn't one. */

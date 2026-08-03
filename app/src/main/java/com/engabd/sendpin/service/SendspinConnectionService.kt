@@ -14,8 +14,6 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
-import androidx.core.app.TaskStackBuilder
-import com.engabd.sendpin.MainActivity
 import com.engabd.sendpin.SendpinApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -113,7 +111,17 @@ class SendspinConnectionService : Service() {
         wifiLock = null
     }
 
-    /** Update the notification text when connection state changes. */
+    /**
+     * Update the notification text when **connection** state changes — and nothing
+     * else.
+     *
+     * Playback is deliberately not watched here. This notification is about
+     * reachability for announcements and TTS; the media notification in
+     * [SendspinService] is the one that follows the music. Having this one narrate the
+     * track as well meant two entries in the shade saying the same thing, both
+     * re-rendering on every play/pause, and the announcements entry changing its mind
+     * about what it was for depending on whether music happened to be playing.
+     */
     private fun observeConnection() {
         if (observeJob != null) return
         observeJob = scope.launch {
@@ -121,10 +129,6 @@ class SendspinConnectionService : Service() {
         }
         scope.launch {
             pb.connected.collect { _ -> updateNotification() }
-        }
-        // The selected speaker starting or stopping changes what this says.
-        scope.launch {
-            SendpinApp.instance.maNowPlaying.now.collect { _ -> updateNotification() }
         }
     }
 
@@ -142,23 +146,24 @@ class SendspinConnectionService : Service() {
             .notify(NOTIFICATION_ID, buildNotification())
     }
 
+    /**
+     * A *connection* notification, and only that.
+     *
+     * The text says what this service is for and whether it can do it. It used to
+     * narrate the current track instead — "Playing here — …" / "Playing on …" — which
+     * made it a second, worse copy of the media notification that changed on every
+     * play/pause. What the user wants to know from this entry is whether the phone is
+     * still reachable for announcements, which is true or false regardless of whether
+     * music happens to be playing.
+     */
     private fun buildNotification(): Notification {
         val connected = pb.connected.value
         val title = if (connected) "Sendspin" else "Sendspin — reconnecting"
-        // `pb.isPlaying` is this phone's own Sendspin stream and nothing else, so
-        // driving a speaker left this reading "Ready — announcements will play here"
-        // while an album was playing. The selected player is the missing case.
-        val remote = SendpinApp.instance.maNowPlaying.now.value
-        val text = when {
-            !connected -> pb.connectionStatus.value
-            pb.isPlaying.value -> "Playing here — ${pb.trackTitle.value.ifEmpty { "…" }}"
-            remote?.isPlaying == true -> "Playing on ${remote.playerName}"
-            else -> "Ready — announcements will play here"
-        }
+        val text =
+            if (connected) "Ready — announcements will play here"
+            else pb.connectionStatus.value
 
-        val open = TaskStackBuilder.create(this)
-            .addNextIntent(Intent(this, MainActivity::class.java))
-            .getPendingIntent(0, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val open = openAppIntent(this, OpenAppRequest.CONNECTION)
 
         val stop = PendingIntent.getService(
             this, 1,

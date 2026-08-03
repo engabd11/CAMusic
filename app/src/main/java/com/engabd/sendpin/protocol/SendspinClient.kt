@@ -275,6 +275,8 @@ class SendspinClient(
                     artworkUrl = m.artworkUrl,
                     durationMs = m.progress?.trackDuration,
                     progressMs = m.progress?.trackProgress,
+                    progressAtServerUs = m.timestamp,
+                    speedMilli = m.progress?.speedMilli ?: 1000L,
                 )
             }
             is SendspinIncoming.StreamStart -> {
