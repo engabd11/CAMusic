@@ -826,7 +826,7 @@ private fun freqToSlider(hz: Float): Float {
     val minHz = 20.0
     val maxHz = 20_000.0
     val clamped = hz.toDouble().coerceIn(minHz, maxHz)
-    return (kotlin.math.log(clamped / minHz) / kotlin.math.log(maxHz / minHz)).toFloat().coerceIn(0f, 1f)
+    return (Math.log(clamped / minHz) / Math.log(maxHz / minHz)).toFloat().coerceIn(0f, 1f)
 }
 
 private fun sliderToFreq(s: Float): Float {
@@ -844,7 +844,7 @@ private fun qToSlider(q: Float): Float {
     val minQ = 0.1
     val maxQ = 10.0
     val clamped = q.toDouble().coerceIn(minQ, maxQ)
-    return (kotlin.math.log(clamped / minQ) / kotlin.math.log(maxQ / minQ)).toFloat().coerceIn(0f, 1f)
+    return (Math.log(clamped / minQ) / Math.log(maxQ / minQ)).toFloat().coerceIn(0f, 1f)
 }
 
 private fun sliderToQ(s: Float): Float {
