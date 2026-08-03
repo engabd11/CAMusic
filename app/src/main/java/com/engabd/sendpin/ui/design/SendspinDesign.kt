@@ -42,6 +42,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
@@ -319,7 +320,7 @@ fun Pill(text: String, selected: Boolean, modifier: Modifier = Modifier, onClick
         Text(
             text,
             color = if (selected) Ink else TextSecondary,
-            fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 12.sp,
+            style = MaterialTheme.typography.labelLarge,
             maxLines = 1,
         )
     }
@@ -339,7 +340,7 @@ fun ToggleChip(text: String, selected: Boolean, modifier: Modifier = Modifier, o
         Text(
             text,
             color = if (selected) accent else TextMuted,
-            fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 12.sp,
+            style = MaterialTheme.typography.labelLarge,
         )
     }
 }
@@ -373,7 +374,7 @@ fun SegmentedToggle(
                 Text(
                     label,
                     color = if (on) Ink else TextMuted,
-                    fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1,
+                    style = MaterialTheme.typography.labelLarge, maxLines = 1,
                 )
             }
         }
@@ -449,7 +450,9 @@ fun QualityPill(
         Text(
             text,
             color = if (lossless) Color.White.a(0.92f) else TextMuted,
-            fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = fontSize, maxLines = 1,
+            style = if (compact) TextStyle(fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 9.sp)
+                    else MaterialTheme.typography.labelMedium,
+            maxLines = 1,
         )
     }
 }
