@@ -13,6 +13,7 @@ import com.engabd.sendpin.ui.viewmodel.PlayerPositionTracker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -77,6 +78,9 @@ class MaNowPlaying(app: Context) {
     private val _backend = MutableStateFlow("ma")
 
     private val positions = PlayerPositionTracker()
+    private var freezeWatchdog: Job? = null
+    @Volatile private var pendingSeekMs: Long? = null
+    @Volatile private var pendingSkipFromTrack: String? = null
 
     private fun targetId() = _target.value.ifBlank { myPlayerId }
 
@@ -155,6 +159,32 @@ class MaNowPlaying(app: Context) {
                 positions.observe(id).collect { _positionMs.value = it }
             }
         }
+        // When this phone *is* the Music Assistant player, the Sendspin stream
+        // starting is proof that audio is flowing — which is exactly what releases
+        // an optimistic freeze, rather than a guess made from polled state. A
+        // remote speaker gives us no such signal and relies on the poll corroborating
+        // the skip (see [anchor]).
+        scope.launch {
+            SendpinApp.instance.playback.isPlaying.collect { playing ->
+                if (playing && positions.isFrozen(targetId())) {
+                    pendingSeekMs = null
+                    pendingSkipFromTrack = null
+                    freezeWatchdog?.cancel(); freezeWatchdog = null
+                    positions.confirmPlaying(targetId())
+                }
+            }
+        }
+    }
+
+    /** Identity of the current track, for detecting a change between polls. */
+    @Volatile private var lastTrackId: String? = null
+
+    private fun trackId(player: MaPlayer, queue: MaQueue?): String? {
+        queue?.currentQueueItemId?.let { return it }
+        queue?.currentItem?.uri?.let { return it }
+        val np = player.nowPlaying ?: return null
+        if (np.title.isBlank()) return null
+        return "${np.title}|${np.artist}|${np.durationMs}"
     }
 
     /**
@@ -168,6 +198,65 @@ class MaNowPlaying(app: Context) {
         if (player == null) return
         val np = player.nowPlaying
         val elapsed = queue?.elapsedMs ?: np?.elapsedMs ?: return
+
+        val trackId = trackId(player, queue)
+        val trackChanged = trackId != null && trackId != lastTrackId
+        if (trackId != null) lastTrackId = trackId
+
+        // Release an optimistic freeze once the server corroborates it.
+        if (positions.isFrozen(playerId)) {
+            val seekTarget = pendingSeekMs
+            val skipFrom = pendingSkipFromTrack
+            val confirmed = when {
+                // A skip is confirmed by the server naming a different track.
+                skipFrom != null -> trackId != null && trackId != skipFrom
+                // A seek is confirmed when the server's elapsed lands near the target.
+                seekTarget != null -> kotlin.math.abs(elapsed - seekTarget) < SEEK_CONFIRM_MS
+                // No pending operation — release unconditionally (shouldn't happen).
+                else -> true
+            }
+            if (!confirmed) {
+                // Still frozen — but a track change is news regardless of the freeze.
+                if (trackChanged) {
+                    lastStamp.remove(playerId)
+                    queue?.elapsedTimeLastUpdated?.let { lastStamp[playerId] = it }
+                    pendingSeekMs = null
+                    pendingSkipFromTrack = null
+                    freezeWatchdog?.cancel(); freezeWatchdog = null
+                    positions.setAnchor(playerId, 0L, isPlaying = player.isPlaying,
+                        durationMs = np?.durationMs, speed = queue?.playbackSpeed)
+                    positions.setPlaying(playerId, player.isPlaying)
+                }
+                return
+            }
+            // Confirmed — release the freeze.
+            pendingSeekMs = null
+            pendingSkipFromTrack = null
+            freezeWatchdog?.cancel(); freezeWatchdog = null
+            positions.confirmPlaying(playerId)
+        }
+
+        // A track change is news no matter what the clock says: anchor at zero.
+        if (trackChanged) {
+            lastStamp.remove(playerId)
+            queue?.elapsedTimeLastUpdated?.let { lastStamp[playerId] = it }
+            positions.setAnchor(playerId, 0L, isPlaying = player.isPlaying,
+                durationMs = np?.durationMs, speed = queue?.playbackSpeed)
+            positions.setPlaying(playerId, player.isPlaying)
+            return
+        }
+
+        // Staleness gate — same shape as NowPlayingViewModel. A repeated
+        // `elapsed_time_last_updated` means the server hasn't recomputed the
+        // playhead, so re-anchoring would drag the bar backwards.
+        val stamp = queue?.elapsedTimeLastUpdated
+        val staleReading = stamp != null && lastStamp[playerId]?.let { stamp <= it } == true
+        if (staleReading) {
+            positions.setPlaying(playerId, player.isPlaying)
+            return
+        }
+        if (stamp != null) lastStamp[playerId] = stamp
+
         positions.setAnchor(
             queueId = playerId,
             elapsedMs = elapsed,
@@ -176,6 +265,22 @@ class MaNowPlaying(app: Context) {
             speed = queue?.playbackSpeed,
         )
         positions.setPlaying(playerId, player.isPlaying)
+    }
+
+    /** Last `elapsed_time_last_updated` accepted, per player — the staleness gate. */
+    private val lastStamp = mutableMapOf<String, Double>()
+
+    /**
+     * Safety net: if the server never corroborates a seek or skip, release the
+     * freeze after [FREEZE_TIMEOUT_MS] so the bar doesn't wedge permanently.
+     */
+    private fun armFreezeWatchdog(playerId: String) {
+        freezeWatchdog?.cancel()
+        freezeWatchdog = scope.launch {
+            delay(FREEZE_TIMEOUT_MS)
+            positions.confirmPlaying(playerId)
+            freezeWatchdog = null
+        }
     }
 
     // --- refresh ----------------------------------------------------------
@@ -224,13 +329,21 @@ class MaNowPlaying(app: Context) {
     }
 
     fun next() = command {
-        positions.setOptimisticTrackChange(targetId())
-        repo.next(targetId())
+        val id = targetId()
+        pendingSeekMs = null
+        pendingSkipFromTrack = lastTrackId
+        positions.setOptimisticTrackChange(id)
+        armFreezeWatchdog(id)
+        repo.next(id)
     }
 
     fun previous() = command {
-        positions.setOptimisticTrackChange(targetId())
-        repo.previous(targetId())
+        val id = targetId()
+        pendingSeekMs = null
+        pendingSkipFromTrack = lastTrackId
+        positions.setOptimisticTrackChange(id)
+        armFreezeWatchdog(id)
+        repo.previous(id)
     }
 
     fun stop() = command { repo.stop(targetId()) }
@@ -239,9 +352,15 @@ class MaNowPlaying(app: Context) {
         val id = targetId()
         // Hold the bar where the user dropped it: MA keeps reporting the old position
         // for a beat after a seek, and rendering that makes the bar jump back.
+        pendingSeekMs = positionMs
+        pendingSkipFromTrack = null
         positions.setOptimisticSeek(id, positionMs, now.value?.durationMs)
+        armFreezeWatchdog(id)
         repo.seek(id, (positionMs / 1000).toInt())
-        positions.confirmPlaying(id)
+        // Don't confirmPlaying immediately — the server hasn't processed the seek
+        // yet. The freeze watchdog or the next poll confirming the seek target will
+        // release it. Confirming here would let the very next poll drag the bar back
+        // to the old position.
     }
 
     /** [level01] is 0..1, as the media session reports it. */
@@ -261,5 +380,13 @@ class MaNowPlaying(app: Context) {
 
     private companion object {
         const val POLL_MS = 5_000L
+        /**
+         * How long an optimistic seek/skip may ignore the server before it gives up
+         * and accepts whatever the server says. A freeze that never releases would
+         * wedge the bar permanently, so this is the liveness backstop.
+         */
+        const val FREEZE_TIMEOUT_MS = 6_000L
+        /** How close the server's clock must land to a seek target to count as landed. */
+        const val SEEK_CONFIRM_MS = 3_000L
     }
 }

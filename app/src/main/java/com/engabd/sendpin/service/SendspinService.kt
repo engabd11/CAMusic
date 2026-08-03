@@ -271,8 +271,22 @@ class SendspinService : Service() {
         scope.launch {
             // Position comes from whichever side owns the shade: the Sendspin stream's
             // own playhead, or the projected position of the selected MA player.
+            //
+            // When this phone is the player, `pb.positionMs` is raw `progressMs` from
+            // `server/state` — it has no projection between updates and no freeze after
+            // a seek, so the notification bar snaps back before jumping forward. The
+            // `MaNowPlaying` tracker projects and freezes for the selected player, which
+            // *is* this phone when it's the target — so prefer its reading when the MA
+            // target is this phone, and fall back to the raw stream position only when
+            // MA is tracking a different player (an edge case: this phone playing as a
+            // synced member while the user has selected another speaker).
             combine(shade, pb.positionMs, ma.positionMs) { s, localPos, remotePos ->
-                Triple(s.isPlaying, if (s.local) localPos else remotePos, s)
+                val pos = when {
+                    s.local && ma.now.value?.isSelf == true -> remotePos
+                    s.local -> localPos
+                    else -> remotePos
+                }
+                Triple(s.isPlaying, pos, s)
             }.collect { (isPlaying, pos, _) -> updatePlaybackState(isPlaying, pos) }
         }
         scope.launch {

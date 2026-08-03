@@ -77,12 +77,17 @@ class SendspinAudioEngine(private val clock: ClockSync) {
          * How long the head of a stream may be held back waiting for the clock filter
          * to converge before we give up and play it unscheduled.
          *
-         * `client/time` runs fast enough that eight converged samples cost a couple of
-         * seconds from a cold connect, and nothing at all on a connection that has been
-         * up for a while. Past this the offset is not going to arrive, and indefinite
-         * silence is worse than a stream that is merely out of step.
+         * `client/time` runs at 300ms cadence until 50 samples, and
+         * `isReadyForPlaybackStart()` needs 8 low-error samples. At 300ms per
+         * round-trip that is ~2.4s from a cold connect — less on a connection that
+         * has been up for a while (the filter keeps running between tracks).
+         *
+         * 3 seconds gives a comfortable margin past the theoretical 2.4s without
+         * letting the queue accumulate an excessive amount of read-ahead audio.
+         * Past this the offset is not going to arrive, and indefinite silence is
+         * worse than a stream that is merely out of step.
          */
-        const val MAX_STALL_MS = 4_000L
+        const val MAX_STALL_MS = 3_000L
 
         enum class Decision {
             /** Schedule normally: the clock is trustworthy. */
@@ -120,6 +125,12 @@ class SendspinAudioEngine(private val clock: ClockSync) {
      * which are the two points where playback restarts from a known position.
      */
     @Volatile private var awaitStart = false
+    /**
+     * Set when the head gate was just released via SCHEDULE — the next frame polled
+     * from the queue should be scheduled against the clock. Cleared after the first
+     * frame is processed.
+     */
+    @Volatile private var headSchedulePending = false
     /** When the current head-of-stream wait began, for the give-up deadline. */
     @Volatile private var headArmedAtMs = 0L
     @Volatile private var volume = 1.0f
@@ -188,13 +199,7 @@ class SendspinAudioEngine(private val clock: ClockSync) {
     private fun runLoop() {
         val info = MediaCodec.BufferInfo()
         while (running) {
-            val frame = try {
-                queue.poll(200, TimeUnit.MILLISECONDS)
-            } catch (_: InterruptedException) {
-                break
-            } ?: continue
-            val t = track ?: continue
-
+            // ── Head-of-stream gate ──────────────────────────────────────────
             // Only the *first* frame of a stream is scheduled; after that the
             // AudioTrack paces playback itself at the stream's sample rate.
             //
@@ -206,10 +211,22 @@ class SendspinAudioEngine(private val clock: ClockSync) {
             // once, at the head of the stream, cannot do that: either the whole stream
             // is scheduled or none of it is.
             //
-            // The gate stays armed until a frame is actually released. Clearing it
-            // *before* the check — which is what this used to do — meant one dropped
-            // head frame disabled scheduling for the rest of the stream, and the
-            // server's multi-second read-ahead went straight into the track.
+            // ── Critical: don't consume frames during HOLD ───────────────────
+            // The previous implementation polled a frame and then did `continue` on
+            // HOLD, which **permanently dropped** the head-of-stream audio frames
+            // while waiting for the clock filter to converge. The server's
+            // multi-second read-ahead means the queue fills with several seconds of
+            // audio during that wait; by the time the clock converged (or the 4s
+            // timeout fired), the head frame was already several seconds into the
+            // track — so the song started part-way in. If the clock never converged,
+            // frames were silently discarded — so there was no audio for the first
+            // few seconds.
+            //
+            // The fix: during HOLD, **do not poll from the queue at all**. Let the
+            // frames accumulate. Once the clock is ready (or the timeout fires), poll
+            // the head frame — which is the earliest frame, i.e., the start of the
+            // track — and schedule it. This way the song always starts from the
+            // beginning, whether scheduled or unscheduled.
             if (awaitStart) {
                 val stalledMs = android.os.SystemClock.elapsedRealtime() - headArmedAtMs
                 // `isSynced()` is true after a *single* round-trip, long before the
@@ -218,16 +235,44 @@ class SendspinAudioEngine(private val clock: ClockSync) {
                 // while the server ran on, or dropped as "late". Playback start has
                 // its own, stricter readiness test — this is what it was for.
                 when (HeadGate.decide(clockReady = clock.isReadyForPlaybackStart(), stalledMs = stalledMs)) {
-                    HeadGate.Decision.HOLD -> continue
+                    HeadGate.Decision.HOLD -> {
+                        // Clock not ready — don't touch the queue. Frames accumulate
+                        // from the server's read-ahead buffer; we'll consume the head
+                        // (earliest) once the clock converges or the timeout fires.
+                        try { Thread.sleep(50) } catch (_: InterruptedException) { break }
+                        continue
+                    }
                     HeadGate.Decision.PLAY_NOW -> {
                         Log.w(TAG, "head: clock never converged in ${stalledMs}ms — playing unscheduled")
                         awaitStart = false
+                        // Fall through to poll and play the head frame unscheduled.
                     }
                     HeadGate.Decision.SCHEDULE -> {
-                        if (!awaitFrameTime(frame.serverTsUs)) continue   // stays armed
-                        Log.i(TAG, "head released: err=${clock.errorUs()}us stall=${stalledMs}ms")
                         awaitStart = false
+                        headSchedulePending = true
+                        // Fall through to poll and schedule the head frame.
                     }
+                }
+            }
+
+            val frame = try {
+                queue.poll(200, TimeUnit.MILLISECONDS)
+            } catch (_: InterruptedException) {
+                break
+            } ?: continue
+            val t = track ?: continue
+
+            // Schedule the head frame if we just released the gate via SCHEDULE.
+            // If awaitFrameTime says the frame is too late (its scheduled moment has
+            // passed), play it **anyway** rather than dropping it: this is the head of
+            // the stream, and dropping it means lost audio — the song starts with a
+            // gap. A late head frame is still the earliest audio we have.
+            if (headSchedulePending) {
+                headSchedulePending = false
+                if (!awaitFrameTime(frame.serverTsUs)) {
+                    Log.d(TAG, "head late but is earliest frame — playing unscheduled")
+                } else {
+                    Log.i(TAG, "head released: err=${clock.errorUs()}us stall=${android.os.SystemClock.elapsedRealtime() - headArmedAtMs}ms")
                 }
             }
 
