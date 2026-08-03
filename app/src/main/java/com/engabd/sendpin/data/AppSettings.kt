@@ -40,6 +40,15 @@ class AppSettings(private val context: Context) {
         private val DOWNLOAD_STORAGE_CAP_MB = stringPreferencesKey("download_storage_cap_mb") // 0 = unlimited
         private val DOWNLOAD_WIFI_ONLY = booleanPreferencesKey("download_wifi_only") // skip downloads on mobile data
         private val RADIO_MODE = booleanPreferencesKey("radio_mode")            // MA keeps the music going past the queue
+        private val STATIC_DELAY_MS = stringPreferencesKey("sendspin_static_delay_ms") // per-player latency trim
+
+        /**
+         * How far the sync trim can be pushed either way. Matches the range Music
+         * Assistant's own `sendspin_sync_delay` control offers, so the two agree;
+         * only the positive half survives the clamp onto the wire, where the spec
+         * caps `static_delay_ms` at 0..5000.
+         */
+        const val MAX_TRIM_MS = 2_000
     }
 
     val backend: Flow<String> = context.dataStore.data.map { it[BACKEND] ?: "ma" }
@@ -97,6 +106,24 @@ class AppSettings(private val context: Context) {
      * detected; consumed by both [SendspinAudioEngine] and [LocalPlayer].
      */
     val preferredAudioDeviceId: Flow<String> = context.dataStore.data.map { it[PREFERRED_AUDIO_DEVICE_ID] ?: "" }
+
+    /**
+     * This player's latency trim, in milliseconds, for lining it up against other
+     * speakers in a group.
+     *
+     * Sign follows the Sendspin spec, which is the opposite of how a "delay" control
+     * usually reads: a **positive** value says this output path adds that much
+     * latency, so the engine schedules frames that much *earlier*. Increase it when
+     * the phone sounds late against the rest of the group.
+     *
+     * Stored as a string because DataStore has no int key helper in use here and the
+     * other numeric settings already do this.
+     */
+    val staticDelayMs: Flow<Int> = context.dataStore.data.map { it[STATIC_DELAY_MS]?.toIntOrNull() ?: 0 }
+
+    suspend fun setStaticDelayMs(ms: Int) = context.dataStore.edit {
+        it[STATIC_DELAY_MS] = ms.coerceIn(-MAX_TRIM_MS, MAX_TRIM_MS).toString()
+    }
 
     /** Download storage cap in MB. 0 means unlimited. */
     val downloadStorageCapMb: Flow<Int> = context.dataStore.data.map { it[DOWNLOAD_STORAGE_CAP_MB]?.toIntOrNull() ?: 0 }

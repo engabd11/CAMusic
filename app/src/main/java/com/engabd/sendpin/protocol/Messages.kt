@@ -67,8 +67,10 @@ data class DeviceInfo(
 @Serializable
 data class PlayerV1Support(
     @SerialName("supported_formats") val supportedFormats: List<AudioFormatSpec>,
-    // Bytes of compressed audio the server may stream ahead (Sendspin spec). ~30 s
-    // of FLAC so a throughput dip rides the buffer instead of underrunning.
+    // Bytes of compressed audio the server may stream ahead (Sendspin spec), so a
+    // throughput dip rides the buffer instead of underrunning. ~30 s of CD-rate
+    // FLAC — but only ~7 s at 24/192, which is worth knowing before raising the
+    // advertised rates any further.
     @SerialName("buffer_capacity") val bufferCapacity: Int = 4_000_000,
     @SerialName("supported_commands") val supportedCommands: List<String> = listOf("volume", "mute"),
 )
@@ -225,9 +227,14 @@ data class ServerStatePayload(val metadata: ServerMetadataPayload? = null)
 
 @Serializable
 data class PlayerCommandPayload(
-    val command: String,          // "volume" | "mute" | …
+    val command: String,          // "volume" | "mute" | "set_static_delay"
     val volume: Int? = null,
     val mute: Boolean? = null,
+    /**
+     * Only present on `set_static_delay`. The spec lets the server push the
+     * per-player latency trim, not just read the one we report in `client/state`.
+     */
+    @SerialName("static_delay_ms") val staticDelayMs: Int? = null,
 )
 
 @Serializable

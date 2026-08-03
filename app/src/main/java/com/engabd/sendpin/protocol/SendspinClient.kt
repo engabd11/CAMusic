@@ -2,9 +2,14 @@ package com.engabd.sendpin.protocol
 
 import android.util.Log
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -12,6 +17,7 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Sendspin player client for Music Assistant over a **plain WebSocket** (text
@@ -33,12 +39,6 @@ class SendspinClient(
     },
 ) {
     enum class State { DISCONNECTED, CONNECTING, AUTHENTICATING, CONNECTED, ERROR }
-
-    sealed class StreamEvent {
-        data class Start(val format: StreamStartPlayerInfo) : StreamEvent()
-        data object End : StreamEvent()
-        data object Clear : StreamEvent()
-    }
 
     /** Clock shared with the audio scheduler. */
     val clock = ClockSync()
@@ -67,7 +67,28 @@ class SendspinClient(
 
     @Volatile private var lastVolume = 100
     @Volatile private var lastMuted = false
-    @Volatile private var staticDelayMs = 0
+
+    /**
+     * The per-player latency trim, in milliseconds, and the single source of truth
+     * for it — the settings layer and the server both write here, and the audio
+     * engine reads only from here, so the two can't fight over it.
+     *
+     * Sign follows the spec, not Music Assistant's own UI: a **positive** value
+     * means this output path adds that much latency, so the engine subtracts it and
+     * plays *earlier*. MA's `sendspin_sync_delay` control is signed and reads as
+     * "delay this speaker", which is the opposite sense; the mapping happens at the
+     * settings boundary, and only 0..5000 goes on the wire.
+     */
+    private val _staticDelayMs = MutableStateFlow(0)
+    val staticDelay: StateFlow<Int> = _staticDelayMs.asStateFlow()
+
+    /** True while the clock is too green to be trusted — output should be muted. */
+    private val _syncMuted = MutableStateFlow(false)
+    val syncMuted: StateFlow<Boolean> = _syncMuted.asStateFlow()
+
+    /** Roles the server actually activated, from `server/hello`. */
+    private val _activeRoles = MutableStateFlow<List<String>>(emptyList())
+    val activeRoles: StateFlow<List<String>> = _activeRoles.asStateFlow()
 
     private val _state = MutableStateFlow(State.DISCONNECTED)
     val state: StateFlow<State> = _state.asStateFlow()
@@ -95,16 +116,92 @@ class SendspinClient(
     private val _serverCommands = MutableSharedFlow<PlayerCommandPayload>(extraBufferCapacity = 32)
     val serverCommands: SharedFlow<PlayerCommandPayload> = _serverCommands.asSharedFlow()
 
-    private val _streamEvents = MutableSharedFlow<StreamEvent>(extraBufferCapacity = 32)
-    val streamEvents: SharedFlow<StreamEvent> = _streamEvents.asSharedFlow()
+    /**
+     * Where stream lifecycle and audio are delivered, in wire order.
+     *
+     * Deliberately an interface and not a `SharedFlow`: two collectors on two flows
+     * have no ordering relative to each other, and a buffered flow drops silently on
+     * overflow. Direct calls from the single ingest consumer have neither problem.
+     * The remaining flows below are UI-facing and order-insensitive.
+     */
+    interface PlaybackSink {
+        fun onStreamStart(format: StreamStartPlayerInfo)
+        fun onStreamEnd()
+        fun onStreamClear()
+        fun onAudio(frame: ByteArray)
+        fun onDisconnected()
+    }
+
+    /**
+     * Set before [connect]. Calls arrive on the ingest coroutine, so implementations
+     * must not block: anything slow (starting a foreground service, audio focus)
+     * belongs on its own coroutine, or it stalls the socket.
+     */
+    @Volatile
+    var sink: PlaybackSink? = null
 
     /** Group playback state changes pushed by the server — instant, no 5s poll. */
     private val _groupUpdates = MutableSharedFlow<SendspinIncoming.GroupUpdate>(extraBufferCapacity = 16)
     val groupUpdates: SharedFlow<SendspinIncoming.GroupUpdate> = _groupUpdates.asSharedFlow()
 
-    // Raw binary audio chunks; SendspinAudioEngine parses the header + decodes.
-    private val _audioFrames = MutableSharedFlow<ByteArray>(extraBufferCapacity = 512)
-    val audioFrames: SharedFlow<ByteArray> = _audioFrames.asSharedFlow()
+    /**
+     * The single ordered queue every socket callback feeds. Unbounded, because
+     * dropping to make room would be exactly the reordering this exists to prevent;
+     * [Inbox.accept] is the memory guard instead.
+     */
+    private val inbox = Channel<Inbound>(Channel.UNLIMITED)
+    private val inboxDepth = AtomicInteger(0)
+    private var ingestJob: Job? = null
+
+    /** Frames dropped because the consumer stalled — surfaced for the debug trace. */
+    private val _droppedFrames = MutableStateFlow(0L)
+    val droppedFrames: StateFlow<Long> = _droppedFrames.asStateFlow()
+
+    /** Enqueue from a socket callback. Non-blocking; ordering is the whole point. */
+    private fun offer(item: Inbound) {
+        if (!Inbox.accept(inboxDepth.get(), item is Inbound.Audio)) {
+            _droppedFrames.value++
+            return
+        }
+        inboxDepth.incrementAndGet()
+        // UNLIMITED never rejects, but the channel is closed after close().
+        if (inbox.trySend(item).isFailure) inboxDepth.decrementAndGet()
+    }
+
+    /**
+     * Drains [inbox] on one coroutine, so wire order survives all the way to the
+     * audio engine. Parsing happens here rather than on the socket's reader thread:
+     * it is the only per-message cost that grows with payload size, and the T4
+     * timestamp it needs was already taken at arrival.
+     */
+    private fun startIngest() {
+        if (ingestJob?.isActive == true) return
+        ingestJob = scope.launch {
+            for (item in inbox) {
+                inboxDepth.decrementAndGet()
+                when (item) {
+                    is Inbound.Audio -> sink?.onAudio(item.frame)
+                    is Inbound.Disconnected -> sink?.onDisconnected()
+                    is Inbound.Text -> {
+                        val parsed = try {
+                            SendspinIncoming.parse(item.text, json)
+                        } catch (_: Exception) {
+                            dbg("rx PARSE-ERROR: ${item.text.take(160)}")
+                            SendspinIncoming.Unknown("parse_error")
+                        }
+                        // server/time is chatty once syncing → keep it out of the trace.
+                        if (parsed is SendspinIncoming.ServerTime) Log.d(TAG, "rx server/time")
+                        else dbg("rx ${item.text.take(200)}")
+                        handleIncoming(
+                            if (parsed is SendspinIncoming.ServerTime) {
+                                parsed.copy(clientReceivedUs = item.rxUs)
+                            } else parsed
+                        )
+                    }
+                }
+            }
+        }
+    }
 
     fun connect(
         serverUrl: String,
@@ -127,6 +224,7 @@ class SendspinClient(
         userClosed = false
         attempt = 0
         reconnectJob?.cancel()
+        startIngest()
         builtUrl = buildUrl(serverUrl)
         dbg("connect → $builtUrl (token=${if (token.isNullOrBlank()) "none" else "set"})")
         openSocket()
@@ -174,15 +272,40 @@ class SendspinClient(
 
     fun close(reason: String = "user_request") {
         disconnect(reason)
+        // Only here, not in disconnect(): disconnect() is followed by reconnects, and
+        // the ingest loop has to survive those to keep serving the same inbox.
+        ingestJob?.cancel(); ingestJob = null
+        inbox.close()
         scope.cancel()
     }
 
-    fun sendClientState(volume: Int = lastVolume, muted: Boolean = lastMuted, staticDelayMs: Int = this.staticDelayMs) {
-        lastVolume = volume; lastMuted = muted; this.staticDelayMs = staticDelayMs
+    /**
+     * Report player state. [state] is `"synchronized"` or `"error"` per the spec —
+     * see [SyncGate] for when each is right.
+     */
+    fun sendClientState(
+        volume: Int = lastVolume,
+        muted: Boolean = lastMuted,
+        staticDelayMs: Int = _staticDelayMs.value,
+        state: String = "synchronized",
+    ) {
+        lastVolume = volume; lastMuted = muted
+        _staticDelayMs.value = staticDelayMs
         val msg = SendspinClientState(
-            payload = ClientStatePayload(player = PlayerStateInfo(volume, muted, staticDelayMs))
+            payload = ClientStatePayload(
+                state = state,
+                // The spec's wire range is 0..5000; a negative trim is meaningful
+                // locally (play later) but has nothing to say to the server.
+                player = PlayerStateInfo(volume, muted, staticDelayMs.coerceIn(0, MAX_STATIC_DELAY_MS)),
+            )
         )
         webSocket?.send(json.encodeToString(msg))
+    }
+
+    /** Set the latency trim locally (from settings). Pushed to the server too. */
+    fun setStaticDelayMs(ms: Int) {
+        if (_staticDelayMs.value == ms) return
+        sendClientState(staticDelayMs = ms)
     }
 
     fun sendRequestFormat(codec: String, sampleRate: Int = 48000, bitDepth: Int = 16, channels: Int = 2) {
@@ -213,23 +336,14 @@ class SendspinClient(
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
-            // Stamp T4 before any deserialize/dispatch (only server/time needs it).
-            val rxUs = System.nanoTime() / 1000
-            val parsed = try {
-                SendspinIncoming.parse(text, json)
-            } catch (e: Exception) {
-                dbg("rx PARSE-ERROR: ${text.take(160)}")
-                SendspinIncoming.Unknown("parse_error")
-            }
-            // server/time is chatty once syncing → keep it out of the on-screen trace.
-            if (parsed is SendspinIncoming.ServerTime) Log.d(TAG, "rx server/time")
-            else dbg("rx ${text.take(200)}")
-            val incoming = if (parsed is SendspinIncoming.ServerTime) parsed.copy(clientReceivedUs = rxUs) else parsed
-            scope.launch { handleIncoming(incoming) }
+            // Stamp T4 here and nowhere later: this is the earliest point the frame
+            // exists locally, and measuring it after a parse or a coroutine hop
+            // biases the clock offset low, which makes the player play late.
+            offer(Inbound.Text(text, System.nanoTime() / 1000))
         }
 
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-            _audioFrames.tryEmit(bytes.toByteArray())
+            offer(Inbound.Audio(bytes.toByteArray()))
         }
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
@@ -240,6 +354,9 @@ class SendspinClient(
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             dbg("ws CLOSED $code '$reason'")
             timeJob?.cancel(); stateJob?.cancel()
+            // Queued rather than applied here, so the engine is torn down *after* any
+            // frames still ahead of it in the inbox rather than in the middle of them.
+            offer(Inbound.Disconnected)
             if (_state.value != State.ERROR) {
                 _state.value = State.DISCONNECTED
                 _statusText.value = "Disconnected"
@@ -251,6 +368,7 @@ class SendspinClient(
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             dbg("ws FAILURE (http ${response?.code}): ${t.message}")
             timeJob?.cancel(); stateJob?.cancel()
+            offer(Inbound.Disconnected)
             _state.value = State.ERROR
             _statusText.value = "Error: ${t.message}"
             if (response?.code != 404) scheduleReconnect()
@@ -265,7 +383,23 @@ class SendspinClient(
                 _statusText.value = "Auth failed: ${msg.message}"
             }
             is SendspinIncoming.ServerHello -> {
-                dbg("server/hello → CONNECTED ✓")
+                // The payload used to be parsed and thrown away, which meant a server
+                // that never activated `player@v1` looked identical to one that did —
+                // the client would sit there advertising a role nobody asked it to
+                // play, with no way to tell from the trace.
+                val p = msg.raw["payload"] as? JsonObject
+                val roles = (p?.get("active_roles") as? JsonArray)
+                    ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+                    .orEmpty()
+                _activeRoles.value = roles
+                val reason = (p?.get("connection_reason") as? JsonPrimitive)?.contentOrNull
+                val serverName = (p?.get("name") as? JsonPrimitive)?.contentOrNull
+                dbg("server/hello → CONNECTED ✓ (${serverName ?: "?"}, roles=$roles, reason=${reason ?: "?"})")
+                if (roles.isNotEmpty() && roles.none { it.startsWith("player@") }) {
+                    // Not fatal — metadata-only connections are legitimate — but the
+                    // silence that follows is otherwise unexplainable.
+                    Log.w(TAG, "server did not activate a player role; no audio will arrive")
+                }
                 attempt = 0   // reset backoff on a good handshake
                 _state.value = State.CONNECTED
                 _statusText.value = "Connected"
@@ -292,11 +426,22 @@ class SendspinClient(
             is SendspinIncoming.GroupUpdate -> _groupUpdates.tryEmit(msg)
             is SendspinIncoming.StreamStart -> {
                 _streamFormat.value = msg.payload.player
-                _streamEvents.tryEmit(StreamEvent.Start(msg.payload.player))
+                sink?.onStreamStart(msg.payload.player)
             }
-            is SendspinIncoming.StreamEnd -> _streamEvents.tryEmit(StreamEvent.End)
-            is SendspinIncoming.StreamClear -> _streamEvents.tryEmit(StreamEvent.Clear)
-            is SendspinIncoming.ServerCommand -> msg.payload.player?.let { _serverCommands.tryEmit(it) }
+            is SendspinIncoming.StreamEnd -> sink?.onStreamEnd()
+            is SendspinIncoming.StreamClear -> sink?.onStreamClear()
+            is SendspinIncoming.ServerCommand -> msg.payload.player?.let { p ->
+                // Latched here rather than only downstream, so the value the client
+                // reports back stays right whoever set it.
+                if (p.command == "set_static_delay") {
+                    p.staticDelayMs?.let { ms ->
+                        val clamped = ms.coerceIn(0, MAX_STATIC_DELAY_MS)
+                        dbg("server/command set_static_delay=${clamped}ms")
+                        sendClientState(staticDelayMs = clamped)
+                    }
+                }
+                _serverCommands.tryEmit(p)
+            }
             else -> {}
         }
     }
@@ -329,12 +474,32 @@ class SendspinClient(
         }
     }
 
+    /**
+     * Report `client/state` on a loop, telling the truth about whether this player
+     * can actually be placed on the shared timeline yet — see [SyncGate].
+     *
+     * Faster while unconverged: the report is what the server acts on, so a stale
+     * "still error" costs group join latency for no reason.
+     */
     private fun startStateReporting() {
         stateJob?.cancel()
         stateJob = scope.launch {
+            var unreadySinceMs = System.currentTimeMillis()
             while (isActive) {
-                sendClientState()
-                delay(5_000L)
+                val ready = clock.isReadyForPlaybackStart()
+                if (ready) unreadySinceMs = System.currentTimeMillis()
+                val d = SyncGate.decide(
+                    clockReady = ready,
+                    unreadyMs = if (ready) 0L else System.currentTimeMillis() - unreadySinceMs,
+                )
+                if (_syncMuted.value != d.muted) {
+                    dbg(if (d.muted) "clock unconverged → muting" else "clock ready → unmuting")
+                }
+                _syncMuted.value = d.muted
+                sendClientState(
+                    state = if (d.report == SyncGate.Report.SYNCHRONIZED) "synchronized" else "error"
+                )
+                delay(if (ready) 5_000L else 300L)
             }
         }
     }
@@ -353,7 +518,10 @@ class SendspinClient(
         }
     }
 
-    private companion object {
-        const val TAG = "SendspinClient"
+    companion object {
+        private const val TAG = "SendspinClient"
+
+        /** The spec's range for `static_delay_ms` in `client/state`. */
+        const val MAX_STATIC_DELAY_MS = 5_000
     }
 }

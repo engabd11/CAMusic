@@ -46,8 +46,23 @@ object FormatNegotiator {
     /** CD and DVD rate families — covers essentially every library file. */
     private val RATES_STANDARD = listOf(48_000, 44_100)
 
-    /** Adds the hi-res member of each family (2× 48k and 2× 44.1k). */
-    private val RATES_HIRES = listOf(48_000, 44_100, 96_000, 88_200)
+    /**
+     * Adds the hi-res members of each family — 2× and 4× of 48k and 44.1k.
+     *
+     * 176.4/192 are filtered out by [maxSampleRate] unless the caller has actually
+     * probed the device for them: advertising a rate the phone can't open means the
+     * server picks it and nothing plays, and on a phone whose mixer runs at 48 kHz
+     * a 192 kHz stream is ~4.6 Mbit/s that gets resampled straight back down.
+     */
+    private val RATES_HIRES = listOf(48_000, 44_100, 96_000, 88_200, 192_000, 176_400)
+
+    /**
+     * The default ceiling on advertised rates.
+     *
+     * 96 kHz keeps the historical list exactly as it was; anything higher has to be
+     * asked for explicitly, with a device probe behind it.
+     */
+    const val DEFAULT_MAX_RATE = 96_000
 
     /** Every codec [SendspinAudioEngine] can decode, in the order "auto" offers them. */
     val CODECS = listOf("flac", "pcm", "opus")
@@ -76,8 +91,9 @@ object FormatNegotiator {
         preferFlac: Boolean = true,
         codec: String? = null,
         bitPerfect: Boolean = false,
+        maxSampleRate: Int = DEFAULT_MAX_RATE,
     ): List<AudioFormatSpec> {
-        val rates = if (preferHiRes) RATES_HIRES else RATES_STANDARD
+        val rates = (if (preferHiRes) RATES_HIRES else RATES_STANDARD).filter { it <= maxSampleRate }
         val depth = bitDepthFor(bitPerfect)
         val only = codec?.lowercase()?.takeIf { it in CODECS }
         if (only != null) {
@@ -117,8 +133,9 @@ object FormatNegotiator {
         bitDepth: Int,
         preferHiRes: Boolean = true,
         bitPerfect: Boolean = false,
+        maxSampleRate: Int = DEFAULT_MAX_RATE,
     ): Boolean {
-        val rates = if (preferHiRes) RATES_HIRES else RATES_STANDARD
+        val rates = (if (preferHiRes) RATES_HIRES else RATES_STANDARD).filter { it <= maxSampleRate }
         return sampleRate in rates && bitDepth <= bitDepthFor(bitPerfect)
     }
 

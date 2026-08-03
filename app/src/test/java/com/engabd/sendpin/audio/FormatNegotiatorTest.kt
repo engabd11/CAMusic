@@ -73,6 +73,52 @@ class FormatNegotiatorTest {
         assertTrue(96_000 in hires && 88_200 in hires)
     }
 
+    /**
+     * Advertising a rate is a commitment: Music Assistant may only stream a format
+     * the client listed, so a rate the device can't open means the server picks it
+     * and nothing plays. 176.4/192 therefore need an explicit probed ceiling, and
+     * the default has to leave the historical list exactly as it was.
+     */
+    @Test
+    fun `quad rates need an explicit ceiling`() {
+        val default = FormatNegotiator.supportedFormats(preferHiRes = true).map { it.sampleRate }.toSet()
+        assertEquals(setOf(48_000, 44_100, 96_000, 88_200), default)
+
+        val probed = FormatNegotiator.supportedFormats(preferHiRes = true, maxSampleRate = 192_000)
+            .map { it.sampleRate }.toSet()
+        assertTrue(192_000 in probed && 176_400 in probed)
+    }
+
+    /**
+     * The ceiling trims from the top; it must never cost 44.1 kHz, which is most of
+     * anyone's library.
+     */
+    @Test
+    fun `a low ceiling trims the top rather than emptying the list`() {
+        val rates = FormatNegotiator.supportedFormats(preferHiRes = true, maxSampleRate = 48_000)
+            .map { it.sampleRate }.toSet()
+        assertEquals(setOf(48_000, 44_100), rates)
+    }
+
+    /** 48 kHz stays first however far the ceiling is raised — grouped sync depends on it. */
+    @Test
+    fun `48k still leads when quad rates are enabled`() {
+        assertEquals(
+            48_000,
+            FormatNegotiator.supportedFormats(maxSampleRate = 192_000).first().sampleRate,
+        )
+    }
+
+    @Test
+    fun `192k counts as untouched only once the ceiling allows it`() {
+        assertFalse(FormatNegotiator.canStreamUntouched(192_000, 24, bitPerfect = true))
+        assertTrue(
+            FormatNegotiator.canStreamUntouched(
+                192_000, 24, bitPerfect = true, maxSampleRate = 192_000,
+            )
+        )
+    }
+
     /** 48 kHz first is what grouped/multi-room sync was validated against. */
     @Test
     fun `48k leads the list`() {

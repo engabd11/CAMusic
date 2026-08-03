@@ -18,6 +18,7 @@ import com.engabd.sendpin.ma.MaRepository
 import com.engabd.sendpin.protocol.ProgressProjection
 import com.engabd.sendpin.protocol.SendspinClient
 import com.engabd.sendpin.protocol.SendspinIncoming
+import com.engabd.sendpin.protocol.StreamStartPlayerInfo
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -99,6 +100,13 @@ class Playback(private val app: Context) {
     private var discoveryStop: Job? = null
     private var volumeJob: Job? = null
 
+    /**
+     * Deferred "playback really has stopped" work. Armed on `stream/end` and
+     * cancelled by the next `stream/start`, so a track change doesn't flicker the
+     * notification or the play/pause state. Matches the engine's own linger.
+     */
+    private var idleJob: Job? = null
+
     // --- audio focus -------------------------------------------------------
 
     private val audioManager by lazy { app.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
@@ -122,7 +130,7 @@ class Playback(private val app: Context) {
             AudioManager.AUDIOFOCUS_GAIN -> engine?.setVolume(volume.value)
             AudioManager.AUDIOFOCUS_LOSS -> {
                 // Another app took over media for good — stop and release.
-                engine?.stop()
+                engine?.release()
                 _isPlaying.value = false
                 abandonAudioFocus()
             }
@@ -270,10 +278,57 @@ class Playback(private val app: Context) {
                 when (cmd.command) {
                     "volume" -> cmd.volume?.let { v -> _volume.value = v / 100f; eng.setVolume(v / 100f) }
                     "mute" -> cmd.mute?.let { m -> eng.setVolume(if (m) 0f else _volume.value) }
+                    // Latched by the client, which owns the value; persisted here so
+                    // it survives a reconnect.
+                    "set_static_delay" -> cmd.staticDelayMs?.let { ms ->
+                        scope.launch { settings.setStaticDelayMs(ms) }
+                    }
+                    // Anything else the spec grows: say so rather than vanishing.
+                    else -> android.util.Log.w("Playback", "unhandled server/command '${cmd.command}'")
                 }
             }
         }
-        scope.launch { c.audioFrames.collect { bytes -> eng.submit(bytes) } }
+        // Stream lifecycle and audio arrive through one ordered sink rather than two
+        // flows: `stream/clear` only means anything if it is still ordered against
+        // the audio around it, and two collectors have no ordering between them.
+        //
+        // These callbacks run on the client's ingest coroutine, so only the engine
+        // calls — all non-blocking — happen inline. Anything slower (audio focus,
+        // starting a foreground service) is posted, or it stalls the socket.
+        c.sink = object : SendspinClient.PlaybackSink {
+            override fun onAudio(frame: ByteArray) = eng.submit(frame)
+
+            override fun onStreamStart(format: StreamStartPlayerInfo) {
+                eng.start(format)
+                idleJob?.cancel(); idleJob = null
+                scope.launch {
+                    requestAudioFocus()
+                    _isPlaying.value = true
+                    SendspinService.startMedia(app)
+                }
+            }
+
+            override fun onStreamEnd() {
+                // Not a stop: MA ends the stream between every track. The engine keeps
+                // the tail playing and tears itself down only if nothing follows, and
+                // the notification waits the same way instead of blinking on every skip.
+                eng.endOfStream()
+                idleJob?.cancel()
+                idleJob = scope.launch {
+                    delay(SendspinAudioEngine.END_LINGER_MS)
+                    _isPlaying.value = false
+                    SendspinService.idleMedia(app)
+                }
+            }
+
+            override fun onStreamClear() = eng.flush()
+
+            override fun onDisconnected() {
+                // Park rather than tear down: a reconnect is usually seconds away and
+                // a matching stream/start will carry straight on through the tail.
+                eng.endOfStream()
+            }
+        }
 
         // `group/update` is a push on the player socket, so it lands the moment
         // grouping changes. Forwarded to whoever is showing group state — the
@@ -292,33 +347,20 @@ class Playback(private val app: Context) {
             }
         }
 
+        // The latency trim. The setting pushes into the client, and the client is the
+        // only thing that writes the engine — one arrow in, so a value the *server*
+        // pushes (`set_static_delay`) and one the user sets can't fight each other.
+        scope.launch { settings.staticDelayMs.collect { c.setStaticDelayMs(it) } }
+        scope.launch { c.staticDelay.collect { eng.staticDelayMs = it } }
+
+        // Mute while the clock is still converging, per the spec — decoding and
+        // buffering carry on, only the gain goes to zero. See SyncGate.
+        scope.launch { c.syncMuted.collect { eng.setSyncMuted(it) } }
+
         // The persistent connection service keeps the process (and this WebSocket)
         // alive in the background and shows a small "connected" notification with a
         // Stop action. It survives idle periods so TTS/announcements still arrive.
         SendspinConnectionService.start(app)
-
-        // The media notification service shows album art + transport + seek bar,
-        // but only while music is playing. It comes and goes; the connection stays.
-        scope.launch {
-            c.streamEvents.collect { ev ->
-                when (ev) {
-                    is SendspinClient.StreamEvent.Start -> {
-                        requestAudioFocus()
-                        eng.start(ev.format); _isPlaying.value = true
-                        SendspinService.startMedia(app)
-                    }
-                    SendspinClient.StreamEvent.End -> {
-                        eng.stop(); _isPlaying.value = false
-                        // Not a stop: the server ends the stream between every track,
-                        // so tearing the notification down here made it blink on every
-                        // skip. The service holds it for a minute and cancels that on
-                        // the next stream/start.
-                        SendspinService.idleMedia(app)
-                    }
-                    SendspinClient.StreamEvent.Clear -> eng.flush()
-                }
-            }
-        }
 
         // The advertised format list is what stops the server converting: it may only
         // stream something we listed. Built from the user's audio preferences, and sent
@@ -326,11 +368,21 @@ class Playback(private val app: Context) {
         scope.launch {
             val codec = settings.sendspinCodec.first()
             connectedCodec = codec
+            val bitPerfect = settings.bitPerfect24Bit.first()
+            // Only reach past 96 kHz when the user has asked for the bit-perfect path
+            // *and* the device will actually open a track at the rate. Advertising a
+            // rate is a commitment — the server may only send what was listed.
+            val maxRate = if (bitPerfect) {
+                AudioOutputs.maxSupportedSampleRate()
+            } else {
+                FormatNegotiator.DEFAULT_MAX_RATE
+            }
             val formats = FormatNegotiator.supportedFormats(
                 preferHiRes = settings.preferHiRes.first(),
                 preferFlac = settings.preferFlac.first(),
                 codec = codec.takeIf { it != "auto" },
-                bitPerfect = settings.bitPerfect24Bit.first(),
+                bitPerfect = bitPerfect,
+                maxSampleRate = maxRate,
             )
             c.connect(url, playerId, name, deviceInfo, formats, token)
             // The hello only *registers* a name; a player Music Assistant already
@@ -586,8 +638,9 @@ class Playback(private val app: Context) {
      */
     fun disconnect(stopService: Boolean = true, reason: String = "user_request") {
         abandonAudioFocus()
-        engine?.stop(); engine = null
+        engine?.release(); engine = null
         client?.close(reason); client = null
+        idleJob?.cancel(); idleJob = null
         positionTicker?.cancel(); positionTicker = null
         progressAnchor = null
         _connected.value = false

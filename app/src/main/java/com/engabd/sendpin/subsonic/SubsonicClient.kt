@@ -332,31 +332,7 @@ class SubsonicClient(
         try {
             val root = get("getLyricsBySongId", mapOf("id" to songId))
             val structured = root["lyricsList"]?.jsonObject?.get("structuredLyrics")?.jsonArray
-            if (structured != null && structured.isNotEmpty()) {
-                val entry = structured.firstOrNull()?.jsonObject ?: return null
-                val synced = entry.str("synced") == "true"
-                val linesArray = entry["line"]?.jsonArray
-                if (linesArray != null) {
-                    val text = buildString {
-                        for (lineEl in linesArray) {
-                            val line = lineEl.jsonObject
-                            val start = line.long("start") ?: 0L
-                            val value = line.str("value").orEmpty()
-                            if (synced && start > 0) {
-                                // Format as LRC [mm:ss.xx] so MaLyrics can parse it.
-                                val mm = start / 60_000
-                                val ss = (start % 60_000) / 1_000
-                                val cs = (start % 1_000) / 10
-                                append("[${mm}:${ss.toString().padStart(2, '0')}.${cs.toString().padStart(2, '0')}]$value")
-                            } else {
-                                append(value)
-                            }
-                            append("\n")
-                        }
-                    }
-                    return MaLyrics(text.trimEnd(), synced = synced)
-                }
-            }
+            StructuredLyrics.parse(structured)?.let { return it }
         } catch (_: SubsonicException) {
             // Server doesn't support getLyricsBySongId — fall through to legacy.
         }

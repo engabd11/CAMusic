@@ -160,34 +160,58 @@ class MaRepository(val api: MaApiClient) {
     // --- playlist CRUD (MA) ------------------------------------------------
 
     /**
-     * Create a new playlist. MA's `music/playlists/create` takes a name and
-     * returns the new playlist's library item. The caller can then open it or
-     * add tracks to it via [playOn].
+     * Create a new playlist and return its library item.
+     *
+     * The command is `music/playlists/create_playlist` — not `.../create`, which
+     * does not exist. `provider_instance_or_domain` is deliberately omitted so MA
+     * picks the provider itself; note the name has no `_id_`, unlike the
+     * `provider_instance_id_or_domain` every read command takes.
      */
     suspend fun createPlaylist(name: String): MaItem? {
-        val res = api.sendCommand("music/playlists/create", buildJsonObject {
+        val res = api.sendCommand("music/playlists/create_playlist", buildJsonObject {
             put("name", name)
         })
         return MaParse.item(res, serverUrl)
     }
 
     /**
-     * Delete a playlist. MA identifies it by `item_id` + `provider`, the same
-     * pair [itemRef] builds for every other library command.
+     * Delete a playlist from the library.
+     *
+     * `music/playlists/remove` is the library-record delete every media type
+     * shares, and it takes a **bare `item_id`** — not the `item_id` +
+     * `provider_instance_id_or_domain` pair [itemRef] builds for the read
+     * commands. Sending the pair makes MA reject the call.
      */
     suspend fun deletePlaylist(item: MaItem) {
-        api.sendCommand("music/playlists/delete", itemRef(item))
+        api.sendCommand("music/playlists/remove", buildJsonObject {
+            put("item_id", item.itemId)
+        })
     }
 
     /**
-     * Rename a playlist — the only edit the library UI exposes. MA's
-     * `music/playlists/edit` takes the item ref and the new name.
+     * Add tracks to an existing playlist.
+     *
+     * `uris` are MA item URIs, and [db_playlist_id] is the *library* id — a
+     * provider-side id will not resolve. Returns once MA has queued the
+     * background task, which is not the same as the tracks being visible.
      */
-    suspend fun editPlaylist(item: MaItem, newName: String) {
-        api.sendCommand("music/playlists/edit", buildJsonObject {
-            put("item_id", item.itemId)
-            put("provider_instance_id_or_domain", item.provider)
-            put("name", newName)
+    suspend fun addPlaylistTracks(playlist: MaItem, uris: List<String>) {
+        if (uris.isEmpty()) return
+        api.sendCommand("music/playlists/add_playlist_tracks", buildJsonObject {
+            put("db_playlist_id", playlist.itemId)
+            put("uris", JsonArray(uris.map { JsonPrimitive(it) }))
+        })
+    }
+
+    /**
+     * Remove tracks from a playlist by their **provider playlist positions**,
+     * not by item id — MA's parameter is `positions_to_remove`.
+     */
+    suspend fun removePlaylistTracks(playlist: MaItem, positions: List<Int>) {
+        if (positions.isEmpty()) return
+        api.sendCommand("music/playlists/remove_playlist_tracks", buildJsonObject {
+            put("db_playlist_id", playlist.itemId)
+            put("positions_to_remove", JsonArray(positions.map { JsonPrimitive(it) }))
         })
     }
 
