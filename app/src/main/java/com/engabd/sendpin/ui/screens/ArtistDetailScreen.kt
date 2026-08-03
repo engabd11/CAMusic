@@ -44,8 +44,9 @@ private fun Shelf(text: String) {
 }
 
 /**
- * The artist's biography, from the server's own metadata (Navidrome fills this
- * from last.fm via `getArtistInfo2`). Clamped to four lines and expanded on tap —
+ * The artist's biography — Music Assistant's `metadata.description`, or Navidrome's
+ * `getArtistInfo2` (which it fills from last.fm), including when Music Assistant is
+ * the backend and has nothing of its own. Clamped to four lines and expanded on tap:
  * these run to several paragraphs, and the albums are what the screen is for.
  */
 @Composable

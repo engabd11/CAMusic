@@ -66,6 +66,14 @@ data class MaItem(
     /** Disc number for multi-disc albums (for tracks). */
     val discNumber: Int? = null,
     /**
+     * Long-form prose about the item — an artist's biography, an album's notes.
+     *
+     * Music Assistant keeps it at `metadata.description`, which the app was not
+     * reading, so the About section only ever appeared on the Navidrome backend
+     * even when MA had the text sitting right there.
+     */
+    val description: String? = null,
+    /**
      * The container this item sits in — a track's album id, an album's artist id.
      * Subsonic gives these directly; MA addresses items by uri instead and leaves
      * it null.
@@ -373,6 +381,12 @@ object MaParse {
             // through rather than dropping it at parse time.
             composer = (o["metadata"] as? JsonObject)?.let {
                 it["composer"]?.jsonPrimitive?.contentOrNull?.takeIf { c -> c.isNotBlank() }
+            },
+            // Same block: `metadata.description` is MA's biography/notes field, with
+            // `review` as the album-side alternative some providers fill instead.
+            description = (o["metadata"] as? JsonObject)?.let { m ->
+                (m["description"] ?: m["review"])?.jsonPrimitive?.contentOrNull
+                    ?.takeIf { d -> d.isNotBlank() }
             },
         )
     }

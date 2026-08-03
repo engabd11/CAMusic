@@ -85,7 +85,15 @@ class ArtistDetailViewModel(
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error
 
-    /** Artist biography text (from Navidrome's getArtistInfo2), or null. */
+    /**
+     * Artist biography, or null when neither server has one.
+     *
+     * On Navidrome it comes from `getArtistInfo2`. On Music Assistant it is MA's own
+     * `metadata.description` — and, failing that, Navidrome's, because the two
+     * libraries usually hold the same artists and a biography is a fact about the
+     * artist rather than about the server that happens to be selected. See
+     * [navidromeBiographyFor] for why that borrowing is name-matched.
+     */
     private val _biography = MutableStateFlow<String?>(null)
     val biography: StateFlow<String?> = _biography
 
@@ -127,12 +135,49 @@ class ArtistDetailViewModel(
                     // mapping and concatenates the results, so an artist held by two
                     // providers comes back with every album twice.
                     _albums.value = maRepo.artistAlbums(ref).distinctBy { it.itemId }
+                    // MA's own `metadata.description` first — it is the same field
+                    // the web UI shows, and it costs nothing extra.
+                    _biography.value = ref.description
+                        ?: artistMeta?.description
+                        ?: navidromeBiographyFor(ref.name)
                 }
             } catch (e: Exception) {
                 _error.value = e.message ?: "Failed to load artist"
             }
             _loading.value = false
         }
+    }
+
+    /**
+     * Borrow an artist biography from Navidrome for an artist we are browsing on
+     * Music Assistant.
+     *
+     * Navidrome fills these from Last.fm, and MA often has nothing — so the About
+     * section existed on one backend and not the other for the same artist, which is
+     * the gap this closes.
+     *
+     * **Matched on the name, exactly.** Navidrome can only be asked for an artist by
+     * id, so the name has to be searched first, and a search returns near misses
+     * cheerfully. Anything short of an exact name match is dropped rather than shown:
+     * the failure mode of guessing is a confident biography of the wrong musician,
+     * which is worse than no biography at all. Same reasoning as the lyrics lookup.
+     *
+     * Returns null on any failure — no server configured, no match, no biography.
+     * This is a bonus, so it never surfaces an error.
+     */
+    private suspend fun navidromeBiographyFor(artistName: String): String? {
+        if (artistName.isBlank()) return null
+        return runCatching {
+            val url = settings.navUrl.first().trim()
+            if (url.isBlank()) return null
+            val sc = subsonic ?: SubsonicClient(
+                url, settings.navUsername.first(), settings.navPassword.first(),
+            ).also { subsonic = it }
+            val match = sc.search(artistName, limit = 10).artists
+                .firstOrNull { it.name.equals(artistName, ignoreCase = true) }
+                ?: return null
+            sc.getArtistInfo2(match.itemId)
+        }.getOrNull()
     }
 
     /**

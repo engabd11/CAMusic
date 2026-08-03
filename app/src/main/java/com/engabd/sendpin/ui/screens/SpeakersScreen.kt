@@ -13,6 +13,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
@@ -197,14 +199,17 @@ private fun JoinedCard(p: SpeakerUi, onSelect: () -> Unit, onUnjoin: () -> Unit,
                 Spacer(Modifier.width(11.dp))
                 Column(Modifier.weight(1f).clickable(onClick = onSelect)) {
                     Text(p.name, color = TextPrimary, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Spacer(Modifier.height(3.dp))
                     Text(if (p.isTarget) "Playing here" else p.meta, color = if (p.isTarget) accent else TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
                 }
-                // The leader (active target) isn't unjoinable; members are.
-                if (!p.isTarget) {
-                    Box(Modifier.clip(RoundedCornerShape(100)).background(Glass).border(1.dp, Hairline, RoundedCornerShape(100)).clickable(onClick = onUnjoin).padding(horizontal = 13.dp, vertical = 7.dp)) {
-                        Text("Unjoin", color = TextSecondary, fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                    }
-                }
+                // In the group, so the switch is on. The leader is the group — it
+                // cannot leave itself — so its switch is disabled rather than absent,
+                // which keeps the column of switches aligned and says why.
+                GroupSwitch(
+                    checked = true,
+                    enabled = !p.isTarget,
+                    onCheckedChange = { onUnjoin() },
+                )
             }
             Spacer(Modifier.height(12.dp))
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -245,6 +250,7 @@ private fun FreeCard(
         // Tap the name to make this the active play-to player.
         Column(Modifier.weight(1f).clickable(onClick = onPlayHere)) {
             Text(p.name, color = TextSecondary, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Spacer(Modifier.height(3.dp))
             Text("Tap to play here · ${p.meta}", color = TextFaint, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         // Distinct from "tap to play here", which only redirects what you play
@@ -256,11 +262,43 @@ private fun FreeCard(
             Spacer(Modifier.width(8.dp))
         }
         if (canJoin) {
-            Box(Modifier.clip(RoundedCornerShape(100)).background(accent.a(0.16f)).border(1.dp, accent.a(0.55f), RoundedCornerShape(100)).clickable(onClick = onJoin).padding(horizontal = 16.dp, vertical = 8.dp)) {
-                Text("Join", color = accent, fontWeight = FontWeight.ExtraBold, fontSize = 11.sp)
-            }
+            GroupSwitch(checked = false, enabled = true, onCheckedChange = { onJoin() })
         }
     }
+}
+
+/**
+ * In the group, or not — as a switch rather than a Join/Unjoin button.
+ *
+ * Group membership is a state, not an action, and a button had to name the *next*
+ * state to be useful ("Join" when out, "Unjoin" when in) which meant the label
+ * contradicted the row it sat on. A switch shows the state it is in and needs no
+ * label at all, which is also how every speaker-grouping UI on the platform behaves.
+ *
+ * Tinted from the album accent like the rest of the screen rather than left on the
+ * M3 primary, so it belongs to the artwork the way the sliders and pills do.
+ */
+@Composable
+private fun GroupSwitch(checked: Boolean, enabled: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    val accent = LocalAccent.current
+    Switch(
+        checked = checked,
+        onCheckedChange = onCheckedChange,
+        enabled = enabled,
+        colors = SwitchDefaults.colors(
+            checkedThumbColor = Ink,
+            checkedTrackColor = accent,
+            checkedBorderColor = accent,
+            uncheckedThumbColor = TextMuted,
+            uncheckedTrackColor = Glass,
+            uncheckedBorderColor = Hairline,
+            // The leader's switch: on, and not for turning off. Dimmed rather than
+            // greyed to neutral, so it still reads as part of the group.
+            disabledCheckedThumbColor = Ink,
+            disabledCheckedTrackColor = accent.a(0.45f),
+            disabledCheckedBorderColor = accent.a(0.45f),
+        ),
+    )
 }
 
 /** A quiet inline explanation — not an error, just why a control isn't there. */
