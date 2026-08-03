@@ -22,10 +22,14 @@ data class MaAudioFormat(
      * object. Null when the server didn't supply it — plain Subsonic servers omit
      * it entirely, so callers must read null as "no measurement" rather than 0 dB.
      *
-     * Not populated on the Music Assistant path: MA applies its own loudness
-     * normalisation server-side and does not put the measurement on the media
-     * item, so there is nothing here to read. The badge showing gain for a
-     * Navidrome stream and not an MA one is therefore accurate, not a gap.
+     * Not populated on the Music Assistant path — but that is a **gap, not a
+     * limitation**, and this comment used to claim otherwise. MA's `StreamDetails`
+     * schema carries `loudness`, `loudness_album`, `prefer_album_loudness`,
+     * `volume_normalization_mode`, `volume_normalization_gain_correct` and
+     * `target_loudness`; the measurement and the correction MA actually applied are
+     * both there to read, in different fields under a different name. Reading them
+     * would let the quality card say what MA did to the loudness rather than going
+     * quiet about it. Not wired yet.
      */
     val replayGainTrack: Float? = null,
     /**
