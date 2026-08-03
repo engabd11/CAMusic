@@ -181,7 +181,23 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     }.stateIn(viewModelScope, SharingStarted.Eagerly, LocalSnap())
 
     /** True while the phone is playing on its own rather than through MA. */
-    private val isLocal get() = localSnap.value.active
+    /**
+     * Which library the app is pointed at — and so, which player owns the screen.
+     *
+     * On the Navidrome backend this phone *is* the player: there is no Music
+     * Assistant player to reflect, which is why Speakers and Light Sync are off
+     * there too. Owning the screen therefore cannot depend on the local player
+     * having a session loaded, or switching to Navidrome with nothing playing yet
+     * leaves Now Playing showing an MA player whose transport controls drive
+     * something the user has just switched away from. That asymmetry is why
+     * Navidrome → MA looked right and MA → Navidrome did not.
+     */
+    private val backendPref: StateFlow<String> =
+        settings.backend.stateIn(viewModelScope, SharingStarted.Eagerly, "ma")
+
+    private val onSubsonic get() = backendPref.value == "subsonic"
+
+    private val isLocal get() = localSnap.value.active || onSubsonic
 
     private val _target = MutableStateFlow("")
     private val _players = MutableStateFlow<List<MaPlayer>>(emptyList())
@@ -378,8 +394,13 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
      * Assistant view otherwise. There is no third state — the phone is either
      * playing something itself or reflecting a player MA owns.
      */
-    val state: StateFlow<State> = combine(maState, localSnap, deviceVolume.level) { ma, l, devVol ->
-        if (!l.active) return@combine ma
+    val state: StateFlow<State> = combine(
+        maState, localSnap, deviceVolume.level, backendPref,
+    ) { ma, l, devVol, backend ->
+        // Either the local player has a session, or the library is Navidrome and this
+        // phone is the only player there is. The second case is the one that was
+        // missing: with nothing playing yet it fell through to the MA view.
+        if (!l.active && backend != "subsonic") return@combine ma
         val t = l.track
         State(
             playerName = "This phone",
