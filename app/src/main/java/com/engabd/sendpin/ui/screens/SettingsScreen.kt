@@ -271,7 +271,7 @@ fun SettingsScreen(
                             Text(
                                 "Where the Library tab browses from",
                                 color = TextPrimary, fontFamily = AppFont,
-                                fontWeight = FontWeight.Bold, fontSize = 14.sp,
+                                style = MaterialTheme.typography.titleLarge,
                             )
                             SegmentedToggle(
                                 options = listOf("Music Assistant", "Navidrome"),
@@ -321,7 +321,7 @@ fun SettingsScreen(
                             Text(
                                 "Layout style",
                                 color = TextPrimary, fontFamily = AppFont,
-                                fontWeight = FontWeight.Bold, fontSize = 14.sp,
+                                style = MaterialTheme.typography.titleLarge,
                             )
                             Text(
                                 "Overlay: the cover slides over the app; swipe down to minimize into a bar. " +
@@ -762,7 +762,7 @@ private fun DownloadsCard(vm: LibraryViewModel, accent: Color) {
             Text(
                 "Storage limit",
                 color = TextPrimary, fontFamily = AppFont,
-                fontWeight = FontWeight.Bold, fontSize = 14.sp,
+                style = MaterialTheme.typography.titleLarge,
             )
             // Fixed steps rather than a free text field: the number only has to be
             // roughly right, and a slider or keyboard here would be more precision

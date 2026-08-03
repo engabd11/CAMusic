@@ -257,7 +257,7 @@ fun NowPlayingScreen(
                 if (st.album.isNotBlank()) {
                     Spacer(Modifier.height(2.dp))
                     Text(
-                        st.album, color = TextFaint, fontFamily = AppFont, fontSize = 13.sp,
+                        st.album, color = TextFaint, style = MaterialTheme.typography.bodyMedium,
                         maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
                     )
                 }

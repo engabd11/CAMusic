@@ -112,7 +112,7 @@ fun BoxScope.PlayerOptionsSheet(onClose: () -> Unit, viewModel: NowPlayingViewMo
                         Spacer(Modifier.width(12.dp))
                         Text(
                             "Playback speed", color = TextPrimary, fontFamily = AppFont,
-                            fontWeight = FontWeight.Bold, fontSize = 14.sp, modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f),
                         )
                         Text(
                             "${trim(st.playbackSpeed)}×", color = accent, fontFamily = MonoFont,

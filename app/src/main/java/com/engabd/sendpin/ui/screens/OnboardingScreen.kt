@@ -15,6 +15,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -135,7 +136,7 @@ fun OnboardingScreen(
                     }
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(s.name, color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(s.name, color = TextPrimary, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text("${s.host}:${s.port}", color = TextMuted, fontSize = 12.sp)
                     }
                     Text("Connect", color = accent, fontWeight = FontWeight.ExtraBold, fontSize = 12.sp)
@@ -193,7 +194,7 @@ fun OnboardingScreen(
             Spacer(Modifier.height(26.dp))
             Text(
                 "Explore offline",
-                color = TextMuted, fontWeight = FontWeight.Bold, fontSize = 13.sp,
+                style = MaterialTheme.typography.titleLarge,
                 modifier = Modifier.clip(RoundedCornerShape(100)).clickable(onClick = onSkip).padding(horizontal = 18.dp, vertical = 10.dp),
             )
         }

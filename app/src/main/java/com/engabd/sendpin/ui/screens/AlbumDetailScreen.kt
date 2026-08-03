@@ -174,7 +174,7 @@ fun AlbumDetailScreen(
                 Snackbar(
                     containerColor = Ink3, contentColor = TextPrimary,
                     shape = RoundedCornerShape(14.dp),
-                ) { Text(data.visuals.message, fontFamily = AppFont, fontSize = 13.sp) }
+                ) { Text(data.visuals.message, style = MaterialTheme.typography.bodyMedium) }
             }
 
             // Long-press on a track: queue it without losing what's playing.
@@ -367,7 +367,7 @@ internal fun TrackRow(
         Text(
             "${track.trackNumber ?: (index + 1)}",
             color = TextMuted, fontFamily = AppFont,
-            fontWeight = FontWeight.Bold, fontSize = 14.sp,
+            style = MaterialTheme.typography.titleLarge,
             modifier = Modifier.width(28.dp),
             textAlign = androidx.compose.ui.text.style.TextAlign.End,
         )
@@ -377,7 +377,7 @@ internal fun TrackRow(
             Text(
                 track.name,
                 color = TextPrimary, fontFamily = AppFont,
-                fontWeight = FontWeight.Bold, fontSize = 14.sp,
+                style = MaterialTheme.typography.titleLarge,
                 maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
             track.subtitle?.takeIf { it.isNotBlank() }?.let { artist ->

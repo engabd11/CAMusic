@@ -140,7 +140,7 @@ fun LibraryScreen(
             Modifier.align(Alignment.BottomCenter).padding(bottom = navBarInset() + 8.dp, start = 16.dp, end = 16.dp),
         ) { data ->
             Snackbar(containerColor = Ink3, contentColor = TextPrimary, shape = RoundedCornerShape(14.dp)) {
-                Text(data.visuals.message, fontFamily = AppFont, fontSize = 13.sp)
+                Text(data.visuals.message, style = MaterialTheme.typography.bodyMedium)
             }
         }
 
@@ -1030,7 +1030,7 @@ private fun SearchEmptyState(
         Text(title, color = Color.White.a(0.75f), fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 15.sp)
         Spacer(Modifier.height(6.dp))
         Text(
-            body, color = TextMuted, fontFamily = AppFont, fontSize = 13.sp,
+            body, color = TextMuted, style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.widthIn(max = 240.dp),
         )
     }
@@ -1051,7 +1051,7 @@ private fun SearchErrorState(message: String, onRetry: () -> Unit) {
         Text("Couldn't load", color = Color.White.a(0.8f), fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 15.sp)
         Spacer(Modifier.height(6.dp))
         Text(
-            message, color = TextMuted, fontFamily = AppFont, fontSize = 13.sp,
+            message, color = TextMuted, style = MaterialTheme.typography.bodyMedium,
             maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 260.dp),
         )
         Spacer(Modifier.height(18.dp))
@@ -1094,7 +1094,7 @@ private fun ConnectForm(viewModel: LibraryViewModel, backend: Backend) {
             SectionLabel("Navidrome / OpenSubsonic")
             Text(
                 "Direct mode plays on this phone and can download for offline — it works even when Music Assistant is down.",
-                color = TextMuted, fontFamily = AppFont, fontSize = 13.sp,
+                color = TextMuted, style = MaterialTheme.typography.bodyMedium,
             )
             GlassField("Server URL", url, viewModel::setNavUrl, "http://192.168.0.10:4533")
             GlassField("Username", user, viewModel::setNavUser)
@@ -1116,7 +1116,7 @@ private fun ConnectForm(viewModel: LibraryViewModel, backend: Backend) {
             else Text("Connect", color = Ink, fontFamily = AppFont, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp)
         }
         connError?.let {
-            Text(it, color = ErrorRed, fontFamily = AppFont, fontSize = 13.sp)
+            Text(it, color = ErrorRed, style = MaterialTheme.typography.bodyMedium)
         }
     }
 }

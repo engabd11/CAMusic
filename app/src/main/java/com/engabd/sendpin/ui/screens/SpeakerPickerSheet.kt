@@ -17,6 +17,7 @@ import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -106,7 +107,7 @@ fun BoxScope.SpeakerPickerSheet(
             if (rows.isEmpty()) {
                 Text(
                     if (connected) "No players available." else "Not connected to Music Assistant.",
-                    color = TextMuted, fontFamily = AppFont, fontSize = 13.sp,
+                    color = TextMuted, style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.padding(horizontal = 18.dp, vertical = 20.dp),
                 )
             } else {
@@ -165,7 +166,7 @@ private fun SpeakerPickRow(
             Column(Modifier.weight(1f)) {
                 Text(
                     row.name, color = TextPrimary, fontFamily = AppFont,
-                    fontWeight = FontWeight.Bold, fontSize = 14.sp,
+                    style = MaterialTheme.typography.titleLarge,
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
                 if (row.meta.isNotBlank()) {
