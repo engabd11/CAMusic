@@ -352,8 +352,16 @@ class LocalPlayer(private val context: Context) {
 
     fun clear() {
         stopTicker()
-        player.clearMediaItems()
-        player.stop()
+        // The session flags below are what Now Playing switches on, and they must be
+        // cleared even if the player itself refuses — ExoPlayer throws when touched
+        // off its own thread, and an exception here used to leave `_hasSession` true
+        // with no queue behind it. Now Playing then stayed pinned to a local player
+        // that had nothing to play, which is what "switched to Music Assistant but
+        // it's stuck on the local player" looks like from the outside.
+        runCatching {
+            player.clearMediaItems()
+            player.stop()
+        }
         _queue.value = emptyList()
         _index.value = -1
         _current.value = null
