@@ -5,22 +5,29 @@ A systematic audit of every API surface the app touches — Music Assistant
 what is implemented and what is not. Each item names the exact commands,
 endpoints, or messages, and the file it touches.
 
+> **Status, 2026-08-03.** Most of the tiers below have shipped, and a second audit
+> — this time against the MA 2.9.9 commands reference, the published Sendspin spec
+> and the Subsonic/Navidrome docs rather than against the code — turned up several
+> things this document had wrong. Those are recorded in **Corrections** at the
+> bottom; read that before trusting an item here.
+
 ## Current state at a glance
 
 | Area | MA API | Sendspin protocol | Navidrome (OpenSubsonic) |
 |---|---|---|---|
-| Browse | Artists, albums, tracks, playlists + shelves (recent, recent-added, in-progress, recommendations, favorites) | — | Artists, albums, playlists, genres, starred, newest, random |
+| Browse | Artists, albums, tracks, playlists + shelves (recent, recent-added, in-progress, recommendations, favorites) | — | Artists, albums, playlists, genres, starred, newest, random, frequent |
 | Search | Full search + sonic text search (CLAP embeddings) + similar tracks | — | search3 + playlist name match |
-| Play | Play to any player, enqueue (replace/add/next), preview | Clock-synced decode (FLAC/Opus/PCM 16-bit) | Local queue (MediaPlayer), shuffle, repeat, seek, speed |
-| Queue | View, jump, reorder, remove, clear, save-as-playlist | — | Local queue with full transport |
-| Lyrics | LRC-timed + plain | — | **Not implemented** |
-| Favorites | Add/remove (optimistic) | — | Star/unstar |
-| Speakers | Group/ungroup, group volume, sync delay, rename, power | `server/command` volume/mute | — |
-| Downloads | — | — | Track/album/playlist, offline playback, cached covers |
+| Play | Play to any player, enqueue (replace/add/next), preview | Clock-synced decode (FLAC/Opus/PCM), gapless across track boundaries | Local queue (**ExoPlayer**), gapless, ReplayGain, exact seek, shuffle, repeat, speed |
+| Queue | View, jump, reorder, remove, clear, save-as-playlist, transfer | — | Local queue with full transport |
+| Playlists | Create, delete, add/remove tracks | — | Create, delete, add tracks, rename |
+| Lyrics | LRC-timed + plain | — | Structured (`getLyricsBySongId`) + legacy |
+| Favorites | Add/remove (optimistic) | — | Star/unstar, `setRating` |
+| Speakers | Group/ungroup, group volume, sync delay, rename, power, mute | `server/command` volume/mute/set_static_delay, `group/update` | — |
+| Downloads | — | — | Track/album/playlist, offline playback, cached covers, Wi-Fi-only, storage cap |
 | Light Sync | — | — | Drives syncoV2 via HA WebSocket |
 | Notifications | Media notification for selected player | Connection service notification | Local playback notification |
 | Sleep timer | Fade-out + pause (shared) | — | — |
-| Scrobble | — | — | Now-playing ping + completed-play submission |
+| Scrobble | — | — | Now-playing ping + completed-play submission (incl. the play-original path) |
 
 ---
 
@@ -263,3 +270,74 @@ Files:
 - `protocol/SendspinClient.kt`
 - `service/Playback.kt`
 - `service/SendspinConnectionService.kt`
+---
+
+## Corrections (2026-08-03)
+
+Found by auditing against the specs rather than the code. Where this document and
+the reference disagreed, the reference won.
+
+### The MA playlist commands in §5 do not exist
+
+§5 lists `music/playlists/create`, `add_items`, `remove_items`, `delete` and
+`edit`. None of those are Music Assistant commands. In the 2.9.9 reference they are:
+
+| Wanted | Actual command | Parameters |
+|---|---|---|
+| Create | `music/playlists/create_playlist` | `name`, `media_types[]`, `provider_instance_or_domain` — note **no `_id_`** |
+| Delete | `music/playlists/remove` *(admin)* | `item_id` — a **bare id**, not the `item_id`+provider pair every read takes |
+| Add tracks | `music/playlists/add_playlist_tracks` | `db_playlist_id`, `uris[]` |
+| Remove tracks | `music/playlists/remove_playlist_tracks` | `db_playlist_id`, `positions_to_remove[]` — **positions, not ids** |
+| Rename | `music/playlists/update` *(admin)* | `item_id`, `update` (a whole Playlist), `overwrite` |
+
+Create and delete shipped with UI against the wrong names, so the feature had never
+worked against any server.
+
+### §2 was wrong about where ReplayGain can be applied
+
+It said Android `AudioTrack` "can't do this natively; it requires either a DSP
+stage in the decode loop or switching the local player to ExoPlayer (which supports
+ReplayGain via `MediaProcessor`)". There is no `MediaProcessor`, and ExoPlayer has
+no built-in ReplayGain. A constant per-track gain is just a scalar on the output —
+no processor and no buffer copy needed. See `audio/ReplayGain.kt`.
+
+### §1 understated the 24-bit problem
+
+The `MAX_BIT_DEPTH` cap was not the only thing in the way: the AudioTrack was built
+from the depth the *server* claimed while the FLAC decoder was never asked for
+anything but 16-bit output, so two-byte samples went into three-byte frames. Fixed
+in `1bb8034` by building the track from what the decoder reports.
+
+### Subsonic `updatePlaylist` takes a delta, not a track list
+
+`SubsonicClient.updatePlaylist` sent `songId`, which `updatePlaylist` has no
+parameter for — the call was accepted and ignored. It takes `songIdToAdd`
+(repeated) and `songIndexToRemove` (repeated, an **index into the playlist**).
+Repeated parameters were also being comma-joined, which hands the server one id
+with commas in it.
+
+### Not in this document at all
+
+The second audit found these, none of which §§1–16 mention:
+
+- `stream/end` released the AudioTrack via `flush()`, which **discards** unplayed
+  PCM out of a ~1 s buffer. MA ends the stream between every track, so the last
+  second of every track was being thrown away.
+- Text and binary frames were handled through separate flows in separate
+  coroutines, so `stream/clear` could be applied after the audio it was meant to
+  discard — the ordering `protocol-alignment.md:88-89` already required.
+- `static_delay_ms` had no writer anywhere: the sync trim did nothing locally.
+- `client/state` always reported `"synchronized"`, so the player joined groups
+  before its clock had converged. The spec wants `"error"` plus a mute until then.
+- `ACTION_AUDIO_BECOMING_NOISY` was handled on neither path.
+- A dropped MA socket resolved pending requests to `null`, making a failed load
+  indistinguishable from an empty library.
+- The "play at original quality" path never scrobbled.
+
+### Still open
+
+- **AGP / compileSdk.** media3 is pinned to 1.8.0 because 1.9+ needs compileSdk 36
+  and AGP 8.7.3 tops out at 35.
+- **The native AAudio path** (`app/src/main/cpp/`) remains written, unbuilt and
+  uncalled. True bit-perfect exclusive-mode output is its own piece of work.
+- **Device verification** of everything in the audio path.

@@ -157,6 +157,31 @@ class MaRepository(val api: MaApiClient) {
     suspend fun playlistTracks(item: MaItem) =
         MaParse.items(api.sendCommand("music/playlists/playlist_tracks", itemRef(item)), serverUrl)
 
+    // --- versions ----------------------------------------------------------
+
+    /**
+     * Every copy of this track Music Assistant can find, across all providers.
+     *
+     * The one command in the API that speaks directly to why someone runs a local
+     * library alongside streaming: the same song exists as a 16/44 stream, a 24/96
+     * purchase and a CD rip, and MA already knows about all three. Without this the
+     * app plays whichever one the library row happened to come from.
+     */
+    suspend fun trackVersions(item: MaItem): List<MaItem> =
+        MaParse.items(api.sendCommand("music/tracks/track_versions", itemRef(item)), serverUrl)
+
+    /** As [trackVersions], for a whole album. */
+    suspend fun albumVersions(item: MaItem): List<MaItem> =
+        MaParse.items(api.sendCommand("music/albums/album_versions", itemRef(item)), serverUrl)
+
+    /** An artist's top tracks, aggregated across their providers. */
+    suspend fun topTracks(item: MaItem): List<MaItem> =
+        MaParse.items(api.sendCommand("music/artists/top_tracks", itemRef(item)), serverUrl)
+
+    /** Artists MA's providers consider similar to this one. */
+    suspend fun similarArtists(item: MaItem): List<MaItem> =
+        MaParse.items(api.sendCommand("music/artists/similar_artists", itemRef(item)), serverUrl)
+
     // --- playlist CRUD (MA) ------------------------------------------------
 
     /**
@@ -337,6 +362,15 @@ class MaRepository(val api: MaApiClient) {
     suspend fun setVolume(playerId: String, level: Int) =
         api.sendCommand("players/cmd/volume_set", buildJsonObject {
             put("player_id", playerId); put("volume_level", level.coerceIn(0, 100))
+        })
+
+    /**
+     * Real mute, as opposed to setting the volume to zero and losing where it was.
+     * MA restores the previous level on unmute, which volume_set cannot do.
+     */
+    suspend fun setMuted(playerId: String, muted: Boolean) =
+        api.sendCommand("players/cmd/volume_mute", buildJsonObject {
+            put("player_id", playerId); put("muted", muted)
         })
 
     suspend fun setShuffle(queueId: String, enabled: Boolean) =

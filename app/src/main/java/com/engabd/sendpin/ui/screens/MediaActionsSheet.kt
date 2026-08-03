@@ -12,6 +12,7 @@ import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.LibraryAdd
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -62,6 +63,8 @@ fun BoxScope.MediaActionsSheet(
     onAddToQueue: () -> Unit,
     /** Null leaves the row out — nothing on the MA backend can be downloaded. */
     onDownload: (() -> Unit)? = null,
+    /** Null leaves the row out. Absent for a playlist — filing one into itself. */
+    onAddToPlaylist: (() -> Unit)? = null,
     /** Null leaves the row out. Only ever passed for a playlist the server owns. */
     onDelete: (() -> Unit)? = null,
 ) {
@@ -131,6 +134,12 @@ fun BoxScope.MediaActionsSheet(
                 Icons.AutoMirrored.Filled.QueueMusic, "Add to queue",
                 "At the end",
             ) { onClose(); onAddToQueue() }
+            onAddToPlaylist?.let { add ->
+                ActionRow(
+                    Icons.Default.LibraryAdd, "Add to playlist",
+                    if (whole) "Every track in it" else "Pick a playlist",
+                ) { onClose(); add() }
+            }
             onDownload?.let { dl ->
                 ActionRow(
                     Icons.Default.Download, "Download",

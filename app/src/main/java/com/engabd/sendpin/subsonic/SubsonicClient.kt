@@ -22,6 +22,19 @@ import java.util.concurrent.TimeUnit
  * identical — a blank shelf and no explanation. Everything here throws instead,
  * and the ViewModel turns that into an error the user can act on.
  */
+/**
+ * A play queue another client left on the server, for cross-device resume.
+ *
+ * @param changedBy the client name that saved it — worth showing, because "resume
+ *   from your laptop" is a different offer from "resume from this phone".
+ */
+data class SavedQueue(
+    val tracks: List<MaItem>,
+    val index: Int,
+    val positionMs: Long,
+    val changedBy: String?,
+)
+
 class SubsonicException(
     message: String,
     /**
@@ -156,9 +169,22 @@ class SubsonicClient(
         return "u=${enc(username)}&t=$token&s=$salt&v=$API_VERSION&c=$CLIENT"
     }
 
-    private fun restUrl(endpoint: String, params: Map<String, String>, jsonFmt: Boolean): String {
+    /**
+     * @param repeated parameters Subsonic defines as repeatable — `songId`,
+     *   `songIdToAdd`, `id` on star/unstar. They go on the query string once per
+     *   value: `songId=a&songId=b`. Comma-joining them, which is what this used to
+     *   do, hands the server a single id with commas in it, and the call silently
+     *   does nothing.
+     */
+    private fun restUrl(
+        endpoint: String,
+        params: Map<String, String>,
+        jsonFmt: Boolean,
+        repeated: List<Pair<String, String>> = emptyList(),
+    ): String {
         val sb = StringBuilder("${base()}/rest/$endpoint.view?${authQuery()}")
         for ((k, v) in params) sb.append("&${enc(k)}=${enc(v)}")
+        for ((k, v) in repeated) sb.append("&${enc(k)}=${enc(v)}")
         if (jsonFmt) sb.append("&f=json")
         return sb.toString()
     }
@@ -203,10 +229,14 @@ class SubsonicClient(
 
     // --- requests ---------------------------------------------------------
 
-    private suspend fun get(endpoint: String, params: Map<String, String> = emptyMap()): JsonObject =
+    private suspend fun get(
+        endpoint: String,
+        params: Map<String, String> = emptyMap(),
+        repeated: List<Pair<String, String>> = emptyList(),
+    ): JsonObject =
         withContext(Dispatchers.IO) {
             val body = try {
-                http.newCall(Request.Builder().url(restUrl(endpoint, params, jsonFmt = true)).build())
+                http.newCall(Request.Builder().url(restUrl(endpoint, params, jsonFmt = true, repeated)).build())
                     .execute().use { resp ->
                         if (!resp.isSuccessful) {
                             throw SubsonicException("Server returned HTTP ${resp.code}")
@@ -350,28 +380,101 @@ class SubsonicClient(
      * it directly, or null when the server doesn't report one.
      */
     suspend fun createPlaylist(name: String, songIds: List<String> = emptyList()): String? {
-        val params = buildMap {
-            put("name", name)
-            if (songIds.isNotEmpty()) put("songId", songIds.joinToString(","))
-        }
-        val res = get("createPlaylist", params)["playlist"]?.jsonObject
+        // `songId` is a repeated parameter, not a comma-separated list.
+        val res = get(
+            "createPlaylist",
+            mapOf("name" to name),
+            repeated = songIds.map { "songId" to it },
+        )["playlist"]?.jsonObject
         return res?.str("id")
     }
 
     /**
-     * Rename a playlist, and/or replace its entire track list.
+     * Rename a playlist, and/or add and remove tracks.
      *
-     * `updatePlaylist` is OpenSubsonic's one-shot edit: `name` changes the title
-     * and `songId` (repeated) replaces the contents. Only the fields that are
-     * non-null are sent, so a rename and a content swap are independent.
+     * `updatePlaylist` is a *delta*, which is the part that had been got wrong: it
+     * takes `songIdToAdd` (repeated) and `songIndexToRemove` (repeated, and an
+     * **index into the playlist**, not a song id). It has no `songId` parameter at
+     * all, so the previous shape was accepted and quietly ignored.
      */
-    suspend fun updatePlaylist(id: String, name: String? = null, songIds: List<String>? = null) {
+    suspend fun updatePlaylist(
+        id: String,
+        name: String? = null,
+        addSongIds: List<String> = emptyList(),
+        removeIndices: List<Int> = emptyList(),
+    ) {
         val params = buildMap {
             put("playlistId", id)
             name?.let { put("name", it) }
-            songIds?.let { put("songId", it.joinToString(",")) }
         }
-        get("updatePlaylist", params)
+        get(
+            "updatePlaylist",
+            params,
+            repeated = addSongIds.map { "songIdToAdd" to it } +
+                removeIndices.map { "songIndexToRemove" to it.toString() },
+        )
+    }
+
+    /**
+     * A 1–5 star rating, or 0 to clear it.
+     *
+     * Distinct from starring: `star` is a boolean favourite, `setRating` is the
+     * five-point scale Navidrome keeps separately and exposes in its own UI.
+     */
+    suspend fun setRating(id: String, rating: Int) {
+        get("setRating", mapOf("id" to id, "rating" to rating.coerceIn(0, 5).toString()))
+    }
+
+    // --- play queue (cross-device resume) ----------------------------------
+
+    /**
+     * The play queue this user left on another client, if any.
+     *
+     * Navidrome returns `current` as a **string song id**, not the integer index the
+     * Subsonic schema describes — their docs call that out explicitly — so it is read
+     * as an id and matched against the entries rather than used as a position.
+     */
+    suspend fun playQueue(): SavedQueue? {
+        val q = get("getPlayQueue")["playQueue"]?.jsonObject ?: return null
+        val songs = q["entry"]?.jsonArray.orEmptyArray().map { songItem(it.jsonObject) }
+        if (songs.isEmpty()) return null
+        val currentId = q.str("current")
+        return SavedQueue(
+            tracks = songs,
+            index = songs.indexOfFirst { it.itemId == currentId }.coerceAtLeast(0),
+            positionMs = q.long("position") ?: 0L,
+            changedBy = q.str("changedBy"),
+        )
+    }
+
+    /** Hand the current queue to the server so another client can pick it up. */
+    suspend fun savePlayQueue(songIds: List<String>, currentId: String?, positionMs: Long) {
+        if (songIds.isEmpty()) return
+        val params = buildMap {
+            currentId?.let { put("current", it) }
+            put("position", positionMs.coerceAtLeast(0).toString())
+        }
+        get("savePlayQueue", params, repeated = songIds.map { "id" to it })
+    }
+
+    /**
+     * Which OpenSubsonic extensions this server implements.
+     *
+     * The app probes-and-falls-back everywhere else (see [getLyrics]), which costs a
+     * failed round trip per call on a server that doesn't have the endpoint. Asking
+     * once is cheaper and, more usefully, lets the UI stop offering things the
+     * server cannot do. Returns an empty map on a server that has never heard of the
+     * endpoint — which is itself the answer.
+     */
+    suspend fun openSubsonicExtensions(): Map<String, List<Int>> = try {
+        get("getOpenSubsonicExtensions")["openSubsonicExtensions"]?.jsonArray.orEmptyArray()
+            .mapNotNull { el ->
+                val o = el.jsonObject
+                val name = o.str("name") ?: return@mapNotNull null
+                name to o["versions"]?.jsonArray.orEmptyArray().mapNotNull { it.jsonPrimitive.intOrNull }
+            }.toMap()
+    } catch (_: SubsonicException) {
+        emptyMap()
     }
 
     /** Delete a playlist by id. The server removes it and its track associations. */

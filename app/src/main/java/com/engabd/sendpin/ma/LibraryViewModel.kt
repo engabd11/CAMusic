@@ -138,6 +138,63 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     fun closeCreatePlaylist() { _showCreatePlaylist.value = false }
 
     /**
+     * The item waiting to be filed into a playlist, and the playlists to choose
+     * from. Adding to a playlist was the one thing neither backend could do at
+     * all — a playlist could be created and deleted, and then only filled by
+     * playing into it and saving the queue.
+     */
+    private val _addingToPlaylist = MutableStateFlow<MaItem?>(null)
+    val addingToPlaylist: StateFlow<MaItem?> = _addingToPlaylist
+
+    private val _playlistChoices = MutableStateFlow<List<MaItem>>(emptyList())
+    val playlistChoices: StateFlow<List<MaItem>> = _playlistChoices
+
+    fun openAddToPlaylist(item: MaItem) {
+        _addingToPlaylist.value = item
+        viewModelScope.launch {
+            _playlistChoices.value = try {
+                when (_backend.value) {
+                    Backend.MA -> maRepo.playlists()
+                    Backend.SUBSONIC -> subsonic?.playlists().orEmpty()
+                }
+            } catch (_: Exception) { emptyList() }
+        }
+    }
+
+    fun closeAddToPlaylist() { _addingToPlaylist.value = null }
+
+    /**
+     * File [item] into [playlist]. A container resolves to its tracks first, so
+     * "add this album to my playlist" means the album's tracks rather than nothing.
+     */
+    fun addToPlaylist(playlist: MaItem) {
+        val item = _addingToPlaylist.value ?: return
+        _addingToPlaylist.value = null
+        viewModelScope.launch {
+            try {
+                val tracks =
+                    if (item.mediaType == "track") listOf(item) else childrenOf(item)
+                        .filter { it.mediaType == "track" }
+                if (tracks.isEmpty()) { _toast.tryEmit("Nothing to add"); return@launch }
+                when (playlist.provider) {
+                    SubsonicClient.PROVIDER -> {
+                        val sc = subsonic ?: throw IllegalStateException("Navidrome isn't connected")
+                        sc.updatePlaylist(playlist.itemId, addSongIds = tracks.map { it.itemId })
+                    }
+                    // MA identifies playlist members by uri, not by library id.
+                    else -> maRepo.addPlaylistTracks(playlist, tracks.mapNotNull { it.uri })
+                }
+                _toast.tryEmit(
+                    if (tracks.size == 1) "Added to \"${playlist.name}\""
+                    else "Added ${tracks.size} tracks to \"${playlist.name}\""
+                )
+            } catch (e: Exception) {
+                _toast.tryEmit(e.message ?: "Couldn't add to playlist")
+            }
+        }
+    }
+
+    /**
      * Create a playlist on whichever backend is active. A freshly-created
      * playlist has no tracks; the user fills it by playing into it or by
      * using "Add to queue" from the library and then "Save queue as playlist".
