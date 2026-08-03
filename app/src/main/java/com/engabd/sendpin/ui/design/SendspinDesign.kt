@@ -16,6 +16,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -203,10 +204,7 @@ fun SectionLabel(text: String, modifier: Modifier = Modifier) {
     Text(
         text.uppercase(),
         color = TextFaint,
-        fontFamily = AppFont,
-        fontWeight = FontWeight.Bold,
-        fontSize = 10.sp,
-        letterSpacing = 1.4.sp,
+        style = MaterialTheme.typography.labelSmall,
         modifier = modifier,
     )
 }
@@ -220,11 +218,12 @@ fun GlassCard(
     fill: Color = Glass,
     content: @Composable BoxScope.() -> Unit,
 ) {
+    val outline = MaterialTheme.colorScheme.outline
     Box(
         modifier
             .clip(RoundedCornerShape(radius))
             .background(fill)
-            .border(1.dp, Hairline, RoundedCornerShape(radius)),
+            .border(1.dp, outline, RoundedCornerShape(radius)),
         content = content,
     )
 }
