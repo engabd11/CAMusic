@@ -39,6 +39,7 @@ import com.engabd.sendpin.ma.EqBandType
 import com.engabd.sendpin.ma.DspPreset
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
+import com.engabd.sendpin.ui.viewmodel.DspViewModel
 
 /**
  * The DSP / Equalizer screen — a per-player parametric EQ, tone control, and
