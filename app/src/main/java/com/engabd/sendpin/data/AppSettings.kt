@@ -39,6 +39,7 @@ class AppSettings(private val context: Context) {
         private val PREFERRED_AUDIO_DEVICE_ID = stringPreferencesKey("preferred_audio_device_id") // USB DAC routing
         private val DOWNLOAD_STORAGE_CAP_MB = stringPreferencesKey("download_storage_cap_mb") // 0 = unlimited
         private val DOWNLOAD_WIFI_ONLY = booleanPreferencesKey("download_wifi_only") // skip downloads on mobile data
+        private val RADIO_MODE = booleanPreferencesKey("radio_mode")            // MA keeps the music going past the queue
     }
 
     val backend: Flow<String> = context.dataStore.data.map { it[BACKEND] ?: "ma" }
@@ -102,6 +103,14 @@ class AppSettings(private val context: Context) {
 
     /** Only download over Wi-Fi, skip on mobile data. */
     val downloadWifiOnly: Flow<Boolean> = context.dataStore.data.map { it[DOWNLOAD_WIFI_ONLY] ?: false }
+
+    /**
+     * Radio mode: MA keeps generating similar tracks once the queue runs out.
+     * Persisted rather than held in a view model because it is applied when
+     * playback *starts* (`player_queues/play_media`), which the library does,
+     * while the toggle that sets it lives on Now Playing.
+     */
+    val radioMode: Flow<Boolean> = context.dataStore.data.map { it[RADIO_MODE] ?: false }
 
     suspend fun setBackend(value: String) {
         context.dataStore.edit { it[BACKEND] = value }
@@ -182,5 +191,10 @@ class AppSettings(private val context: Context) {
 
     suspend fun setDownloadWifiOnly(value: Boolean) {
         context.dataStore.edit { it[DOWNLOAD_WIFI_ONLY] = value }
+    }
+
+    /** Applies to the next thing played, not the queue already running. */
+    suspend fun setRadioMode(value: Boolean) {
+        context.dataStore.edit { it[RADIO_MODE] = value }
     }
 }

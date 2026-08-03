@@ -5,6 +5,7 @@ import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.os.Build
+import com.engabd.sendpin.audio.AudioOutputs
 import com.engabd.sendpin.audio.FormatNegotiator
 import com.engabd.sendpin.audio.SendspinAudioEngine
 import com.engabd.sendpin.audio.StreamQuality
@@ -16,6 +17,7 @@ import com.engabd.sendpin.ma.MaApiClient
 import com.engabd.sendpin.ma.MaRepository
 import com.engabd.sendpin.protocol.ProgressProjection
 import com.engabd.sendpin.protocol.SendspinClient
+import com.engabd.sendpin.protocol.SendspinIncoming
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -68,6 +70,14 @@ class Playback(private val app: Context) {
     private val _currentFormat = MutableStateFlow("—"); val currentFormat: StateFlow<String> = _currentFormat
     private val _streamQuality = MutableStateFlow<StreamQuality?>(null); val streamQuality: StateFlow<StreamQuality?> = _streamQuality
     private val _serverUrl = MutableStateFlow(""); val serverUrl: StateFlow<String> = _serverUrl
+
+    /**
+     * `group/update` pushes from the player socket, forwarded to the UI. Group
+     * membership changes reach us here the instant the server knows, which is
+     * what lets the Speakers screen skip the wait for its next 5 s poll.
+     */
+    private val _groupUpdates = MutableSharedFlow<SendspinIncoming.GroupUpdate>(extraBufferCapacity = 16)
+    val groupUpdates: SharedFlow<SendspinIncoming.GroupUpdate> = _groupUpdates.asSharedFlow()
     private val _connectionLog = MutableStateFlow<List<String>>(emptyList()); val connectionLog: StateFlow<List<String>> = _connectionLog
     // Exposed as flows so the media notification's seek bar tracks the track instead
     // of only refreshing when play/pause flips.
@@ -265,18 +275,21 @@ class Playback(private val app: Context) {
         }
         scope.launch { c.audioFrames.collect { bytes -> eng.submit(bytes) } }
 
-        // Group playback state changes arrive as pushes, so the Speakers screen
-        // and the notification can update instantly rather than waiting for the
-        // 5-second poll. The actual state refresh is driven by the MA API events
-        // collected in MaNowPlaying and NowPlayingViewModel — this just nudges
-        // them by triggering a player re-read.
+        // `group/update` is a push on the player socket, so it lands the moment
+        // grouping changes. Forwarded to whoever is showing group state — the
+        // Speakers screen re-reads on it instead of waiting out its 5 s poll.
+        scope.launch { c.groupUpdates.collect { _groupUpdates.tryEmit(it) } }
+
+        // Audio output preferences. Read before the first stream/start, because
+        // both are consumed when the AudioTrack is built (once per stream).
         scope.launch {
-            c.groupUpdates.collect { /* Group state changed — the 5s poll in
-                MaNowPlaying and NowPlayingViewModel will pick this up on the
-                next tick. A direct refresh call here would need a handle on the
-                MaApiClient, which Playback doesn't own. The group/update
-                message's value is in not waiting 5s for the *next* poll — the
-                event flow in the MA API client fires on the same socket push. */ }
+            settings.bitPerfect24Bit.collect { eng.bitPerfect = it }
+        }
+        scope.launch {
+            settings.preferredAudioDeviceId.collect { id ->
+                val am = app.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+                eng.setPreferredDevice(AudioOutputs.resolve(am, id))
+            }
         }
 
         // The persistent connection service keeps the process (and this WebSocket)
@@ -312,10 +325,12 @@ class Playback(private val app: Context) {
         // once in the hello — which is why changing those settings needs a reconnect.
         scope.launch {
             val codec = settings.sendspinCodec.first()
+            connectedCodec = codec
             val formats = FormatNegotiator.supportedFormats(
                 preferHiRes = settings.preferHiRes.first(),
                 preferFlac = settings.preferFlac.first(),
                 codec = codec.takeIf { it != "auto" },
+                bitPerfect = settings.bitPerfect24Bit.first(),
             )
             c.connect(url, playerId, name, deviceInfo, formats, token)
             // The hello only *registers* a name; a player Music Assistant already
@@ -469,11 +484,35 @@ class Playback(private val app: Context) {
     }
 
     /**
-     * Ask the server to switch codec/rate mid-stream. The server replies with
-     * a new `stream/start` carrying the new format — no reconnect needed.
+     * Whether a codec change can be applied to the live connection.
+     *
+     * The server may only send a format the client advertised in its hello, so a
+     * mid-stream switch is only legal when everything was advertised — which is
+     * what "auto" does. Connect on a single codec and the list has one entry, so
+     * asking for another would be asking for something never offered; that case
+     * still needs the reconnect.
      */
-    fun requestFormat(codec: String, sampleRate: Int = 48000, bitDepth: Int = 16) {
-        client?.sendRequestFormat(codec, sampleRate, bitDepth)
+    val canSwitchFormatLive: Boolean get() = connectedCodec == "auto" && _connected.value
+
+    /** The codec setting the current connection was opened with. */
+    @Volatile private var connectedCodec: String = "auto"
+
+    /**
+     * Ask the server to switch codec mid-stream. It replies with a new
+     * `stream/start` carrying the new format — no reconnect, and the engine
+     * rebuilds itself off that message as it does for any other stream.
+     *
+     * Rate and depth follow whatever is playing now rather than being re-chosen
+     * here: this is a codec change, and pinning 48/16 into it would quietly
+     * resample a 44.1 kHz album as a side effect.
+     */
+    fun requestFormat(codec: String) {
+        val live = client?.streamFormat?.value
+        client?.sendRequestFormat(
+            codec,
+            sampleRate = live?.sampleRate ?: 48_000,
+            bitDepth = live?.bitDepth ?: FormatNegotiator.DEFAULT_BIT_DEPTH,
+        )
     }
 
     /**
@@ -540,10 +579,15 @@ class Playback(private val app: Context) {
 
     fun disablePlayer() = disconnect()
 
+    /**
+     * Tear the player down. [reason] rides along in `client/goodbye`: pass
+     * `"restart"` when the process is going away but expects to come back, so
+     * MA holds the player slot instead of dropping it from the speaker list.
+     */
     fun disconnect(stopService: Boolean = true, reason: String = "user_request") {
         abandonAudioFocus()
         engine?.stop(); engine = null
-        client?.disconnect(reason); client?.close(); client = null
+        client?.close(reason); client = null
         positionTicker?.cancel(); positionTicker = null
         progressAnchor = null
         _connected.value = false

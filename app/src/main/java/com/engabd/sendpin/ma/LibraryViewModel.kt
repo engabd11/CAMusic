@@ -51,6 +51,13 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private val _targetPlayer = MutableStateFlow("")
     private fun playTarget() = _targetPlayer.value.ifBlank { myPlayerId }
 
+    /**
+     * Whether to ask MA to keep the music going once this queue runs dry. Read at
+     * play time rather than cached: `radio_mode` is a parameter of
+     * `player_queues/play_media`, so it only ever means anything here.
+     */
+    private suspend fun radioMode(): Boolean = settings.radioMode.first()
+
     private val maApi = (app as SendpinApp).maApi
     private val maRepo = MaRepository(maApi)
     private var subsonic: SubsonicClient? = null
@@ -249,6 +256,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         listOfNotNull(
             loadFavoriteAlbums(), loadFavoriteArtists(), loadRecent(),
             loadRecentlyAdded(), loadRecommendations(), loadInProgress(),
+            loadFrequent(),
         ).joinAll()
     }
 
@@ -518,7 +526,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                         // buttons keep driving) a player that is no longer the one
                         // making the sound.
                         if (option == "replace") localPlayer.stop()
-                        item.uri?.let { maRepo.playOn(playTarget(), listOf(it), option) }
+                        item.uri?.let {
+                            maRepo.playOn(playTarget(), listOf(it), option, radioMode())
+                        }
                         _toast.tryEmit(if (option == "replace") "Playing ${item.name}" else "Added to queue")
                     }
                 }
@@ -654,7 +664,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 if (_backend.value == Backend.MA && tracks.none { it.provider == DOWNLOAD }) {
                     if (replacing) localPlayer.stop()
-                    maRepo.playOn(playTarget(), tracks.mapNotNull { it.uri }, option)
+                    maRepo.playOn(playTarget(), tracks.mapNotNull { it.uri }, option, radioMode())
                     _toast.tryEmit(queuedMessage(option, tracks.size))
                 } else {
                     // Local playback — stop MA first so both don't play at once.
@@ -743,13 +753,23 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             }
         )
 
-        // Storage cap — delete oldest downloads until under the cap.
+        // Storage cap — evict oldest-first until back under the limit. The index is
+        // appended to on each download, so the head of the list is the oldest.
+        // Bounded by the snapshot rather than looping on live state: a file that has
+        // vanished from disk contributes nothing to the total, and re-reading the
+        // list each pass would spin on it.
         val capMb = settings.downloadStorageCapMb.first()
         if (capMb > 0) {
-            val capBytes = capMb.toLong() * 1024 * 1024
-            while (downloadManager.bytesUsed() > capBytes && downloadManager.downloads.value.isNotEmpty()) {
-                val oldest = downloadManager.downloads.value.first()
-                downloadManager.delete(oldest.id)
+            val capBytes = capMb.toLong() * 1_000_000
+            val nowPlayingId = localPlayer.current.value?.id
+            for (entry in downloadManager.downloads.value) {
+                if (downloadManager.bytesUsed() <= capBytes) break
+                // Never evict the track being listened to out from under the player.
+                if (entry.id == nowPlayingId) continue
+                downloadManager.delete(entry.id)
+            }
+            if (downloadManager.bytesUsed() > capBytes) {
+                _toast.tryEmit("Downloads are over the ${capMb / 1000} GB limit")
             }
         }
     }

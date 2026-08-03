@@ -321,7 +321,11 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             // server that sends no stream details.
             sourceQuality = queue?.inputFormat
                 ?: queue?.currentItem?.audioFormat?.let {
-                    StreamQuality(it.codec, it.sampleRate, it.bitDepth, it.bitRate)
+                    StreamQuality(
+                        it.codec, it.sampleRate, it.bitDepth, it.bitRate,
+                        replayGainTrack = it.replayGainTrack,
+                        replayGainAlbum = it.replayGainAlbum,
+                    )
                 },
             // Music Assistant is what is playing, whatever shelf it took the file off.
             source = "MA",
@@ -628,6 +632,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             if (url.isNotBlank()) api.connect(url, token = null, username = user.ifBlank { null }, password = pass.ifBlank { null })
         }
         viewModelScope.launch { settings.targetPlayer.collect { _target.value = it } }
+        viewModelScope.launch { settings.radioMode.collect { _radioMode.value = it } }
         viewModelScope.launch {
             settings.navStreamFormat.collect { navFormat = it.takeIf { f -> f != "raw" } }
         }
@@ -921,29 +926,39 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     // --- radio mode ---------------------------------------------------------
 
     /**
-     * Radio mode: when the queue runs low, MA auto-generates a radio queue
-     * from the seed track. This is the queue-level version of "don't stop
-     * the music" — it keeps similar music flowing after the user's queue ends.
+     * Radio mode: when the queue runs out, MA carries on with similar tracks
+     * generated from the seed. This is the queue-level version of "don't stop
+     * the music".
+     *
+     * It is a parameter of `player_queues/play_media`, so it takes effect on the
+     * *next* thing played rather than the queue already running — hence persisted
+     * in [AppSettings], where the library's play paths read it. Toggling it here
+     * cannot retrofit the queue that is already going.
      */
     private val _radioMode = MutableStateFlow(false)
     val radioMode: StateFlow<Boolean> = _radioMode
 
     fun toggleRadioMode() {
         if (isLocal) { _toast.tryEmit("Radio mode needs Music Assistant"); return }
-        _radioMode.value = !_radioMode.value
-        _toast.tryEmit(if (_radioMode.value) "Radio mode on" else "Radio mode off")
+        val next = !_radioMode.value
+        viewModelScope.launch {
+            settings.setRadioMode(next)
+            _toast.tryEmit(
+                if (next) "Radio mode on — applies to the next thing you play"
+                else "Radio mode off"
+            )
+        }
     }
 
     // --- stream format switching (Sendspin) ---------------------------------
 
     /**
-     * Ask the server to switch codec/rate mid-stream. The server replies with
-     * a new `stream/start` carrying the new format — no reconnect needed.
-     * Useful for switching to Opus on mobile, or back to FLAC on Wi-Fi.
+     * Ask the server to switch codec mid-stream — no reconnect. Only offered
+     * where [Playback.canSwitchFormatLive] holds; see it for why.
      */
-    fun requestFormat(codec: String, sampleRate: Int = 48000, bitDepth: Int = 16) {
-        playback.requestFormat(codec, sampleRate, bitDepth)
-        _toast.tryEmit("Requesting $codec ${sampleRate / 1000}kHz/$bitDepth-bit")
+    fun requestFormat(codec: String) {
+        playback.requestFormat(codec)
+        _toast.tryEmit("Switching to ${codec.uppercase()}")
     }
 
     // --- favourite ---------------------------------------------------------

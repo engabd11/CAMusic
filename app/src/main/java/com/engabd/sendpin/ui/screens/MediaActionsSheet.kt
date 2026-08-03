@@ -10,15 +10,20 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -57,6 +62,8 @@ fun BoxScope.MediaActionsSheet(
     onAddToQueue: () -> Unit,
     /** Null leaves the row out — nothing on the MA backend can be downloaded. */
     onDownload: (() -> Unit)? = null,
+    /** Null leaves the row out. Only ever passed for a playlist the server owns. */
+    onDelete: (() -> Unit)? = null,
 ) {
     HideBottomChrome()
     BackHandler(onBack = onClose)
@@ -130,6 +137,17 @@ fun BoxScope.MediaActionsSheet(
                     if (whole) "Every track, for offline" else "For offline",
                 ) { onClose(); dl() }
             }
+            onDelete?.let { del ->
+                var confirming by remember { mutableStateOf(false) }
+                // Confirm in place rather than stacking a dialog on a sheet: this
+                // deletes on the server, for every client, and cannot be undone.
+                ActionRow(
+                    Icons.Default.DeleteOutline,
+                    if (confirming) "Tap again to delete" else "Delete playlist",
+                    if (confirming) "This can't be undone" else "Removes it from the server",
+                    tint = if (confirming) ErrorRed else null,
+                ) { if (confirming) { onClose(); del() } else confirming = true }
+            }
         }
     }
 }
@@ -145,7 +163,13 @@ private fun typeLabel(mediaType: String): String? = when (mediaType) {
 }
 
 @Composable
-private fun ActionRow(icon: ImageVector, title: String, subtitle: String, onClick: () -> Unit) {
+private fun ActionRow(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    tint: Color? = null,
+    onClick: () -> Unit,
+) {
     val accent = LocalAccent.current
     Row(
         Modifier
@@ -155,7 +179,7 @@ private fun ActionRow(icon: ImageVector, title: String, subtitle: String, onClic
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Icon(icon, null, tint = accent, modifier = Modifier.size(20.dp))
+        Icon(icon, null, tint = tint ?: accent, modifier = Modifier.size(20.dp))
         Column(Modifier.weight(1f)) {
             Text(title, color = TextPrimary, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 14.sp)
             Text(subtitle, color = TextFaint, fontFamily = AppFont, fontSize = 11.sp)

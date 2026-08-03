@@ -55,6 +55,12 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     /** Rename without a reconnect — the displayed name is player config, not the hello. */
     fun renamePlayer(name: String) = pb.renamePlayer(name)
 
+    /** Whether a codec change can be applied without reconnecting. */
+    val canSwitchFormatLive: Boolean get() = pb.canSwitchFormatLive
+
+    /** Switch codec on the live stream — see [Playback.requestFormat]. */
+    fun requestFormat(codec: String) = pb.requestFormat(codec)
+
     /** Arrive in Music Assistant as a new player, when the old one's name won't budge. */
     fun reregister(name: String) = pb.reregister(name)
 

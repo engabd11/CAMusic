@@ -18,16 +18,19 @@ data class MaAudioFormat(
     val bitRate: Int = 0,
     val channels: Int = 2,
     /**
-     * ReplayGain track-level adjustment in dB, parsed from
-     * `provider_mappings[].audio_format.replay_gain_track`. Null when the
-     * provider didn't supply it — most don't, so callers must treat null as
-     * "no gain adjustment available" rather than 0 dB.
+     * ReplayGain track-level adjustment in dB, off OpenSubsonic's `replayGain`
+     * object. Null when the server didn't supply it — plain Subsonic servers omit
+     * it entirely, so callers must read null as "no measurement" rather than 0 dB.
+     *
+     * Not populated on the Music Assistant path: MA applies its own loudness
+     * normalisation server-side and does not put the measurement on the media
+     * item, so there is nothing here to read. The badge showing gain for a
+     * Navidrome stream and not an MA one is therefore accurate, not a gap.
      */
     val replayGainTrack: Float? = null,
     /**
-     * ReplayGain album-level adjustment in dB, parsed from
-     * `provider_mappings[].audio_format.replay_gain_album`. Null when absent.
-     * Album gain is preferred for whole-album playback; track gain for shuffle.
+     * ReplayGain album-level adjustment in dB. Null when absent. Album gain is
+     * preferred for whole-album playback; track gain for shuffle.
      */
     val replayGainAlbum: Float? = null,
 )

@@ -579,17 +579,26 @@ class SubsonicClient(
      */
     private fun audioFormat(o: JsonObject): MaAudioFormat? {
         val codec = o.str("suffix") ?: o.str("contentType")?.substringAfterLast('/') ?: return null
+        // OpenSubsonic's `replayGain` object: {trackGain, albumGain, trackPeak,
+        // albumPeak, baseGain}, all optional and all in dB. Navidrome sends it when
+        // the file carries the tags; plain Subsonic servers omit the object
+        // entirely, which is why absent stays null rather than becoming 0 dB —
+        // "no measurement" and "measured at unity" are different answers.
+        val rg = o["replayGain"] as? JsonObject
         return MaAudioFormat(
             codec = codec,
             sampleRate = o.int("samplingRate") ?: 0,
             bitDepth = o.int("bitDepth") ?: 0,
             bitRate = o.int("bitRate") ?: 0,
             channels = o.int("channelCount") ?: 2,
+            replayGainTrack = rg?.float("trackGain"),
+            replayGainAlbum = rg?.float("albumGain"),
         )
     }
 
     private fun JsonObject.str(k: String) = this[k]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
     private fun JsonObject.int(k: String) = this[k]?.jsonPrimitive?.let { it.intOrNull ?: it.doubleOrNull?.toInt() }
+    private fun JsonObject.float(k: String) = this[k]?.jsonPrimitive?.let { it.floatOrNull ?: it.contentOrNull?.toFloatOrNull() }
     private fun JsonObject.long(k: String) = this[k]?.jsonPrimitive?.let { it.longOrNull ?: it.doubleOrNull?.toLong() }
 }
 

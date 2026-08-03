@@ -70,6 +70,7 @@ fun AlbumDetailScreen(
     val loading by viewModel.loading.collectAsState()
     val error by viewModel.error.collectAsState()
     val albumDownloaded by viewModel.allDownloaded.collectAsState()
+    val notes by viewModel.notes.collectAsState()
     val accent = LocalAccent.current
     val snackbar = remember { SnackbarHostState() }
     // The track whose long-press menu is open, if any.
@@ -120,6 +121,11 @@ fun AlbumDetailScreen(
                             downloaded = albumDownloaded,
                             onFavorite = viewModel::toggleAlbumFavorite,
                         )
+                    }
+
+                    // Liner notes, when the server has them (Navidrome's getAlbumInfo2).
+                    notes?.takeIf { it.isNotBlank() }?.let { text ->
+                        item(key = "notes") { AlbumNotes(text) }
                     }
 
                     // Track list
@@ -406,6 +412,31 @@ internal fun TrackRow(
             )
         }
     }
+}
+
+// --- liner notes ---------------------------------------------------------
+
+/**
+ * The album's notes, from the server's own metadata (Navidrome fills this from
+ * last.fm via `getAlbumInfo2`). Clamped to three lines and expanded on tap — the
+ * track list is what the screen is for, and these can run long.
+ */
+@Composable
+private fun AlbumNotes(text: String) {
+    var expanded by remember { mutableStateOf(false) }
+    Text(
+        text,
+        color = TextMuted,
+        fontFamily = AppFont,
+        fontSize = 13.sp,
+        lineHeight = 19.sp,
+        maxLines = if (expanded) Int.MAX_VALUE else 3,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { expanded = !expanded }
+            .padding(horizontal = 20.dp, vertical = 8.dp),
+    )
 }
 
 // --- multi-disc header ---------------------------------------------------

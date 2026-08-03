@@ -21,13 +21,27 @@ data class NegotiatedFormat(
 object FormatNegotiator {
 
     /**
-     * The Kotlin engine can now render 24-bit PCM via AudioTrack's
-     * `ENCODING_PCM_24BIT_PACKED` (API 31+), so we advertise 24-bit to the
-     * server. The native AAudio path in `cpp/` remains for a future phase
-     * that bypasses the Android mixer entirely; this is the honest ceiling
-     * for the current AudioTrack-based renderer.
+     * What [SendspinAudioEngine] renders by default: 16-bit PCM through an
+     * `ENCODING_PCM_16BIT` AudioTrack. Advertising a depth we then truncate only
+     * makes the server spend bandwidth on bits thrown away on arrival, so this
+     * stays the floor *and* the default ceiling.
      */
-    const val MAX_BIT_DEPTH = 24
+    const val DEFAULT_BIT_DEPTH = 16
+
+    /**
+     * The ceiling when the user turns bit-perfect on. The engine asks the FLAC
+     * decoder for float output and builds the AudioTrack from the depth the
+     * decoder actually reports, so 24-bit sources keep their resolution instead
+     * of being requantised — see [SendspinAudioEngine.bitPerfect].
+     *
+     * Gated on the setting rather than always-on: 24-bit costs real bandwidth,
+     * and on a device whose mixer runs at 16-bit the extra bits are resampled
+     * away again downstream for nothing.
+     */
+    const val HIRES_BIT_DEPTH = 24
+
+    /** The depth we advertise given the user's bit-perfect preference. */
+    fun bitDepthFor(bitPerfect: Boolean) = if (bitPerfect) HIRES_BIT_DEPTH else DEFAULT_BIT_DEPTH
 
     /** CD and DVD rate families — covers essentially every library file. */
     private val RATES_STANDARD = listOf(48_000, 44_100)
@@ -49,6 +63,10 @@ object FormatNegotiator {
      * rather than express a preference the server is free to ignore. This is how the
      * official Music Assistant app implements its codec setting.
      *
+     * [bitPerfect] — advertise 24-bit rather than 16. Only the lossless codecs get
+     * it: Opus is lossy and decodes to 16-bit whatever depth we claim, so asking
+     * for 24 there would be a number with nothing behind it.
+     *
      * 48 kHz stays first for compatibility: it is Music Assistant's own default and the
      * ordering that grouped/multi-room sync was validated against. The added rates give
      * the server an exact match to pick when the source is not 48 kHz.
@@ -57,19 +75,24 @@ object FormatNegotiator {
         preferHiRes: Boolean = true,
         preferFlac: Boolean = true,
         codec: String? = null,
+        bitPerfect: Boolean = false,
     ): List<AudioFormatSpec> {
         val rates = if (preferHiRes) RATES_HIRES else RATES_STANDARD
+        val depth = bitDepthFor(bitPerfect)
         val only = codec?.lowercase()?.takeIf { it in CODECS }
-        if (only != null) return ratesFor(only, rates).map { AudioFormatSpec(only, 2, it, MAX_BIT_DEPTH) }
+        if (only != null) {
+            val d = if (only == "opus") DEFAULT_BIT_DEPTH else depth
+            return ratesFor(only, rates).map { AudioFormatSpec(only, 2, it, d) }
+        }
 
         val losslessOrder = if (preferFlac) listOf("flac", "pcm") else listOf("pcm", "flac")
         return buildList {
             for (c in losslessOrder) for (rate in rates) {
-                add(AudioFormatSpec(c, 2, rate, MAX_BIT_DEPTH))
+                add(AudioFormatSpec(c, 2, rate, depth))
             }
             // Lossy, and last: only reached if the server can serve none of the above.
             // Opus is 48 kHz only, and listing it first breaks grouped sync.
-            add(AudioFormatSpec("opus", 2, 48_000, MAX_BIT_DEPTH))
+            add(AudioFormatSpec("opus", 2, 48_000, DEFAULT_BIT_DEPTH))
         }
     }
 
@@ -93,9 +116,10 @@ object FormatNegotiator {
         sampleRate: Int,
         bitDepth: Int,
         preferHiRes: Boolean = true,
+        bitPerfect: Boolean = false,
     ): Boolean {
         val rates = if (preferHiRes) RATES_HIRES else RATES_STANDARD
-        return sampleRate in rates && bitDepth <= MAX_BIT_DEPTH
+        return sampleRate in rates && bitDepth <= bitDepthFor(bitPerfect)
     }
 
     /**
@@ -112,12 +136,12 @@ object FormatNegotiator {
      * direct) rather than negotiated with Music Assistant, since nothing upstream
      * gets a say in it.
      */
-    fun deviceOutputQuality(): StreamQuality {
+    fun deviceOutputQuality(bitPerfect: Boolean = false): StreamQuality {
         val rate = try {
             android.media.AudioTrack.getNativeOutputSampleRate(android.media.AudioManager.STREAM_MUSIC)
         } catch (_: Throwable) {
             48_000
         }
-        return StreamQuality(codec = "PCM", sampleRateHz = rate, bitDepth = MAX_BIT_DEPTH)
+        return StreamQuality(codec = "PCM", sampleRateHz = rate, bitDepth = bitDepthFor(bitPerfect))
     }
 }

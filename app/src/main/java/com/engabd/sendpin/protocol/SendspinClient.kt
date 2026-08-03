@@ -153,9 +153,15 @@ class SendspinClient(
         }
     }
 
+    /**
+     * Close the socket, telling the server *why*. The reason reaches MA in the
+     * `client/goodbye` payload: `"user_request"` drops the player from the
+     * speaker list immediately, `"restart"` asks MA to hold the slot open for a
+     * ~30 s resume grace so a process restart doesn't make the player vanish.
+     */
     fun disconnect(reason: String = "user_request") {
         userClosed = true
-        reconnectJob?.cancel()
+        reconnectJob?.cancel(); reconnectJob = null
         timeJob?.cancel(); timeJob = null
         stateJob?.cancel(); stateJob = null
         val ws = webSocket
@@ -166,8 +172,8 @@ class SendspinClient(
         _statusText.value = "Disconnected"
     }
 
-    fun close() {
-        disconnect()
+    fun close(reason: String = "user_request") {
+        disconnect(reason)
         scope.cancel()
     }
 

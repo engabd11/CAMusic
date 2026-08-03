@@ -193,6 +193,17 @@ fun NowPlayingScreen(
                     }
                     IconChip(Icons.Default.Tune, "Player options", active = options) { options = !options }
                     IconChip(Icons.Default.GraphicEq, "DSP / Equalizer") { onOpenDsp() }
+                    // Radio mode is a parameter of play_media, so it colours what you
+                    // play *next* rather than the queue already running — the toast
+                    // on toggle says so. Hidden on the local player, which has no
+                    // radio generation behind it.
+                    if (!st.isLocalSession) {
+                        IconChip(
+                            Icons.Default.Radio,
+                            if (st.radioMode) "Radio mode on" else "Radio mode off",
+                            active = st.radioMode,
+                        ) { viewModel.toggleRadioMode() }
+                    }
                     // Disabled until MA tells us which library item is playing —
                     // without an item_id there is nothing to favourite.
                     IconChip(
@@ -457,6 +468,16 @@ private fun QualityDetailCard(playing: StreamQuality?, source: StreamQuality?, p
             Text(
                 if (transcoded) "Transcoded from ${source.label} to ${playing.label}"
                 else "Direct — no transcoding",
+                color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
+            )
+        }
+        // ReplayGain, when the file carries a measurement. Shown as the tag's own
+        // value rather than "on/off": nothing here applies it — MA normalises
+        // server-side, and the local player doesn't touch gain at all — so this
+        // reports what the file says about itself, which is all it can honestly do.
+        source?.gainLabel?.let {
+            Text(
+                "ReplayGain $it",
                 color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
             )
         }

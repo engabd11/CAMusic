@@ -73,6 +73,9 @@ class SendspinConnectionService : Service() {
     private var wifiLock: WifiManager.WifiLock? = null
     private var observeJob: kotlinx.coroutines.Job? = null
 
+    /** Set when the user taps Stop, so [onDestroy] doesn't send a second goodbye. */
+    private var stoppedByUser = false
+
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
@@ -81,6 +84,7 @@ class SendspinConnectionService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
+            stoppedByUser = true
             pb.disconnect()
             stopSelf()
             return START_NOT_STICKY
@@ -200,18 +204,17 @@ class SendspinConnectionService : Service() {
         super.onTaskRemoved(rootIntent)
     }
 
-    override fun onTrimMemory(level: Int) {
-        // When the app goes to the background (not destroyed), send a warm
-        // goodbye so MA holds the player slot for 30 seconds. A full disconnect
-        // drops the player from MA's speaker list immediately; "restart" keeps
-        // it visible so a quick app switch doesn't lose the player.
-        if (level == TRIM_MEMORY_UI_HIDDEN) {
-            pb.disconnect(reason = "restart")
-        }
-        super.onTrimMemory(level)
-    }
-
     override fun onDestroy() {
+        // Warm goodbye. This service is START_STICKY, so the common reason we
+        // land here without the user having tapped Stop is the system reclaiming
+        // the process — and it will start us again. Telling MA `"restart"` makes
+        // it hold the player slot for its ~30 s resume grace, so the player does
+        // not blink out of the speaker list in the gap. An explicit Stop already
+        // sent `"user_request"` from onStartCommand, which is the one case where
+        // we *want* MA to drop us immediately.
+        if (!stoppedByUser) {
+            runCatching { pb.disconnect(stopService = false, reason = "restart") }
+        }
         releaseLocks()
         observeJob?.cancel()
         scope.cancel()

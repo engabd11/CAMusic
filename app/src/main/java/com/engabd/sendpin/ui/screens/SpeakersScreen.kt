@@ -38,6 +38,7 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
     val connected by viewModel.connected.collectAsState()
     val error by viewModel.error.collectAsState()
     val canGroup by viewModel.leaderCanGroup.collectAsState()
+    val somethingPlaying by viewModel.leaderIsPlaying.collectAsState()
 
     val total = joined.size + available.size
     val allJoined = available.isEmpty() && joined.isNotEmpty()
@@ -109,8 +110,10 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
                         FreeCard(
                             p,
                             canJoin = canGroup,
+                            canMoveMusic = somethingPlaying,
                             onPlayHere = { viewModel.selectPlayer(p.id) },
                             onJoin = { viewModel.join(p.id) },
+                            onMoveMusic = { viewModel.transferQueueTo(p.id) },
                         )
                         Spacer(Modifier.height(12.dp))
                     }
@@ -223,7 +226,14 @@ private fun JoinedCard(p: SpeakerUi, onSelect: () -> Unit, onUnjoin: () -> Unit,
 }
 
 @Composable
-private fun FreeCard(p: SpeakerUi, canJoin: Boolean, onPlayHere: () -> Unit, onJoin: () -> Unit) {
+private fun FreeCard(
+    p: SpeakerUi,
+    canJoin: Boolean,
+    canMoveMusic: Boolean,
+    onPlayHere: () -> Unit,
+    onJoin: () -> Unit,
+    onMoveMusic: () -> Unit,
+) {
     val accent = LocalAccent.current
     Row(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Glass).border(1.dp, HairlineSoft, RoundedCornerShape(16.dp)).padding(14.dp),
@@ -235,6 +245,14 @@ private fun FreeCard(p: SpeakerUi, canJoin: Boolean, onPlayHere: () -> Unit, onJ
         Column(Modifier.weight(1f).clickable(onClick = onPlayHere)) {
             Text(p.name, color = TextSecondary, fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text("Tap to play here · ${p.meta}", color = TextFaint, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        // Distinct from "tap to play here", which only redirects what you play
+        // *next*: this carries the queue and the playhead across, so the track
+        // keeps going on the new speaker. Only offered when there is something
+        // playing to move.
+        if (canMoveMusic) {
+            CircleIconButton(Icons.Default.MusicNote, "Move music here", onMoveMusic)
+            Spacer(Modifier.width(8.dp))
         }
         if (canJoin) {
             Box(Modifier.clip(RoundedCornerShape(100)).background(accent.a(0.16f)).border(1.dp, accent.a(0.55f), RoundedCornerShape(100)).clickable(onClick = onJoin).padding(horizontal = 16.dp, vertical = 8.dp)) {

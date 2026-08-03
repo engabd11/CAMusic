@@ -267,8 +267,12 @@ class MaRepository(val api: MaApiClient) {
      * The entry point every screen should use. [playMedia] takes a raw `queue_id` and
      * is left exposed only for callers that already hold one.
      */
-    suspend fun playOn(playerId: String, uris: List<String>, option: String = "replace") =
-        playMedia(activeQueueId(playerId), uris, option)
+    suspend fun playOn(
+        playerId: String,
+        uris: List<String>,
+        option: String = "replace",
+        radioMode: Boolean = false,
+    ) = playMedia(activeQueueId(playerId), uris, option, radioMode)
 
     /**
      * `player_queues/play_media`, argument-for-argument as the official Music

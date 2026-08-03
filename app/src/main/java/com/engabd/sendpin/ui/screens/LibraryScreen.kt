@@ -28,12 +28,16 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -87,6 +91,7 @@ fun LibraryScreen(
     val searchOpen by viewModel.searchOpen.collectAsState()
     val query by viewModel.query.collectAsState()
     val refreshing by viewModel.refreshing.collectAsState()
+    val showCreatePlaylist by viewModel.showCreatePlaylist.collectAsState()
     val palette = LocalPalette.current
     val snackbar = remember { SnackbarHostState() }
     // Long-press target. Hoisted to the screen so the sheet is a sibling of the
@@ -151,6 +156,20 @@ fun LibraryScreen(
                 onDownload = if (picked.provider == SubsonicClient.PROVIDER) {
                     { viewModel.download(picked) }
                 } else null,
+                // Only playlists can be deleted; the ViewModel routes to whichever
+                // backend owns the one picked.
+                onDelete = if (picked.mediaType == "playlist") {
+                    { viewModel.deletePlaylist(picked) }
+                } else null,
+            )
+        }
+
+        // Create playlist. The dialog is driven from the ViewModel so the library
+        // can reopen it after a failed attempt without the screen holding state.
+        if (showCreatePlaylist) {
+            CreatePlaylistDialog(
+                onDismiss = viewModel::closeCreatePlaylist,
+                onCreate = viewModel::createPlaylist,
             )
         }
     }
@@ -345,6 +364,7 @@ private fun Browse(
     val recentlyAdded by viewModel.recentlyAdded.collectAsState()
     val recommendations by viewModel.recommendations.collectAsState()
     val inProgress by viewModel.inProgress.collectAsState()
+    val frequent by viewModel.frequent.collectAsState()
     val jobs by viewModel.downloadJobs.collectAsState()
     val offline by viewModel.offline.collectAsState()
 
@@ -409,11 +429,22 @@ private fun Browse(
             shelf("Recently added", recentlyAdded, openItem, onLongPress)
             shelf("For you", recommendations, openItem, onLongPress)
             shelf("Recently played", recent, openItem, onLongPress)
+            // Navidrome only — MA has no equivalent of getAlbumList2(frequent), so
+            // the list is empty on that backend and the shelf hides itself.
+            shelf("Played most", frequent, openItem, onLongPress)
             return@LazyVerticalGrid
         }
 
+        // Creating a playlist belongs where playlists are, not on the root — and
+        // it has to come before the empty-state return, or a library with no
+        // playlists yet would be the one place you can't make one.
+        val inPlaylists = !searchOpen && node.title == "Playlists"
+        if (inPlaylists) {
+            item(span = { full() }) { NewPlaylistRow(viewModel::openCreatePlaylist) }
+        }
+
         if (node.items.isEmpty()) {
-            item(span = { full() }) { SearchEmptyState() }
+            item(span = { full() }) { if (inPlaylists) Unit else SearchEmptyState() }
             return@LazyVerticalGrid
         }
 
@@ -517,6 +548,83 @@ private fun androidx.compose.foundation.lazy.grid.LazyGridScope.downloadsSection
 @Composable
 private fun Shelf(text: String) {
     Box(Modifier.padding(top = 12.dp, bottom = 2.dp)) { SectionLabel(text) }
+}
+
+/** The "New playlist" affordance at the top of the Playlists list. */
+@Composable
+private fun NewPlaylistRow(onClick: () -> Unit) {
+    val accent = LocalAccent.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(Glass)
+            .border(1.dp, HairlineSoft, RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 13.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Icon(Icons.Default.Add, null, tint = accent, modifier = Modifier.size(20.dp))
+        Text(
+            "New playlist",
+            color = TextPrimary, fontFamily = AppFont,
+            fontWeight = FontWeight.Bold, fontSize = 14.sp,
+        )
+    }
+}
+
+/**
+ * Name a new playlist. It is created empty — both backends make one that way,
+ * and tracks go in afterwards — so the caption says so rather than leaving the
+ * user waiting for a picker that isn't coming.
+ */
+@Composable
+private fun CreatePlaylistDialog(onDismiss: () -> Unit, onCreate: (String) -> Unit) {
+    val accent = LocalAccent.current
+    var name by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Ink2,
+        title = {
+            Text(
+                "New playlist", color = TextPrimary, fontFamily = AppFont,
+                fontWeight = FontWeight.ExtraBold, fontSize = 17.sp,
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    singleLine = true,
+                    placeholder = { Text("Playlist name", color = TextFaint, fontFamily = AppFont) },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = TextPrimary,
+                        unfocusedTextColor = TextPrimary,
+                        focusedBorderColor = accent,
+                        unfocusedBorderColor = Hairline,
+                        cursorColor = accent,
+                    ),
+                )
+                Text(
+                    "Created empty — add tracks to it afterwards.",
+                    color = TextMuted, fontFamily = AppFont, fontSize = 12.sp,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onCreate(name) }, enabled = name.isNotBlank()) {
+                Text("Create", color = if (name.isBlank()) TextFaint else accent, fontFamily = AppFont, fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = TextMuted, fontFamily = AppFont)
+            }
+        },
+    )
 }
 
 @Composable
