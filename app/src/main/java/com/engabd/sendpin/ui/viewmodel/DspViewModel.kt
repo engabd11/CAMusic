@@ -150,7 +150,7 @@ class DspViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun loadPresets() {
         runCatching { repo.getDspPresets() }
             .onSuccess { _presets.value = it }
-            .onFailure { /* presets are optional — silent failure */ }
+            .onFailure { /* presets are optional, silent failure */ }
     }
 
     // ── Save ──────────────────────────────────────────────────────────────

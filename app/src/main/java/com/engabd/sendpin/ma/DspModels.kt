@@ -2,12 +2,7 @@ package com.engabd.sendpin.ma
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.doubleOrNull
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.*
 
 // ─── Enums ────────────────────────────────────────────────────────────────
 
@@ -142,7 +137,7 @@ data class DspPreset(
 object DspParse {
 
     fun config(o: JsonObject): DspConfig {
-        val enabled = (o["enabled"] as? JsonPrimitive)?.let { it.bool ?: false } ?: false
+        val enabled = (o["enabled"] as? JsonPrimitive)?.booleanOrNull ?: false
         val inputGain = num(o["input_gain"]) ?: 0f
         val outputGain = num(o["output_gain"]) ?: 0f
         val filtersArr = o["filters"]
@@ -170,7 +165,7 @@ object DspParse {
         arr?.mapNotNull { preset(it as? JsonObject ?: return@mapNotNull null) } ?: emptyList()
 
     private fun eqFilter(o: JsonObject): ParametricEQFilter {
-        val enabled = (o["enabled"] as? JsonPrimitive)?.let { it.bool ?: false } ?: false
+        val enabled = (o["enabled"] as? JsonPrimitive)?.booleanOrNull ?: false
         val preamp = num(o["preamp"]) ?: 0f
         val perCh = (o["per_channel_preamp"] as? JsonObject)
             ?.mapNotNull { (k, v) -> num(v)?.let { k to it } }
@@ -183,7 +178,7 @@ object DspParse {
                 q = num(bo["q"]) ?: 1f,
                 gain = num(bo["gain"]) ?: 0f,
                 typeWire = str(bo["type"]) ?: "peak",
-                enabled = (bo["enabled"] as? JsonPrimitive)?.let { it.bool ?: true } ?: true,
+                enabled = (bo["enabled"] as? JsonPrimitive)?.booleanOrNull ?: true,
                 channelWire = str(bo["channel"]) ?: "ALL",
             )
         } ?: emptyList()
@@ -192,7 +187,7 @@ object DspParse {
 
     private fun toneFilter(o: JsonObject): ToneControlFilter {
         return ToneControlFilter(
-            enabled = (o["enabled"] as? JsonPrimitive)?.let { it.bool ?: false } ?: false,
+            enabled = (o["enabled"] as? JsonPrimitive)?.booleanOrNull ?: false,
             type = "tone_control",
             bassLevel = num(o["bass_level"]) ?: 0f,
             midLevel = num(o["mid_level"]) ?: 0f,
@@ -260,7 +255,4 @@ object DspParse {
 
     private fun num(el: kotlinx.serialization.json.JsonElement?): Float? =
         (el as? JsonPrimitive)?.let { it.floatOrNull ?: it.contentOrNull?.toFloatOrNull() }
-
-    // JsonPrimitive extension — bool isn't in the kotlinx serialization API
-    private val JsonPrimitive.bool: Boolean? get() = contentOrNull?.let { it == "true" }
 }
