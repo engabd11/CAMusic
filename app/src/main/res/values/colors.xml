@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="primary">#FF1A73E8</color>
-    <color name="primary_dark">#FF1557B0</color>
-    <color name="accent">#FF1A73E8</color>
+    <!-- The Sendspin amber-gold accent. Used by the XML launch theme's
+         colorPrimary so the window matches the Compose MaterialTheme's
+         primary before Compose draws. The old values were a Material 2
+         blue (#1A73E8) that no longer matches anything in the app. -->
+    <color name="primary">#FFD9A85C</color>
+    <color name="primary_dark">#FF000000</color>
+    <color name="accent">#FFD9A85C</color>
 </resources>
