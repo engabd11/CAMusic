@@ -1,10 +1,10 @@
 package com.engabd.sendpin.ma
 
+import androidx.compose.runtime.Immutable
 import com.engabd.sendpin.audio.StreamQuality
 import kotlinx.serialization.json.*
 import java.net.URLEncoder
 
-/** A Music Assistant media item (artist / album / track / playlist / radio). */
 /**
  * The source file's own format, off `provider_mappings[].audio_format`. Used to
  * decide whether Music Assistant would have to convert a track to stream it — see
@@ -39,6 +39,22 @@ data class MaAudioFormat(
     val replayGainAlbum: Float? = null,
 )
 
+/**
+ * A Music Assistant media item (artist / album / track / playlist / radio).
+ *
+ * `@Immutable` because [providerDomains] and [genres] are `List<String>`, which Compose
+ * otherwise infers as unstable. Strong skipping (on by default from Kotlin 2.0) means an
+ * unstable item would still let a row skip — but only by comparing *instances*, so it
+ * skips when the row is handed back the very object it already has, and not otherwise.
+ * That is the wrong test here: every reconnect and refresh re-parses the library into
+ * brand-new `MaItem`s, and under instance comparison every visible row rebuilds even
+ * though nothing about it changed. Annotated, the comparison becomes the data class's
+ * own `equals`, and an unchanged row stays put.
+ *
+ * The promise holds: both lists are built once during parsing and only ever read. The
+ * same reasoning applies to the other annotated models here.
+ */
+@Immutable
 data class MaItem(
     val itemId: String,
     val provider: String,
@@ -108,6 +124,7 @@ data class MaNowPlaying(
 )
 
 /** A Music Assistant player (a possible playback target / group). */
+@Immutable
 data class MaPlayer(
     val playerId: String,
     val name: String,
@@ -139,6 +156,7 @@ data class MaPlayer(
 data class SyncDelay(val key: String, val ms: Int)
 
 /** A player queue: what's streaming, and how the queue itself is set up. */
+@Immutable
 data class MaQueue(
     val queueId: String,
     /**
@@ -209,6 +227,7 @@ data class MaQueue(
 }
 
 /** Grouped search hits. */
+@Immutable
 data class MaSearchResults(
     val artists: List<MaItem>,
     val albums: List<MaItem>,
@@ -234,7 +253,13 @@ data class MaQueueItem(
 /** One timed line of an LRC lyric. */
 data class LyricLine(val atMs: Long, val text: String)
 
-/** Lyrics for a track, plain or LRC-timed. */
+/**
+ * Lyrics for a track, plain or LRC-timed.
+ *
+ * [lines] is a `by lazy` val — computed once on first read and never recomputed, so
+ * it satisfies `@Immutable` the same way a stored field would.
+ */
+@Immutable
 data class MaLyrics(
     val text: String,
     val synced: Boolean = false,

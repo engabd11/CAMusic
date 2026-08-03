@@ -1,8 +1,10 @@
 package com.engabd.sendpin.ha
 
+import androidx.compose.runtime.Immutable
 import kotlinx.serialization.json.*
 
 /** A selectable media player the area can follow. */
+@Immutable
 data class HaMediaPlayer(
     val entityId: String,
     val name: String,
@@ -21,9 +23,11 @@ data class HaMediaPlayer(
  * in for it. Schemes are gradients, not single colours: Rainbow is seven stops
  * and Honolulu four, and a one-colour dot can't tell them apart.
  */
+@Immutable
 data class ColourScheme(val key: String, val label: String, val colours: List<Long>)
 
 /** One Hue Synco entertainment area (an HA device) with its controllable entities. */
+@Immutable
 data class LightArea(
     val id: String,                 // HA device_id
     val name: String,

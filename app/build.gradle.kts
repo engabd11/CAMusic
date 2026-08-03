@@ -44,6 +44,23 @@ android {
     // native output path actually has a caller.
 }
 
+// Compose stability/skippability reports, off by default because writing them costs
+// build time on every compile:
+//
+//   ./gradlew :app:compileReleaseKotlin -PcomposeMetrics
+//   app/build/compose_reports/app_release-composables.txt
+//
+// The library rows are the reason this is here. A list item that reports as
+// `restartable skippable` re-uses its composition while scrolling; one that doesn't
+// is rebuilt from scratch every time anything on the screen changes, which is what
+// made scrolling feel unsettled. Check here before assuming a stability fix took.
+composeCompiler {
+    if (project.findProperty("composeMetrics") != null) {
+        reportsDestination = layout.buildDirectory.dir("compose_reports")
+        metricsDestination = layout.buildDirectory.dir("compose_metrics")
+    }
+}
+
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
     implementation(composeBom)

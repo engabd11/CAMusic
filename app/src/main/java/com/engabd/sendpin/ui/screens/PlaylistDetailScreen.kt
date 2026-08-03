@@ -119,7 +119,7 @@ fun PlaylistDetailScreen(
                     }
 
                     if (loading && tracks.isEmpty()) {
-                        items(6) { SkeletonTrackRow() }
+                        items(6, contentType = { "skeleton" }) { SkeletonTrackRow() }
                     } else if (error != null && tracks.isEmpty()) {
                         item { ErrorState(error!!) { viewModel.loadPlaylist() } }
                     } else if (tracks.isEmpty()) {
@@ -128,7 +128,11 @@ fun PlaylistDetailScreen(
                         // Index in the key, not the item id alone: a playlist is
                         // allowed to hold the same track twice, and a duplicate key
                         // is a hard crash in a lazy list.
-                        itemsIndexed(tracks, key = { i, t -> "track:$i:${t.itemId}" }) { index, track ->
+                        itemsIndexed(
+                            tracks,
+                            key = { i, t -> "track:$i:${t.itemId}" },
+                            contentType = { _, _ -> "track" },
+                        ) { index, track ->
                             TrackRow(
                                 track = track,
                                 index = index,

@@ -214,7 +214,11 @@ fun SettingsScreen(
                 when (section) {
                     // The index. Every row says what lives behind it, because a
                     // one-word category is a guess until you have opened it once.
-                    null -> items(SettingsSection.entries) { s ->
+                    null -> items(
+                        SettingsSection.entries,
+                        key = { it.name },
+                        contentType = { "category" },
+                    ) { s ->
                         SettingsCategoryRow(s, accent) { section = s }
                     }
 

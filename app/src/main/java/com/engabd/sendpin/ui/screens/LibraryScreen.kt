@@ -358,6 +358,16 @@ private fun SearchField(
 private const val COLS = 6              // 6-col base: covers span 2, categories 3, rows 6
 private fun full() = GridItemSpan(COLS)
 
+// Media-type sets, hoisted out of the per-item lambdas that test against them. Written
+// inline as `mediaType in setOf(...)` these built a fresh Set for every item, on every
+// pass over the list — once per row for the membership tests, and once per *element*
+// for the `artful` count that decides tiles-or-rows.
+private val ArtfulTypes = setOf("album", "playlist")
+private val DownloadableTypes = setOf("track", "album", "playlist")
+private val LongPressableTypes = setOf("track", "album", "artist", "playlist", "radio")
+private val SubsonicActionTypes = setOf("track", "album", "artist")
+private val MaActionTypes = setOf("track", "album", "artist", "playlist")
+
 @Composable
 private fun Browse(
     viewModel: LibraryViewModel,
@@ -374,18 +384,40 @@ private fun Browse(
     val error by viewModel.error.collectAsState()
     val search by viewModel.search.collectAsState()
     val searchOpen by viewModel.searchOpen.collectAsState()
-    val recent by viewModel.recent.collectAsState()
-    val favoriteAlbums by viewModel.favoriteAlbums.collectAsState()
-    val favoriteArtists by viewModel.favoriteArtists.collectAsState()
-    val recentlyAdded by viewModel.recentlyAdded.collectAsState()
-    val recommendations by viewModel.recommendations.collectAsState()
-    val inProgress by viewModel.inProgress.collectAsState()
-    val frequent by viewModel.frequent.collectAsState()
+    val shelves by viewModel.shelves.collectAsState()
     val jobs by viewModel.downloadJobs.collectAsState()
     val offline by viewModel.offline.collectAsState()
 
+    // Collected once for the whole grid. These three used to be read *inside* ItemRow
+    // and its children, so every visible row stood up three flow collectors of its
+    // own, each torn down and rebuilt as rows recycled during a scroll. The rows now
+    // take plain booleans, which also lets them skip when nothing about them changed.
+    val downloadedIds by viewModel.downloadedIds.collectAsState()
+    val favorites by viewModel.favorites.collectAsState()
+    val previewingId by viewModel.previewing.collectAsState()
+    val rows = RowState(downloadedIds, favorites, previewingId)
+
     val s = if (searchOpen) search else null
-    val isDownloads = node.items.any { it.provider == "__dl__" } || node.title == "Downloads"
+
+    // Everything derived from the node's item list is computed once here, keyed on the
+    // list itself. It cannot live inside the LazyVerticalGrid content lambda below:
+    // that lambda is a LazyGridScope receiver, not a composable, so it has no
+    // `remember` — every scan written inside it is redone in full each time the grid
+    // rebuilds, which is on any of this screen's state changes.
+    val isDownloads = remember(node) {
+        node.items.any { it.provider == "__dl__" } || node.title == "Downloads"
+    }
+    // A shelf of albums earns cover tiles; anything else reads better as rows.
+    val artful = remember(node.items) {
+        val n = node.items.count { it.image != null && it.mediaType in ArtfulTypes }
+        n > 0 && n >= node.items.size / 2
+    }
+    val tracks = remember(node.items) {
+        node.items.filter { it.playable && it.mediaType == "track" }
+    }
+    // Downloading a Navidrome album one row at a time was never a real answer, so
+    // the whole list is one tap from disk.
+    val downloadable = remember(tracks) { tracks.filter { it.provider == "subsonic" } }
 
     LazyVerticalGrid(
         columns = GridCells.Fixed(COLS),
@@ -404,15 +436,15 @@ private fun Browse(
             return@LazyVerticalGrid
         }
         if (loading) {
-            items(6, span = { full() }) { SkeletonRow() }
+            items(6, span = { full() }, contentType = { "skeleton" }) { SkeletonRow() }
             return@LazyVerticalGrid
         }
 
         if (s != null) {
-            searchSection("Artists", s.artists, viewModel, onAlbumClick, onArtistClick, onPlaylistClick, onLongPress)
-            searchSection("Albums", s.albums, viewModel, onAlbumClick, onArtistClick, onPlaylistClick, onLongPress)
-            searchSection("Tracks", s.tracks, viewModel, onAlbumClick, onArtistClick, onPlaylistClick, onLongPress)
-            searchSection("Playlists", s.playlists, viewModel, onAlbumClick, onArtistClick, onPlaylistClick, onLongPress)
+            searchSection("Artists", s.artists, viewModel, rows, onAlbumClick, onArtistClick, onPlaylistClick, onLongPress)
+            searchSection("Albums", s.albums, viewModel, rows, onAlbumClick, onArtistClick, onPlaylistClick, onLongPress)
+            searchSection("Tracks", s.tracks, viewModel, rows, onAlbumClick, onArtistClick, onPlaylistClick, onLongPress)
+            searchSection("Playlists", s.playlists, viewModel, rows, onAlbumClick, onArtistClick, onPlaylistClick, onLongPress)
             if (s.artists.isEmpty() && s.albums.isEmpty() && s.tracks.isEmpty() && s.playlists.isEmpty()) {
                 item(span = { full() }) { SearchEmptyState() }
             }
@@ -420,13 +452,18 @@ private fun Browse(
         }
 
         if (isDownloads) {
-            downloadsSection(node.items, jobs, viewModel)
+            downloadsSection(node.items, jobs, viewModel, rows)
             return@LazyVerticalGrid
         }
 
         if (depth == 0) {
             // Root shelf: the category grid, then dynamic shelves of content.
-            items(node.items, span = { GridItemSpan(3) }) { cat ->
+            items(
+                node.items,
+                key = { "cat_" + it.itemId },
+                contentType = { "category" },
+                span = { GridItemSpan(3) },
+            ) { cat ->
                 CategoryCard(cat) { viewModel.open(cat) }
             }
             val openItem: (MaItem) -> Unit = { item ->
@@ -439,15 +476,15 @@ private fun Browse(
             }
             // Favourites lead: what you chose to keep is a better front page than
             // whatever the scanner saw last. The rest keep their old order behind them.
-            shelf("Favourite albums", favoriteAlbums, openItem, onLongPress)
-            shelf("Favourite artists", favoriteArtists, openItem, onLongPress)
-            shelf("Continue listening", inProgress, openItem, onLongPress)
-            shelf("Recently added", recentlyAdded, openItem, onLongPress)
-            shelf("For you", recommendations, openItem, onLongPress)
-            shelf("Recently played", recent, openItem, onLongPress)
+            shelf("Favourite albums", shelves.favoriteAlbums, openItem, onLongPress)
+            shelf("Favourite artists", shelves.favoriteArtists, openItem, onLongPress)
+            shelf("Continue listening", shelves.inProgress, openItem, onLongPress)
+            shelf("Recently added", shelves.recentlyAdded, openItem, onLongPress)
+            shelf("For you", shelves.recommendations, openItem, onLongPress)
+            shelf("Recently played", shelves.recent, openItem, onLongPress)
             // Navidrome only — MA has no equivalent of getAlbumList2(frequent), so
             // the list is empty on that backend and the shelf hides itself.
-            shelf("Played most", frequent, openItem, onLongPress)
+            shelf("Played most", shelves.frequent, openItem, onLongPress)
             return@LazyVerticalGrid
         }
 
@@ -464,10 +501,13 @@ private fun Browse(
             return@LazyVerticalGrid
         }
 
-        // A shelf of albums earns cover tiles; anything else reads better as rows.
-        val artful = node.items.count { it.image != null && it.mediaType in setOf("album", "playlist") }
-        if (artful >= node.items.size / 2 && artful > 0) {
-            items(node.items, span = { GridItemSpan(2) }) { entry ->
+        if (artful) {
+            items(
+                node.items,
+                key = { "t_${it.provider}|${it.itemId}" },
+                contentType = { "cover" },
+                span = { GridItemSpan(2) },
+            ) { entry ->
                 CoverTile(entry, onLongPress = { onLongPress(entry) }) {
                     when (entry.mediaType) {
                         "album" -> onAlbumClick(entry)
@@ -478,12 +518,8 @@ private fun Browse(
                 }
             }
         } else {
-            val tracks = node.items.filter { it.playable && it.mediaType == "track" }
             if (tracks.size > 1) {
-                // Downloading a Navidrome album one row at a time was never a real
-                // answer, so the whole list is one tap from disk.
-                val downloadable = tracks.filter { it.provider == "subsonic" }
-                item(span = { full() }) {
+                item(key = "playall", span = { full() }, contentType = { "playall" }) {
                     PlayAllBar(
                         count = tracks.size,
                         onPlayAll = { viewModel.playAll(tracks) },
@@ -492,20 +528,61 @@ private fun Browse(
                     )
                 }
             }
-            items(node.items, span = { full() }) { entry ->
+            items(
+                node.items,
+                key = { "r_${it.provider}|${it.itemId}" },
+                contentType = { "row" },
+                span = { full() },
+            ) { entry ->
                 val click: (() -> Unit)? = when (entry.mediaType) {
                     "album" -> { { onAlbumClick(entry) } }
                     "artist" -> { { onArtistClick(entry) } }
                     "playlist" -> { { onPlaylistClick(entry) } }
                     else -> null
                 }
-                ItemRow(entry, viewModel, click, onLongPress)
+                ItemRow(entry, viewModel, rows.of(entry), click, onLongPress)
             }
         }
     }
 }
 
-/** One titled row of cover tiles, hidden when the shelf has nothing in it. */
+/**
+ * The row-level state the library's list rows need, collected once for the whole grid
+ * and narrowed to a single row by [of].
+ *
+ * `@Immutable` because the `Set`s read as unstable — they are replaced wholesale by
+ * the view model, never mutated in place.
+ */
+@Immutable
+private data class RowState(
+    val downloadedIds: Set<String>,
+    val favorites: Set<String>,
+    val previewingId: String?,
+) {
+    /** The three flags as they apply to one item. */
+    fun of(item: MaItem) = RowFlags(
+        onDisk = item.itemId in downloadedIds,
+        isFavorite = item.itemId in favorites,
+        isPreviewing = previewingId == item.itemId,
+    )
+}
+
+/** [RowState] resolved for a single row — three booleans, so the row can skip. */
+@Immutable
+private data class RowFlags(
+    val onDisk: Boolean,
+    val isFavorite: Boolean,
+    val isPreviewing: Boolean,
+)
+
+/**
+ * One titled row of cover tiles, hidden when the shelf has nothing in it.
+ *
+ * [title] seeds the item keys as well as labelling the shelf. The same album turns up
+ * in several shelves at once — a favourite that was also added recently — and lazy
+ * keys have to be unique across the whole grid, not just within one section, so the
+ * shelf's own name is what separates them.
+ */
 private fun androidx.compose.foundation.lazy.grid.LazyGridScope.shelf(
     title: String,
     list: List<MaItem>,
@@ -513,49 +590,73 @@ private fun androidx.compose.foundation.lazy.grid.LazyGridScope.shelf(
     onLongPress: (MaItem) -> Unit,
 ) {
     if (list.isEmpty()) return
-    item(span = { full() }) { Shelf(title) }
-    items(list, span = { GridItemSpan(2) }) { entry ->
+    item(key = "hdr_$title", span = { full() }, contentType = { "header" }) { Shelf(title) }
+    items(
+        list,
+        key = { "$title|${it.provider}|${it.itemId}" },
+        contentType = { "cover" },
+        span = { GridItemSpan(2) },
+    ) { entry ->
         CoverTile(entry, onLongPress = { onLongPress(entry) }) { onOpen(entry) }
     }
 }
 
 private fun androidx.compose.foundation.lazy.grid.LazyGridScope.searchSection(
     title: String, list: List<MaItem>, viewModel: LibraryViewModel,
+    rows: RowState,
     onAlbumClick: (MaItem) -> Unit,
     onArtistClick: (MaItem) -> Unit,
     onPlaylistClick: (MaItem) -> Unit,
     onLongPress: (MaItem) -> Unit,
 ) {
     if (list.isEmpty()) return
-    item(span = { full() }) { Shelf(title) }
-    items(list, span = { full() }) { entry ->
+    item(key = "shdr_$title", span = { full() }, contentType = { "header" }) { Shelf(title) }
+    items(
+        list,
+        key = { "s_$title|${it.provider}|${it.itemId}" },
+        contentType = { "row" },
+        span = { full() },
+    ) { entry ->
         val click: (() -> Unit)? = when (entry.mediaType) {
             "album" -> { { onAlbumClick(entry) } }
             "artist" -> { { onArtistClick(entry) } }
             "playlist" -> { { onPlaylistClick(entry) } }
             else -> null
         }
-        ItemRow(entry, viewModel, click, onLongPress)
+        ItemRow(entry, viewModel, rows.of(entry), click, onLongPress)
     }
 }
 
 private fun androidx.compose.foundation.lazy.grid.LazyGridScope.downloadsSection(
     items: List<MaItem>, jobs: List<DownloadJob>, viewModel: LibraryViewModel,
+    rows: RowState,
 ) {
     if (jobs.isNotEmpty()) {
-        item(span = { full() }) { Shelf("In progress") }
-        items(jobs, span = { full() }, key = { "j_" + it.id }) { job -> DownloadJobRow(job, viewModel) }
+        item(key = "hdr_inprogress", span = { full() }, contentType = { "header" }) { Shelf("In progress") }
+        items(
+            jobs,
+            key = { "j_" + it.id },
+            contentType = { "job" },
+            span = { full() },
+        ) { job -> DownloadJobRow(job, viewModel) }
     }
     if (items.isEmpty() && jobs.isEmpty()) {
         item(span = { full() }) { SearchEmptyState("Nothing downloaded", "Downloaded tracks play with the server off.") }
         return
     }
     if (items.isNotEmpty()) {
-        item(span = { full() }) { Shelf("On this device") }
+        item(key = "hdr_ondevice", span = { full() }, contentType = { "header" }) { Shelf("On this device") }
         if (items.size > 1) {
-            item(span = { full() }) { PlayAllBar(items.size, onPlayAll = { viewModel.playAll(items) }) }
+            item(key = "dl_playall", span = { full() }, contentType = { "playall" }) {
+                PlayAllBar(items.size, onPlayAll = { viewModel.playAll(items) })
+            }
         }
-        items(items, span = { full() }) { entry -> ItemRow(entry, viewModel) }
+        items(
+            items,
+            key = { "d_${it.provider}|${it.itemId}" },
+            contentType = { "row" },
+            span = { full() },
+        ) { entry -> ItemRow(entry, viewModel, rows.of(entry)) }
     }
 }
 
@@ -684,10 +785,13 @@ private fun CoverTile(item: MaItem, onLongPress: (() -> Unit)? = null, onClick: 
         }
     ) {
         Box(
+            // No elevation shadow. It cost a shadow-casting render node per grid cell
+            // — the most-repeated element in the app — to draw something that is very
+            // nearly invisible against a true-black background. The hairline border
+            // below is what actually separates a cover from the page.
             Modifier
                 .fillMaxWidth()
                 .aspectRatio(1f)
-                .shadow(14.dp, RoundedCornerShape(14.dp))
                 .clip(RoundedCornerShape(14.dp))
                 .background(Ink3)
                 .border(1.dp, HairlineSoft, RoundedCornerShape(14.dp)),
@@ -749,6 +853,7 @@ private fun RowCard(
 private fun ItemRow(
     item: MaItem,
     viewModel: LibraryViewModel,
+    flags: RowFlags,
     onClick: (() -> Unit)? = null,
     onLongPress: ((MaItem) -> Unit)? = null,
 ) {
@@ -760,14 +865,13 @@ private fun ItemRow(
     // Artists and genres resolve to a lot of files; offering to download one by
     // accident from a list row would be a nasty surprise, so only the things a
     // user thinks of as "a download" get the button.
-    val downloadable = isSubsonic && item.mediaType in setOf("track", "album", "playlist")
-    val downloadedIds by viewModel.downloadedIds.collectAsState()
-    val onDisk = item.itemId in downloadedIds
+    val downloadable = isSubsonic && item.mediaType in DownloadableTypes
+    val onDisk = flags.onDisk
 
     // A category card opens a list and a download row is already on the phone —
     // neither has anything the actions sheet could offer.
     val longPressable = !isCategory && !isDownload &&
-        item.mediaType in setOf("track", "album", "artist", "playlist", "radio")
+        item.mediaType in LongPressableTypes
 
     RowCard(
         onClick = {
@@ -817,11 +921,10 @@ private fun ItemRow(
         // MA tracks can be auditioned in place; Navidrome has no preview endpoint.
         val isMaTrack = !isCategory && !isDownload && !isSubsonic && item.mediaType == "track"
         if (isMaTrack) {
-            val previewing by viewModel.previewing.collectAsState()
             Icon(
-                if (previewing == item.itemId) Icons.Default.StopCircle else Icons.Default.Headphones,
-                if (previewing == item.itemId) "Stop preview" else "Preview",
-                tint = if (previewing == item.itemId) accent else TextMuted,
+                if (flags.isPreviewing) Icons.Default.StopCircle else Icons.Default.Headphones,
+                if (flags.isPreviewing) "Stop preview" else "Preview",
+                tint = if (flags.isPreviewing) accent else TextMuted,
                 modifier = Modifier.size(20.dp).clip(CircleShape).clickable { viewModel.togglePreview(item) },
             )
         }
@@ -834,12 +937,11 @@ private fun ItemRow(
         // Subsonic's `star` has no playlist parameter, so that one really is
         // backend-specific.
         val favouritable = !isCategory && !isDownload && when {
-            isSubsonic -> item.mediaType in setOf("track", "album", "artist")
-            else -> item.mediaType in setOf("track", "album", "artist", "playlist")
+            isSubsonic -> item.mediaType in SubsonicActionTypes
+            else -> item.mediaType in MaActionTypes
         }
         if (favouritable) {
-            val favorites by viewModel.favorites.collectAsState()
-            val isFav = item.itemId in favorites
+            val isFav = flags.isFavorite
             Icon(
                 if (isFav) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                 if (isFav) "Remove from favourites" else "Add to favourites",

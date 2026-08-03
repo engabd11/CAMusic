@@ -1,6 +1,7 @@
 package com.engabd.sendpin.ma
 
 import android.app.Application
+import androidx.compose.runtime.Immutable
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.engabd.sendpin.SendpinApp
@@ -27,6 +28,24 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+
+/**
+ * The library root's dynamic shelves, carried as one value rather than seven flows.
+ *
+ * `@Immutable` for the same reason [MaItem] is: `List<T>` reads as unstable, and an
+ * unstable parameter would stop the composable holding these from ever skipping.
+ * Every list here is replaced wholesale by its loader, never mutated in place.
+ */
+@Immutable
+data class LibraryShelves(
+    val favoriteAlbums: List<MaItem> = emptyList(),
+    val favoriteArtists: List<MaItem> = emptyList(),
+    val inProgress: List<MaItem> = emptyList(),
+    val recentlyAdded: List<MaItem> = emptyList(),
+    val recommendations: List<MaItem> = emptyList(),
+    val recent: List<MaItem> = emptyList(),
+    val frequent: List<MaItem> = emptyList(),
+)
 
 /**
  * On-device library. Two switchable backends:
@@ -141,6 +160,30 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * reached it, and the app died the moment the library opened.
      */
     private val _frequent = MutableStateFlow<List<MaItem>>(emptyList()); val frequent: StateFlow<List<MaItem>> = _frequent
+
+    /**
+     * The seven root shelves as one value.
+     *
+     * The library grid used to read all seven flows separately, which meant seven
+     * independent ways to invalidate the whole `LazyVerticalGrid` content lambda —
+     * and the shelves load one after another on connect, so opening the library
+     * rebuilt the grid seven times in a row. Combined, that is one rebuild.
+     *
+     * Declared below every flow it reads: [init] collects on `viewModelScope`
+     * (`Dispatchers.Main.immediate`), so construction runs shelf loads synchronously
+     * and a property declared above its dependencies sees them as null — the same
+     * trap [_frequent] documents above.
+     */
+    val shelves: StateFlow<LibraryShelves> = combine(
+        _favoriteAlbums, _favoriteArtists, _inProgress, _recentlyAdded,
+        _recommendations, _recent, _frequent,
+    ) { s ->
+        LibraryShelves(
+            favoriteAlbums = s[0], favoriteArtists = s[1], inProgress = s[2],
+            recentlyAdded = s[3], recommendations = s[4], recent = s[5], frequent = s[6],
+        )
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, LibraryShelves())
+
     val downloadJobs: StateFlow<List<DownloadJob>> get() = downloadManager.jobs
     /** Ids of everything on disk — what puts the "downloaded" tick on a track row. */
     val downloadedIds: StateFlow<Set<String>> = downloadManager.downloads

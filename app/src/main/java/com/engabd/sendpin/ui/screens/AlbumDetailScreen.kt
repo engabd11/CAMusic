@@ -83,6 +83,15 @@ fun AlbumDetailScreen(
     val albumArt = album?.image ?: artUrl
     val albumPalette = rememberAlbumPalette(albumArt)
 
+    // Scans over the track list, hoisted out of the LazyColumn body below. That body is
+    // a LazyListScope receiver rather than a composable, so it has no `remember` — a
+    // groupBy and a sumOf written inside it are redone in full every time the list
+    // rebuilds, which is on every state change this screen has.
+    val totalDuration = remember(tracks) { tracks.sumOf { it.duration ?: 0 } }
+    // Multi-disc grouping: when tracks span 2+ discs, a "Disc N" header goes between
+    // groups. A single disc (or all null/1) renders flat as before.
+    val discGroups = remember(tracks) { tracks.groupBy { it.discNumber ?: 1 } }
+
     CompositionLocalProvider(
         LocalAccent provides albumPalette.accent,
         LocalPalette provides albumPalette,
@@ -112,7 +121,7 @@ fun AlbumDetailScreen(
                             albumName = album?.name ?: name,
                             artUrl = albumArt,
                             trackCount = tracks.size,
-                            totalDuration = tracks.sumOf { it.duration ?: 0 },
+                            totalDuration = totalDuration,
                             onPlayAll = viewModel::playAll,
                             onShuffle = viewModel::shuffleAll,
                             onAddToQueue = viewModel::addToQueue,
@@ -130,25 +139,25 @@ fun AlbumDetailScreen(
 
                     // Track list
                     if (loading && tracks.isEmpty()) {
-                        items(6) { SkeletonTrackRow() }
+                        items(6, contentType = { "skeleton" }) { SkeletonTrackRow() }
                     } else if (error != null && tracks.isEmpty()) {
                         item { ErrorState(error!!) { viewModel.loadAlbum() } }
                     } else if (tracks.isEmpty()) {
                         item { EmptyState("No tracks", "This album appears to be empty.") }
                     } else {
-                        // Multi-disc grouping: when tracks span 2+ discs, render
-                        // a "Disc N" header between groups. A single disc (or all
-                        // null/1) renders flat as before.
-                        val discGroups = tracks.groupBy { it.discNumber ?: 1 }
                         val multiDisc = discGroups.size > 1
                         var runningIndex = 0
                         discGroups.forEach { (disc, discTracks) ->
                             if (multiDisc) {
-                                item(key = "disc:$disc") {
+                                item(key = "disc:$disc", contentType = "discHeader") {
                                     DiscHeader(disc = disc, accent = albumPalette.accent)
                                 }
                             }
-                            itemsIndexed(discTracks, key = { i, t -> "track:$disc:$i:${t.itemId}" }) { offset, track ->
+                            itemsIndexed(
+                                discTracks,
+                                key = { i, t -> "track:$disc:$i:${t.itemId}" },
+                                contentType = { _, _ -> "track" },
+                            ) { offset, track ->
                                 val index = runningIndex + offset
                                 TrackRow(
                                     track = track,

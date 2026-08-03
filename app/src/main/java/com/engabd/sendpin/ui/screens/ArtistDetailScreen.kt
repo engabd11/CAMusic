@@ -156,7 +156,7 @@ fun ArtistDetailScreen(
                     }
 
                     if (loading && albums.isEmpty()) {
-                        items(4) { SkeletonTrackRow() }
+                        items(4, contentType = { "skeleton" }) { SkeletonTrackRow() }
                         return@LazyColumn
                     }
 
@@ -175,7 +175,11 @@ fun ArtistDetailScreen(
                     // duplicate key is a hard crash in a lazy list.
                     if (albums.isNotEmpty()) {
                         item { Shelf("Albums") }
-                        itemsIndexed(albums, key = { i, a -> "album:$i:${a.itemId}" }) { _, album ->
+                        itemsIndexed(
+                            albums,
+                            key = { i, a -> "album:$i:${a.itemId}" },
+                            contentType = { _, _ -> "album" },
+                        ) { _, album ->
                             AlbumRow(
                                 album = album,
                                 accent = artistPalette.accent,

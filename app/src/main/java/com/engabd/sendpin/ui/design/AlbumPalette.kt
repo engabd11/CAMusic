@@ -2,6 +2,7 @@ package com.engabd.sendpin.ui.design
 
 import android.graphics.Bitmap
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
@@ -37,6 +38,7 @@ import kotlin.math.min
  * mood), and renders near-neutral swatches as tinted whites (warm/cool/neutral)
  * rather than inventing hues that aren't on the cover.
  */
+@Immutable
 data class AlbumPalette(
     val accent: Color = DefaultAccent,
     val swatches: List<Color> = FallbackPalette,

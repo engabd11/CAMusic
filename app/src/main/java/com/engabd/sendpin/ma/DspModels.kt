@@ -1,5 +1,6 @@
 package com.engabd.sendpin.ma
 
+import androidx.compose.runtime.Immutable
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.*
@@ -67,6 +68,7 @@ data class EqBand(
  * Carries an arbitrary number of [EqBand]s plus per-channel preamp.
  */
 @Serializable
+@Immutable
 data class ParametricEQFilter(
     @SerialName("enabled") val enabled: Boolean = false,
     @SerialName("preamp") val preamp: Float = 0f,
@@ -91,6 +93,7 @@ data class ToneControlFilter(
  * Which filter a [DspConfig] entry is. MA's schema uses a `oneOf` with a
  * `type` discriminator.
  */
+@Immutable
 sealed class DspFilter {
     abstract val enabled: Boolean
 
@@ -110,6 +113,7 @@ sealed class DspFilter {
  * limiter. The `filters` array may contain a mix of parametric EQ and tone
  * control entries, applied in order.
  */
+@Immutable
 data class DspConfig(
     val enabled: Boolean = false,
     val inputGain: Float = 0f,
