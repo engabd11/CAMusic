@@ -673,7 +673,7 @@ private fun PresetSection(
                     singleLine = true,
                     modifier = Modifier.weight(1f),
                     colors = accentTextFieldColors(accent),
-                    textStyle = androidx.compose.ui.text.TextStyle(style = MaterialTheme.typography.bodyMedium),
+                    textStyle = MaterialTheme.typography.bodyMedium,
                 )
                 Box(
                     Modifier.clip(RoundedCornerShape(8.dp)).background(accent).clickable(onClick = onSavePreset)
