@@ -14,7 +14,6 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -277,10 +276,7 @@ private fun HaField(value: String, onChange: (String) -> Unit, label: String, pl
         value = value, onValueChange = onChange,
         label = { Text(label) }, placeholder = { Text(placeholder) },
         singleLine = true, modifier = Modifier.fillMaxWidth(),
-        colors = OutlinedTextFieldDefaults.colors(
-            focusedBorderColor = accent, cursorColor = accent, focusedLabelColor = accent,
-            unfocusedBorderColor = Hairline, focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
-        ),
+        colors = accentTextFieldColors(accent),
     )
 }
 

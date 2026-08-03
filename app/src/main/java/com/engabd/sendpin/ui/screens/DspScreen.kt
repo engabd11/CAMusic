@@ -672,11 +672,7 @@ private fun PresetSection(
                     placeholder = { Text("Preset name", color = TextFaint, fontSize = 13.sp) },
                     singleLine = true,
                     modifier = Modifier.weight(1f),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
-                        focusedBorderColor = accent, unfocusedBorderColor = Hairline,
-                        cursorColor = accent,
-                    ),
+                    colors = accentTextFieldColors(accent),
                     textStyle = androidx.compose.ui.text.TextStyle(fontFamily = AppFont, fontSize = 13.sp),
                 )
                 Box(
