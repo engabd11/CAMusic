@@ -1,6 +1,7 @@
 package com.engabd.sendpin.ui.theme
 
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
 /**
@@ -23,6 +24,7 @@ import androidx.compose.ui.graphics.Color
  * )
  * ```
  */
+@Composable
 fun accentTextFieldColors(accent: Color) = OutlinedTextFieldDefaults.colors(
     focusedBorderColor = accent,
     cursorColor = accent,
