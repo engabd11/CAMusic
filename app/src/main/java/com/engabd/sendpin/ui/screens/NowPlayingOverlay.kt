@@ -59,6 +59,7 @@ fun NowPlayingOverlay(
     viewModel: NowPlayingViewModel = viewModel(),
     onOpenSpeakers: () -> Unit = {},
     onBrowse: () -> Unit = {},
+    onOpenDsp: () -> Unit = {},
     expanded: Boolean,
     onExpand: () -> Unit,
     onCollapse: () -> Unit,
@@ -374,6 +375,7 @@ fun NowPlayingOverlay(
                     }
                     // Playback speed + player options
                     IconChip(Icons.Default.Tune, "Player options", active = options) { options = !options }
+                    IconChip(Icons.Default.GraphicEq, "DSP / Equalizer") { onOpenDsp() }
                 }
 
                 Spacer(Modifier.height(8.dp))

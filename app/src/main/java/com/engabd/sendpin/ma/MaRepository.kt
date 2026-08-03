@@ -605,6 +605,66 @@ class MaRepository(val api: MaApiClient) {
         return values[match]?.jsonObject
     }
 
+    // --- per-player DSP (EQ, tone control, gain) ---------------------------
+
+    /**
+     * The DSP configuration for [playerId]. Returns a default config (disabled)
+     * when the player has none set.
+     */
+    suspend fun getDspConfig(playerId: String): DspConfig? {
+        val res = runCatching {
+            api.sendCommand("config/players/dsp/get", buildJsonObject {
+                put("player_id", playerId)
+            })
+        }.getOrNull()?.jsonObject ?: return null
+        return DspParse.config(res)
+    }
+
+    /**
+     * Save a DSP config for [playerId]. Admin-only on the server side.
+     * MA validates the config and applies it live — changes take effect
+     * without restarting playback.
+     */
+    suspend fun saveDspConfig(playerId: String, config: DspConfig): DspConfig? {
+        val res = runCatching {
+            api.sendCommand("config/players/dsp/save", buildJsonObject {
+                put("player_id", playerId)
+                put("config", DspParse.toJson(config))
+            })
+        }.getOrNull()?.jsonObject ?: return null
+        return DspParse.config(res)
+    }
+
+    // --- DSP presets (reusable configs across players) ---------------------
+
+    /** All user-defined DSP presets. */
+    suspend fun getDspPresets(): List<DspPreset> {
+        val res = runCatching {
+            api.sendCommand("config/dsp_presets/get")
+        }.getOrNull() ?: return emptyList()
+        val arr = res as? kotlinx.serialization.json.JsonArray ?: return emptyList()
+        return DspParse.presets(arr)
+    }
+
+    /** Create or update a preset. Returns the saved preset with its id. */
+    suspend fun saveDspPreset(preset: DspPreset): DspPreset? {
+        val res = runCatching {
+            api.sendCommand("config/dsp_presets/save", buildJsonObject {
+                put("preset", DspParse.presetToJson(preset))
+            })
+        }.getOrNull()?.jsonObject ?: return null
+        return DspParse.preset(res)
+    }
+
+    /** Remove a preset by id. */
+    suspend fun removeDspPreset(presetId: String) {
+        runCatching {
+            api.sendCommand("config/dsp_presets/remove", buildJsonObject {
+                put("preset_id", presetId)
+            })
+        }
+    }
+
     // --- args -------------------------------------------------------------
 
     /**

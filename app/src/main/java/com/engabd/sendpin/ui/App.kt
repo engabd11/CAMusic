@@ -48,6 +48,7 @@ import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
 import com.engabd.sendpin.ui.screens.AlbumDetailScreen
 import com.engabd.sendpin.ui.screens.ArtistDetailScreen
+import com.engabd.sendpin.ui.screens.DspScreen
 import com.engabd.sendpin.ui.screens.LibraryScreen
 import com.engabd.sendpin.ui.screens.LightSyncScreen
 import com.engabd.sendpin.ui.screens.MiniPlayerBar
@@ -199,6 +200,7 @@ fun App() {
                                 viewModel = nowPlayingVm,
                                 onOpenSpeakers = { go("speakers") },
                                 onBrowse = { go("library") },
+                                onOpenDsp = { navController.navigate("dsp") },
                             )
                         }
                     }
@@ -296,6 +298,7 @@ fun App() {
                         )
                     }
                     composable("speakers") { SpeakersScreen(onBack = { navController.popBackStack() }) }
+                    composable("dsp") { DspScreen(onBack = { navController.popBackStack() }) }
                     composable("light_sync") { LightSyncScreen(onBack = { navController.popBackStack() }) }
                     composable("settings") { SettingsScreen(viewModel = playerVm) }
                 }
@@ -334,6 +337,7 @@ fun App() {
                             viewModel = nowPlayingVm,
                             onOpenSpeakers = { overlayExpanded = false; go("speakers") },
                             onBrowse = { overlayExpanded = false; go("library") },
+                            onOpenDsp = { overlayExpanded = false; navController.navigate("dsp") },
                             expanded = overlayExpanded,
                             onExpand = { overlayExpanded = true },
                             onCollapse = { overlayExpanded = false },
