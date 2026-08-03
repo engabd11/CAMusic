@@ -14,7 +14,6 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -84,29 +83,20 @@ fun OnboardingScreen(
             OutlinedTextField(
                 value = name, onValueChange = { name = it },
                 label = { Text("Player name") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = accent, cursorColor = accent, focusedLabelColor = accent,
-                    unfocusedBorderColor = Hairline, focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
-                ),
+                colors = accentTextFieldColors(accent),
             )
             Spacer(Modifier.height(10.dp))
             OutlinedTextField(
                 value = user, onValueChange = { user = it },
                 label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = accent, cursorColor = accent, focusedLabelColor = accent,
-                    unfocusedBorderColor = Hairline, focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
-                ),
+                colors = accentTextFieldColors(accent),
             )
             Spacer(Modifier.height(10.dp))
             OutlinedTextField(
                 value = pass, onValueChange = { pass = it },
                 label = { Text("Password") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
                 visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = accent, cursorColor = accent, focusedLabelColor = accent,
-                    unfocusedBorderColor = Hairline, focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
-                ),
+                colors = accentTextFieldColors(accent),
             )
             Text(
                 "Leave blank only if your server has no authentication.",
@@ -165,11 +155,7 @@ fun OnboardingScreen(
                 label = { Text("WebSocket URL") },
                 placeholder = { Text("ws://192.168.0.100:8095/ws") },
                 singleLine = true, modifier = Modifier.fillMaxWidth(),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = accent, cursorColor = accent,
-                    focusedLabelColor = accent, unfocusedBorderColor = Hairline,
-                    focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
-                ),
+                colors = accentTextFieldColors(accent),
             )
             Spacer(Modifier.height(14.dp))
             Box(

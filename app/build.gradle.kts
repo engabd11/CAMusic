@@ -60,6 +60,12 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
 
+    // Material Components library — provides Theme.Material3.NoActionBar (the XML
+    // theme parent) used by themes.xml. The Compose material3 artifact handles the
+    // Compose layer; this handles the pre-Compose window so the XML theme's parent
+    // matches the Compose MaterialTheme.
+    implementation("com.google.android.material:material:1.12.0")
+
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")

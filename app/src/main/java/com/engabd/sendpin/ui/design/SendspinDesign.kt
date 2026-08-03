@@ -16,6 +16,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -41,6 +42,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
@@ -203,10 +205,7 @@ fun SectionLabel(text: String, modifier: Modifier = Modifier) {
     Text(
         text.uppercase(),
         color = TextFaint,
-        fontFamily = AppFont,
-        fontWeight = FontWeight.Bold,
-        fontSize = 10.sp,
-        letterSpacing = 1.4.sp,
+        style = MaterialTheme.typography.labelSmall,
         modifier = modifier,
     )
 }
@@ -220,11 +219,12 @@ fun GlassCard(
     fill: Color = Glass,
     content: @Composable BoxScope.() -> Unit,
 ) {
+    val outline = MaterialTheme.colorScheme.outline
     Box(
         modifier
             .clip(RoundedCornerShape(radius))
             .background(fill)
-            .border(1.dp, Hairline, RoundedCornerShape(radius)),
+            .border(1.dp, outline, RoundedCornerShape(radius)),
         content = content,
     )
 }
@@ -320,7 +320,7 @@ fun Pill(text: String, selected: Boolean, modifier: Modifier = Modifier, onClick
         Text(
             text,
             color = if (selected) Ink else TextSecondary,
-            fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 12.sp,
+            style = MaterialTheme.typography.labelLarge,
             maxLines = 1,
         )
     }
@@ -340,7 +340,7 @@ fun ToggleChip(text: String, selected: Boolean, modifier: Modifier = Modifier, o
         Text(
             text,
             color = if (selected) accent else TextMuted,
-            fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 12.sp,
+            style = MaterialTheme.typography.labelLarge,
         )
     }
 }
@@ -374,7 +374,7 @@ fun SegmentedToggle(
                 Text(
                     label,
                     color = if (on) Ink else TextMuted,
-                    fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1,
+                    style = MaterialTheme.typography.labelLarge, maxLines = 1,
                 )
             }
         }
@@ -450,7 +450,9 @@ fun QualityPill(
         Text(
             text,
             color = if (lossless) Color.White.a(0.92f) else TextMuted,
-            fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = fontSize, maxLines = 1,
+            style = if (compact) TextStyle(fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 9.sp)
+                    else MaterialTheme.typography.labelMedium,
+            maxLines = 1,
         )
     }
 }

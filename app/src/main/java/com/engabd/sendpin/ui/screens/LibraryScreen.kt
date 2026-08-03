@@ -32,7 +32,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -616,13 +615,7 @@ private fun CreatePlaylistDialog(onDismiss: () -> Unit, onCreate: (String) -> Un
                     onValueChange = { name = it },
                     singleLine = true,
                     placeholder = { Text("Playlist name", color = TextFaint, fontFamily = AppFont) },
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = TextPrimary,
-                        unfocusedTextColor = TextPrimary,
-                        focusedBorderColor = accent,
-                        unfocusedBorderColor = Hairline,
-                        cursorColor = accent,
-                    ),
+                    colors = accentTextFieldColors(accent),
                 )
                 Text(
                     "Created empty — add tracks to it afterwards.",

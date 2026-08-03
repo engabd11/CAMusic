@@ -851,7 +851,6 @@ private fun OledField(
         visualTransformation = visualTransformation,
         colors = OutlinedTextFieldDefaults.colors(
             focusedBorderColor = accent, cursorColor = accent, focusedLabelColor = accent,
-            unfocusedBorderColor = Hairline, focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
             disabledBorderColor = Hairline, disabledTextColor = TextMuted, disabledLabelColor = TextMuted,
         ),
         trailingIcon = trailingIcon,
