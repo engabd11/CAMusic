@@ -518,11 +518,18 @@ private fun QualityDetailCard(
                 color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
             )
         }
-        // Which library the file itself came from. This is the reading that used to
-        // sit in the corner badge, where it was mistaken for the thing playing.
-        provider?.let {
+        // Where Music Assistant pulled the bytes from — `StreamDetails.provider`.
+        //
+        // Named in full rather than as "From X". It sat in the corner badge once and
+        // was read as the thing playing; moving it here kept the ambiguity, because
+        // "From Subsonic" on a screen whose player is MA still reads as a claim about
+        // the library or the player. It is neither: MA's own library is backed by
+        // providers, and this says which one held the file. Worth keeping — it is the
+        // difference between a local rip and a lossy stream — but only if it cannot be
+        // mistaken for anything else.
+        provider?.takeIf { !localSession }?.let {
             Text(
-                "From $it",
+                "Music Assistant fetched this from $it",
                 color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
             )
         }
