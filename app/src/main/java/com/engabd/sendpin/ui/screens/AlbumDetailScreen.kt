@@ -130,18 +130,30 @@ fun AlbumDetailScreen(
                     } else if (tracks.isEmpty()) {
                         item { EmptyState("No tracks", "This album appears to be empty.") }
                     } else {
-                        // Index in the key, not the item id alone: an id repeated in
-                        // the list is a hard crash in a lazy list, and a track mapped
-                        // through two providers comes back twice.
-                        itemsIndexed(tracks, key = { i, t -> "track:$i:${t.itemId}" }) { index, track ->
-                            TrackRow(
-                                track = track,
-                                index = index,
-                                accent = albumPalette.accent,
-                                onPlay = { viewModel.playTrack(track) },
-                                onFavorite = { viewModel.toggleFavorite(track) },
-                                onLongPress = { actionsFor = track },
-                            )
+                        // Multi-disc grouping: when tracks span 2+ discs, render
+                        // a "Disc N" header between groups. A single disc (or all
+                        // null/1) renders flat as before.
+                        val discGroups = tracks.groupBy { it.discNumber ?: 1 }
+                        val multiDisc = discGroups.size > 1
+                        var runningIndex = 0
+                        discGroups.forEach { (disc, discTracks) ->
+                            if (multiDisc) {
+                                item(key = "disc:$disc") {
+                                    DiscHeader(disc = disc, accent = albumPalette.accent)
+                                }
+                            }
+                            itemsIndexed(discTracks, key = { i, t -> "track:$disc:$i:${t.itemId}" }) { offset, track ->
+                                val index = runningIndex + offset
+                                TrackRow(
+                                    track = track,
+                                    index = index,
+                                    accent = albumPalette.accent,
+                                    onPlay = { viewModel.playTrack(track) },
+                                    onFavorite = { viewModel.toggleFavorite(track) },
+                                    onLongPress = { actionsFor = track },
+                                )
+                            }
+                            runningIndex += discTracks.size
                         }
                     }
                 }
@@ -393,6 +405,39 @@ internal fun TrackRow(
                 modifier = Modifier.size(16.dp).clip(CircleShape).clickable(onClick = fav),
             )
         }
+    }
+}
+
+// --- multi-disc header ---------------------------------------------------
+
+/**
+ * A "Disc N" header that sits between track groups on a multi-disc album.
+ * Only rendered when the album has 2+ distinct disc numbers.
+ */
+@Composable
+private fun DiscHeader(disc: Int, accent: Color) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp, vertical = 10.dp)
+            .padding(top = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Box(
+            Modifier
+                .width(3.dp).height(14.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(accent.a(0.6f)),
+        )
+        Text(
+            "Disc $disc",
+            color = accent,
+            fontFamily = AppFont,
+            fontWeight = FontWeight.Bold,
+            fontSize = 13.sp,
+            letterSpacing = 0.5.sp,
+        )
     }
 }
 
