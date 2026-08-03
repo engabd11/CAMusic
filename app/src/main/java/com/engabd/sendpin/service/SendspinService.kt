@@ -13,14 +13,12 @@ import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
 import androidx.core.app.NotificationCompat
-import androidx.core.app.TaskStackBuilder
 import androidx.core.graphics.drawable.toBitmap
 import androidx.media.app.NotificationCompat.MediaStyle
 import androidx.media.session.MediaButtonReceiver
 import coil.imageLoader
 import coil.request.ImageRequest
 import coil.request.SuccessResult
-import com.engabd.sendpin.MainActivity
 import com.engabd.sendpin.SendpinApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -271,22 +269,8 @@ class SendspinService : Service() {
         scope.launch {
             // Position comes from whichever side owns the shade: the Sendspin stream's
             // own playhead, or the projected position of the selected MA player.
-            //
-            // When this phone is the player, `pb.positionMs` is raw `progressMs` from
-            // `server/state` — it has no projection between updates and no freeze after
-            // a seek, so the notification bar snaps back before jumping forward. The
-            // `MaNowPlaying` tracker projects and freezes for the selected player, which
-            // *is* this phone when it's the target — so prefer its reading when the MA
-            // target is this phone, and fall back to the raw stream position only when
-            // MA is tracking a different player (an edge case: this phone playing as a
-            // synced member while the user has selected another speaker).
             combine(shade, pb.positionMs, ma.positionMs) { s, localPos, remotePos ->
-                val pos = when {
-                    s.local && ma.now.value?.isSelf == true -> remotePos
-                    s.local -> localPos
-                    else -> remotePos
-                }
-                Triple(s.isPlaying, pos, s)
+                Triple(s.isPlaying, if (s.local) localPos else remotePos, s)
             }.collect { (isPlaying, pos, _) -> updatePlaybackState(isPlaying, pos) }
         }
         scope.launch {
@@ -402,9 +386,7 @@ class SendspinService : Service() {
             }
         }
 
-        val open = TaskStackBuilder.create(this)
-            .addNextIntent(Intent(this, MainActivity::class.java))
-            .getPendingIntent(0, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val open = openAppIntent(this, OpenAppRequest.MEDIA)
 
         val playPauseIcon = if (isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play
         val playPauseLabel = if (isPlaying) "Pause" else "Play"

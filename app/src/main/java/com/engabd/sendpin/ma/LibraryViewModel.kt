@@ -11,6 +11,8 @@ import com.engabd.sendpin.discovery.PlayerIdentity
 import com.engabd.sendpin.download.DownloadJob
 import com.engabd.sendpin.download.DownloadedTrack
 import com.engabd.sendpin.subsonic.SubsonicClient
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -114,6 +116,75 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     /** How deep the browser is; 0 = the root shelf (categories + shelves). */
     private val _depth = MutableStateFlow(0); val depth: StateFlow<Int> = _depth
+
+    // ── Refresh ─────────────────────────────────────────────────────────────
+    //
+    // Both backends cache hard at their own end and neither pushes an "the library
+    // changed" event, so a newly-added album simply isn't there until something asks
+    // again. Without a way to ask, the only remedy was to kill the app.
+
+    /**
+     * How to re-fetch the node currently on screen. Null at the root shelf, whose
+     * refresh is [showRoot] rather than a single loader.
+     *
+     * Kept as a stack alongside [stack] so walking back up restores the right one:
+     * the node a [pushNode] published knows how it was built, but its parent's
+     * loader is only recoverable if it was put somewhere first.
+     */
+    private data class Reload(val title: String, val load: suspend ((List<MaItem>) -> Unit) -> List<MaItem>)
+    private var reload: Reload? = null
+    private val reloadStack = ArrayDeque<Reload?>()
+
+    private val _refreshing = MutableStateFlow(false); val refreshing: StateFlow<Boolean> = _refreshing
+    private var refreshJob: Job? = null
+
+    /**
+     * Re-pull whatever the library is showing, from the server.
+     *
+     * Refreshes what the user is actually looking at rather than always bouncing to
+     * the root: a search re-runs, a browsed node re-fetches in place (no push, so
+     * Back still goes where it did), and the root reloads every shelf.
+     */
+    fun refresh() {
+        if (refreshJob?.isActive == true) return
+        refreshJob = viewModelScope.launch {
+            _refreshing.value = true
+            try {
+                val here = reload
+                when {
+                    _searchOpen.value && _query.value.isNotBlank() -> runSearch(_query.value)
+                    here == null -> reloadRoot()
+                    else -> reloadNode(here)
+                }
+            } finally {
+                _refreshing.value = false
+            }
+        }
+    }
+
+    /** Re-run a node's own loader, replacing it in place rather than pushing a copy. */
+    private suspend fun reloadNode(target: Reload) {
+        _loading.value = true; _error.value = null
+        try {
+            fun publish(items: List<MaItem>) {
+                rememberFavorites(items)
+                _node.value = Node(target.title, items)
+            }
+            publish(target.load { partial -> if (partial.isNotEmpty()) publish(partial) })
+        } catch (e: Exception) {
+            _error.value = e.message ?: "Failed to refresh"
+        }
+        _loading.value = false
+    }
+
+    /** The root shelf, re-fetched — and waited for, so the spinner means something. */
+    private suspend fun reloadRoot() {
+        _node.value = Node("Library", rootItems())
+        listOfNotNull(
+            loadFavoriteAlbums(), loadFavoriteArtists(), loadRecent(),
+            loadRecentlyAdded(), loadRecommendations(), loadInProgress(),
+        ).joinAll()
+    }
 
     init {
         viewModelScope.launch {
@@ -339,6 +410,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     fun back(): Boolean {
         if (stack.isNotEmpty()) {
             _node.value = stack.removeLast()
+            reload = if (reloadStack.isEmpty()) null else reloadStack.removeLast()
             _depth.value = stack.size
             // Returning to the depth the search was launched from puts the results back.
             if (_search.value != null && stack.size == searchDepth) _searchOpen.value = true
@@ -614,19 +686,22 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         if (query.isBlank()) { clearSearch(); return }
         searchDepth = stack.size
         _searchOpen.value = true
-        viewModelScope.launch {
-            _loading.value = true; _error.value = null
-            try {
-                val r = when {
-                    _backend.value == Backend.MA -> maRepo.search(query)
-                    _offline.value -> searchDownloads(query)
-                    else -> subsonic?.search(query)
-                }
-                r?.let { rememberFavorites(it.artists + it.albums + it.tracks + it.playlists) }
-                _search.value = r
-            } catch (e: Exception) { _error.value = e.message ?: "Search failed" }
-            _loading.value = false
-        }
+        viewModelScope.launch { runSearch(query) }
+    }
+
+    /** The body of [doSearch], so [refresh] can await it rather than fire and forget. */
+    private suspend fun runSearch(query: String) {
+        _loading.value = true; _error.value = null
+        try {
+            val r = when {
+                _backend.value == Backend.MA -> maRepo.search(query)
+                _offline.value -> searchDownloads(query)
+                else -> subsonic?.search(query)
+            }
+            r?.let { rememberFavorites(it.artists + it.albums + it.tracks + it.playlists) }
+            _search.value = r
+        } catch (e: Exception) { _error.value = e.message ?: "Search failed" }
+        _loading.value = false
     }
 
     /** With the server gone, search what's on the phone rather than nothing at all. */
@@ -692,6 +767,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private fun openCategory(id: String, title: String) {
         if (id == "downloads") {
             stack.addLast(_node.value)
+            reloadStack.addLast(reload)
+            // Reads the in-memory index rather than the server, but refreshing it is
+            // still the right answer to "this list looks stale".
+            reload = Reload(DOWNLOADS_TITLE) { downloadItems(downloads.value) }
             _node.value = Node(DOWNLOADS_TITLE, downloadItems(downloads.value))
             _depth.value = stack.size
             return
@@ -779,6 +858,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 rememberFavorites(items)
                 if (!pushed) {
                     stack.addLast(_node.value)
+                    // Remember how *this* node was built, and park the parent's own
+                    // loader so Back restores it. See [Reload].
+                    reloadStack.addLast(reload)
+                    reload = Reload(title, loader)
                     pushed = true
                     _depth.value = stack.size
                 }
@@ -799,6 +882,8 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun showRoot() {
         stack.clear()
+        reloadStack.clear()
+        reload = null            // the root's refresh is [reloadRoot], not a loader
         _search.value = null
         _node.value = Node("Library", rootItems())
         _depth.value = 0
@@ -811,9 +896,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Best-effort — a shelf is hidden rather than erroring if a server lacks it. */
-    private fun loadRecent() {
-        if (_offline.value) { _recent.value = emptyList(); return }
-        viewModelScope.launch {
+    private fun loadRecent(): Job? {
+        if (_offline.value) { _recent.value = emptyList(); return null }
+        return viewModelScope.launch {
             _recent.value = try {
                 if (_backend.value == Backend.MA) maRepo.recentlyPlayed()
                 else subsonic?.albumList("recent", size = 12).orEmpty()
@@ -853,9 +938,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         if (played == true) sc.scrobble(id, submission = true, timeMs = startedAtMs)
     }
 
-    private fun loadFavoriteAlbums() {
-        if (_offline.value) { _favoriteAlbums.value = emptyList(); return }
-        viewModelScope.launch {
+    private fun loadFavoriteAlbums(): Job? {
+        if (_offline.value) { _favoriteAlbums.value = emptyList(); return null }
+        return viewModelScope.launch {
             _favoriteAlbums.value = try {
                 if (_backend.value == Backend.MA) maRepo.favoriteAlbums()
                 else subsonic?.albumList("starred", size = 12).orEmpty()
@@ -864,9 +949,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun loadFavoriteArtists() {
-        if (_offline.value) { _favoriteArtists.value = emptyList(); return }
-        viewModelScope.launch {
+    private fun loadFavoriteArtists(): Job? {
+        if (_offline.value) { _favoriteArtists.value = emptyList(); return null }
+        return viewModelScope.launch {
             _favoriteArtists.value = try {
                 if (_backend.value == Backend.MA) maRepo.favoriteArtists()
                 else subsonic?.starred()?.artists?.take(12).orEmpty()
@@ -875,9 +960,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun loadRecentlyAdded() {
-        if (_offline.value) { _recentlyAdded.value = emptyList(); return }
-        viewModelScope.launch {
+    private fun loadRecentlyAdded(): Job? {
+        if (_offline.value) { _recentlyAdded.value = emptyList(); return null }
+        return viewModelScope.launch {
             _recentlyAdded.value = try {
                 if (_backend.value == Backend.MA) maRepo.recentlyAdded()
                 else subsonic?.albumList("newest", size = 12).orEmpty()
@@ -887,9 +972,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** "For you": MA's recommendations, or a fresh handful of the shelf you forgot. */
-    private fun loadRecommendations() {
-        if (_offline.value) { _recommendations.value = emptyList(); return }
-        viewModelScope.launch {
+    private fun loadRecommendations(): Job? {
+        if (_offline.value) { _recommendations.value = emptyList(); return null }
+        return viewModelScope.launch {
             _recommendations.value = try {
                 if (_backend.value == Backend.MA) maRepo.recommendations()
                 else subsonic?.albumList("random", size = 12).orEmpty()
@@ -899,9 +984,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Load in-progress audiobooks/podcasts (MA only). */
-    private fun loadInProgress() {
-        if (_backend.value != Backend.MA) { _inProgress.value = emptyList(); return }
-        viewModelScope.launch {
+    private fun loadInProgress(): Job? {
+        if (_backend.value != Backend.MA) { _inProgress.value = emptyList(); return null }
+        return viewModelScope.launch {
             _inProgress.value = try { maRepo.inProgress() } catch (_: Exception) { emptyList() }
             rememberFavorites(_inProgress.value)
         }

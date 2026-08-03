@@ -59,11 +59,23 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         /** The original source format from the library (before any transcoding). */
         val sourceQuality: StreamQuality? = null,
         /**
-         * Where the track came from: "MA", "Navidrome", "Offline", or the streaming
-         * provider MA pulled it from. Never blank — the badge tells the user which
-         * backend owns playback, and that is knowable even before a queue exists.
+         * Which **backend owns playback**: "MA", "Navidrome" or "Offline". Never
+         * blank — that is knowable even before a queue exists, which is why the badge
+         * asks this question and not a harder one.
+         *
+         * Deliberately not the upstream music provider. Reporting that here read
+         * "Subsonic" whenever Music Assistant streamed a track out of a Subsonic
+         * library, which is true about the *file* and wrong about the *player*: the
+         * transport buttons, the queue and the speaker list were all MA's. See
+         * [streamProvider] for where that reading went.
          */
         val source: String = "MA",
+        /**
+         * The upstream provider MA pulled the bytes from ("Subsonic", "Spotify"), or
+         * null when the server doesn't say. Stream detail, shown in the quality card
+         * rather than the badge — see [source].
+         */
+        val streamProvider: String? = null,
         /** Players sharing this stream, when the target leads a sync group. */
         val groupSize: Int = 1,
         val shuffle: Boolean = false,
@@ -104,10 +116,12 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
      * controlled something the user couldn't hear.
      */
     private val local = (app as SendpinApp).localPlayer
+    /** This phone's own Sendspin connection and stream. */
+    private val playback = (app as SendpinApp).playback
     /** This phone's own Sendspin stream — the authoritative format when we're the player. */
-    private val localQuality = (app as SendpinApp).playback.streamQuality
+    private val localQuality = playback.streamQuality
     /** True while this phone's Sendspin stream is actually running. */
-    private val sendspinPlaying = (app as SendpinApp).playback.isPlaying
+    private val sendspinPlaying = playback.isPlaying
     /** What this phone can put out on its own, for locally-decoded playback. */
     private val deviceQuality = FormatNegotiator.deviceOutputQuality()
 
@@ -180,6 +194,24 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Which queue the tracker is keyed on: the group leader, since members share it. */
     private fun positionKey(): String = streamQueueId()
+
+    /**
+     * True when this phone's own Sendspin stream is the best answer about the playhead.
+     *
+     * When we *are* the player, `server/state` is pushed on every change and carries
+     * the server-clock instant its progress reading was true at, so [Playback] can date
+     * it exactly (see `Playback.anchorProgress`). Music Assistant's `elapsed_time`, by
+     * contrast, arrives on a five-second poll and says nothing trustworthy about how
+     * old it is.
+     *
+     * That gap is what the bar was showing. A new track was detected on a poll and
+     * anchored at zero *at detection time* — but the server had already been playing
+     * for however long the poll took to notice, so the bar ran ahead of the music and
+     * the next poll dragged it back to around a second. Hence "it moves a couple of
+     * seconds and then goes back to 00:01".
+     */
+    private fun sendspinAuthoritative(): Boolean =
+        !isLocal && sendspinPlaying.value && targetId() == myPlayerId
 
     /** Identity of the current track, for detecting a change between polls. */
     @Volatile private var lastTrackId: String? = null
@@ -286,10 +318,12 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                 ?: queue?.currentItem?.audioFormat?.let {
                     StreamQuality(it.codec, it.sampleRate, it.bitDepth, it.bitRate)
                 },
-            // Where the bytes are coming from, off `streamdetails.provider`. The media
-            // item's own provider is always "library" — it says where MA filed the
-            // track, not which backend is streaming it.
-            source = MaParse.providerLabel(queue?.streamProvider),
+            // Music Assistant is what is playing, whatever shelf it took the file off.
+            source = "MA",
+            // …and that shelf, off `streamdetails.provider`, as detail. The media
+            // item's own provider is always "library" — it says where MA *filed* the
+            // track, not where it streamed it from.
+            streamProvider = MaParse.streamProviderLabel(queue?.streamProvider),
             groupSize = 1 + (p?.groupChilds?.size ?: 0),
             shuffle = queue?.shuffleEnabled == true,
             repeatMode = queue?.repeatMode ?: "off",
@@ -434,6 +468,26 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                 .distinctUntilChanged()
                 .collect { followPosition(it) }
         }
+        // When this phone is the player, anchor off its own Sendspin playhead rather
+        // than MA's poll — see [sendspinAuthoritative]. Deliberately fed *through* the
+        // tracker rather than around it: everything that makes seeking and skipping
+        // behave (the optimistic freeze, its watchdog) lives there, and a second
+        // position source bypassing it would have to reimplement all of it.
+        //
+        // [Playback.positionMs] is already projected to now, so the tracker's own
+        // forward projection has nothing left to add — which is fine. It re-anchors
+        // several times a second on a reading that is correct each time.
+        viewModelScope.launch {
+            playback.positionMs.collect { ms ->
+                if (!sendspinAuthoritative()) return@collect
+                positions.setAnchor(
+                    positionKey(),
+                    ms,
+                    isPlaying = true,
+                    durationMs = playback.playbackDurationMs.takeIf { it > 0 },
+                )
+            }
+        }
     }
 
     /** Last `elapsed_time_last_updated` accepted, per queue — the staleness gate. */
@@ -472,6 +526,13 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             if (!confirmed) return
             releaseFreeze(key)
         }
+
+        // Freeze bookkeeping above still applies — a seek or skip has to be confirmed
+        // however the playhead is sourced — but the anchor itself belongs to the
+        // Sendspin stream when we are the player. Anchoring here as well would drag a
+        // precise, pushed reading back onto a five-second-old polled one several times
+        // a minute, which is the jitter this is meant to remove.
+        if (sendspinAuthoritative()) return
 
         val speed = q?.playbackSpeed ?: 1f
 

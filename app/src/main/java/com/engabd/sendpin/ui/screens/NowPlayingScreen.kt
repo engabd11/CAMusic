@@ -265,7 +265,7 @@ fun NowPlayingScreen(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
-                        TappableQualityChip(playing = st.quality, source = st.sourceQuality)
+                        TappableQualityChip(playing = st.quality, source = st.sourceQuality, provider = st.streamProvider)
                         PlayButton(st.isPlaying) { viewModel.playPause() }
                     }
                     TransportIcon(Icons.Default.SkipNext, "Next", 26.dp) { viewModel.next() }
@@ -378,7 +378,7 @@ private fun TopBar(playerName: String, isSelf: Boolean, groupSize: Int, onOpenSp
  * time it opened; an info panel has no business moving the play button.
  */
 @Composable
-fun TappableQualityChip(playing: StreamQuality?, source: StreamQuality?) {
+fun TappableQualityChip(playing: StreamQuality?, source: StreamQuality?, provider: String? = null) {
     var showDetail by remember { mutableStateOf(false) }
 
     Box(Modifier.clickable { showDetail = true }) {
@@ -413,7 +413,7 @@ fun TappableQualityChip(playing: StreamQuality?, source: StreamQuality?) {
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
                     ) { }
-                ) { QualityDetailCard(playing = playing, source = source) }
+                ) { QualityDetailCard(playing = playing, source = source, provider = provider) }
             }
         }
     }
@@ -421,7 +421,7 @@ fun TappableQualityChip(playing: StreamQuality?, source: StreamQuality?) {
 
 /** A small card showing both the original source and the playing format. */
 @Composable
-private fun QualityDetailCard(playing: StreamQuality?, source: StreamQuality?) {
+private fun QualityDetailCard(playing: StreamQuality?, source: StreamQuality?, provider: String? = null) {
     val accent = LocalAccent.current
     // Both rows always render when both readings exist, and the line underneath says
     // whether they differ. Hiding "Source" on a match was the old behaviour, and it
@@ -448,6 +448,14 @@ private fun QualityDetailCard(playing: StreamQuality?, source: StreamQuality?) {
             Text(
                 if (transcoded) "Transcoded from ${source.label} to ${playing.label}"
                 else "Direct — no transcoding",
+                color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
+            )
+        }
+        // Which library the file itself came from. This is the reading that used to
+        // sit in the corner badge, where it was mistaken for the thing playing.
+        provider?.let {
+            Text(
+                "From $it",
                 color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
             )
         }

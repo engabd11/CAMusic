@@ -16,9 +16,12 @@
         android:usesCleartextTraffic="true"
         android:theme="@style/Theme.Sendspin">
 
+        <!-- singleTask so a notification tap resumes the running task instead of
+             building a second instance on top of it. See service/OpenApp.kt. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTask"
             android:theme="@style/Theme.Sendspin">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

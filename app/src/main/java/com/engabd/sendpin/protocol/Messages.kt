@@ -165,14 +165,44 @@ data class StreamStartPayload(val player: StreamStartPlayerInfo = StreamStartPla
 
 @Serializable
 data class MetadataProgressPayload(
+    /** Milliseconds into the current track, per the spec. */
     @SerialName("track_progress")
     @Serializable(with = FlexibleLongSerializer::class)
     val trackProgress: Long? = null,
+    /** Total track length in milliseconds. */
     @SerialName("track_duration")
     @Serializable(with = FlexibleLongSerializer::class)
     val trackDuration: Long? = null,
-    @SerialName("playback_speed") val playbackSpeed: Int? = null,
-)
+    /**
+     * Playback speed multiplier **×1000** — the spec's own unit, so 1000 is normal.
+     *
+     * Read through [speedMilli] rather than directly, and parsed flexibly for the
+     * same reason `track_duration` is: Music Assistant is documented (see
+     * `docs/protocol-alignment.md`) to send floats where the spec says integer, and a
+     * strict `Int` here would throw and take the *entire* `server/state` down with
+     * it — title, artist and progress all lost on a message that was only ever
+     * awkward about one field.
+     */
+    @SerialName("playback_speed")
+    @Serializable(with = FlexibleLongSerializer::class)
+    val playbackSpeed: Long? = null,
+) {
+    /**
+     * [playbackSpeed] normalised to the spec's ×1000 form, defaulting to normal.
+     *
+     * Guarded because this field is trivially easy to send in the obvious-but-wrong
+     * unit: a server that means "normal speed" and writes a bare `1` would otherwise
+     * be taken as 1/1000th speed, and the progress bar would sit still for the whole
+     * track. Nothing sane sits between "a plain multiplier" and "×1000", so anything
+     * at or below 10 is read as the former.
+     */
+    val speedMilli: Long
+        get() = when {
+            playbackSpeed == null || playbackSpeed <= 0L -> 1000L
+            playbackSpeed <= 10L -> playbackSpeed * 1000L
+            else -> playbackSpeed
+        }
+}
 
 @Serializable
 data class ServerMetadataPayload(
@@ -211,6 +241,20 @@ data class NowPlaying(
     val artworkUrl: String?,
     val durationMs: Long?,
     val progressMs: Long?,
+    /**
+     * `metadata.timestamp` — the **server-clock microsecond** instant [progressMs] was
+     * true at, in the same time domain as the binary audio frames.
+     *
+     * This is what makes the position bar exact rather than approximately right. The
+     * spec's formula is
+     * `progress + (now − timestamp) × playback_speed / 1_000_000`, so with the clock
+     * filter mapping server time onto local time the reading can be aged precisely
+     * instead of being assumed to describe the moment it happened to arrive. Null on a
+     * server that omits it, which falls back to exactly that assumption.
+     */
+    val progressAtServerUs: Long? = null,
+    /** Playback speed ×1000, per the spec; 1000 is normal. */
+    val speedMilli: Long = 1000L,
 )
 
 // --- Incoming dispatch ----------------------------------------------------
