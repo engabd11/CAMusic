@@ -364,7 +364,22 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             settings.backend.collect { stored ->
                 if (!_booted.value) return@collect
-                setBackend(if (stored == "subsonic") Backend.SUBSONIC else Backend.MA)
+                val want = if (stored == "subsonic") Backend.SUBSONIC else Backend.MA
+                setBackend(want)
+                // Backstop. [setBackend] early-returns when it thinks it is already on
+                // this backend, and [applyBackend] is the only thing that empties the
+                // browse stack — so any path that leaves those two disagreeing strands
+                // the *previous* library's albums on screen under the new library's
+                // name, which is what "switching backends keeps the old view" looks
+                // like. Cheap to assert here, and it cannot be wrong: a backend change
+                // has no reading in which a half-browsed stack from the other server
+                // is still valid.
+                if (_backend.value == want && _depth.value > 0) {
+                    stack.clear()
+                    reloadStack.clear()
+                    _depth.value = 0
+                    showRoot()
+                }
             }
         }
         viewModelScope.launch {
