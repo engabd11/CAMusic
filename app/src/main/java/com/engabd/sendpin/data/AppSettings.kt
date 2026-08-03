@@ -41,6 +41,7 @@ class AppSettings(private val context: Context) {
         private val DOWNLOAD_WIFI_ONLY = booleanPreferencesKey("download_wifi_only") // skip downloads on mobile data
         private val RADIO_MODE = booleanPreferencesKey("radio_mode")            // MA keeps the music going past the queue
         private val STATIC_DELAY_MS = stringPreferencesKey("sendspin_static_delay_ms") // per-player latency trim
+        private val REPLAY_GAIN = stringPreferencesKey("replay_gain_mode")      // off | track | album
 
         /**
          * How far the sync trim can be pushed either way. Matches the range Music
@@ -124,6 +125,21 @@ class AppSettings(private val context: Context) {
     suspend fun setStaticDelayMs(ms: Int) = context.dataStore.edit {
         it[STATIC_DELAY_MS] = ms.coerceIn(-MAX_TRIM_MS, MAX_TRIM_MS).toString()
     }
+
+    /**
+     * ReplayGain handling on the local player: `off`, `track` or `album`.
+     *
+     * Defaults to `album`, which is the right answer for anyone who listens to
+     * records rather than shuffled singles: album gain keeps the intended dynamics
+     * *between* tracks, where track gain flattens a quiet interlude up to match the
+     * loud song after it.
+     *
+     * Only the Navidrome/offline path reads this — Music Assistant applies gain
+     * server-side in its own DSP pipeline, so applying it again here would double it.
+     */
+    val replayGainMode: Flow<String> = context.dataStore.data.map { it[REPLAY_GAIN] ?: "album" }
+
+    suspend fun setReplayGainMode(mode: String) = context.dataStore.edit { it[REPLAY_GAIN] = mode }
 
     /** Download storage cap in MB. 0 means unlimited. */
     val downloadStorageCapMb: Flow<Int> = context.dataStore.data.map { it[DOWNLOAD_STORAGE_CAP_MB]?.toIntOrNull() ?: 0 }

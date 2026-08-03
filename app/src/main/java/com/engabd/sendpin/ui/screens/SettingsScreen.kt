@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.engabd.sendpin.BuildConfig
 import com.engabd.sendpin.audio.AudioOutputs
+import com.engabd.sendpin.audio.ReplayGain
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ui.design.*
@@ -346,11 +347,13 @@ fun SettingsScreen(
                     var preferFlac by remember { mutableStateOf(true) }
                     var preferOriginal by remember { mutableStateOf(false) }
                     var bitPerfect by remember { mutableStateOf(false) }
+                    var replayGain by remember { mutableStateOf("album") }
                     LaunchedEffect(Unit) {
                         preferHiRes = settings.preferHiRes.first()
                         preferFlac = settings.preferFlac.first()
                         preferOriginal = settings.preferOriginal.first()
                         bitPerfect = settings.bitPerfect24Bit.first()
+                        replayGain = settings.replayGainMode.first()
                     }
                     SectionHeader(Icons.Default.GraphicEq, "Audio", accent)
                     Spacer(Modifier.height(12.dp))
@@ -384,6 +387,37 @@ fun SettingsScreen(
                                     "44.1 and 48 kHz are always offered, so CD-rate files stream " +
                                     "untouched. Output is ${if (bitPerfect) "up to 24-bit" else "16-bit"}. " +
                                     "Reconnect to apply.",
+                                color = TextFaint, fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp,
+                            )
+                            Box(Modifier.fillMaxWidth().height(1.dp).background(HairlineSoft))
+                            Text(
+                                "ReplayGain",
+                                color = TextSecondary, fontFamily = AppFont,
+                                fontWeight = FontWeight.Bold, fontSize = 12.sp,
+                            )
+                            SegmentedToggle(
+                                options = ReplayGainLabels,
+                                selectedIndex = ReplayGainValues.indexOf(replayGain).coerceAtLeast(0),
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                replayGain = ReplayGainValues[it]
+                                scope.launch { settings.setReplayGainMode(ReplayGainValues[it]) }
+                            }
+                            Text(
+                                when (replayGain) {
+                                    ReplayGain.ALBUM -> "Levels whole albums against each other and keeps " +
+                                        "the dynamics within one. What you want for records."
+                                    ReplayGain.TRACK -> "Levels every track to the same loudness. Better " +
+                                        "for shuffled singles; flattens an album's quiet passages."
+                                    else -> "Play files at their mastered level. A 1985 master and a " +
+                                        "2015 one can land 10 dB apart."
+                                },
+                                color = TextFaint, fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp,
+                            )
+                            Text(
+                                "Applies to Navidrome and offline playback. Music Assistant does its " +
+                                    "own gain server-side, so this would double it there. Boosts are " +
+                                    "capped at +${ReplayGain.MAX_BOOST_DB.toInt()} dB to avoid clipping.",
                                 color = TextFaint, fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp,
                             )
                             OutputDevicePicker(accent)
@@ -876,6 +910,9 @@ private val CodecLabels = listOf("Auto", "FLAC", "PCM", "Opus")
  */
 private val NavFormatValues = listOf("raw", "flac", "mp3-320", "mp3-192", "opus-128")
 private val NavFormatLabels = listOf("Original", "FLAC", "MP3 320", "MP3 192", "Opus 128")
+
+private val ReplayGainValues = listOf(ReplayGain.OFF, ReplayGain.TRACK, ReplayGain.ALBUM)
+private val ReplayGainLabels = listOf("Off", "Track", "Album")
 
 @Composable
 private fun StatusRow(label: String, value: String) {

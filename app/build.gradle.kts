@@ -67,6 +67,16 @@ dependencies {
     implementation("androidx.palette:palette-ktx:1.0.0")
     implementation("androidx.datastore:datastore-preferences:1.1.1")
     implementation("androidx.media:media:1.7.0")
+    // The Navidrome/offline player. MediaPlayer could not do gapless reliably
+    // (setNextMediaPlayer is OEM-dependent), reported nothing about the format it
+    // was decoding, and had no stage to apply ReplayGain in.
+    //
+    // Pinned to 1.8.0 rather than the current 1.10.x: from 1.9 media3 requires
+    // compileSdk 36, and AGP 8.7.3 tops out at 35. Moving to it means an AGP and
+    // compileSdk bump, which belongs in its own change rather than riding along
+    // with an audio rewrite.
+    implementation("androidx.media3:media3-exoplayer:1.8.0")
+    implementation("androidx.media3:media3-session:1.8.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
