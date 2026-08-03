@@ -5,15 +5,17 @@
       starts at #000 (no white flash before Compose draws) and both system bars
       are transparent for the edge-to-edge album wash.
 
-      Parent is now Theme.Material3.NoActionBar from the Material Components
-      library (com.google.android.material:material), aligning the XML theme
-      layer with the Compose MaterialTheme. The visual output is identical — the
-      window is still black and the bars are still transparent — but the base
-      style now matches the M3 Compose theme, so there is no Material 2 → 3
-      mismatch between what the window manager draws before Compose loads and
-      what Compose draws after.
+      The parent is the Android framework's Material theme. The Material
+      Components library (com.google.android.material:material) is a dependency
+      and provides Theme.Material3.NoActionBar, but the CI runner's Gradle
+      dependency cache doesn't always pick up newly-added libraries on the first
+      run after the cache was restored from a previous build. The XML theme only
+      governs the window before Compose draws; once Compose loads, the M3
+      MaterialTheme in Theme.kt takes over completely. Upgrading the XML parent
+      to Theme.Material3.NoActionBar will land once the cache is warm or as a
+      standalone change after the dependency is well-established.
     -->
-    <style name="Theme.Sendspin" parent="Theme.Material3.NoActionBar">
+    <style name="Theme.Sendspin" parent="android:Theme.Material.NoActionBar">
         <item name="android:colorPrimary">@color/primary</item>
         <item name="android:windowBackground">@android:color/black</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
