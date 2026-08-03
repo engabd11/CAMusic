@@ -89,13 +89,21 @@ fun BoxScope.PlayerOptionsSheet(onClose: () -> Unit, viewModel: NowPlayingViewMo
                     )
                 }
 
-                OptionRow(
-                    icon = Icons.Default.AllInclusive,
-                    title = "Don't stop the music",
-                    subtitle = "Keep playing similar tracks when the queue runs out",
-                    checked = st.dontStopTheMusic,
-                    onChange = { viewModel.toggleDontStopTheMusic() },
-                )
+                // Music Assistant only. `player_queues/dont_stop_the_music` is a
+                // property of an MA queue, generated from MA's own similarity model —
+                // Navidrome has no equivalent, and showing the switch there offered a
+                // setting that silently did nothing to the player making the sound.
+                // The two backends share a UI but not an API; the badge top-right says
+                // which one is live, and the controls now agree with it.
+                if (!st.isLocalSession) {
+                    OptionRow(
+                        icon = Icons.Default.AllInclusive,
+                        title = "Don't stop the music",
+                        subtitle = "Keep playing similar tracks when the queue runs out",
+                        checked = st.dontStopTheMusic,
+                        onChange = { viewModel.toggleDontStopTheMusic() },
+                    )
+                }
 
                 Column {
                     Row(verticalAlignment = Alignment.CenterVertically) {

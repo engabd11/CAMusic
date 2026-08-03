@@ -278,15 +278,6 @@ class SendspinAudioEngine(private val clock: ClockSync) {
      */
     @Volatile private var syncMuted = false
 
-    /**
-     * The next frame continues a stream that was already playing, rather than
-     * starting a cold one. Distinct from [awaitStart] because the two want opposite
-     * things when the clock is unready: a cold head is held (the track is silent
-     * anyway), a continuation is written immediately (the track is mid-playback and
-     * holding it would underrun the tail that is still playing).
-     */
-    @Volatile private var awaitContinuation = false
-
     /** `stream/end` seen; the teardown is deferred by [END_LINGER_MS]. */
     @Volatile private var endPending = false
     @Volatile private var endPendingAtMs = 0L
@@ -301,7 +292,6 @@ class SendspinAudioEngine(private val clock: ClockSync) {
     /** Arm the head-of-stream gate and restart its deadline. */
     private fun armHead() {
         awaitStart = true
-        awaitContinuation = false
         headArmedAtMs = android.os.SystemClock.elapsedRealtime()
     }
 
@@ -347,13 +337,19 @@ class SendspinAudioEngine(private val clock: ClockSync) {
         // still playing its tail. Carry straight on through it.
         if (endPending && running && plan.reuseTrack) {
             endPending = false
-            if (!plan.reuseCodec) rebuildCodecKeeping(format, wantHiRes)
+            if (plan.reuseCodec) {
+                runCatching { codec?.flush(); codec?.start() }
+            } else {
+                rebuildCodecKeeping(format, wantHiRes)
+            }
             currentFormat = format
             currentHiRes = wantHiRes
-            // Not armHead(): the track is mid-playback, so holding it would starve
-            // the audio still queued ahead of this frame.
-            awaitContinuation = true
-            awaitStart = false
+            // [endOfStream] left the track paused and empty, so bring it back and
+            // schedule the next frame like the head it now is. The saving here is the
+            // rebuild — the codec and the AudioTrack survive a track change — not the
+            // buffer, which cannot survive one without breaking pause.
+            runCatching { track?.play() }
+            armHead()
             Log.d(TAG, "continue ${format.codec} ${format.sampleRate}/${format.bitDepth} (codec reused=${plan.reuseCodec})")
             return
         }
@@ -414,20 +410,40 @@ class SendspinAudioEngine(private val clock: ClockSync) {
     }
 
     /**
-     * `stream/end` — mark the stream finished and *do nothing else*.
+     * `stream/end` — stop making sound now, but keep the codec and track alive for a
+     * moment in case another stream follows.
      *
-     * The worker keeps running, the codec and track stay alive, and the ~1 s of PCM
-     * already queued keeps playing. Tearing down here is what truncated the end of
-     * every track: `AudioTrack.flush()` discards unplayed audio, and MA sends
-     * `stream/end` at every track boundary, not just when playback stops.
+     * **This drops what is buffered, and it has to.** `stream/end` is not only a
+     * track boundary: Music Assistant sends exactly this message when the user
+     * *pauses*, with no `stream/clear` alongside it. Since the client advertises a
+     * 4 MB `buffer_capacity`, the server streams up to ~30 s ahead — so a version of
+     * this that played the buffer out (0.4.0 and 0.4.1 did) carries on for another
+     * half-minute after the listener has pressed pause, ignores the next seek because
+     * the audio it wanted is behind that backlog, and can only be silenced by
+     * disconnecting the player. Which is what "stop the announcements notification"
+     * did, and why it looked like a second audio path.
      *
-     * The teardown happens in the decode loop once [END_LINGER_MS] has passed with
-     * nothing left to play — or never, if the next `stream/start` arrives first.
+     * There is no way to tell a pause from a track boundary at this point in the
+     * protocol — the message is byte-identical, and the `playback_speed: 0` that
+     * distinguishes them arrives afterwards, in a separate `server/state`. Between
+     * cutting a track's last moment short and ignoring the pause button, the pause
+     * button wins every time.
+     *
+     * What is still kept is the codec and the AudioTrack themselves, so a genuine
+     * track change does not pay for a rebuild — the part of the 0.4.0 work that was
+     * sound. Teardown happens in the decode loop once [END_LINGER_MS] has passed, or
+     * never, if the next `stream/start` arrives first.
      */
     fun endOfStream() {
         if (!running) return
         endPending = true
         endPendingAtMs = android.os.SystemClock.elapsedRealtime()
+        queue.clear()
+        // pause + flush, not stop: the point is to be silent *now*.
+        runCatching { track?.pause(); track?.flush() }
+        framesWritten = 0L
+        // Whatever comes next starts from a known point, so it is a head again.
+        armHead()
     }
 
     fun submit(frame: ByteArray) {
@@ -439,7 +455,7 @@ class SendspinAudioEngine(private val clock: ClockSync) {
         // the oldest frame is the most stale and goes, but while a gate is armed the
         // oldest frame is the *start of the track* the gate exists to protect —
         // dropping it there would reintroduce the bug from the other side.
-        if (awaitStart || awaitContinuation) return
+        if (awaitStart) return
         queue.poll()
         queue.offer(f)
     }
@@ -657,13 +673,6 @@ class SendspinAudioEngine(private val clock: ClockSync) {
                 } else if (scheduleHead) {
                     Log.i(TAG, "head released: err=${clock.errorUs()}us")
                 }
-            } else if (awaitContinuation) {
-                // First frame of the next track through a track that is still
-                // playing. Schedule it if the clock is good, but never hold: the
-                // audio ahead of it is draining in real time and a hold would leave
-                // a gap — the exact thing this path exists to avoid.
-                awaitContinuation = false
-                if (clock.isReadyForPlaybackStart()) awaitFrameTime(frame.serverTsUs)
             }
 
             if (isPcm) {

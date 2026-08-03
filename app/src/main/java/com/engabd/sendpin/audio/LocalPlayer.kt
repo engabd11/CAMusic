@@ -239,11 +239,20 @@ class LocalPlayer(private val context: Context) {
             .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
             .build()
 
+        // Deliberately stock.
+        //
+        // This used to set `setEnableAudioFloatOutput(true)`, to keep 24-bit sources
+        // off the sink's 16-bit requantisation, and `EXTENSION_RENDERER_MODE_PREFER`.
+        // Both were added on theory. Float output is documented as experimental, is
+        // known to misbehave on some sinks at rates other than the device's native
+        // one — this phone runs at 48 kHz — and 44.1/16 came back audibly distorted
+        // while 48 kHz was clean, which is exactly that shape. The preferred
+        // extension mode was dead configuration: no decoder extensions are in this
+        // build, so it only ever cost some failed reflection at startup.
+        //
+        // Neither belongs here without a device to prove it on. Float output is worth
+        // revisiting behind the bit-perfect setting, measured, not assumed.
         val renderers = DefaultRenderersFactory(context)
-            // 24-bit sources reach the mixer at their own resolution instead of
-            // being requantised to 16 inside the sink.
-            .setEnableAudioFloatOutput(true)
-            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
 
         // The defaults are sized for video-on-mobile-data. This is a lossless file
         // over a LAN, where the sensible trade is a deeper buffer: a 24/96 FLAC is

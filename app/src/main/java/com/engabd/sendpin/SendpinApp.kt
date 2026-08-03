@@ -50,6 +50,14 @@ class SendpinApp : Application(), ImageLoaderFactory {
      */
     val localPlayer: LocalPlayer by lazy { LocalPlayer(this) }
 
+    /**
+     * The phone's media volume. Process-scoped so the observer is registered once
+     * and every screen reads the same live value.
+     */
+    val deviceVolume: com.engabd.sendpin.audio.DeviceVolume by lazy {
+        com.engabd.sendpin.audio.DeviceVolume(this)
+    }
+
     /** The offline download index, shared for the same reason. */
     val downloads: DownloadManager by lazy { DownloadManager(this) }
 

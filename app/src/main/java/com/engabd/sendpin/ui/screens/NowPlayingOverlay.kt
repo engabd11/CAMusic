@@ -375,7 +375,10 @@ fun NowPlayingOverlay(
                     }
                     // Playback speed + player options
                     IconChip(Icons.Default.Tune, "Player options", active = options) { options = !options }
-                    IconChip(Icons.Default.GraphicEq, "DSP / Equalizer") { onOpenDsp() }
+                    // MA-only: see the note on the same chip in NowPlayingScreen.
+                    if (!st.isLocalSession) {
+                        IconChip(Icons.Default.GraphicEq, "DSP / Equalizer") { onOpenDsp() }
+                    }
                 }
 
                 Spacer(Modifier.height(8.dp))

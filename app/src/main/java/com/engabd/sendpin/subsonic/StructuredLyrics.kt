@@ -33,10 +33,19 @@ internal object StructuredLyrics {
         val synced = entry.isSynced()
         val lines = entry["line"] as? JsonArray ?: return null
 
+        // OpenSubsonic carries a per-set `offset`, "the offset to apply to all
+        // lyrics, in milliseconds" — the same idea as LRC's `[offset:]` tag, and how
+        // a tagger corrects a set that runs early or late against the recording.
+        // Ignoring it, which is what this did, leaves every line off by a constant
+        // for exactly the files someone bothered to correct.
+        val offset = entry.longOf("offset") ?: 0L
+
         val text = buildString {
             for (el in lines) {
                 val line = el as? JsonObject ?: continue
-                val start = line.startMs()
+                // A negative offset can pull the opening line before zero; clamp
+                // rather than drop it, or the correction costs the first lyric.
+                val start = (line.startMs() + offset).coerceAtLeast(0L)
                 val value = line["value"]?.jsonPrimitive?.contentOrNull.orEmpty()
                 // `>= 0`, not `> 0`. A line starting at exactly 0 ms is ordinary —
                 // plenty of songs open on a lyric. Stamping only positive starts left
@@ -65,8 +74,10 @@ internal object StructuredLyrics {
     private fun JsonObject.isSynced(): Boolean =
         this["synced"]?.jsonPrimitive?.contentOrNull == "true"
 
-    private fun JsonObject.startMs(): Long {
-        val p = this["start"]?.jsonPrimitive ?: return 0L
-        return p.longOrNull ?: p.doubleOrNull?.toLong() ?: 0L
+    private fun JsonObject.startMs(): Long = longOf("start") ?: 0L
+
+    private fun JsonObject.longOf(key: String): Long? {
+        val p = this[key]?.jsonPrimitive ?: return null
+        return p.longOrNull ?: p.doubleOrNull?.toLong()
     }
 }

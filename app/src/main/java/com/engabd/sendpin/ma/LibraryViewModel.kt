@@ -117,6 +117,19 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private val _inProgress = MutableStateFlow<List<MaItem>>(emptyList()); val inProgress: StateFlow<List<MaItem>> = _inProgress
 
     /**
+     * A reachability answer for the Navidrome server that does *not* depend on it
+     * being the active backend.
+     *
+     * The existing status line could only ever say "switch the library to Navidrome
+     * to use it" while Music Assistant was selected, so there was no way to find out
+     * whether the credentials were even right. And Navidrome is used from the MA
+     * backend too — "play at original quality" streams from it, and every download
+     * comes from it — so "is it connected" is a real question in both modes.
+     */
+    private val _navStatus = MutableStateFlow<String?>(null)
+    val navStatus: StateFlow<String?> = _navStatus
+
+    /**
      * Frequently-played albums — a Navidrome shelf from `getAlbumList2(frequent)`.
      *
      * Declared here with the other shelves rather than beside [loadFrequent], which
@@ -510,6 +523,26 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                     _ready.value = false
                     goOfflineIfPossible(err)
                 }
+            }
+        }
+    }
+
+    /**
+     * Ask the Navidrome server whether it is there and whether it accepts these
+     * credentials, whichever backend the library is currently showing.
+     */
+    fun checkNavidrome() {
+        viewModelScope.launch {
+            val url = settings.navUrl.first().trim()
+            if (url.isBlank()) { _navStatus.value = "Not set up"; return@launch }
+            _navStatus.value = "Checking…"
+            val sc = subsonic ?: navidromeClient()
+            if (sc == null) { _navStatus.value = "Not set up"; return@launch }
+            val err = sc.pingResult()
+            _navStatus.value = when {
+                err == null -> "Connected"
+                SubsonicError.isAuth(err.code) -> err.message ?: "Rejected"
+                else -> "Unreachable — ${err.message}"
             }
         }
     }

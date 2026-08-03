@@ -601,22 +601,42 @@ private fun NavidromeCard(
                 accent = accent,
             ) { vm.saveNavidrome() }
 
-            // Only the active backend can report a live state; saying "Connected"
-            // while the library is browsing MA would be a lie.
+            // The library's own state is only meaningful while Navidrome is the
+            // active backend. When it isn't, the server is still asked directly —
+            // downloads and "play at original quality" both go to it from the MA
+            // backend, so whether it answers is a real question either way.
+            val probe by vm.navStatus.collectAsState()
+            LaunchedEffect(url) { if (url.isNotBlank()) vm.checkNavidrome() }
             val status = when {
-                onSubsonic != LibraryViewModel.Backend.SUBSONIC -> "Saved — switch the library to Navidrome to use it"
-                connecting -> "Connecting…"
-                offline -> "Offline — playing downloads"
-                ready -> "Connected"
-                connError != null -> connError!!
+                onSubsonic == LibraryViewModel.Backend.SUBSONIC && connecting -> "Connecting…"
+                onSubsonic == LibraryViewModel.Backend.SUBSONIC && offline -> "Offline — playing downloads"
+                onSubsonic == LibraryViewModel.Backend.SUBSONIC && ready -> "Connected"
+                onSubsonic == LibraryViewModel.Backend.SUBSONIC && connError != null -> connError!!
                 url.isBlank() -> "Not set up"
-                else -> "Not connected"
+                probe != null -> "$probe — not the active library"
+                else -> "Checking…"
             }
-            Text(
-                status,
-                color = if (connError != null && onSubsonic == LibraryViewModel.Backend.SUBSONIC && !ready) ErrorRed else TextFaint,
-                fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp,
-            )
+            val bad = status.startsWith("Unreachable") ||
+                status.contains("rejected", ignoreCase = true) ||
+                (connError != null && onSubsonic == LibraryViewModel.Backend.SUBSONIC && !ready)
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    status,
+                    color = if (bad) ErrorRed else TextFaint,
+                    fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    "Re-check",
+                    color = accent, fontFamily = AppFont, fontWeight = FontWeight.Bold,
+                    fontSize = 11.sp,
+                    modifier = Modifier.clickable { vm.checkNavidrome() }.padding(start = 10.dp),
+                )
+            }
 
             Spacer(Modifier.height(2.dp))
             Box(Modifier.fillMaxWidth().height(1.dp).background(HairlineSoft))

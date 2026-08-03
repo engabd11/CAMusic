@@ -162,9 +162,15 @@ class SendspinConnectionService : Service() {
      */
     private fun buildNotification(): Notification {
         val connected = pb.connected.value
-        val title = if (connected) "Sendspin" else "Sendspin — reconnecting"
+        val title = if (connected) "Sendspin player online" else "Sendspin — reconnecting"
+        // "Announcements will play here" was read, reasonably, as *this notification
+        // being an audio destination* — a second stream the music was coming out of,
+        // separate from the media player. It never was: there is one player, and this
+        // entry is the background connection that keeps it registered with Music
+        // Assistant so playback and announcements both arrive without waiting for the
+        // app to be opened. The text now says that instead of describing a stream.
         val text =
-            if (connected) "Ready — announcements will play here"
+            if (connected) "Connected to Music Assistant — keeps playback and announcements ready"
             else pb.connectionStatus.value
 
         val open = openAppIntent(this, OpenAppRequest.CONNECTION)
@@ -182,15 +188,24 @@ class SendspinConnectionService : Service() {
             .setContentIntent(open)
             .setOngoing(true)
             .setVisibility(NotificationCompat.VISIBILITY_SECRET)   // not on lock screen
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stop)
+            // "Disconnect", not "Stop": it does not stop the music, it takes the
+            // player off Music Assistant entirely — after which it has to be turned
+            // back on in Settings. Calling it Stop invited it to be used as a pause.
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Disconnect", stop)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
     }
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(CHANNEL_ID, "Sendspin Connection", NotificationManager.IMPORTANCE_LOW).apply {
-                description = "Keeps the player connected and reachable for announcements"
+            // Its own channel so it can be hidden from the shade in system settings
+            // without touching the media notification. Android requires a foreground
+            // service to post *something* while the connection is held, so hiding the
+            // channel is the only way to get it out of the way while staying online —
+            // there is no in-app setting that can do it.
+            val channel = NotificationChannel(CHANNEL_ID, "Player connection", NotificationManager.IMPORTANCE_LOW).apply {
+                description = "Keeps this phone registered with Music Assistant so playback " +
+                    "and announcements start without opening the app"
                 setShowBadge(false)
                 setSound(null, null)
             }

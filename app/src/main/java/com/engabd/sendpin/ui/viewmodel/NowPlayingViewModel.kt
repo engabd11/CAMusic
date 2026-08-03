@@ -130,6 +130,12 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     private val deviceQuality = FormatNegotiator.deviceOutputQuality()
 
     /**
+     * The phone's media volume — the slider's meaning while the local player owns
+     * playback, where there is no server-side player level to set.
+     */
+    private val deviceVolume = (app as SendpinApp).deviceVolume
+
+    /**
      * The Navidrome transcode currently asked for, or null when streaming the stored
      * file. Held as plain state rather than read per frame — it changes rarely and the
      * badge is rebuilt on every poll.
@@ -372,7 +378,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
      * Assistant view otherwise. There is no third state — the phone is either
      * playing something itself or reflecting a player MA owns.
      */
-    val state: StateFlow<State> = combine(maState, localSnap) { ma, l ->
+    val state: StateFlow<State> = combine(maState, localSnap, deviceVolume.level) { ma, l, devVol ->
         if (!l.active) return@combine ma
         val t = l.track
         State(
@@ -384,9 +390,12 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             album = t?.album.orEmpty(),
             artworkUrl = t?.artUrl,
             isPlaying = l.playing,
-            // The local player runs at the device volume; MA's per-player level
-            // means nothing here, so the slider stays where the system has it.
-            volume = ma.volume,
+            // The device's own media volume — the same level the rocker moves, and
+            // the only volume that means anything for a stream this phone decodes
+            // itself. It used to show MA's per-player level, which belongs to a
+            // different player entirely: the number was wrong and dragging it did
+            // nothing.
+            volume = devVol,
             positionMs = 0,
             durationMs = l.durationMs,
             hasTrack = t != null,
@@ -911,7 +920,11 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
 
     private var volJob: kotlinx.coroutines.Job? = null
     fun setVolume(level01: Float) {
-        if (isLocal) { local.setVolume(level01.coerceIn(0f, 1f)); return }
+        // Locally, the slider *is* the phone's media volume — not an attenuation
+        // inside the player. ExoPlayer's own volume is left alone because ReplayGain
+        // rides on it, and mixing the two would make a quiet album read as a
+        // turned-down phone.
+        if (isLocal) { deviceVolume.set(level01.coerceIn(0f, 1f)); return }
         val lvl = (level01 * 100).toInt().coerceIn(0, 100)
         _players.update { list -> list.map { if (it.playerId == targetId()) it.copy(volumeLevel = lvl) else it } }
         volJob?.cancel()

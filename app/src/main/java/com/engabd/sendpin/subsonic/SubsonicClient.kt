@@ -509,17 +509,32 @@ class SubsonicClient(
             // Server doesn't support getLyricsBySongId — fall through to legacy.
         }
 
-        // Legacy getLyrics — plain text, matched by artist + title. We need the
-        // song's metadata to call it, so fetch the song first.
+        // Legacy getLyrics — plain text, and the only way to ask is by *name*, not by
+        // id. That is the whole problem with it: the server matches however it likes,
+        // and a miss does not come back empty, it comes back as some other song's
+        // words. Which is why tracks with no lyrics were showing something random.
+        //
+        // The response says which song it actually found (`artist`/`title` on the
+        // lyrics element, per the Subsonic schema), so the answer is checkable — and
+        // anything that doesn't match what was asked for is thrown away.
         return try {
             val song = get("getSong", mapOf("id" to songId))["song"]?.jsonObject
             val artist = song?.str("artist") ?: return null
             val title = song.str("title") ?: return null
-            val res = get("getLyrics", mapOf("artist" to artist, "title" to title))
-            val text = res["lyrics"]?.jsonObject?.str("value")
-                ?: res["lyrics"]?.jsonObject?.str("content")
-                ?: res["lyrics"]?.jsonPrimitive?.contentOrNull
-            text?.takeIf { it.isNotBlank() }?.let { MaLyrics(it, synced = false) }
+            val el = get("getLyrics", mapOf("artist" to artist, "title" to title))["lyrics"]
+            val obj = el as? JsonObject
+            val text = obj?.str("value")
+                ?: obj?.str("content")
+                ?: (el as? JsonPrimitive)?.contentOrNull
+            if (text.isNullOrBlank()) return null
+            // Only trust it when the server names the same song back. A server that
+            // reports nothing is given the benefit of the doubt — it asked for this
+            // artist and title and answered, which is as much as the endpoint offers.
+            val gotArtist = obj?.str("artist")
+            val gotTitle = obj?.str("title")
+            val matches = (gotArtist == null || gotArtist.equals(artist, ignoreCase = true)) &&
+                (gotTitle == null || gotTitle.equals(title, ignoreCase = true))
+            if (!matches) null else MaLyrics(text, synced = false)
         } catch (_: SubsonicException) {
             null
         }

@@ -194,7 +194,14 @@ fun NowPlayingScreen(
                         panel = if (panel == Panel.QUEUE) null else Panel.QUEUE
                     }
                     IconChip(Icons.Default.Tune, "Player options", active = options) { options = !options }
-                    IconChip(Icons.Default.GraphicEq, "DSP / Equalizer") { onOpenDsp() }
+                    // DSP is Music Assistant's server-side pipeline, configured per MA
+                    // player over `config/players/dsp/*`. The local player decodes on
+                    // this phone and MA has never heard of it, so opening this while
+                    // Navidrome is playing showed — and would have saved — settings for
+                    // a completely different player.
+                    if (!st.isLocalSession) {
+                        IconChip(Icons.Default.GraphicEq, "DSP / Equalizer") { onOpenDsp() }
+                    }
                     // Radio mode is a parameter of play_media, so it colours what you
                     // play *next* rather than the queue already running — the toast
                     // on toggle says so. Hidden on the local player, which has no
