@@ -5,17 +5,18 @@
       starts at #000 (no white flash before Compose draws) and both system bars
       are transparent for the edge-to-edge album wash.
 
-      The parent is the Android framework's Material theme. The Material
-      Components library (com.google.android.material:material) is a dependency
-      and provides Theme.Material3.NoActionBar, but the CI runner's Gradle
-      dependency cache doesn't always pick up newly-added libraries on the first
-      run after the cache was restored from a previous build. The XML theme only
-      governs the window before Compose draws; once Compose loads, the M3
-      MaterialTheme in Theme.kt takes over completely. Upgrading the XML parent
-      to Theme.Material3.NoActionBar will land once the cache is warm or as a
-      standalone change after the dependency is well-established.
+      Parented on Material 3 to match the Compose layer. This was reverted once,
+      to the framework's Material theme, because a CI runner restoring a warm
+      Gradle cache from before com.google.android.material was added could not
+      resolve it. That dependency has been on master through several green runs
+      since, so the reason has expired - and it was always the wrong trade: the
+      library was being carried anyway, and the XML theme is what paints the
+      window before Compose takes over, so a Material/Material3 mismatch there is
+      exactly where a wrong-coloured flash on cold start comes from.
     -->
-    <style name="Theme.Sendspin" parent="android:Theme.Material.NoActionBar">
+    <!-- Dark, not DayNight: this app is OLED-black in every mode, and a DayNight
+         parent would hand the window light defaults to override in light mode. -->
+    <style name="Theme.Sendspin" parent="Theme.Material3.Dark.NoActionBar">
         <item name="android:colorPrimary">@color/primary</item>
         <item name="android:windowBackground">@android:color/black</item>
         <item name="android:statusBarColor">@android:color/transparent</item>

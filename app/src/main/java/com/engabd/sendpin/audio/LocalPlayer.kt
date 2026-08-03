@@ -516,7 +516,7 @@ class LocalPlayer(private val context: Context) {
         ticker = scope.launch {
             while (isActive) {
                 _positionMs.value = player.currentPosition.coerceAtLeast(0)
-                delay(500)
+                delay(POSITION_TICK_MS)
             }
         }
     }
@@ -526,5 +526,15 @@ class LocalPlayer(private val context: Context) {
     private companion object {
         /** Past this into a track, Previous restarts it instead of going back one. */
         const val RESTART_THRESHOLD_MS = 4_000L
+
+        /**
+         * How often the published playhead is refreshed.
+         *
+         * Was 500 ms, which is fine for a progress bar and too coarse for synced
+         * lyrics: a line could light up a beat after it was sung, every time, which
+         * reads as lyrics that are simply out of sync. Matches the Sendspin path's
+         * own tick so both players feel the same.
+         */
+        const val POSITION_TICK_MS = 250L
     }
 }

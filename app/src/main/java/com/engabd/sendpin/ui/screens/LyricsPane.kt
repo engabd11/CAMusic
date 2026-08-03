@@ -23,6 +23,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -91,10 +94,20 @@ private fun SyncedLyrics(
     else lines.indexOfLast { it.atMs <= positionMs }.coerceAtLeast(0)
 
     val listState = rememberLazyListState()
+    var previous by remember(lines) { mutableIntStateOf(-1) }
     LaunchedEffect(active) {
         // Hold the sung line a third of the way down rather than pinned to the top,
         // so the next few lines are always readable ahead of the vocal.
-        if (active >= 0) listState.animateScrollToItem(maxOf(0, active - 2))
+        if (active < 0) return@LaunchedEffect
+        val target = maxOf(0, active - 2)
+        // A seek moves the playhead by minutes, so the active line jumps by tens of
+        // rows. Animating that is a long scroll through the whole lyric, during which
+        // the highlighted line is nowhere near the screen and the pane looks like it
+        // has lost sync entirely - it has not, it is still travelling. A jump gets
+        // there at once; only the line-to-line advance is worth animating.
+        val jumped = previous < 0 || kotlin.math.abs(active - previous) > 4
+        previous = active
+        if (jumped) listState.scrollToItem(target) else listState.animateScrollToItem(target)
     }
 
     LazyColumn(
