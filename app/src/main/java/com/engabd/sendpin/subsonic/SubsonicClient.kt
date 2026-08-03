@@ -71,7 +71,7 @@ object SubsonicError {
         BAD_CREDENTIALS -> "That username or password was rejected"
         // Navidrome only hits this for LDAP users; the fix is a real one, so say it.
         TOKEN_AUTH_UNSUPPORTED ->
-            "This account can't use token authentication — it needs a password-auth client"
+            "This account can't use token authentication - it needs a password-auth client"
         NOT_AUTHORIZED -> "That account isn't allowed to do this"
         NOT_FOUND -> "The server doesn't have that"
         SERVER_TOO_OLD -> "The server is too old for this app"

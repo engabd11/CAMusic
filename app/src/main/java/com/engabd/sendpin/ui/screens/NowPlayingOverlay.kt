@@ -457,13 +457,17 @@ fun MiniPlayerBar(
                 .background(Ink2)
                 .border(1.dp, HairlineSoft, RoundedCornerShape(14.dp))
                 .clickable(onClick = onExpand)
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                // Roomier than it was (8dp/40dp art). In overlay mode this bar is the
+                // only way back into the full player, and it was competing for the
+                // thumb with the nav bar directly under it — a taller bar is an easier
+                // target as well as a better look.
+                .padding(horizontal = 12.dp, vertical = 11.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             // Album thumbnail.
             Box(
-                Modifier.size(40.dp).clip(RoundedCornerShape(8.dp))
+                Modifier.size(48.dp).clip(RoundedCornerShape(10.dp))
                     .background(Glass),
                 contentAlignment = Alignment.Center,
             ) {
@@ -480,12 +484,12 @@ fun MiniPlayerBar(
             }
 
             // Title + artist.
-            Column(Modifier.weight(1f)) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
                 Text(
                     if (st.blank) "Nothing playing" else st.title,
                     color = if (st.blank) TextSecondary else TextPrimary,
                     fontFamily = AppFont,
-                    fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1,
+                    fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
                 // Falls back to the player name so an idle bar still says *where*.
@@ -493,7 +497,7 @@ fun MiniPlayerBar(
                 if (sub.isNotBlank()) {
                     Text(
                         sub, color = TextMuted, fontFamily = AppFont,
-                        fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
                 }
             }
@@ -618,7 +622,7 @@ private fun IdleNotice(playerName: String, blank: Boolean, onBrowse: () -> Unit)
     ) {
         Icon(Icons.Default.PauseCircleOutline, null, tint = TextMuted, modifier = Modifier.size(15.dp))
         Text(
-            if (blank) "Nothing playing on $playerName — browse" else "Nothing playing — browse",
+            if (blank) "Nothing playing on $playerName - browse" else "Nothing playing - browse",
             color = TextSecondary, fontFamily = AppFont, fontWeight = FontWeight.Bold,
             fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
         )

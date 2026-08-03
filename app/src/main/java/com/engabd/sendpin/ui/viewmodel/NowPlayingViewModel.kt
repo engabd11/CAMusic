@@ -821,7 +821,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try { repo.previous(targetId()) } catch (_: Exception) {}
             finally {
-                delay(400)   // 400ms cooldown — matches massdroid_native's prev cooldown
+                delay(400)   // 400ms cooldown - matches massdroid_native's prev cooldown
                 prevInFlight.set(false)
             }
         }
@@ -948,7 +948,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             settings.setRadioMode(next)
             _toast.tryEmit(
-                if (next) "Radio mode on — applies to the next thing you play"
+                if (next) "Radio mode on - applies to the next thing you play"
                 else "Radio mode off"
             )
         }

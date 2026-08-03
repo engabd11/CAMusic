@@ -194,10 +194,10 @@ fun SettingsScreen(
                             Text(
                                 when (sendspinCodec) {
                                     "flac" -> "Lossless, about half the bandwidth of PCM. Music Assistant " +
-                                        "must send FLAC — it is the only format offered."
+                                        "must send FLAC - it is the only format offered."
                                     "pcm" -> "Lossless and uncompressed. Highest bandwidth, no decode cost."
                                     "opus" -> "Compressed. Lowest bandwidth, 48 kHz only."
-                                    else -> "Offer all three and let Music Assistant choose — FLAC first, " +
+                                    else -> "Offer all three and let Music Assistant choose - FLAC first, " +
                                         "then PCM, then Opus."
                                 },
                                 color = TextFaint, style = MaterialTheme.typography.bodySmall,
@@ -235,7 +235,7 @@ fun SettingsScreen(
                                             "applied to the running stream. It sticks for good on the " +
                                             "next reconnect."
                                     else
-                                        "A format change needs the player disabled and enabled again — " +
+                                        "A format change needs the player disabled and enabled again - " +
                                             "it is only announced when the connection opens.",
                                     color = TextFaint, style = MaterialTheme.typography.bodySmall,
                                 )
@@ -251,7 +251,7 @@ fun SettingsScreen(
                             Text(
                                 "Still showing the old name? Music Assistant keeps the name a player " +
                                     "was first registered under. Registering again arrives as a new " +
-                                    "player under the name above — the old entry stays in Music " +
+                                    "player under the name above - the old entry stays in Music " +
                                     "Assistant, greyed out, for you to delete.",
                                 color = TextFaint, style = MaterialTheme.typography.bodySmall,
                             )
@@ -367,20 +367,20 @@ fun SettingsScreen(
                             ) { preferHiRes = it; scope.launch { settings.setPreferHiRes(it) } }
                             ToggleRow(
                                 "Prefer FLAC over PCM",
-                                "Lossless either way — FLAC uses about half the bandwidth",
+                                "Lossless either way - FLAC uses about half the bandwidth",
                                 preferFlac, accent,
                             ) { preferFlac = it; scope.launch { settings.setPreferFlac(it) } }
                             ToggleRow(
                                 "Play at original quality",
                                 "Stream straight from Navidrome when Music Assistant would have " +
-                                    "to resample. Plays on this phone only — no queue, no grouping.",
+                                    "to resample. Plays on this phone only - no queue, no grouping.",
                                 preferOriginal, accent,
                             ) { preferOriginal = it; scope.launch { settings.setPreferOriginal(it) } }
                             ToggleRow(
                                 "Bit-perfect (24-bit)",
                                 "Ask for 24-bit instead of 16 and render whatever depth the decoder " +
                                     "reports. Costs bandwidth, and a phone whose mixer runs at 16-bit " +
-                                    "gains nothing — leave it off unless you're on a USB DAC.",
+                                    "gains nothing - leave it off unless you're on a USB DAC.",
                                 bitPerfect, accent,
                             ) { bitPerfect = it; scope.launch { settings.setBitPerfect24Bit(it) } }
                             Text(
@@ -518,7 +518,7 @@ fun SettingsScreen(
                     GlassCard(radius = 16.dp) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                             Text(
-                                "Sendspin — a Music Assistant player & controller for Android.\n\n" +
+                                "Sendspin - a Music Assistant player & controller for Android.\n\n" +
                                 "Plays FLAC / Opus 16-bit as an MA player, with Navidrome-direct " +
                                 "browse + offline downloads and Hue light-sync controls.",
                                 color = TextMuted, fontSize = 13.sp,
@@ -610,11 +610,11 @@ private fun NavidromeCard(
             LaunchedEffect(url) { if (url.isNotBlank()) vm.checkNavidrome() }
             val status = when {
                 onSubsonic == LibraryViewModel.Backend.SUBSONIC && connecting -> "Connecting…"
-                onSubsonic == LibraryViewModel.Backend.SUBSONIC && offline -> "Offline — playing downloads"
+                onSubsonic == LibraryViewModel.Backend.SUBSONIC && offline -> "Offline - playing downloads"
                 onSubsonic == LibraryViewModel.Backend.SUBSONIC && ready -> "Connected"
                 onSubsonic == LibraryViewModel.Backend.SUBSONIC && connError != null -> connError!!
                 url.isBlank() -> "Not set up"
-                probe != null -> "$probe — not the active library"
+                probe != null -> "$probe - not the active library"
                 else -> "Checking…"
             }
             val bad = status.startsWith("Unreachable") ||
@@ -709,7 +709,7 @@ private fun OutputDevicePicker(accent: Color) {
     }
     Text(
         if (selected.isBlank())
-            "Android picks the route — normally the last thing you plugged in."
+            "Android picks the route - normally the last thing you plugged in."
         else
             "Playback is pinned to this output. If it's unplugged, Android routes " +
                 "normally again until it's back.",
@@ -742,7 +742,7 @@ private fun DownloadsCard(vm: LibraryViewModel, accent: Color) {
     GlassCard(radius = 16.dp) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text(
-                "Original files, not transcodes — a downloaded track plays at the " +
+                "Original files, not transcodes - a downloaded track plays at the " +
                     "quality it was stored at, with or without a network.",
                 color = TextMuted, fontSize = 13.sp,
             )
@@ -784,7 +784,7 @@ private fun DownloadsCard(vm: LibraryViewModel, accent: Color) {
                 if (capMb > 0)
                     "The oldest downloads are deleted once the total goes past the limit."
                 else
-                    "No limit — downloads are only removed when you delete them.",
+                    "No limit - downloads are only removed when you delete them.",
                 color = TextFaint, style = MaterialTheme.typography.bodySmall,
             )
             if (downloads.isNotEmpty()) {
@@ -829,7 +829,7 @@ private fun ServerRow(name: String, host: String, connected: Boolean, accent: Co
             .clickable(onClick = onClick).padding(12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(Modifier.weight(1f)) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
             Text(name, color = TextPrimary, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1)
             Text(host, color = TextMuted, fontSize = 11.sp)
         }
@@ -902,7 +902,7 @@ private fun ToggleRow(title: String, subtitle: String, checked: Boolean, accent:
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(Modifier.weight(1f)) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
             Text(title, color = TextPrimary, style = MaterialTheme.typography.titleLarge)
             Text(subtitle, color = TextFaint, fontSize = 11.sp)
         }

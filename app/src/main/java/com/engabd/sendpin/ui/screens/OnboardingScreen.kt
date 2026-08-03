@@ -72,7 +72,7 @@ fun OnboardingScreen(
             Text("Sendspin", color = TextPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 28.sp)
             Spacer(Modifier.height(8.dp))
             Text(
-                "Play your library in perfect sync — pick a Music Assistant server on your network to begin.",
+                "Play your library in perfect sync - pick a Music Assistant server on your network to begin.",
                 color = TextMuted, fontSize = 14.sp, textAlign = TextAlign.Center, modifier = Modifier.widthIn(max = 300.dp),
             )
 
@@ -122,7 +122,7 @@ fun OnboardingScreen(
                 }
             }
             if (!discovering && servers.isEmpty()) {
-                Text("No servers found yet — try scanning again or connect manually below.", color = TextFaint, fontSize = 13.sp, textAlign = TextAlign.Center)
+                Text("No servers found yet - try scanning again or connect manually below.", color = TextFaint, fontSize = 13.sp, textAlign = TextAlign.Center)
             }
 
             servers.forEach { s ->
@@ -135,7 +135,7 @@ fun OnboardingScreen(
                         Text("MA", color = accent, fontWeight = FontWeight.ExtraBold, fontSize = 12.sp)
                     }
                     Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
                         Text(s.name, color = TextPrimary, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text("${s.host}:${s.port}", color = TextMuted, fontSize = 12.sp)
                     }

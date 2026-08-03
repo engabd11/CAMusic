@@ -418,7 +418,7 @@ fun TappableQualityChip(
     var showDetail by remember { mutableStateOf(false) }
 
     Box(Modifier.clickable { showDetail = true }) {
-        if (playing == null) QualityPill("—", lossless = false, compact = true)
+        if (playing == null) QualityPill("-", lossless = false, compact = true)
         else QualityPill(playing.label, hiRes = playing.hiRes, lossless = playing.lossless, compact = true)
     }
 
@@ -500,7 +500,7 @@ private fun QualityDetailCard(
         if (playing != null && source != null) {
             Text(
                 if (transcoded) "Transcoded from ${source.label} to ${playing.label}"
-                else "Direct — no transcoding",
+                else "Direct - no transcoding",
                 color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
             )
         }
@@ -512,8 +512,8 @@ private fun QualityDetailCard(
             val applied = if (localSession) ReplayGain.decibels(source, gainMode) else null
             Text(
                 when {
-                    !localSession -> "ReplayGain $tag — applied by Music Assistant"
-                    applied == null -> "ReplayGain $tag — not applied"
+                    !localSession -> "ReplayGain $tag - applied by Music Assistant"
+                    applied == null -> "ReplayGain $tag - not applied"
                     else -> "ReplayGain %+.1f dB applied".format(applied)
                 },
                 color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
@@ -547,7 +547,7 @@ private fun QualityRow(label: String, q: StreamQuality?, accent: Color) {
             fontSize = 12.sp, modifier = Modifier.width(50.dp),
         )
         Text(
-            q?.label ?: "—",
+            q?.label ?: "-",
             color = TextPrimary, fontFamily = MonoFont, fontWeight = FontWeight.Bold,
             fontSize = 13.sp,
         )
@@ -643,7 +643,7 @@ private fun IdleNotice(playerName: String, blank: Boolean, onBrowse: () -> Unit)
     ) {
         Icon(Icons.Default.PauseCircleOutline, null, tint = TextMuted, modifier = Modifier.size(15.dp))
         Text(
-            if (blank) "Nothing playing on $playerName — browse" else "Nothing playing — browse",
+            if (blank) "Nothing playing on $playerName - browse" else "Nothing playing - browse",
             color = TextSecondary, fontFamily = AppFont, fontWeight = FontWeight.Bold,
             fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
         )

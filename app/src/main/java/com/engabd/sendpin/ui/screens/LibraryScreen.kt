@@ -619,7 +619,7 @@ private fun CreatePlaylistDialog(onDismiss: () -> Unit, onCreate: (String) -> Un
                     colors = accentTextFieldColors(accent),
                 )
                 Text(
-                    "Created empty — add tracks to it afterwards.",
+                    "Created empty - add tracks to it afterwards.",
                     color = TextMuted, fontFamily = AppFont, fontSize = 12.sp,
                 )
             }
@@ -801,7 +801,7 @@ private fun ItemRow(
             ) { Icon(mediaIcon(item.mediaType), null, tint = TextMuted, modifier = Modifier.size(18.dp)) }
         }
 
-        Column(Modifier.weight(1f)) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
             Text(
                 item.name, color = TextPrimary, fontFamily = AppFont, fontWeight = FontWeight.Bold,
                 fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
@@ -896,7 +896,7 @@ private fun DownloadJobRow(job: DownloadJob, viewModel: LibraryViewModel) {
             Modifier.size(46.dp).clip(RoundedCornerShape(11.dp)).background(Glass),
             contentAlignment = Alignment.Center,
         ) { Icon(Icons.Default.MusicNote, null, tint = TextMuted, modifier = Modifier.size(18.dp)) }
-        Column(Modifier.weight(1f)) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
             Text(
                 job.title, color = TextPrimary, fontFamily = AppFont, fontWeight = FontWeight.Bold,
                 fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
@@ -970,13 +970,13 @@ private fun OfflineNotice(onRetry: () -> Unit) {
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Icon(Icons.Default.CloudOff, null, tint = TextMuted, modifier = Modifier.size(18.dp))
-        Column(Modifier.weight(1f)) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
             Text(
                 "Offline", color = TextPrimary, fontFamily = AppFont,
                 fontWeight = FontWeight.Bold, fontSize = 13.sp,
             )
             Text(
-                "Navidrome isn't reachable — playing your downloads.",
+                "Navidrome isn't reachable - playing your downloads.",
                 color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
             )
         }
@@ -1093,7 +1093,7 @@ private fun ConnectForm(viewModel: LibraryViewModel, backend: Backend) {
             val pass by viewModel.navPass.collectAsState()
             SectionLabel("Navidrome / OpenSubsonic")
             Text(
-                "Direct mode plays on this phone and can download for offline — it works even when Music Assistant is down.",
+                "Direct mode plays on this phone and can download for offline - it works even when Music Assistant is down.",
                 color = TextMuted, style = MaterialTheme.typography.bodyMedium,
             )
             GlassField("Server URL", url, viewModel::setNavUrl, "http://192.168.0.10:4533")

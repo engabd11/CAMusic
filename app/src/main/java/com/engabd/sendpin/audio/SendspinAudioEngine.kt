@@ -627,7 +627,7 @@ class SendspinAudioEngine(private val clock: ClockSync) {
             if (endPending && queue.isEmpty() &&
                 android.os.SystemClock.elapsedRealtime() - endPendingAtMs > END_LINGER_MS
             ) {
-                Log.d(TAG, "stream ended and drained — releasing")
+                Log.d(TAG, "stream ended and drained - releasing")
                 thread(name = "sendspin-release", isDaemon = true) { releaseInternal(drain = true) }
                 break
             }
@@ -647,7 +647,7 @@ class SendspinAudioEngine(private val clock: ClockSync) {
                         continue
                     }
                     HeadGate.Decision.PLAY_NOW ->
-                        Log.w(TAG, "head: clock never converged in ${stalledMs}ms — playing unscheduled")
+                        Log.w(TAG, "head: clock never converged in ${stalledMs}ms - playing unscheduled")
                     HeadGate.Decision.SCHEDULE -> scheduleHead = true
                 }
             }
@@ -656,7 +656,7 @@ class SendspinAudioEngine(private val clock: ClockSync) {
                 queue.poll(200, TimeUnit.MILLISECONDS)
             } catch (_: InterruptedException) {
                 break
-            } ?: continue                      // nothing yet — the gate re-decides next pass
+            } ?: continue                      // nothing yet - the gate re-decides next pass
 
             if (awaitStart) {
                 // A frame is in hand, so the gate has actually done its job and can
@@ -669,7 +669,7 @@ class SendspinAudioEngine(private val clock: ClockSync) {
                     // spec's "drop late chunks" is about staying in sync mid-stream;
                     // applying it here deletes the start of the song, which is the bug
                     // being fixed. Play it, and accept being a beat behind the group.
-                    Log.d(TAG, "head late but earliest available — playing unscheduled")
+                    Log.d(TAG, "head late but earliest available - playing unscheduled")
                 } else if (scheduleHead) {
                     Log.i(TAG, "head released: err=${clock.errorUs()}us")
                 }
@@ -763,7 +763,7 @@ class SendspinAudioEngine(private val clock: ClockSync) {
         val buffered = bufferedUs()
         var waitUs = Scheduling.waitUs(localUs, clock.nowUs(), buffered, staticUs)
         if (waitUs < -LATE_TOLERANCE_US) {                        // too late to be useful
-            Log.d(TAG, "head late by ${-waitUs / 1000}ms — dropped")
+            Log.d(TAG, "head late by ${-waitUs / 1000}ms - dropped")
             return false
         }
         if (waitUs > MAX_LEAD_US) return true                     // implausible: don't stall on it
@@ -813,7 +813,7 @@ class SendspinAudioEngine(private val clock: ClockSync) {
         }
         if (existing != null) {
             Log.w(TAG, "decoder output $rate/${ch}ch/enc=$enc != track " +
-                "$trackSampleRate/${trackChannels}ch/enc=$trackEncoding — rebuilding")
+                "$trackSampleRate/${trackChannels}ch/enc=$trackEncoding - rebuilding")
             runCatching { existing.pause(); existing.flush(); existing.release() }
         }
         trackSampleRate = rate

@@ -7,7 +7,7 @@ data class HaMediaPlayer(
     val entityId: String,
     val name: String,
     val state: String = "idle",       // playing | paused | idle | off | …
-    val nowPlaying: String? = null,   // "Artist — Title" when something is on
+    val nowPlaying: String? = null,   // "Artist - Title" when something is on
 ) {
     val isPlaying get() = state == "playing"
 }
@@ -104,17 +104,17 @@ class LightSyncRepository(private val ha: HaClient) {
         /** One-line summaries of each rung, from `SyncMode` in const.py. */
         val MODE_BLURBS = mapOf(
             "auto" to "Picks a level live from the music",
-            "subtle" to "Seamless — steady level, colour just flows",
-            "medium" to "Gentle club — visible dimming, soft flashes",
-            "high" to "The band — kicks, guitar and vocals split across lamps",
-            "intense" to "Club — the room follows energy, colour jumps on beats",
-            "extreme" to "Max club — dark room, fast beats chase side to side",
+            "subtle" to "Seamless - steady level, colour just flows",
+            "medium" to "Gentle club - visible dimming, soft flashes",
+            "high" to "The band - kicks, guitar and vocals split across lamps",
+            "intense" to "Club - the room follows energy, colour jumps on beats",
+            "extreme" to "Max club - dark room, fast beats chase side to side",
         )
 
         /** From `SyncEffect` in const.py. */
         val EFFECT_BLURBS = mapOf(
             "music" to "Beat and frequency choreography",
-            "movies" to "Calm — brightness follows the soundtrack",
+            "movies" to "Calm - brightness follows the soundtrack",
             "fireworks" to "Bursts ignite on big beats, then fade",
         )
     }
@@ -193,7 +193,7 @@ class LightSyncRepository(private val ha: HaClient) {
 
             LightArea(
                 id = deviceId,
-                name = (deviceName[deviceId] ?: "Area").removePrefix("Music Sync — ").removePrefix("Music Sync - "),
+                name = (deviceName[deviceId] ?: "Area").removePrefix("Music Sync - ").removePrefix("Music Sync - "),
                 enabled = st(switchEid)?.first == "on",
                 switchEntity = switchEid,
                 mode = st(modeEid)?.first,
@@ -240,7 +240,7 @@ class LightSyncRepository(private val ha: HaClient) {
             nowPlaying = when {
                 title == null -> null
                 artist == null -> title
-                else -> "$artist — $title"
+                else -> "$artist - $title"
             },
         )
     }.sortedWith(compareByDescending<HaMediaPlayer> { it.isPlaying }.thenBy { it.name.lowercase() })

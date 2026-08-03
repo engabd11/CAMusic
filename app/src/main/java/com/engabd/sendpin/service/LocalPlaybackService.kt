@@ -211,7 +211,7 @@ class LocalPlaybackService : Service() {
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(track?.title.orEmpty().ifBlank { "Sendspin" })
             .setContentText(
-                listOfNotNull(track?.artist, track?.album).joinToString(" — ")
+                listOfNotNull(track?.artist, track?.album).joinToString(" - ")
                     .ifBlank { if (track?.offline == true) "Offline" else "" }
             )
             .setSmallIcon(android.R.drawable.ic_media_play)

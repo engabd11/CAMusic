@@ -28,6 +28,7 @@ import com.engabd.sendpin.ui.design.HideBottomChrome
 import com.engabd.sendpin.ui.design.LocalAccent
 import com.engabd.sendpin.ui.design.dismissOnDragDown
 import com.engabd.sendpin.ui.design.systemNavInset
+import com.engabd.sendpin.ui.design.TitleGap
 import com.engabd.sendpin.ui.theme.*
 
 /**
@@ -87,7 +88,7 @@ fun BoxScope.PlaylistPickerSheet(
 
             if (playlists.isEmpty()) {
                 Text(
-                    "No playlists yet — create one from the Playlists list first.",
+                    "No playlists yet - create one from the Playlists list first.",
                     color = TextMuted, style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.padding(horizontal = 18.dp, vertical = 18.dp),
                 )
@@ -106,7 +107,7 @@ fun BoxScope.PlaylistPickerSheet(
                                 Icons.AutoMirrored.Filled.QueueMusic, null,
                                 tint = accent, modifier = Modifier.size(20.dp),
                             )
-                            Column(Modifier.weight(1f)) {
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
                                 Text(
                                     pl.name, color = TextPrimary, fontFamily = AppFont,
                                     style = MaterialTheme.typography.titleLarge,

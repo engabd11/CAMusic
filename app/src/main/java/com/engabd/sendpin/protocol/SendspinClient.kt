@@ -34,7 +34,7 @@ import java.util.concurrent.atomic.AtomicInteger
 class SendspinClient(
     private val json: Json = Json {
         ignoreUnknownKeys = true
-        encodeDefaults = true   // `type` fields carry defaults — must be emitted
+        encodeDefaults = true   // `type` fields carry defaults - must be emitted
         explicitNulls = false   // omit null device_info / codec_header / etc.
     },
 ) {

@@ -63,6 +63,22 @@ import kotlin.math.roundToInt
 /** The current album-derived accent, provided down the tree. */
 val LocalAccent = compositionLocalOf { DefaultAccent }
 
+/**
+ * The gap between a title and the subtitle under it.
+ *
+ * Two `Text`s stacked in a `Column` sit on their own line boxes with nothing
+ * between them, which packs a bold 15sp title against an 11sp subtitle tightly
+ * enough that the pair reads as one smudged block rather than two lines. It shows up
+ * everywhere the app puts a label over a detail: speaker rows, settings rows, track
+ * rows, the Lights tab, the mini player.
+ *
+ * One token rather than a hand-placed `Spacer` at each site, so the whole app moves
+ * together and there is a single thing to turn if it wants to be looser still.
+ * Applied as the `Column`'s `verticalArrangement`, which also spaces any third line
+ * consistently instead of only the first gap.
+ */
+val TitleGap = 3.dp
+
 fun Color.a(alpha: Float): Color = copy(alpha = alpha)
 
 private fun saturate(amount: Float) =

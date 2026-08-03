@@ -557,7 +557,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             _navStatus.value = when {
                 err == null -> "Connected"
                 SubsonicError.isAuth(err.code) -> err.message ?: "Rejected"
-                else -> "Unreachable — ${err.message}"
+                else -> "Unreachable - ${err.message}"
             }
         }
     }
@@ -576,7 +576,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         val auth = SubsonicError.isAuth(error.code)
         _connError.value =
             if (auth) error.message.orEmpty()
-            else "Couldn't reach Navidrome — ${error.message}"
+            else "Couldn't reach Navidrome - ${error.message}"
         if (auth || downloads.value.isEmpty()) {
             _offline.value = false
             _ready.value = false
@@ -655,7 +655,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                                     localTrack(item, streamUrl = direct.url, scrobbleId = direct.songId)
                                 )
                             )
-                            _toast.tryEmit("Playing ${item.name} — original file")
+                            _toast.tryEmit("Playing ${item.name} - original file")
                             return@launch
                         }
                         // Handing playback back to Music Assistant ends the local
@@ -888,7 +888,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             val isWifi = cm.activeNetwork?.let { net ->
                 cm.getNetworkCapabilities(net)?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)
             } ?: false
-            if (!isWifi) { _toast.tryEmit("Wi-Fi only — connect to Wi-Fi to download"); return }
+            if (!isWifi) { _toast.tryEmit("Wi-Fi only - connect to Wi-Fi to download"); return }
         }
 
         _toast.tryEmit(
@@ -901,7 +901,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 ok == pending.size && ok == 1 -> "Downloaded ${pending.first().name}"
                 ok == pending.size -> "Downloaded $ok tracks"
                 ok == 0 -> "Download failed"
-                else -> "Downloaded $ok of ${pending.size} — tap a failed row to dismiss"
+                else -> "Downloaded $ok of ${pending.size} - tap a failed row to dismiss"
             }
         )
 

@@ -36,6 +36,7 @@ import com.engabd.sendpin.ui.design.a
 import com.engabd.sendpin.ui.design.HideBottomChrome
 import com.engabd.sendpin.ui.design.dismissOnDragDown
 import com.engabd.sendpin.ui.design.systemNavInset
+import com.engabd.sendpin.ui.design.TitleGap
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.SpeakersViewModel
 
@@ -163,7 +164,7 @@ private fun SpeakerPickRow(
                 if (row.isSelf) Icons.Default.Smartphone else Icons.Default.Speaker, null,
                 tint = if (row.isTarget) accent else TextMuted, modifier = Modifier.size(18.dp),
             )
-            Column(Modifier.weight(1f)) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
                 Text(
                     row.name, color = TextPrimary, fontFamily = AppFont,
                     style = MaterialTheme.typography.titleLarge,

@@ -54,7 +54,7 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
             Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, top = 16.dp, bottom = 14.dp), verticalAlignment = Alignment.CenterVertically) {
                 CircleIconButton(Icons.AutoMirrored.Filled.ArrowBack, "Back", onBack)
                 Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
                     Text("Speakers", color = TextPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp)
                     Text(
                         if (!connected) "Connecting to Music Assistant…" else "${joined.size} of $total players grouped",
@@ -163,7 +163,7 @@ private fun GroupHeroCard(master: Float, activeCount: Int, title: String, onMast
                     Icon(Icons.Default.Speaker, null, tint = accent, modifier = Modifier.size(18.dp))
                 }
                 Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
                     Text(title, color = TextPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text("$activeCount ${if (activeCount == 1) "player" else "players"} synced", color = TextSecondary, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
                 }
@@ -199,7 +199,6 @@ private fun JoinedCard(p: SpeakerUi, onSelect: () -> Unit, onUnjoin: () -> Unit,
                 Spacer(Modifier.width(11.dp))
                 Column(Modifier.weight(1f).clickable(onClick = onSelect)) {
                     Text(p.name, color = TextPrimary, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Spacer(Modifier.height(3.dp))
                     Text(if (p.isTarget) "Playing here" else p.meta, color = if (p.isTarget) accent else TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
                 }
                 // In the group, so the switch is on. The leader is the group — it
@@ -223,7 +222,7 @@ private fun JoinedCard(p: SpeakerUi, onSelect: () -> Unit, onUnjoin: () -> Unit,
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Sync offset", color = TextFaint, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, modifier = Modifier.weight(1f))
                     StepBtn("−") { onOffset(-5) }
-                    Text(if (p.offsetKnown) "${p.offsetMs} ms" else "—", color = TextSecondary, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 11.sp, modifier = Modifier.widthIn(min = 54.dp))
+                    Text(if (p.offsetKnown) "${p.offsetMs} ms" else "-", color = TextSecondary, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 11.sp, modifier = Modifier.widthIn(min = 54.dp))
                     StepBtn("+") { onOffset(5) }
                 }
             }
@@ -250,7 +249,6 @@ private fun FreeCard(
         // Tap the name to make this the active play-to player.
         Column(Modifier.weight(1f).clickable(onClick = onPlayHere)) {
             Text(p.name, color = TextSecondary, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Spacer(Modifier.height(3.dp))
             Text("Tap to play here · ${p.meta}", color = TextFaint, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         // Distinct from "tap to play here", which only redirects what you play

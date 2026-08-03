@@ -354,7 +354,7 @@ private fun ExpandableSection(
                 }
             }
 
-            Column(Modifier.weight(1f)) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
                 Text(
                     title,
                     color = if (enabled) TextPrimary else TextSecondary,
@@ -636,7 +636,7 @@ private fun GainSection(
         GainSlider("Input gain", inputGain, accent, onInput)
         GainSlider("Output gain", outputGain, accent, onOutput)
         Text(
-            "The output limiter prevents clipping after positive gain — enabled by default in MA.",
+            "The output limiter prevents clipping after positive gain - enabled by default in MA.",
             color = TextFaint, fontFamily = AppFont, fontSize = 11.sp,
         )
     }

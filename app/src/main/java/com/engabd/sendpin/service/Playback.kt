@@ -68,7 +68,7 @@ class Playback(private val app: Context) {
     private val _artworkUrl = MutableStateFlow<String?>(null); val artworkUrl: StateFlow<String?> = _artworkUrl
     private val _isPlaying = MutableStateFlow(false); val isPlaying: StateFlow<Boolean> = _isPlaying
     private val _volume = MutableStateFlow(1.0f); val volume: StateFlow<Float> = _volume
-    private val _currentFormat = MutableStateFlow("—"); val currentFormat: StateFlow<String> = _currentFormat
+    private val _currentFormat = MutableStateFlow("-"); val currentFormat: StateFlow<String> = _currentFormat
     private val _streamQuality = MutableStateFlow<StreamQuality?>(null); val streamQuality: StateFlow<StreamQuality?> = _streamQuality
     private val _serverUrl = MutableStateFlow(""); val serverUrl: StateFlow<String> = _serverUrl
 
@@ -138,7 +138,7 @@ class Playback(private val app: Context) {
     }
 
     private fun requestAudioFocus() {
-        if (holdsFocus) return   // already held — re-requesting would leak the old request
+        if (holdsFocus) return   // already held - re-requesting would leak the old request
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val attrs = AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_MEDIA)
@@ -270,7 +270,7 @@ class Playback(private val app: Context) {
             val hasCreds = user.isNotBlank() && pass.isNotBlank()
             val token = if (hasCreds) fetchMaToken(base, user, pass) else null
             if (hasCreds && token == null) {
-                _connectionStatus.value = "Sign-in failed — check username / password"
+                _connectionStatus.value = "Sign-in failed - check username / password"
                 return@launch
             }
             startSendspin(url, token, playerName)
@@ -311,7 +311,7 @@ class Playback(private val app: Context) {
                 // 44.1kHz stream as "44kHz" in the Settings readout.
                 _currentFormat.value = f?.let {
                     "${StreamQuality.khz(it.sampleRate)}kHz / ${it.bitDepth}-bit / ${it.codec.uppercase()}"
-                } ?: "—"
+                } ?: "-"
                 _streamQuality.value = f?.let { StreamQuality(it.codec, it.sampleRate, it.bitDepth) }
             }
         }
@@ -689,7 +689,7 @@ class Playback(private val app: Context) {
         progressAnchor = null
         _connected.value = false
         _connectionStatus.value = "Disconnected"
-        _currentFormat.value = "—"
+        _currentFormat.value = "-"
         _streamQuality.value = null
         _isPlaying.value = false
         _positionMs.value = 0

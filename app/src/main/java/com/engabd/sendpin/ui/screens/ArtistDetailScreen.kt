@@ -332,7 +332,7 @@ private fun AlbumRow(album: MaItem, accent: Color, onClick: () -> Unit, onLongPr
             ) { Icon(Icons.Default.Album, null, tint = TextFaint, modifier = Modifier.size(20.dp)) }
         }
 
-        Column(Modifier.weight(1f)) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
             Text(
                 album.name, color = TextPrimary, fontFamily = AppFont,
                 style = MaterialTheme.typography.titleLarge,

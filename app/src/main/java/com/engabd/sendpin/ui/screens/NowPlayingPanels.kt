@@ -307,7 +307,7 @@ private fun QueueRow(
             }
         }
         Spacer(Modifier.width(11.dp))
-        Column(Modifier.weight(1f)) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
             Text(
                 item.name,
                 color = if (playing) accent else if (item.available) TextPrimary else TextFaint,
@@ -419,7 +419,7 @@ fun SleepTimerChip(viewModel: NowPlayingViewModel) {
                     fontWeight = FontWeight.ExtraBold, fontSize = 16.sp,
                 )
                 Text(
-                    if (running) "${countdown(remainingMs)} left — the music fades out over the last 10 seconds."
+                    if (running) "${countdown(remainingMs)} left - the music fades out over the last 10 seconds."
                     else "Fades the music out, then pauses the player.",
                     color = TextMuted, fontFamily = AppFont, fontSize = 12.sp, lineHeight = 16.sp,
                 )

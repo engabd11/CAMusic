@@ -135,7 +135,7 @@ fun BoxScope.PlayerOptionsSheet(onClose: () -> Unit, viewModel: NowPlayingViewMo
                     }
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "Applies to this player's queue — useful for audiobooks and podcasts.",
+                        "Applies to this player's queue - useful for audiobooks and podcasts.",
                         color = TextFaint, fontFamily = AppFont, fontSize = 11.sp,
                     )
                 }
@@ -156,7 +156,7 @@ private fun OptionRow(
     Row(verticalAlignment = Alignment.CenterVertically) {
         Icon(icon, null, tint = if (checked) accent else TextMuted, modifier = Modifier.size(17.dp))
         Spacer(Modifier.width(12.dp))
-        Column(Modifier.weight(1f)) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
             Text(title, color = TextPrimary, style = MaterialTheme.typography.titleLarge)
             Text(subtitle, color = TextFaint, style = MaterialTheme.typography.bodySmall)
         }

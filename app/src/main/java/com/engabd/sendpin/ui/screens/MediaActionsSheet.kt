@@ -36,6 +36,7 @@ import com.engabd.sendpin.ui.design.HideBottomChrome
 import com.engabd.sendpin.ui.design.LocalAccent
 import com.engabd.sendpin.ui.design.dismissOnDragDown
 import com.engabd.sendpin.ui.design.systemNavInset
+import com.engabd.sendpin.ui.design.TitleGap
 import com.engabd.sendpin.ui.theme.*
 
 /**
@@ -190,7 +191,7 @@ private fun ActionRow(
         horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Icon(icon, null, tint = tint ?: accent, modifier = Modifier.size(20.dp))
-        Column(Modifier.weight(1f)) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
             Text(title, color = TextPrimary, style = MaterialTheme.typography.titleLarge)
             Text(subtitle, color = TextFaint, fontFamily = AppFont, fontSize = 11.sp)
         }
