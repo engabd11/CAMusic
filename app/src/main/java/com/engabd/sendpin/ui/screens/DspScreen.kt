@@ -551,7 +551,7 @@ private fun BandTypeDropdown(type: EqBandType, accent: Color, onSelect: (EqBandT
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             EqBandType.entries.filter { it != EqBandType.UNKNOWN }.forEach { t ->
                 DropdownMenuItem(
-                    text = { Text(t.wire.replace("_", " "), fontFamily = AppFont, fontSize = 13.sp) },
+                    text = { Text(t.wire.replace("_", " "), style = MaterialTheme.typography.bodyMedium) },
                     onClick = { onSelect(t); expanded = false },
                 )
             }
@@ -579,7 +579,7 @@ private fun ChannelDropdown(channel: AudioChannel, accent: Color, onSelect: (Aud
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             AudioChannel.entries.forEach { ch ->
                 DropdownMenuItem(
-                    text = { Text(ch.wire, fontFamily = AppFont, fontSize = 13.sp) },
+                    text = { Text(ch.wire, style = MaterialTheme.typography.bodyMedium) },
                     onClick = { onSelect(ch); expanded = false },
                 )
             }
@@ -673,7 +673,7 @@ private fun PresetSection(
                     singleLine = true,
                     modifier = Modifier.weight(1f),
                     colors = accentTextFieldColors(accent),
-                    textStyle = androidx.compose.ui.text.TextStyle(fontFamily = AppFont, fontSize = 13.sp),
+                    textStyle = androidx.compose.ui.text.TextStyle(style = MaterialTheme.typography.bodyMedium),
                 )
                 Box(
                     Modifier.clip(RoundedCornerShape(8.dp)).background(accent).clickable(onClick = onSavePreset)

@@ -13,6 +13,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -87,7 +88,7 @@ fun BoxScope.PlaylistPickerSheet(
             if (playlists.isEmpty()) {
                 Text(
                     "No playlists yet — create one from the Playlists list first.",
-                    color = TextMuted, fontFamily = AppFont, fontSize = 13.sp,
+                    color = TextMuted, style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.padding(horizontal = 18.dp, vertical = 18.dp),
                 )
             } else {
@@ -108,7 +109,7 @@ fun BoxScope.PlaylistPickerSheet(
                             Column(Modifier.weight(1f)) {
                                 Text(
                                     pl.name, color = TextPrimary, fontFamily = AppFont,
-                                    fontWeight = FontWeight.Bold, fontSize = 14.sp,
+                                    style = MaterialTheme.typography.titleLarge,
                                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                                 )
                                 pl.subtitle?.takeIf { it.isNotBlank() }?.let {

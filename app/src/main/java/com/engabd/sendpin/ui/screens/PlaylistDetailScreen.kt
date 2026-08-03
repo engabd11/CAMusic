@@ -148,7 +148,7 @@ fun PlaylistDetailScreen(
                     .padding(bottom = navBarInset() + 8.dp, start = 16.dp, end = 16.dp),
             ) { data ->
                 Snackbar(containerColor = Ink3, contentColor = TextPrimary, shape = RoundedCornerShape(14.dp)) {
-                    Text(data.visuals.message, fontFamily = AppFont, fontSize = 13.sp)
+                    Text(data.visuals.message, style = MaterialTheme.typography.bodyMedium)
                 }
             }
 
