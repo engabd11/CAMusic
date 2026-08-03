@@ -141,6 +141,31 @@ fun App() {
         val backend by settings.backend.collectAsState(initial = "ma")
         val disabledRoutes = if (backend == "subsonic") setOf("speakers", "light_sync") else emptySet()
 
+        // An album/artist/playlist detail screen belongs to the server it was opened
+        // from, so switching libraries has to leave it.
+        //
+        // [LibraryViewModel.applyBackend] already empties the *browse stack*, which is
+        // why this looked fixed and wasn't: a detail screen is not a browse node, it
+        // is its own navigation destination with its own ViewModel, and no amount of
+        // clearing library state pops it. Switching to Navidrome while standing on an
+        // MA album left that album on screen, backed by a repository for a server the
+        // library is no longer pointed at.
+        var lastBackend by rememberSaveable { mutableStateOf(backend) }
+        LaunchedEffect(backend) {
+            if (backend != lastBackend) {
+                lastBackend = backend
+                // Two calls, because the switch is made from *Settings* — so the
+                // Library tab is not the current stack, it is a **saved** one. The
+                // bottom bar navigates with `saveState`/`restoreState` (that is what
+                // keeps each tab where you left it), and `popBackStack` only ever
+                // touches the current stack: it cannot reach the saved album detail,
+                // which is then faithfully restored the moment the Library tab is
+                // tapped. `clearBackStack` is the one that drops it.
+                navController.popBackStack("library", inclusive = false)
+                runCatching { navController.clearBackStack("library") }
+            }
+        }
+
         // Overlay expand/collapse state.
         var overlayExpanded by rememberSaveable { mutableStateOf(false) }
 
