@@ -18,6 +18,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -172,7 +173,7 @@ fun SettingsScreen(
                             // used to be swallowed, so the name simply stayed wrong with
                             // no explanation.
                             configStatus.takeIf { it.isNotBlank() }?.let {
-                                Text(it, color = WarnAmber, fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp)
+                                Text(it, color = WarnAmber, style = MaterialTheme.typography.bodySmall)
                             }
 
                             // Stream codec. Sits here rather than under Audio because it
@@ -180,7 +181,7 @@ fun SettingsScreen(
                             Text(
                                 "Stream format",
                                 color = TextSecondary, fontFamily = AppFont,
-                                fontWeight = FontWeight.Bold, fontSize = 12.sp,
+                                style = MaterialTheme.typography.labelLarge
                             )
                             SegmentedToggle(
                                 options = CodecLabels,
@@ -199,7 +200,7 @@ fun SettingsScreen(
                                     else -> "Offer all three and let Music Assistant choose — FLAC first, " +
                                         "then PCM, then Opus."
                                 },
-                                color = TextFaint, fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp,
+                                color = TextFaint, style = MaterialTheme.typography.bodySmall,
                             )
 
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -236,7 +237,7 @@ fun SettingsScreen(
                                     else
                                         "A format change needs the player disabled and enabled again — " +
                                             "it is only announced when the connection opens.",
-                                    color = TextFaint, fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp,
+                                    color = TextFaint, style = MaterialTheme.typography.bodySmall,
                                 )
                             }
 
@@ -252,7 +253,7 @@ fun SettingsScreen(
                                     "was first registered under. Registering again arrives as a new " +
                                     "player under the name above — the old entry stays in Music " +
                                     "Assistant, greyed out, for you to delete.",
-                                color = TextFaint, fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp,
+                                color = TextFaint, style = MaterialTheme.typography.bodySmall,
                             )
                             OledButton("Register again as a new player", accent = accent) {
                                 viewModel.reregister(playerName.trim())
@@ -284,7 +285,7 @@ fun SettingsScreen(
                                 else
                                     "Music Assistant browses the whole library, plays to any speaker, and " +
                                         "keeps grouping and Light Sync available.",
-                                color = TextFaint, fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp,
+                                color = TextFaint, style = MaterialTheme.typography.bodySmall,
                             )
                         }
                     }
@@ -325,7 +326,7 @@ fun SettingsScreen(
                             Text(
                                 "Overlay: the cover slides over the app; swipe down to minimize into a bar. " +
                                     "Tab: the classic full-screen player as a bottom tab.",
-                                color = TextFaint, fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp,
+                                color = TextFaint, style = MaterialTheme.typography.bodySmall,
                             )
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 ToggleChip("Tab (classic)", npLayout == "tab") {
@@ -387,13 +388,13 @@ fun SettingsScreen(
                                     "44.1 and 48 kHz are always offered, so CD-rate files stream " +
                                     "untouched. Output is ${if (bitPerfect) "up to 24-bit" else "16-bit"}. " +
                                     "Reconnect to apply.",
-                                color = TextFaint, fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp,
+                                color = TextFaint, style = MaterialTheme.typography.bodySmall,
                             )
                             Box(Modifier.fillMaxWidth().height(1.dp).background(HairlineSoft))
                             Text(
                                 "ReplayGain",
                                 color = TextSecondary, fontFamily = AppFont,
-                                fontWeight = FontWeight.Bold, fontSize = 12.sp,
+                                style = MaterialTheme.typography.labelLarge
                             )
                             SegmentedToggle(
                                 options = ReplayGainLabels,
@@ -412,13 +413,13 @@ fun SettingsScreen(
                                     else -> "Play files at their mastered level. A 1985 master and a " +
                                         "2015 one can land 10 dB apart."
                                 },
-                                color = TextFaint, fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp,
+                                color = TextFaint, style = MaterialTheme.typography.bodySmall,
                             )
                             Text(
                                 "Applies to Navidrome and offline playback. Music Assistant does its " +
                                     "own gain server-side, so this would double it there. Boosts are " +
                                     "capped at +${ReplayGain.MAX_BOOST_DB.toInt()} dB to avoid clipping.",
-                                color = TextFaint, fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp,
+                                color = TextFaint, style = MaterialTheme.typography.bodySmall,
                             )
                             OutputDevicePicker(accent)
                             // Status readout
@@ -627,13 +628,13 @@ private fun NavidromeCard(
                 Text(
                     status,
                     color = if (bad) ErrorRed else TextFaint,
-                    fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp,
+                    style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.weight(1f),
                 )
                 Text(
                     "Re-check",
-                    color = accent, fontFamily = AppFont, fontWeight = FontWeight.Bold,
-                    fontSize = 11.sp,
+                    color = accent,
+                    style = MaterialTheme.typography.labelLarge,
                     modifier = Modifier.clickable { vm.checkNavidrome() }.padding(start = 10.dp),
                 )
             }
@@ -643,7 +644,7 @@ private fun NavidromeCard(
             Text(
                 "Stream quality",
                 color = TextSecondary, fontFamily = AppFont,
-                fontWeight = FontWeight.Bold, fontSize = 12.sp,
+                style = MaterialTheme.typography.labelLarge
             )
             SegmentedToggle(
                 options = NavFormatLabels,
@@ -658,7 +659,7 @@ private fun NavidromeCard(
                         "even when the library holds huge hi-res masters."
                     else -> "Transcoded, lossy. Worth it on a slow or metered connection."
                 },
-                color = TextFaint, fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp,
+                color = TextFaint, style = MaterialTheme.typography.bodySmall,
             )
             Text(
                 "Applies to the next track. Downloads always take the original file.",
@@ -694,7 +695,7 @@ private fun OutputDevicePicker(accent: Color) {
     Text(
         "Output device",
         color = TextSecondary, fontFamily = AppFont,
-        fontWeight = FontWeight.Bold, fontSize = 12.sp,
+        style = MaterialTheme.typography.labelLarge
     )
     val labels = listOf("Automatic") + outputs.map { it.label }
     val ids = listOf("") + outputs.map { it.id }
@@ -712,7 +713,7 @@ private fun OutputDevicePicker(accent: Color) {
         else
             "Playback is pinned to this output. If it's unplugged, Android routes " +
                 "normally again until it's back.",
-        color = TextFaint, fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp,
+        color = TextFaint, style = MaterialTheme.typography.bodySmall,
     )
 }
 
@@ -784,7 +785,7 @@ private fun DownloadsCard(vm: LibraryViewModel, accent: Color) {
                     "The oldest downloads are deleted once the total goes past the limit."
                 else
                     "No limit — downloads are only removed when you delete them.",
-                color = TextFaint, fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp,
+                color = TextFaint, style = MaterialTheme.typography.bodySmall,
             )
             if (downloads.isNotEmpty()) {
                 OledButton(
@@ -902,7 +903,7 @@ private fun ToggleRow(title: String, subtitle: String, checked: Boolean, accent:
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
-            Text(title, color = TextPrimary, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            Text(title, color = TextPrimary, style = MaterialTheme.typography.titleLarge)
             Text(subtitle, color = TextFaint, fontSize = 11.sp)
         }
         Box(

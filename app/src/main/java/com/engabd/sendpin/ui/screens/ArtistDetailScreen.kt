@@ -334,7 +334,7 @@ private fun AlbumRow(album: MaItem, accent: Color, onClick: () -> Unit, onLongPr
         Column(Modifier.weight(1f)) {
             Text(
                 album.name, color = TextPrimary, fontFamily = AppFont,
-                fontWeight = FontWeight.Bold, fontSize = 14.sp,
+                style = MaterialTheme.typography.titleLarge,
                 maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
             album.subtitle?.takeIf { it.isNotBlank() }?.let {

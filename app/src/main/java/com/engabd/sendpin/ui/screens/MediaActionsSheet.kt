@@ -16,6 +16,7 @@ import androidx.compose.material.icons.filled.LibraryAdd
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -190,7 +191,7 @@ private fun ActionRow(
     ) {
         Icon(icon, null, tint = tint ?: accent, modifier = Modifier.size(20.dp))
         Column(Modifier.weight(1f)) {
-            Text(title, color = TextPrimary, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            Text(title, color = TextPrimary, style = MaterialTheme.typography.titleLarge)
             Text(subtitle, color = TextFaint, fontFamily = AppFont, fontSize = 11.sp)
         }
     }

@@ -13,6 +13,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -156,8 +157,8 @@ private fun OptionRow(
         Icon(icon, null, tint = if (checked) accent else TextMuted, modifier = Modifier.size(17.dp))
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
-            Text(title, color = TextPrimary, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-            Text(subtitle, color = TextFaint, fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp)
+            Text(title, color = TextPrimary, style = MaterialTheme.typography.titleLarge)
+            Text(subtitle, color = TextFaint, style = MaterialTheme.typography.bodySmall)
         }
         Spacer(Modifier.width(10.dp))
         Switch(
