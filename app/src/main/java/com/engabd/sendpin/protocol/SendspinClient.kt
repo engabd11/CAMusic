@@ -98,6 +98,10 @@ class SendspinClient(
     private val _streamEvents = MutableSharedFlow<StreamEvent>(extraBufferCapacity = 32)
     val streamEvents: SharedFlow<StreamEvent> = _streamEvents.asSharedFlow()
 
+    /** Group playback state changes pushed by the server — instant, no 5s poll. */
+    private val _groupUpdates = MutableSharedFlow<SendspinIncoming.GroupUpdate>(extraBufferCapacity = 16)
+    val groupUpdates: SharedFlow<SendspinIncoming.GroupUpdate> = _groupUpdates.asSharedFlow()
+
     // Raw binary audio chunks; SendspinAudioEngine parses the header + decodes.
     private val _audioFrames = MutableSharedFlow<ByteArray>(extraBufferCapacity = 512)
     val audioFrames: SharedFlow<ByteArray> = _audioFrames.asSharedFlow()
@@ -149,6 +153,12 @@ class SendspinClient(
         }
     }
 
+    /**
+     * Close the socket, telling the server *why*. The reason reaches MA in the
+     * `client/goodbye` payload: `"user_request"` drops the player from the
+     * speaker list immediately, `"restart"` asks MA to hold the slot open for a
+     * ~30 s resume grace so a process restart doesn't make the player vanish.
+     */
     fun disconnect(reason: String = "user_request") {
         userClosed = true
         reconnectJob?.cancel(); reconnectJob = null
@@ -162,8 +172,8 @@ class SendspinClient(
         _statusText.value = "Disconnected"
     }
 
-    fun close() {
-        disconnect()
+    fun close(reason: String = "user_request") {
+        disconnect(reason)
         scope.cancel()
     }
 
@@ -279,6 +289,7 @@ class SendspinClient(
                     speedMilli = m.progress?.speedMilli ?: 1000L,
                 )
             }
+            is SendspinIncoming.GroupUpdate -> _groupUpdates.tryEmit(msg)
             is SendspinIncoming.StreamStart -> {
                 _streamFormat.value = msg.payload.player
                 _streamEvents.tryEmit(StreamEvent.Start(msg.payload.player))

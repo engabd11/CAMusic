@@ -1,7 +1,9 @@
 package com.engabd.sendpin.audio
 
 import android.media.AudioAttributes
+import android.media.AudioDeviceInfo
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioTrack
 import android.media.MediaCodec
 import android.media.MediaFormat
@@ -17,11 +19,15 @@ import kotlin.concurrent.thread
 import kotlin.math.max
 
 /**
- * Decodes the Sendspin binary audio stream and plays it through an [AudioTrack]
- * (16-bit PCM). FLAC and Opus are decoded with Android's [MediaCodec]; PCM is a
- * passthrough. Pure Kotlin — no NDK — so it builds and runs without the native
- * pipeline (the native AAudio-I24 path is kept in `cpp/` for the future
- * bit-perfect 24-bit phase). Modeled on the massdroid engine (MIT).
+ * Decodes the Sendspin binary audio stream and plays it through an [AudioTrack].
+ * Supports 16-bit and 24-bit PCM output: when [bitPerfect24Bit] is true the
+ * AudioTrack is built with `ENCODING_PCM_24BIT_PACKED` (API 31+, which is our
+ * minSdk), so 24-bit FLAC streams keep their full depth instead of being
+ * truncated to 16-bit. FLAC and Opus are decoded with Android's [MediaCodec];
+ * PCM is a passthrough. Pure Kotlin — no NDK — so it builds and runs without
+ * the native pipeline (the native AAudio-I24 path is kept in `cpp/` for the
+ * future bit-perfect phase that bypasses the Android mixer). Modeled on the
+ * massdroid engine (MIT).
  *
  * Each binary WebSocket frame is
  * `[type:uint8 = 4][server_ts_us: int64 big-endian][payload…]`.
@@ -41,7 +47,36 @@ class SendspinAudioEngine(private val clock: ClockSync) {
      */
     @Volatile var staticDelayMs: Int = 0
 
-    private companion object {
+    /**
+     * When true, hi-res sources keep their resolution instead of being
+     * requantised to 16-bit. Set from
+     * [com.engabd.sendpin.data.AppSettings.bitPerfect24Bit] before [start].
+     *
+     * What this actually does depends on the path:
+     *
+     *  - **PCM passthrough** — the wire *is* the sample format, so the track is
+     *    built with `ENCODING_PCM_24BIT_PACKED` when the server says 24-bit.
+     *  - **FLAC** — MediaCodec has no 24-bit-packed output encoding. The decoder
+     *    is asked for `ENCODING_PCM_FLOAT`, which AOSP's FLAC decoder honours for
+     *    >16-bit sources, and the track is built to match.
+     *
+     * Either way the track is only ever built from the format the *decoder
+     * reports*, never from the depth the server claimed — writing 2-byte samples
+     * into a 3-byte-per-sample track is not quiet degradation, it is noise.
+     */
+    @Volatile var bitPerfect: Boolean = false
+
+    /**
+     * The preferred output device for audio routing (USB DAC support).
+     * When non-null, the AudioTrack is routed to this [AudioDeviceInfo] via
+     * `setPreferredDevice`. Set from
+     * [com.engabd.sendpin.data.AppSettings.preferredAudioDeviceId] before
+     * [start]; resolved to an [AudioDeviceInfo] by the caller via
+     * [AudioManager.getDevices].
+     */
+    @Volatile var preferredOutputDevice: AudioDeviceInfo? = null
+
+    companion object {
         const val TAG = "SendspinAudio"
         const val HEADER_SIZE = 9
         const val TYPE_PLAYER_AUDIO = 4
@@ -126,6 +161,8 @@ class SendspinAudioEngine(private val clock: ClockSync) {
     private var codec: MediaCodec? = null
     private var track: AudioTrack? = null
     private var isPcm = false
+    /** The AudioFormat encoding the current track was built with. */
+    private var trackEncoding = AudioFormat.ENCODING_PCM_16BIT
     /** What the AudioTrack was built for, to check the decoder against. */
     private var trackSampleRate = 0
     private var trackChannels = 0
@@ -150,18 +187,29 @@ class SendspinAudioEngine(private val clock: ClockSync) {
         stop()
         val channels = format.channels.coerceIn(1, 2)
         isPcm = format.codec.equals("pcm", ignoreCase = true)
+        // Hi-res is only worth asking for when the source actually has the bits:
+        // a 16-bit file widened on the way out is padding, not resolution.
+        val wantHiRes = bitPerfect && format.bitDepth >= 24
         codec = when (format.codec.lowercase()) {
             "opus" -> createOpusDecoder(format.sampleRate, channels, format.codecHeader)
-            "flac" -> createFlacDecoder(format.sampleRate, channels, format.bitDepth, format.codecHeader)
+            "flac" -> createFlacDecoder(format.sampleRate, channels, format.bitDepth, format.codecHeader, wantHiRes)
             else -> null   // pcm or unknown -> passthrough / silence
         }
         trackSampleRate = format.sampleRate
         trackChannels = channels
-        track = createTrack(format.sampleRate, channels).also { it.setVolume(volume); it.play() }
+        // Passthrough has no decoder to ask, so the server's claim is the only
+        // description of the bytes and the track is built now. Decoded streams
+        // wait for INFO_OUTPUT_FORMAT_CHANGED — see ensureTrackFor.
+        track = if (isPcm) {
+            val enc = if (wantHiRes) AudioFormat.ENCODING_PCM_24BIT_PACKED else AudioFormat.ENCODING_PCM_16BIT
+            createTrack(format.sampleRate, channels, enc).also { it.setVolume(volume); it.play() }
+        } else {
+            null
+        }
         armHead()
         running = true
         worker = thread(name = "sendspin-audio", isDaemon = true) { runLoop() }
-        Log.d(TAG, "start ${format.codec} ${format.sampleRate}/${format.bitDepth} ch=$channels")
+        Log.d(TAG, "start ${format.codec} ${format.sampleRate}/${format.bitDepth} ch=$channels hires=$wantHiRes")
     }
 
     fun submit(frame: ByteArray) {
@@ -203,6 +251,15 @@ class SendspinAudioEngine(private val clock: ClockSync) {
     fun setVolume(v: Float) {
         volume = v.coerceIn(0f, 1f)
         track?.setVolume(volume)
+    }
+
+    /**
+     * Route audio output to a specific [AudioDeviceInfo] (USB DAC, Bluetooth
+     * headset, etc.). Takes effect on the next [start] call — the AudioTrack is
+     * rebuilt per stream. Call with null to revert to the system default route.
+     */
+    fun setPreferredDevice(device: AudioDeviceInfo?) {
+        preferredOutputDevice = device
     }
 
     // --- decode loop ------------------------------------------------------
@@ -259,7 +316,6 @@ class SendspinAudioEngine(private val clock: ClockSync) {
             } catch (_: InterruptedException) {
                 break
             } ?: continue                      // nothing yet — the gate re-decides next pass
-            val t = track ?: continue
 
             if (awaitStart) {
                 // A frame is in hand, so the gate has actually done its job and can
@@ -279,7 +335,9 @@ class SendspinAudioEngine(private val clock: ClockSync) {
             }
 
             if (isPcm) {
-                t.write(frame.payload, 0, frame.payload.size)   // s16le passthrough
+                // Passthrough: the track was built in start() from the server's
+                // stated depth, because there is no decoder to ask.
+                track?.write(frame.payload, 0, frame.payload.size)
                 continue
             }
 
@@ -293,30 +351,29 @@ class SendspinAudioEngine(private val clock: ClockSync) {
                     }
                 }
                 var outIdx = c.dequeueOutputBuffer(info, DEQUEUE_TIMEOUT_US)
-                // The decoder's own answer about what it is producing. The AudioTrack
-                // was built from the server's `stream/start` claim, so a mismatch here
-                // means the badge is lying and playback is pitched wrong. Log only —
-                // rebuilding the track mid-stream is a bigger change than this earns.
+                // The decoder's own answer about what it is producing — rate,
+                // channels *and* sample encoding. This is what the track gets built
+                // from, so the two can never disagree: a rate or channel mismatch
+                // plays at the wrong pitch, and an encoding mismatch (2-byte samples
+                // written into a 3-byte-per-sample track) is white noise. MediaCodec
+                // always raises this before the first output buffer.
                 if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                    runCatching {
-                        val f = c.outputFormat
-                        val rate = f.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-                        val ch = f.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-                        if (rate != trackSampleRate || ch != trackChannels) {
-                            Log.w(TAG, "decoder output $rate/${ch}ch != track $trackSampleRate/${trackChannels}ch")
-                        }
-                    }
+                    ensureTrackFor(c.outputFormat)
                     outIdx = c.dequeueOutputBuffer(info, DEQUEUE_TIMEOUT_US)
                 }
                 while (outIdx >= 0) {
                     if (info.size > 0) {
+                        // Belt and braces: if a decoder ever hands us output without
+                        // having announced its format, ask it directly rather than
+                        // dropping the audio.
+                        val t = track ?: ensureTrackFor(c.outputFormat)
                         c.getOutputBuffer(outIdx)?.let { out ->
                             // Hand the codec's own buffer straight to the track: no
                             // intermediate ByteArray, so nothing to allocate, copy or
                             // pool on the decode hot path (~112 KB/s at 900 kbps FLAC).
                             out.position(info.offset)
                             out.limit(info.offset + info.size)
-                            t.write(out, info.size, AudioTrack.WRITE_BLOCKING)
+                            t?.write(out, info.size, AudioTrack.WRITE_BLOCKING)
                         }
                     }
                     c.releaseOutputBuffer(outIdx, false)
@@ -376,11 +433,55 @@ class SendspinAudioEngine(private val clock: ClockSync) {
 
     // --- codec / track creation (derived from the massdroid engine) -------
 
-    private fun createTrack(sampleRate: Int, channels: Int): AudioTrack {
+    /**
+     * Build (or rebuild) the track to match what the decoder says it is emitting.
+     * Called on `INFO_OUTPUT_FORMAT_CHANGED`, before any output buffer is written.
+     *
+     * A decoder is free to ignore what we asked for — an OEM FLAC decoder that
+     * doesn't do float output will simply report 16-bit, and this follows it
+     * rather than corrupting every sample. Returns the live track.
+     */
+    @Synchronized
+    private fun ensureTrackFor(out: MediaFormat): AudioTrack? {
+        val rate = runCatching { out.getInteger(MediaFormat.KEY_SAMPLE_RATE) }.getOrNull() ?: trackSampleRate
+        val ch = runCatching { out.getInteger(MediaFormat.KEY_CHANNEL_COUNT) }.getOrNull() ?: trackChannels
+        val enc = runCatching { out.getInteger(MediaFormat.KEY_PCM_ENCODING) }
+            .getOrNull() ?: AudioFormat.ENCODING_PCM_16BIT
+        val existing = track
+        if (existing != null && rate == trackSampleRate && ch == trackChannels && enc == trackEncoding) {
+            return existing
+        }
+        if (existing != null) {
+            Log.w(TAG, "decoder output $rate/${ch}ch/enc=$enc != track " +
+                "$trackSampleRate/${trackChannels}ch/enc=$trackEncoding — rebuilding")
+            runCatching { existing.pause(); existing.flush(); existing.release() }
+        }
+        trackSampleRate = rate
+        trackChannels = ch
+        trackEncoding = enc
+        return runCatching {
+            createTrack(rate, ch, enc).also { it.setVolume(volume); it.play() }
+        }.onFailure { Log.e(TAG, "couldn't build track for $rate/${ch}ch/enc=$enc: ${it.message}") }
+            .getOrNull()
+            .also { track = it }
+    }
+
+    /**
+     * Build the AudioTrack for an explicit [encoding]. When [preferredOutputDevice]
+     * is set, routes output to that device (USB DAC) via `setPreferredDevice`.
+     */
+    private fun createTrack(sampleRate: Int, channels: Int, encoding: Int): AudioTrack {
         val channelMask = if (channels == 1) AudioFormat.CHANNEL_OUT_MONO else AudioFormat.CHANNEL_OUT_STEREO
-        val minBuf = AudioTrack.getMinBufferSize(sampleRate, channelMask, AudioFormat.ENCODING_PCM_16BIT)
-        val bufSize = max(minBuf, sampleRate * channels * 2)   // ~1 s of headroom
-        return AudioTrack.Builder()
+        // Float is 4 bytes per sample, 24-bit packed 3, 16-bit 2. The buffer is
+        // sized for ~1 s of headroom whichever it is.
+        val bytesPerSample = when (encoding) {
+            AudioFormat.ENCODING_PCM_FLOAT -> 4
+            AudioFormat.ENCODING_PCM_24BIT_PACKED -> 3
+            else -> 2
+        }
+        val minBuf = AudioTrack.getMinBufferSize(sampleRate, channelMask, encoding)
+        val bufSize = max(minBuf, sampleRate * channels * bytesPerSample)
+        val builder = AudioTrack.Builder()
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_MEDIA)
@@ -389,20 +490,37 @@ class SendspinAudioEngine(private val clock: ClockSync) {
             )
             .setAudioFormat(
                 AudioFormat.Builder()
-                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setEncoding(encoding)
                     .setSampleRate(sampleRate)
                     .setChannelMask(channelMask)
                     .build()
             )
             .setBufferSizeInBytes(bufSize)
             .setTransferMode(AudioTrack.MODE_STREAM)
-            .build()
+        val t = builder.build()
+        // Route to a preferred output device (USB DAC) if one is set. Done after
+        // build because `setPreferredDevice` is a runtime call, not a builder one.
+        preferredOutputDevice?.let { dev -> t.setPreferredDevice(dev) }
+        return t
     }
 
-    private fun createFlacDecoder(sampleRate: Int, channels: Int, bitDepth: Int, codecHeader: String?): MediaCodec {
+    private fun createFlacDecoder(
+        sampleRate: Int,
+        channels: Int,
+        bitDepth: Int,
+        codecHeader: String?,
+        wantHiRes: Boolean = false,
+    ): MediaCodec {
         val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_FLAC, sampleRate, channels)
         format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, FLAC_MAX_INPUT)
         format.setInteger("bit-depth", bitDepth)
+        // MediaCodec has no 24-bit-packed *output* encoding, so the way to get more
+        // than 16 bits out of the FLAC decoder is to ask for float — which AOSP's
+        // decoder honours for >16-bit sources. Requesting it is only ever a hint:
+        // ensureTrackFor reads back what the decoder actually chose.
+        if (wantHiRes) {
+            format.setInteger(MediaFormat.KEY_PCM_ENCODING, AudioFormat.ENCODING_PCM_FLOAT)
+        }
         codecHeader?.let {
             try { format.setByteBuffer("csd-0", ByteBuffer.wrap(Base64.decode(it, Base64.DEFAULT))) } catch (_: Exception) {}
         }

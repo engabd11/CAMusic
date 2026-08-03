@@ -1,6 +1,8 @@
 package com.engabd.sendpin.ui.screens
 
+import android.content.Context
 import android.content.Intent
+import android.media.AudioManager
 import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -30,6 +32,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.engabd.sendpin.BuildConfig
+import com.engabd.sendpin.audio.AudioOutputs
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ui.design.*
@@ -211,9 +214,27 @@ fun SettingsScreen(
                                 }
                             }
                             if (connected) {
+                                // On "Auto" the hello advertised every codec, so the
+                                // server is free to switch to any of them on request —
+                                // `client/request_format`, answered with a fresh
+                                // stream/start. Connect on a single codec and the
+                                // advertised list has one entry, so there is nothing
+                                // to switch to without reconnecting.
+                                val live = viewModel.canSwitchFormatLive && sendspinCodec != "auto"
+                                if (live) {
+                                    OledButton(
+                                        "Switch to ${CodecLabels[CodecValues.indexOf(sendspinCodec)]} now",
+                                        modifier = Modifier.fillMaxWidth(), accent = accent,
+                                    ) { viewModel.requestFormat(sendspinCodec) }
+                                }
                                 Text(
-                                    "A format change needs the player disabled and enabled again — " +
-                                        "it is only announced when the connection opens.",
+                                    if (live)
+                                        "This connection offered every format, so the change can be " +
+                                            "applied to the running stream. It sticks for good on the " +
+                                            "next reconnect."
+                                    else
+                                        "A format change needs the player disabled and enabled again — " +
+                                            "it is only announced when the connection opens.",
                                     color = TextFaint, fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp,
                                 )
                             }
@@ -324,10 +345,12 @@ fun SettingsScreen(
                     var preferHiRes by remember { mutableStateOf(true) }
                     var preferFlac by remember { mutableStateOf(true) }
                     var preferOriginal by remember { mutableStateOf(false) }
+                    var bitPerfect by remember { mutableStateOf(false) }
                     LaunchedEffect(Unit) {
                         preferHiRes = settings.preferHiRes.first()
                         preferFlac = settings.preferFlac.first()
                         preferOriginal = settings.preferOriginal.first()
+                        bitPerfect = settings.bitPerfect24Bit.first()
                     }
                     SectionHeader(Icons.Default.GraphicEq, "Audio", accent)
                     Spacer(Modifier.height(12.dp))
@@ -349,12 +372,21 @@ fun SettingsScreen(
                                     "to resample. Plays on this phone only — no queue, no grouping.",
                                 preferOriginal, accent,
                             ) { preferOriginal = it; scope.launch { settings.setPreferOriginal(it) } }
+                            ToggleRow(
+                                "Bit-perfect (24-bit)",
+                                "Ask for 24-bit instead of 16 and render whatever depth the decoder " +
+                                    "reports. Costs bandwidth, and a phone whose mixer runs at 16-bit " +
+                                    "gains nothing — leave it off unless you're on a USB DAC.",
+                                bitPerfect, accent,
+                            ) { bitPerfect = it; scope.launch { settings.setBitPerfect24Bit(it) } }
                             Text(
                                 "Music Assistant may only send a format this phone advertises. " +
                                     "44.1 and 48 kHz are always offered, so CD-rate files stream " +
-                                    "untouched. Output is 16-bit. Reconnect to apply.",
+                                    "untouched. Output is ${if (bitPerfect) "up to 24-bit" else "16-bit"}. " +
+                                    "Reconnect to apply.",
                                 color = TextFaint, fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp,
                             )
+                            OutputDevicePicker(accent)
                             // Status readout
                             Column(
                                 Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
@@ -582,6 +614,54 @@ private fun NavidromeCard(
     }
 }
 
+/**
+ * Pin playback to one output device. Android normally routes for you, and for a
+ * USB DAC it usually gets it right — but "usually" is not good enough for the
+ * one person who went and bought a DAC, and the system offers no way to say so.
+ *
+ * The list is read once per composition rather than observed: plugging a DAC in
+ * while this screen is open is rare enough that reopening Settings is a fair
+ * price for not holding an [android.media.AudioDeviceCallback] here.
+ */
+@Composable
+private fun OutputDevicePicker(accent: Color) {
+    val context = LocalContext.current
+    val settings = remember { AppSettings(context) }
+    val scope = rememberCoroutineScope()
+    val am = remember { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
+    val outputs = remember { AudioOutputs.list(am) }
+    var selected by remember { mutableStateOf("") }
+    LaunchedEffect(Unit) { selected = settings.preferredAudioDeviceId.first() }
+
+    // Nothing to choose between on a phone with only its own speaker.
+    if (outputs.size < 2) return
+
+    Spacer(Modifier.height(2.dp))
+    Text(
+        "Output device",
+        color = TextSecondary, fontFamily = AppFont,
+        fontWeight = FontWeight.Bold, fontSize = 12.sp,
+    )
+    val labels = listOf("Automatic") + outputs.map { it.label }
+    val ids = listOf("") + outputs.map { it.id }
+    SegmentedToggle(
+        options = labels,
+        selectedIndex = ids.indexOf(selected).coerceAtLeast(0),
+        modifier = Modifier.fillMaxWidth(),
+    ) { i ->
+        selected = ids[i]
+        scope.launch { settings.setPreferredAudioDeviceId(ids[i]) }
+    }
+    Text(
+        if (selected.isBlank())
+            "Android picks the route — normally the last thing you plugged in."
+        else
+            "Playback is pinned to this output. If it's unplugged, Android routes " +
+                "normally again until it's back.",
+        color = TextFaint, fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp,
+    )
+}
+
 /** What's on the phone for offline listening, and the one way to get it back. */
 @Composable
 private fun DownloadsCard(vm: LibraryViewModel, accent: Color) {
@@ -591,6 +671,16 @@ private fun DownloadsCard(vm: LibraryViewModel, accent: Color) {
     // only when the list itself changes.
     var bytes by remember { mutableStateOf(0L) }
     LaunchedEffect(downloads) { bytes = withContext(Dispatchers.IO) { vm.downloadBytes() } }
+
+    val context = LocalContext.current
+    val settings = remember { AppSettings(context) }
+    val scope = rememberCoroutineScope()
+    var wifiOnly by remember { mutableStateOf(false) }
+    var capMb by remember { mutableStateOf(0) }
+    LaunchedEffect(Unit) {
+        wifiOnly = settings.downloadWifiOnly.first()
+        capMb = settings.downloadStorageCapMb.first()
+    }
 
     SectionHeader(Icons.Default.Download, "Downloads", accent)
     Spacer(Modifier.height(12.dp))
@@ -607,7 +697,41 @@ private fun DownloadsCard(vm: LibraryViewModel, accent: Color) {
             ) {
                 StatusRow("Tracks", downloads.size.toString())
                 StatusRow("On disk", formatBytes(bytes))
+                if (capMb > 0) StatusRow("Limit", "${capMb} MB")
             }
+            ToggleRow(
+                "Wi-Fi only",
+                "Skip downloads on mobile data rather than spending the allowance on them",
+                wifiOnly, accent,
+            ) { wifiOnly = it; scope.launch { settings.setDownloadWifiOnly(it) } }
+            Text(
+                "Storage limit",
+                color = TextPrimary, fontFamily = AppFont,
+                fontWeight = FontWeight.Bold, fontSize = 14.sp,
+            )
+            // Fixed steps rather than a free text field: the number only has to be
+            // roughly right, and a slider or keyboard here would be more precision
+            // than the setting deserves.
+            SegmentedToggle(
+                options = listOf("Off", "1 GB", "5 GB", "20 GB"),
+                selectedIndex = when (capMb) {
+                    1_000 -> 1
+                    5_000 -> 2
+                    20_000 -> 3
+                    else -> 0
+                },
+            ) { i ->
+                val mb = listOf(0, 1_000, 5_000, 20_000)[i]
+                capMb = mb
+                scope.launch { settings.setDownloadStorageCapMb(mb) }
+            }
+            Text(
+                if (capMb > 0)
+                    "The oldest downloads are deleted once the total goes past the limit."
+                else
+                    "No limit — downloads are only removed when you delete them.",
+                color = TextFaint, fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp,
+            )
             if (downloads.isNotEmpty()) {
                 OledButton(
                     if (confirming) "Tap again to delete all" else "Delete all downloads",

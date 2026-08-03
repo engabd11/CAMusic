@@ -70,6 +70,10 @@ class AlbumDetailViewModel(
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error
 
+    /** Album notes/liner notes (from Navidrome's getAlbumInfo2), or null. */
+    private val _notes = MutableStateFlow<String?>(null)
+    val notes: StateFlow<String?> = _notes
+
     private val _toast = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val toast: SharedFlow<String> = _toast.asSharedFlow()
 
@@ -103,6 +107,8 @@ class AlbumDetailViewModel(
                     val (albumMeta, trackList) = sc.albumDetail(itemId)
                     if (albumMeta != null) _album.value = albumMeta
                     _tracks.value = trackList
+                    // Fetch album notes from Navidrome's getAlbumInfo2.
+                    _notes.value = runCatching { sc.getAlbumInfo2(itemId) }.getOrNull()
                 } else {
                     // Fetch full album metadata, then tracks.
                     val ref = MaItem(itemId, provider, initialName, null, "album", null, initialArt, null)

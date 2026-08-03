@@ -44,6 +44,32 @@ private fun Shelf(text: String) {
 }
 
 /**
+ * The artist's biography, from the server's own metadata (Navidrome fills this
+ * from last.fm via `getArtistInfo2`). Clamped to four lines and expanded on tap —
+ * these run to several paragraphs, and the albums are what the screen is for.
+ */
+@Composable
+private fun Biography(text: String) {
+    var expanded by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth()) {
+        Shelf("About")
+        Text(
+            text,
+            color = TextMuted,
+            fontFamily = AppFont,
+            fontSize = 13.sp,
+            lineHeight = 19.sp,
+            maxLines = if (expanded) Int.MAX_VALUE else 4,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { expanded = !expanded }
+                .padding(horizontal = 20.dp, vertical = 4.dp),
+        )
+    }
+}
+
+/**
  * The artist detail screen — a page that leads with the artist's image (or a
  * gradient avatar when none), shows their albums as a cover grid, and lists top
  * tracks below. Like [AlbumDetailScreen], the whole screen is tinted by the
@@ -75,6 +101,7 @@ fun ArtistDetailScreen(
     val downloaded by viewModel.allDownloaded.collectAsState()
     val loading by viewModel.loading.collectAsState()
     val error by viewModel.error.collectAsState()
+    val biography by viewModel.biography.collectAsState()
     val snackbar = remember { SnackbarHostState() }
     var actionsFor by remember { mutableStateOf<MaItem?>(null) }
 
@@ -135,6 +162,11 @@ fun ArtistDetailScreen(
                     if (error != null && albums.isEmpty()) {
                         item { ErrorState(error!!) { viewModel.loadArtist() } }
                         return@LazyColumn
+                    }
+
+                    // Biography, when the server has one (Navidrome's getArtistInfo2).
+                    biography?.takeIf { it.isNotBlank() }?.let { bio ->
+                        item(key = "bio") { Biography(bio) }
                     }
 
                     // Albums. Keyed by index as well as id: MA numbers library items

@@ -51,6 +51,13 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private val _targetPlayer = MutableStateFlow("")
     private fun playTarget() = _targetPlayer.value.ifBlank { myPlayerId }
 
+    /**
+     * Whether to ask MA to keep the music going once this queue runs dry. Read at
+     * play time rather than cached: `radio_mode` is a parameter of
+     * `player_queues/play_media`, so it only ever means anything here.
+     */
+    private suspend fun radioMode(): Boolean = settings.radioMode.first()
+
     private val maApi = (app as SendpinApp).maApi
     private val maRepo = MaRepository(maApi)
     private var subsonic: SubsonicClient? = null
@@ -113,6 +120,72 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
     private val _toast = MutableSharedFlow<String>(extraBufferCapacity = 8); val toast: SharedFlow<String> = _toast.asSharedFlow()
     private val stack = ArrayDeque<Node>()
+
+    // --- playlist create / delete (both backends) --------------------------
+
+    /**
+     * Whether the "Create playlist" dialog is open. The dialog lives in the
+     * library because a playlist is a library-level object — it is created
+     * empty and filled later by playing into it — and the entry point sits
+     * next to the Playlists category.
+     */
+    private val _showCreatePlaylist = MutableStateFlow(false)
+    val showCreatePlaylist: StateFlow<Boolean> = _showCreatePlaylist
+
+    fun openCreatePlaylist() { _showCreatePlaylist.value = true }
+    fun closeCreatePlaylist() { _showCreatePlaylist.value = false }
+
+    /**
+     * Create a playlist on whichever backend is active. A freshly-created
+     * playlist has no tracks; the user fills it by playing into it or by
+     * using "Add to queue" from the library and then "Save queue as playlist".
+     */
+    fun createPlaylist(name: String) {
+        if (name.isBlank()) return
+        _showCreatePlaylist.value = false
+        viewModelScope.launch {
+            try {
+                when (_backend.value) {
+                    Backend.MA -> {
+                        maRepo.createPlaylist(name.trim())
+                        _toast.tryEmit("Created \"${name.trim()}\"")
+                        refresh()
+                    }
+                    Backend.SUBSONIC -> {
+                        val sc = subsonic ?: throw IllegalStateException("Navidrome isn't connected")
+                        sc.createPlaylist(name.trim())
+                        _toast.tryEmit("Created \"${name.trim()}\"")
+                        refresh()
+                    }
+                }
+            } catch (e: Exception) {
+                _toast.tryEmit(e.message ?: "Couldn't create playlist")
+            }
+        }
+    }
+
+    /**
+     * Delete a playlist from whichever backend owns it. The caller passes the
+     * [MaItem] as it appears in the library — its `provider` decides which
+     * backend's delete command is used.
+     */
+    fun deletePlaylist(item: MaItem) {
+        viewModelScope.launch {
+            try {
+                when (item.provider) {
+                    SubsonicClient.PROVIDER -> {
+                        val sc = subsonic ?: throw IllegalStateException("Navidrome isn't connected")
+                        sc.deletePlaylist(item.itemId)
+                    }
+                    else -> maRepo.deletePlaylist(item)
+                }
+                _toast.tryEmit("Deleted \"${item.name}\"")
+                refresh()
+            } catch (e: Exception) {
+                _toast.tryEmit(e.message ?: "Couldn't delete playlist")
+            }
+        }
+    }
 
     /** How deep the browser is; 0 = the root shelf (categories + shelves). */
     private val _depth = MutableStateFlow(0); val depth: StateFlow<Int> = _depth
@@ -183,6 +256,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         listOfNotNull(
             loadFavoriteAlbums(), loadFavoriteArtists(), loadRecent(),
             loadRecentlyAdded(), loadRecommendations(), loadInProgress(),
+            loadFrequent(),
         ).joinAll()
     }
 
@@ -452,7 +526,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                         // buttons keep driving) a player that is no longer the one
                         // making the sound.
                         if (option == "replace") localPlayer.stop()
-                        item.uri?.let { maRepo.playOn(playTarget(), listOf(it), option) }
+                        item.uri?.let {
+                            maRepo.playOn(playTarget(), listOf(it), option, radioMode())
+                        }
                         _toast.tryEmit(if (option == "replace") "Playing ${item.name}" else "Added to queue")
                     }
                 }
@@ -588,7 +664,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 if (_backend.value == Backend.MA && tracks.none { it.provider == DOWNLOAD }) {
                     if (replacing) localPlayer.stop()
-                    maRepo.playOn(playTarget(), tracks.mapNotNull { it.uri }, option)
+                    maRepo.playOn(playTarget(), tracks.mapNotNull { it.uri }, option, radioMode())
                     _toast.tryEmit(queuedMessage(option, tracks.size))
                 } else {
                     // Local playback — stop MA first so both don't play at once.
@@ -652,6 +728,17 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun runDownload(tracks: List<MaItem>, sc: SubsonicClient) {
         val pending = tracks.filterNot { downloadManager.isDownloaded(it.itemId) }
         if (pending.isEmpty()) { _toast.tryEmit("Already downloaded"); return }
+
+        // Wi-Fi-only guard — skip downloads on mobile data when the setting is on.
+        if (settings.downloadWifiOnly.first()) {
+            val cm = getApplication<Application>().getSystemService(android.content.Context.CONNECTIVITY_SERVICE)
+                    as android.net.ConnectivityManager
+            val isWifi = cm.activeNetwork?.let { net ->
+                cm.getNetworkCapabilities(net)?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)
+            } ?: false
+            if (!isWifi) { _toast.tryEmit("Wi-Fi only — connect to Wi-Fi to download"); return }
+        }
+
         _toast.tryEmit(
             if (pending.size == 1) "Downloading ${pending.first().name}…"
             else "Downloading ${pending.size} tracks…"
@@ -665,6 +752,26 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 else -> "Downloaded $ok of ${pending.size} — tap a failed row to dismiss"
             }
         )
+
+        // Storage cap — evict oldest-first until back under the limit. The index is
+        // appended to on each download, so the head of the list is the oldest.
+        // Bounded by the snapshot rather than looping on live state: a file that has
+        // vanished from disk contributes nothing to the total, and re-reading the
+        // list each pass would spin on it.
+        val capMb = settings.downloadStorageCapMb.first()
+        if (capMb > 0) {
+            val capBytes = capMb.toLong() * 1_000_000
+            val nowPlayingId = localPlayer.current.value?.id
+            for (entry in downloadManager.downloads.value) {
+                if (downloadManager.bytesUsed() <= capBytes) break
+                // Never evict the track being listened to out from under the player.
+                if (entry.id == nowPlayingId) continue
+                downloadManager.delete(entry.id)
+            }
+            if (downloadManager.bytesUsed() > capBytes) {
+                _toast.tryEmit("Downloads are over the ${capMb / 1000} GB limit")
+            }
+        }
     }
 
     fun deleteDownload(id: String) = downloadManager.delete(id)
@@ -893,6 +1000,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         loadRecentlyAdded()
         loadRecommendations()
         loadInProgress()
+        loadFrequent()
     }
 
     /** Best-effort — a shelf is hidden rather than erroring if a server lacks it. */
@@ -989,6 +1097,17 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         return viewModelScope.launch {
             _inProgress.value = try { maRepo.inProgress() } catch (_: Exception) { emptyList() }
             rememberFavorites(_inProgress.value)
+        }
+    }
+
+    /** Frequently-played albums — a Navidrome shelf from `getAlbumList2(frequent)`. */
+    private val _frequent = MutableStateFlow<List<MaItem>>(emptyList()); val frequent: StateFlow<List<MaItem>> = _frequent
+
+    private fun loadFrequent(): Job? {
+        if (_backend.value != Backend.SUBSONIC) { _frequent.value = emptyList(); return null }
+        return viewModelScope.launch {
+            _frequent.value = try { subsonic?.albumList("frequent", size = 12).orEmpty() } catch (_: Exception) { emptyList() }
+            rememberFavorites(_frequent.value)
         }
     }
 

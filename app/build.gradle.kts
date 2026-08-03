@@ -36,9 +36,12 @@ android {
     buildFeatures { compose = true; buildConfig = true }
 
     // The native AAudio-I24 / libFLAC pipeline (src/main/cpp) is kept for the
-    // future bit-perfect 24-bit phase but is NOT built for now — M1 decodes with
-    // MediaCodec + AudioTrack (16-bit), which needs no NDK. Re-enable the
-    // externalNativeBuild { cmake { … } } block here when the hi-res path lands.
+    // future bit-perfect phase that bypasses the Android mixer, but is NOT built:
+    // nothing in Kotlin loads it, so switching the NDK on would add a toolchain
+    // download to every CI run and an unused .so to every APK. Hi-res today goes
+    // through MediaCodec + AudioTrack — see SendspinAudioEngine.bitPerfect.
+    // Re-enable the externalNativeBuild { cmake { … } } block here when the
+    // native output path actually has a caller.
 }
 
 dependencies {

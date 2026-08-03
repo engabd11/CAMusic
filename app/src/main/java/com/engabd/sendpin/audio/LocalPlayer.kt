@@ -42,6 +42,8 @@ data class LocalTrack(
      * `samplingRate`), in which case the badge shows Playing alone.
      */
     val sourceQuality: StreamQuality? = null,
+    /** Composer credit, for classical / jazz tracks. */
+    val composer: String? = null,
 ) {
     /**
      * There is a downloaded copy to play from. Deliberately *not* a `File.exists()`
@@ -81,11 +83,35 @@ data class LocalTrack(
 class LocalPlayer(private val context: Context) {
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+
+    init {
+        // The output preference is process-wide, so this player follows it itself
+        // rather than waiting for a screen to be open and push it down.
+        scope.launch {
+            com.engabd.sendpin.data.AppSettings(context).preferredAudioDeviceId.collect { id ->
+                setPreferredDevice(AudioOutputs.resolve(audioManager, id))
+            }
+        }
+    }
+
     private var mp: MediaPlayer? = null
+    /** The next track's player, pre-prepared for a gapless transition. */
+    private var nextMp: MediaPlayer? = null
+    /** [nextMp] has finished preparing and may be handed to [mp]. */
+    private var nextReady = false
+    /** [nextMp] is registered with [mp] via `setNextMediaPlayer`. */
+    private var nextHandedOver = false
     private var ticker: Job? = null
 
     /** True between `prepareAsync()` and `onPrepared`, when the player has no valid state. */
     @Volatile private var preparing = false
+
+    /**
+     * The output the user pinned in Settings (a USB DAC, typically), or null to
+     * let Android route. Applied to each MediaPlayer as it is prepared, and
+     * re-applied to the one already playing when the setting changes.
+     */
+    @Volatile private var preferredOutput: android.media.AudioDeviceInfo? = null
 
     // --- audio focus ------------------------------------------------------
     private val audioManager by lazy { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
@@ -279,6 +305,7 @@ class LocalPlayer(private val context: Context) {
     fun playAt(position: Int) {
         val list = _queue.value
         if (position !in list.indices) return
+        releaseNext()
         _index.value = position
         val track = list[position]
         _current.value = track
@@ -286,6 +313,8 @@ class LocalPlayer(private val context: Context) {
         _durationMs.value = track.durationMs
         _positionMs.value = 0
         open(track)
+        // Pre-prepare the next track for gapless playback.
+        prepareNext()
     }
 
     fun pause() {
@@ -414,11 +443,15 @@ class LocalPlayer(private val context: Context) {
                     Log.w(TAG, "opened at ${it.currentPosition}ms — seeking to 0")
                     runCatching { it.seekTo(0) }
                 }
+                preferredOutput?.let { dev -> runCatching { it.setPreferredDevice(dev) } }
                 it.start()
                 if (_speed.value != 1f) applySpeed()
                 _playing.value = true
                 startTicker()
                 _started.tryEmit(track)
+                // The follow-on player may already be prepared and waiting for a
+                // current player to attach itself to.
+                tryHandOver()
             }
             setOnCompletionListener { onCompleted() }
             setOnErrorListener { _, _, _ ->
@@ -446,9 +479,157 @@ class LocalPlayer(private val context: Context) {
             _playing.value = false
             stopTicker()
             _positionMs.value = _durationMs.value
-        } else {
-            playAt(nxt)
+            return
         }
+        // If the next player was handed to MediaPlayer via setNextMediaPlayer and
+        // was ready in time, the framework has *already* started it by the time
+        // this callback runs — there was no gap to close. All that's left is to
+        // adopt it as the current player. Otherwise (not prepared in time, or the
+        // handover failed) fall back to opening the track the normal way.
+        val handed = nextMp?.takeIf { nextHandedOver }
+        if (handed != null) adoptNext(handed, nxt) else playAt(nxt)
+    }
+
+    /**
+     * Take ownership of the player the framework just started. It is already
+     * playing, so this only moves the bookkeeping across — notably the listeners,
+     * which the pre-prepared player deliberately does not carry until it becomes
+     * the current one (an idle next-player must not drive the queue).
+     */
+    private fun adoptNext(next: MediaPlayer, nextIndex: Int) {
+        mp?.let { old ->
+            runCatching { old.setOnCompletionListener(null) }
+            runCatching { old.setOnErrorListener(null) }
+            runCatching { old.setOnPreparedListener(null) }
+            runCatching { old.reset() }
+            runCatching { old.release() }
+        }
+        mp = next
+        nextMp = null
+        nextHandedOver = false
+        nextReady = false
+        preparing = false
+        _index.value = nextIndex
+        val track = _queue.value.getOrNull(nextIndex)
+        _current.value = track
+        _titleFlow.value = track?.title ?: ""
+        // MediaPlayer knows the real duration; library metadata is a rounded
+        // second count at best. Same reasoning as the onPrepared path in open().
+        _durationMs.value = runCatching { next.duration.toLong() }.getOrNull()
+            ?.takeIf { it > 0 } ?: track?.durationMs ?: 0
+        _positionMs.value = 0
+        attachListeners(next, track)
+        if (_speed.value != 1f) applySpeed()
+        _playing.value = true
+        startTicker()
+        track?.let { _started.tryEmit(it) }
+        // Queue up the one after this.
+        prepareNext()
+    }
+
+    /**
+     * The completion/error listeners that make a player *the current one*: the
+     * completion listener is what advances the queue, so a player without it
+     * ends the session silently when its track runs out.
+     */
+    private fun attachListeners(player: MediaPlayer, track: LocalTrack?) {
+        player.setOnCompletionListener { onCompleted() }
+        player.setOnErrorListener { _, _, _ ->
+            preparing = false
+            _playing.value = false
+            stopTicker()
+            _error.tryEmit("Couldn't play \"${track?.title.orEmpty()}\"")
+            true
+        }
+    }
+
+    /**
+     * Pre-prepare the next track and hand it to MediaPlayer as the follow-on
+     * player. `setNextMediaPlayer` is what makes the transition actually gapless:
+     * the framework starts the next player the instant the current one drains,
+     * inside the audio pipeline. Swapping players ourselves in `onCompletion`
+     * cannot match it — that callback only runs *after* the gap has happened.
+     *
+     * Best-effort throughout. If the next track isn't prepared before the current
+     * one ends, [onCompleted] just opens it the ordinary way.
+     */
+    private fun prepareNext() {
+        releaseNext()
+        val nxt = step(+1) ?: return
+        // Repeat-one replays the same player; a queued follow-on would fight it.
+        if (_repeatMode.value == "one") return
+        val track = _queue.value.getOrNull(nxt) ?: return
+        val source = track.localPath?.takeIf { File(it).exists() } ?: track.streamUrl ?: return
+        val candidate = MediaPlayer()
+        nextMp = candidate
+        // Listeners and `nextMp` are both in place before prepareAsync, so there is
+        // no window in which the callback could arrive with nothing to match it
+        // against.
+        candidate.setOnPreparedListener { prepared ->
+            // Only act if this is still the player we're waiting on — a skip or
+            // queue edit in the meantime will have replaced or dropped it.
+            if (nextMp !== prepared) return@setOnPreparedListener
+            nextReady = true
+            tryHandOver()
+        }
+        candidate.setOnErrorListener { failed, _, _ ->
+            if (nextMp === failed) releaseNext()
+            true
+        }
+        try {
+            candidate.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build()
+            )
+            candidate.setDataSource(source)
+            candidate.prepareAsync()
+        } catch (_: Exception) {
+            releaseNext()
+        }
+    }
+
+    /**
+     * Register the ready follow-on player with the current one. Attempted from
+     * both sides — whichever of the two finishes preparing last gets there — because
+     * `setNextMediaPlayer` needs the *current* player already prepared, and on a
+     * local file the next track can easily be ready first.
+     */
+    private fun tryHandOver() {
+        if (nextHandedOver || !nextReady) return
+        val current = mp ?: return
+        val next = nextMp ?: return
+        // The follow-on player is started by the framework, not by us, so it has to
+        // carry the routing before the handover rather than at start time.
+        preferredOutput?.let { dev -> runCatching { next.setPreferredDevice(dev) } }
+        nextHandedOver = runCatching { current.setNextMediaPlayer(next) }.isSuccess
+    }
+
+    /**
+     * Point playback at a specific output device, or null for the system route.
+     * Takes effect immediately on whatever is playing, and on every player opened
+     * after — including the pre-prepared one, in [tryHandOver].
+     */
+    fun setPreferredDevice(device: android.media.AudioDeviceInfo?) {
+        preferredOutput = device
+        runCatching { mp?.setPreferredDevice(device) }
+        runCatching { nextMp?.setPreferredDevice(device) }
+    }
+
+    /** Drop the pre-prepared follow-on player, detaching it from [mp] first. */
+    private fun releaseNext() {
+        val next = nextMp ?: return
+        nextMp = null
+        // Clear the framework's reference before releasing, or it may start a
+        // player that no longer exists when the current track ends.
+        if (nextHandedOver) runCatching { mp?.setNextMediaPlayer(null) }
+        nextHandedOver = false
+        nextReady = false
+        runCatching { next.setOnPreparedListener(null) }
+        runCatching { next.setOnErrorListener(null) }
+        runCatching { next.reset() }
+        runCatching { next.release() }
     }
 
     /**
@@ -496,6 +677,7 @@ class LocalPlayer(private val context: Context) {
     private fun stopInternal() {
         stopTicker()
         preparing = false
+        releaseNext()
         mp?.let {
             it.setOnCompletionListener(null)
             it.setOnErrorListener(null)

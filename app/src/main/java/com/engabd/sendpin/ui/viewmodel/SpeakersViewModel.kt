@@ -114,6 +114,15 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
         players.firstOrNull { it.playerId == leaderIdOf(players, target) }?.canSetMembers ?: false
     }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
+    /**
+     * Whether the active player has something going. Gates "move music here" —
+     * there is no queue to hand over when nothing is playing, and the button
+     * would silently do nothing.
+     */
+    val leaderIsPlaying: StateFlow<Boolean> = combine(_players, _target) { players, target ->
+        players.firstOrNull { it.playerId == leaderIdOf(players, target) }?.isPlaying ?: false
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
     init {
         viewModelScope.launch {
             val url = settings.maBaseUrl.first()
@@ -142,6 +151,11 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
             api.events.collect {
                 if ("player" in it["event"]?.toString().orEmpty()) refresh()
             }
+        }
+        // The Sendspin player socket pushes `group/update` on the same events, and
+        // is a different connection to MA's API — whichever arrives first wins.
+        viewModelScope.launch {
+            (app as SendpinApp).playback.groupUpdates.collect { refresh() }
         }
     }
 
@@ -211,6 +225,23 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
     fun playHereOnly() {
         ungroupAll()
         selectPlayer(myPlayerId)
+    }
+
+    /**
+     * Transfer the entire queue (items, position, shuffle/repeat state) from
+     * the current leader to [targetPlayerId] — the "tap a speaker, music moves
+     * there" feature. Auto-starts playback on the target.
+     */
+    fun transferQueueTo(targetPlayerId: String) {
+        val source = leaderId
+        if (targetPlayerId == source) return
+        act {
+            val sourceQueue = repo.activeQueueId(source)
+            val targetQueue = repo.activeQueueId(targetPlayerId)
+            repo.transferQueue(sourceQueue, targetQueue, autoPlay = true)
+            // Follow the music — switch the target to where it went.
+            selectPlayer(targetPlayerId)
+        }
     }
 
     // Volume dragging fires every frame; debounce so we don't flood MA (which then

@@ -103,8 +103,13 @@ class DownloadManager(
             streamUrl = streamUrl,
             localPath = dl?.filePath ?: localPathFallback,
             sourceQuality = item.audioFormat?.let {
-                StreamQuality(it.codec, it.sampleRate, it.bitDepth)
+                StreamQuality(
+                    it.codec, it.sampleRate, it.bitDepth,
+                    replayGainTrack = it.replayGainTrack,
+                    replayGainAlbum = it.replayGainAlbum,
+                )
             },
+            composer = item.composer,
         )
     }
 
