@@ -22,7 +22,6 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -157,10 +156,7 @@ private fun ColumnScope.QueuePanel(viewModel: NowPlayingViewModel, accent: Color
                 keyboardActions = KeyboardActions(onDone = {
                     viewModel.saveQueueAsPlaylist(playlistName); naming = false
                 }),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = accent, cursorColor = accent, focusedLabelColor = accent,
-                    unfocusedBorderColor = Hairline, focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
-                ),
+                colors = accentTextFieldColors(accent),
             )
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
