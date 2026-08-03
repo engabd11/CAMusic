@@ -5,13 +5,16 @@ import android.content.Intent
 import android.media.AudioManager
 import android.net.Uri
 import androidx.compose.foundation.background
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -20,6 +23,7 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -38,6 +42,7 @@ import com.engabd.sendpin.audio.ReplayGain
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ui.design.*
+import com.engabd.sendpin.ui.design.TitleGap
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.PlayerViewModel
 import kotlinx.coroutines.Dispatchers
@@ -45,10 +50,101 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/**
+ * The top level of Settings.
+ *
+ * Everything used to live on one scroll: seven headed cards, server credentials and
+ * audio switches and a version string, all in a single column you had to travel to
+ * find anything in. Splitting it costs a tap and buys a screen you can read.
+ *
+ * Grouped by *what you are configuring*, not by which class implements it - which is
+ * why the Navidrome server sits with Music Assistant and Home Assistant under
+ * Servers, while "which library the app browses" is its own thing. They are the same
+ * server in the code and two different questions to the person asking them.
+ *
+ * @param subtitle what is actually behind the row. A one-word category is a guess
+ *   until you have opened it once, and this is a settings screen with two music
+ *   servers and a home-automation token in it.
+ */
+private enum class SettingsSection(
+    val title: String,
+    val subtitle: String,
+    val icon: ImageVector,
+) {
+    SERVERS(
+        "Servers",
+        "Music Assistant, Navidrome and Home Assistant connections",
+        Icons.Default.Cloud,
+    ),
+    LIBRARY(
+        "Library",
+        "Which server the Library tab browses",
+        Icons.Default.LibraryMusic,
+    ),
+    PLAYER(
+        "This player",
+        "The name this phone shows in Music Assistant, and how it takes the stream",
+        Icons.Default.Smartphone,
+    ),
+    AUDIO(
+        "Audio quality",
+        "Sample rates, bit depth, ReplayGain and output device",
+        Icons.Default.GraphicEq,
+    ),
+    DOWNLOADS(
+        "Downloads",
+        "Offline copies, storage limit and when to fetch them",
+        Icons.Default.Download,
+    ),
+    APPEARANCE(
+        "Appearance",
+        "How the Now Playing screen behaves",
+        Icons.Default.PlayArrow,
+    ),
+    ABOUT(
+        "About",
+        "Version and source code",
+        Icons.Default.Info,
+    ),
+}
+
+/** One row on the settings index: icon, name, and what is behind it. */
+@Composable
+private fun SettingsCategoryRow(section: SettingsSection, accent: Color, onClick: () -> Unit) {
+    GlassCard(radius = 16.dp) {
+        Row(
+            Modifier.fillMaxWidth().clickable(onClick = onClick).padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Box(
+                Modifier.size(34.dp).clip(RoundedCornerShape(10.dp)).background(accent.a(0.14f)),
+                contentAlignment = Alignment.Center,
+            ) { Icon(section.icon, null, tint = accent, modifier = Modifier.size(18.dp)) }
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+                Text(
+                    section.title, color = TextPrimary, fontFamily = AppFont,
+                    style = MaterialTheme.typography.titleLarge,
+                )
+                Text(
+                    section.subtitle, color = TextFaint, fontFamily = AppFont,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Icon(Icons.Default.ChevronRight, null, tint = TextMuted, modifier = Modifier.size(20.dp))
+        }
+    }
+}
+
 @Composable
 fun SettingsScreen(
     viewModel: PlayerViewModel = viewModel()
 ) {
+    // Which category is open, or null for the index. Saveable so a rotation or a
+    // trip to another tab comes back where it was rather than at the top.
+    var section by rememberSaveable { mutableStateOf<SettingsSection?>(null) }
+    BackHandler(enabled = section != null) { section = null }
+
     val accent = LocalAccent.current
     val discoveredServers by viewModel.discoveredServers.collectAsState()
     val isDiscovering by viewModel.isDiscovering.collectAsState()
@@ -90,13 +186,21 @@ fun SettingsScreen(
 
     Box(Modifier.fillMaxSize().background(Ink)) {
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars)) {
-            // Header
+            // Header. Inside a section it carries a back arrow and that section's
+            // name, so there is never a doubt about which list you are looking at.
             Row(
                 Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, top = 16.dp, bottom = 14.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                if (section != null) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = TextSecondary,
+                        modifier = Modifier.size(24.dp).clip(CircleShape).clickable { section = null },
+                    )
+                    Spacer(Modifier.width(12.dp))
+                }
                 Text(
-                    "Settings", color = TextPrimary, fontFamily = AppFont,
+                    section?.title ?: "Settings", color = TextPrimary, fontFamily = AppFont,
                     fontWeight = FontWeight.ExtraBold, fontSize = 26.sp,
                     letterSpacing = (-0.5).sp,
                 )
@@ -105,445 +209,458 @@ fun SettingsScreen(
             LazyColumn(
                 Modifier.weight(1f).fillMaxWidth(),
                 contentPadding = PaddingValues(start = 18.dp, end = 18.dp, bottom = navBarInset() + 16.dp),
-                verticalArrangement = Arrangement.spacedBy(22.dp),
+                verticalArrangement = Arrangement.spacedBy(if (section == null) 10.dp else 22.dp),
             ) {
-                // ── Connection ──────────────────────────────────────────────
-                item {
-                    var manualUrl by remember { mutableStateOf("") }
-                    SectionHeader(Icons.Default.Cloud, "Connection", accent)
-                    Spacer(Modifier.height(12.dp))
-                    GlassCard(radius = 16.dp) {
-                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            if (isDiscovering) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = accent)
-                                    Spacer(Modifier.width(10.dp))
-                                    Text("Scanning…", color = TextMuted, fontSize = 13.sp)
+                when (section) {
+                    // The index. Every row says what lives behind it, because a
+                    // one-word category is a guess until you have opened it once.
+                    null -> items(SettingsSection.entries) { s ->
+                        SettingsCategoryRow(s, accent) { section = s }
+                    }
+
+                    SettingsSection.SERVERS -> {
+                        // ── Connection ──────────────────────────────────────────────
+                        item {
+                            var manualUrl by remember { mutableStateOf("") }
+                            SectionHeader(Icons.Default.Cloud, "Connection", accent)
+                            Spacer(Modifier.height(12.dp))
+                            GlassCard(radius = 16.dp) {
+                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    if (isDiscovering) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = accent)
+                                            Spacer(Modifier.width(10.dp))
+                                            Text("Scanning…", color = TextMuted, fontSize = 13.sp)
+                                        }
+                                    }
+                                    if (!isDiscovering && discoveredServers.isEmpty()) {
+                                        Text("No servers found on the network", color = TextFaint, fontSize = 13.sp)
+                                    }
+                                    discoveredServers.forEach { server ->
+                                        ServerRow(
+                                            name = server.name,
+                                            host = "${server.host}:${server.port}",
+                                            connected = serverUrl == server.webSocketUrl && connected,
+                                            accent = accent,
+                                        ) { viewModel.connectToServer(server.webSocketUrl) }
+                                    }
+                                    OledField(manualUrl, { manualUrl = it }, "WebSocket URL", "ws://192.168.0.100:8095/ws", accent)
+                                    OledButton(
+                                        if (connected) "Reconnect" else "Connect",
+                                        enabled = manualUrl.isNotBlank(),
+                                        accent = accent,
+                                    ) { viewModel.connectToServer(manualUrl) }
+                                    if (connected) {
+                                        // Disconnecting drops the player out of Music
+                                        // Assistant — that's a destructive action and it
+                                        // should look like one rather than a spare grey chip.
+                                        OledButton("Disconnect", accent = accent, danger = true) { viewModel.disconnect() }
+                                    }
                                 }
                             }
-                            if (!isDiscovering && discoveredServers.isEmpty()) {
-                                Text("No servers found on the network", color = TextFaint, fontSize = 13.sp)
-                            }
-                            discoveredServers.forEach { server ->
-                                ServerRow(
-                                    name = server.name,
-                                    host = "${server.host}:${server.port}",
-                                    connected = serverUrl == server.webSocketUrl && connected,
-                                    accent = accent,
-                                ) { viewModel.connectToServer(server.webSocketUrl) }
-                            }
-                            OledField(manualUrl, { manualUrl = it }, "WebSocket URL", "ws://192.168.0.100:8095/ws", accent)
-                            OledButton(
-                                if (connected) "Reconnect" else "Connect",
-                                enabled = manualUrl.isNotBlank(),
+                        }
+
+                        // ── Navidrome server ────────────────────────────────────────
+                        // The server details used to be reachable only from the Library
+                        // tab's connect form, which is hidden the moment a connection
+                        // works — so a moved server or a changed password could not be
+                        // fixed from inside the app at all.
+                        item {
+                            // Quality lives in this card rather than a section of its own:
+                            // it is a property of the Navidrome connection, not of the app.
+                            NavidromeCard(
+                                vm = libraryVm,
                                 accent = accent,
-                            ) { viewModel.connectToServer(manualUrl) }
-                            if (connected) {
-                                // Disconnecting drops the player out of Music
-                                // Assistant — that's a destructive action and it
-                                // should look like one rather than a spare grey chip.
-                                OledButton("Disconnect", accent = accent, danger = true) { viewModel.disconnect() }
-                            }
-                        }
-                    }
-                }
-
-                // ── Player ──────────────────────────────────────────────────
-                item {
-                    SectionHeader(Icons.Default.Smartphone, "Player", accent)
-                    Spacer(Modifier.height(12.dp))
-                    GlassCard(radius = 16.dp) {
-                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            // The name is editable at any time: it is Music Assistant's
-                            // per-player config that decides the displayed name, not the
-                            // hello, so a rename is a config write and needs no reconnect.
-                            OledField(
-                                playerName,
-                                { playerName = it },
-                                "Player name",
-                                "e.g. Abdullah's phone",
-                                accent,
-                            )
-                            Text(
-                                "Shown in Music Assistant.",
-                                color = TextFaint, fontSize = 11.sp,
-                            )
-                            // A rename can only be refused by the server —
-                            // `config/players/save` is an admin command — and a refusal
-                            // used to be swallowed, so the name simply stayed wrong with
-                            // no explanation.
-                            configStatus.takeIf { it.isNotBlank() }?.let {
-                                Text(it, color = WarnAmber, style = MaterialTheme.typography.bodySmall)
-                            }
-
-                            // Stream codec. Sits here rather than under Audio because it
-                            // is announced in the same hello as the name.
-                            Text(
-                                "Stream format",
-                                color = TextSecondary, fontFamily = AppFont,
-                                style = MaterialTheme.typography.labelLarge
-                            )
-                            SegmentedToggle(
-                                options = CodecLabels,
-                                selectedIndex = CodecValues.indexOf(sendspinCodec).coerceAtLeast(0),
-                                modifier = Modifier.fillMaxWidth(),
-                            ) { i ->
-                                sendspinCodec = CodecValues[i]
-                                scope.launch { settings.setSendspinCodec(CodecValues[i]) }
-                            }
-                            Text(
-                                when (sendspinCodec) {
-                                    "flac" -> "Lossless, about half the bandwidth of PCM. Music Assistant " +
-                                        "must send FLAC - it is the only format offered."
-                                    "pcm" -> "Lossless and uncompressed. Highest bandwidth, no decode cost."
-                                    "opus" -> "Compressed. Lowest bandwidth, 48 kHz only."
-                                    else -> "Offer all three and let Music Assistant choose - FLAC first, " +
-                                        "then PCM, then Opus."
-                                },
-                                color = TextFaint, style = MaterialTheme.typography.bodySmall,
-                            )
-
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                if (connected) {
-                                    OledButton("Save name", modifier = Modifier.weight(1f), accent = accent) {
-                                        viewModel.renamePlayer(playerName.trim())
-                                    }
-                                    OledButton("Disable", modifier = Modifier.weight(1f), accent = accent) { viewModel.disablePlayer() }
-                                } else {
-                                    OledButton("Enable player", modifier = Modifier.weight(1f), accent = accent) {
-                                        viewModel.enablePlayer(playerName.trim(), sendspinCodec)
-                                    }
-                                }
-                            }
-                            if (connected) {
-                                // On "Auto" the hello advertised every codec, so the
-                                // server is free to switch to any of them on request —
-                                // `client/request_format`, answered with a fresh
-                                // stream/start. Connect on a single codec and the
-                                // advertised list has one entry, so there is nothing
-                                // to switch to without reconnecting.
-                                val live = viewModel.canSwitchFormatLive && sendspinCodec != "auto"
-                                if (live) {
-                                    OledButton(
-                                        "Switch to ${CodecLabels[CodecValues.indexOf(sendspinCodec)]} now",
-                                        modifier = Modifier.fillMaxWidth(), accent = accent,
-                                    ) { viewModel.requestFormat(sendspinCodec) }
-                                }
-                                Text(
-                                    if (live)
-                                        "This connection offered every format, so the change can be " +
-                                            "applied to the running stream. It sticks for good on the " +
-                                            "next reconnect."
-                                    else
-                                        "A format change needs the player disabled and enabled again - " +
-                                            "it is only announced when the connection opens.",
-                                    color = TextFaint, style = MaterialTheme.typography.bodySmall,
-                                )
-                            }
-
-                            // Last resort for a name Music Assistant won't let go of.
-                            // MA keys a player on its client id and keeps the name it
-                            // was first registered under; the protocol has no rename
-                            // message, so when the config edit is refused, arriving as
-                            // a new player is the only thing left.
-                            Spacer(Modifier.height(2.dp))
-                            Box(Modifier.fillMaxWidth().height(1.dp).background(HairlineSoft))
-                            Text(
-                                "Still showing the old name? Music Assistant keeps the name a player " +
-                                    "was first registered under. Registering again arrives as a new " +
-                                    "player under the name above - the old entry stays in Music " +
-                                    "Assistant, greyed out, for you to delete.",
-                                color = TextFaint, style = MaterialTheme.typography.bodySmall,
-                            )
-                            OledButton("Register again as a new player", accent = accent) {
-                                viewModel.reregister(playerName.trim())
-                            }
-                        }
-                    }
-                }
-
-                // ── Library ─────────────────────────────────────────────────
-                item {
-                    SectionHeader(Icons.Default.LibraryMusic, "Library", accent)
-                    Spacer(Modifier.height(12.dp))
-                    GlassCard(radius = 16.dp) {
-                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Text(
-                                "Where the Library tab browses from",
-                                color = TextPrimary, fontFamily = AppFont,
-                                style = MaterialTheme.typography.titleLarge,
-                            )
-                            SegmentedToggle(
-                                options = listOf("Music Assistant", "Navidrome"),
-                                selectedIndex = if (backend == "subsonic") 1 else 0,
-                            ) { scope.launch { settings.setBackend(if (it == 1) "subsonic" else "ma") } }
-                            Text(
-                                if (backend == "subsonic")
-                                    "Navidrome plays on this phone only. Speaker grouping and Light Sync " +
-                                        "both run through Music Assistant, so those tabs are off while " +
-                                        "Navidrome is the library."
-                                else
-                                    "Music Assistant browses the whole library, plays to any speaker, and " +
-                                        "keeps grouping and Light Sync available.",
-                                color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                                format = navFormat,
+                                onFormat = { navFormat = it; scope.launch { settings.setNavStreamFormat(it) } },
                             )
                         }
-                    }
-                }
 
-                // ── Navidrome server ────────────────────────────────────────
-                // The server details used to be reachable only from the Library
-                // tab's connect form, which is hidden the moment a connection
-                // works — so a moved server or a changed password could not be
-                // fixed from inside the app at all.
-                item {
-                    // Quality lives in this card rather than a section of its own:
-                    // it is a property of the Navidrome connection, not of the app.
-                    NavidromeCard(
-                        vm = libraryVm,
-                        accent = accent,
-                        format = navFormat,
-                        onFormat = { navFormat = it; scope.launch { settings.setNavStreamFormat(it) } },
-                    )
-                }
-
-                // ── Downloads ───────────────────────────────────────────────
-                item { DownloadsCard(libraryVm, accent) }
-
-                // ── Now Playing ─────────────────────────────────────────────
-                item {
-                    var npLayout by remember { mutableStateOf("tab") }
-                    LaunchedEffect(Unit) { npLayout = settings.nowPlayingLayout.first() }
-                    SectionHeader(Icons.Default.PlayArrow, "Now Playing", accent)
-                    Spacer(Modifier.height(12.dp))
-                    GlassCard(radius = 16.dp) {
-                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Text(
-                                "Layout style",
-                                color = TextPrimary, fontFamily = AppFont,
-                                style = MaterialTheme.typography.titleLarge,
-                            )
-                            Text(
-                                "Overlay: the cover slides over the app; swipe down to minimize into a bar. " +
-                                    "Tab: the classic full-screen player as a bottom tab.",
-                                color = TextFaint, style = MaterialTheme.typography.bodySmall,
-                            )
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                ToggleChip("Tab (classic)", npLayout == "tab") {
-                                    npLayout = "tab"
-                                    scope.launch { settings.setNowPlayingLayout("tab") }
-                                }
-                                ToggleChip("Overlay", npLayout == "overlay") {
-                                    npLayout = "overlay"
-                                    scope.launch { settings.setNowPlayingLayout("overlay") }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // ── Audio ───────────────────────────────────────────────────
-                item {
-                    var preferHiRes by remember { mutableStateOf(true) }
-                    var preferFlac by remember { mutableStateOf(true) }
-                    var preferOriginal by remember { mutableStateOf(false) }
-                    var bitPerfect by remember { mutableStateOf(false) }
-                    var replayGain by remember { mutableStateOf("album") }
-                    LaunchedEffect(Unit) {
-                        preferHiRes = settings.preferHiRes.first()
-                        preferFlac = settings.preferFlac.first()
-                        preferOriginal = settings.preferOriginal.first()
-                        bitPerfect = settings.bitPerfect24Bit.first()
-                        replayGain = settings.replayGainMode.first()
-                    }
-                    SectionHeader(Icons.Default.GraphicEq, "Audio", accent)
-                    Spacer(Modifier.height(12.dp))
-                    GlassCard(radius = 16.dp) {
-                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            ToggleRow(
-                                "Offer hi-res rates",
-                                "Also accept 88.2/96 kHz so hi-res masters aren't downsampled to 48 kHz",
-                                preferHiRes, accent,
-                            ) { preferHiRes = it; scope.launch { settings.setPreferHiRes(it) } }
-                            ToggleRow(
-                                "Prefer FLAC over PCM",
-                                "Lossless either way - FLAC uses about half the bandwidth",
-                                preferFlac, accent,
-                            ) { preferFlac = it; scope.launch { settings.setPreferFlac(it) } }
-                            ToggleRow(
-                                "Play at original quality",
-                                "Stream straight from Navidrome when Music Assistant would have " +
-                                    "to resample. Plays on this phone only - no queue, no grouping.",
-                                preferOriginal, accent,
-                            ) { preferOriginal = it; scope.launch { settings.setPreferOriginal(it) } }
-                            ToggleRow(
-                                "Bit-perfect (24-bit)",
-                                "Ask for 24-bit instead of 16 and render whatever depth the decoder " +
-                                    "reports. Costs bandwidth, and a phone whose mixer runs at 16-bit " +
-                                    "gains nothing - leave it off unless you're on a USB DAC.",
-                                bitPerfect, accent,
-                            ) { bitPerfect = it; scope.launch { settings.setBitPerfect24Bit(it) } }
-                            Text(
-                                "Music Assistant may only send a format this phone advertises. " +
-                                    "44.1 and 48 kHz are always offered, so CD-rate files stream " +
-                                    "untouched. Output is ${if (bitPerfect) "up to 24-bit" else "16-bit"}. " +
-                                    "Reconnect to apply.",
-                                color = TextFaint, style = MaterialTheme.typography.bodySmall,
-                            )
-                            Box(Modifier.fillMaxWidth().height(1.dp).background(HairlineSoft))
-                            Text(
-                                "ReplayGain",
-                                color = TextSecondary, fontFamily = AppFont,
-                                style = MaterialTheme.typography.labelLarge
-                            )
-                            SegmentedToggle(
-                                options = ReplayGainLabels,
-                                selectedIndex = ReplayGainValues.indexOf(replayGain).coerceAtLeast(0),
-                                modifier = Modifier.fillMaxWidth(),
-                            ) {
-                                replayGain = ReplayGainValues[it]
-                                scope.launch { settings.setReplayGainMode(ReplayGainValues[it]) }
-                            }
-                            Text(
-                                when (replayGain) {
-                                    ReplayGain.ALBUM -> "Levels whole albums against each other and keeps " +
-                                        "the dynamics within one. What you want for records."
-                                    ReplayGain.TRACK -> "Levels every track to the same loudness. Better " +
-                                        "for shuffled singles; flattens an album's quiet passages."
-                                    else -> "Play files at their mastered level. A 1985 master and a " +
-                                        "2015 one can land 10 dB apart."
-                                },
-                                color = TextFaint, style = MaterialTheme.typography.bodySmall,
-                            )
-                            Text(
-                                "Applies to Navidrome and offline playback. Music Assistant does its " +
-                                    "own gain server-side, so this would double it there. Boosts are " +
-                                    "capped at +${ReplayGain.MAX_BOOST_DB.toInt()} dB to avoid clipping.",
-                                color = TextFaint, style = MaterialTheme.typography.bodySmall,
-                            )
-                            OutputDevicePicker(accent)
-                            // Status readout
-                            Column(
-                                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
-                                    .background(Ink3).padding(14.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp),
-                            ) {
-                                StatusRow("Connection", if (connected) "Connected" else "Disconnected")
-                                StatusRow("Format", currentFormat)
-                                StatusRow("Player ID", viewModel.playerId.take(12) + "…")
-                                StatusRow("Player name", playerName.ifBlank { viewModel.deviceName })
-                                StatusRow("Device", viewModel.deviceName)
-                            }
-                        }
-                    }
-                }
-
-                // ── Light Sync (HA) ─────────────────────────────────────────
-                item {
-                    SectionHeader(Icons.Default.Lightbulb, "Light Sync", accent)
-                    Spacer(Modifier.height(12.dp))
-                    GlassCard(radius = 16.dp) {
-                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Text(
-                                "Drives the Hue Synco light-sync integration. Use a long-lived access token (Profile → Security).",
-                                color = TextMuted, fontSize = 13.sp,
-                            )
-                            OledField(haUrl, { haUrl = it; haSaved = false }, "HA URL", "http://192.168.0.10:8123", accent)
-                            if (haTokenLocked) {
-                                // A long-lived token is a house key. Once it's in and
-                                // working there is no reason to keep it on screen —
-                                // the field is sealed and can only be replaced whole.
-                                OledField(
-                                    "•".repeat(24), {}, "Long-lived access token", "", accent,
-                                    enabled = false,
-                                    trailingIcon = {
-                                        Icon(
-                                            Icons.Default.Lock, "Saved",
-                                            tint = TextMuted, modifier = Modifier.size(18.dp),
+                        // ── Light Sync (HA) ─────────────────────────────────────────
+                        item {
+                            SectionHeader(Icons.Default.Lightbulb, "Light Sync", accent)
+                            Spacer(Modifier.height(12.dp))
+                            GlassCard(radius = 16.dp) {
+                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Text(
+                                        "Drives the Hue Synco light-sync integration. Use a long-lived access token (Profile → Security).",
+                                        color = TextMuted, fontSize = 13.sp,
+                                    )
+                                    OledField(haUrl, { haUrl = it; haSaved = false }, "HA URL", "http://192.168.0.10:8123", accent)
+                                    if (haTokenLocked) {
+                                        // A long-lived token is a house key. Once it's in and
+                                        // working there is no reason to keep it on screen —
+                                        // the field is sealed and can only be replaced whole.
+                                        OledField(
+                                            "•".repeat(24), {}, "Long-lived access token", "", accent,
+                                            enabled = false,
+                                            trailingIcon = {
+                                                Icon(
+                                                    Icons.Default.Lock, "Saved",
+                                                    tint = TextMuted, modifier = Modifier.size(18.dp),
+                                                )
+                                            },
                                         )
-                                    },
-                                )
-                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    // The URL stays editable, so keep a way to save it
-                                    // without making the user re-paste the token.
-                                    OledButton(
-                                        if (haSaved) "Saved" else "Save",
-                                        enabled = haUrl.isNotBlank() && !haSaved,
-                                        accent = accent, modifier = Modifier.weight(1f),
-                                    ) {
-                                        scope.launch {
-                                            settings.setHomeAssistant(haUrl.trim(), haToken.trim()); haSaved = true
+                                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            // The URL stays editable, so keep a way to save it
+                                            // without making the user re-paste the token.
+                                            OledButton(
+                                                if (haSaved) "Saved" else "Save",
+                                                enabled = haUrl.isNotBlank() && !haSaved,
+                                                accent = accent, modifier = Modifier.weight(1f),
+                                            ) {
+                                                scope.launch {
+                                                    settings.setHomeAssistant(haUrl.trim(), haToken.trim()); haSaved = true
+                                                }
+                                            }
+                                            OledButton("Replace token", accent = accent, outline = true, modifier = Modifier.weight(1f)) {
+                                                haToken = ""; haTokenVisible = false; haSaved = false; haTokenLocked = false
+                                            }
                                         }
-                                    }
-                                    OledButton("Replace token", accent = accent, outline = true, modifier = Modifier.weight(1f)) {
-                                        haToken = ""; haTokenVisible = false; haSaved = false; haTokenLocked = false
-                                    }
-                                }
-                            } else {
-                                OledField(
-                                    haToken, { haToken = it; haSaved = false },
-                                    "Long-lived access token", "eyJ…", accent,
-                                    visualTransformation = if (haTokenVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                                    trailingIcon = {
-                                        Box(Modifier.size(20.dp).clip(CircleShape).clickable { haTokenVisible = !haTokenVisible }) {
-                                            Icon(
-                                                if (haTokenVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                                if (haTokenVisible) "Hide" else "Show",
-                                                tint = TextMuted, modifier = Modifier.size(20.dp),
-                                            )
+                                    } else {
+                                        OledField(
+                                            haToken, { haToken = it; haSaved = false },
+                                            "Long-lived access token", "eyJ…", accent,
+                                            visualTransformation = if (haTokenVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                                            trailingIcon = {
+                                                Box(Modifier.size(20.dp).clip(CircleShape).clickable { haTokenVisible = !haTokenVisible }) {
+                                                    Icon(
+                                                        if (haTokenVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                                        if (haTokenVisible) "Hide" else "Show",
+                                                        tint = TextMuted, modifier = Modifier.size(20.dp),
+                                                    )
+                                                }
+                                            },
+                                        )
+                                        OledButton(
+                                            if (haSaved) "Saved" else "Save",
+                                            enabled = haUrl.isNotBlank() && haToken.isNotBlank(),
+                                            accent = accent,
+                                        ) {
+                                            scope.launch {
+                                                settings.setHomeAssistant(haUrl.trim(), haToken.trim())
+                                                haSaved = true
+                                                haTokenVisible = false
+                                                haTokenLocked = true
+                                            }
                                         }
-                                    },
-                                )
-                                OledButton(
-                                    if (haSaved) "Saved" else "Save",
-                                    enabled = haUrl.isNotBlank() && haToken.isNotBlank(),
-                                    accent = accent,
-                                ) {
-                                    scope.launch {
-                                        settings.setHomeAssistant(haUrl.trim(), haToken.trim())
-                                        haSaved = true
-                                        haTokenVisible = false
-                                        haTokenLocked = true
                                     }
                                 }
                             }
                         }
                     }
-                }
 
-                // ── About ────────────────────────────────────────────────────
-                item {
-                    SectionHeader(Icons.Default.Info, "About", accent)
-                    Spacer(Modifier.height(12.dp))
-                    GlassCard(radius = 16.dp) {
-                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Text(
-                                "Sendspin - a Music Assistant player & controller for Android.\n\n" +
-                                "Plays FLAC / Opus 16-bit as an MA player, with Navidrome-direct " +
-                                "browse + offline downloads and Hue light-sync controls.",
-                                color = TextMuted, fontSize = 13.sp,
-                            )
-                            Row(
-                                Modifier.clip(RoundedCornerShape(100)).background(Glass)
-                                    .border(1.dp, Hairline, RoundedCornerShape(100))
-                                    .clickable {
-                                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/engabd11/sendspin-nowdroid")))
-                                    }
-                                    .padding(horizontal = 16.dp, vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                Icon(Icons.Default.Code, null, tint = accent, modifier = Modifier.size(16.dp))
-                                Text("GitHub Repository", color = TextSecondary, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    SettingsSection.LIBRARY -> {
+                        // ── Library ─────────────────────────────────────────────────
+                        item {
+                            GlassCard(radius = 16.dp) {
+                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Text(
+                                        "Where the Library tab browses from",
+                                        color = TextPrimary, fontFamily = AppFont,
+                                        style = MaterialTheme.typography.titleLarge,
+                                    )
+                                    SegmentedToggle(
+                                        options = listOf("Music Assistant", "Navidrome"),
+                                        selectedIndex = if (backend == "subsonic") 1 else 0,
+                                    ) { scope.launch { settings.setBackend(if (it == 1) "subsonic" else "ma") } }
+                                    Text(
+                                        if (backend == "subsonic")
+                                            "Navidrome plays on this phone only. Speaker grouping and Light Sync " +
+                                                "both run through Music Assistant, so those tabs are off while " +
+                                                "Navidrome is the library."
+                                        else
+                                            "Music Assistant browses the whole library, plays to any speaker, and " +
+                                                "keeps grouping and Light Sync available.",
+                                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
                             }
-                            // Read from the build rather than retyped here — the
-                            // hard-coded string had been stale since 0.1.3.
-                            Text(
-                                "v${BuildConfig.VERSION_NAME} (code ${BuildConfig.VERSION_CODE})",
-                                color = TextFaint, fontFamily = MonoFont, fontSize = 11.sp,
-                            )
                         }
                     }
+
+                    SettingsSection.PLAYER -> {
+                        // ── Player ──────────────────────────────────────────────────
+                        item {
+                            GlassCard(radius = 16.dp) {
+                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    // The name is editable at any time: it is Music Assistant's
+                                    // per-player config that decides the displayed name, not the
+                                    // hello, so a rename is a config write and needs no reconnect.
+                                    OledField(
+                                        playerName,
+                                        { playerName = it },
+                                        "Player name",
+                                        "e.g. Abdullah's phone",
+                                        accent,
+                                    )
+                                    Text(
+                                        "Shown in Music Assistant.",
+                                        color = TextFaint, fontSize = 11.sp,
+                                    )
+                                    // A rename can only be refused by the server —
+                                    // `config/players/save` is an admin command — and a refusal
+                                    // used to be swallowed, so the name simply stayed wrong with
+                                    // no explanation.
+                                    configStatus.takeIf { it.isNotBlank() }?.let {
+                                        Text(it, color = WarnAmber, style = MaterialTheme.typography.bodySmall)
+                                    }
+
+                                    // Stream codec. Sits here rather than under Audio because it
+                                    // is announced in the same hello as the name.
+                                    Text(
+                                        "Stream format",
+                                        color = TextSecondary, fontFamily = AppFont,
+                                        style = MaterialTheme.typography.labelLarge
+                                    )
+                                    SegmentedToggle(
+                                        options = CodecLabels,
+                                        selectedIndex = CodecValues.indexOf(sendspinCodec).coerceAtLeast(0),
+                                        modifier = Modifier.fillMaxWidth(),
+                                    ) { i ->
+                                        sendspinCodec = CodecValues[i]
+                                        scope.launch { settings.setSendspinCodec(CodecValues[i]) }
+                                    }
+                                    Text(
+                                        when (sendspinCodec) {
+                                            "flac" -> "Lossless, about half the bandwidth of PCM. Music Assistant " +
+                                                "must send FLAC - it is the only format offered."
+                                            "pcm" -> "Lossless and uncompressed. Highest bandwidth, no decode cost."
+                                            "opus" -> "Compressed. Lowest bandwidth, 48 kHz only."
+                                            else -> "Offer all three and let Music Assistant choose - FLAC first, " +
+                                                "then PCM, then Opus."
+                                        },
+                                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                                    )
+
+                                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        if (connected) {
+                                            OledButton("Save name", modifier = Modifier.weight(1f), accent = accent) {
+                                                viewModel.renamePlayer(playerName.trim())
+                                            }
+                                            OledButton("Disable", modifier = Modifier.weight(1f), accent = accent) { viewModel.disablePlayer() }
+                                        } else {
+                                            OledButton("Enable player", modifier = Modifier.weight(1f), accent = accent) {
+                                                viewModel.enablePlayer(playerName.trim(), sendspinCodec)
+                                            }
+                                        }
+                                    }
+                                    if (connected) {
+                                        // On "Auto" the hello advertised every codec, so the
+                                        // server is free to switch to any of them on request —
+                                        // `client/request_format`, answered with a fresh
+                                        // stream/start. Connect on a single codec and the
+                                        // advertised list has one entry, so there is nothing
+                                        // to switch to without reconnecting.
+                                        val live = viewModel.canSwitchFormatLive && sendspinCodec != "auto"
+                                        if (live) {
+                                            OledButton(
+                                                "Switch to ${CodecLabels[CodecValues.indexOf(sendspinCodec)]} now",
+                                                modifier = Modifier.fillMaxWidth(), accent = accent,
+                                            ) { viewModel.requestFormat(sendspinCodec) }
+                                        }
+                                        Text(
+                                            if (live)
+                                                "This connection offered every format, so the change can be " +
+                                                    "applied to the running stream. It sticks for good on the " +
+                                                    "next reconnect."
+                                            else
+                                                "A format change needs the player disabled and enabled again - " +
+                                                    "it is only announced when the connection opens.",
+                                            color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                                        )
+                                    }
+
+                                    // Last resort for a name Music Assistant won't let go of.
+                                    // MA keys a player on its client id and keeps the name it
+                                    // was first registered under; the protocol has no rename
+                                    // message, so when the config edit is refused, arriving as
+                                    // a new player is the only thing left.
+                                    Spacer(Modifier.height(2.dp))
+                                    Box(Modifier.fillMaxWidth().height(1.dp).background(HairlineSoft))
+                                    Text(
+                                        "Still showing the old name? Music Assistant keeps the name a player " +
+                                            "was first registered under. Registering again arrives as a new " +
+                                            "player under the name above - the old entry stays in Music " +
+                                            "Assistant, greyed out, for you to delete.",
+                                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                                    )
+                                    OledButton("Register again as a new player", accent = accent) {
+                                        viewModel.reregister(playerName.trim())
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    SettingsSection.AUDIO -> {
+                        // ── Audio ───────────────────────────────────────────────────
+                        item {
+                            var preferHiRes by remember { mutableStateOf(true) }
+                            var preferFlac by remember { mutableStateOf(true) }
+                            var preferOriginal by remember { mutableStateOf(false) }
+                            var bitPerfect by remember { mutableStateOf(false) }
+                            var replayGain by remember { mutableStateOf("album") }
+                            LaunchedEffect(Unit) {
+                                preferHiRes = settings.preferHiRes.first()
+                                preferFlac = settings.preferFlac.first()
+                                preferOriginal = settings.preferOriginal.first()
+                                bitPerfect = settings.bitPerfect24Bit.first()
+                                replayGain = settings.replayGainMode.first()
+                            }
+                            GlassCard(radius = 16.dp) {
+                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    ToggleRow(
+                                        "Offer hi-res rates",
+                                        "Also accept 88.2/96 kHz so hi-res masters aren't downsampled to 48 kHz",
+                                        preferHiRes, accent,
+                                    ) { preferHiRes = it; scope.launch { settings.setPreferHiRes(it) } }
+                                    ToggleRow(
+                                        "Prefer FLAC over PCM",
+                                        "Lossless either way - FLAC uses about half the bandwidth",
+                                        preferFlac, accent,
+                                    ) { preferFlac = it; scope.launch { settings.setPreferFlac(it) } }
+                                    ToggleRow(
+                                        "Play at original quality",
+                                        "Stream straight from Navidrome when Music Assistant would have " +
+                                            "to resample. Plays on this phone only - no queue, no grouping.",
+                                        preferOriginal, accent,
+                                    ) { preferOriginal = it; scope.launch { settings.setPreferOriginal(it) } }
+                                    ToggleRow(
+                                        "Bit-perfect (24-bit)",
+                                        "Ask for 24-bit instead of 16 and render whatever depth the decoder " +
+                                            "reports. Costs bandwidth, and a phone whose mixer runs at 16-bit " +
+                                            "gains nothing - leave it off unless you're on a USB DAC.",
+                                        bitPerfect, accent,
+                                    ) { bitPerfect = it; scope.launch { settings.setBitPerfect24Bit(it) } }
+                                    Text(
+                                        "Music Assistant may only send a format this phone advertises. " +
+                                            "44.1 and 48 kHz are always offered, so CD-rate files stream " +
+                                            "untouched. Output is ${if (bitPerfect) "up to 24-bit" else "16-bit"}. " +
+                                            "Reconnect to apply.",
+                                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                                    )
+                                    Box(Modifier.fillMaxWidth().height(1.dp).background(HairlineSoft))
+                                    Text(
+                                        "ReplayGain",
+                                        color = TextSecondary, fontFamily = AppFont,
+                                        style = MaterialTheme.typography.labelLarge
+                                    )
+                                    SegmentedToggle(
+                                        options = ReplayGainLabels,
+                                        selectedIndex = ReplayGainValues.indexOf(replayGain).coerceAtLeast(0),
+                                        modifier = Modifier.fillMaxWidth(),
+                                    ) {
+                                        replayGain = ReplayGainValues[it]
+                                        scope.launch { settings.setReplayGainMode(ReplayGainValues[it]) }
+                                    }
+                                    Text(
+                                        when (replayGain) {
+                                            ReplayGain.ALBUM -> "Levels whole albums against each other and keeps " +
+                                                "the dynamics within one. What you want for records."
+                                            ReplayGain.TRACK -> "Levels every track to the same loudness. Better " +
+                                                "for shuffled singles; flattens an album's quiet passages."
+                                            else -> "Play files at their mastered level. A 1985 master and a " +
+                                                "2015 one can land 10 dB apart."
+                                        },
+                                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                                    )
+                                    Text(
+                                        "Applies to Navidrome and offline playback. Music Assistant does its " +
+                                            "own gain server-side, so this would double it there. Boosts are " +
+                                            "capped at +${ReplayGain.MAX_BOOST_DB.toInt()} dB to avoid clipping.",
+                                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                                    )
+                                    OutputDevicePicker(accent)
+                                    // Status readout
+                                    Column(
+                                        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                                            .background(Ink3).padding(14.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                                    ) {
+                                        StatusRow("Connection", if (connected) "Connected" else "Disconnected")
+                                        StatusRow("Format", currentFormat)
+                                        StatusRow("Player ID", viewModel.playerId.take(12) + "…")
+                                        StatusRow("Player name", playerName.ifBlank { viewModel.deviceName })
+                                        StatusRow("Device", viewModel.deviceName)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    SettingsSection.DOWNLOADS -> {
+                        // ── Downloads ───────────────────────────────────────────────
+                        item { DownloadsCard(libraryVm, accent) }
+                    }
+
+                    SettingsSection.APPEARANCE -> {
+                        // ── Now Playing ─────────────────────────────────────────────
+                        item {
+                            var npLayout by remember { mutableStateOf("tab") }
+                            LaunchedEffect(Unit) { npLayout = settings.nowPlayingLayout.first() }
+                            GlassCard(radius = 16.dp) {
+                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Text(
+                                        "Layout style",
+                                        color = TextPrimary, fontFamily = AppFont,
+                                        style = MaterialTheme.typography.titleLarge,
+                                    )
+                                    Text(
+                                        "Overlay: the cover slides over the app; swipe down to minimize into a bar. " +
+                                            "Tab: the classic full-screen player as a bottom tab.",
+                                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                                    )
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        ToggleChip("Tab (classic)", npLayout == "tab") {
+                                            npLayout = "tab"
+                                            scope.launch { settings.setNowPlayingLayout("tab") }
+                                        }
+                                        ToggleChip("Overlay", npLayout == "overlay") {
+                                            npLayout = "overlay"
+                                            scope.launch { settings.setNowPlayingLayout("overlay") }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    SettingsSection.ABOUT -> {
+                        // ── About ────────────────────────────────────────────────────
+                        item {
+                            GlassCard(radius = 16.dp) {
+                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    Text(
+                                        "Sendspin - a Music Assistant player & controller for Android.\n\n" +
+                                        "Plays FLAC / Opus 16-bit as an MA player, with Navidrome-direct " +
+                                        "browse + offline downloads and Hue light-sync controls.",
+                                        color = TextMuted, fontSize = 13.sp,
+                                    )
+                                    Row(
+                                        Modifier.clip(RoundedCornerShape(100)).background(Glass)
+                                            .border(1.dp, Hairline, RoundedCornerShape(100))
+                                            .clickable {
+                                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/engabd11/sendspin-nowdroid")))
+                                            }
+                                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    ) {
+                                        Icon(Icons.Default.Code, null, tint = accent, modifier = Modifier.size(16.dp))
+                                        Text("GitHub Repository", color = TextSecondary, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                    }
+                                    // Read from the build rather than retyped here — the
+                                    // hard-coded string had been stale since 0.1.3.
+                                    Text(
+                                        "v${BuildConfig.VERSION_NAME} (code ${BuildConfig.VERSION_CODE})",
+                                        color = TextFaint, fontFamily = MonoFont, fontSize = 11.sp,
+                                    )
+                                }
+                            }
+                        }
+                    }
+
                 }
             }
         }
