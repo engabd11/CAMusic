@@ -45,6 +45,7 @@ import com.engabd.sendpin.ui.design.SendspinNavBar
 import com.engabd.sendpin.ui.design.rememberAlbumPalette
 import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ma.MaItem
+import com.engabd.sendpin.subsonic.SubsonicClient
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
 import com.engabd.sendpin.ui.screens.AlbumDetailScreen
 import com.engabd.sendpin.ui.screens.ArtistDetailScreen
@@ -150,20 +151,25 @@ fun App() {
         // clearing library state pops it. Switching to Navidrome while standing on an
         // MA album left that album on screen, backed by a repository for a server the
         // library is no longer pointed at.
-        var lastBackend by rememberSaveable { mutableStateOf(backend) }
-        LaunchedEffect(backend) {
-            if (backend != lastBackend) {
-                lastBackend = backend
-                // Two calls, because the switch is made from *Settings* — so the
-                // Library tab is not the current stack, it is a **saved** one. The
-                // bottom bar navigates with `saveState`/`restoreState` (that is what
-                // keeps each tab where you left it), and `popBackStack` only ever
-                // touches the current stack: it cannot reach the saved album detail,
-                // which is then faithfully restored the moment the Library tab is
-                // tapped. `clearBackStack` is the one that drops it.
-                navController.popBackStack("library", inclusive = false)
-                runCatching { navController.clearBackStack("library") }
-            }
+        /**
+         * Does a detail screen opened from [itemProvider] still belong to the library
+         * the user is now browsing?
+         *
+         * A detail screen is its own navigation destination, so clearing the library's
+         * browse stack cannot pop it — switching to Navidrome while standing on a
+         * Music Assistant album left that album on screen. The obvious fix, popping
+         * the back stack from an effect when the backend changes, is worse than the
+         * bug: the switch happens in *Settings*, so the Library tab is a **saved**
+         * stack, and tearing entries out from under it crashes with "cannot access
+         * the NavBackStackEntry's ViewModels" the moment it is restored and composed.
+         *
+         * So the screen leaves under its own power instead, while it is the current
+         * destination and popping is ordinary navigation. The provider already
+         * travels in the route, so no extra state is needed to know.
+         */
+        fun strandedOnOtherBackend(itemProvider: String): Boolean {
+            val subsonicItem = itemProvider == SubsonicClient.PROVIDER || itemProvider == "download"
+            return if (backend == "subsonic") !subsonicItem else subsonicItem
         }
 
         // Overlay expand/collapse state.
@@ -255,6 +261,8 @@ fun App() {
                         val aProvider = backStackEntry.arguments?.getString("provider") ?: ""
                         val aName = backStackEntry.arguments?.getString("name") ?: ""
                         val aArt = backStackEntry.arguments?.getString("art")?.takeIf { it.isNotBlank() }
+                        val aStranded = strandedOnOtherBackend(aProvider)
+                        LaunchedEffect(aStranded) { if (aStranded) navController.popBackStack() }
                         AlbumDetailScreen(
                             itemId = aItemId,
                             provider = aProvider,
@@ -287,6 +295,8 @@ fun App() {
                         val aName = backStackEntry.arguments?.getString("name") ?: ""
                         val aArt = backStackEntry.arguments?.getString("art")?.takeIf { it.isNotBlank() }
                         val aByName = backStackEntry.arguments?.getBoolean("byName") ?: false
+                        val artistStranded = strandedOnOtherBackend(aProvider)
+                        LaunchedEffect(artistStranded) { if (artistStranded) navController.popBackStack() }
                         ArtistDetailScreen(
                             itemId = aItemId,
                             provider = aProvider,
@@ -314,6 +324,8 @@ fun App() {
                         val pProvider = backStackEntry.arguments?.getString("provider") ?: ""
                         val pName = backStackEntry.arguments?.getString("name") ?: ""
                         val pArt = backStackEntry.arguments?.getString("art")?.takeIf { it.isNotBlank() }
+                        val pStranded = strandedOnOtherBackend(pProvider)
+                        LaunchedEffect(pStranded) { if (pStranded) navController.popBackStack() }
                         PlaylistDetailScreen(
                             itemId = pItemId,
                             provider = pProvider,

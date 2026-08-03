@@ -53,10 +53,20 @@ class SendspinConnectionService : Service() {
             val intent = Intent(context, SendspinConnectionService::class.java).apply {
                 action = ACTION_START
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+            // Android 12+ refuses a foreground service started from the background,
+            // and the refusal is an exception — thrown here on a background
+            // dispatcher, where nothing was catching it, so it took the process down.
+            // A connection that cannot show its notification yet is a degraded state,
+            // not a crash: the reconnect loop and the next foreground moment both get
+            // another chance at it.
+            runCatching {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            }.onFailure {
+                android.util.Log.w("SendspinConnection", "couldn't start service: ${it.message}")
             }
         }
 

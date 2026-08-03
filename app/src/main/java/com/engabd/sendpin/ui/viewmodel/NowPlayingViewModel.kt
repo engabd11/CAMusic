@@ -492,44 +492,6 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
 
     // Drive the position engine off the raw player/queue state rather than the
     // derived [state], because the staleness stamp doesn't survive that projection.
-    init {
-        viewModelScope.launch {
-            combine(_players, _queues, _target) { players, queues, _ ->
-                Triple(players, queues, Unit)
-            }.collect { (players, queues, _) ->
-                // The local player reports its own position; projecting a server
-                // anchor forward on top of it would fight it.
-                if (isLocal) return@collect
-                anchorFromServer(players, queues)
-            }
-        }
-        // Keep the republishing ticker pointed at whichever queue is current.
-        viewModelScope.launch {
-            combine(_players, _target) { _, _ -> streamQueueId() }
-                .distinctUntilChanged()
-                .collect { followPosition(it) }
-        }
-        // When this phone is the player, anchor off its own Sendspin playhead rather
-        // than MA's poll — see [sendspinAuthoritative]. Deliberately fed *through* the
-        // tracker rather than around it: everything that makes seeking and skipping
-        // behave (the optimistic freeze, its watchdog) lives there, and a second
-        // position source bypassing it would have to reimplement all of it.
-        //
-        // [Playback.positionMs] is already projected to now, so the tracker's own
-        // forward projection has nothing left to add — which is fine. It re-anchors
-        // several times a second on a reading that is correct each time.
-        viewModelScope.launch {
-            playback.positionMs.collect { ms ->
-                if (!sendspinAuthoritative()) return@collect
-                positions.setAnchor(
-                    positionKey(),
-                    ms,
-                    isPlaying = true,
-                    durationMs = playback.playbackDurationMs.takeIf { it > 0 },
-                )
-            }
-        }
-    }
 
     /** Last `elapsed_time_last_updated` accepted, per queue — the staleness gate. */
     private val lastStamp = mutableMapOf<String, Double>()
@@ -1372,4 +1334,60 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         /** How close the server's clock must land to a seek target to count as landed. */
         const val SEEK_CONFIRM_MS = 3_000L
     }
+
+    /**
+     * Deliberately the **last** thing in the class.
+     *
+     * Property initialisers and init blocks run in source order, and this block
+     * starts collectors on `viewModelScope` — `Dispatchers.Main.immediate`, which
+     * does not defer on the main thread. A StateFlow hands over its current value
+     * synchronously, so these bodies run *during construction*: anything they
+     * touch that is declared below them is still null. That cost three separate
+     * launch crashes (`_radioMode`, `_frequent`, and `refreshing` here), each
+     * fixed by moving one property up, each time leaving the next one waiting.
+     *
+     * Sitting at the bottom, every property in the class is initialised before
+     * any of this runs, and the whole class of bug is gone rather than one more
+     * instance of it. Nothing here needs to run early — it cannot: construction
+     * has to finish before anyone can call into the object anyway.
+     */
+    init {
+        viewModelScope.launch {
+            combine(_players, _queues, _target) { players, queues, _ ->
+                Triple(players, queues, Unit)
+            }.collect { (players, queues, _) ->
+                // The local player reports its own position; projecting a server
+                // anchor forward on top of it would fight it.
+                if (isLocal) return@collect
+                anchorFromServer(players, queues)
+            }
+        }
+        // Keep the republishing ticker pointed at whichever queue is current.
+        viewModelScope.launch {
+            combine(_players, _target) { _, _ -> streamQueueId() }
+                .distinctUntilChanged()
+                .collect { followPosition(it) }
+        }
+        // When this phone is the player, anchor off its own Sendspin playhead rather
+        // than MA's poll — see [sendspinAuthoritative]. Deliberately fed *through* the
+        // tracker rather than around it: everything that makes seeking and skipping
+        // behave (the optimistic freeze, its watchdog) lives there, and a second
+        // position source bypassing it would have to reimplement all of it.
+        //
+        // [Playback.positionMs] is already projected to now, so the tracker's own
+        // forward projection has nothing left to add — which is fine. It re-anchors
+        // several times a second on a reading that is correct each time.
+        viewModelScope.launch {
+            playback.positionMs.collect { ms ->
+                if (!sendspinAuthoritative()) return@collect
+                positions.setAnchor(
+                    positionKey(),
+                    ms,
+                    isPlaying = true,
+                    durationMs = playback.playbackDurationMs.takeIf { it > 0 },
+                )
+            }
+        }
+    }
+
 }
