@@ -796,6 +796,7 @@ private fun NotConnectedNotice() {
 
 @Composable
 private fun ErrorNotice(message: String, onRetry: () -> Unit) {
+    val accent = LocalAccent.current
     Row(
         Modifier.fillMaxWidth().padding(8.dp).clip(RoundedCornerShape(12.dp))
             .background(ErrorRed.a(0.10f)).border(1.dp, ErrorRed.a(0.25f), RoundedCornerShape(12.dp))
@@ -821,16 +822,16 @@ private fun fmtFreq(hz: Float): String = when {
 
 /** 20 Hz → 0, 20 kHz → 1, logarithmic. */
 private fun freqToSlider(hz: Float): Float {
-    val minHz = 20f
-    val maxHz = 20_000f
-    val clamped = hz.coerceIn(minHz, maxHz)
+    val minHz = 20.0
+    val maxHz = 20_000.0
+    val clamped = hz.toDouble().coerceIn(minHz, maxHz)
     return (kotlin.math.log(clamped / minHz) / kotlin.math.log(maxHz / minHz)).toFloat().coerceIn(0f, 1f)
 }
 
 private fun sliderToFreq(s: Float): Float {
-    val minHz = 20f
-    val maxHz = 20_000f
-    return (minHz * Math.pow((maxHz / minHz).toDouble(), s.toDouble())).toFloat()
+    val minHz = 20.0
+    val maxHz = 20_000.0
+    return (minHz * Math.pow(maxHz / minHz, s.toDouble())).toFloat()
 }
 
 /** -12 dB → 0, 0 dB → 0.5, +12 dB → 1. */
@@ -839,14 +840,14 @@ private fun sliderToGain(s: Float): Float = (s * 24f - 12f)
 
 /** 0.1 → 0, 1.0 → 0.5, 10.0 → 1, logarithmic. */
 private fun qToSlider(q: Float): Float {
-    val minQ = 0.1f
-    val maxQ = 10f
-    val clamped = q.coerceIn(minQ, maxQ)
+    val minQ = 0.1
+    val maxQ = 10.0
+    val clamped = q.toDouble().coerceIn(minQ, maxQ)
     return (kotlin.math.log(clamped / minQ) / kotlin.math.log(maxQ / minQ)).toFloat().coerceIn(0f, 1f)
 }
 
 private fun sliderToQ(s: Float): Float {
-    val minQ = 0.1f
-    val maxQ = 10f
-    return (minQ * Math.pow((maxQ / minQ).toDouble(), s.toDouble())).toFloat()
+    val minQ = 0.1
+    val maxQ = 10.0
+    return (minQ * Math.pow(maxQ / minQ, s.toDouble())).toFloat()
 }

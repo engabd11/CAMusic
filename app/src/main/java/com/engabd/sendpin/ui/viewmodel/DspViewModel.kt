@@ -32,7 +32,7 @@ import kotlinx.coroutines.launch
  * `config/players/dsp/get` and `config/players/dsp/save` (admin). Changes are
  * applied live by MA — no playback restart needed.
  *
- * Also manages reusable DSP presets via `config/dsp_presets/*`.
+ * Also manages reusable DSP presets via `config/dsp_presets` commands.
  *
  * Works for **any** MA player — not just this phone. The target player follows
  * the same setting the Speakers screen and Now Playing use ("Play here"

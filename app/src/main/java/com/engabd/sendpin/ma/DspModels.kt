@@ -202,29 +202,33 @@ object DspParse {
 
     // ── Serialization back to MA's wire format ──────────────────────────
 
+    private fun jBool(b: Boolean) = JsonPrimitive(b)
+    private fun jNum(f: Float) = JsonPrimitive(f)
+    private fun jStr(s: String) = JsonPrimitive(s)
+
     fun toJson(config: DspConfig): JsonObject = buildJsonObject {
-        put("enabled", config.enabled)
-        put("input_gain", config.inputGain)
-        put("output_gain", config.outputGain)
+        put("enabled", jBool(config.enabled))
+        put("input_gain", jNum(config.inputGain))
+        put("output_gain", jNum(config.outputGain))
         if (config.filters.isNotEmpty()) {
             put("filters", kotlinx.serialization.json.JsonArray(config.filters.map { filterJson(it) }))
         }
     }
 
     fun presetToJson(preset: DspPreset): JsonObject = buildJsonObject {
-        put("name", preset.name)
+        put("name", jStr(preset.name))
         put("config", toJson(preset.config))
-        preset.presetId?.let { put("preset_id", it) }
+        preset.presetId?.let { put("preset_id", jStr(it)) }
     }
 
     private fun filterJson(f: DspFilter): JsonObject = when (f) {
         is DspFilter.Eq -> buildJsonObject {
-            put("enabled", f.filter.enabled)
-            put("type", "parametric_eq")
-            put("preamp", f.filter.preamp)
+            put("enabled", jBool(f.filter.enabled))
+            put("type", jStr("parametric_eq"))
+            put("preamp", jNum(f.filter.preamp))
             if (f.filter.perChannelPreamp.isNotEmpty()) {
                 put("per_channel_preamp", buildJsonObject {
-                    f.filter.perChannelPreamp.forEach { (k, v) -> put(k, v) }
+                    f.filter.perChannelPreamp.forEach { (k, v) -> put(k, jNum(v)) }
                 })
             }
             if (f.filter.bands.isNotEmpty()) {
@@ -232,21 +236,21 @@ object DspParse {
             }
         }
         is DspFilter.Tone -> buildJsonObject {
-            put("enabled", f.filter.enabled)
-            put("type", "tone_control")
-            put("bass_level", f.filter.bassLevel)
-            put("mid_level", f.filter.midLevel)
-            put("treble_level", f.filter.trebleLevel)
+            put("enabled", jBool(f.filter.enabled))
+            put("type", jStr("tone_control"))
+            put("bass_level", jNum(f.filter.bassLevel))
+            put("mid_level", jNum(f.filter.midLevel))
+            put("treble_level", jNum(f.filter.trebleLevel))
         }
     }
 
     private fun bandJson(b: EqBand): JsonObject = buildJsonObject {
-        put("frequency", b.frequency)
-        put("q", b.q)
-        put("gain", b.gain)
-        put("type", b.typeWire)
-        put("enabled", b.enabled)
-        put("channel", b.channelWire)
+        put("frequency", jNum(b.frequency))
+        put("q", jNum(b.q))
+        put("gain", jNum(b.gain))
+        put("type", jStr(b.typeWire))
+        put("enabled", jBool(b.enabled))
+        put("channel", jStr(b.channelWire))
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────
