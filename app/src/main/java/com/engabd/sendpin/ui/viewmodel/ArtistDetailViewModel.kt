@@ -85,6 +85,10 @@ class ArtistDetailViewModel(
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error
 
+    /** Artist biography text (from Navidrome's getArtistInfo2), or null. */
+    private val _biography = MutableStateFlow<String?>(null)
+    val biography: StateFlow<String?> = _biography
+
     private val _toast = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val toast: SharedFlow<String> = _toast.asSharedFlow()
 
@@ -113,6 +117,8 @@ class ArtistDetailViewModel(
                     val (artistMeta, albumList) = sc.artistDetail(ref.itemId)
                     if (artistMeta != null) { ref = artistMeta; _artist.value = artistMeta }
                     _albums.value = albumList.distinctBy { it.itemId }
+                    // Fetch biography from Navidrome's getArtistInfo2.
+                    _biography.value = runCatching { sc.getArtistInfo2(ref.itemId) }.getOrNull()
                 } else {
                     if (!resolveRef()) return@launch
                     val artistMeta = maRepo.getArtist(ref)

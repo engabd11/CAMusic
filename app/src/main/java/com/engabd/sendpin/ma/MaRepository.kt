@@ -157,6 +157,40 @@ class MaRepository(val api: MaApiClient) {
     suspend fun playlistTracks(item: MaItem) =
         MaParse.items(api.sendCommand("music/playlists/playlist_tracks", itemRef(item)), serverUrl)
 
+    // --- playlist CRUD (MA) ------------------------------------------------
+
+    /**
+     * Create a new playlist. MA's `music/playlists/create` takes a name and
+     * returns the new playlist's library item. The caller can then open it or
+     * add tracks to it via [playOn].
+     */
+    suspend fun createPlaylist(name: String): MaItem? {
+        val res = api.sendCommand("music/playlists/create", buildJsonObject {
+            put("name", name)
+        })
+        return MaParse.item(res, serverUrl)
+    }
+
+    /**
+     * Delete a playlist. MA identifies it by `item_id` + `provider`, the same
+     * pair [itemRef] builds for every other library command.
+     */
+    suspend fun deletePlaylist(item: MaItem) {
+        api.sendCommand("music/playlists/delete", itemRef(item))
+    }
+
+    /**
+     * Rename a playlist — the only edit the library UI exposes. MA's
+     * `music/playlists/edit` takes the item ref and the new name.
+     */
+    suspend fun editPlaylist(item: MaItem, newName: String) {
+        api.sendCommand("music/playlists/edit", buildJsonObject {
+            put("item_id", item.itemId)
+            put("provider_instance_id_or_domain", item.provider)
+            put("name", newName)
+        })
+    }
+
     suspend fun search(query: String, limit: Int = 30): MaSearchResults {
         val res = api.sendCommand("music/search", buildJsonObject {
             put("search_query", query); put("limit", limit)

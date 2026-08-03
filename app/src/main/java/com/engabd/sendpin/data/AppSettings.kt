@@ -35,6 +35,10 @@ class AppSettings(private val context: Context) {
         private val REGISTERED_NAME = stringPreferencesKey("registered_player_name")
         private val SENDSPIN_CODEC = stringPreferencesKey("sendspin_codec")     // "auto" | "flac" | "pcm" | "opus"
         private val NAV_STREAM_FORMAT = stringPreferencesKey("nav_stream_format") // Subsonic `format=` ("raw" = original)
+        private val BIT_PERFECT = booleanPreferencesKey("bit_perfect_24bit")     // 24-bit AudioTrack path when available
+        private val PREFERRED_AUDIO_DEVICE_ID = stringPreferencesKey("preferred_audio_device_id") // USB DAC routing
+        private val DOWNLOAD_STORAGE_CAP_MB = stringPreferencesKey("download_storage_cap_mb") // 0 = unlimited
+        private val DOWNLOAD_WIFI_ONLY = booleanPreferencesKey("download_wifi_only") // skip downloads on mobile data
     }
 
     val backend: Flow<String> = context.dataStore.data.map { it[BACKEND] ?: "ma" }
@@ -75,6 +79,29 @@ class AppSettings(private val context: Context) {
      * slow connection and wasteful on a fast one.
      */
     val navStreamFormat: Flow<String> = context.dataStore.data.map { it[NAV_STREAM_FORMAT] ?: "raw" }
+
+    /**
+     * Whether to request 24-bit bit-perfect playback from the AudioTrack path.
+     * When true and the device supports `ENCODING_PCM_24BIT_PACKED` (API 31+,
+     * which is our minSdk), [SendspinAudioEngine] builds a 24-bit AudioTrack
+     * instead of truncating to 16-bit. The server must also be sending 24-bit
+     * — see [FormatNegotiator.MAX_BIT_DEPTH], which is now 24.
+     */
+    val bitPerfect24Bit: Flow<Boolean> = context.dataStore.data.map { it[BIT_PERFECT] ?: false }
+
+    /**
+     * The system AudioDeviceInfo ID to route audio to, for USB DAC support.
+     * Empty string means "let the system pick" (default speaker/headset).
+     * Set by [com.engabd.sendpin.service.Playback] when a USB audio device is
+     * detected; consumed by both [SendspinAudioEngine] and [LocalPlayer].
+     */
+    val preferredAudioDeviceId: Flow<String> = context.dataStore.data.map { it[PREFERRED_AUDIO_DEVICE_ID] ?: "" }
+
+    /** Download storage cap in MB. 0 means unlimited. */
+    val downloadStorageCapMb: Flow<Int> = context.dataStore.data.map { it[DOWNLOAD_STORAGE_CAP_MB]?.toIntOrNull() ?: 0 }
+
+    /** Only download over Wi-Fi, skip on mobile data. */
+    val downloadWifiOnly: Flow<Boolean> = context.dataStore.data.map { it[DOWNLOAD_WIFI_ONLY] ?: false }
 
     suspend fun setBackend(value: String) {
         context.dataStore.edit { it[BACKEND] = value }
@@ -137,5 +164,23 @@ class AppSettings(private val context: Context) {
     /** Applies to the next track: the format is a query parameter on the stream URL. */
     suspend fun setNavStreamFormat(value: String) {
         context.dataStore.edit { it[NAV_STREAM_FORMAT] = value }
+    }
+
+    /** Takes effect on the next stream/start — the AudioTrack is built per stream. */
+    suspend fun setBitPerfect24Bit(value: Boolean) {
+        context.dataStore.edit { it[BIT_PERFECT] = value }
+    }
+
+    /** Takes effect on the next stream/start or track open. */
+    suspend fun setPreferredAudioDeviceId(value: String) {
+        context.dataStore.edit { it[PREFERRED_AUDIO_DEVICE_ID] = value }
+    }
+
+    suspend fun setDownloadStorageCapMb(value: Int) {
+        context.dataStore.edit { it[DOWNLOAD_STORAGE_CAP_MB] = value.toString() }
+    }
+
+    suspend fun setDownloadWifiOnly(value: Boolean) {
+        context.dataStore.edit { it[DOWNLOAD_WIFI_ONLY] = value }
     }
 }

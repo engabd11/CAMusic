@@ -200,6 +200,17 @@ class SendspinConnectionService : Service() {
         super.onTaskRemoved(rootIntent)
     }
 
+    override fun onTrimMemory(level: Int) {
+        // When the app goes to the background (not destroyed), send a warm
+        // goodbye so MA holds the player slot for 30 seconds. A full disconnect
+        // drops the player from MA's speaker list immediately; "restart" keeps
+        // it visible so a quick app switch doesn't lose the player.
+        if (level == TRIM_MEMORY_UI_HIDDEN) {
+            pb.disconnect(reason = "restart")
+        }
+        super.onTrimMemory(level)
+    }
+
     override fun onDestroy() {
         releaseLocks()
         observeJob?.cancel()

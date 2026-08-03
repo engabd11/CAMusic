@@ -21,13 +21,13 @@ data class NegotiatedFormat(
 object FormatNegotiator {
 
     /**
-     * The Kotlin engine renders 16-bit PCM — see [SendspinAudioEngine], whose
-     * AudioTrack is built as `ENCODING_PCM_16BIT`. The native AAudio 24-bit path in
-     * `cpp/` is not wired up yet, and advertising a depth we cannot render only makes
-     * the server spend bandwidth on bits we truncate on arrival. Raise this to 24 in
-     * the same change that lands real 24-bit output.
+     * The Kotlin engine can now render 24-bit PCM via AudioTrack's
+     * `ENCODING_PCM_24BIT_PACKED` (API 31+), so we advertise 24-bit to the
+     * server. The native AAudio path in `cpp/` remains for a future phase
+     * that bypasses the Android mixer entirely; this is the honest ceiling
+     * for the current AudioTrack-based renderer.
      */
-    const val MAX_BIT_DEPTH = 16
+    const val MAX_BIT_DEPTH = 24
 
     /** CD and DVD rate families — covers essentially every library file. */
     private val RATES_STANDARD = listOf(48_000, 44_100)

@@ -17,6 +17,19 @@ data class MaAudioFormat(
     /** kbps, off MA's `AudioFormat.bit_rate`. 0 when the provider didn't say. */
     val bitRate: Int = 0,
     val channels: Int = 2,
+    /**
+     * ReplayGain track-level adjustment in dB, parsed from
+     * `provider_mappings[].audio_format.replay_gain_track`. Null when the
+     * provider didn't supply it — most don't, so callers must treat null as
+     * "no gain adjustment available" rather than 0 dB.
+     */
+    val replayGainTrack: Float? = null,
+    /**
+     * ReplayGain album-level adjustment in dB, parsed from
+     * `provider_mappings[].audio_format.replay_gain_album`. Null when absent.
+     * Album gain is preferred for whole-album playback; track gain for shuffle.
+     */
+    val replayGainAlbum: Float? = null,
 )
 
 data class MaItem(
@@ -53,6 +66,12 @@ data class MaItem(
     val parentId: String? = null,
     /** Album name, when the item carries one of its own (a Subsonic song does). */
     val album: String? = null,
+    /**
+     * Composer credits, when the item carries them (a Subsonic song or an MA track
+     * with metadata). Shown below the artist on Now Playing for classical / jazz
+     * tracks where the composer is the credit the listener actually cares about.
+     */
+    val composer: String? = null,
 ) {
     val browsable get() = mediaType in BROWSABLE
     val playable get() = uri != null && mediaType in PLAYABLE
@@ -341,6 +360,13 @@ object MaParse {
             genres = genreList(o),
             trackNumber = o["track_number"]?.jsonPrimitive?.intOrNull,
             discNumber = o["disc_number"]?.jsonPrimitive?.intOrNull,
+            // MA carries composer in the item's metadata block, not at the top
+            // level — `metadata.composer` is where it lives for tracks that have
+            // one tagged. Classical/jazz listeners want to see it, so pass it
+            // through rather than dropping it at parse time.
+            composer = (o["metadata"] as? JsonObject)?.let {
+                it["composer"]?.jsonPrimitive?.contentOrNull?.takeIf { c -> c.isNotBlank() }
+            },
         )
     }
 

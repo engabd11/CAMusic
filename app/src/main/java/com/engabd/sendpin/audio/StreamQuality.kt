@@ -12,8 +12,18 @@ data class StreamQuality(
     val sampleRateHz: Int = 0,
     val bitDepth: Int = 0,
     val bitrateKbps: Int = 0,
+    /** ReplayGain track-level adjustment in dB, or null when not available. */
+    val replayGainTrack: Float? = null,
+    /** ReplayGain album-level adjustment in dB, or null when not available. */
+    val replayGainAlbum: Float? = null,
 ) {
     val lossless: Boolean get() = normalizedCodec in LOSSLESS
+
+    /** The gain adjustment being applied, if any. Album gain preferred for album play. */
+    val activeGain: Float? get() = replayGainAlbum ?: replayGainTrack
+
+    /** Human-readable gain, e.g. "+2.5 dB RG" or null. */
+    val gainLabel: String? get() = activeGain?.let { "%+.1f dB RG".format(it) }
 
     /**
      * Whether two readings describe the same audio, i.e. nothing was transcoded

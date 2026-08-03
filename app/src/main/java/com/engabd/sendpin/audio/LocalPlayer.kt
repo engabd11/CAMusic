@@ -42,6 +42,8 @@ data class LocalTrack(
      * `samplingRate`), in which case the badge shows Playing alone.
      */
     val sourceQuality: StreamQuality? = null,
+    /** Composer credit, for classical / jazz tracks. */
+    val composer: String? = null,
 ) {
     /**
      * There is a downloaded copy to play from. Deliberately *not* a `File.exists()`
@@ -82,6 +84,8 @@ class LocalPlayer(private val context: Context) {
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var mp: MediaPlayer? = null
+    /** The next track's player, pre-prepared for gapless transition. */
+    private var nextMp: MediaPlayer? = null
     private var ticker: Job? = null
 
     /** True between `prepareAsync()` and `onPrepared`, when the player has no valid state. */
@@ -279,6 +283,7 @@ class LocalPlayer(private val context: Context) {
     fun playAt(position: Int) {
         val list = _queue.value
         if (position !in list.indices) return
+        nextMp?.let { runCatching { it.release() } }; nextMp = null
         _index.value = position
         val track = list[position]
         _current.value = track
@@ -286,6 +291,8 @@ class LocalPlayer(private val context: Context) {
         _durationMs.value = track.durationMs
         _positionMs.value = 0
         open(track)
+        // Pre-prepare the next track for gapless playback.
+        prepareNext()
     }
 
     fun pause() {
@@ -447,7 +454,71 @@ class LocalPlayer(private val context: Context) {
             stopTicker()
             _positionMs.value = _durationMs.value
         } else {
-            playAt(nxt)
+            // Gapless: if the next track was already prepared, swap to it
+            // without stopping. Otherwise fall back to the normal path.
+            val prepared = nextMp
+            if (prepared != null) {
+                swapToNext(prepared, nxt)
+            } else {
+                playAt(nxt)
+            }
+        }
+    }
+
+    /**
+     * Swap from the current player to the already-prepared [prepared] player
+     * for gapless transition. The current player is released immediately.
+     */
+    private fun swapToNext(prepared: MediaPlayer, nextIndex: Int) {
+        mp?.let { old ->
+            runCatching { old.setOnCompletionListener(null) }
+            runCatching { old.setOnErrorListener(null) }
+            runCatching { old.setOnPreparedListener(null) }
+            runCatching { old.stop() }
+            old.release()
+        }
+        mp = prepared
+        nextMp = null
+        _index.value = nextIndex
+        val track = _queue.value.getOrNull(nextIndex)
+        _current.value = track
+        _titleFlow.value = track?.title ?: ""
+        _durationMs.value = track?.durationMs ?: 0
+        _positionMs.value = 0
+        prepared.start()
+        if (_speed.value != 1f) applySpeed()
+        _playing.value = true
+        startTicker()
+        track?.let { _started.tryEmit(it) }
+        // Pre-prepare the next-next track.
+        prepareNext()
+    }
+
+    /**
+     * Pre-prepare the next track in the queue so it's ready for a gapless
+     * swap when the current one finishes. Called after each track starts.
+     */
+    private fun prepareNext() {
+        nextMp?.let { runCatching { it.release() } }
+        nextMp = null
+        val nxt = step(+1) ?: return
+        val track = _queue.value.getOrNull(nxt) ?: return
+        val source = track.localPath?.takeIf { File(it).exists() } ?: track.streamUrl ?: return
+        try {
+            nextMp = MediaPlayer().apply {
+                setAudioAttributes(
+                    android.media.AudioAttributes.Builder()
+                        .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC)
+                        .build()
+                )
+                setDataSource(source)
+                setOnPreparedListener { /* ready for swap */ }
+                setOnErrorListener { _, _, _ -> runCatching { release() }; nextMp = null; true }
+                prepareAsync()
+            }
+        } catch (_: Exception) {
+            nextMp = null
         }
     }
 
@@ -496,6 +567,8 @@ class LocalPlayer(private val context: Context) {
     private fun stopInternal() {
         stopTicker()
         preparing = false
+        nextMp?.let { runCatching { it.release() } }
+        nextMp = null
         mp?.let {
             it.setOnCompletionListener(null)
             it.setOnErrorListener(null)

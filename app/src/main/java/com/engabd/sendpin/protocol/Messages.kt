@@ -267,7 +267,11 @@ sealed class SendspinIncoming {
     // clientReceivedUs (T4) must be stamped at the WebSocket onMessage callback,
     // not here — capturing it after coroutine dispatch biases the clock offset.
     data class ServerTime(val payload: ServerTimePayload, val clientReceivedUs: Long = 0L) : SendspinIncoming()
-    data object GroupUpdate : SendspinIncoming()
+    data class GroupUpdate(
+        val playbackState: String? = null,
+        val groupId: String? = null,
+        val groupName: String? = null,
+    ) : SendspinIncoming()
     data class StreamStart(val payload: StreamStartPayload) : SendspinIncoming()
     data object StreamEnd : SendspinIncoming()
     data object StreamClear : SendspinIncoming()
@@ -287,7 +291,13 @@ sealed class SendspinIncoming {
                 "server/time" -> payload?.let {
                     ServerTime(json.decodeFromJsonElement(ServerTimePayload.serializer(), it))
                 } ?: Unknown(type)
-                "group/update" -> GroupUpdate
+                "group/update" -> payload?.let {
+                    GroupUpdate(
+                        playbackState = (it as? JsonObject)?.get("playback_state")?.jsonPrimitive?.contentOrNull,
+                        groupId = (it as? JsonObject)?.get("group_id")?.jsonPrimitive?.contentOrNull,
+                        groupName = (it as? JsonObject)?.get("group_name")?.jsonPrimitive?.contentOrNull,
+                    )
+                } ?: GroupUpdate()
                 "stream/start" -> StreamStart(
                     payload?.let { json.decodeFromJsonElement(StreamStartPayload.serializer(), it) }
                         ?: StreamStartPayload()

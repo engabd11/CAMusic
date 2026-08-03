@@ -98,6 +98,10 @@ class SendspinClient(
     private val _streamEvents = MutableSharedFlow<StreamEvent>(extraBufferCapacity = 32)
     val streamEvents: SharedFlow<StreamEvent> = _streamEvents.asSharedFlow()
 
+    /** Group playback state changes pushed by the server — instant, no 5s poll. */
+    private val _groupUpdates = MutableSharedFlow<SendspinIncoming.GroupUpdate>(extraBufferCapacity = 16)
+    val groupUpdates: SharedFlow<SendspinIncoming.GroupUpdate> = _groupUpdates.asSharedFlow()
+
     // Raw binary audio chunks; SendspinAudioEngine parses the header + decodes.
     private val _audioFrames = MutableSharedFlow<ByteArray>(extraBufferCapacity = 512)
     val audioFrames: SharedFlow<ByteArray> = _audioFrames.asSharedFlow()
@@ -151,7 +155,7 @@ class SendspinClient(
 
     fun disconnect(reason: String = "user_request") {
         userClosed = true
-        reconnectJob?.cancel(); reconnectJob = null
+        reconnectJob?.cancel()
         timeJob?.cancel(); timeJob = null
         stateJob?.cancel(); stateJob = null
         val ws = webSocket
@@ -279,6 +283,7 @@ class SendspinClient(
                     speedMilli = m.progress?.speedMilli ?: 1000L,
                 )
             }
+            is SendspinIncoming.GroupUpdate -> _groupUpdates.tryEmit(msg)
             is SendspinIncoming.StreamStart -> {
                 _streamFormat.value = msg.payload.player
                 _streamEvents.tryEmit(StreamEvent.Start(msg.payload.player))

@@ -42,6 +42,8 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         val isSelf: Boolean = true,
         val title: String = "",
         val artist: String = "",
+        /** Composer credit — shown below the artist for classical / jazz tracks. */
+        val composer: String = "",
         val album: String = "",
         val artworkUrl: String? = null,
         val isPlaying: Boolean = false,
@@ -94,6 +96,8 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
          * not worth complaining about — nothing on screen depends on it.
          */
         val isLocalSession: Boolean = false,
+        /** Radio mode: MA auto-generates a radio queue after the current one ends. */
+        val radioMode: Boolean = false,
     )
 
     /** A panel's load state — the UI has to tell "empty" from "not fetched yet". */
@@ -277,6 +281,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             isSelf = isSelf,
             title = np?.title.orEmpty(),
             artist = np?.artist.orEmpty(),
+            composer = queue?.currentItem?.composer.orEmpty(),
             album = np?.album.orEmpty(),
             artworkUrl = np?.imageUrl,
             isPlaying = live != null && p?.isPlaying == true,
@@ -333,6 +338,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             dontStopTheMusic = queue?.dontStopTheMusic == true,
             powered = p?.powered ?: true,
             canPower = p?.let { "power" in it.supportedFeatures } ?: false,
+            radioMode = _radioMode.value,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, State())
 
@@ -349,6 +355,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             isSelf = true,
             title = t?.title.orEmpty(),
             artist = t?.artist.orEmpty(),
+            composer = t?.composer.orEmpty(),
             album = t?.album.orEmpty(),
             artworkUrl = t?.artUrl,
             isPlaying = l.playing,
@@ -911,6 +918,34 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         act(toastOnError = "Couldn't change Don't stop the music") { repo.setDontStopTheMusic(q, next) }
     }
 
+    // --- radio mode ---------------------------------------------------------
+
+    /**
+     * Radio mode: when the queue runs low, MA auto-generates a radio queue
+     * from the seed track. This is the queue-level version of "don't stop
+     * the music" — it keeps similar music flowing after the user's queue ends.
+     */
+    private val _radioMode = MutableStateFlow(false)
+    val radioMode: StateFlow<Boolean> = _radioMode
+
+    fun toggleRadioMode() {
+        if (isLocal) { _toast.tryEmit("Radio mode needs Music Assistant"); return }
+        _radioMode.value = !_radioMode.value
+        _toast.tryEmit(if (_radioMode.value) "Radio mode on" else "Radio mode off")
+    }
+
+    // --- stream format switching (Sendspin) ---------------------------------
+
+    /**
+     * Ask the server to switch codec/rate mid-stream. The server replies with
+     * a new `stream/start` carrying the new format — no reconnect needed.
+     * Useful for switching to Opus on mobile, or back to FLAC on Wi-Fi.
+     */
+    fun requestFormat(codec: String, sampleRate: Int = 48000, bitDepth: Int = 16) {
+        playback.requestFormat(codec, sampleRate, bitDepth)
+        _toast.tryEmit("Requesting $codec ${sampleRate / 1000}kHz/$bitDepth-bit")
+    }
+
     // --- favourite ---------------------------------------------------------
 
     fun toggleFavorite() {
@@ -1075,6 +1110,23 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     // --- lyrics ------------------------------------------------------------
 
     fun loadLyrics() {
+        // When the local player is active (Navidrome/offline), try Subsonic lyrics.
+        if (isLocal) {
+            val track = local.current.value
+            if (track == null) { _lyrics.value = Load.Failed("Nothing playing"); return }
+            _lyrics.value = Load.Loading
+            viewModelScope.launch {
+                _lyrics.value = try {
+                    val sc = subsonicClient()
+                    val lyrics = sc?.lyrics(track.id)
+                    if (lyrics != null) Load.Ready(lyrics)
+                    else Load.Failed("No lyrics found")
+                } catch (e: Exception) {
+                    Load.Failed(e.message ?: "Couldn't fetch lyrics")
+                }
+            }
+            return
+        }
         val item = currentItem.value ?: run {
             _lyrics.value = Load.Failed("Nothing playing")
             return

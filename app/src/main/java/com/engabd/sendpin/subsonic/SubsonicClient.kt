@@ -2,6 +2,7 @@ package com.engabd.sendpin.subsonic
 
 import com.engabd.sendpin.ma.MaAudioFormat
 import com.engabd.sendpin.ma.MaItem
+import com.engabd.sendpin.ma.MaLyrics
 import com.engabd.sendpin.ma.MaSearchResults
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -269,6 +270,162 @@ class SubsonicClient(
             ?.jsonObject?.get("song")?.jsonArray.orEmptyArray()
             .map { songItem(it.jsonObject) }
 
+    // --- playlist CRUD ----------------------------------------------------
+
+    /**
+     * Create a new, empty playlist. OpenSubsonic's `createPlaylist` takes a name
+     * and an optional list of song ids to seed it with; an empty playlist is
+     * valid and is what the library's "Create playlist" dialog asks for.
+     *
+     * Returns the new playlist's id (from the response) so the caller can open
+     * it directly, or null when the server doesn't report one.
+     */
+    suspend fun createPlaylist(name: String, songIds: List<String> = emptyList()): String? {
+        val params = buildMap {
+            put("name", name)
+            if (songIds.isNotEmpty()) put("songId", songIds.joinToString(","))
+        }
+        val res = get("createPlaylist", params)["playlist"]?.jsonObject
+        return res?.str("id")
+    }
+
+    /**
+     * Rename a playlist, and/or replace its entire track list.
+     *
+     * `updatePlaylist` is OpenSubsonic's one-shot edit: `name` changes the title
+     * and `songId` (repeated) replaces the contents. Only the fields that are
+     * non-null are sent, so a rename and a content swap are independent.
+     */
+    suspend fun updatePlaylist(id: String, name: String? = null, songIds: List<String>? = null) {
+        val params = buildMap {
+            put("playlistId", id)
+            name?.let { put("name", it) }
+            songIds?.let { put("songId", it.joinToString(",")) }
+        }
+        get("updatePlaylist", params)
+    }
+
+    /** Delete a playlist by id. The server removes it and its track associations. */
+    suspend fun deletePlaylist(id: String) {
+        get("deletePlaylist", mapOf("id" to id))
+    }
+
+    // --- lyrics ------------------------------------------------------------
+
+    /**
+     * Lyrics for a song, as a [MaLyrics] so the existing [LyricsPane] renders
+     * them unchanged.
+     *
+     * OpenSubsonic's `getLyricsBySongId` is tried first — it is the structured
+     * endpoint and returns lyrics as a list of `structuredLyrics` entries with
+     * a `lang` and `synced` flag. A server that doesn't implement it returns an
+     * error, which is caught and falls through to the legacy `getLyrics`
+     * endpoint (artist + title based, plain text).
+     *
+     * The structured response carries either timed LRC lines (`synced = true`)
+     * or plain text. Both are folded into [MaLyrics], which already knows how to
+     * split LRC stamps from plain lines — so the UI does not need to know which
+     * Subsonic endpoint the text came from.
+     */
+    suspend fun getLyrics(songId: String): MaLyrics? {
+        // OpenSubsonic structured lyrics — the preferred path.
+        try {
+            val root = get("getLyricsBySongId", mapOf("id" to songId))
+            val structured = root["lyricsList"]?.jsonObject?.get("structuredLyrics")?.jsonArray
+            if (structured != null && structured.isNotEmpty()) {
+                val entry = structured.firstOrNull()?.jsonObject ?: return null
+                val synced = entry.str("synced") == "true"
+                val linesArray = entry["line"]?.jsonArray
+                if (linesArray != null) {
+                    val text = buildString {
+                        for (lineEl in linesArray) {
+                            val line = lineEl.jsonObject
+                            val start = line.long("start") ?: 0L
+                            val value = line.str("value").orEmpty()
+                            if (synced && start > 0) {
+                                // Format as LRC [mm:ss.xx] so MaLyrics can parse it.
+                                val mm = start / 60_000
+                                val ss = (start % 60_000) / 1_000
+                                val cs = (start % 1_000) / 10
+                                append("[${mm}:${ss.toString().padStart(2, '0')}.${cs.toString().padStart(2, '0')}]$value")
+                            } else {
+                                append(value)
+                            }
+                            append("\n")
+                        }
+                    }
+                    return MaLyrics(text.trimEnd(), synced = synced)
+                }
+            }
+        } catch (_: SubsonicException) {
+            // Server doesn't support getLyricsBySongId — fall through to legacy.
+        }
+
+        // Legacy getLyrics — plain text, matched by artist + title. We need the
+        // song's metadata to call it, so fetch the song first.
+        return try {
+            val song = get("getSong", mapOf("id" to songId))["song"]?.jsonObject
+            val artist = song?.str("artist") ?: return null
+            val title = song.str("title") ?: return null
+            val res = get("getLyrics", mapOf("artist" to artist, "title" to title))
+            val text = res["lyrics"]?.jsonObject?.str("value")
+                ?: res["lyrics"]?.jsonObject?.str("content")
+                ?: res["lyrics"]?.jsonPrimitive?.contentOrNull
+            text?.takeIf { it.isNotBlank() }?.let { MaLyrics(it, synced = false) }
+        } catch (_: SubsonicException) {
+            null
+        }
+    }
+
+    // --- artist / album info -----------------------------------------------
+
+    /**
+     * Extended artist metadata: biography, music-brainz id, last.fm URL, etc.
+     *
+     * `getArtistInfo2` is the OpenSubsonic endpoint for this; `getArtistInfo`
+     * (v1) is the older equivalent. We try `2` first and fall back silently —
+     * a plain Subsonic server may not implement the `2` variant.
+     *
+     * Returns the biography text, or null when the server has nothing.
+     */
+    suspend fun getArtistInfo2(id: String): String? {
+        // Try the OpenSubsonic `2` variant first.
+        try {
+            val res = get("getArtistInfo2", mapOf("id" to id, "count" to "0", "includeNotPresent" to "true"))
+            val info = res["artistInfo2"]?.jsonObject
+            return info?.str("biography")?.takeIf { it.isNotBlank() }
+        } catch (_: SubsonicException) {
+            // Fall through to the legacy endpoint.
+        }
+        return try {
+            val res = get("getArtistInfo", mapOf("id" to id, "count" to "0", "includeNotPresent" to "true"))
+            res["artistInfo"]?.jsonObject?.str("biography")?.takeIf { it.isNotBlank() }
+        } catch (_: SubsonicException) {
+            null
+        }
+    }
+
+    /**
+     * Extended album metadata: liner notes, description, etc.
+     *
+     * `getAlbumInfo2` is the OpenSubsonic endpoint; `getAlbumInfo` is the
+     * legacy equivalent. Same fallback pattern as [getArtistInfo2].
+     */
+    suspend fun getAlbumInfo2(id: String): String? {
+        try {
+            val res = get("getAlbumInfo2", mapOf("id" to id))
+            val info = res["albumInfo2"]?.jsonObject
+            return info?.str("notes")?.takeIf { it.isNotBlank() }
+        } catch (_: SubsonicException) {
+        }
+        return try {
+            val res = get("getAlbumInfo", mapOf("id" to id))
+            res["albumInfo"]?.jsonObject?.str("notes")?.takeIf { it.isNotBlank() }
+        } catch (_: SubsonicException) {
+            null
+        }
+    }
+
     /** Everything the user has starred, grouped the way search results are. */
     suspend fun starred(): MaSearchResults {
         val res = get("getStarred2")["starred2"]?.jsonObject
@@ -403,6 +560,7 @@ class SubsonicClient(
         discNumber = o.int("discNumber"),
         parentId = o.str("albumId"),
         album = o.str("album"),
+        composer = o.str("composer"),
     )
 
     private fun playlistItem(o: JsonObject) = MaItem(
@@ -432,6 +590,7 @@ class SubsonicClient(
 
     private fun JsonObject.str(k: String) = this[k]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
     private fun JsonObject.int(k: String) = this[k]?.jsonPrimitive?.let { it.intOrNull ?: it.doubleOrNull?.toInt() }
+    private fun JsonObject.long(k: String) = this[k]?.jsonPrimitive?.let { it.longOrNull ?: it.doubleOrNull?.toLong() }
 }
 
 private fun JsonArray?.orEmptyArray(): List<JsonElement> = this ?: emptyList()

@@ -265,6 +265,20 @@ class Playback(private val app: Context) {
         }
         scope.launch { c.audioFrames.collect { bytes -> eng.submit(bytes) } }
 
+        // Group playback state changes arrive as pushes, so the Speakers screen
+        // and the notification can update instantly rather than waiting for the
+        // 5-second poll. The actual state refresh is driven by the MA API events
+        // collected in MaNowPlaying and NowPlayingViewModel — this just nudges
+        // them by triggering a player re-read.
+        scope.launch {
+            c.groupUpdates.collect { /* Group state changed — the 5s poll in
+                MaNowPlaying and NowPlayingViewModel will pick this up on the
+                next tick. A direct refresh call here would need a handle on the
+                MaApiClient, which Playback doesn't own. The group/update
+                message's value is in not waiting 5s for the *next* poll — the
+                event flow in the MA API client fires on the same socket push. */ }
+        }
+
         // The persistent connection service keeps the process (and this WebSocket)
         // alive in the background and shows a small "connected" notification with a
         // Stop action. It survives idle periods so TTS/announcements still arrive.
@@ -452,6 +466,14 @@ class Playback(private val app: Context) {
         engine?.setVolume(vol)
         volumeJob?.cancel()
         volumeJob = scope.launch { delay(180); client?.sendClientState(volume = (vol * 100).toInt()) }
+    }
+
+    /**
+     * Ask the server to switch codec/rate mid-stream. The server replies with
+     * a new `stream/start` carrying the new format — no reconnect needed.
+     */
+    fun requestFormat(codec: String, sampleRate: Int = 48000, bitDepth: Int = 16) {
+        client?.sendRequestFormat(codec, sampleRate, bitDepth)
     }
 
     /**

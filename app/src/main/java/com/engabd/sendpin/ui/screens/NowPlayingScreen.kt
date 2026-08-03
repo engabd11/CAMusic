@@ -226,6 +226,13 @@ fun NowPlayingScreen(
                         overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
                     )
                 }
+                if (st.composer.isNotBlank()) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        st.composer, color = TextFaint, fontFamily = AppFont, fontSize = 12.sp,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
+                    )
+                }
                 if (st.album.isNotBlank()) {
                     Spacer(Modifier.height(2.dp))
                     Text(

@@ -35,10 +35,16 @@ android {
     // carrying a hand-typed copy that goes stale between releases.
     buildFeatures { compose = true; buildConfig = true }
 
-    // The native AAudio-I24 / libFLAC pipeline (src/main/cpp) is kept for the
-    // future bit-perfect 24-bit phase but is NOT built for now — M1 decodes with
-    // MediaCodec + AudioTrack (16-bit), which needs no NDK. Re-enable the
-    // externalNativeBuild { cmake { … } } block here when the hi-res path lands.
+    // The native AAudio-I24 / libFLAC pipeline (src/main/cpp). Now enabled so the
+    // NDK shared library builds; the Kotlin 24-bit AudioTrack path uses it as an
+    // optional future renderer. The native AAudio output path itself stays wired
+    // in cpp/ for the next phase — this just makes it compile.
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
 }
 
 dependencies {

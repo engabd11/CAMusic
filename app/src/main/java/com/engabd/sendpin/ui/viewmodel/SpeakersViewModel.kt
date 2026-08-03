@@ -213,6 +213,23 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
         selectPlayer(myPlayerId)
     }
 
+    /**
+     * Transfer the entire queue (items, position, shuffle/repeat state) from
+     * the current leader to [targetPlayerId] — the "tap a speaker, music moves
+     * there" feature. Auto-starts playback on the target.
+     */
+    fun transferQueueTo(targetPlayerId: String) {
+        val source = leaderId
+        if (targetPlayerId == source) return
+        act {
+            val sourceQueue = repo.activeQueueId(source)
+            val targetQueue = repo.activeQueueId(targetPlayerId)
+            repo.transferQueue(sourceQueue, targetQueue, autoPlay = true)
+            // Follow the music — switch the target to where it went.
+            selectPlayer(targetPlayerId)
+        }
+    }
+
     // Volume dragging fires every frame; debounce so we don't flood MA (which then
     // logs "Ignoring command cmd_volume_set …" and lags). The intent holds the UI
     // at the dragged value until MA reports it back.

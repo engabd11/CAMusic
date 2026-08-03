@@ -1,7 +1,9 @@
 package com.engabd.sendpin.audio
 
 import android.media.AudioAttributes
+import android.media.AudioDeviceInfo
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioTrack
 import android.media.MediaCodec
 import android.media.MediaFormat
@@ -17,11 +19,15 @@ import kotlin.concurrent.thread
 import kotlin.math.max
 
 /**
- * Decodes the Sendspin binary audio stream and plays it through an [AudioTrack]
- * (16-bit PCM). FLAC and Opus are decoded with Android's [MediaCodec]; PCM is a
- * passthrough. Pure Kotlin — no NDK — so it builds and runs without the native
- * pipeline (the native AAudio-I24 path is kept in `cpp/` for the future
- * bit-perfect 24-bit phase). Modeled on the massdroid engine (MIT).
+ * Decodes the Sendspin binary audio stream and plays it through an [AudioTrack].
+ * Supports 16-bit and 24-bit PCM output: when [bitPerfect24Bit] is true the
+ * AudioTrack is built with `ENCODING_PCM_24BIT_PACKED` (API 31+, which is our
+ * minSdk), so 24-bit FLAC streams keep their full depth instead of being
+ * truncated to 16-bit. FLAC and Opus are decoded with Android's [MediaCodec];
+ * PCM is a passthrough. Pure Kotlin — no NDK — so it builds and runs without
+ * the native pipeline (the native AAudio-I24 path is kept in `cpp/` for the
+ * future bit-perfect phase that bypasses the Android mixer). Modeled on the
+ * massdroid engine (MIT).
  *
  * Each binary WebSocket frame is
  * `[type:uint8 = 4][server_ts_us: int64 big-endian][payload…]`.
@@ -41,7 +47,25 @@ class SendspinAudioEngine(private val clock: ClockSync) {
      */
     @Volatile var staticDelayMs: Int = 0
 
-    private companion object {
+    /**
+     * When true, the AudioTrack is built with `ENCODING_PCM_24BIT_PACKED` so
+     * 24-bit streams are rendered at full depth. Set from
+     * [com.engabd.sendpin.data.AppSettings.bitPerfect24Bit] before [start].
+     * Our minSdk is 31, so the 24-bit encoding is always available.
+     */
+    @Volatile var bitPerfect24Bit: Boolean = false
+
+    /**
+     * The preferred output device for audio routing (USB DAC support).
+     * When non-null, the AudioTrack is routed to this [AudioDeviceInfo] via
+     * `setPreferredDevice`. Set from
+     * [com.engabd.sendpin.data.AppSettings.preferredAudioDeviceId] before
+     * [start]; resolved to an [AudioDeviceInfo] by the caller via
+     * [AudioManager.getDevices].
+     */
+    @Volatile var preferredOutputDevice: AudioDeviceInfo? = null
+
+    companion object {
         const val TAG = "SendspinAudio"
         const val HEADER_SIZE = 9
         const val TYPE_PLAYER_AUDIO = 4
@@ -70,6 +94,18 @@ class SendspinAudioEngine(private val clock: ClockSync) {
          * converges — that delay is dead air at the start of the track.
          */
         const val HOLD_POLL_MS = 25L
+
+        /**
+         * Resolve a stored device ID string (from
+         * [com.engabd.sendpin.data.AppSettings.preferredAudioDeviceId]) to a live
+         * [AudioDeviceInfo] by scanning the system's output devices. Returns null
+         * when the device is no longer connected (unplugged USB DAC, etc.).
+         */
+        fun resolveAudioDevice(audioManager: AudioManager, deviceId: String): AudioDeviceInfo? {
+            if (deviceId.isBlank()) return null
+            return audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+                .firstOrNull { it.id.toString() == deviceId }
+        }
     }
 
     /**
@@ -126,6 +162,8 @@ class SendspinAudioEngine(private val clock: ClockSync) {
     private var codec: MediaCodec? = null
     private var track: AudioTrack? = null
     private var isPcm = false
+    /** Whether the current AudioTrack was built for 24-bit packed PCM. */
+    private var use24Bit = false
     /** What the AudioTrack was built for, to check the decoder against. */
     private var trackSampleRate = 0
     private var trackChannels = 0
@@ -150,6 +188,11 @@ class SendspinAudioEngine(private val clock: ClockSync) {
         stop()
         val channels = format.channels.coerceIn(1, 2)
         isPcm = format.codec.equals("pcm", ignoreCase = true)
+        // 24-bit output is only worth requesting when the source is actually
+        // 24-bit — a 16-bit file sent through a 24-bit track is just padded
+        // zeroes, and MediaCodec decodes it to 16-bit anyway. The bit-perfect
+        // setting gates the feature; the stream's bit depth gates it per-track.
+        use24Bit = bitPerfect24Bit && format.bitDepth >= 24
         codec = when (format.codec.lowercase()) {
             "opus" -> createOpusDecoder(format.sampleRate, channels, format.codecHeader)
             "flac" -> createFlacDecoder(format.sampleRate, channels, format.bitDepth, format.codecHeader)
@@ -157,11 +200,11 @@ class SendspinAudioEngine(private val clock: ClockSync) {
         }
         trackSampleRate = format.sampleRate
         trackChannels = channels
-        track = createTrack(format.sampleRate, channels).also { it.setVolume(volume); it.play() }
+        track = createTrack(format.sampleRate, channels, use24Bit).also { it.setVolume(volume); it.play() }
         armHead()
         running = true
         worker = thread(name = "sendspin-audio", isDaemon = true) { runLoop() }
-        Log.d(TAG, "start ${format.codec} ${format.sampleRate}/${format.bitDepth} ch=$channels")
+        Log.d(TAG, "start ${format.codec} ${format.sampleRate}/${format.bitDepth} ch=$channels 24bit=$use24Bit")
     }
 
     fun submit(frame: ByteArray) {
@@ -203,6 +246,15 @@ class SendspinAudioEngine(private val clock: ClockSync) {
     fun setVolume(v: Float) {
         volume = v.coerceIn(0f, 1f)
         track?.setVolume(volume)
+    }
+
+    /**
+     * Route audio output to a specific [AudioDeviceInfo] (USB DAC, Bluetooth
+     * headset, etc.). Takes effect on the next [start] call — the AudioTrack is
+     * rebuilt per stream. Call with null to revert to the system default route.
+     */
+    fun setPreferredDevice(device: AudioDeviceInfo?) {
+        preferredOutputDevice = device
     }
 
     // --- decode loop ------------------------------------------------------
@@ -376,11 +428,21 @@ class SendspinAudioEngine(private val clock: ClockSync) {
 
     // --- codec / track creation (derived from the massdroid engine) -------
 
-    private fun createTrack(sampleRate: Int, channels: Int): AudioTrack {
+    /**
+     * Build the AudioTrack. When [bit24] is true, uses
+     * `ENCODING_PCM_24BIT_PACKED` (API 31+, which is our minSdk) so 24-bit
+     * sources are rendered at full depth. When [preferredOutputDevice] is
+     * set, routes output to that device (USB DAC) via `setPreferredDevice`.
+     */
+    private fun createTrack(sampleRate: Int, channels: Int, bit24: Boolean): AudioTrack {
         val channelMask = if (channels == 1) AudioFormat.CHANNEL_OUT_MONO else AudioFormat.CHANNEL_OUT_STEREO
-        val minBuf = AudioTrack.getMinBufferSize(sampleRate, channelMask, AudioFormat.ENCODING_PCM_16BIT)
-        val bufSize = max(minBuf, sampleRate * channels * 2)   // ~1 s of headroom
-        return AudioTrack.Builder()
+        val encoding = if (bit24) AudioFormat.ENCODING_PCM_24BIT_PACKED else AudioFormat.ENCODING_PCM_16BIT
+        // 24-bit packed is 3 bytes per sample; 16-bit is 2. The buffer is sized
+        // for ~1 s of headroom either way.
+        val bytesPerSample = if (bit24) 3 else 2
+        val minBuf = AudioTrack.getMinBufferSize(sampleRate, channelMask, encoding)
+        val bufSize = max(minBuf, sampleRate * channels * bytesPerSample)
+        val builder = AudioTrack.Builder()
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_MEDIA)
@@ -389,14 +451,18 @@ class SendspinAudioEngine(private val clock: ClockSync) {
             )
             .setAudioFormat(
                 AudioFormat.Builder()
-                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setEncoding(encoding)
                     .setSampleRate(sampleRate)
                     .setChannelMask(channelMask)
                     .build()
             )
             .setBufferSizeInBytes(bufSize)
             .setTransferMode(AudioTrack.MODE_STREAM)
-            .build()
+        val t = builder.build()
+        // Route to a preferred output device (USB DAC) if one is set. Done after
+        // build because `setPreferredDevice` is a runtime call, not a builder one.
+        preferredOutputDevice?.let { dev -> t.setPreferredDevice(dev) }
+        return t
     }
 
     private fun createFlacDecoder(sampleRate: Int, channels: Int, bitDepth: Int, codecHeader: String?): MediaCodec {
