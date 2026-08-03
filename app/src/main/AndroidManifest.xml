@@ -9,7 +9,13 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
+    <!--
+      Predictive back: targetSdk 36 expects an app to have opted in, and the M3
+      motion work below relies on the back gesture being animated rather than
+      cutting straight to the previous screen.
+    -->
     <application
+        android:enableOnBackInvokedCallback="true"
         android:name=".SendpinApp"
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"

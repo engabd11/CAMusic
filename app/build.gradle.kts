@@ -1,3 +1,5 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -7,12 +9,12 @@ plugins {
 
 android {
     namespace = "com.engabd.sendpin"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.engabd.sendpin"
         minSdk = 31
-        targetSdk = 35
+        targetSdk = 36
         versionCode = 26
         versionName = "0.4.3"
     }
@@ -29,7 +31,7 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions { jvmTarget = "17" }
+    kotlin { compilerOptions { jvmTarget = JvmTarget.JVM_17 } }
 
     // buildConfig: the About screen reads the version from BuildConfig rather than
     // carrying a hand-typed copy that goes stale between releases.
@@ -62,14 +64,20 @@ composeCompiler {
 }
 
 dependencies {
-    val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
+    // Carries Material3 1.4 — the Expressive release. The motion scheme, the wavy
+    // progress indicators and the shape morphing the UI now leans on are all in it.
+    val composeBom = platform("androidx.compose:compose-bom:2026.06.01")
     implementation(composeBom)
 
-    implementation("androidx.core:core-ktx:1.15.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
-    implementation("androidx.activity:activity-compose:1.9.3")
-    implementation("androidx.navigation:navigation-compose:2.8.5")
+    // core 1.17+ and lifecycle 2.10+ are built against compileSdk 37 and demand AGP 9.1,
+    // so these two stop here while the app stays on AGP 8.x / compileSdk 36. Nothing
+    // else in the tree is held back by it — the Compose BOM below, and with it
+    // Material3 Expressive, resolves fine at 36.
+    implementation("androidx.core:core-ktx:1.16.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.4")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.4")
+    implementation("androidx.activity:activity-compose:1.13.0")
+    implementation("androidx.navigation:navigation-compose:2.9.8")
 
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
@@ -88,18 +96,17 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("androidx.palette:palette-ktx:1.0.0")
-    implementation("androidx.datastore:datastore-preferences:1.1.1")
+    implementation("androidx.datastore:datastore-preferences:1.2.1")
     implementation("androidx.media:media:1.7.0")
     // The Navidrome/offline player. MediaPlayer could not do gapless reliably
     // (setNextMediaPlayer is OEM-dependent), reported nothing about the format it
     // was decoding, and had no stage to apply ReplayGain in.
     //
-    // Pinned to 1.8.0 rather than the current 1.10.x: from 1.9 media3 requires
-    // compileSdk 36, and AGP 8.7.3 tops out at 35. Moving to it means an AGP and
-    // compileSdk bump, which belongs in its own change rather than riding along
-    // with an audio rewrite.
-    implementation("androidx.media3:media3-exoplayer:1.8.0")
-    implementation("androidx.media3:media3-session:1.8.0")
+    // Was pinned to 1.8.0 because 1.9+ needs compileSdk 36 and AGP 8.7.3 topped out
+    // at 35. Both moved in the same change that brought Material3 Expressive in, so
+    // the pin is gone.
+    implementation("androidx.media3:media3-exoplayer:1.10.1")
+    implementation("androidx.media3:media3-session:1.10.1")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
