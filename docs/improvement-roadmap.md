@@ -1,0 +1,265 @@
+# Improvement roadmap — next-level functionality and the audiophile audience
+
+A systematic audit of every API surface the app touches — Music Assistant
+(`​/ws`), the Sendspin player protocol, and OpenSubsonic/Navidrome — against
+what is implemented and what is not. Each item names the exact commands,
+endpoints, or messages, and the file it touches.
+
+## Current state at a glance
+
+| Area | MA API | Sendspin protocol | Navidrome (OpenSubsonic) |
+|---|---|---|---|
+| Browse | Artists, albums, tracks, playlists + shelves (recent, recent-added, in-progress, recommendations, favorites) | — | Artists, albums, playlists, genres, starred, newest, random |
+| Search | Full search + sonic text search (CLAP embeddings) + similar tracks | — | search3 + playlist name match |
+| Play | Play to any player, enqueue (replace/add/next), preview | Clock-synced decode (FLAC/Opus/PCM 16-bit) | Local queue (MediaPlayer), shuffle, repeat, seek, speed |
+| Queue | View, jump, reorder, remove, clear, save-as-playlist | — | Local queue with full transport |
+| Lyrics | LRC-timed + plain | — | **Not implemented** |
+| Favorites | Add/remove (optimistic) | — | Star/unstar |
+| Speakers | Group/ungroup, group volume, sync delay, rename, power | `server/command` volume/mute | — |
+| Downloads | — | — | Track/album/playlist, offline playback, cached covers |
+| Light Sync | — | — | Drives syncoV2 via HA WebSocket |
+| Notifications | Media notification for selected player | Connection service notification | Local playback notification |
+| Sleep timer | Fade-out + pause (shared) | — | — |
+| Scrobble | — | — | Now-playing ping + completed-play submission |
+
+---
+
+## Tier 1 — Audiophile core
+
+### 1. 24-bit bit-perfect playback (both backends)
+
+**Applies to MA and Navidrome.** The Sendspin protocol's `bit_depth` is a
+client-advertised, server-respected parameter — the server streams whatever the
+client lists in `supported_formats`. The cap is purely on the client side:
+
+- `FormatNegotiator.MAX_BIT_DEPTH` is hardcoded to `16`.
+- `SendspinAudioEngine.createTrack()` uses `ENCODING_PCM_16BIT`.
+- The native AAudio I24 exclusive-mode pipeline (`app/src/main/cpp/`) is written
+  but commented out in `app/build.gradle.kts`.
+
+Enabling 24-bit:
+
+1. Uncomment `externalNativeBuild` in `build.gradle.kts`.
+2. Raise `FormatNegotiator.MAX_BIT_DEPTH` to `24`.
+3. Add a setting: "Bit-perfect mode" → exclusive AAudio (no Android mixer).
+4. In `SendspinAudioEngine`, route to the native engine when 24-bit is requested;
+   fall back to the 16-bit `AudioTrack` path when the native stream can't be
+   opened (or the device doesn't support it).
+5. Show the actual device output rate alongside the stream format badge.
+
+The native engine already requests `SharingMode::Exclusive` with a `Shared`
+fallback, so the bit-perfect path degrades gracefully on devices that don't
+allow exclusive access.
+
+Files:
+- `app/build.gradle.kts` (uncomment NDK)
+- `audio/FormatNegotiator.kt`
+- `audio/SendspinAudioEngine.kt`
+- `data/AppSettings.kt` (new setting)
+- `ui/screens/SettingsScreen.kt`
+
+### 2. ReplayGain awareness
+
+MA's DSP pipeline applies ReplayGain server-side. The app should:
+- Parse and display ReplayGain tags from `provider_mappings` (MA) or
+  OpenSubsonic's `replayGain` fields.
+- Show whether MA is applying gain correction (off the `dsp` output format vs
+  the input format).
+- For the Navidrome backend, apply ReplayGain locally — Android `AudioTrack`
+  can't do this natively; it requires either a DSP stage in the decode loop or
+  switching the local player to ExoPlayer (which supports ReplayGain via
+  `MediaProcessor`).
+
+Files:
+- `ma/MaModels.kt` (parse ReplayGain from provider_mappings)
+- `audio/StreamQuality.kt` (display gain info)
+- `ui/screens/NowPlayingScreen.kt` (show in quality card)
+
+### 3. Gapless playback for the local player
+
+`LocalPlayer` uses `MediaPlayer`, which has a ~200ms gap between tracks. For
+album listening this is audible. The Sendspin player is already gapless
+(continuous stream), so this only affects the Navidrome/offline path.
+
+Options:
+- Switch to `ExoPlayer` with gapless transition support (handles cross-track
+  buffering natively).
+- Or use two `MediaPlayer` instances with crossfade.
+
+Files:
+- `audio/LocalPlayer.kt`
+
+### 4. USB DAC / external audio routing
+
+Android 12+ supports `AudioDeviceInfo` routing. The app should:
+- Detect and prefer USB audio devices when connected.
+- Show the connected DAC's supported formats (sample rates, bit depths).
+- Allow forcing output to a specific device.
+- Show when the Android mixer is resampling (compare stream rate vs
+  `getNativeOutputSampleRate`).
+
+Files:
+- `audio/SendspinAudioEngine.kt`
+- `audio/LocalPlayer.kt`
+- `data/AppSettings.kt` (device selection)
+- `ui/screens/SettingsScreen.kt`
+
+---
+
+## Tier 2 — Features that complete the app
+
+### 5. Playlist management (both backends)
+
+MA (`/ws` API):
+- `music/playlists/create` — create a new playlist.
+- `music/playlists/add_items` — add tracks to an existing playlist.
+- `music/playlists/remove_items` — remove tracks.
+- `music/playlists/delete` — delete a playlist.
+- `music/playlists/edit` — rename (if MA supports it).
+
+Navidrome (OpenSubsonic):
+- `createPlaylist` — create.
+- `updatePlaylist` — add/remove songs, name change.
+- `deletePlaylist` — delete.
+
+Files:
+- `ma/MaRepository.kt`
+- `subsonic/SubsonicClient.kt`
+- `ma/LibraryViewModel.kt`
+- `ui/screens/PlaylistDetailScreen.kt`
+
+### 6. Queue transfer UI ("move music to this speaker")
+
+`MaRepository.transferQueue()` is already implemented but has no UI. The
+Speakers screen should have a "Transfer playback here" button on each player
+that moves the current queue + position to that speaker. This is the "tap a
+speaker, music follows" feature that MA's own app has.
+
+Files:
+- `ui/screens/SpeakersScreen.kt`
+- `ui/viewmodel/SpeakersViewModel.kt`
+
+### 7. Lyrics on the Navidrome backend
+
+OpenSubsonic has `getLyrics` (legacy) and `getLyricsBySongId` (the extension).
+The `LyricsPane` currently only works with the MA backend. Add:
+- `SubsonicClient.lyrics(id)` → parse into the same `MaLyrics` model.
+- The local player's Now Playing should show lyrics when available.
+
+Files:
+- `subsonic/SubsonicClient.kt`
+- `ui/viewmodel/NowPlayingViewModel.kt`
+- `ui/screens/LyricsPane.kt`
+
+### 8. Artist/album detail on Navidrome
+
+`getArtistInfo2` gives biography, similar artists, and image URLs.
+`getAlbumInfo2` gives last.fm notes and MusicBrainz links. The artist/album
+detail screens should show this for the Navidrome backend the same way they
+show MA's `getArtist`/`getAlbum` metadata.
+
+Files:
+- `subsonic/SubsonicClient.kt`
+- `ui/viewmodel/ArtistDetailViewModel.kt`
+- `ui/viewmodel/AlbumDetailViewModel.kt`
+- `ui/screens/ArtistDetailScreen.kt`
+- `ui/screens/AlbumDetailScreen.kt`
+
+### 9. Radio mode toggle
+
+MA's `radio_mode` on `play_media` is currently hardcoded to `false`. It should
+be a user toggle — "after this queue, keep playing similar music" — because
+MA's radio generation is exactly the "don't stop the music" feature but at the
+queue level. Expose it as a toggle on the Now Playing screen or in player
+options.
+
+Files:
+- `ma/MaRepository.kt` (parameter already exists)
+- `ma/LibraryViewModel.kt`
+- `ui/screens/PlayerOptionsSheet.kt`
+
+### 10. Stream format switching (Sendspin)
+
+`SendspinClient.sendRequestFormat()` exists but is never called. The user
+should be able to switch codec/rate on the fly from Settings or Now Playing:
+- Switch from FLAC to Opus (saves bandwidth on mobile).
+- Switch from 48 kHz to 96 kHz (if the source is hi-res and 24-bit is enabled).
+- This is a mid-stream format change — no reconnect needed.
+
+Files:
+- `protocol/SendspinClient.kt` (method exists)
+- `service/Playback.kt`
+- `ui/screens/SettingsScreen.kt`
+
+---
+
+## Tier 3 — Polish that matters
+
+### 11. Multi-disc album grouping
+
+`MaItem.discNumber` is parsed but not used. An album with 2+ discs should show
+disc headers in the track list, grouping tracks under "Disc 1", "Disc 2", etc.
+Both backends carry this field.
+
+Files:
+- `ui/screens/AlbumDetailScreen.kt`
+- `ui/screens/LibraryScreen.kt`
+
+### 12. Download management
+
+The roadmap mentions storage cap and Wi-Fi-only, neither implemented:
+- Storage cap setting (delete oldest when exceeded).
+- Wi-Fi-only download setting (check `ConnectivityManager`).
+- Download queue with retry.
+- Download status in a dedicated Downloads screen (not just a shelf).
+
+Files:
+- `download/DownloadManager.kt`
+- `data/AppSettings.kt`
+- `ma/LibraryViewModel.kt`
+- `ui/screens/LibraryScreen.kt`
+
+### 13. Composer / credits
+
+OpenSubsonic returns `composer`, `lyricist`, `genre` per track. MA returns
+`artists[]` with roles. The track row and Now Playing should show
+composer/credits for classical and jazz — the audiophile audience cares about
+this.
+
+Files:
+- `subsonic/SubsonicClient.kt` (parse in `songItem`)
+- `ma/MaModels.kt` (parse in `MaParse.item`)
+- `ui/screens/NowPlayingScreen.kt`
+- `ui/screens/LibraryScreen.kt`
+
+### 14. Frequently-played shelf (Navidrome)
+
+`getAlbumList2(type=frequent)` gives most-played albums. Add this as a shelf
+alongside "Recently played" for the Navidrome backend.
+
+Files:
+- `ma/LibraryViewModel.kt`
+- `subsonic/SubsonicClient.kt`
+
+### 15. `group/update` handling
+
+The Sendspin protocol pushes `group/update` when group playback state changes.
+Currently parsed as a no-op. Handling it would give instant group state updates
+without waiting for the 5-second poll, which matters for the Speakers screen.
+
+Files:
+- `protocol/SendspinClient.kt`
+- `protocol/Messages.kt`
+- `service/Playback.kt`
+
+### 16. Warm reconnect (`client/goodbye` with `"restart"`)
+
+Currently the goodbye is always `"user_request"`. Sending `"restart"` when the
+app is backgrounded (not killed) gives a 30-second resume grace where MA holds
+the player slot open. This means a quick app switch doesn't drop the player
+from MA's speaker list.
+
+Files:
+- `protocol/SendspinClient.kt`
+- `service/Playback.kt`
+- `service/SendspinConnectionService.kt`
