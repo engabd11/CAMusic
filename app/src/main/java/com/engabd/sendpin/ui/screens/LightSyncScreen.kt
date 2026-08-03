@@ -17,6 +17,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -138,7 +139,7 @@ fun LightSyncScreen(onBack: () -> Unit = {}, viewModel: LightSyncViewModel = vie
                 // What the selected rung actually does — the ladder's names don't say.
                 LightSyncRepository.MODE_BLURBS[a.mode]?.let {
                     Spacer(Modifier.height(9.dp))
-                    Text(it, color = TextFaint, fontSize = 11.sp, lineHeight = 15.sp)
+                    Text(it, color = TextFaint, style = MaterialTheme.typography.bodySmall)
                 }
 
                 // Auto rungs — the intensities Auto may pick from (only when mode == auto).
@@ -154,7 +155,7 @@ fun LightSyncScreen(onBack: () -> Unit = {}, viewModel: LightSyncViewModel = vie
                     Spacer(Modifier.height(8.dp))
                     Text(
                         "Auto spreads these across each song's own dynamic range — the quiet parts sit on the lowest, the biggest moments reach the highest.",
-                        color = TextFaint, fontSize = 11.sp, lineHeight = 15.sp,
+                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
                     )
                 }
 
@@ -167,7 +168,7 @@ fun LightSyncScreen(onBack: () -> Unit = {}, viewModel: LightSyncViewModel = vie
                 }
                 LightSyncRepository.EFFECT_BLURBS[a.effect]?.let {
                     Spacer(Modifier.height(9.dp))
-                    Text(it, color = TextFaint, fontSize = 11.sp, lineHeight = 15.sp)
+                    Text(it, color = TextFaint, style = MaterialTheme.typography.bodySmall)
                 }
 
                 Spacer(Modifier.height(22.dp))
@@ -382,7 +383,7 @@ private fun ColourPicker(selected: String?, onSelect: (String) -> Unit) {
     }
     blurb?.let {
         Spacer(Modifier.height(9.dp))
-        Text(it, color = TextFaint, fontSize = 11.sp, lineHeight = 15.sp)
+        Text(it, color = TextFaint, style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -445,7 +446,7 @@ private fun AreaChip(name: String, selected: Boolean, active: Boolean, accent: C
             Modifier.size(7.dp).clip(CircleShape)
                 .background(if (active) accent else TextFaint),
         )
-        Text(name, color = tint, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1)
+        Text(name, color = tint, style = MaterialTheme.typography.labelLarge, maxLines = 1)
     }
 }
 
@@ -502,7 +503,7 @@ private fun PlayerCard(
             Text(
                 name,
                 color = if (selected) accent else TextSecondary,
-                fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 12.sp,
+                style = MaterialTheme.typography.labelLarge,
                 maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
             Text(

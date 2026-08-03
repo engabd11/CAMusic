@@ -501,7 +501,7 @@ internal fun EmptyState(title: String, body: String) {
             contentAlignment = Alignment.Center,
         ) { Icon(Icons.Default.Album, null, tint = TextFaint, modifier = Modifier.size(24.dp)) }
         Spacer(Modifier.height(14.dp))
-        Text(title, color = TextSecondary, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+        Text(title, color = TextSecondary, style = MaterialTheme.typography.titleLarge)
         Spacer(Modifier.height(4.dp))
         Text(body, color = TextMuted, fontFamily = AppFont, fontSize = 12.sp)
     }
@@ -519,7 +519,7 @@ internal fun ErrorState(message: String, onRetry: () -> Unit) {
             contentAlignment = Alignment.Center,
         ) { Icon(Icons.Default.ErrorOutline, null, tint = ErrorRed, modifier = Modifier.size(24.dp)) }
         Spacer(Modifier.height(14.dp))
-        Text("Couldn't load", color = TextSecondary, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+        Text("Couldn't load", color = TextSecondary, style = MaterialTheme.typography.titleLarge)
         Spacer(Modifier.height(4.dp))
         Text(message, color = TextMuted, fontFamily = AppFont, fontSize = 12.sp, maxLines = 3)
         Spacer(Modifier.height(16.dp))

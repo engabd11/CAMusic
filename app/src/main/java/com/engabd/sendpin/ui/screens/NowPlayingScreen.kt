@@ -16,6 +16,7 @@ import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -603,8 +604,8 @@ private fun OfflineBanner() {
     ) {
         Icon(Icons.Default.CloudOff, null, tint = WarnAmber, modifier = Modifier.size(15.dp))
         Text(
-            "Reconnecting…", color = Color(0xFFF2C574), fontFamily = AppFont,
-            fontWeight = FontWeight.Bold, fontSize = 12.sp,
+            "Reconnecting…", color = Color(0xFFF2C574),
+            style = MaterialTheme.typography.labelLarge
         )
     }
 }

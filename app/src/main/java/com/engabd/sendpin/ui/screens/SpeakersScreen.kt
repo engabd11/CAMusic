@@ -14,6 +14,7 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -195,7 +196,7 @@ private fun JoinedCard(p: SpeakerUi, onSelect: () -> Unit, onUnjoin: () -> Unit,
                 PlayerIcon(p.isSelf, true)
                 Spacer(Modifier.width(11.dp))
                 Column(Modifier.weight(1f).clickable(onClick = onSelect)) {
-                    Text(p.name, color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(p.name, color = TextPrimary, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(if (p.isTarget) "Playing here" else p.meta, color = if (p.isTarget) accent else TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
                 }
                 // The leader (active target) isn't unjoinable; members are.
@@ -243,7 +244,7 @@ private fun FreeCard(
         Spacer(Modifier.width(11.dp))
         // Tap the name to make this the active play-to player.
         Column(Modifier.weight(1f).clickable(onClick = onPlayHere)) {
-            Text(p.name, color = TextSecondary, fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(p.name, color = TextSecondary, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text("Tap to play here · ${p.meta}", color = TextFaint, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         // Distinct from "tap to play here", which only redirects what you play

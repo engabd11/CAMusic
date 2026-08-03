@@ -37,6 +37,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -585,7 +586,7 @@ private fun NewPlaylistRow(onClick: () -> Unit) {
         Text(
             "New playlist",
             color = TextPrimary, fontFamily = AppFont,
-            fontWeight = FontWeight.Bold, fontSize = 14.sp,
+            style = MaterialTheme.typography.titleLarge
         )
     }
 }
@@ -980,7 +981,7 @@ private fun OfflineNotice(onRetry: () -> Unit) {
             )
         }
         Text(
-            "Retry", color = accent, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 12.sp,
+            "Retry", color = accent, style = MaterialTheme.typography.labelLarge,
             modifier = Modifier.clip(RoundedCornerShape(100)).clickable(onClick = onRetry)
                 .padding(horizontal = 10.dp, vertical = 6.dp),
         )

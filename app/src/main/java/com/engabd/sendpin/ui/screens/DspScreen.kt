@@ -274,7 +274,7 @@ private fun WarningBanner() {
             "DSP is applied server-side by Music Assistant. " +
                 "Extreme gain settings may cause clipping or distortion. " +
                 "Changes take effect immediately on the selected player.",
-            color = Color(0xFFF2C574), fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp,
+            color = Color(0xFFF2C574), style = MaterialTheme.typography.bodySmall,
         )
     }
 }
@@ -678,7 +678,7 @@ private fun PresetSection(
                 Box(
                     Modifier.clip(RoundedCornerShape(8.dp)).background(accent).clickable(onClick = onSavePreset)
                         .padding(horizontal = 12.dp, vertical = 8.dp),
-                ) { Text("Save", color = Ink, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 12.sp) }
+                ) { Text("Save", color = Ink, style = MaterialTheme.typography.labelLarge) }
                 Box(
                     Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = onHideSaveDialog)
                         .padding(horizontal = 10.dp, vertical = 8.dp),
@@ -739,7 +739,7 @@ private fun PresetSection(
 private fun GainSlider(label: String, value: Float, accent: Color, onChange: (Float) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(label, color = TextMuted, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+            Text(label, color = TextMuted, style = MaterialTheme.typography.labelLarge)
             Text(fmtDb(value), color = TextPrimary, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 12.sp)
         }
         HSlider(
@@ -754,7 +754,7 @@ private fun GainSlider(label: String, value: Float, accent: Color, onChange: (Fl
 private fun LabelSlider(label: String, displayValue: String, value: Float, accent: Color, onChange: (Float) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(label, color = TextMuted, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+            Text(label, color = TextMuted, style = MaterialTheme.typography.labelLarge)
             Text(displayValue, color = TextPrimary, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 12.sp)
         }
         HSlider(value = value, onChange = onChange, accented = true)
@@ -803,7 +803,7 @@ private fun ErrorNotice(message: String, onRetry: () -> Unit) {
     ) {
         Icon(Icons.Default.ErrorOutline, null, tint = ErrorRed, modifier = Modifier.size(16.dp))
         Text(message, color = Color(0xFFE88080), fontFamily = AppFont, fontSize = 12.sp, modifier = Modifier.weight(1f))
-        Text("Retry", color = accent, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 12.sp,
+        Text("Retry", color = accent, style = MaterialTheme.typography.labelLarge,
             modifier = Modifier.clickable(onClick = onRetry))
     }
 }
