@@ -50,6 +50,7 @@ fun NowPlayingScreen(
     viewModel: NowPlayingViewModel = viewModel(),
     onOpenSpeakers: () -> Unit = {},
     onBrowse: () -> Unit = {},
+    onOpenDsp: () -> Unit = {},
 ) {
     val st by viewModel.state.collectAsState()
     val connected by viewModel.connected.collectAsState()
@@ -191,6 +192,7 @@ fun NowPlayingScreen(
                         panel = if (panel == Panel.QUEUE) null else Panel.QUEUE
                     }
                     IconChip(Icons.Default.Tune, "Player options", active = options) { options = !options }
+                    IconChip(Icons.Default.GraphicEq, "DSP / Equalizer") { onOpenDsp() }
                     // Disabled until MA tells us which library item is playing —
                     // without an item_id there is nothing to favourite.
                     IconChip(
