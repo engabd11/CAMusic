@@ -272,6 +272,62 @@ Files:
 - `service/SendspinConnectionService.kt`
 ---
 
+## Tier 4 — Planned
+
+### 17. Light Sync for the local player (direct HA authentication)
+
+Light Sync today drives syncoV2 over Home Assistant's WebSocket, and syncoV2
+follows an **HA `media_player` entity**. That works because Music Assistant
+publishes every one of its players as an entity, so pointing an entertainment area
+at "Kitchen" and pressing play in this app lights the room.
+
+The Navidrome/offline player has no such entity. It is an `ExoPlayer` inside this
+process — Home Assistant cannot see it, so there is nothing for an area to follow,
+and Light Sync is silently useless on the whole standalone backend. That is the gap:
+the backend an audiophile is most likely to use for critical listening is the one
+the lights ignore.
+
+So Light Sync gets **two modes**, chosen by which player is making the sound:
+
+**Mode A — through Music Assistant (what exists today).** Unchanged. The area
+follows an MA player entity and HA does the driving. Keep it as the default
+whenever an MA player is selected: it already works, it survives the app being
+backgrounded, and it keeps a grouped multi-room setup in step because HA is
+watching the same player every speaker is.
+
+**Mode B — direct, for the local player (new).** The app authenticates to Home
+Assistant itself — it already holds an HA URL and long-lived token in
+`AppSettings` (`haUrl`, `haToken`) for exactly this connection — and drives the
+area from its *own* playback state instead of an entity's. Available **only** when
+the local player is the active one; with an MA player selected it stays on Mode A,
+because two writers on one area would fight.
+
+Design notes for whoever picks this up:
+
+- **The mode is not a user setting.** It follows `localPlayer.active`, the same
+  signal Now Playing already uses to decide which player it is showing. A toggle
+  would only ever be set wrong.
+- **What to send.** syncoV2's `set_options` service and its entity writes are
+  already modelled in `ha/LightSyncRepository.kt`; the missing half is a play/pause
+  and track-change feed that today comes from the entity. Start by writing the
+  area's switch and effect directly on the local player's `playing` and `current`
+  flows — the same transitions the entity would have produced.
+- **Timing.** The entity path gets beat/level information from syncoV2 watching
+  HA's own audio. Driving from here means either sending nothing (the area free-runs
+  its effect, which is what `auto` mode already does) or feeding it from the
+  decode path. Ship the first; the second wants an `AudioProcessor` tap on the
+  ExoPlayer chain and belongs in its own change.
+- **Hand-off.** Switching from a local track to an MA speaker mid-listen has to
+  release the area cleanly, or Mode A inherits a state Mode B set and never clears.
+
+Files:
+- `ha/LightSyncRepository.kt` (a second, direct driver alongside the entity one)
+- `ui/viewmodel/LightSyncViewModel.kt` (mode selection off `localPlayer.active`)
+- `ui/screens/LightSyncScreen.kt` (say which mode is live, and why the other isn't)
+- `audio/LocalPlayer.kt` (expose what the direct driver needs)
+
+---
+
 ## Corrections (2026-08-03)
 
 Found by auditing against the specs rather than the code. Where this document and
