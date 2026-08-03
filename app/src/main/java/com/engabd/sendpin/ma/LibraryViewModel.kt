@@ -115,6 +115,19 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private val _recentlyAdded = MutableStateFlow<List<MaItem>>(emptyList()); val recentlyAdded: StateFlow<List<MaItem>> = _recentlyAdded
     private val _recommendations = MutableStateFlow<List<MaItem>>(emptyList()); val recommendations: StateFlow<List<MaItem>> = _recommendations
     private val _inProgress = MutableStateFlow<List<MaItem>>(emptyList()); val inProgress: StateFlow<List<MaItem>> = _inProgress
+
+    /**
+     * Frequently-played albums — a Navidrome shelf from `getAlbumList2(frequent)`.
+     *
+     * Declared here with the other shelves rather than beside [loadFrequent], which
+     * is where it was and where it read more naturally. [init] collects the API
+     * state on `viewModelScope` — `Dispatchers.Main.immediate` — so on the main
+     * thread a StateFlow hands over its current value *synchronously during
+     * construction*, and `showRoot()` runs before any property below [init] exists.
+     * Sitting further down the file, this was still null when the first shelf load
+     * reached it, and the app died the moment the library opened.
+     */
+    private val _frequent = MutableStateFlow<List<MaItem>>(emptyList()); val frequent: StateFlow<List<MaItem>> = _frequent
     val downloadJobs: StateFlow<List<DownloadJob>> get() = downloadManager.jobs
     /** Ids of everything on disk — what puts the "downloaded" tick on a track row. */
     val downloadedIds: StateFlow<Set<String>> = downloadManager.downloads
@@ -1190,9 +1203,6 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             rememberFavorites(_inProgress.value)
         }
     }
-
-    /** Frequently-played albums — a Navidrome shelf from `getAlbumList2(frequent)`. */
-    private val _frequent = MutableStateFlow<List<MaItem>>(emptyList()); val frequent: StateFlow<List<MaItem>> = _frequent
 
     private fun loadFrequent(): Job? {
         if (_backend.value != Backend.SUBSONIC) { _frequent.value = emptyList(); return null }

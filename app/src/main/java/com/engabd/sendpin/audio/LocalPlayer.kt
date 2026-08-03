@@ -178,52 +178,13 @@ class LocalPlayer(private val context: Context) {
         }
     }
 
-    private fun buildPlayer(): ExoPlayer {
-        val attrs = AudioAttributes.Builder()
-            .setUsage(C.USAGE_MEDIA)
-            .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
-            .build()
-
-        val renderers = DefaultRenderersFactory(context)
-            // 24-bit sources reach the mixer at their own resolution instead of
-            // being requantised to 16 inside the sink.
-            .setEnableAudioFloatOutput(true)
-            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
-
-        // The defaults are sized for video-on-mobile-data. This is a lossless file
-        // over a LAN, where the sensible trade is a deeper buffer: a 24/96 FLAC is
-        // several Mbit/s and a Wi-Fi dropout mid-album is the failure that matters.
-        val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(
-                /* minBufferMs = */ 30_000,
-                /* maxBufferMs = */ 120_000,
-                /* bufferForPlaybackMs = */ 1_000,
-                /* bufferForPlaybackAfterRebufferMs = */ 2_500,
-            )
-            .build()
-
-        return ExoPlayer.Builder(context, renderers)
-            .setLoadControl(loadControl)
-            // handleAudioFocus = true replaces the entire hand-rolled focus listener:
-            // ducking, transient loss, and resume-on-regain are all ExoPlayer's.
-            .setAudioAttributes(attrs, /* handleAudioFocus = */ true)
-            // Headphones out, or Bluetooth gone: pause rather than switching to the
-            // phone's speaker at whatever volume was in the ears a moment ago.
-            .setHandleAudioBecomingNoisy(true)
-            // Past this into a track, Previous restarts it instead of going back one
-            // — the convention every player follows.
-            .setMaxSeekToPreviousPositionMs(RESTART_THRESHOLD_MS)
-            .build()
-            .also { p ->
-                // A scrub lands where the finger asked, not at the nearest sync
-                // sample — which in a 20-minute movement can be seconds away.
-                p.setSeekParameters(SeekParameters.EXACT)
-                p.addListener(listener)
-                preferredOutput?.let { d -> runCatching { p.setPreferredAudioDevice(d) } }
-            }
-    }
-
-    private val listener = object : Player.Listener {
+    /**
+     * Declared above [buildPlayer], which reads it — property initialisers run in
+     * source order, so a listener declared below the function that installs it is
+     * null for anything that builds the player during construction. That trap is
+     * what killed the app on launch in 0.4.0, one class over.
+     */
+    private val playerListener = object : Player.Listener {
         override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
             val at = player.currentMediaItemIndex
             _index.value = at
@@ -271,6 +232,52 @@ class LocalPlayer(private val context: Context) {
             }
         }
     }
+
+    private fun buildPlayer(): ExoPlayer {
+        val attrs = AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+            .build()
+
+        val renderers = DefaultRenderersFactory(context)
+            // 24-bit sources reach the mixer at their own resolution instead of
+            // being requantised to 16 inside the sink.
+            .setEnableAudioFloatOutput(true)
+            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+
+        // The defaults are sized for video-on-mobile-data. This is a lossless file
+        // over a LAN, where the sensible trade is a deeper buffer: a 24/96 FLAC is
+        // several Mbit/s and a Wi-Fi dropout mid-album is the failure that matters.
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                /* minBufferMs = */ 30_000,
+                /* maxBufferMs = */ 120_000,
+                /* bufferForPlaybackMs = */ 1_000,
+                /* bufferForPlaybackAfterRebufferMs = */ 2_500,
+            )
+            .build()
+
+        return ExoPlayer.Builder(context, renderers)
+            .setLoadControl(loadControl)
+            // handleAudioFocus = true replaces the entire hand-rolled focus listener:
+            // ducking, transient loss, and resume-on-regain are all ExoPlayer's.
+            .setAudioAttributes(attrs, /* handleAudioFocus = */ true)
+            // Headphones out, or Bluetooth gone: pause rather than switching to the
+            // phone's speaker at whatever volume was in the ears a moment ago.
+            .setHandleAudioBecomingNoisy(true)
+            // Past this into a track, Previous restarts it instead of going back one
+            // — the convention every player follows.
+            .setMaxSeekToPreviousPositionMs(RESTART_THRESHOLD_MS)
+            .build()
+            .also { p ->
+                // A scrub lands where the finger asked, not at the nearest sync
+                // sample — which in a 20-minute movement can be seconds away.
+                p.setSeekParameters(SeekParameters.EXACT)
+                p.addListener(playerListener)
+                preferredOutput?.let { d -> runCatching { p.setPreferredAudioDevice(d) } }
+            }
+    }
+
 
     // --- queue ------------------------------------------------------------
 

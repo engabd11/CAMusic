@@ -188,6 +188,27 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
      */
     private val _lastTrack = MutableStateFlow<MaNowPlaying?>(null)
 
+    /**
+     * Radio mode: when the queue runs out, MA carries on with similar tracks
+     * generated from the seed. This is the queue-level version of "don't stop
+     * the music".
+     *
+     * It is a parameter of `player_queues/play_media`, so it takes effect on the
+     * *next* thing played rather than the queue already running — hence persisted
+     * in [AppSettings], where the library's play paths read it. Toggling it here
+     * cannot retrofit the queue that is already going.
+     *
+     * **Declared here, with the other backing flows, and not next to
+     * [toggleRadioMode] where it reads more naturally.** [maState] is an eagerly
+     * started `stateIn` on `viewModelScope`, which is `Dispatchers.Main.immediate`
+     * — so on the main thread its combine runs *during construction*, and every
+     * property it touches must already be initialised. Sitting further down the
+     * file, this was still null when it was read, and the app died on launch with
+     * an NPE before the first frame. Same reasoning as [maEvents] below.
+     */
+    private val _radioMode = MutableStateFlow(false)
+    val radioMode: StateFlow<Boolean> = _radioMode
+
     // ── Server-anchored position engine ──────────────────────────────────────
     // The bar is not snapped to whatever the last poll said; it is projected
     // forward from an anchor by [PlayerPositionTracker], a port of the official
@@ -924,19 +945,6 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // --- radio mode ---------------------------------------------------------
-
-    /**
-     * Radio mode: when the queue runs out, MA carries on with similar tracks
-     * generated from the seed. This is the queue-level version of "don't stop
-     * the music".
-     *
-     * It is a parameter of `player_queues/play_media`, so it takes effect on the
-     * *next* thing played rather than the queue already running — hence persisted
-     * in [AppSettings], where the library's play paths read it. Toggling it here
-     * cannot retrofit the queue that is already going.
-     */
-    private val _radioMode = MutableStateFlow(false)
-    val radioMode: StateFlow<Boolean> = _radioMode
 
     fun toggleRadioMode() {
         if (isLocal) { _toast.tryEmit("Radio mode needs Music Assistant"); return }
