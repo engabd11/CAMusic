@@ -1,12 +1,19 @@
 package com.engabd.sendpin.audio
 
 import android.content.Context
-import android.media.AudioAttributes
-import android.media.AudioFocusRequest
-import android.media.AudioManager
-import android.media.MediaPlayer
-import android.os.Build
-import android.util.Log
+import android.media.AudioDeviceInfo
+import androidx.annotation.OptIn
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.DefaultRenderersFactory
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.SeekParameters
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -37,6 +44,13 @@ data class LocalTrack(
     val streamUrl: String? = null,
     val localPath: String? = null,
     /**
+     * The Navidrome song id to report plays against, when this track came from
+     * there. Separate from [id] because "play at original quality" plays a Music
+     * Assistant item through a Navidrome stream — same song, two different ids, and
+     * scrobbling MA's would name a track Navidrome has never heard of.
+     */
+    val scrobbleId: String? = null,
+    /**
      * The file's own format, when the library reported one — the "Source" half of the
      * quality badge. Null on a server that doesn't say (plain Subsonic sends no
      * `samplingRate`), in which case the badge shows Playing alone.
@@ -49,129 +63,60 @@ data class LocalTrack(
      * There is a downloaded copy to play from. Deliberately *not* a `File.exists()`
      * check: this is read on every state emission and every notification rebuild,
      * and hitting the disk there put I/O on the main thread several times a second.
-     * The one place the file has to really be there is [LocalPlayer.open], which
+     * The one place the file has to really be there is [LocalPlayer.sourceOf], which
      * checks once and falls back to the stream.
      */
     val offline: Boolean get() = localPath != null
 }
 
 /**
- * The standalone player: a real queue on top of Android's [MediaPlayer], used when
- * there is no Music Assistant to route audio to — Navidrome-direct streaming and
- * offline playback of downloaded files.
+ * The standalone player: a real queue used when there is no Music Assistant to
+ * route audio to — Navidrome-direct streaming and offline playback of downloads.
  *
- * It is deliberately a *queue*, not a one-shot `play(url)`. Playing an album used
- * to mean playing its first track and stopping, which made the Navidrome backend
- * unusable for anything but auditioning single songs — and made "download for
- * offline" pointless, since the downloads could not be listened to as an album.
+ * Built on **ExoPlayer**, which replaced `android.media.MediaPlayer`. MediaPlayer
+ * could not do the things this audience notices:
+ *
+ *  - **Gapless.** `setNextMediaPlayer` is the framework's only gapless hook and its
+ *    behaviour is OEM-dependent, so a live album or a DJ mix could gap on one phone
+ *    and not another. ExoPlayer owns the whole playlist and buffers across the
+ *    boundary itself, which is why the queue is handed to it wholesale here rather
+ *    than fed one track at a time.
+ *  - **ReplayGain.** There was no stage to apply it in, so a parsed gain was shown
+ *    on the quality card and never acted on. See [applyGain].
+ *  - **Accurate seek.** MediaPlayer seeks to the nearest sync sample; a scrub in a
+ *    long classical movement could land seconds away. [SeekParameters.EXACT] does
+ *    what the finger asked.
+ *  - **Float output**, so 24-bit sources are not quietly requantised to 16 on the
+ *    way to the mixer.
+ *
+ * Audio focus and the headphone-unplug pause are ExoPlayer's now
+ * (`setAudioAttributes(handleAudioFocus = true)`, `setHandleAudioBecomingNoisy`),
+ * which is why the hand-rolled focus listener is gone. Focus still does *not*
+ * police the two backends against each other:
+ * [com.engabd.sendpin.audio.SendspinAudioEngine] writes to its `AudioTrack` without
+ * registering a focus listener, so keeping MA and this player off each other's toes
+ * remains [com.engabd.sendpin.ma.LibraryViewModel]'s job, via an explicit stop.
  *
  * Process-scoped (see `SendpinApp.localPlayer`): Now Playing, the library and the
- * media notification all drive the same instance.
- *
- * **Audio focus**: the local player requests focus on `USAGE_MEDIA` before playing
- * and abandons it when it stops, so it plays by the same rules as every other media
- * app on the phone — it gets out of the way for a call, and other players get out of
- * its way when it starts.
- *
- * Focus does *not* police the two backends against each other:
- * [com.engabd.sendpin.audio.SendspinAudioEngine] writes to its `AudioTrack` without
- * ever registering a focus listener, so Android has no way to tell it to stop.
- * Keeping MA and the local player off each other's toes is
- * [com.engabd.sendpin.ma.LibraryViewModel]'s job, and it does it by sending MA an
- * explicit stop.
+ * media notification all drive the same instance. Every method here must be called
+ * on the main thread, which is where ExoPlayer is built.
  */
+@OptIn(UnstableApi::class)
 class LocalPlayer(private val context: Context) {
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
-    init {
-        // The output preference is process-wide, so this player follows it itself
-        // rather than waiting for a screen to be open and push it down.
-        scope.launch {
-            com.engabd.sendpin.data.AppSettings(context).preferredAudioDeviceId.collect { id ->
-                setPreferredDevice(AudioOutputs.resolve(audioManager, id))
-            }
-        }
-    }
+    private val player: ExoPlayer by lazy { buildPlayer() }
 
-    private var mp: MediaPlayer? = null
-    /** The next track's player, pre-prepared for a gapless transition. */
-    private var nextMp: MediaPlayer? = null
-    /** [nextMp] has finished preparing and may be handed to [mp]. */
-    private var nextReady = false
-    /** [nextMp] is registered with [mp] via `setNextMediaPlayer`. */
-    private var nextHandedOver = false
     private var ticker: Job? = null
 
-    /** True between `prepareAsync()` and `onPrepared`, when the player has no valid state. */
-    @Volatile private var preparing = false
+    /** The output the user pinned in Settings (a USB DAC, typically). */
+    private var preferredOutput: AudioDeviceInfo? = null
 
-    /**
-     * The output the user pinned in Settings (a USB DAC, typically), or null to
-     * let Android route. Applied to each MediaPlayer as it is prepared, and
-     * re-applied to the one already playing when the setting changes.
-     */
-    @Volatile private var preferredOutput: android.media.AudioDeviceInfo? = null
+    /** The user's own volume, kept apart from the ReplayGain factor multiplied onto it. */
+    private var userVolume = 1f
 
-    // --- audio focus ------------------------------------------------------
-    private val audioManager by lazy { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
-    private var audioFocusRequest: AudioFocusRequest? = null
-    @Volatile private var holdsFocus = false
-
-    /**
-     * Playback was stopped by a focus loss rather than by the user, so regaining
-     * focus should start it again. Without this the music stays dead after a phone
-     * call or a navigation prompt until someone taps play.
-     */
-    @Volatile private var pausedByFocusLoss = false
-
-    private val focusListener = AudioManager.OnAudioFocusChangeListener { change ->
-        when (change) {
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> mp?.setVolume(0.3f, 0.3f)
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> if (_playing.value) { pausedByFocusLoss = true; pause() }
-            AudioManager.AUDIOFOCUS_GAIN -> {
-                mp?.setVolume(1f, 1f)
-                if (pausedByFocusLoss) { pausedByFocusLoss = false; resume() }
-            }
-            // A permanent loss pauses; it does not clear. The queue the user built
-            // is not another app's to throw away, and they may come straight back
-            // to it — [resume] re-claims focus when they do.
-            AudioManager.AUDIOFOCUS_LOSS -> { pause(); abandonAudioFocus() }
-        }
-    }
-
-    private fun requestAudioFocus(): Boolean {
-        if (holdsFocus) return true
-        val attrs = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_MEDIA)
-            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-            .build()
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                .setAudioAttributes(attrs)
-                .setAcceptsDelayedFocusGain(false)
-                .setOnAudioFocusChangeListener(focusListener)
-                .build()
-            audioFocusRequest = req
-            audioManager.requestAudioFocus(req) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
-        } else {
-            @Suppress("DEPRECATION")
-            audioManager.requestAudioFocus(focusListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
-        }.also { if (it) holdsFocus = true }
-    }
-
-    private fun abandonAudioFocus() {
-        pausedByFocusLoss = false
-        if (!holdsFocus) return
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
-            audioFocusRequest = null
-        } else {
-            @Suppress("DEPRECATION")
-            audioManager.abandonAudioFocus(focusListener)
-        }
-        holdsFocus = false
-    }
+    private var replayGainMode = ReplayGain.ALBUM
 
     private val _queue = MutableStateFlow<List<LocalTrack>>(emptyList())
     val queue: StateFlow<List<LocalTrack>> = _queue
@@ -212,21 +157,134 @@ class LocalPlayer(private val context: Context) {
     val active: StateFlow<Boolean> get() = _hasSession
     private val _hasSession = MutableStateFlow(false)
 
-    /** The play order — identity, or a shuffled permutation of the queue's indices. */
-    private var order: List<Int> = emptyList()
-
     val title: StateFlow<String> get() = _titleFlow
     private val _titleFlow = MutableStateFlow("")
+
+    init {
+        val settings = com.engabd.sendpin.data.AppSettings(context)
+        // Both preferences are process-wide, so this player follows them itself
+        // rather than waiting for a screen to be open and push them down.
+        scope.launch {
+            settings.preferredAudioDeviceId.collect { id ->
+                val am = context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+                setPreferredDevice(AudioOutputs.resolve(am, id))
+            }
+        }
+        scope.launch {
+            settings.replayGainMode.collect { mode ->
+                replayGainMode = mode
+                applyGain()
+            }
+        }
+    }
+
+    private fun buildPlayer(): ExoPlayer {
+        val attrs = AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+            .build()
+
+        val renderers = DefaultRenderersFactory(context)
+            // 24-bit sources reach the mixer at their own resolution instead of
+            // being requantised to 16 inside the sink.
+            .setEnableAudioFloatOutput(true)
+            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+
+        // The defaults are sized for video-on-mobile-data. This is a lossless file
+        // over a LAN, where the sensible trade is a deeper buffer: a 24/96 FLAC is
+        // several Mbit/s and a Wi-Fi dropout mid-album is the failure that matters.
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                /* minBufferMs = */ 30_000,
+                /* maxBufferMs = */ 120_000,
+                /* bufferForPlaybackMs = */ 1_000,
+                /* bufferForPlaybackAfterRebufferMs = */ 2_500,
+            )
+            .build()
+
+        return ExoPlayer.Builder(context, renderers)
+            .setLoadControl(loadControl)
+            // handleAudioFocus = true replaces the entire hand-rolled focus listener:
+            // ducking, transient loss, and resume-on-regain are all ExoPlayer's.
+            .setAudioAttributes(attrs, /* handleAudioFocus = */ true)
+            // Headphones out, or Bluetooth gone: pause rather than switching to the
+            // phone's speaker at whatever volume was in the ears a moment ago.
+            .setHandleAudioBecomingNoisy(true)
+            // Past this into a track, Previous restarts it instead of going back one
+            // — the convention every player follows.
+            .setMaxSeekToPreviousPositionMs(RESTART_THRESHOLD_MS)
+            .build()
+            .also { p ->
+                // A scrub lands where the finger asked, not at the nearest sync
+                // sample — which in a 20-minute movement can be seconds away.
+                p.setSeekParameters(SeekParameters.EXACT)
+                p.addListener(listener)
+                preferredOutput?.let { d -> runCatching { p.setPreferredAudioDevice(d) } }
+            }
+    }
+
+    private val listener = object : Player.Listener {
+        override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
+            val at = player.currentMediaItemIndex
+            _index.value = at
+            val track = _queue.value.getOrNull(at)
+            _current.value = track
+            _titleFlow.value = track?.title.orEmpty()
+            _positionMs.value = 0
+            _durationMs.value = track?.durationMs ?: 0
+            // The gain belongs to the track, so it has to be re-applied at every
+            // boundary — including the gapless ones, where nothing else happens.
+            applyGain()
+            track?.let { _started.tryEmit(it) }
+        }
+
+        override fun onIsPlayingChanged(isPlaying: Boolean) {
+            _playing.value = isPlaying
+            if (isPlaying) startTicker() else stopTicker()
+        }
+
+        override fun onPlaybackStateChanged(state: Int) {
+            if (state == Player.STATE_READY) {
+                // ExoPlayer knows the real duration; the library's metadata is a
+                // rounded second count at best, and downloads may carry none at all.
+                val d = player.duration
+                if (d != C.TIME_UNSET && d > 0) _durationMs.value = d
+            }
+            if (state == Player.STATE_ENDED) {
+                stopTicker()
+                _playing.value = false
+                _positionMs.value = _durationMs.value
+            }
+        }
+
+        override fun onPlayerError(error: PlaybackException) {
+            stopTicker()
+            _playing.value = false
+            val name = _current.value?.title.orEmpty()
+            _error.tryEmit(
+                if (name.isBlank()) "Playback failed" else "Couldn't play \"$name\""
+            )
+            // One bad track should not end the album. Anything left goes on.
+            if (player.hasNextMediaItem()) {
+                player.seekToNextMediaItem()
+                player.prepare()
+            }
+        }
+    }
 
     // --- queue ------------------------------------------------------------
 
     /** Replace the queue and start at [startIndex]. */
     fun setQueue(tracks: List<LocalTrack>, startIndex: Int = 0) {
         if (tracks.isEmpty()) { clear(); return }
+        val start = startIndex.coerceIn(0, tracks.lastIndex)
         _queue.value = tracks
-        rebuildOrder(keepCurrent = startIndex.coerceIn(0, tracks.lastIndex))
         _hasSession.value = true
-        playAt(startIndex.coerceIn(0, tracks.lastIndex))
+        // The whole list goes to ExoPlayer at once — that is what lets it buffer
+        // across a track boundary, and so what makes the transition gapless.
+        player.setMediaItems(tracks.map(::mediaItem), start, C.TIME_UNSET)
+        player.prepare()
+        player.play()
     }
 
     /** Append to the queue, starting playback if nothing is loaded. */
@@ -234,8 +292,12 @@ class LocalPlayer(private val context: Context) {
         if (tracks.isEmpty()) return
         val wasEmpty = _queue.value.isEmpty()
         _queue.value = _queue.value + tracks
-        rebuildOrder(keepCurrent = _index.value)
-        if (wasEmpty) { _hasSession.value = true; playAt(0) }
+        player.addMediaItems(tracks.map(::mediaItem))
+        if (wasEmpty) {
+            _hasSession.value = true
+            player.prepare()
+            player.play()
+        }
     }
 
     /** Insert right after what's playing. */
@@ -244,20 +306,17 @@ class LocalPlayer(private val context: Context) {
         if (_queue.value.isEmpty()) { setQueue(tracks); return }
         val at = (_index.value + 1).coerceIn(0, _queue.value.size)
         _queue.value = _queue.value.toMutableList().apply { addAll(at, tracks) }
-        rebuildOrder(keepCurrent = _index.value)
+        player.addMediaItems(at, tracks.map(::mediaItem))
     }
 
     fun removeAt(position: Int) {
         val list = _queue.value
         if (position !in list.indices) return
-        val playingNow = _index.value
         _queue.value = list.toMutableList().apply { removeAt(position) }
-        when {
-            _queue.value.isEmpty() -> clear()
-            position < playingNow -> { _index.value = playingNow - 1; rebuildOrder(keepCurrent = _index.value) }
-            position == playingNow -> { rebuildOrder(keepCurrent = position.coerceAtMost(_queue.value.lastIndex)); playAt(position.coerceAtMost(_queue.value.lastIndex)) }
-            else -> rebuildOrder(keepCurrent = _index.value)
-        }
+        if (_queue.value.isEmpty()) { clear(); return }
+        // ExoPlayer moves to the next item itself when the current one is removed.
+        player.removeMediaItem(position)
+        _index.value = player.currentMediaItemIndex
     }
 
     /**
@@ -269,29 +328,23 @@ class LocalPlayer(private val context: Context) {
         if (from !in list.indices) return
         val to = (from + shift).coerceIn(0, list.lastIndex)
         if (to == from) return
-        val moved = list.removeAt(from)
-        list.add(to, moved)
-        val playing = _index.value
-        _index.value = when {
-            playing == from -> to
-            from < playing && to >= playing -> playing - 1
-            from > playing && to <= playing -> playing + 1
-            else -> playing
-        }
+        list.add(to, list.removeAt(from))
         _queue.value = list
-        rebuildOrder(keepCurrent = _index.value)
+        player.moveMediaItem(from, to)
+        _index.value = player.currentMediaItemIndex
     }
 
     fun clear() {
-        stopInternal()
-        abandonAudioFocus()
+        stopTicker()
+        player.clearMediaItems()
+        player.stop()
         _queue.value = emptyList()
-        order = emptyList()
         _index.value = -1
         _current.value = null
         _titleFlow.value = ""
         _durationMs.value = 0
         _positionMs.value = 0
+        _playing.value = false
         _hasSession.value = false
     }
 
@@ -303,96 +356,68 @@ class LocalPlayer(private val context: Context) {
     }
 
     fun playAt(position: Int) {
-        val list = _queue.value
-        if (position !in list.indices) return
-        releaseNext()
-        _index.value = position
-        val track = list[position]
-        _current.value = track
-        _titleFlow.value = track.title
-        _durationMs.value = track.durationMs
-        _positionMs.value = 0
-        open(track)
-        // Pre-prepare the next track for gapless playback.
-        prepareNext()
+        if (position !in _queue.value.indices) return
+        player.seekTo(position, C.TIME_UNSET)
+        player.play()
     }
 
-    fun pause() {
-        val p = mp ?: return
-        if (preparing) return
-        if (p.isPlaying) { p.pause(); _playing.value = false; stopTicker() }
-    }
+    fun pause() = player.pause()
 
     fun resume() {
-        val p = mp ?: run {
-            // Nothing open but a queue is loaded (e.g. after an error) — re-open it.
-            _index.value.takeIf { it >= 0 }?.let { playAt(it) }
-            return
-        }
-        if (preparing) return
-        // Focus can have been taken away while we sat paused — a call, another
-        // player — so claim it back before making sound again.
-        if (!requestAudioFocus()) {
-            _error.tryEmit("Can't play — another app owns audio")
-            return
-        }
-        if (!p.isPlaying) { p.start(); _playing.value = true; startTicker() }
+        if (_queue.value.isEmpty()) return
+        // A playlist that ran to the end, or one an error tore down, needs preparing
+        // again before it will make sound.
+        if (player.playbackState == Player.STATE_IDLE) player.prepare()
+        player.play()
     }
 
     fun toggle() = if (_playing.value) pause() else resume()
 
     /**
      * Previous behaves the way players conventionally do: past the first few seconds
-     * it restarts the track rather than jumping back one.
+     * it restarts the track rather than jumping back one. That threshold is
+     * `maxSeekToPreviousPositionMs`, set when the player is built.
      */
-    fun previous() {
-        if (_positionMs.value > RESTART_THRESHOLD_MS) { seekTo(0); return }
-        val prev = step(-1) ?: run { seekTo(0); return }
-        playAt(prev)
-    }
+    fun previous() = player.seekToPrevious()
 
     fun next() {
-        val nxt = step(+1)
-        // Running off the end of the queue is the end of the session, so let go of
-        // focus — holding it leaves every other player on the phone ducked forever.
-        if (nxt == null) { stopInternal(); _positionMs.value = 0; abandonAudioFocus() } else playAt(nxt)
+        if (player.hasNextMediaItem()) {
+            player.seekToNextMediaItem()
+        } else {
+            // Running off the end is the end of the session. Stopping releases audio
+            // focus, which holding would leave every other player on the phone ducked.
+            player.stop()
+            _positionMs.value = 0
+            _playing.value = false
+        }
     }
 
     fun seekTo(ms: Long) {
-        val p = mp ?: return
-        if (preparing) return
-        val target = ms.coerceIn(0, _durationMs.value.takeIf { it > 0 } ?: ms)
-        runCatching { p.seekTo(target.toInt()) }
+        val max = _durationMs.value.takeIf { it > 0 } ?: ms
+        val target = ms.coerceIn(0, max)
+        player.seekTo(target)
         _positionMs.value = target
     }
 
-    fun setVolume(v: Float) { mp?.setVolume(v, v) }
+    fun setVolume(v: Float) {
+        userVolume = v.coerceIn(0f, 1f)
+        applyGain()
+    }
 
     /**
      * Playback speed, for audiobooks and podcasts — the same control the MA player
      * exposes, so the option doesn't quietly do nothing on this backend.
-     *
-     * `playbackParams` has the side effect of *starting* a paused player, so a
-     * paused player is put straight back where it was.
      */
     fun setSpeed(value: Float) {
         _speed.value = value.coerceIn(0.5f, 3f)
-        applySpeed()
-    }
-
-    private fun applySpeed() {
-        val p = mp ?: return
-        if (preparing) return
-        runCatching {
-            val wasPlaying = p.isPlaying
-            p.playbackParams = p.playbackParams.setSpeed(_speed.value)
-            if (!wasPlaying) p.pause()
-        }
+        player.setPlaybackSpeed(_speed.value)
     }
 
     fun setShuffle(on: Boolean) {
         _shuffle.value = on
-        rebuildOrder(keepCurrent = _index.value)
+        // ExoPlayer shuffles the *play order* and leaves the list alone, which is
+        // what the queue UI wants: the list stays as the user built it.
+        player.shuffleModeEnabled = on
     }
 
     fun cycleRepeat() {
@@ -401,272 +426,72 @@ class LocalPlayer(private val context: Context) {
             "all" -> "one"
             else -> "off"
         }
+        player.repeatMode = when (_repeatMode.value) {
+            "all" -> Player.REPEAT_MODE_ALL
+            "one" -> Player.REPEAT_MODE_ONE
+            else -> Player.REPEAT_MODE_OFF
+        }
     }
 
     fun stop() = clear()
 
-    // --- internals --------------------------------------------------------
-
-    private fun open(track: LocalTrack) {
-        stopInternal()
-        // The downloaded copy wins — it is bit-identical, costs no bandwidth, and
-        // plays with the server gone. If the file has been deleted out from under
-        // the index, fall back to streaming rather than failing outright.
-        val source = track.localPath?.takeIf { File(it).exists() } ?: track.streamUrl
-        if (source == null) {
-            _error.tryEmit("\"${track.title}\" isn't downloaded and the server is unreachable")
-            return
-        }
-        // Claim audio focus before opening — this is what tells the Sendspin stream
-        // (or any other media app) to get out of the way.
-        if (!requestAudioFocus()) {
-            _error.tryEmit("Can't play — another app owns audio")
-            return
-        }
-        preparing = true
-        mp = MediaPlayer().apply {
-            setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                    .build()
-            )
-            setOnPreparedListener {
-                preparing = false
-                // MediaPlayer knows the real duration; the library's metadata is only
-                // ever a rounded second count, and downloads may carry none at all.
-                if (it.duration > 0) _durationMs.value = it.duration.toLong()
-                // A freshly prepared source should sit at zero. If the demuxer resynced
-                // part-way in — which a chunked transcode with no Content-Length can
-                // cause — start the track where the listener expects it.
-                if (it.currentPosition > 1_000) {
-                    Log.w(TAG, "opened at ${it.currentPosition}ms — seeking to 0")
-                    runCatching { it.seekTo(0) }
-                }
-                preferredOutput?.let { dev -> runCatching { it.setPreferredDevice(dev) } }
-                it.start()
-                if (_speed.value != 1f) applySpeed()
-                _playing.value = true
-                startTicker()
-                _started.tryEmit(track)
-                // The follow-on player may already be prepared and waiting for a
-                // current player to attach itself to.
-                tryHandOver()
-            }
-            setOnCompletionListener { onCompleted() }
-            setOnErrorListener { _, _, _ ->
-                preparing = false
-                _playing.value = false
-                stopTicker()
-                _error.tryEmit("Couldn't play \"${track.title}\"")
-                true
-            }
-            try {
-                setDataSource(source)
-                prepareAsync()
-            } catch (_: Exception) {
-                preparing = false
-                _playing.value = false
-                _error.tryEmit("Couldn't open \"${track.title}\"")
-            }
-        }
-    }
-
-    private fun onCompleted() {
-        if (_repeatMode.value == "one") { playAt(_index.value); return }
-        val nxt = step(+1)
-        if (nxt == null) {
-            _playing.value = false
-            stopTicker()
-            _positionMs.value = _durationMs.value
-            return
-        }
-        // If the next player was handed to MediaPlayer via setNextMediaPlayer and
-        // was ready in time, the framework has *already* started it by the time
-        // this callback runs — there was no gap to close. All that's left is to
-        // adopt it as the current player. Otherwise (not prepared in time, or the
-        // handover failed) fall back to opening the track the normal way.
-        val handed = nextMp?.takeIf { nextHandedOver }
-        if (handed != null) adoptNext(handed, nxt) else playAt(nxt)
-    }
-
-    /**
-     * Take ownership of the player the framework just started. It is already
-     * playing, so this only moves the bookkeeping across — notably the listeners,
-     * which the pre-prepared player deliberately does not carry until it becomes
-     * the current one (an idle next-player must not drive the queue).
-     */
-    private fun adoptNext(next: MediaPlayer, nextIndex: Int) {
-        mp?.let { old ->
-            runCatching { old.setOnCompletionListener(null) }
-            runCatching { old.setOnErrorListener(null) }
-            runCatching { old.setOnPreparedListener(null) }
-            runCatching { old.reset() }
-            runCatching { old.release() }
-        }
-        mp = next
-        nextMp = null
-        nextHandedOver = false
-        nextReady = false
-        preparing = false
-        _index.value = nextIndex
-        val track = _queue.value.getOrNull(nextIndex)
-        _current.value = track
-        _titleFlow.value = track?.title ?: ""
-        // MediaPlayer knows the real duration; library metadata is a rounded
-        // second count at best. Same reasoning as the onPrepared path in open().
-        _durationMs.value = runCatching { next.duration.toLong() }.getOrNull()
-            ?.takeIf { it > 0 } ?: track?.durationMs ?: 0
-        _positionMs.value = 0
-        attachListeners(next, track)
-        if (_speed.value != 1f) applySpeed()
-        _playing.value = true
-        startTicker()
-        track?.let { _started.tryEmit(it) }
-        // Queue up the one after this.
-        prepareNext()
-    }
-
-    /**
-     * The completion/error listeners that make a player *the current one*: the
-     * completion listener is what advances the queue, so a player without it
-     * ends the session silently when its track runs out.
-     */
-    private fun attachListeners(player: MediaPlayer, track: LocalTrack?) {
-        player.setOnCompletionListener { onCompleted() }
-        player.setOnErrorListener { _, _, _ ->
-            preparing = false
-            _playing.value = false
-            stopTicker()
-            _error.tryEmit("Couldn't play \"${track?.title.orEmpty()}\"")
-            true
-        }
-    }
-
-    /**
-     * Pre-prepare the next track and hand it to MediaPlayer as the follow-on
-     * player. `setNextMediaPlayer` is what makes the transition actually gapless:
-     * the framework starts the next player the instant the current one drains,
-     * inside the audio pipeline. Swapping players ourselves in `onCompletion`
-     * cannot match it — that callback only runs *after* the gap has happened.
-     *
-     * Best-effort throughout. If the next track isn't prepared before the current
-     * one ends, [onCompleted] just opens it the ordinary way.
-     */
-    private fun prepareNext() {
-        releaseNext()
-        val nxt = step(+1) ?: return
-        // Repeat-one replays the same player; a queued follow-on would fight it.
-        if (_repeatMode.value == "one") return
-        val track = _queue.value.getOrNull(nxt) ?: return
-        val source = track.localPath?.takeIf { File(it).exists() } ?: track.streamUrl ?: return
-        val candidate = MediaPlayer()
-        nextMp = candidate
-        // Listeners and `nextMp` are both in place before prepareAsync, so there is
-        // no window in which the callback could arrive with nothing to match it
-        // against.
-        candidate.setOnPreparedListener { prepared ->
-            // Only act if this is still the player we're waiting on — a skip or
-            // queue edit in the meantime will have replaced or dropped it.
-            if (nextMp !== prepared) return@setOnPreparedListener
-            nextReady = true
-            tryHandOver()
-        }
-        candidate.setOnErrorListener { failed, _, _ ->
-            if (nextMp === failed) releaseNext()
-            true
-        }
-        try {
-            candidate.setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                    .build()
-            )
-            candidate.setDataSource(source)
-            candidate.prepareAsync()
-        } catch (_: Exception) {
-            releaseNext()
-        }
-    }
-
-    /**
-     * Register the ready follow-on player with the current one. Attempted from
-     * both sides — whichever of the two finishes preparing last gets there — because
-     * `setNextMediaPlayer` needs the *current* player already prepared, and on a
-     * local file the next track can easily be ready first.
-     */
-    private fun tryHandOver() {
-        if (nextHandedOver || !nextReady) return
-        val current = mp ?: return
-        val next = nextMp ?: return
-        // The follow-on player is started by the framework, not by us, so it has to
-        // carry the routing before the handover rather than at start time.
-        preferredOutput?.let { dev -> runCatching { next.setPreferredDevice(dev) } }
-        nextHandedOver = runCatching { current.setNextMediaPlayer(next) }.isSuccess
-    }
-
     /**
      * Point playback at a specific output device, or null for the system route.
-     * Takes effect immediately on whatever is playing, and on every player opened
-     * after — including the pre-prepared one, in [tryHandOver].
+     * Applies to what is playing and to everything opened after.
      */
-    fun setPreferredDevice(device: android.media.AudioDeviceInfo?) {
+    fun setPreferredDevice(device: AudioDeviceInfo?) {
         preferredOutput = device
-        runCatching { mp?.setPreferredDevice(device) }
-        runCatching { nextMp?.setPreferredDevice(device) }
+        runCatching { player.setPreferredAudioDevice(device) }
     }
 
-    /** Drop the pre-prepared follow-on player, detaching it from [mp] first. */
-    private fun releaseNext() {
-        val next = nextMp ?: return
-        nextMp = null
-        // Clear the framework's reference before releasing, or it may start a
-        // player that no longer exists when the current track ends.
-        if (nextHandedOver) runCatching { mp?.setNextMediaPlayer(null) }
-        nextHandedOver = false
-        nextReady = false
-        runCatching { next.setOnPreparedListener(null) }
-        runCatching { next.setOnErrorListener(null) }
-        runCatching { next.reset() }
-        runCatching { next.release() }
+    /** Release the player. Only for process teardown — this object is app-scoped. */
+    fun release() {
+        stopTicker()
+        runCatching { player.release() }
     }
+
+    // --- internals --------------------------------------------------------
 
     /**
-     * The queue index [delta] places away in *play* order, or null at the end.
-     * Repeat-all wraps; shuffle walks the shuffled permutation rather than the list.
+     * The downloaded copy wins — it is bit-identical, costs no bandwidth, and plays
+     * with the server gone. If the file has been deleted out from under the index,
+     * fall back to streaming rather than failing outright.
      */
-    private fun step(delta: Int): Int? {
-        if (order.isEmpty()) return null
-        val here = order.indexOf(_index.value).takeIf { it >= 0 } ?: return order.firstOrNull()
-        val next = here + delta
-        return when {
-            next in order.indices -> order[next]
-            _repeatMode.value == "all" -> order[(next + order.size) % order.size]
-            else -> null
-        }
-    }
+    private fun sourceOf(track: LocalTrack): String? =
+        track.localPath?.takeIf { File(it).exists() } ?: track.streamUrl
+
+    private fun mediaItem(track: LocalTrack): MediaItem =
+        MediaItem.Builder()
+            .setMediaId(track.id)
+            // An unplayable entry still has to occupy its slot, or every index in the
+            // queue would shift out from under the UI. ExoPlayer reports the error
+            // and the listener moves on.
+            .setUri(sourceOf(track) ?: "")
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle(track.title)
+                    .setArtist(track.artist)
+                    .setAlbumTitle(track.album)
+                    .setComposer(track.composer)
+                    .build()
+            )
+            .build()
 
     /**
-     * Recompute the play order. [keepCurrent] stays first in a shuffled order, so
-     * turning shuffle on doesn't jump away from the track already playing.
+     * Set the output volume to the user's level, scaled by the current track's
+     * ReplayGain. Re-run whenever either half changes, or a track boundary makes the
+     * gain stale.
      */
-    private fun rebuildOrder(keepCurrent: Int) {
-        val indices = _queue.value.indices.toList()
-        order = if (!_shuffle.value) indices
-        else (indices - keepCurrent).shuffled().let { rest ->
-            if (keepCurrent in indices) listOf(keepCurrent) + rest else rest
-        }
+    private fun applyGain() {
+        val factor = ReplayGain.factor(_current.value?.sourceQuality, replayGainMode)
+        player.volume = (userVolume * factor).coerceIn(0f, 1f)
     }
 
     private fun startTicker() {
         stopTicker()
         ticker = scope.launch {
             while (isActive) {
-                val p = mp
-                if (p != null && !preparing && p.isPlaying) {
-                    _positionMs.value = runCatching { p.currentPosition.toLong() }.getOrDefault(_positionMs.value)
-                }
+                _positionMs.value = player.currentPosition.coerceAtLeast(0)
                 delay(500)
             }
         }
@@ -674,24 +499,7 @@ class LocalPlayer(private val context: Context) {
 
     private fun stopTicker() { ticker?.cancel(); ticker = null }
 
-    private fun stopInternal() {
-        stopTicker()
-        preparing = false
-        releaseNext()
-        mp?.let {
-            it.setOnCompletionListener(null)
-            it.setOnErrorListener(null)
-            it.setOnPreparedListener(null)
-            runCatching { it.stop() }
-            it.release()
-        }
-        mp = null
-        _playing.value = false
-    }
-
     private companion object {
-        const val TAG = "LocalPlayer"
-
         /** Past this into a track, Previous restarts it instead of going back one. */
         const val RESTART_THRESHOLD_MS = 4_000L
     }

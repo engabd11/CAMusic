@@ -26,7 +26,16 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
-class MaApiException(message: String, val code: Int) : Exception(message)
+/**
+ * @param isTransport the request never reached a verdict — it timed out, or the
+ *   socket went away under it. Those are worth retrying; a server that answered
+ *   with an error is not, since it will answer the same way again.
+ */
+class MaApiException(
+    message: String,
+    val code: Int,
+    val isTransport: Boolean = false,
+) : Exception(message)
 
 /**
  * Music Assistant **main API** client (the `/ws` endpoint — distinct from the
@@ -80,7 +89,22 @@ class MaApiClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
         userClosed = true; reconnectJob?.cancel()
         ws?.close(1000, "bye"); ws = null
         _state.value = State.DISCONNECTED
-        pending.values.forEach { it.complete(null) }; pending.clear(); partials.clear()
+        failPending("Disconnected")
+        partials.clear()
+    }
+
+    /**
+     * Fail everything still waiting, rather than answering it with null.
+     *
+     * Completing with null made a dropped socket indistinguishable from a server
+     * that legitimately had nothing to return, so a library that failed to load
+     * rendered as a library that is empty — and callers that retry on failure had
+     * nothing to retry on.
+     */
+    private fun failPending(why: String) {
+        val waiting = pending.values.toList()
+        pending.clear()
+        waiting.forEach { it.completeExceptionally(MaApiException(why, -1, isTransport = true)) }
     }
 
     /** Reconnect with backoff after an unexpected drop — keeps browse/volume/grouping working. */
@@ -104,12 +128,12 @@ class MaApiClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
         }
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             _state.value = State.ERROR
-            pending.values.forEach { it.complete(null) }; pending.clear()
+            failPending(t.message ?: "Connection failed")
             scheduleReconnect()
         }
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             if (_state.value != State.ERROR) _state.value = State.DISCONNECTED
-            pending.values.forEach { it.complete(null) }; pending.clear()
+            failPending("Connection closed")
             scheduleReconnect()
         }
     }
@@ -203,7 +227,11 @@ class MaApiClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
             try {
                 return sendRaw(command, args, awaitResponse, timeoutMs)
             } catch (e: MaApiException) {
-                if (attempt++ >= retries) throw e
+                // Only transport failures are worth another go. A server-side
+                // rejection — a bad argument, a missing permission — answers the same
+                // way however many times it is asked, and retrying it just multiplies
+                // the delay before the user sees why.
+                if (!e.isTransport || attempt++ >= retries) throw e
                 delay(500L * attempt)
             }
         }
@@ -220,12 +248,15 @@ class MaApiClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
         val msg = buildJsonObject {
             put("command", command); put("message_id", id); if (args != null) put("args", args)
         }
-        if (ws?.send(msg.toString()) != true) { pending.remove(id); throw MaApiException("Not connected", -1) }
+        if (ws?.send(msg.toString()) != true) {
+            pending.remove(id); throw MaApiException("Not connected", -1, isTransport = true)
+        }
         if (!awaitResponse) return null
         return try {
             withTimeout(timeoutMs) { d!!.await() }
         } catch (e: TimeoutCancellationException) {
-            pending.remove(id); partials.remove(id); throw MaApiException("Request timed out", -1)
+            pending.remove(id); partials.remove(id)
+            throw MaApiException("Request timed out", -1, isTransport = true)
         }
     }
 

@@ -34,7 +34,9 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.engabd.sendpin.audio.ReplayGain
 import com.engabd.sendpin.audio.StreamQuality
+import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
@@ -285,7 +287,7 @@ fun NowPlayingScreen(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
-                        TappableQualityChip(playing = st.quality, source = st.sourceQuality, provider = st.streamProvider)
+                        TappableQualityChip(playing = st.quality, source = st.sourceQuality, provider = st.streamProvider, localSession = st.isLocalSession)
                         PlayButton(st.isPlaying) { viewModel.playPause() }
                     }
                     TransportIcon(Icons.Default.SkipNext, "Next", 26.dp) { viewModel.next() }
@@ -398,7 +400,13 @@ private fun TopBar(playerName: String, isSelf: Boolean, groupSize: Int, onOpenSp
  * time it opened; an info panel has no business moving the play button.
  */
 @Composable
-fun TappableQualityChip(playing: StreamQuality?, source: StreamQuality?, provider: String? = null) {
+fun TappableQualityChip(
+    playing: StreamQuality?,
+    source: StreamQuality?,
+    provider: String? = null,
+    /** This phone is decoding, so its ReplayGain setting is the one in effect. */
+    localSession: Boolean = false,
+) {
     var showDetail by remember { mutableStateOf(false) }
 
     Box(Modifier.clickable { showDetail = true }) {
@@ -433,7 +441,14 @@ fun TappableQualityChip(playing: StreamQuality?, source: StreamQuality?, provide
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
                     ) { }
-                ) { QualityDetailCard(playing = playing, source = source, provider = provider) }
+                ) {
+                    QualityDetailCard(
+                        playing = playing,
+                        source = source,
+                        provider = provider,
+                        localSession = localSession,
+                    )
+                }
             }
         }
     }
@@ -441,8 +456,18 @@ fun TappableQualityChip(playing: StreamQuality?, source: StreamQuality?, provide
 
 /** A small card showing both the original source and the playing format. */
 @Composable
-private fun QualityDetailCard(playing: StreamQuality?, source: StreamQuality?, provider: String? = null) {
+private fun QualityDetailCard(
+    playing: StreamQuality?,
+    source: StreamQuality?,
+    provider: String? = null,
+    localSession: Boolean = false,
+) {
     val accent = LocalAccent.current
+    // Only meaningful on the local path — Music Assistant does its own gain
+    // server-side, so the app's setting has no say in what a speaker plays.
+    val context = LocalContext.current
+    val settings = remember(context) { AppSettings(context) }
+    val gainMode by settings.replayGainMode.collectAsState(initial = ReplayGain.ALBUM)
     // Both rows always render when both readings exist, and the line underneath says
     // whether they differ. Hiding "Source" on a match was the old behaviour, and it
     // meant the common case — a direct, untranscoded stream — showed a single
@@ -471,13 +496,18 @@ private fun QualityDetailCard(playing: StreamQuality?, source: StreamQuality?, p
                 color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
             )
         }
-        // ReplayGain, when the file carries a measurement. Shown as the tag's own
-        // value rather than "on/off": nothing here applies it — MA normalises
-        // server-side, and the local player doesn't touch gain at all — so this
-        // reports what the file says about itself, which is all it can honestly do.
-        source?.gainLabel?.let {
+        // ReplayGain. The card says whether the tag is being *acted on*, not just
+        // that the file carries one: on the local path the applied figure can differ
+        // from the tag (a boost is capped to keep it out of the ceiling), and on a
+        // Music Assistant player the app's setting has no say at all.
+        source?.gainLabel?.let { tag ->
+            val applied = if (localSession) ReplayGain.decibels(source, gainMode) else null
             Text(
-                "ReplayGain $it",
+                when {
+                    !localSession -> "ReplayGain $tag — applied by Music Assistant"
+                    applied == null -> "ReplayGain $tag — not applied"
+                    else -> "ReplayGain %+.1f dB applied".format(applied)
+                },
                 color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
             )
         }

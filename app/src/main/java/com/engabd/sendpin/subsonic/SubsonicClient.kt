@@ -22,7 +22,65 @@ import java.util.concurrent.TimeUnit
  * identical — a blank shelf and no explanation. Everything here throws instead,
  * and the ViewModel turns that into an error the user can act on.
  */
-class SubsonicException(message: String) : IOException(message)
+/**
+ * A play queue another client left on the server, for cross-device resume.
+ *
+ * @param changedBy the client name that saved it — worth showing, because "resume
+ *   from your laptop" is a different offer from "resume from this phone".
+ */
+data class SavedQueue(
+    val tracks: List<MaItem>,
+    val index: Int,
+    val positionMs: Long,
+    val changedBy: String?,
+)
+
+class SubsonicException(
+    message: String,
+    /**
+     * The Subsonic error code, when the server got far enough to give one.
+     * [SubsonicError] has the meanings; null means the request never reached a
+     * Subsonic server at all.
+     */
+    val code: Int? = null,
+) : IOException(message)
+
+/**
+ * The Subsonic error codes, and what to tell someone about them.
+ *
+ * These were being interpolated into a string and never looked at, so a wrong
+ * password and a missing album produced the same shrug — and the connect screen
+ * reported bad credentials and an unreachable host identically, which is the one
+ * place the difference actually decides what the user should do next.
+ */
+object SubsonicError {
+    const val GENERIC = 0
+    const val MISSING_PARAM = 10
+    const val CLIENT_TOO_OLD = 20
+    const val SERVER_TOO_OLD = 30
+    const val BAD_CREDENTIALS = 40
+    const val TOKEN_AUTH_UNSUPPORTED = 41
+    const val NOT_AUTHORIZED = 50
+    const val TRIAL_EXPIRED = 60
+    const val NOT_FOUND = 70
+
+    /** True when re-entering the password is the fix. */
+    fun isAuth(code: Int?) = code == BAD_CREDENTIALS || code == TOKEN_AUTH_UNSUPPORTED
+
+    fun explain(code: Int?, serverMessage: String?): String = when (code) {
+        BAD_CREDENTIALS -> "That username or password was rejected"
+        // Navidrome only hits this for LDAP users; the fix is a real one, so say it.
+        TOKEN_AUTH_UNSUPPORTED ->
+            "This account can't use token authentication — it needs a password-auth client"
+        NOT_AUTHORIZED -> "That account isn't allowed to do this"
+        NOT_FOUND -> "The server doesn't have that"
+        SERVER_TOO_OLD -> "The server is too old for this app"
+        CLIENT_TOO_OLD -> "The server wants a newer client than this"
+        TRIAL_EXPIRED -> "The server's trial period has expired"
+        else -> serverMessage?.takeIf { it.isNotBlank() }
+            ?: "The server refused the request${code?.let { " (code $it)" }.orEmpty()}"
+    }
+}
 
 /**
  * Direct OpenSubsonic / Navidrome client — browse/search/stream straight from the
@@ -39,13 +97,27 @@ class SubsonicClient(
     private val baseUrl: String,
     private val username: String,
     private val password: String,
-    private val http: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS).readTimeout(20, TimeUnit.SECONDS).build(),
+    private val http: OkHttpClient = shared,
     private val json: Json = Json { ignoreUnknownKeys = true },
 ) {
     companion object {
         /** The provider tag every item from this client carries. */
         const val PROVIDER = "subsonic"
+
+        /**
+         * One client for every Subsonic call in the app.
+         *
+         * Each view model used to build its own, so six connection pools and six
+         * dispatcher thread pools existed against a single server, none of them
+         * reusing each other's sockets. OkHttp is designed to be shared — the whole
+         * point of the pool is that it outlives any one caller.
+         */
+        private val shared: OkHttpClient by lazy {
+            OkHttpClient.Builder()
+                .connectTimeout(10, TimeUnit.SECONDS)
+                .readTimeout(20, TimeUnit.SECONDS)
+                .build()
+        }
 
         private const val CLIENT = "sendpin"
         private const val API_VERSION = "1.16.1"
@@ -97,9 +169,22 @@ class SubsonicClient(
         return "u=${enc(username)}&t=$token&s=$salt&v=$API_VERSION&c=$CLIENT"
     }
 
-    private fun restUrl(endpoint: String, params: Map<String, String>, jsonFmt: Boolean): String {
+    /**
+     * @param repeated parameters Subsonic defines as repeatable — `songId`,
+     *   `songIdToAdd`, `id` on star/unstar. They go on the query string once per
+     *   value: `songId=a&songId=b`. Comma-joining them, which is what this used to
+     *   do, hands the server a single id with commas in it, and the call silently
+     *   does nothing.
+     */
+    private fun restUrl(
+        endpoint: String,
+        params: Map<String, String>,
+        jsonFmt: Boolean,
+        repeated: List<Pair<String, String>> = emptyList(),
+    ): String {
         val sb = StringBuilder("${base()}/rest/$endpoint.view?${authQuery()}")
         for ((k, v) in params) sb.append("&${enc(k)}=${enc(v)}")
+        for ((k, v) in repeated) sb.append("&${enc(k)}=${enc(v)}")
         if (jsonFmt) sb.append("&f=json")
         return sb.toString()
     }
@@ -144,10 +229,14 @@ class SubsonicClient(
 
     // --- requests ---------------------------------------------------------
 
-    private suspend fun get(endpoint: String, params: Map<String, String> = emptyMap()): JsonObject =
+    private suspend fun get(
+        endpoint: String,
+        params: Map<String, String> = emptyMap(),
+        repeated: List<Pair<String, String>> = emptyList(),
+    ): JsonObject =
         withContext(Dispatchers.IO) {
             val body = try {
-                http.newCall(Request.Builder().url(restUrl(endpoint, params, jsonFmt = true)).build())
+                http.newCall(Request.Builder().url(restUrl(endpoint, params, jsonFmt = true, repeated)).build())
                     .execute().use { resp ->
                         if (!resp.isSuccessful) {
                             throw SubsonicException("Server returned HTTP ${resp.code}")
@@ -170,20 +259,30 @@ class SubsonicClient(
 
             if (root["status"]?.jsonPrimitive?.contentOrNull == "failed") {
                 val err = root["error"]?.jsonObject
+                val code = err?.get("code")?.jsonPrimitive?.intOrNull
                 throw SubsonicException(
-                    err?.get("message")?.jsonPrimitive?.contentOrNull
-                        ?: "The server refused the request (code ${err?.get("code")?.jsonPrimitive?.contentOrNull ?: "?"})"
+                    SubsonicError.explain(code, err?.get("message")?.jsonPrimitive?.contentOrNull),
+                    code = code,
                 )
             }
             root
         }
 
-    /** Reachability + credentials probe. Returns null when fine, else why not. */
-    suspend fun pingError(): String? = try {
+    /**
+     * Reachability + credentials probe. Returns null when fine, else why not.
+     *
+     * The distinction matters to the caller, not just to the message: a rejected
+     * password is worth re-prompting for, an unreachable host is worth falling back
+     * to downloads for. See [pingResult].
+     */
+    suspend fun pingError(): String? = pingResult()?.message
+
+    /** As [pingError], but keeping the code so the caller can tell the cases apart. */
+    suspend fun pingResult(): SubsonicException? = try {
         get("ping")
         null
     } catch (e: SubsonicException) {
-        e.message
+        e
     }
 
     // --- browse -----------------------------------------------------------
@@ -281,28 +380,101 @@ class SubsonicClient(
      * it directly, or null when the server doesn't report one.
      */
     suspend fun createPlaylist(name: String, songIds: List<String> = emptyList()): String? {
-        val params = buildMap {
-            put("name", name)
-            if (songIds.isNotEmpty()) put("songId", songIds.joinToString(","))
-        }
-        val res = get("createPlaylist", params)["playlist"]?.jsonObject
+        // `songId` is a repeated parameter, not a comma-separated list.
+        val res = get(
+            "createPlaylist",
+            mapOf("name" to name),
+            repeated = songIds.map { "songId" to it },
+        )["playlist"]?.jsonObject
         return res?.str("id")
     }
 
     /**
-     * Rename a playlist, and/or replace its entire track list.
+     * Rename a playlist, and/or add and remove tracks.
      *
-     * `updatePlaylist` is OpenSubsonic's one-shot edit: `name` changes the title
-     * and `songId` (repeated) replaces the contents. Only the fields that are
-     * non-null are sent, so a rename and a content swap are independent.
+     * `updatePlaylist` is a *delta*, which is the part that had been got wrong: it
+     * takes `songIdToAdd` (repeated) and `songIndexToRemove` (repeated, and an
+     * **index into the playlist**, not a song id). It has no `songId` parameter at
+     * all, so the previous shape was accepted and quietly ignored.
      */
-    suspend fun updatePlaylist(id: String, name: String? = null, songIds: List<String>? = null) {
+    suspend fun updatePlaylist(
+        id: String,
+        name: String? = null,
+        addSongIds: List<String> = emptyList(),
+        removeIndices: List<Int> = emptyList(),
+    ) {
         val params = buildMap {
             put("playlistId", id)
             name?.let { put("name", it) }
-            songIds?.let { put("songId", it.joinToString(",")) }
         }
-        get("updatePlaylist", params)
+        get(
+            "updatePlaylist",
+            params,
+            repeated = addSongIds.map { "songIdToAdd" to it } +
+                removeIndices.map { "songIndexToRemove" to it.toString() },
+        )
+    }
+
+    /**
+     * A 1–5 star rating, or 0 to clear it.
+     *
+     * Distinct from starring: `star` is a boolean favourite, `setRating` is the
+     * five-point scale Navidrome keeps separately and exposes in its own UI.
+     */
+    suspend fun setRating(id: String, rating: Int) {
+        get("setRating", mapOf("id" to id, "rating" to rating.coerceIn(0, 5).toString()))
+    }
+
+    // --- play queue (cross-device resume) ----------------------------------
+
+    /**
+     * The play queue this user left on another client, if any.
+     *
+     * Navidrome returns `current` as a **string song id**, not the integer index the
+     * Subsonic schema describes — their docs call that out explicitly — so it is read
+     * as an id and matched against the entries rather than used as a position.
+     */
+    suspend fun playQueue(): SavedQueue? {
+        val q = get("getPlayQueue")["playQueue"]?.jsonObject ?: return null
+        val songs = q["entry"]?.jsonArray.orEmptyArray().map { songItem(it.jsonObject) }
+        if (songs.isEmpty()) return null
+        val currentId = q.str("current")
+        return SavedQueue(
+            tracks = songs,
+            index = songs.indexOfFirst { it.itemId == currentId }.coerceAtLeast(0),
+            positionMs = q.long("position") ?: 0L,
+            changedBy = q.str("changedBy"),
+        )
+    }
+
+    /** Hand the current queue to the server so another client can pick it up. */
+    suspend fun savePlayQueue(songIds: List<String>, currentId: String?, positionMs: Long) {
+        if (songIds.isEmpty()) return
+        val params = buildMap {
+            currentId?.let { put("current", it) }
+            put("position", positionMs.coerceAtLeast(0).toString())
+        }
+        get("savePlayQueue", params, repeated = songIds.map { "id" to it })
+    }
+
+    /**
+     * Which OpenSubsonic extensions this server implements.
+     *
+     * The app probes-and-falls-back everywhere else (see [getLyrics]), which costs a
+     * failed round trip per call on a server that doesn't have the endpoint. Asking
+     * once is cheaper and, more usefully, lets the UI stop offering things the
+     * server cannot do. Returns an empty map on a server that has never heard of the
+     * endpoint — which is itself the answer.
+     */
+    suspend fun openSubsonicExtensions(): Map<String, List<Int>> = try {
+        get("getOpenSubsonicExtensions")["openSubsonicExtensions"]?.jsonArray.orEmptyArray()
+            .mapNotNull { el ->
+                val o = el.jsonObject
+                val name = o.str("name") ?: return@mapNotNull null
+                name to o["versions"]?.jsonArray.orEmptyArray().mapNotNull { it.jsonPrimitive.intOrNull }
+            }.toMap()
+    } catch (_: SubsonicException) {
+        emptyMap()
     }
 
     /** Delete a playlist by id. The server removes it and its track associations. */
@@ -332,31 +504,7 @@ class SubsonicClient(
         try {
             val root = get("getLyricsBySongId", mapOf("id" to songId))
             val structured = root["lyricsList"]?.jsonObject?.get("structuredLyrics")?.jsonArray
-            if (structured != null && structured.isNotEmpty()) {
-                val entry = structured.firstOrNull()?.jsonObject ?: return null
-                val synced = entry.str("synced") == "true"
-                val linesArray = entry["line"]?.jsonArray
-                if (linesArray != null) {
-                    val text = buildString {
-                        for (lineEl in linesArray) {
-                            val line = lineEl.jsonObject
-                            val start = line.long("start") ?: 0L
-                            val value = line.str("value").orEmpty()
-                            if (synced && start > 0) {
-                                // Format as LRC [mm:ss.xx] so MaLyrics can parse it.
-                                val mm = start / 60_000
-                                val ss = (start % 60_000) / 1_000
-                                val cs = (start % 1_000) / 10
-                                append("[${mm}:${ss.toString().padStart(2, '0')}.${cs.toString().padStart(2, '0')}]$value")
-                            } else {
-                                append(value)
-                            }
-                            append("\n")
-                        }
-                    }
-                    return MaLyrics(text.trimEnd(), synced = synced)
-                }
-            }
+            StructuredLyrics.parse(structured)?.let { return it }
         } catch (_: SubsonicException) {
             // Server doesn't support getLyricsBySongId — fall through to legacy.
         }

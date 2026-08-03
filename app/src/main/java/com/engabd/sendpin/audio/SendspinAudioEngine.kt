@@ -105,6 +105,101 @@ class SendspinAudioEngine(private val clock: ClockSync) {
          * converges — that delay is dead air at the start of the track.
          */
         const val HOLD_POLL_MS = 25L
+
+        /**
+         * How long a stream is kept alive after `stream/end` before the codec and
+         * track are torn down.
+         *
+         * Music Assistant ends the stream between *every* track, so `stream/end` is
+         * not "playback stopped" — it is usually a track boundary with the next
+         * `stream/start` a few milliseconds behind. Tearing down on it truncated the
+         * tail (the track still held ~1 s of PCM) and rebuilt for the next track,
+         * which is the gap. Lingering longer than the track buffer means a genuine
+         * stop still drains completely, and a track change finds everything alive.
+         */
+        const val END_LINGER_MS = 2_000L
+
+        /** Poll interval while waiting for the track to play out its tail. */
+        const val DRAIN_POLL_MS = 20L
+
+        /** Cap on pumping the decoder's own pipeline out after end-of-stream. */
+        const val DRAIN_EOS_TIMEOUT_MS = 200L
+
+        /** Slack past the buffer's own length before giving up on a drain. */
+        const val DRAIN_TAIL_MARGIN_MS = 250L
+
+        /**
+         * How long to wait for the decode thread to leave the loop before releasing
+         * the track under it. The worker can be parked inside a blocking
+         * `AudioTrack.write`, and releasing the track from another thread while it
+         * is in there is a use-after-free in native code.
+         */
+        const val WORKER_JOIN_MS = 500L
+
+        /** Float is 4 bytes per sample, 24-bit packed 3, everything else 2. */
+        fun bytesPerSample(encoding: Int): Int = when (encoding) {
+            AudioFormat.ENCODING_PCM_FLOAT -> 4
+            AudioFormat.ENCODING_PCM_24BIT_PACKED -> 3
+            else -> 2
+        }
+    }
+
+    /**
+     * Whether the next stream can carry on through the live codec and track, or
+     * needs new ones.
+     *
+     * Two booleans rather than one because they fail independently. MA's per-track
+     * FLAC `codec_header` is a STREAMINFO block carrying that track's own total
+     * sample count and MD5, so it differs between tracks even when the *format* is
+     * identical — meaning [reuseCodec] is usually false at a track boundary while
+     * [reuseTrack] stays true. [reuseTrack] is the one that matters: the AudioTrack
+     * is where the previous track's unplayed tail lives, and where a rebuild turns
+     * into silence. Rebuilding just the decoder costs tens of milliseconds, hidden
+     * entirely under the ~1 s of PCM already queued.
+     *
+     * Pure, like [HeadGate], because the engine around it cannot be instantiated
+     * off-device.
+     */
+    internal object StreamContinuity {
+        data class Plan(val reuseTrack: Boolean, val reuseCodec: Boolean)
+
+        fun plan(
+            prev: StreamStartPlayerInfo?,
+            next: StreamStartPlayerInfo,
+            prevHiRes: Boolean,
+            nextHiRes: Boolean,
+        ): Plan {
+            if (prev == null) return Plan(reuseTrack = false, reuseCodec = false)
+            val prevPcm = prev.codec.equals("pcm", ignoreCase = true)
+            val nextPcm = next.codec.equals("pcm", ignoreCase = true)
+            // Channel count is compared after the same coercion start() applies, or a
+            // server claiming 6 channels twice would look like a change.
+            val reuseTrack = prev.sampleRate == next.sampleRate &&
+                prev.channels.coerceIn(1, 2) == next.channels.coerceIn(1, 2) &&
+                prevHiRes == nextHiRes &&
+                prevPcm == nextPcm
+            val reuseCodec = reuseTrack &&
+                prev.codec.equals(next.codec, ignoreCase = true) &&
+                prev.bitDepth == next.bitDepth &&
+                prev.codecHeader == next.codecHeader
+            return Plan(reuseTrack, reuseCodec)
+        }
+    }
+
+    /**
+     * How long to wait before writing the head of a stream.
+     *
+     * Split out because of [bufferedUs]: while a track is rebuilt for every stream
+     * it is always empty when the head is written, and scheduling against the raw
+     * timestamp is right. The moment a track survives a track change, a sample
+     * written now is not heard until the queued audio ahead of it has played, so
+     * scheduling against the raw timestamp puts every continuation exactly one
+     * buffer late. Subtracting what is already queued is what keeps the two cases
+     * on the same clock.
+     */
+    internal object Scheduling {
+        fun waitUs(headLocalUs: Long, nowUs: Long, bufferedUs: Long, staticDelayUs: Long): Long =
+            headLocalUs - staticDelayUs - bufferedUs - nowUs
     }
 
     /**
@@ -176,20 +271,98 @@ class SendspinAudioEngine(private val clock: ClockSync) {
     @Volatile private var headArmedAtMs = 0L
     @Volatile private var volume = 1.0f
 
+    /**
+     * Muted because the clock hasn't converged, per the spec's "mute output, keep
+     * buffering" rule. Kept apart from [volume] so restoring it can't clobber what
+     * the user or the server set.
+     */
+    @Volatile private var syncMuted = false
+
+    /**
+     * The next frame continues a stream that was already playing, rather than
+     * starting a cold one. Distinct from [awaitStart] because the two want opposite
+     * things when the clock is unready: a cold head is held (the track is silent
+     * anyway), a continuation is written immediately (the track is mid-playback and
+     * holding it would underrun the tail that is still playing).
+     */
+    @Volatile private var awaitContinuation = false
+
+    /** `stream/end` seen; the teardown is deferred by [END_LINGER_MS]. */
+    @Volatile private var endPending = false
+    @Volatile private var endPendingAtMs = 0L
+
+    /** Frames handed to the track since it was built, for [bufferedUs]. */
+    @Volatile private var framesWritten = 0L
+
+    /** The format the live codec/track were built for, for the reuse decision. */
+    private var currentFormat: StreamStartPlayerInfo? = null
+    private var currentHiRes = false
+
     /** Arm the head-of-stream gate and restart its deadline. */
     private fun armHead() {
         awaitStart = true
+        awaitContinuation = false
         headArmedAtMs = android.os.SystemClock.elapsedRealtime()
     }
 
+    /** The volume actually applied, honouring a sync mute without losing [volume]. */
+    private fun effectiveVolume(): Float = if (syncMuted) 0f else volume
+
+    /**
+     * Mute/unmute for clock-convergence reasons. Decoding and writing continue —
+     * the spec's rule is "mute output and continue buffering", not "stop".
+     */
+    fun setSyncMuted(muted: Boolean) {
+        if (syncMuted == muted) return
+        syncMuted = muted
+        track?.setVolume(effectiveVolume())
+    }
+
+    /**
+     * How much audio is queued in the track but not yet heard, in microseconds.
+     *
+     * Zero for a freshly built track, so the cold-start path behaves exactly as it
+     * did before continuations existed.
+     */
+    private fun bufferedUs(): Long {
+        val t = track ?: return 0L
+        if (trackSampleRate <= 0) return 0L
+        // getPlaybackHeadPosition is a *wrapping* Int frame counter; mask it back to
+        // unsigned before comparing against our own running total.
+        val head = t.playbackHeadPosition.toLong() and 0xFFFF_FFFFL
+        return ((framesWritten - head).coerceAtLeast(0L)) * 1_000_000L / trackSampleRate
+    }
+
+    /** Bytes per frame for the encoding the live track was built with. */
+    private fun bytesPerFrame(): Int = bytesPerSample(trackEncoding) * trackChannels.coerceAtLeast(1)
+
     @Synchronized
     fun start(format: StreamStartPlayerInfo) {
-        stop()
-        val channels = format.channels.coerceIn(1, 2)
-        isPcm = format.codec.equals("pcm", ignoreCase = true)
         // Hi-res is only worth asking for when the source actually has the bits:
         // a 16-bit file widened on the way out is padding, not resolution.
         val wantHiRes = bitPerfect && format.bitDepth >= 24
+        val plan = StreamContinuity.plan(currentFormat, format, currentHiRes, wantHiRes)
+
+        // A track boundary: MA ended the last stream moments ago and the track is
+        // still playing its tail. Carry straight on through it.
+        if (endPending && running && plan.reuseTrack) {
+            endPending = false
+            if (!plan.reuseCodec) rebuildCodecKeeping(format, wantHiRes)
+            currentFormat = format
+            currentHiRes = wantHiRes
+            // Not armHead(): the track is mid-playback, so holding it would starve
+            // the audio still queued ahead of this frame.
+            awaitContinuation = true
+            awaitStart = false
+            Log.d(TAG, "continue ${format.codec} ${format.sampleRate}/${format.bitDepth} (codec reused=${plan.reuseCodec})")
+            return
+        }
+
+        // Genuine (re)start. Drain first so a pending end doesn't lose its tail.
+        releaseInternal(drain = endPending)
+
+        val channels = format.channels.coerceIn(1, 2)
+        isPcm = format.codec.equals("pcm", ignoreCase = true)
         codec = when (format.codec.lowercase()) {
             "opus" -> createOpusDecoder(format.sampleRate, channels, format.codecHeader)
             "flac" -> createFlacDecoder(format.sampleRate, channels, format.bitDepth, format.codecHeader, wantHiRes)
@@ -197,19 +370,64 @@ class SendspinAudioEngine(private val clock: ClockSync) {
         }
         trackSampleRate = format.sampleRate
         trackChannels = channels
+        framesWritten = 0L
         // Passthrough has no decoder to ask, so the server's claim is the only
         // description of the bytes and the track is built now. Decoded streams
         // wait for INFO_OUTPUT_FORMAT_CHANGED — see ensureTrackFor.
         track = if (isPcm) {
             val enc = if (wantHiRes) AudioFormat.ENCODING_PCM_24BIT_PACKED else AudioFormat.ENCODING_PCM_16BIT
-            createTrack(format.sampleRate, channels, enc).also { it.setVolume(volume); it.play() }
+            trackEncoding = enc
+            createTrack(format.sampleRate, channels, enc).also { it.setVolume(effectiveVolume()); it.play() }
         } else {
             null
         }
+        currentFormat = format
+        currentHiRes = wantHiRes
+        endPending = false
         armHead()
         running = true
-        worker = thread(name = "sendspin-audio", isDaemon = true) { runLoop() }
+        // Guard: a continuation leaves the worker alive, and a second one writing to
+        // the same track would interleave two decoders into one stream.
+        if (worker == null) worker = thread(name = "sendspin-audio", isDaemon = true) { runLoop() }
         Log.d(TAG, "start ${format.codec} ${format.sampleRate}/${format.bitDepth} ch=$channels hires=$wantHiRes")
+    }
+
+    /**
+     * Swap the decoder without touching the track.
+     *
+     * Deliberately leaves [trackSampleRate]/[trackChannels]/[trackEncoding] alone so
+     * the new decoder's `INFO_OUTPUT_FORMAT_CHANGED` matches in [ensureTrackFor] and
+     * keeps the live track — that track is holding the previous song's tail.
+     */
+    private fun rebuildCodecKeeping(format: StreamStartPlayerInfo, wantHiRes: Boolean) {
+        runCatching { codec?.stop() }
+        runCatching { codec?.release() }
+        val channels = format.channels.coerceIn(1, 2)
+        isPcm = format.codec.equals("pcm", ignoreCase = true)
+        codec = runCatching {
+            when (format.codec.lowercase()) {
+                "opus" -> createOpusDecoder(format.sampleRate, channels, format.codecHeader)
+                "flac" -> createFlacDecoder(format.sampleRate, channels, format.bitDepth, format.codecHeader, wantHiRes)
+                else -> null
+            }
+        }.onFailure { Log.w(TAG, "codec rebuild failed: ${it.message}") }.getOrNull()
+    }
+
+    /**
+     * `stream/end` — mark the stream finished and *do nothing else*.
+     *
+     * The worker keeps running, the codec and track stay alive, and the ~1 s of PCM
+     * already queued keeps playing. Tearing down here is what truncated the end of
+     * every track: `AudioTrack.flush()` discards unplayed audio, and MA sends
+     * `stream/end` at every track boundary, not just when playback stops.
+     *
+     * The teardown happens in the decode loop once [END_LINGER_MS] has passed with
+     * nothing left to play — or never, if the next `stream/start` arrives first.
+     */
+    fun endOfStream() {
+        if (!running) return
+        endPending = true
+        endPendingAtMs = android.os.SystemClock.elapsedRealtime()
     }
 
     fun submit(frame: ByteArray) {
@@ -218,39 +436,131 @@ class SendspinAudioEngine(private val clock: ClockSync) {
         val f = Frame(parseTimestampUs(frame), frame.copyOfRange(HEADER_SIZE, frame.size))
         if (queue.offer(f)) return
         // Full. Which end to sacrifice depends on what the queue is holding: normally
-        // the oldest frame is the most stale and goes, but while the head gate is
-        // armed the oldest frame is the *start of the track* the gate exists to
-        // protect — dropping it there would reintroduce the bug from the other side.
-        if (awaitStart) return
+        // the oldest frame is the most stale and goes, but while a gate is armed the
+        // oldest frame is the *start of the track* the gate exists to protect —
+        // dropping it there would reintroduce the bug from the other side.
+        if (awaitStart || awaitContinuation) return
         queue.poll()
         queue.offer(f)
     }
 
-    /** stream/clear — a seek or track jump: drop buffered audio and reset. */
+    /**
+     * `stream/clear` — a seek or track jump: drop buffered audio and reset.
+     *
+     * This discard is correct and stays: the point of a seek is that everything
+     * already queued is now wrong. That is the opposite of [endOfStream], where the
+     * queued audio is the tail the listener is still owed.
+     */
     fun flush() {
         queue.clear()
-        // A seek or track jump restarts from a known point, so the next frame is a
-        // head-of-stream again and gets scheduled like one.
+        // A seek restarts from a known point, so the next frame is a head-of-stream
+        // again and gets scheduled like one.
+        endPending = false
         armHead()
         try { codec?.flush(); codec?.start() } catch (_: Exception) {}
         try { track?.pause(); track?.flush(); track?.play() } catch (_: Exception) {}
+        // The track's frame counter resets with the flush, so ours has to as well or
+        // bufferedUs() reads negative and the next head schedules early.
+        framesWritten = 0L
     }
 
-    @Synchronized
-    fun stop() {
+    /**
+     * Tear the engine down for good — disconnect, or permanent audio-focus loss.
+     * Drains rather than discards, so a stop at the end of a track still plays out.
+     */
+    fun release() = releaseInternal(drain = true)
+
+    /**
+     * @param drain let the track play out what it holds before releasing it.
+     *   False only when the audio is already known to be unwanted.
+     */
+    private fun releaseInternal(drain: Boolean) {
+        // The join must happen *outside* the monitor: the worker calls the
+        // synchronized ensureTrackFor, so joining while holding the lock deadlocks.
         running = false
-        worker?.interrupt(); worker = null
-        queue.clear()
-        try { codec?.stop() } catch (_: Exception) {}
-        try { codec?.release() } catch (_: Exception) {}
-        codec = null
-        try { track?.pause(); track?.flush(); track?.release() } catch (_: Exception) {}
-        track = null
+        val w = worker
+        worker = null
+        w?.interrupt()
+        try { w?.join(WORKER_JOIN_MS) } catch (_: InterruptedException) {}
+        synchronized(this) {
+            queue.clear()
+            if (drain) drainCodecAndTrack()
+            runCatching { codec?.stop() }
+            runCatching { codec?.release() }
+            codec = null
+            // Without the drain above this is the discard that truncated tails; with
+            // it, everything worth hearing has already been played out.
+            runCatching { track?.pause(); track?.flush(); track?.release() }
+            track = null
+            currentFormat = null
+            endPending = false
+            framesWritten = 0L
+        }
+    }
+
+    /**
+     * Play out what the decoder and the track are still holding.
+     *
+     * Two stages, and both are needed. The decoder has its own internal pipeline
+     * that a plain `stop()` discards, so it is drained with an explicit
+     * end-of-stream buffer first. Then `AudioTrack.stop()` — which in `MODE_STREAM`
+     * plays the remaining data out rather than dropping it, unlike `flush()` — but
+     * it returns immediately and drains *asynchronously*, so releasing straight
+     * afterwards would truncate anyway. Hence the bounded wait on the playback head.
+     */
+    private fun drainCodecAndTrack() {
+        val t = track ?: return
+        val c = codec
+        if (c != null && !isPcm) {
+            runCatching {
+                val deadline = android.os.SystemClock.elapsedRealtime() + DRAIN_EOS_TIMEOUT_MS
+                val inIdx = c.dequeueInputBuffer(DEQUEUE_TIMEOUT_US)
+                if (inIdx >= 0) {
+                    c.queueInputBuffer(inIdx, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                }
+                val info = MediaCodec.BufferInfo()
+                while (android.os.SystemClock.elapsedRealtime() < deadline) {
+                    val outIdx = c.dequeueOutputBuffer(info, DEQUEUE_TIMEOUT_US)
+                    if (outIdx < 0) {
+                        if (outIdx == MediaCodec.INFO_TRY_AGAIN_LATER) continue else break
+                    }
+                    if (info.size > 0) {
+                        c.getOutputBuffer(outIdx)?.let { out ->
+                            out.position(info.offset)
+                            out.limit(info.offset + info.size)
+                            writeToTrack(t, out, info.size)
+                        }
+                    }
+                    c.releaseOutputBuffer(outIdx, false)
+                    if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) break
+                }
+            }
+        }
+        runCatching {
+            t.stop()
+            val bufferMs = if (trackSampleRate > 0) {
+                t.bufferSizeInFrames * 1000L / trackSampleRate
+            } else 0L
+            val deadline = android.os.SystemClock.elapsedRealtime() + bufferMs + DRAIN_TAIL_MARGIN_MS
+            var last = -1L
+            var still = 0
+            while (android.os.SystemClock.elapsedRealtime() < deadline) {
+                if (t.playState == AudioTrack.PLAYSTATE_STOPPED) break
+                val head = t.playbackHeadPosition.toLong() and 0xFFFF_FFFFL
+                if (head == last) {
+                    if (++still >= 2) break
+                } else {
+                    still = 0
+                    last = head
+                }
+                Thread.sleep(DRAIN_POLL_MS)
+            }
+        }
     }
 
     fun setVolume(v: Float) {
         volume = v.coerceIn(0f, 1f)
-        track?.setVolume(volume)
+        track?.setVolume(effectiveVolume())
     }
 
     /**
@@ -291,6 +601,21 @@ class SendspinAudioEngine(private val clock: ClockSync) {
             //
             // Holding without polling lets the frames pile up instead. Whenever the
             // gate opens, the head of the queue is still the head of the *track*.
+            // ── Deferred teardown ──────────────────────────────────────────────
+            //
+            // `stream/end` only marks the stream finished; the tail is still playing.
+            // Once the queue has run dry and the linger has passed, nothing more is
+            // coming — the next stream/start would have cancelled this — so drain and
+            // release. Done here rather than on a timer so it stays serialised with
+            // decoding for free.
+            if (endPending && queue.isEmpty() &&
+                android.os.SystemClock.elapsedRealtime() - endPendingAtMs > END_LINGER_MS
+            ) {
+                Log.d(TAG, "stream ended and drained — releasing")
+                thread(name = "sendspin-release", isDaemon = true) { releaseInternal(drain = true) }
+                break
+            }
+
             var scheduleHead = false
             if (awaitStart) {
                 val stalledMs = android.os.SystemClock.elapsedRealtime() - headArmedAtMs
@@ -332,12 +657,23 @@ class SendspinAudioEngine(private val clock: ClockSync) {
                 } else if (scheduleHead) {
                     Log.i(TAG, "head released: err=${clock.errorUs()}us")
                 }
+            } else if (awaitContinuation) {
+                // First frame of the next track through a track that is still
+                // playing. Schedule it if the clock is good, but never hold: the
+                // audio ahead of it is draining in real time and a hold would leave
+                // a gap — the exact thing this path exists to avoid.
+                awaitContinuation = false
+                if (clock.isReadyForPlaybackStart()) awaitFrameTime(frame.serverTsUs)
             }
 
             if (isPcm) {
                 // Passthrough: the track was built in start() from the server's
                 // stated depth, because there is no decoder to ask.
-                track?.write(frame.payload, 0, frame.payload.size)
+                val t = track
+                if (t != null) {
+                    t.write(frame.payload, 0, frame.payload.size)
+                    countFrames(frame.payload.size)
+                }
                 continue
             }
 
@@ -373,7 +709,7 @@ class SendspinAudioEngine(private val clock: ClockSync) {
                             // pool on the decode hot path (~112 KB/s at 900 kbps FLAC).
                             out.position(info.offset)
                             out.limit(info.offset + info.size)
-                            t?.write(out, info.size, AudioTrack.WRITE_BLOCKING)
+                            if (t != null) writeToTrack(t, out, info.size)
                         }
                     }
                     c.releaseOutputBuffer(outIdx, false)
@@ -411,24 +747,39 @@ class SendspinAudioEngine(private val clock: ClockSync) {
      */
     private fun awaitFrameTime(serverTsUs: Long): Boolean {
         if (serverTsUs <= 0L) return true                         // nothing to schedule against
-        val localUs = clock.serverTimeToLocal(serverTsUs) - staticDelayMs * 1_000L
-        var waitUs = localUs - clock.nowUs()
+        val localUs = clock.serverTimeToLocal(serverTsUs)
+        val staticUs = staticDelayMs * 1_000L
+        // Whatever is already queued in the track plays before this frame does, so
+        // it counts against the wait. Zero on a fresh track.
+        val buffered = bufferedUs()
+        var waitUs = Scheduling.waitUs(localUs, clock.nowUs(), buffered, staticUs)
         if (waitUs < -LATE_TOLERANCE_US) {                        // too late to be useful
             Log.d(TAG, "head late by ${-waitUs / 1000}ms — dropped")
             return false
         }
         if (waitUs > MAX_LEAD_US) return true                     // implausible: don't stall on it
         while (running && waitUs > 0) {
-            // Sleep in slices so stop()/flush() are still responsive mid-wait.
+            // Sleep in slices so release()/flush() are still responsive mid-wait.
             val slice = waitUs.coerceAtMost(20_000L)
             try {
                 Thread.sleep(slice / 1_000L, ((slice % 1_000L) * 1_000L).toInt())
             } catch (_: InterruptedException) {
                 return false
             }
-            waitUs = localUs - clock.nowUs()
+            waitUs = Scheduling.waitUs(localUs, clock.nowUs(), bufferedUs(), staticUs)
         }
         return running
+    }
+
+    /** Write to the track and keep the frame count [bufferedUs] depends on. */
+    private fun writeToTrack(t: AudioTrack, buf: ByteBuffer, size: Int) {
+        val written = t.write(buf, size, AudioTrack.WRITE_BLOCKING)
+        if (written > 0) countFrames(written)
+    }
+
+    private fun countFrames(bytes: Int) {
+        val bpf = bytesPerFrame()
+        if (bpf > 0) framesWritten += bytes / bpf
     }
 
     // --- codec / track creation (derived from the massdroid engine) -------
@@ -459,8 +810,10 @@ class SendspinAudioEngine(private val clock: ClockSync) {
         trackSampleRate = rate
         trackChannels = ch
         trackEncoding = enc
+        // A new track starts empty, so the counter bufferedUs() reads must too.
+        framesWritten = 0L
         return runCatching {
-            createTrack(rate, ch, enc).also { it.setVolume(volume); it.play() }
+            createTrack(rate, ch, enc).also { it.setVolume(effectiveVolume()); it.play() }
         }.onFailure { Log.e(TAG, "couldn't build track for $rate/${ch}ch/enc=$enc: ${it.message}") }
             .getOrNull()
             .also { track = it }
@@ -472,13 +825,8 @@ class SendspinAudioEngine(private val clock: ClockSync) {
      */
     private fun createTrack(sampleRate: Int, channels: Int, encoding: Int): AudioTrack {
         val channelMask = if (channels == 1) AudioFormat.CHANNEL_OUT_MONO else AudioFormat.CHANNEL_OUT_STEREO
-        // Float is 4 bytes per sample, 24-bit packed 3, 16-bit 2. The buffer is
-        // sized for ~1 s of headroom whichever it is.
-        val bytesPerSample = when (encoding) {
-            AudioFormat.ENCODING_PCM_FLOAT -> 4
-            AudioFormat.ENCODING_PCM_24BIT_PACKED -> 3
-            else -> 2
-        }
+        // The buffer is sized for ~1 s of headroom whatever the encoding.
+        val bytesPerSample = bytesPerSample(encoding)
         val minBuf = AudioTrack.getMinBufferSize(sampleRate, channelMask, encoding)
         val bufSize = max(minBuf, sampleRate * channels * bytesPerSample)
         val builder = AudioTrack.Builder()

@@ -20,6 +20,36 @@ object AudioOutputs {
     data class Output(val id: String, val label: String, val isUsb: Boolean)
 
     /**
+     * The highest sample rate this device will actually open a stereo track at.
+     *
+     * Asked rather than assumed, because advertising a rate to Music Assistant is a
+     * commitment: the server may only stream a format the client listed, so listing
+     * 192 kHz on a phone that cannot open it means the server picks it and nothing
+     * plays at all. `getMinBufferSize` returns `ERROR_BAD_VALUE` for a rate the
+     * output doesn't support, which is the cheapest honest probe available.
+     *
+     * Note this says nothing about whether the *mixer* will pass the rate through
+     * untouched — only that a track can be created. Bit-perfect output is the
+     * native engine's job, not this one's.
+     */
+    fun maxSupportedSampleRate(
+        candidates: List<Int> = listOf(192_000, 176_400, 96_000, 88_200, 48_000),
+        encoding: Int = android.media.AudioFormat.ENCODING_PCM_16BIT,
+    ): Int {
+        for (rate in candidates) {
+            val size = runCatching {
+                android.media.AudioTrack.getMinBufferSize(
+                    rate,
+                    android.media.AudioFormat.CHANNEL_OUT_STEREO,
+                    encoding,
+                )
+            }.getOrDefault(android.media.AudioTrack.ERROR_BAD_VALUE)
+            if (size > 0) return rate
+        }
+        return 48_000
+    }
+
+    /**
      * Every output device currently attached, most interesting first: USB before
      * wired, wired before Bluetooth, the built-in speaker last. A phone lists the
      * same physical output under several types, so entries are de-duplicated by

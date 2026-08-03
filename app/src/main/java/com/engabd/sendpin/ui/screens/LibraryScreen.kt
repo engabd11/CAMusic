@@ -92,6 +92,8 @@ fun LibraryScreen(
     val query by viewModel.query.collectAsState()
     val refreshing by viewModel.refreshing.collectAsState()
     val showCreatePlaylist by viewModel.showCreatePlaylist.collectAsState()
+    val addingToPlaylist by viewModel.addingToPlaylist.collectAsState()
+    val playlistChoices by viewModel.playlistChoices.collectAsState()
     val palette = LocalPalette.current
     val snackbar = remember { SnackbarHostState() }
     // Long-press target. Hoisted to the screen so the sheet is a sibling of the
@@ -156,6 +158,11 @@ fun LibraryScreen(
                 onDownload = if (picked.provider == SubsonicClient.PROVIDER) {
                     { viewModel.download(picked) }
                 } else null,
+                // A playlist has nothing to be filed into but itself, and an artist
+                // resolves to albums rather than tracks — so neither is offered.
+                onAddToPlaylist = if (picked.mediaType == "track" || picked.mediaType == "album") {
+                    { viewModel.openAddToPlaylist(picked) }
+                } else null,
                 // Only playlists can be deleted; the ViewModel routes to whichever
                 // backend owns the one picked.
                 onDelete = if (picked.mediaType == "playlist") {
@@ -170,6 +177,15 @@ fun LibraryScreen(
             CreatePlaylistDialog(
                 onDismiss = viewModel::closeCreatePlaylist,
                 onCreate = viewModel::createPlaylist,
+            )
+        }
+
+        addingToPlaylist?.let { pending ->
+            PlaylistPickerSheet(
+                itemName = pending.name,
+                playlists = playlistChoices,
+                onClose = viewModel::closeAddToPlaylist,
+                onPick = viewModel::addToPlaylist,
             )
         }
     }
