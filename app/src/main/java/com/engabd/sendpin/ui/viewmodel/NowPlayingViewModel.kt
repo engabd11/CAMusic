@@ -1119,7 +1119,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                 _lyrics.value = try {
                     val sc = subsonicClient()
                     val lyrics = sc?.lyrics(track.id)
-                    if (lyrics != null) Load.Ready(lyrics)
+                    if (lyrics != null) Load.Ready(lyrics as MaLyrics)
                     else Load.Failed("No lyrics found")
                 } catch (e: Exception) {
                     Load.Failed(e.message ?: "Couldn't fetch lyrics")

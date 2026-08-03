@@ -540,10 +540,10 @@ class Playback(private val app: Context) {
 
     fun disablePlayer() = disconnect()
 
-    fun disconnect(stopService: Boolean = true) {
+    fun disconnect(stopService: Boolean = true, reason: String = "user_request") {
         abandonAudioFocus()
         engine?.stop(); engine = null
-        client?.close(); client = null
+        client?.disconnect(reason); client?.close(); client = null
         positionTicker?.cancel(); positionTicker = null
         progressAnchor = null
         _connected.value = false
