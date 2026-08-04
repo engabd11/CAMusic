@@ -219,6 +219,41 @@ class Playback(private val app: Context) {
             if (base.isNotBlank() && user.isNotBlank()) connectToServer(sendspinUrlFrom(base))
             _bootChecked.value = true
         }
+        // Wire the app lifecycle observer for warm reconnect and toggleable
+        // background connection. The observer is registered on SendpinApp; here
+        // we give it the callbacks that control the connection.
+        AppLifecycleObserver.register(app).let { observer ->
+            observer.onBackground = { keepAlive ->
+                // Keep-alive on is the default and means: change nothing. Staying
+                // connected in the background *is* the feature — it is how Home
+                // Assistant TTS announcements reach this phone, and a phone that
+                // hangs up the moment it is backgrounded cannot receive one.
+                //
+                // Off means the user does not use announcements and would rather
+                // have the battery. Dropping the connection lets
+                // SendspinConnectionService stop, and it takes the partial wake
+                // lock, the WIFI_MODE_FULL_LOW_LATENCY lock and the persistent
+                // notification with it — which is the whole cost being saved.
+                //
+                // Never while audio is flowing, either way. `disconnect` releases
+                // the engine and closes the socket whatever `stopService` says, so
+                // without the `isPlaying` guard, locking the screen mid-song stopped
+                // the music.
+                if (!keepAlive && _connected.value && !_isPlaying.value) {
+                    disconnect(stopService = true, reason = "user_request")
+                }
+            }
+            observer.onForeground = {
+                // Only reconnect if we were connected before backgrounding and
+                // aren't already. Run in a scope because the check reads DataStore.
+                scope.launch {
+                    if (!_connected.value && settings.maBaseUrl.first().isNotBlank()) {
+                        val base = settings.maBaseUrl.first()
+                        if (base.isNotBlank()) connectToServer(sendspinUrlFrom(base))
+                    }
+                }
+            }
+        }
         // Project the playhead between `server/state` messages, so the bar moves
         // smoothly instead of stepping whenever the server happens to speak.
         //
@@ -611,14 +646,11 @@ class Playback(private val app: Context) {
     }
 
     /**
-     * Bring the player back up, optionally under a new [name].
-     *
-     * The name is saved *here*, before the connection is opened, because the hello is
-     * the only place it's announced — a rename that lands after the socket is up is a
-     * rename the server never hears about.
-     */
-    /**
      * Bring the player up under [name], registering afresh if the name has changed.
+     *
+     * The name is saved *here*, before the connection is opened, because the hello
+     * is the only place it's announced — a rename that lands after the socket is up
+     * is a rename the server never hears about.
      *
      * Music Assistant keys a Sendspin player on its `client_id` and keeps the name it
      * was **first registered under** — the protocol has no rename message, and the

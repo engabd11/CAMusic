@@ -333,7 +333,12 @@ class ArtistDetailViewModel(
                 val pending = tracks.filterNot { downloads.isDownloaded(it.itemId) }
                 if (pending.isEmpty()) { _toast.tryEmit("Already downloaded"); return@launch }
                 _toast.tryEmit("Downloading ${pending.size} tracks…")
-                val ok = downloads.downloadAll(pending, urlFor = { sc.downloadUrl(it.itemId) })
+                val ok = downloads.downloadAll(
+                    pending,
+                    urlFor = { sc.downloadUrl(it.itemId) },
+                    wifiOnly = settings.downloadWifiOnly.first(),
+                    storageCapMb = settings.downloadStorageCapMb.first(),
+                )
                 _toast.tryEmit(
                     when (ok) {
                         pending.size -> "Downloaded ${album.name}"
@@ -407,7 +412,12 @@ class ArtistDetailViewModel(
             val pending = tracks.filterNot { downloads.isDownloaded(it.itemId) }
             if (pending.isEmpty()) { _toast.tryEmit("Already downloaded"); return@launch }
             _toast.tryEmit("Downloading ${pending.size} tracks…")
-            val ok = downloads.downloadAll(pending, urlFor = { sc.downloadUrl(it.itemId) })
+            val ok = downloads.downloadAll(
+                pending,
+                urlFor = { sc.downloadUrl(it.itemId) },
+                wifiOnly = settings.downloadWifiOnly.first(),
+                storageCapMb = settings.downloadStorageCapMb.first(),
+            )
             _toast.tryEmit(
                 when (ok) {
                     pending.size -> "Downloaded ${ref.name}"

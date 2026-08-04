@@ -9,6 +9,7 @@ import coil.memory.MemoryCache
 import com.engabd.sendpin.audio.LocalPlayer
 import com.engabd.sendpin.download.DownloadManager
 import com.engabd.sendpin.ma.MaApiClient
+import com.engabd.sendpin.service.AppLifecycleObserver
 import com.engabd.sendpin.service.LocalPlaybackService
 import com.engabd.sendpin.service.MaNowPlaying
 import com.engabd.sendpin.service.Playback
@@ -75,6 +76,9 @@ class SendpinApp : Application(), ImageLoaderFactory {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        // Register the process lifecycle observer for warm reconnect and
+        // toggleable background connection (TTS battery saver).
+        AppLifecycleObserver.register(this)
         // The media notification follows the local player's session rather than being
         // started by whichever screen happened to press play.
         //
