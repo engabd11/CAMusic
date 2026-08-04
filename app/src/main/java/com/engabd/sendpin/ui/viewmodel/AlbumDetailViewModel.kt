@@ -233,6 +233,7 @@ class AlbumDetailViewModel(
                 urlFor = { sc.downloadUrl(it.itemId) },
                 wifiOnly = settings.downloadWifiOnly.first(),
                 storageCapMb = settings.downloadStorageCapMb.first(),
+            )
             _toast.tryEmit(
                 when (ok) {
                     pending.size -> "Downloaded ${_album.value?.name ?: "album"}"

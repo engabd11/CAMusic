@@ -47,7 +47,7 @@ class AppSettings(private val context: Context) {
         private val RADIO_MODE = booleanPreferencesKey("radio_mode")            // MA keeps the music going past the queue
         private val STATIC_DELAY_MS = stringPreferencesKey("sendspin_static_delay_ms") // per-player latency trim
         private val REPLAY_GAIN = stringPreferencesKey("replay_gain_mode")      // off | track | album
-    private val KEEP_ALIVE_ANNOUNCEMENTS = booleanPreferencesKey("keep_alive_announcements") // persist connection for TTS
+        private val KEEP_ALIVE_ANNOUNCEMENTS = booleanPreferencesKey("keep_alive_announcements") // persist connection for TTS
 
         /**
          * How far the sync trim can be pushed either way. Matches the range Music

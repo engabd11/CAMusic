@@ -161,6 +161,7 @@ class DownloadManager(
         if (wifiOnly && !isOnWifi(context)) {
             // Mark as failed so the UI shows why, rather than silently skipping.
             fail(item)
+            return@withContext false
         }
         putJob(DownloadJob(item.itemId, item.name, item.subtitle, 0f))
         try {

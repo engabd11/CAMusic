@@ -4,9 +4,7 @@ import android.content.Context
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
-import com.engabd.sendpin.audio.SendspinAudioEngine
 import com.engabd.sendpin.data.AppSettings
-import com.engabd.sendpin.protocol.SendspinClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob

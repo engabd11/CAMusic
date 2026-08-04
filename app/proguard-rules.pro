@@ -23,7 +23,7 @@
 -dontwarn org.openjsse.**
 
 # Coil loads image fetchers via reflection.
--keep class coil coil.** { *; }
+-keep class coil.** { *; }
 
 # ExoPlayer / media3 — reflection-heavy for decoder discovery.
 -dontwarn androidx.media3.**

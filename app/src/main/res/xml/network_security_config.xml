@@ -1,19 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  This app is LAN-first: Music Assistant, Navidrome, and Home Assistant all
+  run on the local network and almost never have TLS. Cleartext is permitted
+  globally because servers are discovered dynamically via mDNS and their IPs
+  are not known in advance — Android's <domain> element does not support
+  CIDR ranges, so private IP ranges cannot be enumerated.
+
+  The manifest's usesCleartextTraffic="true" is retained for compatibility
+  (Android reads it as a fallback when networkSecurityConfig is present).
+  This config is the authoritative source.
+-->
 <network-security-config>
-    <!--
-      Cleartext is only for LAN servers: Music Assistant, Navidrome, and Home
-      Assistant all run on the local network and almost never have TLS. Public
-      hosts must use HTTPS — the default for anything not listed below.
-    -->
-    <domain-config cleartextTrafficPermitted="true">
-        <!-- Private IPv4 ranges (RFC 1918) -->
-        <domain includeSubdomains="false">10.0.0.0/8</domain>
-        <domain includeSubdomains="false">172.16.0.0/12</domain>
-        <domain includeSubdomains="false">192.168.0.0/16</domain>
-        <!-- Loopback -->
-        <domain includeSubdomains="false">localhost</domain>
-        <!-- Tailscale / mesh .local mDNS hostnames -->
-        <domain includeSubdomains="true">local</domain>
-    </domain-config>
-    <!-- Everything else: cleartext denied (HTTPS only). -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <!-- System + user CAs — user CAs are needed for self-signed
+                 Navidrome/MA instances that do run TLS on the LAN. -->
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
 </network-security-config>
