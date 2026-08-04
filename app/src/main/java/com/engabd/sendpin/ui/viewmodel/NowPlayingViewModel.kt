@@ -637,106 +637,6 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         .mapNotNull { MaParse.event(it) }
         .shareIn(viewModelScope, SharingStarted.Eagerly)
 
-    init {
-        viewModelScope.launch {
-            val url = settings.maBaseUrl.first()
-            val user = settings.maUsername.first()
-            val pass = settings.maPassword.first()
-            if (url.isNotBlank()) api.connect(url, token = null, username = user.ifBlank { null }, password = pass.ifBlank { null })
-        }
-        viewModelScope.launch { settings.targetPlayer.collect { _target.value = it } }
-        viewModelScope.launch { settings.radioMode.collect { _radioMode.value = it } }
-        viewModelScope.launch {
-            settings.navStreamFormat.collect { navFormat = it.takeIf { f -> f != "raw" } }
-        }
-        // When this phone *is* the Music Assistant player, the Sendspin stream starting
-        // is proof that audio is flowing — which is exactly what releases an optimistic
-        // freeze in the official app, rather than a guess made from polled state. A
-        // remote speaker gives us no such signal and still relies on the poll
-        // corroborating the skip (see [anchorFromServer]).
-        viewModelScope.launch {
-            sendspinPlaying.collect { playing ->
-                if (playing && !isLocal) {
-                    val key = positionKey()
-                    if (positions.isFrozen(key)) releaseFreeze(key)
-                }
-            }
-        }
-        // Remember whatever the selected player last had loaded.
-        viewModelScope.launch {
-            combine(_players, _target) { players, target ->
-                val id = target.ifBlank { myPlayerId }
-                players.firstOrNull { it.playerId == id }?.nowPlaying
-            }.collect { np -> if (np != null && np.title.isNotBlank()) _lastTrack.value = np }
-        }
-        // A new track invalidates whatever the panels were showing.
-        viewModelScope.launch {
-            currentItem.map { it?.itemId }.distinctUntilChanged().collect {
-                _lyrics.value = Load.Idle
-                _similar.value = Load.Idle
-                _favoriteOverride.value = null
-                if (_queueItems.value !is Load.Idle) loadQueue(silent = true)
-            }
-        }
-        // The local queue lives in memory and can change under an open panel — a
-        // track finishing, a "play next", a drag — so the panel follows it.
-        viewModelScope.launch {
-            local.queue.collect {
-                if (isLocal && _queueItems.value !is Load.Idle) _queueItems.value = Load.Ready(localQueueItems())
-            }
-        }
-        viewModelScope.launch {
-            local.current.collect {
-                if (!isLocal) return@collect
-                _lyrics.value = Load.Idle
-                _similar.value = Load.Idle
-            }
-        }
-        viewModelScope.launch { api.state.collect { if (it == MaApiClient.State.CONNECTED) refresh() } }
-        // Poll for metadata (track info, volume, queue state). Position is driven
-        // by the server-anchored ticker, so this can be relaxed — 5s is enough for
-        // metadata + as a fallback anchor for the position engine.
-        viewModelScope.launch {
-            while (true) {
-                delay(5_000)
-                if (api.state.value == MaApiClient.State.CONNECTED) refresh()
-            }
-        }
-        // Refresh promptly on MA player/queue events, at a bounded rate.
-        //
-        // Deliberately `sample`, not `debounce`: MA emits `queue_time_updated` about
-        // once a second per active queue and bursts during skips, and debounce only
-        // emits after a gap of silence — a busy server starved it completely, leaving
-        // the 5s poll as the only refresh. Sample fires on a cadence regardless.
-        viewModelScope.launch {
-            maEvents.filter { it.isPlayerOrQueue }.sample(300).collect { refresh() }
-        }
-        // The queue's *contents* changed.
-        //
-        // A separate collector on purpose: `sample` drops events, and a
-        // `queue_items_updated` lost behind a burst of `queue_time_updated` is exactly
-        // the "added an album, the open panel never showed it" report. Matching by
-        // event name rather than by substring over the whole frame is what makes the
-        // two distinguishable at all.
-        viewModelScope.launch {
-            maEvents
-                .filter { it.changesQueueContents }
-                .filter { it.objectId == null || it.objectId == streamQueueId() }
-                .sample(400)
-                .collect { if (_queueItems.value !is Load.Idle) loadQueue(silent = true) }
-        }
-        // Belt and braces for a server that doesn't emit `queue_items_updated`: the
-        // item count moving is itself proof the list on screen is stale. This is also
-        // what covers "add to queue" issued from the library and the detail screens,
-        // whose ViewModels have no handle on this one.
-        viewModelScope.launch {
-            combine(_queues, _target, _players) { queues, _, _ ->
-                queues.firstOrNull { it.queueId == streamQueueId() }?.itemCount ?: 0
-            }.distinctUntilChanged().drop(1).collect {
-                if (_queueItems.value !is Load.Idle) loadQueue(silent = true)
-            }
-        }
-    }
 
     /** Only one refresh in flight; requests arriving during one collapse into a re-run. */
     private val refreshing = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -1357,20 +1257,135 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Deliberately the **last** thing in the class.
+     * Deliberately the **last** thing in the class, along with the init below it.
      *
-     * Property initialisers and init blocks run in source order, and this block
-     * starts collectors on `viewModelScope` — `Dispatchers.Main.immediate`, which
-     * does not defer on the main thread. A StateFlow hands over its current value
-     * synchronously, so these bodies run *during construction*: anything they
-     * touch that is declared below them is still null. That cost three separate
-     * launch crashes (`_radioMode`, `_frequent`, and `refreshing` here), each
-     * fixed by moving one property up, each time leaving the next one waiting.
+     * Property initialisers and init blocks run in source order, and these blocks
+     * start collectors on `viewModelScope` — `Dispatchers.Main.immediate`, which does
+     * not defer on the main thread. A StateFlow hands over its current value
+     * synchronously, so these bodies run *during construction*: anything they touch
+     * that is declared below them is still null. That cost three separate launch
+     * crashes (`_radioMode`, `_frequent`, and `refreshing`), each fixed by moving one
+     * property up, each time leaving the next one waiting.
      *
-     * Sitting at the bottom, every property in the class is initialised before
-     * any of this runs, and the whole class of bug is gone rather than one more
-     * instance of it. Nothing here needs to run early — it cannot: construction
-     * has to finish before anyone can call into the object anyway.
+     * This block used to sit in the middle of the class, and was the fourth instance:
+     * `api.state.collect { if (CONNECTED) refresh() }` below fired synchronously
+     * whenever the socket was already up when the ViewModel was built, and `refresh()`
+     * touches `refreshing`, which was declared further down. It only showed on a first
+     * clean start, because that is the run where connecting finishes during onboarding
+     * *before* Now Playing is first composed; on every later start the ViewModel is
+     * built while still disconnected and the collector hands over DISCONNECTED.
+     *
+     * Sitting at the bottom, every property in the class is initialised before any of
+     * this runs, and the whole class of bug is gone rather than one more instance of
+     * it. Nothing here needs to run early — it cannot: construction has to finish
+     * before anyone can call into the object anyway.
+     *
+     * **Do not add an init or a property below these two.**
+     */
+    init {
+        viewModelScope.launch {
+            val url = settings.maBaseUrl.first()
+            val user = settings.maUsername.first()
+            val pass = settings.maPassword.first()
+            if (url.isNotBlank()) api.connect(url, token = null, username = user.ifBlank { null }, password = pass.ifBlank { null })
+        }
+        viewModelScope.launch { settings.targetPlayer.collect { _target.value = it } }
+        viewModelScope.launch { settings.radioMode.collect { _radioMode.value = it } }
+        viewModelScope.launch {
+            settings.navStreamFormat.collect { navFormat = it.takeIf { f -> f != "raw" } }
+        }
+        // When this phone *is* the Music Assistant player, the Sendspin stream starting
+        // is proof that audio is flowing — which is exactly what releases an optimistic
+        // freeze in the official app, rather than a guess made from polled state. A
+        // remote speaker gives us no such signal and still relies on the poll
+        // corroborating the skip (see [anchorFromServer]).
+        viewModelScope.launch {
+            sendspinPlaying.collect { playing ->
+                if (playing && !isLocal) {
+                    val key = positionKey()
+                    if (positions.isFrozen(key)) releaseFreeze(key)
+                }
+            }
+        }
+        // Remember whatever the selected player last had loaded.
+        viewModelScope.launch {
+            combine(_players, _target) { players, target ->
+                val id = target.ifBlank { myPlayerId }
+                players.firstOrNull { it.playerId == id }?.nowPlaying
+            }.collect { np -> if (np != null && np.title.isNotBlank()) _lastTrack.value = np }
+        }
+        // A new track invalidates whatever the panels were showing.
+        viewModelScope.launch {
+            currentItem.map { it?.itemId }.distinctUntilChanged().collect {
+                _lyrics.value = Load.Idle
+                _similar.value = Load.Idle
+                _favoriteOverride.value = null
+                if (_queueItems.value !is Load.Idle) loadQueue(silent = true)
+            }
+        }
+        // The local queue lives in memory and can change under an open panel — a
+        // track finishing, a "play next", a drag — so the panel follows it.
+        viewModelScope.launch {
+            local.queue.collect {
+                if (isLocal && _queueItems.value !is Load.Idle) _queueItems.value = Load.Ready(localQueueItems())
+            }
+        }
+        viewModelScope.launch {
+            local.current.collect {
+                if (!isLocal) return@collect
+                _lyrics.value = Load.Idle
+                _similar.value = Load.Idle
+            }
+        }
+        viewModelScope.launch { api.state.collect { if (it == MaApiClient.State.CONNECTED) refresh() } }
+        // Poll for metadata (track info, volume, queue state). Position is driven
+        // by the server-anchored ticker, so this can be relaxed — 5s is enough for
+        // metadata + as a fallback anchor for the position engine.
+        viewModelScope.launch {
+            while (true) {
+                delay(5_000)
+                if (api.state.value == MaApiClient.State.CONNECTED) refresh()
+            }
+        }
+        // Refresh promptly on MA player/queue events, at a bounded rate.
+        //
+        // Deliberately `sample`, not `debounce`: MA emits `queue_time_updated` about
+        // once a second per active queue and bursts during skips, and debounce only
+        // emits after a gap of silence — a busy server starved it completely, leaving
+        // the 5s poll as the only refresh. Sample fires on a cadence regardless.
+        viewModelScope.launch {
+            maEvents.filter { it.isPlayerOrQueue }.sample(300).collect { refresh() }
+        }
+        // The queue's *contents* changed.
+        //
+        // A separate collector on purpose: `sample` drops events, and a
+        // `queue_items_updated` lost behind a burst of `queue_time_updated` is exactly
+        // the "added an album, the open panel never showed it" report. Matching by
+        // event name rather than by substring over the whole frame is what makes the
+        // two distinguishable at all.
+        viewModelScope.launch {
+            maEvents
+                .filter { it.changesQueueContents }
+                .filter { it.objectId == null || it.objectId == streamQueueId() }
+                .sample(400)
+                .collect { if (_queueItems.value !is Load.Idle) loadQueue(silent = true) }
+        }
+        // Belt and braces for a server that doesn't emit `queue_items_updated`: the
+        // item count moving is itself proof the list on screen is stale. This is also
+        // what covers "add to queue" issued from the library and the detail screens,
+        // whose ViewModels have no handle on this one.
+        viewModelScope.launch {
+            combine(_queues, _target, _players) { queues, _, _ ->
+                queues.firstOrNull { it.queueId == streamQueueId() }?.itemCount ?: 0
+            }.distinctUntilChanged().drop(1).collect {
+                if (_queueItems.value !is Load.Idle) loadQueue(silent = true)
+            }
+        }
+    }
+
+    /**
+     * The second of the two init blocks that close the class. See the note on the
+     * first: every `init` here has to stay below every property.
      */
     init {
         viewModelScope.launch {
