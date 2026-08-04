@@ -224,7 +224,13 @@ class Playback(private val app: Context) {
         // we give it the callbacks that control the connection.
         AppLifecycleObserver.register(app).let { observer ->
             observer.onBackground = { keepAlive ->
-                if (_connected.value) {
+                // Never while audio is flowing. `disconnect` releases the engine and
+                // closes the socket whatever `stopService` says — it is not a
+                // "change the goodbye reason" call — so without this guard, locking
+                // the screen or glancing at a notification mid-song stopped the
+                // music. Keeping playing in the background is the entire reason
+                // SendspinConnectionService exists.
+                if (_connected.value && !_isPlaying.value) {
                     // Warm goodbye: "restart" tells MA to hold the player slot for
                     // ~30 seconds. "user_request" drops it immediately.
                     disconnect(
