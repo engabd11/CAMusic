@@ -525,6 +525,31 @@ fun SettingsScreen(
                                 }
                             }
                         }
+
+                        // ── Background connection ───────────────────────────────────
+                        item(key = "keepalive") {
+                            var keepAlive by remember { mutableStateOf(true) }
+                            LaunchedEffect(Unit) { keepAlive = settings.keepAliveForAnnouncements.first() }
+                            GlassCard(radius = 16.dp) {
+                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    SectionHeader(Icons.Default.Campaign, "Announcements", accent)
+                                    ToggleRow(
+                                        "Stay reachable in the background",
+                                        "Keeps this phone connected so Home Assistant can speak to it - " +
+                                            "doorbells, timers, anything that announces. Turn it off to save " +
+                                            "battery if you never send announcements here: the connection, " +
+                                            "the wake lock and the ongoing notification all go with it.",
+                                        keepAlive, accent,
+                                    ) { keepAlive = it; scope.launch { settings.setKeepAliveForAnnouncements(it) } }
+                                    Text(
+                                        "Playback is unaffected either way - music started here keeps " +
+                                            "playing in the background, and the connection comes back when " +
+                                            "you reopen the app.",
+                                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
+                            }
+                        }
                     }
 
                     SettingsSection.AUDIO -> {

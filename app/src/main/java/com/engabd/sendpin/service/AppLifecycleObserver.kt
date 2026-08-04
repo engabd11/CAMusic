@@ -17,18 +17,20 @@ import kotlinx.coroutines.launch
 /**
  * Watches the app's process lifecycle and manages the Sendspin connection accordingly.
  *
- * Two behaviours, both driven by whether [keepAliveForAnnouncements] is on:
+ * One question, asked on backgrounding: does this phone still need to be reachable?
  *
- * - **Keep-alive on (default):** the connection persists through backgrounding. When
- *   the app goes to the background, [disconnect] is called with `reason = "restart"`
- *   — the spec's warm-reconnect signal, which asks MA to hold the player slot for
- *   ~30 seconds. On foreground return, [reconnect] brings it back. TTS announcements
- *   continue to work while backgrounded (the connection service stays up).
+ * - **Keep-alive on (default):** nothing happens. The connection and
+ *   `SendspinConnectionService` both stay up, which is what lets a Home Assistant
+ *   TTS announcement arrive while the app is in the background. This is the
+ *   behaviour the app has always had.
  *
- * - **Keep-alive off:** the connection is torn down with `reason = "user_request"`
- *   when playback goes idle and the app is backgrounded — no persistent service, no
- *   wake lock, no wifi lock. The connection only runs during active playback. This
- *   saves battery for users who don't use HA TTS announcements.
+ * - **Keep-alive off:** the connection is dropped once playback is idle, which lets
+ *   the connection service stop — releasing the partial wake lock, the
+ *   `WIFI_MODE_FULL_LOW_LATENCY` lock and the persistent notification it holds. For
+ *   users who never send announcements to this phone, that is the whole background
+ *   cost of the app, spent on nothing. It reconnects on return to the foreground.
+ *
+ * Neither disconnects while audio is playing — see the guard in [Playback].
  *
  * Registered on [SendpinApp] so it lives for the process lifetime.
  */

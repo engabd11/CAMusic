@@ -224,19 +224,23 @@ class Playback(private val app: Context) {
         // we give it the callbacks that control the connection.
         AppLifecycleObserver.register(app).let { observer ->
             observer.onBackground = { keepAlive ->
-                // Never while audio is flowing. `disconnect` releases the engine and
-                // closes the socket whatever `stopService` says — it is not a
-                // "change the goodbye reason" call — so without this guard, locking
-                // the screen or glancing at a notification mid-song stopped the
-                // music. Keeping playing in the background is the entire reason
-                // SendspinConnectionService exists.
-                if (_connected.value && !_isPlaying.value) {
-                    // Warm goodbye: "restart" tells MA to hold the player slot for
-                    // ~30 seconds. "user_request" drops it immediately.
-                    disconnect(
-                        stopService = !keepAlive,
-                        reason = if (keepAlive) "restart" else "user_request",
-                    )
+                // Keep-alive on is the default and means: change nothing. Staying
+                // connected in the background *is* the feature — it is how Home
+                // Assistant TTS announcements reach this phone, and a phone that
+                // hangs up the moment it is backgrounded cannot receive one.
+                //
+                // Off means the user does not use announcements and would rather
+                // have the battery. Dropping the connection lets
+                // SendspinConnectionService stop, and it takes the partial wake
+                // lock, the WIFI_MODE_FULL_LOW_LATENCY lock and the persistent
+                // notification with it — which is the whole cost being saved.
+                //
+                // Never while audio is flowing, either way. `disconnect` releases
+                // the engine and closes the socket whatever `stopService` says, so
+                // without the `isPlaying` guard, locking the screen mid-song stopped
+                // the music.
+                if (!keepAlive && _connected.value && !_isPlaying.value) {
+                    disconnect(stopService = true, reason = "user_request")
                 }
             }
             observer.onForeground = {
