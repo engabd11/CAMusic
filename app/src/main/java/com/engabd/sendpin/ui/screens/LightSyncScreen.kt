@@ -36,13 +36,47 @@ import com.engabd.sendpin.ha.LightSyncRepository
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.LightSyncViewModel
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 private val ModeFallback = listOf("auto", "subtle", "medium", "high", "intense", "extreme")
 private val EffectFallback = listOf("music", "movies", "fireworks")
 
+/**
+ * What the direct engine renders when the stored scheme is one it can't derive
+ * (album art, song). Mirrors `FALLBACK_SCHEME` in `SyncoEngine.kt` — kept in step
+ * so the direct screen shows the palette the room will actually be lit with.
+ */
+private val FALLBACK_COLOUR = com.engabd.sendpin.hue.ColorScheme.SUNSET.wire
+
+/**
+ * Picks the Light Sync screen for the active transport.
+ *
+ * The two are entirely separate: the HA path is driven by Home Assistant's
+ * entities, the direct path by this phone's own settings and the bridge. The
+ * split lives here rather than inside one screen so that [LightSyncViewModel] —
+ * which opens an HA WebSocket the moment it is constructed — is never built for a
+ * direct-mode user who may have no Home Assistant at all.
+ *
+ * Nothing renders until the transport is known, so the HA screen can't flash up
+ * for a frame in front of a direct-mode user.
+ */
 @Composable
-fun LightSyncScreen(onBack: () -> Unit = {}, viewModel: LightSyncViewModel = viewModel()) {
+fun LightSyncScreen(onBack: () -> Unit = {}) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val lsMode by produceState<String?>(initialValue = null) {
+        value = com.engabd.sendpin.data.AppSettings(context.applicationContext).lightSyncMode.first()
+    }
+    when (lsMode) {
+        null -> Box(Modifier.fillMaxSize().background(Ink))
+        "direct" -> DirectLightSyncScreen(onBack)
+        else -> HaLightSyncScreen(onBack)
+    }
+}
+
+@Composable
+private fun HaLightSyncScreen(onBack: () -> Unit, viewModel: LightSyncViewModel = viewModel()) {
     val accent = LocalAccent.current
     val connected by viewModel.connected.collectAsState()
     val areas by viewModel.areas.collectAsState()
@@ -119,7 +153,7 @@ fun LightSyncScreen(onBack: () -> Unit = {}, viewModel: LightSyncViewModel = vie
                     }
                 }
 
-                // Which player this area follows ("" = Auto — whatever is playing).
+                // Which player this area follows ("Auto" — whatever is playing).
                 Spacer(Modifier.height(22.dp))
                 SectionLabel("Follow player")
                 Spacer(Modifier.height(10.dp))
@@ -232,6 +266,186 @@ fun LightSyncScreen(onBack: () -> Unit = {}, viewModel: LightSyncViewModel = vie
     }
 }
 
+/**
+ * Light Sync driven straight from this phone to the Hue Bridge — no Home Assistant.
+ *
+ * A separate screen from the HA one rather than a branch inside it, because it
+ * shares none of its state: there is no HA connection to gate on, no HA areas to
+ * discover, and one speaker (this phone) instead of a choice of them. Every
+ * control writes [com.engabd.sendpin.data.AppSettings]; [DirectLightSync] watches
+ * those and applies them to the running engine, so nothing here needs a handle on
+ * the engine itself.
+ *
+ * Auto intensity is deliberately absent: the picker is not ported yet, and an
+ * "Auto" pill that silently resolved to High would be worse than no pill.
+ */
+@Composable
+private fun DirectLightSyncScreen(onBack: () -> Unit) {
+    val accent = LocalAccent.current
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val app = context.applicationContext as com.engabd.sendpin.SendpinApp
+    val settings = remember { com.engabd.sendpin.data.AppSettings(context.applicationContext) }
+    val direct = app.directLightSync
+    val scope = rememberCoroutineScope()
+
+    val live by direct.active.collectAsState()
+    val syncError by direct.error.collectAsState()
+    val enabled by settings.lightSyncEnabled.collectAsState(initial = false)
+    val intensity by settings.lightSyncIntensity.collectAsState(initial = "high")
+    val colour by settings.lightSyncColor.collectAsState(initial = "album_art_v2")
+    val brightnessPct by settings.lightSyncBrightness.collectAsState(initial = 100)
+    val bridgeIp by settings.hueBridgeIp.collectAsState(initial = "")
+    val configId by settings.hueEntertainmentConfigId.collectAsState(initial = "")
+
+    // Entertainment areas come from the bridge itself, once per visit.
+    var configs by remember { mutableStateOf(listOf<com.engabd.sendpin.hue.EntertainmentConfig>()) }
+    var loadingConfigs by remember { mutableStateOf(false) }
+    var configError by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(bridgeIp) {
+        val key = settings.hueAppKey.first()
+        if (bridgeIp.isBlank() || key.isBlank()) return@LaunchedEffect
+        loadingConfigs = true
+        configError = null
+        try {
+            configs = direct.bridgeClient.getEntertainmentConfigs(bridgeIp, key)
+        } catch (e: Exception) {
+            configError = e.message ?: "Could not reach the bridge"
+        }
+        loadingConfigs = false
+    }
+
+    Box(Modifier.fillMaxSize().background(Ink)) {
+        Bloom(if (live) accent else TextFaint, 440.dp, (-40).dp, (-70).dp, if (live) 0.42f else 0.16f)
+
+        Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars)) {
+            Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, top = 16.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                CircleBtn(Icons.AutoMirrored.Filled.ArrowBack, "Back", onBack)
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+                    Text("Light Sync", color = TextPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp)
+                    Text("Straight to the bridge", color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                }
+                StatusPill(live)
+            }
+
+            Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp).padding(bottom = navBarInset() + 16.dp)) {
+
+                if (bridgeIp.isBlank()) {
+                    NoBridgeCard()
+                    return@Column
+                }
+
+                // Master toggle. Streaming also needs something playing on this
+                // phone — the bridge is only held open for a live local session.
+                GlassCard(radius = 18.dp, fill = if (enabled) accent.a(0.10f) else Glass) {
+                    Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(42.dp).clip(RoundedCornerShape(13.dp)).background(if (enabled) accent.a(0.18f) else Glass).border(1.dp, if (enabled) accent.a(0.4f) else Hairline, RoundedCornerShape(13.dp)), contentAlignment = Alignment.Center) {
+                            Icon(Icons.Default.Lightbulb, null, tint = if (enabled) accent else TextMuted, modifier = Modifier.size(20.dp))
+                        }
+                        Spacer(Modifier.width(13.dp))
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+                            Text("Sync lights to music", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                            Text(
+                                when {
+                                    live -> "Reacting to the beat"
+                                    enabled -> "Waiting for this phone to play"
+                                    else -> "Lights are steady"
+                                },
+                                color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
+                            )
+                        }
+                        AccentSwitch(enabled) { on -> scope.launch { settings.setLightSyncEnabled(on) } }
+                    }
+                }
+
+                syncError?.let {
+                    Spacer(Modifier.height(12.dp))
+                    Text(it, color = ErrorRed, fontSize = 12.sp)
+                }
+
+                Spacer(Modifier.height(22.dp))
+                SectionLabel("Entertainment area")
+                Spacer(Modifier.height(10.dp))
+                when {
+                    loadingConfigs -> Text("Loading areas from the bridge…", color = TextMuted, fontSize = 13.sp)
+                    configs.isNotEmpty() -> Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        configs.forEach { cfg ->
+                            AreaChip(
+                                name = cfg.name,
+                                selected = cfg.id == configId,
+                                active = cfg.isStreaming,
+                                accent = accent,
+                            ) { scope.launch { settings.setHueConfigId(cfg.id) } }
+                        }
+                    }
+                    else -> Text(
+                        configError ?: "No areas found. Create one in the Hue app.",
+                        color = if (configError != null) ErrorRed else TextFaint, fontSize = 13.sp,
+                    )
+                }
+
+                Spacer(Modifier.height(22.dp))
+                SectionLabel("Intensity")
+                Spacer(Modifier.height(10.dp))
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // Straight off the engine's own enum, so the pills can never
+                    // offer a rung the engine doesn't have.
+                    com.engabd.sendpin.hue.SyncMode.entries.forEach { m ->
+                        Pill(m.wire.label(), m.wire == intensity) {
+                            scope.launch { settings.setLightSyncIntensity(m.wire) }
+                        }
+                    }
+                }
+                LightSyncRepository.MODE_BLURBS[intensity]?.let {
+                    Spacer(Modifier.height(9.dp))
+                    Text(it, color = TextFaint, style = MaterialTheme.typography.bodySmall)
+                }
+
+                Spacer(Modifier.height(22.dp))
+                SectionLabel("Colour")
+                Spacer(Modifier.height(10.dp))
+                // A stored album-art/song scheme renders as the engine's fallback,
+                // so show the palette the lights will actually use rather than a
+                // selection that isn't what happens.
+                val shownColour = if (colour in LightSyncRepository.DYNAMIC_COLOURS) FALLBACK_COLOUR else colour
+                ColourPicker(selected = shownColour, showDynamic = false) { scheme ->
+                    scope.launch { settings.setLightSyncColor(scheme) }
+                }
+
+                Spacer(Modifier.height(22.dp))
+                SectionLabel("Brightness ceiling")
+                Spacer(Modifier.height(10.dp))
+                val bSlider = ((brightnessPct - 5) / 95f).coerceIn(0f, 1f)
+                LabeledSlider(Icons.Default.BrightnessHigh, bSlider, {
+                    scope.launch { settings.setLightSyncBrightness((5 + it * 95).roundToInt()) }
+                }, "$brightnessPct%")
+
+                Spacer(Modifier.height(22.dp))
+                Text(
+                    "Direct mode syncs this phone's own playback. Auto intensity, " +
+                        "album-art colour, effects and timing offset are on the Home " +
+                        "Assistant path only for now.",
+                    color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun NoBridgeCard() {
+    GlassCard(radius = 18.dp) {
+        Column(Modifier.padding(18.dp)) {
+            Text("No bridge paired", color = TextPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 17.sp)
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Direct mode talks to the Hue Bridge itself. Pair one in Settings → Servers → Light Sync, then pick an entertainment area here.",
+                color = TextMuted, fontSize = 13.sp,
+            )
+        }
+    }
+}
+
 private fun String.label(): String = replace('_', ' ').replaceFirstChar { it.uppercase() }
 
 private fun effectIcon(name: String): ImageVector = when (name) {
@@ -333,15 +547,21 @@ private fun EffectTile(name: String, icon: ImageVector, selected: Boolean, onCli
  * of sixteen unlabelled single-colour dots said neither what a scheme was called
  * nor what it would look like.
  */
+/**
+ * [showDynamic] is false on the direct path: album-art and song colours are
+ * derived by the Home Assistant integration, and the direct engine has no
+ * equivalent yet — it renders its fallback palette for all three. Offering them
+ * would be three tiles that all quietly do the same thing.
+ */
 @Composable
-private fun ColourPicker(selected: String?, onSelect: (String) -> Unit) {
+private fun ColourPicker(selected: String?, showDynamic: Boolean = true, onSelect: (String) -> Unit) {
     val accent = LocalAccent.current
     val palette = LocalPalette.current
 
     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         // The dynamic sources preview with the *current* album's real colours, so
         // the choice shows what it will actually do to the room.
-        SwatchTile(
+        if (showDynamic) SwatchTile(
             colours = listOf(accent, palette.swatch(1), palette.swatch(2)),
             label = "Album art",
             caption = "Weighted",
@@ -349,7 +569,7 @@ private fun ColourPicker(selected: String?, onSelect: (String) -> Unit) {
             selected = selected == LightSyncRepository.ALBUM_COLOUR,
         ) { onSelect(LightSyncRepository.ALBUM_COLOUR) }
 
-        SwatchTile(
+        if (showDynamic) SwatchTile(
             colours = listOf(palette.swatch(1), accent),
             label = "Album art",
             caption = "Even",
@@ -357,7 +577,7 @@ private fun ColourPicker(selected: String?, onSelect: (String) -> Unit) {
             selected = selected == LightSyncRepository.ALBUM_COLOUR_V1,
         ) { onSelect(LightSyncRepository.ALBUM_COLOUR_V1) }
 
-        SwatchTile(
+        if (showDynamic) SwatchTile(
             colours = listOf(Color(0xFF33FFC2), Color(0xFF7D40FF), Color(0xFFFF59D1)),
             label = "Song",
             caption = "Harmony",

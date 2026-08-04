@@ -310,72 +310,107 @@ fun SettingsScreen(
                             )
                         }
 
-                        // ── Light Sync (HA) ─────────────────────────────────────────
+                        // ── Light Sync ───────────────────────────────────────────────
                         item {
+                            var lsMode by remember { mutableStateOf("ha") }
+                            LaunchedEffect(Unit) { lsMode = settings.lightSyncMode.first() }
+
                             SectionHeader(Icons.Default.Lightbulb, "Light Sync", accent)
                             Spacer(Modifier.height(12.dp))
+
+                            // Transport selector: Home Assistant or direct to the bridge.
                             GlassCard(radius = 16.dp) {
                                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                                     Text(
-                                        "Drives the Hue Synco light-sync integration. Use a long-lived access token (Profile → Security).",
-                                        color = TextMuted, fontSize = 13.sp,
+                                        "How the lights react to music",
+                                        color = TextPrimary, fontFamily = AppFont,
+                                        style = MaterialTheme.typography.titleLarge,
                                     )
-                                    OledField(haUrl, { haUrl = it; haSaved = false }, "HA URL", "http://192.168.0.10:8123", accent)
-                                    if (haTokenLocked) {
-                                        // A long-lived token is a house key. Once it's in and
-                                        // working there is no reason to keep it on screen —
-                                        // the field is sealed and can only be replaced whole.
-                                        OledField(
-                                            "•".repeat(24), {}, "Long-lived access token", "", accent,
-                                            enabled = false,
-                                            trailingIcon = {
-                                                Icon(
-                                                    Icons.Default.Lock, "Saved",
-                                                    tint = TextMuted, modifier = Modifier.size(18.dp),
-                                                )
-                                            },
+                                    SegmentedToggle(
+                                        options = listOf("Home Assistant", "Bridge (direct)"),
+                                        selectedIndex = if (lsMode == "direct") 1 else 0,
+                                    ) {
+                        val newMode = if (it == 1) "direct" else "ha"
+                        lsMode = newMode
+                        scope.launch { settings.setLightSyncMode(newMode) }
+                    }
+                                    Text(
+                                        if (lsMode == "direct")
+                                            "The app talks to the Hue Bridge directly over the LAN — no Home Assistant needed. " +
+                                                "Works with the Navidrome / offline player. The phone is the only speaker."
+                                        else
+                                            "Drives the Hue Synco integration in Home Assistant over its WebSocket API. " +
+                                                "Follows any MA player entity and works with multi-room grouping.",
+                                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
+                            }
+
+                            Spacer(Modifier.height(12.dp))
+
+                            if (lsMode == "direct") {
+                                // ── Direct bridge setup ────────────────────────────────
+                                DirectBridgeSetup(settings = settings, scope = scope, accent = accent)
+                            } else {
+                                // ── HA setup (existing) ─────────────────────────────────
+                                GlassCard(radius = 16.dp) {
+                                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        Text(
+                                            "Drives the Hue Synco light-sync integration. Use a long-lived access token (Profile → Security).",
+                                            color = TextMuted, fontSize = 13.sp,
                                         )
-                                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                            // The URL stays editable, so keep a way to save it
-                                            // without making the user re-paste the token.
+                                        OledField(haUrl, { haUrl = it; haSaved = false }, "HA URL", "http://192.168.0.10:8123", accent)
+                                        if (haTokenLocked) {
+                                            OledField(
+                                                "•".repeat(24), {}, "Long-lived access token", "", accent,
+                                                enabled = false,
+                                                trailingIcon = {
+                                                    Icon(
+                                                        Icons.Default.Lock, "Saved",
+                                                        tint = TextMuted, modifier = Modifier.size(18.dp),
+                                                    )
+                                                },
+                                            )
+                                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                OledButton(
+                                                    if (haSaved) "Saved" else "Save",
+                                                    enabled = haUrl.isNotBlank() && !haSaved,
+                                                    accent = accent, modifier = Modifier.weight(1f),
+                                                ) {
+                                                    scope.launch {
+                                                        settings.setHomeAssistant(haUrl.trim(), haToken.trim()); haSaved = true
+                                                    }
+                                                }
+                                                OledButton("Replace token", accent = accent, outline = true, modifier = Modifier.weight(1f)) {
+                                                    haToken = ""; haTokenVisible = false; haSaved = false; haTokenLocked = false
+                                                }
+                                            }
+                                        } else {
+                                            OledField(
+                                                haToken, { haToken = it; haSaved = false },
+                                                "Long-lived access token", "eyJ…", accent,
+                                                visualTransformation = if (haTokenVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                                                trailingIcon = {
+                                                    Box(Modifier.size(20.dp).clip(CircleShape).clickable { haTokenVisible = !haTokenVisible }) {
+                                                        Icon(
+                                                            if (haTokenVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                                            if (haTokenVisible) "Hide" else "Show",
+                                                            tint = TextMuted, modifier = Modifier.size(20.dp),
+                                                        )
+                                                    }
+                                                },
+                                            )
                                             OledButton(
                                                 if (haSaved) "Saved" else "Save",
-                                                enabled = haUrl.isNotBlank() && !haSaved,
-                                                accent = accent, modifier = Modifier.weight(1f),
+                                                enabled = haUrl.isNotBlank() && haToken.isNotBlank(),
+                                                accent = accent,
                                             ) {
                                                 scope.launch {
-                                                    settings.setHomeAssistant(haUrl.trim(), haToken.trim()); haSaved = true
+                                                    settings.setHomeAssistant(haUrl.trim(), haToken.trim())
+                                                    haSaved = true
+                                                    haTokenVisible = false
+                                                    haTokenLocked = true
                                                 }
-                                            }
-                                            OledButton("Replace token", accent = accent, outline = true, modifier = Modifier.weight(1f)) {
-                                                haToken = ""; haTokenVisible = false; haSaved = false; haTokenLocked = false
-                                            }
-                                        }
-                                    } else {
-                                        OledField(
-                                            haToken, { haToken = it; haSaved = false },
-                                            "Long-lived access token", "eyJ…", accent,
-                                            visualTransformation = if (haTokenVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                                            trailingIcon = {
-                                                Box(Modifier.size(20.dp).clip(CircleShape).clickable { haTokenVisible = !haTokenVisible }) {
-                                                    Icon(
-                                                        if (haTokenVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                                        if (haTokenVisible) "Hide" else "Show",
-                                                        tint = TextMuted, modifier = Modifier.size(20.dp),
-                                                    )
-                                                }
-                                            },
-                                        )
-                                        OledButton(
-                                            if (haSaved) "Saved" else "Save",
-                                            enabled = haUrl.isNotBlank() && haToken.isNotBlank(),
-                                            accent = accent,
-                                        ) {
-                                            scope.launch {
-                                                settings.setHomeAssistant(haUrl.trim(), haToken.trim())
-                                                haSaved = true
-                                                haTokenVisible = false
-                                                haTokenLocked = true
                                             }
                                         }
                                     }
@@ -400,9 +435,9 @@ fun SettingsScreen(
                                     ) { scope.launch { settings.setBackend(if (it == 1) "subsonic" else "ma") } }
                                     Text(
                                         if (backend == "subsonic")
-                                            "Navidrome plays on this phone only. Speaker grouping and Light Sync " +
-                                                "both run through Music Assistant, so those tabs are off while " +
-                                                "Navidrome is the library."
+                                            "Navidrome plays on this phone only. Speaker grouping runs through " +
+                                                "Music Assistant, so that tab is off. Light Sync is available when " +
+                                                "set to direct bridge mode in Settings."
                                         else
                                             "Music Assistant browses the whole library, plays to any speaker, and " +
                                                 "keeps grouping and Light Sync available.",
@@ -1180,5 +1215,144 @@ private fun StatusRow(label: String, value: String) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
         Text(label, color = TextMuted, fontSize = 12.sp)
         Text(value, color = TextSecondary, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+    }
+}
+
+// ── Direct Hue Bridge setup ───────────────────────────────────────────────
+
+/**
+ * The bridge discovery, pairing and area-pick UI shown in Settings when
+ * "Bridge (direct)" is selected as the Light Sync transport.
+ *
+ * Flow:
+ * 1. If no bridge is paired: "Discover bridges" button → mDNS scan → list
+ *    of found bridges → tap one → "Press the link button" prompt → pair.
+ * 2. If a bridge is paired but no area is selected: fetch entertainment
+ *    configs → list areas → tap to select.
+ * 3. If both are done: show bridge name + area name + status, with a
+ *    "Disconnect" button to clear the pairing.
+ */
+@Composable
+private fun DirectBridgeSetup(
+    settings: com.engabd.sendpin.data.AppSettings,
+    scope: kotlinx.coroutines.CoroutineScope,
+    accent: Color,
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val app = context.applicationContext as com.engabd.sendpin.SendpinApp
+    val bridge = app.directLightSync.bridgeClient
+
+    var bridgeIp by remember { mutableStateOf("") }
+    var appKey by remember { mutableStateOf("") }
+    var configId by remember { mutableStateOf("") }
+    var appId by remember { mutableStateOf("") }
+    var paired by remember { mutableStateOf(false) }
+    var discovering by remember { mutableStateOf(false) }
+    var discoveredBridges by remember { mutableStateOf(listOf<com.engabd.sendpin.hue.DiscoveredBridge>()) }
+    var pairing by remember { mutableStateOf(false) }
+    var pairError by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(Unit) {
+        bridgeIp = settings.hueBridgeIp.first()
+        appKey = settings.hueAppKey.first()
+        configId = settings.hueEntertainmentConfigId.first()
+        appId = settings.hueAppId.first()
+        paired = bridgeIp.isNotBlank() && appKey.isNotBlank()
+    }
+
+    GlassCard(radius = 16.dp) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (!paired) {
+                // ── Discovery + pairing ────────────────────────────────────
+                Text("Pair a Hue Bridge", color = TextPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 17.sp)
+                Text(
+                    "The app connects to the Hue Bridge directly on your LAN. Press the link button on the bridge when prompted.",
+                    color = TextMuted, fontSize = 13.sp,
+                )
+
+                if (!discovering && discoveredBridges.isEmpty()) {
+                    OledButton("Discover bridges", accent = accent) {
+                        discovering = true
+                        bridge.startDiscovery()
+                        scope.launch {
+                            kotlinx.coroutines.delay(8000)
+                            discoveredBridges = bridge.discovered.value
+                            discovering = false
+                            bridge.stopDiscovery()
+                        }
+                    }
+                }
+
+                if (discovering) {
+                    Text("Scanning the network…", color = TextMuted, fontSize = 13.sp)
+                }
+
+                discoveredBridges.forEach { b ->
+                    Row(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                            .background(Glass).border(1.dp, Hairline, RoundedCornerShape(12.dp))
+                            .clickable {
+                                pairing = true
+                                pairError = null
+                                scope.launch {
+                                    try {
+                                        val (key, clientKey) = bridge.pair(b.host)
+                                        val id = bridge.fetchApplicationId(b.host, key) ?: ""
+                                        settings.setHueBridge(b.host, key, clientKey, id)
+                                        bridgeIp = b.host
+                                        appKey = key
+                                        appId = id
+                                        paired = true
+                                    } catch (e: com.engabd.sendpin.hue.LinkButtonNotPressed) {
+                                        pairError = "Press the link button on the bridge, then tap again"
+                                    } catch (e: Exception) {
+                                        pairError = e.message ?: "Pairing failed"
+                                    }
+                                    pairing = false
+                                }
+                            }
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Icon(Icons.Default.Router, null, tint = accent, modifier = Modifier.size(18.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(b.name, color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text(b.host, color = TextFaint, fontFamily = MonoFont, fontSize = 11.sp)
+                        }
+                        if (pairing) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                    }
+                }
+
+                pairError?.let {
+                    Text(it, color = ErrorRed, fontSize = 12.sp)
+                }
+            } else {
+                // ── Paired: show bridge status ───────────────────────────
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Icon(Icons.Default.Router, "Bridge", tint = accent, modifier = Modifier.size(18.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("Hue Bridge", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        Text(bridgeIp, color = TextFaint, fontFamily = MonoFont, fontSize = 11.sp)
+                    }
+                    OledButton("Unpair", accent = accent, outline = true) {
+                        scope.launch {
+                            settings.setHueBridge("", "", "")
+                            settings.setHueConfigId("")
+                            bridgeIp = ""; appKey = ""; configId = ""; paired = false
+                        }
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Box(Modifier.size(7.dp).clip(CircleShape).background(accent))
+                    Text("Paired. Pick an entertainment area on the Lights tab.", color = accent, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                }
+
+                pairError?.let {
+                    Text(it, color = ErrorRed, fontSize = 12.sp)
+                }
+            }
+        }
     }
 }

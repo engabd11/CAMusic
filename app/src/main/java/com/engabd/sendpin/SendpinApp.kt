@@ -19,6 +19,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -64,6 +65,17 @@ class SendpinApp : Application(), ImageLoaderFactory {
     val downloads: DownloadManager by lazy { DownloadManager(this) }
 
     /**
+     * Direct Hue Bridge Light Sync. Process-scoped so it survives Activity
+     * destruction and shares the audio tap with [localPlayer]. Only active
+     * when the user has configured a bridge and selected "direct" mode in
+     * Settings. When "ha" mode is selected (or no bridge is configured),
+     * this stays idle and the existing HA-based path handles Light Sync.
+     */
+    val directLightSync: com.engabd.sendpin.hue.DirectLightSync by lazy {
+        com.engabd.sendpin.hue.DirectLightSync(this, localPlayer.audioAnalysisTap)
+    }
+
+    /**
      * What the *selected* Music Assistant player is playing, at process scope.
      *
      * The media notification has to outlive the Activity, and the Now Playing screen's
@@ -101,6 +113,37 @@ class SendpinApp : Application(), ImageLoaderFactory {
                     }
                 }
             }
+        }
+        // Direct Light Sync follows the local player's session. Direct mode streams
+        // this phone's own decoded audio, so there is exactly one thing that can
+        // drive it and exactly one moment worth holding the bridge open for.
+        //
+        // The session rather than `playing`: a pause would otherwise tear down the
+        // DTLS channel and re-run discovery and the handshake on every resume. The
+        // keepalive holds the last frame while the music is stopped, which is what
+        // it is for.
+        appScope.launch {
+            val settings = com.engabd.sendpin.data.AppSettings(this@SendpinApp)
+            // `started` keeps the lazy singleton lazy: a user on the Home Assistant
+            // path never touches direct mode, so there is no reason to build its
+            // bridge client and settings collectors just to stop something that
+            // was never running.
+            var started = false
+            combine(
+                localPlayer.active,
+                settings.lightSyncMode,
+                settings.lightSyncEnabled,
+            ) { active, mode, enabled -> active && mode == "direct" && enabled }
+                .distinctUntilChanged()
+                .collect { shouldRun ->
+                    if (shouldRun) {
+                        started = true
+                        directLightSync.start()
+                    } else if (started) {
+                        started = false
+                        directLightSync.stop()
+                    }
+                }
         }
         // A remote speaker playing is as much a reason for a media notification as
         // this phone's own stream is — it is the one the user is actually listening
