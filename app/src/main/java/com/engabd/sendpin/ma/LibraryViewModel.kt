@@ -83,6 +83,18 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private val maRepo = MaRepository(maApi)
     private var subsonic: SubsonicClient? = null
 
+    /**
+     * The in-flight Navidrome connect, so a newer attempt can supersede it.
+     *
+     * Each `connect()` used to launch a ping and forget about it. Correcting a typo in
+     * the server address then raced the two attempts: the wrong address sat blocked on
+     * a connect timeout while the corrected one answered, went ready and showed the
+     * library — and then the first one finally failed and stamped its own error over
+     * the top, leaving the app reporting a host the user had already fixed until it was
+     * restarted.
+     */
+    private var navConnectJob: Job? = null
+
     /** Process-scoped, so Now Playing and the media notification see the same player. */
     val localPlayer = (app as SendpinApp).localPlayer
     val downloadManager = (app as SendpinApp).downloads
@@ -568,10 +580,19 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             val url = _navUrl.value.trim()
             if (url.isBlank()) { subsonic = null; _ready.value = false; return }
             _connecting.value = true
+            // Abandon whatever address was being tried before this one.
+            navConnectJob?.cancel()
             val sc = SubsonicClient(url, _navUser.value, _navPass.value); subsonic = sc
-            viewModelScope.launch {
+            navConnectJob = viewModelScope.launch {
                 sc.streamFormat = settings.navStreamFormat.first()
                 val err = sc.pingResult()
+                // Belt as well as braces. `cancel()` above only takes effect at a
+                // suspension point, and a ping blocked on a TCP connect to an address
+                // with nothing on it may not reach one until the socket times out — so
+                // a superseded attempt can still arrive here with an answer nobody
+                // asked for. Whether it is stale is not a matter of timing: it is
+                // whether the client it used is still the current one.
+                if (subsonic !== sc) return@launch
                 _connecting.value = false
                 if (err == null) {
                     _ready.value = true
