@@ -135,11 +135,13 @@ is a future phase, not a current feature.
 
 Written down because the alternative is discovering them by ear:
 
-- **Track transitions on the MA path are not gapless.** They were, briefly, and it broke
-  the pause button: MA sends `stream/end` for a pause and for a track boundary with a
-  byte-identical message, and the client advertises a 4 MB read-ahead. Holding that
-  buffer through `stream/end` meant pause kept playing for half a minute. Pause won.
-  Gapless there needs a way to tell the two apart.
+- **Gapless on the MA path is a server setting this app doesn't expose yet.** Music
+  Assistant decides it per player - disabled, standard or smart - the same way it decides
+  crossfade, so it is changed in MA's own UI rather than here. Not a protocol problem to
+  solve client-side: an earlier attempt to infer track boundaries by holding the read-ahead
+  buffer through `stream/end` broke the pause button instead, because MA sends a
+  byte-identical `stream/end` for both and 4 MB of held buffer meant pause kept playing
+  for half a minute.
 - **Gapless does work on the Navidrome path**, where ExoPlayer owns the whole queue.
 - ReplayGain is applied on the Navidrome path only. MA does its own normalisation
   server-side, and applying it twice would be worse than not applying it.
@@ -161,18 +163,20 @@ anything already shipped struck from it.
 
 ### Audiophile core
 
-- **Gapless on the MA path.** The `stream/end` ambiguity above, solved client-side:
-  after `stream/end`, wait a beat for a `server/state` carrying `playback_speed: 0`. If
-  it arrives it was a pause, so flush; if `stream/start` arrives first it was a track
-  boundary, so keep the tail. The only option of the three that is entirely in our own
-  control and does not trade away buffer resilience.
+- **MA player config, from the app.** Gapless (disabled / standard / smart) and crossfade
+  are per-player settings Music Assistant already owns; today they mean a trip to MA's own
+  UI. This is a UI job rather than a protocol one - `MaRepository.playerConfigEntry()`
+  already reads an arbitrary `ConfigEntry` with the `options` the server declares, and
+  handles MA's protocol-wrapped key names, which is exactly what `preferred_sendspin_format`
+  and the sync delay already do.
 - **MA loudness readout** in the quality card - what the server did to the level, not
   just what format it sent.
 - **Bit-perfect exclusive-mode output** via the native AAudio I24 path in
   `app/src/main/cpp/`, which is written and deliberately not compiled. Bypasses the
   Android mixer: no resampling, no system volume, no other app's audio mixed in.
-- **Crossfade on the Navidrome path.** Gapless is right for an album; a crossfade is
-  what a party playlist wants. ExoPlayer supports it natively.
+- **Crossfade on the Navidrome path.** The MA path gets this from the server config
+  above; the local ExoPlayer queue is ours, so it needs its own. Gapless is right for an
+  album, a crossfade is what a party playlist wants.
 
 ### Feature completion
 
