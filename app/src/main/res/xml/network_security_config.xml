@@ -1,22 +1,33 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  This app is LAN-first: Music Assistant, Navidrome, and Home Assistant all
-  run on the local network and almost never have TLS. Cleartext is permitted
-  globally because servers are discovered dynamically via mDNS and their IPs
-  are not known in advance — Android's <domain> element does not support
-  CIDR ranges, so private IP ranges cannot be enumerated.
+  Cleartext is permitted, and that is deliberate rather than an oversight.
 
-  The manifest's usesCleartextTraffic="true" is retained for compatibility
-  (Android reads it as a fallback when networkSecurityConfig is present).
-  This config is the authoritative source.
+  This app is LAN-first: Music Assistant, Navidrome and Home Assistant almost never
+  have TLS on a home network, and their addresses are not known at build time —
+  servers are discovered over mDNS or typed in by hand. Android's <domain> element
+  matches DNS labels by suffix and has no concept of CIDR, so "all of 10/8, 172.16/12
+  and 192.168/16" cannot be expressed here. Restricting cleartext to private ranges is
+  therefore not something this file can do, whatever it would be nice for it to say.
+  If that restriction is wanted it has to live in the HTTP layer, where the address is
+  known at the moment of the call.
+
+  Trust anchors are SYSTEM ONLY, on purpose. Android has ignored user-installed CAs by
+  default since API 24 because they are an MITM vector: anything that can get a
+  certificate into the user store — malware, a configuration profile, a device
+  management agent, a user tapped through a warning — can then read every byte this app
+  sends. That includes the Music Assistant password, the Navidrome password and the
+  Home Assistant long-lived token.
+
+  Adding `<certificates src="user" />` would buy one thing: self-signed TLS on a LAN
+  server. That case already has a plain answer here, which is plain HTTP over the LAN,
+  permitted above. Trading an always-on credential-disclosure risk for a case that has
+  a workaround is not a trade worth making — so it is not made, not even behind
+  <debug-overrides>.
 -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="true">
         <trust-anchors>
-            <!-- System + user CAs — user CAs are needed for self-signed
-                 Navidrome/MA instances that do run TLS on the LAN. -->
             <certificates src="system" />
-            <certificates src="user" />
         </trust-anchors>
     </base-config>
 </network-security-config>
