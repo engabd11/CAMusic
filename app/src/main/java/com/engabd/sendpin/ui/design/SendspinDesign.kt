@@ -468,7 +468,7 @@ fun QualityPill(
         )
         Text(
             text,
-            color = if (lossless) Color.White.a(0.92f) else TextMuted,
+            color = if (lossless) inkOn(0.92f) else TextMuted,
             style = if (compact) TextStyle(fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 9.sp)
                     else MaterialTheme.typography.labelMedium,
             maxLines = 1,
@@ -493,6 +493,9 @@ fun PlayButton(playing: Boolean, size: Dp = 68.dp, onClick: () -> Unit) {
                 .matchParentSize()
                 .clip(CircleShape)
                 .background(fill)
+                // Stays literal white in every theme: this is a specular highlight on a
+                // coloured disc, not a surface tint. Inverting it on a light theme would
+                // put a dark smear across the top of the play button.
                 .background(Brush.verticalGradient(0f to Color.White.a(0.28f), 0.55f to Color.Transparent))
                 .clickable(onClick = onClick),
             contentAlignment = Alignment.Center,
@@ -511,12 +514,14 @@ fun PlayButton(playing: Boolean, size: Dp = 68.dp, onClick: () -> Unit) {
 @Composable
 fun RingProgress(progress: Float, modifier: Modifier = Modifier, size: Dp = 20.dp, stroke: Dp = 2.4.dp) {
     val accent = LocalAccent.current
+    // Read in composition: the lambda below is a DrawScope, not a composable.
+    val track = inkOn(0.12f)
     Box(
         modifier.size(size).drawBehind {
             val w = stroke.toPx()
             val inset = w / 2f
             drawArc(
-                color = Color.White.a(0.12f), startAngle = 0f, sweepAngle = 360f, useCenter = false,
+                color = track, startAngle = 0f, sweepAngle = 360f, useCenter = false,
                 topLeft = Offset(inset, inset),
                 size = androidx.compose.ui.geometry.Size(this.size.width - w, this.size.height - w),
                 style = Stroke(width = w),
@@ -619,21 +624,23 @@ fun HSlider(
             },
         contentAlignment = Alignment.CenterStart,
     ) {
-        Box(Modifier.fillMaxWidth().height(trackHeight).clip(RoundedCornerShape(50)).background(Color.White.a(0.14f)))
+        Box(Modifier.fillMaxWidth().height(trackHeight).clip(RoundedCornerShape(50)).background(inkOn(0.14f)))
         Box(
             Modifier.fillMaxWidth(v).height(trackHeight)
                 .then(if (accented) Modifier.shadow(10.dp, RoundedCornerShape(50), ambientColor = accent, spotColor = accent) else Modifier)
                 .clip(RoundedCornerShape(50))
                 .background(
                     if (accented) Brush.horizontalGradient(listOf(accent.a(0.5f), accent))
-                    else Brush.horizontalGradient(listOf(Color.White.a(0.62f), Color.White.a(0.62f)))
+                    else Brush.horizontalGradient(listOf(inkOn(0.62f), inkOn(0.62f)))
                 )
         )
         Box(
             Modifier
                 .offset { IntOffset((v * width - knob.toPx() / 2f).roundToInt(), 0) }
                 .then(if (accented) Modifier.shadow(10.dp, CircleShape, ambientColor = accent, spotColor = accent) else Modifier)
-                .size(if (dragging) knob * 1.35f else knob).clip(CircleShape).background(Color.White)
+                // TextPrimary, not literal white: the knob has to stay visible against
+                // its own track, which inverts with the theme.
+                .size(if (dragging) knob * 1.35f else knob).clip(CircleShape).background(TextPrimary)
         )
 
         // Magnifier — rides above the knob while dragging, clamped so it stays on

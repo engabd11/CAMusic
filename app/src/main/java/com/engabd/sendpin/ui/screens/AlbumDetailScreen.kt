@@ -498,10 +498,10 @@ internal fun SkeletonTrackRow() {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Box(Modifier.width(28.dp).height(14.dp).clip(RoundedCornerShape(4.dp)).background(Color.White.a(0.06f)))
+        Box(Modifier.width(28.dp).height(14.dp).clip(RoundedCornerShape(4.dp)).background(inkOn(0.06f)))
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-            Box(Modifier.fillMaxWidth(0.55f).height(12.dp).clip(RoundedCornerShape(4.dp)).background(Color.White.a(0.07f)))
-            Box(Modifier.fillMaxWidth(0.32f).height(10.dp).clip(RoundedCornerShape(4.dp)).background(Color.White.a(0.05f)))
+            Box(Modifier.fillMaxWidth(0.55f).height(12.dp).clip(RoundedCornerShape(4.dp)).background(inkOn(0.07f)))
+            Box(Modifier.fillMaxWidth(0.32f).height(10.dp).clip(RoundedCornerShape(4.dp)).background(inkOn(0.05f)))
         }
     }
 }

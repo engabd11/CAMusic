@@ -98,14 +98,34 @@ private enum class SettingsSection(
     ),
     APPEARANCE(
         "Appearance",
-        "How the Now Playing screen behaves",
-        Icons.Default.PlayArrow,
+        "Theme, accent colour and how Now Playing behaves",
+        Icons.Default.Palette,
     ),
     ABOUT(
         "About",
         "Version and source code",
         Icons.Default.Info,
     ),
+}
+
+/** One pickable accent, ticked when it is the chosen one. */
+@Composable
+private fun SwatchDot(color: Color, selected: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .size(34.dp)
+            .clip(CircleShape)
+            .background(color)
+            // The ring is drawn in the page's own ink rather than a fixed white, so the
+            // selected swatch reads on a light theme as well as a black one.
+            .border(if (selected) 2.dp else 1.dp, if (selected) TextPrimary else Hairline, CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (selected) {
+            Icon(Icons.Default.Check, "Selected", tint = Ink, modifier = Modifier.size(18.dp))
+        }
+    }
 }
 
 /** One row on the settings index: icon, name, and what is behind it. */
@@ -599,6 +619,71 @@ fun SettingsScreen(
                     }
 
                     SettingsSection.APPEARANCE -> {
+                        // ── Theme ───────────────────────────────────────────────────
+                        item(key = "theme") {
+                            val themeKey by settings.theme.collectAsState(initial = ThemeChoice.OLED.key)
+                            val current = ThemeChoice.from(themeKey)
+                            GlassCard(radius = 16.dp) {
+                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Text(
+                                        "Theme",
+                                        color = TextPrimary, fontFamily = AppFont,
+                                        style = MaterialTheme.typography.titleLarge,
+                                    )
+                                    Text(
+                                        current.description,
+                                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                                    )
+                                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        ThemeChoice.entries.forEach { choice ->
+                                            ToggleChip(choice.label, choice == current) {
+                                                scope.launch { settings.setTheme(choice.key) }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // ── Accent ──────────────────────────────────────────────────
+                        item(key = "accent") {
+                            val accentKey by settings.accentSource.collectAsState(initial = AccentChoice.ALBUM.key)
+                            val fixedHex by settings.fixedAccent.collectAsState(initial = "")
+                            val current = AccentChoice.from(accentKey)
+                            GlassCard(radius = 16.dp) {
+                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Text(
+                                        "Accent colour",
+                                        color = TextPrimary, fontFamily = AppFont,
+                                        style = MaterialTheme.typography.titleLarge,
+                                    )
+                                    Text(
+                                        current.description,
+                                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                                    )
+                                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        AccentChoice.entries.forEach { choice ->
+                                            ToggleChip(choice.label, choice == current) {
+                                                scope.launch { settings.setAccentSource(choice.key) }
+                                            }
+                                        }
+                                    }
+                                    // The swatches only mean anything once the accent has
+                                    // stopped following the artwork.
+                                    if (current == AccentChoice.FIXED) {
+                                        val picked = parseAccent(fixedHex)
+                                        FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                            FallbackPalette.forEach { swatch ->
+                                                SwatchDot(swatch, swatch == picked) {
+                                                    scope.launch { settings.setFixedAccent(swatch.toAccentHex()) }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         // ── Now Playing ─────────────────────────────────────────────
                         item {
                             var npLayout by remember { mutableStateOf("tab") }

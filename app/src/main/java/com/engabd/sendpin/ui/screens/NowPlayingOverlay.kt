@@ -291,7 +291,7 @@ fun NowPlayingOverlay(
                 if (st.artist.isNotBlank()) {
                     Spacer(Modifier.height(5.dp))
                     Text(
-                        st.artist, color = Color.White.a(0.62f), fontFamily = AppFont,
+                        st.artist, color = inkOn(0.62f), fontFamily = AppFont,
                         fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1,
                         overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
                     )
@@ -544,7 +544,7 @@ private fun TopBar(playerName: String, isSelf: Boolean, groupSize: Int, onOpenSp
             ) {
                 Icon(
                     if (isSelf) Icons.Default.Smartphone else Icons.Default.Speaker, null,
-                    tint = Color.White.a(0.85f), modifier = Modifier.size(14.dp),
+                    tint = inkOn(0.85f), modifier = Modifier.size(14.dp),
                 )
                 Text(
                     if (groupSize > 1) "$playerName ($groupSize)" else playerName,
@@ -578,7 +578,7 @@ private fun TransportIcon(
         contentAlignment = Alignment.Center,
     ) {
         if (active) Bloom(accent, size * 1.8f, 0.dp, 0.dp, 0.5f)
-        Icon(icon, cd, tint = if (active) accent else Color.White.a(0.9f), modifier = Modifier.size(size))
+        Icon(icon, cd, tint = if (active) accent else inkOn(0.9f), modifier = Modifier.size(size))
     }
 }
 

@@ -318,7 +318,7 @@ private fun SearchField(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(13.dp))
-            .background(Color.White.a(0.045f))
+            .background(inkOn(0.045f))
             .border(1.dp, Hairline, RoundedCornerShape(13.dp))
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -753,7 +753,7 @@ private fun CategoryCard(item: MaItem, onClick: () -> Unit) {
     Row(
         Modifier
             .clip(RoundedCornerShape(15.dp))
-            .background(Color.White.a(0.035f))
+            .background(inkOn(0.035f))
             .border(1.dp, HairlineSoft, RoundedCornerShape(15.dp))
             .clickable(onClick = onClick)
             .padding(14.dp),
@@ -824,7 +824,7 @@ private fun CoverTile(item: MaItem, onLongPress: (() -> Unit)? = null, onClick: 
         )
         item.subtitle?.let {
             Text(
-                it, color = Color.White.a(0.38f), fontFamily = AppFont, fontSize = 11.sp,
+                it, color = inkOn(0.38f), fontFamily = AppFont, fontSize = 11.sp,
                 maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
         }
@@ -842,7 +842,7 @@ private fun RowCard(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
-            .background(Color.White.a(0.03f))
+            .background(inkOn(0.03f))
             .border(1.dp, HairlineSoft, RoundedCornerShape(14.dp))
             .then(
                 when {
@@ -922,7 +922,7 @@ private fun ItemRow(
             )
             item.subtitle?.let {
                 Text(
-                    it, color = Color.White.a(0.38f), fontFamily = AppFont, fontSize = 12.sp,
+                    it, color = inkOn(0.38f), fontFamily = AppFont, fontSize = 12.sp,
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
             }
@@ -1075,7 +1075,7 @@ private fun OfflineNotice(onRetry: () -> Unit) {
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
-            .background(Color.White.a(0.04f))
+            .background(inkOn(0.04f))
             .border(1.dp, HairlineSoft, RoundedCornerShape(14.dp))
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -1116,10 +1116,10 @@ private fun ConnectingState() {
 @Composable
 private fun SkeletonRow() {
     RowCard {
-        Box(Modifier.size(46.dp).clip(RoundedCornerShape(11.dp)).background(Color.White.a(0.06f)))
+        Box(Modifier.size(46.dp).clip(RoundedCornerShape(11.dp)).background(inkOn(0.06f)))
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Box(Modifier.fillMaxWidth(0.6f).height(12.dp).clip(RoundedCornerShape(4.dp)).background(Color.White.a(0.07f)))
-            Box(Modifier.fillMaxWidth(0.38f).height(10.dp).clip(RoundedCornerShape(4.dp)).background(Color.White.a(0.05f)))
+            Box(Modifier.fillMaxWidth(0.6f).height(12.dp).clip(RoundedCornerShape(4.dp)).background(inkOn(0.07f)))
+            Box(Modifier.fillMaxWidth(0.38f).height(10.dp).clip(RoundedCornerShape(4.dp)).background(inkOn(0.05f)))
         }
     }
 }
@@ -1139,7 +1139,7 @@ private fun SearchEmptyState(
             contentAlignment = Alignment.Center,
         ) { Icon(Icons.Default.Search, null, tint = TextFaint, modifier = Modifier.size(26.dp)) }
         Spacer(Modifier.height(16.dp))
-        Text(title, color = Color.White.a(0.75f), fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+        Text(title, color = inkOn(0.75f), fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 15.sp)
         Spacer(Modifier.height(6.dp))
         Text(
             body, color = TextMuted, style = MaterialTheme.typography.bodyMedium,
@@ -1160,7 +1160,7 @@ private fun SearchErrorState(message: String, onRetry: () -> Unit) {
             contentAlignment = Alignment.Center,
         ) { Icon(Icons.Default.ErrorOutline, null, tint = ErrorRed, modifier = Modifier.size(26.dp)) }
         Spacer(Modifier.height(16.dp))
-        Text("Couldn't load", color = Color.White.a(0.8f), fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+        Text("Couldn't load", color = inkOn(0.8f), fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 15.sp)
         Spacer(Modifier.height(6.dp))
         Text(
             message, color = TextMuted, style = MaterialTheme.typography.bodyMedium,
@@ -1247,7 +1247,7 @@ private fun GlassField(
             Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(13.dp))
-                .background(Color.White.a(0.035f))
+                .background(inkOn(0.035f))
                 .border(1.dp, Hairline, RoundedCornerShape(13.dp))
                 .padding(horizontal = 16.dp, vertical = 15.dp),
         ) {

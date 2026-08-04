@@ -125,18 +125,16 @@ fun SendspinNavBar(
     onSelect: (String) -> Unit,
 ) {
     val accent = LocalAccent.current
+    // Read in composition, not in the draw lambda: `drawBehind` runs in a DrawScope,
+    // which is not a composable and so cannot read the theme.
+    val ink = Ink
+    val fade = remember(ink) {
+        Brush.verticalGradient(0f to ink.a(0.5f), 0.16f to ink, 1f to ink)
+    }
     Box(
         modifier
             .fillMaxWidth()
-            .drawBehind {
-                drawRect(
-                    Brush.verticalGradient(
-                        0f to Ink.a(0.5f),
-                        0.16f to Ink,
-                        1f to Ink,
-                    )
-                )
-            }
+            .drawBehind { drawRect(fade) }
     ) {
         Box(Modifier.fillMaxWidth().height(1.dp).background(HairlineSoft).align(Alignment.TopCenter))
         Row(

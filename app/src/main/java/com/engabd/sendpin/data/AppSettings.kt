@@ -29,6 +29,11 @@ class AppSettings(private val context: Context) {
         private val PLAYER_NAME = stringPreferencesKey("player_name")          // Sendspin client/hello name
         private val TARGET_PLAYER = stringPreferencesKey("target_player")      // MA player to play to / control ("" = this phone)
         private val NOW_PLAYING_LAYOUT = stringPreferencesKey("now_playing_layout") // "tab" (default) | "overlay"
+        // Appearance. Defaults are the app as designed — OLED black with the accent
+        // pulled from album art — so an untouched install looks exactly as before.
+        private val THEME = stringPreferencesKey("theme")                       // oled | dark | light | system
+        private val ACCENT_SOURCE = stringPreferencesKey("accent_source")       // album | dynamic | fixed
+        private val FIXED_ACCENT = stringPreferencesKey("fixed_accent")         // ARGB hex, for accent_source=fixed
         private val PREFER_HI_RES = booleanPreferencesKey("prefer_hi_res")      // advertise 88.2/96 kHz too
         private val PREFER_FLAC = booleanPreferencesKey("prefer_flac")          // FLAC ahead of uncompressed PCM
         private val PREFER_ORIGINAL = booleanPreferencesKey("prefer_original")  // bypass MA when it would convert
@@ -64,6 +69,10 @@ class AppSettings(private val context: Context) {
     val playerName: Flow<String> = context.dataStore.data.map { it[PLAYER_NAME] ?: "" }
     val targetPlayer: Flow<String> = context.dataStore.data.map { it[TARGET_PLAYER] ?: "" }
     val nowPlayingLayout: Flow<String> = context.dataStore.data.map { it[NOW_PLAYING_LAYOUT] ?: "tab" }
+    val theme: Flow<String> = context.dataStore.data.map { it[THEME] ?: "oled" }
+    val accentSource: Flow<String> = context.dataStore.data.map { it[ACCENT_SOURCE] ?: "album" }
+    /** Stored as an ARGB hex string; empty means "use the built-in amber". */
+    val fixedAccent: Flow<String> = context.dataStore.data.map { it[FIXED_ACCENT] ?: "" }
     val preferHiRes: Flow<Boolean> = context.dataStore.data.map { it[PREFER_HI_RES] ?: true }
     val preferFlac: Flow<Boolean> = context.dataStore.data.map { it[PREFER_FLAC] ?: true }
     val preferOriginal: Flow<Boolean> = context.dataStore.data.map { it[PREFER_ORIGINAL] ?: false }
@@ -185,6 +194,35 @@ class AppSettings(private val context: Context) {
 
     suspend fun setTargetPlayer(playerId: String) {
         context.dataStore.edit { it[TARGET_PLAYER] = playerId }
+    }
+
+    /**
+     * A synchronous mirror of the theme, for the launch window only.
+     *
+     * The launch theme is XML and is applied before any of our code runs, and DataStore
+     * is asynchronous by design — `onCreate` cannot ask it what colour the page should
+     * be without blocking the main thread on I/O. So every theme write also lands in a
+     * SharedPreferences file, which can be read synchronously. Without it, choosing
+     * Light means a black flash on every cold start.
+     *
+     * DataStore stays the source of truth; this is a cache that only the first frame
+     * reads.
+     */
+    private val bootPrefs = context.getSharedPreferences("sendpin_boot", Context.MODE_PRIVATE)
+
+    val bootTheme: String get() = bootPrefs.getString("theme", "oled") ?: "oled"
+
+    suspend fun setTheme(key: String) {
+        bootPrefs.edit().putString("theme", key).apply()
+        context.dataStore.edit { it[THEME] = key }
+    }
+
+    suspend fun setAccentSource(key: String) {
+        context.dataStore.edit { it[ACCENT_SOURCE] = key }
+    }
+
+    suspend fun setFixedAccent(argbHex: String) {
+        context.dataStore.edit { it[FIXED_ACCENT] = argbHex }
     }
 
     suspend fun setNowPlayingLayout(layout: String) {

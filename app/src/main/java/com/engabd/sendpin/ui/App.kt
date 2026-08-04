@@ -1,6 +1,9 @@
 package com.engabd.sendpin.ui
 
+import android.app.Activity
 import androidx.activity.compose.BackHandler
+import androidx.core.view.WindowCompat
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
@@ -72,8 +75,12 @@ import com.engabd.sendpin.ui.screens.OnboardingScreen
 import com.engabd.sendpin.ui.screens.PlaylistDetailScreen
 import com.engabd.sendpin.ui.screens.SettingsScreen
 import com.engabd.sendpin.ui.screens.SpeakersScreen
+import com.engabd.sendpin.ui.theme.AccentChoice
 import com.engabd.sendpin.ui.theme.Ink
+import com.engabd.sendpin.ui.theme.LocalSendspinColors
 import com.engabd.sendpin.ui.theme.SendspinTheme
+import com.engabd.sendpin.ui.theme.ThemeChoice
+import com.engabd.sendpin.ui.theme.parseAccent
 import com.engabd.sendpin.ui.viewmodel.PlayerViewModel
 import com.engabd.sendpin.data.AppSettings
 import kotlinx.coroutines.flow.first
@@ -114,16 +121,56 @@ private val OverlayTabs = listOf(
     NavTab("settings", "Settings", Icons.Default.Settings),
 )
 
+/**
+ * Points the system bar icons at the current theme.
+ *
+ * `enableEdgeToEdge` in the Activity runs before any of this is known, and on a light
+ * page its light icons are white-on-white — the clock and battery simply vanish. This
+ * re-states them from inside the theme, so switching to Light in Settings fixes the
+ * status bar in the same frame as the rest of the app.
+ */
+@Composable
+private fun SystemBars() {
+    val light = LocalSendspinColors.current.isLight
+    val view = LocalView.current
+    if (view.isInEditMode) return
+    val window = (view.context as? Activity)?.window ?: return
+    LaunchedEffect(light, window) {
+        WindowCompat.getInsetsController(window, view).apply {
+            isAppearanceLightStatusBars = light
+            isAppearanceLightNavigationBars = light
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalSharedTransitionApi::class)
 @Composable
 fun App() {
-    SendspinTheme {
+    // Appearance is read before the theme rather than inside it, because it *is* the
+    // theme. Defaults match the app as designed, so the first frame of a fresh install
+    // — drawn before DataStore has answered — is the same OLED black it settles on,
+    // with no flash of another palette.
+    val themeContext = LocalContext.current
+    val themeSettings = remember { AppSettings(themeContext) }
+    val themeKey by themeSettings.theme.collectAsState(initial = ThemeChoice.OLED.key)
+    val accentKey by themeSettings.accentSource.collectAsState(initial = AccentChoice.ALBUM.key)
+    val fixedAccentHex by themeSettings.fixedAccent.collectAsState(initial = "")
+    val themeChoice = ThemeChoice.from(themeKey)
+    val accentChoice = AccentChoice.from(accentKey)
+    val fixedAccent = remember(fixedAccentHex) { parseAccent(fixedAccentHex) }
+
+    SendspinTheme(
+        theme = themeChoice,
+        accentChoice = accentChoice,
+        seedAccent = fixedAccent,
+    ) {
+        SystemBars()
         val playerVm: PlayerViewModel = viewModel()
         // Boot/onboarding run before the Now Playing VM exists, so they colour
         // themselves from this phone's own stream.
         val localArt by playerVm.artworkUrl.collectAsState()
         val bootPalette = rememberAlbumPalette(localArt)
-        val accent = bootPalette.accent
+        val accent = accentChoice.resolve(bootPalette.accent, fixedAccent, MaterialTheme.colorScheme.primary)
 
         val connected by playerVm.connected.collectAsState()
         val hasSavedServer by playerVm.hasSavedServer.collectAsState()
@@ -160,7 +207,13 @@ fun App() {
         // but Now Playing on the default accent.
         val npState by nowPlayingVm.state.collectAsState()
         val appPalette = rememberAlbumPalette(npState.artworkUrl ?: localArt)
-        val appAccent = appPalette.accent
+        // Only the album-art source lets the artwork drive the accent. On the other two
+        // the user asked for one colour that does not move, so the palette is still
+        // extracted (its companion swatches feed avatars and blooms) but the accent
+        // itself is held.
+        val appAccent = accentChoice.resolve(
+            appPalette.accent, fixedAccent, MaterialTheme.colorScheme.primary,
+        )
 
         // Read the now-playing layout preference.
         val context = LocalContext.current
