@@ -40,8 +40,8 @@ Local player (ExoPlayer)
 |------|--------|
 | `data/AppSettings.kt` | Add: `hueBridgeIp`, `hueAppKey` (encrypted), `hueClientKey` (encrypted), `hueAppId`, `hueEntertainmentConfigId`, `lightSyncMode` ("ha" \| "direct") |
 | `audio/LocalPlayer.kt` | Add `AudioAnalysisTap` to `DefaultRenderersFactory.setAudioProcessors()` |
-| `ui/screens/SettingsScreen.kt` | New "Light Sync" section: mode selector, bridge discovery, link button, area picker |
-| `ui/screens/LightSyncScreen.kt` | Mode indicator (HA vs Direct) |
+| `ui/screens/SettingsScreen.kt` | New "Light Sync" category in Settings: mode selector (HA / Direct), bridge discovery (mDNS scan), link button flow, entertainment area picker. This is where the transport choice lives — the Light Sync tab itself just shows controls. |
+| `ui/screens/LightSyncScreen.kt` | No mode selector here. Shows a small indicator of which transport is active (HA or Direct) for clarity, but the switching is in Settings. |
 | `app/build.gradle.kts` | No new dependencies needed (javax.crypto, OkHttp, media3 all present) |
 
 ## Key decisions

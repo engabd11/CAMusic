@@ -64,6 +64,17 @@ class SendpinApp : Application(), ImageLoaderFactory {
     val downloads: DownloadManager by lazy { DownloadManager(this) }
 
     /**
+     * Direct Hue Bridge Light Sync. Process-scoped so it survives Activity
+     * destruction and shares the audio tap with [localPlayer]. Only active
+     * when the user has configured a bridge and selected "direct" mode in
+     * Settings. When "ha" mode is selected (or no bridge is configured),
+     * this stays idle and the existing HA-based path handles Light Sync.
+     */
+    val directLightSync: com.engabd.sendpin.hue.DirectLightSync by lazy {
+        com.engabd.sendpin.hue.DirectLightSync(this)
+    }
+
+    /**
      * What the *selected* Music Assistant player is playing, at process scope.
      *
      * The media notification has to outlive the Activity, and the Now Playing screen's

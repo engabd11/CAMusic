@@ -113,6 +113,12 @@ class LocalPlayer(private val context: Context) {
     /** The output the user pinned in Settings (a USB DAC, typically). */
     private var preferredOutput: AudioDeviceInfo? = null
 
+    /**
+     * The Light Sync audio analysis tap. Shared with [DirectLightSync] which
+     * activates/deactivates it. When inactive, ExoPlayer bypasses it entirely.
+     */
+    val audioAnalysisTap = com.engabd.sendpin.audio.AudioAnalysisTap()
+
     /** The user's own volume, kept apart from the ReplayGain factor multiplied onto it. */
     private var userVolume = 1f
 
@@ -253,6 +259,12 @@ class LocalPlayer(private val context: Context) {
         // Neither belongs here without a device to prove it on. Float output is worth
         // revisiting behind the bit-perfect setting, measured, not assumed.
         val renderers = DefaultRenderersFactory(context)
+            // The Light Sync audio analysis tap: sits in the render chain as a
+            // pass-through AudioProcessor. When direct Light Sync is off, the
+            // tap's isActive() returns false and ExoPlayer bypasses it entirely
+            // (zero overhead). When on, it downmixes to mono, resamples to
+            // 22050 Hz, and feeds the AudioAnalyzer at ~50 Hz.
+            .setAudioProcessors(audioAnalysisTap)
 
         // The defaults are sized for video-on-mobile-data. This is a lossless file
         // over a LAN, where the sensible trade is a deeper buffer: a 24/96 FLAC is

@@ -49,6 +49,19 @@ class AppSettings(private val context: Context) {
         private val REPLAY_GAIN = stringPreferencesKey("replay_gain_mode")      // off | track | album
         private val KEEP_ALIVE_ANNOUNCEMENTS = booleanPreferencesKey("keep_alive_announcements") // persist connection for TTS
 
+        // Direct Hue Bridge Light Sync
+        private val HUE_BRIDGE_IP = stringPreferencesKey("hue_bridge_ip")
+        private val HUE_APP_KEY = stringPreferencesKey("hue_app_key")         // encrypted
+        private val HUE_CLIENT_KEY = stringPreferencesKey("hue_client_key")   // encrypted (PSK)
+        private val HUE_APP_ID = stringPreferencesKey("hue_app_id")           // hue-application-id for DTLS PSK identity
+        private val HUE_CONFIG_ID = stringPreferencesKey("hue_entertainment_config_id") // entertainment area UUID
+        private val LIGHT_SYNC_MODE = stringPreferencesKey("light_sync_mode") // "ha" | "direct"
+        private val LIGHT_SYNC_INTENSITY = stringPreferencesKey("light_sync_intensity") // subtle|medium|high|intense|extreme
+        private val LIGHT_SYNC_EFFECT = stringPreferencesKey("light_sync_effect") // music|movies|fireworks
+        private val LIGHT_SYNC_COLOR = stringPreferencesKey("light_sync_color") // colour scheme wire key
+        private val LIGHT_SYNC_BRIGHTNESS = stringPreferencesKey("light_sync_brightness") // 5..100
+        private val LIGHT_SYNC_TIMING = stringPreferencesKey("light_sync_timing") // -500..500 ms
+
         /**
          * How far the sync trim can be pushed either way. Matches the range Music
          * Assistant's own `sendspin_sync_delay` control offers, so the two agree;
@@ -291,5 +304,77 @@ class AppSettings(private val context: Context) {
     /** Applies to the next thing played, not the queue already running. */
     suspend fun setRadioMode(value: Boolean) {
         context.dataStore.edit { it[RADIO_MODE] = value }
+    }
+
+    // ── Direct Hue Bridge Light Sync ──────────────────────────────────────
+
+    /** The bridge IP on the LAN, e.g. "192.168.0.42". */
+    val hueBridgeIp: Flow<String> = context.dataStore.data.map { it[HUE_BRIDGE_IP] ?: "" }
+
+    /** The Hue application key (username). Encrypted at rest. */
+    val hueAppKey: Flow<String> = context.dataStore.data.map { Crypto.decrypt(it[HUE_APP_KEY] ?: "") }
+
+    /** The Hue client key (PSK, 32-char hex). Encrypted at rest. */
+    val hueClientKey: Flow<String> = context.dataStore.data.map { Crypto.decrypt(it[HUE_CLIENT_KEY] ?: "") }
+
+    /** The hue-application-id used as the DTLS PSK identity. */
+    val hueAppId: Flow<String> = context.dataStore.data.map { it[HUE_APP_ID] ?: "" }
+
+    /** The entertainment area UUID to stream to. */
+    val hueEntertainmentConfigId: Flow<String> = context.dataStore.data.map { it[HUE_CONFIG_ID] ?: "" }
+
+    /** Which Light Sync transport: "ha" (Home Assistant) or "direct" (Hue Bridge). */
+    val lightSyncMode: Flow<String> = context.dataStore.data.map { it[LIGHT_SYNC_MODE] ?: "ha" }
+
+    /** Intensity mode: subtle / medium / high / intense / extreme. */
+    val lightSyncIntensity: Flow<String> = context.dataStore.data.map { it[LIGHT_SYNC_INTENSITY] ?: "high" }
+
+    /** Effect: music / movies / fireworks. */
+    val lightSyncEffect: Flow<String> = context.dataStore.data.map { it[LIGHT_SYNC_EFFECT] ?: "music" }
+
+    /** Colour scheme wire key. */
+    val lightSyncColor: Flow<String> = context.dataStore.data.map { it[LIGHT_SYNC_COLOR] ?: "album_art_v2" }
+
+    /** Master brightness ceiling (5..100). */
+    val lightSyncBrightness: Flow<Int> = context.dataStore.data.map { it[LIGHT_SYNC_BRIGHTNESS]?.toIntOrNull() ?: 100 }
+
+    /** Timing offset in ms (-500..500). */
+    val lightSyncTiming: Flow<Int> = context.dataStore.data.map { it[LIGHT_SYNC_TIMING]?.toIntOrNull() ?: 0 }
+
+    suspend fun setHueBridge(ip: String, appKey: String, clientKey: String, appId: String = "") {
+        context.dataStore.edit {
+            it[HUE_BRIDGE_IP] = ip
+            it[HUE_APP_KEY] = Crypto.encrypt(appKey)
+            it[HUE_CLIENT_KEY] = Crypto.encrypt(clientKey)
+            if (appId.isNotBlank()) it[HUE_APP_ID] = appId
+        }
+    }
+
+    suspend fun setHueConfigId(id: String) {
+        context.dataStore.edit { it[HUE_CONFIG_ID] = id }
+    }
+
+    suspend fun setLightSyncMode(mode: String) {
+        context.dataStore.edit { it[LIGHT_SYNC_MODE] = mode }
+    }
+
+    suspend fun setLightSyncIntensity(intensity: String) {
+        context.dataStore.edit { it[LIGHT_SYNC_INTENSITY] = intensity }
+    }
+
+    suspend fun setLightSyncEffect(effect: String) {
+        context.dataStore.edit { it[LIGHT_SYNC_EFFECT] = effect }
+    }
+
+    suspend fun setLightSyncColor(color: String) {
+        context.dataStore.edit { it[LIGHT_SYNC_COLOR] = color }
+    }
+
+    suspend fun setLightSyncBrightness(pct: Int) {
+        context.dataStore.edit { it[LIGHT_SYNC_BRIGHTNESS] = pct.toString() }
+    }
+
+    suspend fun setLightSyncTiming(ms: Int) {
+        context.dataStore.edit { it[LIGHT_SYNC_TIMING] = ms.toString() }
     }
 }
