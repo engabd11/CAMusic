@@ -41,80 +41,6 @@ import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.DspViewModel
 
-/**
- * The DSP / Equalizer screen — a per-player parametric EQ, tone control, and
- * gain stage, powered by Music Assistant's server-side DSP pipeline.
- *
- * Reachable from Now Playing via the EQ button. Changes are applied live by MA
- * — no playback restart needed. Works for any MA player (this phone or a remote
- * speaker), following the same "Play here" target the rest of the app uses.
- *
- * Layout: a warning at the top, then expandable sections for the master
- * toggle, parametric EQ, tone control, gain, and presets. Each section
- * collapses to a summary line and expands to show its controls.
- */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun DspScreen(
-    onBack: () -> Unit,
-    viewModel: DspViewModel = viewModel(),
-) {
-    val config by viewModel.config.collectAsState()
-    val loading by viewModel.loading.collectAsState()
-    val saving by viewModel.saving.collectAsState()
-    val error by viewModel.error.collectAsState()
-    val connected by viewModel.connected.collectAsState()
-    val playerName by viewModel.playerName.collectAsState()
-    val presets by viewModel.presets.collectAsState()
-    val eqExpanded by viewModel.eqExpanded.collectAsState()
-    val toneExpanded by viewModel.toneExpanded.collectAsState()
-    val gainExpanded by viewModel.gainExpanded.collectAsState()
-    val presetsExpanded by viewModel.presetsExpanded.collectAsState()
-    val showSavePreset by viewModel.showSavePreset.collectAsState()
-    val presetName by viewModel.presetName.collectAsState()
-    val context = LocalContext.current
-
-    LaunchedEffect(Unit) {
-        viewModel.toast.collect { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }
-    }
-    LaunchedEffect(Unit) { viewModel.load() }
-
-    val accent = LocalAccent.current
-
-    Box(Modifier.fillMaxSize().background(Ink)) {
-        Column(
-            Modifier
-                .fillMaxSize()
-                .windowInsetsPadding(WindowInsets.statusBars)
-                .padding(bottom = systemNavInset()),
-        ) {
-            // ── Top bar ─────────────────────────────────────────────────
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Box(
-                    Modifier.clip(CircleShape).clickable(onClick = onBack).padding(8.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = TextSecondary, modifier = Modifier.size(22.dp))
-                }
-                Text(
-                    "DSP & Equalizer",
-                    color = TextPrimary, fontFamily = AppFont, fontWeight = FontWeight.ExtraBold,
-                    fontSize = 20.sp, modifier = Modifier.weight(1f).padding(start = 4.dp),
-                )
-                // Save button — only when there's something to save.
-                if (config != null) {
-                    SaveButton(saving = saving) { viewModel.save() }
-                }
-            }
-
-            DspBody(viewModel, accent)
-        }
-    }
-}
-
 // ─── Warning banner ──────────────────────────────────────────────────────
 
 @Composable
@@ -731,6 +657,18 @@ internal fun ColumnScope.DspBody(viewModel: DspViewModel, accent: Color) {
     val presetsExpanded by viewModel.presetsExpanded.collectAsState()
     val showSavePreset by viewModel.showSavePreset.collectAsState()
     val presetName by viewModel.presetName.collectAsState()
+    val saving by viewModel.saving.collectAsState()
+    val context = LocalContext.current
+
+    // These belong to the body, not to whatever is hosting it. They used to sit in the
+    // page wrapper, and when DSP became a sheet the sheet inherited the controls
+    // without them: nothing ever called load(), so `config` stayed null and every
+    // section gated on it — the master switch, the EQ, tone control, gain — simply was
+    // not there. The sheet showed a warning and an empty preset list and nothing else.
+    LaunchedEffect(Unit) { viewModel.load() }
+    LaunchedEffect(Unit) {
+        viewModel.toast.collect { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }
+    }
 
             if (loading) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -757,11 +695,25 @@ internal fun ColumnScope.DspBody(viewModel: DspViewModel, accent: Color) {
             ) {
                 Spacer(Modifier.height(4.dp))
 
-                // ── Player name ──────────────────────────────────────────
-                Text(
-                    "Configuring: $playerName",
-                    color = TextMuted, fontFamily = AppFont, fontSize = 12.sp,
-                )
+                // ── Player name + save ───────────────────────────────────
+                // Save lives with the content rather than in a title bar, because the
+                // content is the part that has two hosts. In the sheet there is no
+                // title bar to put it in, and without it the sheet could edit the DSP
+                // and never commit it.
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "Configuring: $playerName",
+                        color = TextMuted, fontFamily = AppFont, fontSize = 12.sp,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (config != null) {
+                        SaveButton(saving = saving) { viewModel.save() }
+                    }
+                }
+
 
                 // ── Warning ──────────────────────────────────────────────
                 WarningBanner()

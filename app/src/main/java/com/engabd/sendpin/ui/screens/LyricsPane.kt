@@ -57,8 +57,16 @@ fun LyricsPane(
 ) {
     val load by viewModel.lyrics.collectAsState()
     val accent = LocalAccent.current
+    val currentItem by viewModel.currentItem.collectAsState()
 
-    LaunchedEffect(Unit) { if (load is Load.Idle) viewModel.loadLyrics() }
+    // Keyed on the track, not on `Unit`. A new track resets the lyrics to Idle in the
+    // view model, but a `LaunchedEffect(Unit)` had already run for the life of this
+    // pane and would not run again — so with the lyrics open, every track after the
+    // first sat on a spinner that had nothing behind it until the pane was closed and
+    // reopened. Re-keying makes the pane follow the track it is sitting on.
+    LaunchedEffect(currentItem?.itemId) {
+        if (viewModel.lyrics.value is Load.Idle) viewModel.loadLyrics()
+    }
 
     Box(modifier, contentAlignment = Alignment.Center) {
         when (val l = load) {
