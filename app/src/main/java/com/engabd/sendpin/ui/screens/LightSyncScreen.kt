@@ -44,6 +44,13 @@ private val ModeFallback = listOf("auto", "subtle", "medium", "high", "intense",
 private val EffectFallback = listOf("music", "movies", "fireworks")
 
 /**
+ * What the direct engine renders when the stored scheme is one it can't derive
+ * (album art, song). Mirrors `FALLBACK_SCHEME` in `SyncoEngine.kt` — kept in step
+ * so the direct screen shows the palette the room will actually be lit with.
+ */
+private val FALLBACK_COLOUR = com.engabd.sendpin.hue.ColorScheme.SUNSET.wire
+
+/**
  * Picks the Light Sync screen for the active transport.
  *
  * The two are entirely separate: the HA path is driven by Home Assistant's
@@ -397,7 +404,13 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                 Spacer(Modifier.height(22.dp))
                 SectionLabel("Colour")
                 Spacer(Modifier.height(10.dp))
-                ColourPicker(selected = colour) { scheme -> scope.launch { settings.setLightSyncColor(scheme) } }
+                // A stored album-art/song scheme renders as the engine's fallback,
+                // so show the palette the lights will actually use rather than a
+                // selection that isn't what happens.
+                val shownColour = if (colour in LightSyncRepository.DYNAMIC_COLOURS) FALLBACK_COLOUR else colour
+                ColourPicker(selected = shownColour, showDynamic = false) { scheme ->
+                    scope.launch { settings.setLightSyncColor(scheme) }
+                }
 
                 Spacer(Modifier.height(22.dp))
                 SectionLabel("Brightness ceiling")
@@ -409,7 +422,9 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
 
                 Spacer(Modifier.height(22.dp))
                 Text(
-                    "Effect and timing controls are on the Home Assistant path only — the direct engine renders music-reactively and does not offset yet.",
+                    "Direct mode syncs this phone's own playback. Auto intensity, " +
+                        "album-art colour, effects and timing offset are on the Home " +
+                        "Assistant path only for now.",
                     color = TextFaint, style = MaterialTheme.typography.bodySmall,
                 )
             }
@@ -532,15 +547,21 @@ private fun EffectTile(name: String, icon: ImageVector, selected: Boolean, onCli
  * of sixteen unlabelled single-colour dots said neither what a scheme was called
  * nor what it would look like.
  */
+/**
+ * [showDynamic] is false on the direct path: album-art and song colours are
+ * derived by the Home Assistant integration, and the direct engine has no
+ * equivalent yet — it renders its fallback palette for all three. Offering them
+ * would be three tiles that all quietly do the same thing.
+ */
 @Composable
-private fun ColourPicker(selected: String?, onSelect: (String) -> Unit) {
+private fun ColourPicker(selected: String?, showDynamic: Boolean = true, onSelect: (String) -> Unit) {
     val accent = LocalAccent.current
     val palette = LocalPalette.current
 
     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         // The dynamic sources preview with the *current* album's real colours, so
         // the choice shows what it will actually do to the room.
-        SwatchTile(
+        if (showDynamic) SwatchTile(
             colours = listOf(accent, palette.swatch(1), palette.swatch(2)),
             label = "Album art",
             caption = "Weighted",
@@ -548,7 +569,7 @@ private fun ColourPicker(selected: String?, onSelect: (String) -> Unit) {
             selected = selected == LightSyncRepository.ALBUM_COLOUR,
         ) { onSelect(LightSyncRepository.ALBUM_COLOUR) }
 
-        SwatchTile(
+        if (showDynamic) SwatchTile(
             colours = listOf(palette.swatch(1), accent),
             label = "Album art",
             caption = "Even",
@@ -556,7 +577,7 @@ private fun ColourPicker(selected: String?, onSelect: (String) -> Unit) {
             selected = selected == LightSyncRepository.ALBUM_COLOUR_V1,
         ) { onSelect(LightSyncRepository.ALBUM_COLOUR_V1) }
 
-        SwatchTile(
+        if (showDynamic) SwatchTile(
             colours = listOf(Color(0xFF33FFC2), Color(0xFF7D40FF), Color(0xFFFF59D1)),
             label = "Song",
             caption = "Harmony",
