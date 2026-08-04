@@ -2,8 +2,8 @@ package com.engabd.sendpin.audio
 
 import kotlin.math.ln
 import kotlin.math.max
-import kotlin.math.maxOf
 import kotlin.math.min
+import kotlin.math.pow
 import kotlin.math.sqrt
 import kotlin.math.PI
 
@@ -162,7 +162,7 @@ private fun bandMeans(mag: FloatArray, starts: IntArray, counts: IntArray): Floa
 private fun makeOnsetFilterbank(freqs: FloatArray, nBands: Int, fmin: Float, fmax: Float): Triple<IntArray, IntArray, Pair<Int, Int>> {
     val ratio = fmax.toDouble() / fmin.toDouble()
     val edges = FloatArray(nBands + 1) { i ->
-        (fmin.toDouble() * kotlin.math.pow(ratio, i.toDouble() / nBands)).toFloat()
+        (fmin.toDouble() * ratio.pow(i.toDouble() / nBands)).toFloat()
     }
     val idx = IntArray(nBands + 1) { i ->
         var result = 0
@@ -186,7 +186,7 @@ private fun makeOnsetFilterbank(freqs: FloatArray, nBands: Int, fmin: Float, fma
 private fun makeMelbank(freqs: FloatArray, nBins: Int, fmin: Float, fmax: Float): Pair<IntArray, IntArray> {
     val ratio = fmax.toDouble() / fmin.toDouble()
     val edges = FloatArray(nBins + 1) { i ->
-        (fmin.toDouble() * kotlin.math.pow(ratio, i.toDouble() / nBins)).toFloat()
+        (fmin.toDouble() * ratio.pow(i.toDouble() / nBins)).toFloat()
     }
     val idx = IntArray(nBins + 1) { i ->
         var result = 0

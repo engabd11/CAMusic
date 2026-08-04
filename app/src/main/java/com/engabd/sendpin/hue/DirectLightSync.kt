@@ -129,9 +129,9 @@ class DirectLightSync(
             // 4. Create the stream encoder + effects engine.
             encoder = HueStreamEncoder(config.id)
             engine = SyncoEngine(channels).also {
-                it.setMode(SyncMode.fromWire(settings.lightSyncIntensity.first()))
+                it.mode = SyncMode.fromWire(settings.lightSyncIntensity.first())
                 it.setScheme(ColorScheme.fromWire(settings.lightSyncColor.first()))
-                it.setBrightness(settings.lightSyncBrightness.first() / 100f)
+                it.brightness = settings.lightSyncBrightness.first() / 100f
             }
 
             // 5. Activate the audio tap.
@@ -269,12 +269,12 @@ class DirectLightSync(
     // ── Live settings updates (from the Light Sync screen) ──────────────────
 
     fun setMode(mode: SyncMode) {
-        engine?.setMode(mode)
+        engine?.mode = mode
         scope.launch { settings.setLightSyncIntensity(mode.wire) }
     }
 
     fun setEffect(effect: SyncEffect) {
-        engine?.setEffect(effect)
+        engine?.effect = effect
         scope.launch { settings.setLightSyncEffect(effect.wire) }
     }
 
@@ -288,7 +288,7 @@ class DirectLightSync(
     }
 
     fun setBrightness(pct: Int) {
-        engine?.setBrightness(pct.coerceIn(0, 100) / 100f)
+        engine?.brightness = pct.coerceIn(0, 100) / 100f
         scope.launch { settings.setLightSyncBrightness(pct) }
     }
 

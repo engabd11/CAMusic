@@ -328,8 +328,10 @@ class SyncoEngine(
 ) {
     var palette: Palette = getPalette(FALLBACK_SCHEME)
     var mode: SyncMode = SyncMode.HIGH
+        set(value) { field = value; params = MODE_PARAMS[value]!!; updateRoles() }
     var effect: SyncEffect = SyncEffect.MUSIC
     var brightness: Float = 1.0f
+        set(value) { field = value.coerceIn(0f, 1f) }
     var time: Float = 0.0f
     var colourPhase: Float = 0.0f
 
@@ -393,12 +395,8 @@ class SyncoEngine(
 
     // ── Public setters ────────────────────────────────────────────────────
 
-    fun setPalette(p: Palette) { palette = p }
     fun setScheme(scheme: ColorScheme) { palette = getPalette(scheme) }
     fun setAlbumColors(colors: List<Rgb>) { if (colors.isNotEmpty()) palette = Palette(colors) }
-    fun setMode(m: SyncMode) { mode = m; params = MODE_PARAMS[m]!!; updateRoles() }
-    fun setEffect(e: SyncEffect) { effect = e }
-    fun setBrightness(b: Float) { brightness = b.coerceIn(0f, 1f) }
 
     // ── Role assignment ───────────────────────────────────────────────────
 
