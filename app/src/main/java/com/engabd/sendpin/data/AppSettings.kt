@@ -56,6 +56,7 @@ class AppSettings(private val context: Context) {
         private val HUE_APP_ID = stringPreferencesKey("hue_app_id")           // hue-application-id for DTLS PSK identity
         private val HUE_CONFIG_ID = stringPreferencesKey("hue_entertainment_config_id") // entertainment area UUID
         private val LIGHT_SYNC_MODE = stringPreferencesKey("light_sync_mode") // "ha" | "direct"
+        private val LIGHT_SYNC_ENABLED = booleanPreferencesKey("light_sync_enabled") // direct mode master toggle
         private val LIGHT_SYNC_INTENSITY = stringPreferencesKey("light_sync_intensity") // subtle|medium|high|intense|extreme
         private val LIGHT_SYNC_EFFECT = stringPreferencesKey("light_sync_effect") // music|movies|fireworks
         private val LIGHT_SYNC_COLOR = stringPreferencesKey("light_sync_color") // colour scheme wire key
@@ -326,6 +327,13 @@ class AppSettings(private val context: Context) {
     /** Which Light Sync transport: "ha" (Home Assistant) or "direct" (Hue Bridge). */
     val lightSyncMode: Flow<String> = context.dataStore.data.map { it[LIGHT_SYNC_MODE] ?: "ha" }
 
+    /**
+     * The direct-mode master toggle. The HA path keeps its own per-area `enabled`
+     * switch in Home Assistant; direct mode has no HA to hold that state, so it
+     * lives here. Off by default: pairing a bridge shouldn't start streaming to it.
+     */
+    val lightSyncEnabled: Flow<Boolean> = context.dataStore.data.map { it[LIGHT_SYNC_ENABLED] ?: false }
+
     /** Intensity mode: subtle / medium / high / intense / extreme. */
     val lightSyncIntensity: Flow<String> = context.dataStore.data.map { it[LIGHT_SYNC_INTENSITY] ?: "high" }
 
@@ -356,6 +364,10 @@ class AppSettings(private val context: Context) {
 
     suspend fun setLightSyncMode(mode: String) {
         context.dataStore.edit { it[LIGHT_SYNC_MODE] = mode }
+    }
+
+    suspend fun setLightSyncEnabled(on: Boolean) {
+        context.dataStore.edit { it[LIGHT_SYNC_ENABLED] = on }
     }
 
     suspend fun setLightSyncIntensity(intensity: String) {

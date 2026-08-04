@@ -19,8 +19,13 @@ import kotlin.math.abs
  * on the audio thread — it's all float arithmetic and an FFT, which is
  * fast enough at 50 Hz to stay well under a frame budget.
  *
- * When Light Sync (direct mode) is off, [isActive] returns false and
- * ExoPlayer bypasses this processor entirely — zero overhead.
+ * [isActive] stays true for any PCM format this can read, rather than tracking
+ * whether Light Sync is on. ExoPlayer builds the sink's processing pipeline once
+ * per configuration and asks [isActive] only then — a processor that reported
+ * false when the track started is left out of the chain, and no later toggle can
+ * put it back. Reporting true keeps the tap in the chain so Light Sync can be
+ * switched on mid-song; [setActive] then gates the analysis itself, leaving a
+ * buffer copy as the cost of being off.
  *
  * The PCM tap is stereo: ExoPlayer downmixes to mono for the analyzer
  * (the analysis is mono-only, matching syncoV2).
@@ -60,8 +65,8 @@ class AudioAnalysisTap : AudioProcessor {
     private var flushed = false
 
     /**
-     * Activate or deactivate the tap. When deactivated, ExoPlayer bypasses
-     * this processor (isActive → false) and no analysis runs.
+     * Turn analysis on or off. The processor stays in ExoPlayer's chain either
+     * way (see [isActive]); this only decides whether buffers are analysed.
      */
     fun setActive(on: Boolean) {
         active = on
@@ -75,7 +80,15 @@ class AudioAnalysisTap : AudioProcessor {
         }
     }
 
-    override fun isActive(): Boolean = active
+    /**
+     * True for any PCM encoding [analyzeBuffer] can read, so the tap is present
+     * in the chain whether or not Light Sync is currently running. See the class
+     * docstring: this is asked once when the sink is configured, not per buffer.
+     */
+    override fun isActive(): Boolean = when (inputAudioFormat?.encoding) {
+        C.ENCODING_PCM_16BIT, C.ENCODING_PCM_FLOAT -> true
+        else -> false
+    }
 
     override fun configure(inputFormat: M3AudioFormat): M3AudioFormat {
         inputAudioFormat = inputFormat
@@ -100,9 +113,10 @@ class AudioAnalysisTap : AudioProcessor {
             outputBuffer.flip()
             inputBuffer.position(inputBuffer.limit())
 
-            // Feed the analyzer if active
-            val an = analyzer
-            if (active && an != null) {
+            // Feed the analyzer if active. Built here when missing so a sink
+            // reset mid-session doesn't leave the tap permanently silent.
+            if (active) {
+                if (analyzer == null) analyzer = AudioAnalyzer()
                 outputBuffer.rewind()
                 analyzeBuffer(outputBuffer)
             }
@@ -207,7 +221,11 @@ class AudioAnalysisTap : AudioProcessor {
     override fun reset() {
         flush()
         analyzer = null
-        active = false
+        // `active` is owned by DirectLightSync, not by the sink's lifecycle. A
+        // reset here means ExoPlayer is reconfiguring, not that the user turned
+        // Light Sync off — clearing it would strand a running session with a tap
+        // that silently stopped analysing. The analyzer is rebuilt on the next
+        // buffer instead.
     }
 
     companion object {

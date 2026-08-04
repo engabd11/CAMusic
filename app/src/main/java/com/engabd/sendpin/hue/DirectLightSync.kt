@@ -30,11 +30,12 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 3. [stop] — stop the stream (PUT action:stop), close the DTLS channel,
  *    release the engine.
  *
- * The orchestrator runs on a background scope. DTLS sends are synchronous
- * (blocking UDP) and run on [Dispatchers.IO]. The analysis frame callback
- * runs on the ExoPlayer audio thread — it only touches the engine (which
- * is single-threaded by contract) and queues the RGB output for the send
- * loop, never blocks.
+ * The orchestrator runs on a background scope. [onAnalysisFrame] runs on the
+ * ExoPlayer audio thread and renders *and sends* inline — a ~100-byte UDP
+ * datagram at 50 Hz, which is microseconds in the normal case. It is still a
+ * blocking socket write on a real-time thread, so if the on-device test turns
+ * up audio glitching under a flaky LAN, this is the first place to look: the
+ * fix is a single-slot handoff to a sender coroutine.
  *
  * Keepalive: the bridge drops the DTLS channel after ~10s of silence.
  * A keepalive loop resends the last frame every 9s if the audio is idle.
@@ -47,6 +48,13 @@ private const val FRAME_PERIOD_MS = 1000L / STREAM_FPS
 
 class DirectLightSync(
     private val context: Context,
+    /**
+     * The tap that is actually installed in ExoPlayer's render chain — it must be
+     * *the same instance* [com.engabd.sendpin.audio.LocalPlayer] handed to its
+     * `TapRenderersFactory`, not a second one. Activating a tap the audio never
+     * flows through yields a connected bridge and lights that never move.
+     */
+    private val audioTap: AudioAnalysisTap,
     private val settings: AppSettings = AppSettings(context),
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -54,17 +62,18 @@ class DirectLightSync(
     /** The bridge client — mDNS discovery, CLIP v2 API. */
     val bridgeClient = HueBridgeClient(context)
 
-    /** The audio tap — plugged into ExoPlayer's render chain. */
-    val audioTap = AudioAnalysisTap()
+    // Written on the orchestrator scope, read on the ExoPlayer audio thread and
+    // by the settings collectors — volatile so a start/stop is seen promptly and
+    // a half-built session is never observed.
 
     /** The DTLS client — opened on start, closed on stop. */
-    private var dtls: DtlsPskClient? = null
+    @Volatile private var dtls: DtlsPskClient? = null
 
     /** The stream encoder — one per entertainment area. */
-    private var encoder: HueStreamEncoder? = null
+    @Volatile private var encoder: HueStreamEncoder? = null
 
     /** The effects engine. */
-    private var engine: SyncoEngine? = null
+    @Volatile private var engine: SyncoEngine? = null
 
     /** Entertainment area channels. */
     private var channels: List<EntertainmentChannel> = emptyList()
@@ -81,8 +90,11 @@ class DirectLightSync(
     val error: StateFlow<String?> = _error.asStateFlow()
 
     private var keepaliveJob: Job? = null
-    private var sendJob: Job? = null
     private val running = AtomicBoolean(false)
+
+    init {
+        observeSettings()
+    }
 
     /**
      * Start the direct Light Sync session.
@@ -91,10 +103,12 @@ class DirectLightSync(
      * area, starts the stream on the bridge, opens the DTLS channel, and
      * activates the audio tap.
      *
-     * Must be called from a coroutine (reads DataStore).
+     * Safe to call from any dispatcher: the whole sequence moves to [Dispatchers.IO],
+     * because the DTLS handshake is a blocking UDP exchange with retransmit timeouts
+     * and would hang the caller's thread.
      */
-    suspend fun start() {
-        if (running.get()) return
+    suspend fun start() = withContext(Dispatchers.IO) {
+        if (running.get()) return@withContext
 
         val host = settings.hueBridgeIp.first()
         val appKey = settings.hueAppKey.first()
@@ -104,7 +118,7 @@ class DirectLightSync(
 
         if (host.isBlank() || appKey.isBlank() || clientKey.isBlank() || configId.isBlank()) {
             _error.value = "Bridge not configured. Set up a bridge in Settings first."
-            return
+            return@withContext
         }
 
         try {
@@ -130,6 +144,7 @@ class DirectLightSync(
             encoder = HueStreamEncoder(config.id)
             engine = SyncoEngine(channels).also {
                 it.mode = SyncMode.fromWire(settings.lightSyncIntensity.first())
+                it.effect = SyncEffect.fromWire(settings.lightSyncEffect.first())
                 it.setScheme(ColorScheme.fromWire(settings.lightSyncColor.first()))
                 it.brightness = settings.lightSyncBrightness.first() / 100f
             }
@@ -167,7 +182,6 @@ class DirectLightSync(
         audioTap.onFrame = null
 
         keepaliveJob?.cancel(); keepaliveJob = null
-        sendJob?.cancel(); sendJob = null
 
         engine = null
         encoder = null
@@ -266,40 +280,36 @@ class DirectLightSync(
         }
     }
 
-    // ── Live settings updates (from the Light Sync screen) ──────────────────
+    // ── Live settings updates ───────────────────────────────────────────────
 
-    fun setMode(mode: SyncMode) {
-        engine?.mode = mode
-        scope.launch { settings.setLightSyncIntensity(mode.wire) }
+    /**
+     * Mirror the stored Light Sync settings onto the running engine.
+     *
+     * The screen writes [AppSettings] and nothing else — it never touches the
+     * engine. So a control moved mid-song lands on the next frame, and one moved
+     * while nothing is playing is simply what [start] seeds the engine with. One
+     * source of truth, and no path where the UI and the lights disagree.
+     *
+     * These collectors run for the life of the process. While the engine is null
+     * every apply is a no-op, which costs nothing — DataStore only emits on change.
+     */
+    private fun observeSettings() {
+        scope.launch {
+            settings.lightSyncIntensity.collect { wire -> engine?.mode = SyncMode.fromWire(wire) }
+        }
+        scope.launch {
+            settings.lightSyncEffect.collect { wire -> engine?.effect = SyncEffect.fromWire(wire) }
+        }
+        scope.launch {
+            settings.lightSyncColor.collect { wire -> engine?.setScheme(ColorScheme.fromWire(wire)) }
+        }
+        scope.launch {
+            settings.lightSyncBrightness.collect { pct -> engine?.brightness = pct.coerceIn(0, 100) / 100f }
+        }
     }
 
-    fun setEffect(effect: SyncEffect) {
-        engine?.effect = effect
-        scope.launch { settings.setLightSyncEffect(effect.wire) }
-    }
-
-    fun setColor(scheme: ColorScheme) {
-        engine?.setScheme(scheme)
-        scope.launch { settings.setLightSyncColor(scheme.wire) }
-    }
-
+    /** Album-art colours, pushed by the player when the track changes. */
     fun setAlbumColors(colors: List<Rgb>) {
         engine?.setAlbumColors(colors)
-    }
-
-    fun setBrightness(pct: Int) {
-        engine?.brightness = pct.coerceIn(0, 100) / 100f
-        scope.launch { settings.setLightSyncBrightness(pct) }
-    }
-
-    fun setTiming(ms: Int) {
-        // Timing offset — deferred (needs delay buffer for negative offsets).
-        // For now this is a no-op that stores the setting.
-        scope.launch { settings.setLightSyncTiming(ms) }
-    }
-
-    fun setTunables(tunables: Map<String, Float>) {
-        // Advanced tunables — deferred for MVP.
-        // The engine supports them but the MVP uses the mode's defaults.
     }
 }
