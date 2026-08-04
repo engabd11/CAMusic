@@ -1,18 +1,15 @@
-# Sendspin for Android
+# CAMusic Sendspin Client for Android.
 
 **Your phone as a Music Assistant speaker, a remote for every other speaker in the
 house, and a standalone player for your own library when the servers are off.**
 
-Sendspin joins Music Assistant as a real Sendspin player, so MA can stream to it, group
+CAMusic joins Music Assistant as a real Sendspin player, so MA can stream to it, group
 it with your other speakers and speak Home Assistant announcements through it. The same
 app browses the library, drives whichever player you are actually listening to, and can
 drop Music Assistant entirely and play straight from Navidrome - including with no
 network at all, once tracks are downloaded.
 
-> **Status: v0.4.x, and honest about it.** Everything below works against live servers.
-> It is a debug build, tested on one phone (Galaxy S23, Android 15), and the audio path
-> has had two regressions found by ear rather than by CI. Read
-> [Known limits](#known-limits) before relying on it.
+
 
 ---
 
