@@ -85,7 +85,7 @@ enum class SettingsSection(
     // this device. What is being configured is the player this app registers with
     // Music Assistant, so it is named after that.
     PLAYER(
-        "Sendspin player",
+        "CAMusic player",
         "The name this phone shows in Music Assistant, and how it takes the stream",
         Icons.Default.Smartphone,
     ),
@@ -731,7 +731,7 @@ fun SettingsScreen(
                             GlassCard(radius = 16.dp) {
                                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                                     Text(
-                                        "Sendspin - a Music Assistant player & controller for Android.\n\n" +
+                                        "CAMusic - a Music Assistant player & controller for Android.\n\n" +
                                         "Plays FLAC / Opus 16-bit as an MA player, with Navidrome-direct " +
                                         "browse + offline downloads and Hue light-sync controls.",
                                         color = TextMuted, fontSize = 13.sp,

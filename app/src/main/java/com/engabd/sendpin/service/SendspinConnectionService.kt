@@ -172,7 +172,7 @@ class SendspinConnectionService : Service() {
      */
     private fun buildNotification(): Notification {
         val connected = pb.connected.value
-        val title = if (connected) "Sendspin player online" else "Sendspin - reconnecting"
+        val title = if (connected) "CAMusic player online" else "CAMusic - reconnecting"
         // "Announcements will play here" was read, reasonably, as *this notification
         // being an audio destination* — a second stream the music was coming out of,
         // separate from the media player. It never was: there is one player, and this

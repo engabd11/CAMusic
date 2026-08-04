@@ -1,11 +1,28 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  The CAMusic mark: a mushroom, white on the black background already set by
+  mipmap-anydpi-v26/ic_launcher.xml (@color/primary_dark is #FF000000).
+
+  Drawn as a vector rather than traced from the supplied JPG for two reasons. A
+  launcher icon is rendered anywhere from 48dp to 192dp and a bitmap only looks
+  right at one of those. And the source image carries a word beneath the mark,
+  which an adaptive icon would cut off — a launcher may mask this 108dp canvas
+  down to a 66dp circle, so nothing that has to be read belongs on it. Only the
+  mushroom survives, and it sits inside that safe zone.
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Simple S icon on dark background -->
+
+    <!-- Cap: a dome overhanging the stem, flat along its underside. -->
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M42,38 L66,38 L66,42 L48,42 L48,52 L64,52 L64,56 L44,56 L44,70 L66,70 L66,74 L42,74 Z"/>
+        android:pathData="M30,58 C30,40.3 40.7,29 54,29 C67.3,29 78,40.3 78,58 Z"/>
+
+    <!-- Stem: tapers in under the cap, then rounds off at the foot. -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M48.4,58 L59.6,58 C59.6,66 58.6,73.2 56.2,77.6 C55.4,79.1 52.6,79.1 51.8,77.6 C49.4,73.2 48.4,66 48.4,58 Z"/>
 </vector>

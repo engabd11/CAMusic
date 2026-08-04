@@ -324,7 +324,7 @@ class SendspinService : Service() {
 
     private fun updateMetadata(meta: MetadataBundle) {
         val md = MediaMetadataCompat.Builder()
-            .putString(MediaMetadataCompat.METADATA_KEY_TITLE, meta.title.ifBlank { "Sendspin" })
+            .putString(MediaMetadataCompat.METADATA_KEY_TITLE, meta.title.ifBlank { "CAMusic" })
             .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, meta.artist)
             .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, meta.album)
             // -1, not 0, when the duration is not known — and it often is not, because
@@ -385,7 +385,7 @@ class SendspinService : Service() {
 
     private fun buildNotification(shade: Shade = currentShade()): Notification {
         val isPlaying = shade.isPlaying
-        val title = shade.title.ifEmpty { "Sendspin" }
+        val title = shade.title.ifEmpty { "CAMusic" }
         val text = shade.artist.ifEmpty {
             when {
                 shade.playerName != null -> "Playing on ${shade.playerName}"
@@ -441,7 +441,7 @@ class SendspinService : Service() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(CHANNEL_ID, "Sendspin Playback", NotificationManager.IMPORTANCE_LOW).apply {
+            val channel = NotificationChannel(CHANNEL_ID, "CAMusic Playback", NotificationManager.IMPORTANCE_LOW).apply {
                 description = "Shows the current track while music is playing"
                 setShowBadge(false)
                 setSound(null, null)

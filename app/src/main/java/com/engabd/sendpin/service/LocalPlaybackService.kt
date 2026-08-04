@@ -152,7 +152,7 @@ class LocalPlaybackService : Service() {
     private fun updateMetadata() {
         val t = player.current.value
         val md = MediaMetadataCompat.Builder()
-            .putString(MediaMetadataCompat.METADATA_KEY_TITLE, t?.title.orEmpty().ifBlank { "Sendspin" })
+            .putString(MediaMetadataCompat.METADATA_KEY_TITLE, t?.title.orEmpty().ifBlank { "CAMusic" })
             .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, t?.artist.orEmpty())
             .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, t?.album.orEmpty())
             // -1 for unknown, never 0 — see the same line in SendspinService: 0 is a
@@ -215,7 +215,7 @@ class LocalPlaybackService : Service() {
         )
 
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle(track?.title.orEmpty().ifBlank { "Sendspin" })
+            .setContentTitle(track?.title.orEmpty().ifBlank { "CAMusic" })
             .setContentText(
                 listOfNotNull(track?.artist, track?.album).joinToString(" - ")
                     .ifBlank { if (track?.offline == true) "Offline" else "" }

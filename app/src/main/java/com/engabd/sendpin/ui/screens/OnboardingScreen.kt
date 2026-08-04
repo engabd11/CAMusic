@@ -69,7 +69,7 @@ fun OnboardingScreen(
             ) { Text("S", color = Ink, fontWeight = FontWeight.Black, fontSize = 40.sp) }
 
             Spacer(Modifier.height(22.dp))
-            Text("Sendspin", color = TextPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 28.sp)
+            Text("CAMusic", color = TextPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 28.sp)
             Spacer(Modifier.height(8.dp))
             Text(
                 "Play your library in perfect sync - pick a Music Assistant server on your network to begin.",
