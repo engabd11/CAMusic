@@ -327,7 +327,15 @@ class SendspinService : Service() {
             .putString(MediaMetadataCompat.METADATA_KEY_TITLE, meta.title.ifBlank { "Sendspin" })
             .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, meta.artist)
             .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, meta.album)
-            .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, meta.durationMs.coerceAtLeast(0))
+            // -1, not 0, when the duration is not known — and it often is not, because
+            // durationMs falls back to 0 whenever the server did not send one.
+            //
+            // 0 does not mean "unknown" to the platform, it means a track zero
+            // milliseconds long, so every position sits at or past the end: the seek
+            // bar in the notification and on the lock screen was pinned hard right for
+            // the whole song. -1 is the documented value for an unknown duration, and
+            // the system draws an indeterminate scrubber for it instead of a wrong one.
+            .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, meta.durationMs.takeIf { it > 0 } ?: -1L)
         cachedArtwork?.let { md.putBitmap(MediaMetadataCompat.METADATA_KEY_ART, it) }
         mediaSession?.setMetadata(md.build())
     }

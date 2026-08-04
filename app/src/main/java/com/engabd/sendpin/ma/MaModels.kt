@@ -37,7 +37,24 @@ data class MaAudioFormat(
      * preferred for whole-album playback; track gain for shuffle.
      */
     val replayGainAlbum: Float? = null,
-)
+) {
+    /**
+     * The same reading as a [StreamQuality], for anything that wants to *show* it.
+     *
+     * Formatting lives there — including that Music Assistant reports a container or
+     * MIME name rather than a codec, so an ordinary MP3 arrives as `mpeg` and reads
+     * as "MPEG" if uppercased verbatim.
+     */
+    val quality: StreamQuality
+        get() = StreamQuality(
+            codec = codec,
+            sampleRateHz = sampleRate,
+            bitDepth = bitDepth,
+            bitrateKbps = bitRate,
+            replayGainTrack = replayGainTrack,
+            replayGainAlbum = replayGainAlbum,
+        )
+}
 
 /**
  * A Music Assistant media item (artist / album / track / playlist / radio).

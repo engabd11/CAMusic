@@ -2,6 +2,7 @@ package com.engabd.sendpin.ui.design
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -31,6 +32,7 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.Shape
@@ -257,33 +259,34 @@ fun GlassCard(
 @Composable
 fun Modifier.dismissOnDragDown(onDismiss: () -> Unit, threshold: Dp = 110.dp): Modifier {
     val scope = rememberCoroutineScope()
-    // Starts off-screen and slides up on first appearance. Every sheet in the app
-    // already left beautifully — dragged down under a finger, or thrown the rest of
-    // the way — and then arrived by simply existing, one frame absent and the next
-    // frame whole. The two halves of the gesture now match.
+    /** How far the finger has dragged the sheet down, in pixels. */
+    val offsetY = remember { Animatable(0f) }
+
+    // Slide up on first appearance. Every sheet already left beautifully — dragged
+    // under a finger, or thrown the rest of the way — and then arrived by simply
+    // existing, one frame absent and the next frame whole.
     //
-    // The initial value is a distance no phone is tall enough to show rather than the
-    // sheet's own height, because that height is not known until it has been measured:
-    // the first frame or two happen below the screen, and the slide starts the moment
-    // the measurement lands.
-    val offsetY = remember { Animatable(OffscreenPx) }
-    var height by remember { mutableIntStateOf(0) }
-    var entered by remember { mutableStateOf(false) }
+    // Expressed as a *fraction of the sheet's own height* rather than a pixel count,
+    // and applied in `graphicsLayer`, where `size` is the measured size at draw time.
+    // The first attempt at this started at a fixed large pixel offset and waited for
+    // `onSizeChanged` to report the real height before animating — which strands the
+    // sheet far off-screen for good if that report never arrives, and it didn't: the
+    // sheets stopped appearing entirely. There is no chicken-and-egg here, because
+    // nothing has to know the height before layout has run.
+    var shown by remember { mutableStateOf(false) }
+    val enter by animateFloatAsState(
+        targetValue = if (shown) 0f else 1f,
+        animationSpec = Motion.spatial(),
+        label = "sheetEnter",
+    )
+    LaunchedEffect(Unit) { shown = true }
+
     val thresholdPx = with(LocalDensity.current) { threshold.toPx() }
 
-    LaunchedEffect(height) {
-        if (height > 0 && !entered) {
-            entered = true
-            // Snap to the sheet's real height first, so the spring travels the distance
-            // the sheet actually covers and settles the way the drag-release does.
-            offsetY.snapTo(height.toFloat())
-            offsetY.animateTo(0f, Motion.spatial())
-        }
-    }
-
     return this
-        .onSizeChanged { height = it.height }
-        .offset { IntOffset(0, offsetY.value.roundToInt()) }
+        // Both the entry and the drag ride here: a translation is a draw-time property,
+        // so dragging a sheet does not re-layout the list inside it on every frame.
+        .graphicsLayer { translationY = offsetY.value + enter * size.height }
         .pointerInput(Unit) {
             val height = size.height.toFloat()
             detectVerticalDragGestures(
@@ -704,5 +707,3 @@ fun HSlider(
 private val BubbleWidth = 72.dp
 private val BubbleLift = 38.dp
 
-/** Far enough down to be off any phone, for the frame before a sheet is measured. */
-private const val OffscreenPx = 4000f

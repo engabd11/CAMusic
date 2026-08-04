@@ -155,7 +155,13 @@ class LocalPlaybackService : Service() {
             .putString(MediaMetadataCompat.METADATA_KEY_TITLE, t?.title.orEmpty().ifBlank { "Sendspin" })
             .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, t?.artist.orEmpty())
             .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, t?.album.orEmpty())
-            .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, player.durationMs.value.coerceAtLeast(0))
+            // -1 for unknown, never 0 — see the same line in SendspinService: 0 is a
+            // zero-length track to the platform, which pins the notification and lock
+            // screen scrubber at the end for the whole song.
+            .putLong(
+                MediaMetadataCompat.METADATA_KEY_DURATION,
+                player.durationMs.value.takeIf { it > 0 } ?: -1L,
+            )
         artwork?.let { md.putBitmap(MediaMetadataCompat.METADATA_KEY_ART, it) }
         mediaSession?.setMetadata(md.build())
     }

@@ -84,6 +84,24 @@ data class StreamQuality(
             return if (detail == null) name else "$name · $detail$br"
         }
 
+    /**
+     * The compact form, for a list row: `FLAC 48/24`, `MP3 320k`.
+     *
+     * [label]'s middle dots and trailing bitrate are right for a badge that is the
+     * only thing on its line, and too much for a track row that already carries a
+     * number, a title, a duration and a heart.
+     */
+    val shortLabel: String
+        get() {
+            val detail = when {
+                lossless && bitDepth > 0 && sampleRateHz > 0 -> "${khz(sampleRateHz)}/$bitDepth"
+                !lossless && bitrateKbps > 0 -> "${bitrateKbps}k"
+                sampleRateHz > 0 -> "${khz(sampleRateHz)}kHz"
+                else -> null
+            }
+            return if (detail == null) displayCodec else "$displayCodec $detail"
+        }
+
     companion object {
         private val LOSSLESS = setOf("flac", "alac", "wav", "aiff", "pcm", "dsf", "dff", "ape", "wavpack")
 

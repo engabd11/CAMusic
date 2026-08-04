@@ -311,6 +311,10 @@ fun NowPlayingOverlay(
                     }
                 }
 
+                // Matches the gap above, so the chips sit centred in the space between
+                // the cover and the title rather than crowding the title.
+                Spacer(Modifier.height(16.dp))
+
                 // Title + artist + album.
                 if (st.idle) {
                     IdleNotice(st.playerName, st.blank, onBrowse)

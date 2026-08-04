@@ -365,8 +365,6 @@ private fun AlbumHero(
 
 // --- track row ------------------------------------------------------------
 
-/** Codecs that carry the original samples, and so earn the accent in a track row. */
-private val LosslessCodecs = setOf("flac", "alac", "wav", "aiff", "ape", "wv", "dsf", "dff")
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -413,20 +411,18 @@ internal fun TrackRow(
             }
         }
 
-        // What the file actually is. Both backends fill this — Music Assistant from
-        // `provider_mappings[].audio_format`, Navidrome from `suffix`/`contentType` —
-        // so a mixed library shows the difference between the FLAC and the MP3 of the
-        // same album without opening either.
+        // What the file actually is: `FLAC 48/24`, `MP3 320k`. Both backends fill it —
+        // Music Assistant from `provider_mappings[].audio_format`, Navidrome from
+        // `suffix`/`contentType` — so a mixed library shows the difference between the
+        // FLAC and the MP3 of the same album without opening either, and between the
+        // 44.1/16 rip and the hi-res one.
         //
-        // Lossless is worth the accent; a lossy codec states itself and no more. The
-        // bit depth and sample rate live in the Now Playing quality card rather than
-        // here, where they would crowd a list row for information you are not scanning
-        // a track list to find.
-        track.audioFormat?.codec?.takeIf { it.isNotBlank() }?.let { codec ->
-            val lossless = codec.lowercase() in LosslessCodecs
+        // Lossless earns the accent. Rate and depth are the meaningful pair there;
+        // for a lossy codec they are not, so it shows its bitrate instead.
+        track.audioFormat?.quality?.let { q ->
             Text(
-                codec.uppercase(),
-                color = if (lossless) accent.a(0.75f) else TextFaint,
+                q.shortLabel,
+                color = if (q.lossless) accent.a(0.75f) else TextFaint,
                 fontFamily = MonoFont,
                 fontWeight = FontWeight.Bold,
                 fontSize = 9.sp,
