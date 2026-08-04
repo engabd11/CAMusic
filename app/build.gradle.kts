@@ -24,6 +24,12 @@ android {
         release {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // Signed with the debug key so a minified build is installable without a
+            // release keystore. This is the build that should be judged for smoothness:
+            // a debug build carries Compose composition tracing, skips R8 entirely, and
+            // runs debuggable, which suppresses most of ART's optimisation. Testing
+            // scroll performance on one measures the build, not the app.
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
