@@ -48,6 +48,8 @@ import com.engabd.sendpin.ma.MaQueueItem
 import com.engabd.sendpin.ma.MaSimilarTrack
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.engabd.sendpin.ui.viewmodel.DspViewModel
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel.Load
 
@@ -56,7 +58,18 @@ import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel.Load
  * the album art's place) and sonic similarity moved to the Library, where finding
  * something to play belongs — neither was ever really "the queue button".
  */
-enum class Panel(val label: String) { QUEUE("Queue") }
+enum class Panel(val label: String) { QUEUE("Queue"), DSP("DSP & Equalizer") }
+
+/**
+ * The DSP view model, scoped to the Activity rather than to the sheet.
+ *
+ * The sheet is composed and thrown away every time it opens, and a view model owned
+ * by it would refetch the player's whole DSP config on each pass. Hoisting it means
+ * the config outlives the sheet, so reopening is instant and an edit made before a
+ * dismissal is still there afterwards.
+ */
+@Composable
+private fun dspViewModel(): DspViewModel = viewModel()
 
 /**
  * The panel sheet: everything about the *track* that doesn't belong on the
@@ -71,6 +84,8 @@ enum class Panel(val label: String) { QUEUE("Queue") }
 fun BoxScope.NowPlayingSheet(
     onClose: () -> Unit,
     viewModel: NowPlayingViewModel,
+    /** Which panel is showing. Its label is the sheet's title. */
+    panel: Panel = Panel.QUEUE,
 ) {
     HideBottomChrome()
     val accent = LocalAccent.current
@@ -101,7 +116,7 @@ fun BoxScope.NowPlayingSheet(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    "Queue", color = TextPrimary, fontFamily = AppFont,
+                    panel.label, color = TextPrimary, fontFamily = AppFont,
                     fontWeight = FontWeight.ExtraBold, fontSize = 17.sp,
                     modifier = Modifier.weight(1f),
                 )
@@ -111,7 +126,13 @@ fun BoxScope.NowPlayingSheet(
                 ) { Icon(Icons.Default.Close, "Close", tint = TextSecondary, modifier = Modifier.size(16.dp)) }
             }
 
-            QueuePanel(viewModel, accent)
+            when (panel) {
+                Panel.QUEUE -> QueuePanel(viewModel, accent)
+                // DSP used to be a whole separate destination, which meant leaving the
+                // player — and losing sight of what you were tuning — to move a slider.
+                // Same body as the standalone screen, hung off the player instead.
+                Panel.DSP -> DspBody(dspViewModel(), accent)
+            }
         }
     }
 }

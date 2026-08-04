@@ -327,18 +327,22 @@ private fun AlbumHero(
             )
         }
 
-        // Action row: Play + Shuffle + Add to queue
+        // Action row. Play sits in the middle rather than at the head: it is the one
+        // thing on this screen with a coloured disc and a glow under it, so putting it
+        // at the end of a row that reads left-to-right buried the loudest control
+        // behind the quiet ones. Third of five on Navidrome, third of four on Music
+        // Assistant — the same place either way, so it does not move when the backend
+        // does.
         Spacer(Modifier.height(20.dp))
         Row(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // Play button — the accent disc
-            PlayButton(playing = false, size = 56.dp, onClick = onPlayAll)
-            // Shuffle
             IconChip(Icons.Default.Shuffle, "Shuffle", onClick = onShuffle)
-            // Add to queue
             IconChip(Icons.AutoMirrored.Filled.QueueMusic, "Add to queue", onClick = onAddToQueue)
+
+            PlayButton(playing = false, size = 56.dp, onClick = onPlayAll)
+
             // The album itself, not its tracks. MA's `favorites/add_item` takes any
             // media item's uri and Subsonic's `star` has an `albumId`.
             IconChip(
@@ -360,6 +364,9 @@ private fun AlbumHero(
 }
 
 // --- track row ------------------------------------------------------------
+
+/** Codecs that carry the original samples, and so earn the accent in a track row. */
+private val LosslessCodecs = setOf("flac", "alac", "wav", "aiff", "ape", "wv", "dsf", "dff")
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -404,6 +411,27 @@ internal fun TrackRow(
                     fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
             }
+        }
+
+        // What the file actually is. Both backends fill this — Music Assistant from
+        // `provider_mappings[].audio_format`, Navidrome from `suffix`/`contentType` —
+        // so a mixed library shows the difference between the FLAC and the MP3 of the
+        // same album without opening either.
+        //
+        // Lossless is worth the accent; a lossy codec states itself and no more. The
+        // bit depth and sample rate live in the Now Playing quality card rather than
+        // here, where they would crowd a list row for information you are not scanning
+        // a track list to find.
+        track.audioFormat?.codec?.takeIf { it.isNotBlank() }?.let { codec ->
+            val lossless = codec.lowercase() in LosslessCodecs
+            Text(
+                codec.uppercase(),
+                color = if (lossless) accent.a(0.75f) else TextFaint,
+                fontFamily = MonoFont,
+                fontWeight = FontWeight.Bold,
+                fontSize = 9.sp,
+                maxLines = 1,
+            )
         }
 
         // Duration

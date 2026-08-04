@@ -110,147 +110,7 @@ fun DspScreen(
                 }
             }
 
-            if (loading) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(color = accent, strokeWidth = 2.dp, modifier = Modifier.size(28.dp))
-                }
-                return@Column
-            }
-
-            if (!connected) {
-                NotConnectedNotice()
-                return@Column
-            }
-
-            error?.let {
-                ErrorNotice(it) { viewModel.load() }
-            }
-
-            Column(
-                Modifier
-                    .weight(1f)
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Spacer(Modifier.height(4.dp))
-
-                // ── Player name ──────────────────────────────────────────
-                Text(
-                    "Configuring: $playerName",
-                    color = TextMuted, fontFamily = AppFont, fontSize = 12.sp,
-                )
-
-                // ── Warning ──────────────────────────────────────────────
-                WarningBanner()
-
-                // ── Master enable ────────────────────────────────────────
-                config?.let { cfg ->
-                    MasterToggle(enabled = cfg.enabled, accent = accent) {
-                        viewModel.toggleEnabled()
-                    }
-                }
-
-                // ── Parametric EQ ────────────────────────────────────────
-                config?.let { cfg ->
-                    val eq = (cfg.filters.firstOrNull { it is DspFilter.Eq } as? DspFilter.Eq)?.filter
-                    val eqEnabled = eq?.enabled == true
-                    ExpandableSection(
-                        title = "Parametric EQ",
-                        subtitle = eq?.let { "${it.bands.size} bands" } ?: "Off",
-                        enabled = eqEnabled,
-                        expanded = eqExpanded,
-                        accent = accent,
-                        onToggleExpand = { viewModel.toggleEqExpanded() },
-                        onEnable = { viewModel.toggleEq() },
-                    ) {
-                        EqSection(
-                            eq = eq,
-                            accent = accent,
-                            onPreamp = { viewModel.setEqPreamp(it) },
-                            onAddBand = { viewModel.addBand() },
-                            onRemoveBand = { viewModel.removeBand(it) },
-                            onToggleBand = { viewModel.toggleBand(it) },
-                            onBandFreq = { i, v -> viewModel.setBandFreq(i, v) },
-                            onBandGain = { i, v -> viewModel.setBandGain(i, v) },
-                            onBandQ = { i, v -> viewModel.setBandQ(i, v) },
-                            onBandType = { i, v -> viewModel.setBandType(i, v) },
-                            onBandChannel = { i, v -> viewModel.setBandChannel(i, v) },
-                        )
-                    }
-                }
-
-                // ── Tone control ─────────────────────────────────────────
-                config?.let { cfg ->
-                    val tone = (cfg.filters.firstOrNull { it is DspFilter.Tone } as? DspFilter.Tone)?.filter
-                    val toneEnabled = tone?.enabled == true
-                    ExpandableSection(
-                        title = "Tone Control",
-                        subtitle = tone?.let { "Bass ${fmtDb(it.bassLevel)} · Mid ${fmtDb(it.midLevel)} · Treble ${fmtDb(it.trebleLevel)}" } ?: "Off",
-                        enabled = toneEnabled,
-                        expanded = toneExpanded,
-                        accent = accent,
-                        onToggleExpand = { viewModel.toggleToneExpanded() },
-                        onEnable = { viewModel.toggleTone() },
-                    ) {
-                        ToneSection(
-                            tone = tone,
-                            accent = accent,
-                            onBass = { viewModel.setBass(it) },
-                            onMid = { viewModel.setMid(it) },
-                            onTreble = { viewModel.setTreble(it) },
-                        )
-                    }
-                }
-
-                // ── Gain ─────────────────────────────────────────────────
-                config?.let { cfg ->
-                    val hasGain = cfg.inputGain != 0f || cfg.outputGain != 0f
-                    ExpandableSection(
-                        title = "Gain",
-                        subtitle = "In ${fmtDb(cfg.inputGain)} · Out ${fmtDb(cfg.outputGain)}",
-                        enabled = hasGain,
-                        expanded = gainExpanded,
-                        accent = accent,
-                        onToggleExpand = { viewModel.toggleGainExpanded() },
-                        onEnable = null,
-                    ) {
-                        GainSection(
-                            inputGain = cfg.inputGain,
-                            outputGain = cfg.outputGain,
-                            accent = accent,
-                            onInput = { viewModel.setInputGain(it) },
-                            onOutput = { viewModel.setOutputGain(it) },
-                        )
-                    }
-                }
-
-                // ── Presets ──────────────────────────────────────────────
-                ExpandableSection(
-                    title = "Presets",
-                    subtitle = "${presets.size} saved",
-                    enabled = false,
-                    expanded = presetsExpanded,
-                    accent = accent,
-                    onToggleExpand = { viewModel.togglePresetsExpanded() },
-                    onEnable = null,
-                ) {
-                    PresetSection(
-                        presets = presets,
-                        accent = accent,
-                        presetName = presetName,
-                        showSaveDialog = showSavePreset,
-                        onPresetNameChange = { viewModel.setPresetName(it) },
-                        onShowSaveDialog = { viewModel.showSavePresetDialog() },
-                        onHideSaveDialog = { viewModel.hideSavePresetDialog() },
-                        onSavePreset = { viewModel.saveAsPreset() },
-                        onApplyPreset = { viewModel.applyPreset(it) },
-                        onDeletePreset = { viewModel.deletePreset(it) },
-                    )
-                }
-
-                Spacer(Modifier.height(24.dp))
-            }
+            DspBody(viewModel, accent)
         }
     }
 }
@@ -847,4 +707,170 @@ private fun sliderToQ(s: Float): Float {
     val minQ = 0.1
     val maxQ = 10.0
     return (minQ * Math.pow(maxQ / minQ, s.toDouble())).toFloat()
+}
+
+/**
+ * Everything in DSP below the title bar.
+ *
+ * Split out so the same controls can be a page or a sheet without being written
+ * twice: [DspScreen] wraps it in a full screen with a back arrow, and [DspSheet]
+ * hangs it off the player. `ColumnScope` because the body uses `weight` to let the
+ * scroll area take what is left after the header, which is true in both hosts.
+ */
+@Composable
+internal fun ColumnScope.DspBody(viewModel: DspViewModel, accent: Color) {
+    val config by viewModel.config.collectAsState()
+    val loading by viewModel.loading.collectAsState()
+    val error by viewModel.error.collectAsState()
+    val connected by viewModel.connected.collectAsState()
+    val playerName by viewModel.playerName.collectAsState()
+    val presets by viewModel.presets.collectAsState()
+    val eqExpanded by viewModel.eqExpanded.collectAsState()
+    val toneExpanded by viewModel.toneExpanded.collectAsState()
+    val gainExpanded by viewModel.gainExpanded.collectAsState()
+    val presetsExpanded by viewModel.presetsExpanded.collectAsState()
+    val showSavePreset by viewModel.showSavePreset.collectAsState()
+    val presetName by viewModel.presetName.collectAsState()
+
+            if (loading) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(color = accent, strokeWidth = 2.dp, modifier = Modifier.size(28.dp))
+                }
+                return
+            }
+
+            if (!connected) {
+                NotConnectedNotice()
+                return
+            }
+
+            error?.let {
+                ErrorNotice(it) { viewModel.load() }
+            }
+
+            Column(
+                Modifier
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Spacer(Modifier.height(4.dp))
+
+                // ── Player name ──────────────────────────────────────────
+                Text(
+                    "Configuring: $playerName",
+                    color = TextMuted, fontFamily = AppFont, fontSize = 12.sp,
+                )
+
+                // ── Warning ──────────────────────────────────────────────
+                WarningBanner()
+
+                // ── Master enable ────────────────────────────────────────
+                config?.let { cfg ->
+                    MasterToggle(enabled = cfg.enabled, accent = accent) {
+                        viewModel.toggleEnabled()
+                    }
+                }
+
+                // ── Parametric EQ ────────────────────────────────────────
+                config?.let { cfg ->
+                    val eq = (cfg.filters.firstOrNull { it is DspFilter.Eq } as? DspFilter.Eq)?.filter
+                    val eqEnabled = eq?.enabled == true
+                    ExpandableSection(
+                        title = "Parametric EQ",
+                        subtitle = eq?.let { "${it.bands.size} bands" } ?: "Off",
+                        enabled = eqEnabled,
+                        expanded = eqExpanded,
+                        accent = accent,
+                        onToggleExpand = { viewModel.toggleEqExpanded() },
+                        onEnable = { viewModel.toggleEq() },
+                    ) {
+                        EqSection(
+                            eq = eq,
+                            accent = accent,
+                            onPreamp = { viewModel.setEqPreamp(it) },
+                            onAddBand = { viewModel.addBand() },
+                            onRemoveBand = { viewModel.removeBand(it) },
+                            onToggleBand = { viewModel.toggleBand(it) },
+                            onBandFreq = { i, v -> viewModel.setBandFreq(i, v) },
+                            onBandGain = { i, v -> viewModel.setBandGain(i, v) },
+                            onBandQ = { i, v -> viewModel.setBandQ(i, v) },
+                            onBandType = { i, v -> viewModel.setBandType(i, v) },
+                            onBandChannel = { i, v -> viewModel.setBandChannel(i, v) },
+                        )
+                    }
+                }
+
+                // ── Tone control ─────────────────────────────────────────
+                config?.let { cfg ->
+                    val tone = (cfg.filters.firstOrNull { it is DspFilter.Tone } as? DspFilter.Tone)?.filter
+                    val toneEnabled = tone?.enabled == true
+                    ExpandableSection(
+                        title = "Tone Control",
+                        subtitle = tone?.let { "Bass ${fmtDb(it.bassLevel)} · Mid ${fmtDb(it.midLevel)} · Treble ${fmtDb(it.trebleLevel)}" } ?: "Off",
+                        enabled = toneEnabled,
+                        expanded = toneExpanded,
+                        accent = accent,
+                        onToggleExpand = { viewModel.toggleToneExpanded() },
+                        onEnable = { viewModel.toggleTone() },
+                    ) {
+                        ToneSection(
+                            tone = tone,
+                            accent = accent,
+                            onBass = { viewModel.setBass(it) },
+                            onMid = { viewModel.setMid(it) },
+                            onTreble = { viewModel.setTreble(it) },
+                        )
+                    }
+                }
+
+                // ── Gain ─────────────────────────────────────────────────
+                config?.let { cfg ->
+                    val hasGain = cfg.inputGain != 0f || cfg.outputGain != 0f
+                    ExpandableSection(
+                        title = "Gain",
+                        subtitle = "In ${fmtDb(cfg.inputGain)} · Out ${fmtDb(cfg.outputGain)}",
+                        enabled = hasGain,
+                        expanded = gainExpanded,
+                        accent = accent,
+                        onToggleExpand = { viewModel.toggleGainExpanded() },
+                        onEnable = null,
+                    ) {
+                        GainSection(
+                            inputGain = cfg.inputGain,
+                            outputGain = cfg.outputGain,
+                            accent = accent,
+                            onInput = { viewModel.setInputGain(it) },
+                            onOutput = { viewModel.setOutputGain(it) },
+                        )
+                    }
+                }
+
+                // ── Presets ──────────────────────────────────────────────
+                ExpandableSection(
+                    title = "Presets",
+                    subtitle = "${presets.size} saved",
+                    enabled = false,
+                    expanded = presetsExpanded,
+                    accent = accent,
+                    onToggleExpand = { viewModel.togglePresetsExpanded() },
+                    onEnable = null,
+                ) {
+                    PresetSection(
+                        presets = presets,
+                        accent = accent,
+                        presetName = presetName,
+                        showSaveDialog = showSavePreset,
+                        onPresetNameChange = { viewModel.setPresetName(it) },
+                        onShowSaveDialog = { viewModel.showSavePresetDialog() },
+                        onHideSaveDialog = { viewModel.hideSavePresetDialog() },
+                        onSavePreset = { viewModel.saveAsPreset() },
+                        onApplyPreset = { viewModel.applyPreset(it) },
+                        onDeletePreset = { viewModel.deletePreset(it) },
+                    )
+                }
+
+                Spacer(Modifier.height(24.dp))
+            }
 }

@@ -60,7 +60,6 @@ fun NowPlayingOverlay(
     viewModel: NowPlayingViewModel = viewModel(),
     onOpenSpeakers: () -> Unit = {},
     onBrowse: () -> Unit = {},
-    onOpenDsp: () -> Unit = {},
     expanded: Boolean,
     onExpand: () -> Unit,
     onCollapse: () -> Unit,
@@ -275,6 +274,43 @@ fun NowPlayingOverlay(
 
                 Spacer(Modifier.height(16.dp))
 
+                // Track/player chips, in one line above the title — the same place the
+                // tab layout puts them, so switching layouts does not move the controls.
+                // Below the transport they also fell below the fold on shorter phones,
+                // which is a poor home for the queue and the lyrics.
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(9.dp, Alignment.CenterHorizontally),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    // Favourite
+                    IconChip(
+                        if (favorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                        if (favorite) "Remove from favourites" else "Add to favourites",
+                        active = favorite,
+                        tint = if (currentItem == null) TextFaint else null,
+                        onClick = if (currentItem == null) null else ({ viewModel.toggleFavorite() }),
+                    )
+                    // Sleep timer
+                    SleepTimerChip(viewModel)
+                    // Lyrics — swaps the cover for the words, in place.
+                    IconChip(Icons.Default.Lyrics, "Lyrics", active = showLyrics) {
+                        showLyrics = !showLyrics
+                    }
+                    // Queue
+                    IconChip(Icons.AutoMirrored.Filled.QueueMusic, "Queue", active = panel == Panel.QUEUE) {
+                        panel = if (panel == Panel.QUEUE) null else Panel.QUEUE
+                    }
+                    // Playback speed + player options
+                    IconChip(Icons.Default.Tune, "Player options", active = options) { options = !options }
+                    // MA-only: see the note on the same chip in NowPlayingScreen.
+                    if (!st.isLocalSession) {
+                        IconChip(Icons.Default.GraphicEq, "DSP / Equalizer", active = panel == Panel.DSP) {
+                            panel = if (panel == Panel.DSP) null else Panel.DSP
+                        }
+                    }
+                }
+
                 // Title + artist + album.
                 if (st.idle) {
                     IdleNotice(st.playerName, st.blank, onBrowse)
@@ -350,38 +386,6 @@ fun NowPlayingOverlay(
 
                 Spacer(Modifier.height(16.dp))
 
-                // Bottom action row — all the track/player chips in one line.
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(9.dp, Alignment.CenterHorizontally),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    // Favourite
-                    IconChip(
-                        if (favorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                        if (favorite) "Remove from favourites" else "Add to favourites",
-                        active = favorite,
-                        tint = if (currentItem == null) TextFaint else null,
-                        onClick = if (currentItem == null) null else ({ viewModel.toggleFavorite() }),
-                    )
-                    // Sleep timer
-                    SleepTimerChip(viewModel)
-                    // Lyrics — swaps the cover for the words, in place.
-                    IconChip(Icons.Default.Lyrics, "Lyrics", active = showLyrics) {
-                        showLyrics = !showLyrics
-                    }
-                    // Queue
-                    IconChip(Icons.AutoMirrored.Filled.QueueMusic, "Queue", active = panel == Panel.QUEUE) {
-                        panel = if (panel == Panel.QUEUE) null else Panel.QUEUE
-                    }
-                    // Playback speed + player options
-                    IconChip(Icons.Default.Tune, "Player options", active = options) { options = !options }
-                    // MA-only: see the note on the same chip in NowPlayingScreen.
-                    if (!st.isLocalSession) {
-                        IconChip(Icons.Default.GraphicEq, "DSP / Equalizer") { onOpenDsp() }
-                    }
-                }
-
                 Spacer(Modifier.height(8.dp))
 
                 // Volume slider (compact).
@@ -416,7 +420,7 @@ fun NowPlayingOverlay(
                 )
             }
             if (panel != null) {
-                NowPlayingSheet(onClose = { panel = null }, viewModel = viewModel)
+                NowPlayingSheet(onClose = { panel = null }, viewModel = viewModel, panel = panel!!)
             }
             if (options) {
                 PlayerOptionsSheet(onClose = { options = false }, viewModel = viewModel)
@@ -457,17 +461,15 @@ fun MiniPlayerBar(
                 .background(Ink2)
                 .border(1.dp, HairlineSoft, RoundedCornerShape(14.dp))
                 .clickable(onClick = onExpand)
-                // Roomier than it was (8dp/40dp art). In overlay mode this bar is the
-                // only way back into the full player, and it was competing for the
-                // thumb with the nav bar directly under it — a taller bar is an easier
-                // target as well as a better look.
-                .padding(horizontal = 12.dp, vertical = 11.dp),
+                .fillMaxHeight()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            // Album thumbnail.
+            // Album thumbnail. Sized off the bar rather than pinned, so it grows with
+            // it — see [MiniBarHeight] for why the bar is as tall as it is.
             Box(
-                Modifier.size(48.dp).clip(RoundedCornerShape(10.dp))
+                Modifier.fillMaxHeight().aspectRatio(1f).clip(RoundedCornerShape(12.dp))
                     .background(Glass),
                 contentAlignment = Alignment.Center,
             ) {
@@ -502,11 +504,21 @@ fun MiniPlayerBar(
                 }
             }
 
-            // Play/pause — nothing to toggle when the queue is empty, so the bar
-            // becomes a plain tap-to-open target instead of offering a dead button.
+            // Transport — nothing to drive when the queue is empty, so the bar becomes
+            // a plain tap-to-open target instead of offering dead buttons.
+            //
+            // Skip is here because the bar is now tall enough to hold it, and skipping
+            // is the thing most often wanted from a minimised player: it used to cost
+            // opening the full screen, skipping, and swiping back down.
             if (!st.blank) {
+                Icon(
+                    Icons.Default.SkipPrevious, "Previous",
+                    tint = TextSecondary,
+                    modifier = Modifier.size(30.dp).clip(CircleShape)
+                        .clickable { viewModel.previous() }.padding(4.dp),
+                )
                 Box(
-                    Modifier.size(32.dp).clip(CircleShape)
+                    Modifier.size(44.dp).clip(CircleShape)
                         .background(Glass)
                         .clickable { viewModel.playPause() },
                     contentAlignment = Alignment.Center,
@@ -514,9 +526,15 @@ fun MiniPlayerBar(
                     Icon(
                         if (st.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                         if (st.isPlaying) "Pause" else "Play",
-                        tint = accent, modifier = Modifier.size(18.dp),
+                        tint = accent, modifier = Modifier.size(24.dp),
                     )
                 }
+                Icon(
+                    Icons.Default.SkipNext, "Next",
+                    tint = TextSecondary,
+                    modifier = Modifier.size(30.dp).clip(CircleShape)
+                        .clickable { viewModel.next() }.padding(4.dp),
+                )
             }
         }
     }

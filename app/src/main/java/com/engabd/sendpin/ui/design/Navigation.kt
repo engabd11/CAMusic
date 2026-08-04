@@ -35,7 +35,16 @@ val NavBarHeight = 62.dp
  *
  * Keep in step with `MiniPlayerBar` and the `Box` that wraps it in `App.kt`.
  */
-val MiniBarHeight = 64.dp
+/**
+ * How much room the minimised overlay player takes above the tab bar.
+ *
+ * Doubled from 64.dp. At the old height the bar was a strip with a thumbnail and a
+ * play button wedged into it — the only way back into the full player, and the
+ * hardest thing on screen to hit, sitting directly above the nav bar it competed
+ * with. The extra room is what lets it carry previous/next as well, and gives the
+ * artwork a size worth looking at.
+ */
+val MiniBarHeight = 128.dp
 
 /**
  * The mini player's height when it is on screen, 0 otherwise.

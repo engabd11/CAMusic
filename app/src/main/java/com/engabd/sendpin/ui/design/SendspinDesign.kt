@@ -257,9 +257,32 @@ fun GlassCard(
 @Composable
 fun Modifier.dismissOnDragDown(onDismiss: () -> Unit, threshold: Dp = 110.dp): Modifier {
     val scope = rememberCoroutineScope()
-    val offsetY = remember { Animatable(0f) }
+    // Starts off-screen and slides up on first appearance. Every sheet in the app
+    // already left beautifully — dragged down under a finger, or thrown the rest of
+    // the way — and then arrived by simply existing, one frame absent and the next
+    // frame whole. The two halves of the gesture now match.
+    //
+    // The initial value is a distance no phone is tall enough to show rather than the
+    // sheet's own height, because that height is not known until it has been measured:
+    // the first frame or two happen below the screen, and the slide starts the moment
+    // the measurement lands.
+    val offsetY = remember { Animatable(OffscreenPx) }
+    var height by remember { mutableIntStateOf(0) }
+    var entered by remember { mutableStateOf(false) }
     val thresholdPx = with(LocalDensity.current) { threshold.toPx() }
+
+    LaunchedEffect(height) {
+        if (height > 0 && !entered) {
+            entered = true
+            // Snap to the sheet's real height first, so the spring travels the distance
+            // the sheet actually covers and settles the way the drag-release does.
+            offsetY.snapTo(height.toFloat())
+            offsetY.animateTo(0f, Motion.spatial())
+        }
+    }
+
     return this
+        .onSizeChanged { height = it.height }
         .offset { IntOffset(0, offsetY.value.roundToInt()) }
         .pointerInput(Unit) {
             val height = size.height.toFloat()
@@ -680,3 +703,6 @@ fun HSlider(
 
 private val BubbleWidth = 72.dp
 private val BubbleLift = 38.dp
+
+/** Far enough down to be off any phone, for the frame before a sheet is measured. */
+private const val OffscreenPx = 4000f

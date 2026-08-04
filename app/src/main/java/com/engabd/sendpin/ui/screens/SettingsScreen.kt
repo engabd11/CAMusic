@@ -66,7 +66,7 @@ import kotlinx.coroutines.withContext
  *   until you have opened it once, and this is a settings screen with two music
  *   servers and a home-automation token in it.
  */
-private enum class SettingsSection(
+enum class SettingsSection(
     val title: String,
     val subtitle: String,
     val icon: ImageVector,
@@ -81,8 +81,11 @@ private enum class SettingsSection(
         "Which server the Library tab browses",
         Icons.Default.LibraryMusic,
     ),
+    // "This player" was true and told you nothing — every settings screen is about
+    // this device. What is being configured is the player this app registers with
+    // Music Assistant, so it is named after that.
     PLAYER(
-        "This player",
+        "Sendspin player",
         "The name this phone shows in Music Assistant, and how it takes the stream",
         Icons.Default.Smartphone,
     ),
@@ -158,12 +161,19 @@ private fun SettingsCategoryRow(section: SettingsSection, accent: Color, onClick
 
 @Composable
 fun SettingsScreen(
-    viewModel: PlayerViewModel = viewModel()
+    viewModel: PlayerViewModel = viewModel(),
+    /**
+     * Which category is open, or null for the index.
+     *
+     * Hoisted rather than held here so the tab bar can close it: tapping Settings
+     * while a category is open should come back to the index, the same way tapping
+     * Library while browsing comes back to the shelves. Still saveable at the caller,
+     * so a rotation or a trip to another tab returns where it was.
+     */
+    section: SettingsSection? = null,
+    onSection: (SettingsSection?) -> Unit = {},
 ) {
-    // Which category is open, or null for the index. Saveable so a rotation or a
-    // trip to another tab comes back where it was rather than at the top.
-    var section by rememberSaveable { mutableStateOf<SettingsSection?>(null) }
-    BackHandler(enabled = section != null) { section = null }
+    BackHandler(enabled = section != null) { onSection(null) }
 
     val accent = LocalAccent.current
     val discoveredServers by viewModel.discoveredServers.collectAsState()
@@ -215,7 +225,7 @@ fun SettingsScreen(
                 if (section != null) {
                     Icon(
                         Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = TextSecondary,
-                        modifier = Modifier.size(24.dp).clip(CircleShape).clickable { section = null },
+                        modifier = Modifier.size(24.dp).clip(CircleShape).clickable { onSection(null) },
                     )
                     Spacer(Modifier.width(12.dp))
                 }
@@ -239,7 +249,7 @@ fun SettingsScreen(
                         key = { it.name },
                         contentType = { "category" },
                     ) { s ->
-                        SettingsCategoryRow(s, accent) { section = s }
+                        SettingsCategoryRow(s, accent) { onSection(s) }
                     }
 
                     SettingsSection.SERVERS -> {

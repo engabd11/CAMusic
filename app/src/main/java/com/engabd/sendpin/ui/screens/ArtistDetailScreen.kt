@@ -284,9 +284,10 @@ private fun ArtistHero(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            PlayButton(playing = false, size = 56.dp, onClick = onPlayAll)
+            // Play in the middle, matching the album screen — see the note there.
             IconChip(Icons.Default.Shuffle, "Shuffle", onClick = onShuffle)
             IconChip(Icons.AutoMirrored.Filled.QueueMusic, "Add to queue", onClick = onAddToQueue)
+            PlayButton(playing = false, size = 56.dp, onClick = onPlayAll)
             // Both backends can favourite an artist — MA takes the uri on
             // `favorites/add_item`, Subsonic takes `artistId` on `star`.
             IconChip(

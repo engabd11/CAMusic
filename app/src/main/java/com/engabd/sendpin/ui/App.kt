@@ -65,7 +65,6 @@ import com.engabd.sendpin.subsonic.SubsonicClient
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
 import com.engabd.sendpin.ui.screens.AlbumDetailScreen
 import com.engabd.sendpin.ui.screens.ArtistDetailScreen
-import com.engabd.sendpin.ui.screens.DspScreen
 import com.engabd.sendpin.ui.screens.LibraryScreen
 import com.engabd.sendpin.ui.screens.LightSyncScreen
 import com.engabd.sendpin.ui.screens.MiniPlayerBar
@@ -74,6 +73,7 @@ import com.engabd.sendpin.ui.screens.NowPlayingScreen
 import com.engabd.sendpin.ui.screens.OnboardingScreen
 import com.engabd.sendpin.ui.screens.PlaylistDetailScreen
 import com.engabd.sendpin.ui.screens.SettingsScreen
+import com.engabd.sendpin.ui.screens.SettingsSection
 import com.engabd.sendpin.ui.screens.SpeakersScreen
 import com.engabd.sendpin.ui.theme.AccentChoice
 import com.engabd.sendpin.ui.theme.Ink
@@ -111,6 +111,20 @@ private val popIn: AnimatedContentTransitionScope<NavBackStackEntry>.() -> Enter
 }
 private val popOut: AnimatedContentTransitionScope<NavBackStackEntry>.() -> ExitTransition = {
     slideOutHorizontally(Motion.screenSlide()) { it } + fadeOut(Motion.effects())
+}
+
+/**
+ * Which tab a route belongs to, or null for one that belongs to none.
+ *
+ * The tab bar used to compare the route to the tab's own route, so opening an album
+ * left every tab unlit — the app stopped saying where you were the moment you went
+ * anywhere. A detail screen is still the Library tab as far as the user is concerned,
+ * and this is what says so.
+ */
+private fun sectionOf(route: String?): String? = when {
+    route == null -> null
+    route.startsWith("album/") || route.startsWith("artist/") || route.startsWith("playlist/") -> "library"
+    else -> route
 }
 
 /** In overlay mode, "Playing" is not a tab — the cover slides over the other four. */
@@ -261,8 +275,33 @@ fun App() {
         // Overlay expand/collapse state.
         var overlayExpanded by rememberSaveable { mutableStateOf(false) }
 
+        // Which category Settings has open, held here rather than inside the screen so
+        // that re-tapping the Settings tab can close it. See [SettingsScreen.section].
+        var settingsSection by rememberSaveable { mutableStateOf<SettingsSection?>(null) }
+
         fun go(route: String) {
-            if (currentRoute == route || route in disabledRoutes) return
+            if (route in disabledRoutes) return
+
+            // Re-tapping the tab you are already on means "take me back to the top of
+            // this section" — the convention every tabbed app has. Without it the only
+            // way out of an album, or out of a settings category, was the system back
+            // button or the arrow in the corner.
+            //
+            // Two different kinds of depth have to unwind, because a detail screen is a
+            // navigation destination while a browse level and a settings category are
+            // state inside one:
+            if (sectionOf(currentRoute) == route) {
+                // A detail screen sitting on top of the tab — pop back to the tab root.
+                if (currentRoute != route) navController.popBackStack(route, inclusive = false)
+                // …and then unwind whatever depth the tab root holds internally. Both
+                // are no-ops when already at the top, so a stray tap costs nothing.
+                when (route) {
+                    "library" -> libraryVm.goToRoot()
+                    "settings" -> settingsSection = null
+                }
+                return
+            }
+
             navController.navigate(route) {
                 // saveState/restoreState is what keeps each tab where the user left
                 // it. The previous popUpTo destroyed the destination outright, so
@@ -324,7 +363,6 @@ fun App() {
                                 viewModel = nowPlayingVm,
                                 onOpenSpeakers = { go("speakers") },
                                 onBrowse = { go("library") },
-                                onOpenDsp = { navController.navigate("dsp") },
                             )
                         }
                     }
@@ -447,12 +485,14 @@ fun App() {
                         )
                     }
                     composable("speakers") { SpeakersScreen(onBack = { navController.popBackStack() }) }
-                    composable("dsp", enterTransition = pushIn, exitTransition = pushOut,
-                        popEnterTransition = popIn, popExitTransition = popOut) {
-                        DspScreen(onBack = { navController.popBackStack() })
-                    }
                     composable("light_sync") { LightSyncScreen(onBack = { navController.popBackStack() }) }
-                    composable("settings") { SettingsScreen(viewModel = playerVm) }
+                    composable("settings") {
+                        SettingsScreen(
+                            viewModel = playerVm,
+                            section = settingsSection,
+                            onSection = { settingsSection = it },
+                        )
+                    }
                 }
                 }
 
@@ -476,7 +516,7 @@ fun App() {
                         }
                         SendspinNavBar(
                             tabs = tabs,
-                            currentRoute = currentRoute,
+                            currentRoute = sectionOf(currentRoute),
                             disabledRoutes = disabledRoutes,
                             onSelect = ::go,
                         )
@@ -490,7 +530,6 @@ fun App() {
                             viewModel = nowPlayingVm,
                             onOpenSpeakers = { overlayExpanded = false; go("speakers") },
                             onBrowse = { overlayExpanded = false; go("library") },
-                            onOpenDsp = { overlayExpanded = false; navController.navigate("dsp") },
                             expanded = overlayExpanded,
                             onExpand = { overlayExpanded = true },
                             onCollapse = { overlayExpanded = false },
@@ -500,7 +539,7 @@ fun App() {
                     BottomChrome(bottomChrome) {
                         SendspinNavBar(
                             tabs = tabs,
-                            currentRoute = currentRoute,
+                            currentRoute = sectionOf(currentRoute),
                             modifier = Modifier.align(Alignment.BottomCenter),
                             disabledRoutes = disabledRoutes,
                             onSelect = ::go,

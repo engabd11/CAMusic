@@ -53,7 +53,6 @@ fun NowPlayingScreen(
     viewModel: NowPlayingViewModel = viewModel(),
     onOpenSpeakers: () -> Unit = {},
     onBrowse: () -> Unit = {},
-    onOpenDsp: () -> Unit = {},
 ) {
     val st by viewModel.state.collectAsState()
     val connected by viewModel.connected.collectAsState()
@@ -201,7 +200,9 @@ fun NowPlayingScreen(
                     // Navidrome is playing showed — and would have saved — settings for
                     // a completely different player.
                     if (!st.isLocalSession) {
-                        IconChip(Icons.Default.GraphicEq, "DSP / Equalizer") { onOpenDsp() }
+                        IconChip(Icons.Default.GraphicEq, "DSP / Equalizer", active = panel == Panel.DSP) {
+                            panel = if (panel == Panel.DSP) null else Panel.DSP
+                        }
                     }
                     // Radio mode is a parameter of play_media, so it colours what you
                     // play *next* rather than the queue already running — the toast
@@ -341,7 +342,7 @@ fun NowPlayingScreen(
                 )
             }
             if (panel != null) {
-                NowPlayingSheet(onClose = { panel = null }, viewModel = viewModel)
+                NowPlayingSheet(onClose = { panel = null }, viewModel = viewModel, panel = panel!!)
             }
             if (options) {
                 PlayerOptionsSheet(onClose = { options = false }, viewModel = viewModel)

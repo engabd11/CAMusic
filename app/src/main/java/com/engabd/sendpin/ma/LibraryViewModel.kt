@@ -1203,6 +1203,23 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Back to the top of the library, however deep the browse stack is.
+     *
+     * What tapping the Library tab does when the library is already on screen — the
+     * convention every tabbed app has, and the reason it exists here is that the only
+     * way out of a nested browse used to be pressing back once per level.
+     *
+     * A no-op at the root with no search open, so re-tapping the tab does not reload
+     * every shelf for nothing.
+     */
+    fun goToRoot() {
+        if (_depth.value == 0 && !_searchOpen.value) return
+        _searchOpen.value = false
+        _query.value = ""
+        showRoot()
+    }
+
     private fun showRoot() {
         stack.clear()
         reloadStack.clear()
