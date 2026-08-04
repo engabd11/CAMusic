@@ -30,6 +30,19 @@ android {
             // runs debuggable, which suppresses most of ART's optimisation. Testing
             // scroll performance on one measures the build, not the app.
             signingConfig = signingConfigs.getByName("debug")
+            // Installs a throwaway copy alongside the real app, with its own empty
+            // data directory:
+            //
+            //   ./gradlew :app:installRelease -PsideBySide
+            //
+            // The only way to test a genuine first-run path — onboarding, an empty
+            // DataStore, no baseline profile yet — is a fresh install, and doing that
+            // on the real package destroys the user's server, credentials and
+            // downloads. This gets the same clean state without touching them.
+            if (project.findProperty("sideBySide") != null) {
+                applicationIdSuffix = ".freshtest"
+                versionNameSuffix = "-freshtest"
+            }
         }
     }
 
@@ -107,6 +120,10 @@ dependencies {
     // packaged and then ignored, so this is not optional dressing — it is the half that
     // does the work on device.
     implementation("androidx.profileinstaller:profileinstaller:1.4.1")
+    // Names :baselineprofile as the producer of this module's profile. Without it the
+    // plugin applies cleanly, `generateBaselineProfile` runs, and nothing is generated
+    // — it has no dependency telling it where profiles come from.
+    baselineProfile(project(":baselineprofile"))
     implementation("androidx.datastore:datastore-preferences:1.2.1")
     implementation("androidx.media:media:1.7.0")
     // The Navidrome/offline player. MediaPlayer could not do gapless reliably
