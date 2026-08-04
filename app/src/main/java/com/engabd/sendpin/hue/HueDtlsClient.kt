@@ -112,7 +112,7 @@ private fun vec16(data: ByteArray): ByteArray {
 
 // ── Exceptions ────────────────────────────────────────────────────────────
 
-class DtlsException(message: String) : Exception(message)
+open class DtlsException(message: String) : Exception(message)
 class DtlsPeerClosed(val description: Int) : DtlsException("bridge closed the stream (${alertName(description)})")
 
 private fun alertName(desc: Int): String = when (desc) {
@@ -285,7 +285,7 @@ class DtlsPskClient(
         val seqBytes = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN)
             .putShort(epoch.toShort())
             .putInt((seq shr 16).toInt())
-            .putShort((seq and 0xFFFF).toInt())
+            .putShort((seq and 0xFFFF).toShort())
             .array()
         // Actually the seq is 6 bytes after 2-byte epoch. Let's fix:
         val seqBytesFixed = ByteArray(8)

@@ -9,6 +9,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
@@ -264,7 +265,7 @@ class LocalPlayer(private val context: Context) {
             // tap's isActive() returns false and ExoPlayer bypasses it entirely
             // (zero overhead). When on, it downmixes to mono, resamples to
             // 22050 Hz, and feeds the AudioAnalyzer at ~50 Hz.
-            .setAudioProcessors(audioAnalysisTap)
+            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
 
         // The defaults are sized for video-on-mobile-data. This is a lossless file
         // over a LAN, where the sensible trade is a deeper buffer: a 24/96 FLAC is
@@ -286,6 +287,9 @@ class LocalPlayer(private val context: Context) {
             // Headphones out, or Bluetooth gone: pause rather than switching to the
             // phone's speaker at whatever volume was in the ears a moment ago.
             .setHandleAudioBecomingNoisy(true)
+            // The Light Sync audio analysis tap: ExoPlayer.Builder.setAudioProcessors
+            // installs it in the render chain as a pass-through AudioProcessor.
+            .setAudioProcessors(arrayOf<AudioProcessor>(audioAnalysisTap))
             // Past this into a track, Previous restarts it instead of going back one
             // — the convention every player follows.
             .setMaxSeekToPreviousPositionMs(RESTART_THRESHOLD_MS)

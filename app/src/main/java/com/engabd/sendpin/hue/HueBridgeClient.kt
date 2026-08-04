@@ -11,6 +11,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.jsonObject
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -74,7 +77,7 @@ class HueBridgeClient(
     val discovered: StateFlow<List<DiscoveredBridge>> = _discovered.asStateFlow()
 
     private val _isDiscovering = MutableStateFlow(false)
-    val isDiscovering: StateFlow<Boolean> = _discovered.asStateFlow()
+    val isDiscovering: StateFlow<Boolean> = _isDiscovering.asStateFlow()
 
     private var nsdManager: NsdManager? = null
     private var discoveryListener: NsdManager.DiscoveryListener? = null
@@ -269,10 +272,6 @@ class HueBridgeClient(
         }
         resp.body?.string()  // consume body
     }
-
-    private fun kotlinx.serialization.json.JsonElement.jsonObject(): kotlinx.serialization.json.JsonObject =
-        this as? kotlinx.serialization.json.JsonObject
-            ?: throw HueBridgeException("Expected JSON object")
 
     companion object {
         /**

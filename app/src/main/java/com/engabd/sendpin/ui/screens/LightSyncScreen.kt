@@ -36,6 +36,8 @@ import com.engabd.sendpin.ha.LightSyncRepository
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.LightSyncViewModel
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 private val ModeFallback = listOf("auto", "subtle", "medium", "high", "intense", "extreme")

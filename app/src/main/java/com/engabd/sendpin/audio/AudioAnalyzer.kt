@@ -3,6 +3,7 @@ package com.engabd.sendpin.audio
 import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
 import kotlin.math.sqrt
 import kotlin.math.PI
 
@@ -106,7 +107,7 @@ private class Agc(private val decay: Float = AGC_DECAY, private val floor: Float
     private var peak = floor
 
     fun normalise(value: Float): Float {
-        peak = max(value, peak * decay, floor)
+        peak = maxOf(value, peak * decay, floor)
         return min(1f, value / peak)
     }
 
@@ -160,7 +161,7 @@ private fun bandMeans(mag: FloatArray, starts: IntArray, counts: IntArray): Floa
 /** Log-spaced band starts/counts for onset filterbank. */
 private fun makeOnsetFilterbank(freqs: FloatArray, nBands: Int, fmin: Float, fmax: Float): Triple<IntArray, IntArray, Pair<Int, Int>> {
     val edges = FloatArray(nBands + 1) { i ->
-        fmin * (fmax / fmin).pow(i.toFloat() / nBands)
+        fmin * kotlin.math.pow((fmax / fmin).toDouble(), (i.toFloat() / nBands).toDouble()).toFloat()
     }
     val idx = IntArray(nBands + 1) { i ->
         var result = 0
@@ -183,7 +184,7 @@ private fun makeOnsetFilterbank(freqs: FloatArray, nBands: Int, fmin: Float, fma
 /** Log-spaced melbank starts/counts. */
 private fun makeMelbank(freqs: FloatArray, nBins: Int, fmin: Float, fmax: Float): Pair<IntArray, IntArray> {
     val edges = FloatArray(nBins + 1) { i ->
-        fmin * (fmax / fmin).pow(i.toFloat() / nBins)
+        fmin * kotlin.math.pow((fmax / fmin).toDouble(), (i.toFloat() / nBins).toDouble()).toFloat()
     }
     val idx = IntArray(nBins + 1) { i ->
         var result = 0
@@ -201,7 +202,7 @@ private fun makeMelbank(freqs: FloatArray, nBins: Int, fmin: Float, fmax: Float)
     return starts to counts
 }
 
-private fun Float.pow(e: Float): Float = kotlin.math.pow(this.toDouble(), e.toDouble()).toFloat()
+// (Float.pow extension removed — use kotlin.math.pow directly via .toDouble().pow().toFloat())
 
 // ── Analyzer ──────────────────────────────────────────────────────────────
 
@@ -242,13 +243,18 @@ class AudioAnalyzer(
     private val midFluxAgc = Agc()
 
     // Onset filterbank
-    private val (fbStarts, fbCounts, bassMidSplit) = makeOnsetFilterbank(freqs, ONSET_BANDS, ONSET_FMIN, ONSET_FMAX)
-    private val nBass = bassMidSplit.first
-    private val nMid = bassMidSplit.second
+    private val fbFilterbank = makeOnsetFilterbank(freqs, ONSET_BANDS, ONSET_FMIN, ONSET_FMAX)
+    private val fbStarts: IntArray = fbFilterbank.first
+    private val fbCounts: IntArray = fbFilterbank.second
+    private val bassMidSplit: Pair<Int, Int> = fbFilterbank.third
+    private val nBass: Int = bassMidSplit.first
+    private val nMid: Int = bassMidSplit.second
 
     // Melbank
-    private val (melStarts, melCounts) = makeMelbank(freqs, MELBANK_BINS, MELBANK_FMIN, MELBANK_FMAX)
-    private val nMel = melStarts.size
+    private val melFilterbank = makeMelbank(freqs, MELBANK_BINS, MELBANK_FMIN, MELBANK_FMAX)
+    private val melStarts: IntArray = melFilterbank.first
+    private val melCounts: IntArray = melFilterbank.second
+    private val nMel: Int = melStarts.size
     private val melAgc = Array(nMel) { Agc(MEL_AGC_DECAY) }
     private val melFilter = ExpFilter(FloatArray(nMel), alphaRise = 0.85f, alphaDecay = 0.20f)
 
@@ -331,7 +337,7 @@ class AudioAnalyzer(
 
         // Salience
         rmsSmooth += (rms - rmsSmooth) * SALIENCE_SMOOTH
-        loudRef = max(rmsSmooth, loudRef * SALIENCE_DECAY, SALIENCE_MIN_REF)
+        loudRef = maxOf(rmsSmooth, loudRef * SALIENCE_DECAY, SALIENCE_MIN_REF)
         val salience = min(1f, rmsSmooth / loudRef)
 
         // Onset detection
@@ -379,7 +385,7 @@ class AudioAnalyzer(
         val tAudio = frameIndex * framePeriod
         frameIndex++
 
-        AnalysisFrame(
+        return AnalysisFrame(
             bands = bands,
             energy = energy,
             melbank = melbank,
@@ -508,10 +514,10 @@ class AudioAnalyzer(
      */
     private fun thresholdOnset(flux: Float, hist: ArrayDeque<Float>, since: Int, requireRising: Boolean = true, floor: Float = 0f): Pair<Boolean, Float> {
         if (hist.size < 22) return false to 0f  // need half the window
-        val arr = hist.toFloatArray()
+        val arr = hist.toList().toFloatArray()
         val med = median(arr)
         val mad = median(arr.map { kotlin.math.abs(it - med) }.toFloatArray())
-        val threshold = max(med + BEAT_SENSITIVITY * 3f * mad, MIN_ONSET_FLUX, floor)
+        val threshold = maxOf(med + BEAT_SENSITIVITY * 3f * mad, MIN_ONSET_FLUX, floor)
         val rising = !requireRising || flux > hist.last()
         if (flux > threshold && rising && since >= ONSET_REFRACTORY) {
             return true to min(3f, flux / threshold)

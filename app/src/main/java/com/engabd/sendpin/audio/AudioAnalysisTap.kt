@@ -77,10 +77,15 @@ class AudioAnalysisTap : AudioProcessor {
 
     override fun isActive(): Boolean = active
 
-    override fun configureAudioFormat(inputFormat: M3AudioFormat): M3AudioFormat {
+    override fun configure(inputFormat: M3AudioFormat): M3AudioFormat {
         inputAudioFormat = inputFormat
         sourceRate = inputFormat.sampleRate
         return inputFormat  // pass-through: same format out
+    }
+
+    override fun queueEndOfStream(): ByteBuffer {
+        // Pass-through: no buffering, signal end immediately with an empty buffer.
+        return ByteBuffer.allocateDirect(0)
     }
 
     override fun queueInput(inputBuffer: ByteBuffer) {

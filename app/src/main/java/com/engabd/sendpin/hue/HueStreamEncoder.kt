@@ -40,9 +40,9 @@ const val COLOR_SPACE_XYB: Byte = 0x01
  * unpredictably, so we clamp to the triangle ourselves for deterministic colour.
  */
 val GAMUT_C = listOf(
-    0.6915 to 0.3038,  // red
-    0.1700 to 0.7000,  // green
-    0.1532 to 0.0475,  // blue
+    0.6915f to 0.3038f,  // red
+    0.1700f to 0.7000f,  // green
+    0.1532f to 0.0475f,  // blue
 )
 
 /**
@@ -50,7 +50,7 @@ val GAMUT_C = listOf(
  * between frames, so a big palette/album-art jump would "pop"; capping the step
  * turns it into a smooth slewed move.
  */
-const val XY_SLEW_MAX = 0.08
+const val XY_SLEW_MAX = 0.08f
 
 // ── Colour math ───────────────────────────────────────────────────────────
 
@@ -94,19 +94,20 @@ fun clampToGamut(x: Float, y: Float, gamut: List<Pair<Float, Float>>): Pair<Floa
 
     // Project to the nearest edge.
     var best: Triple<Float, Float, Float>? = null  // (dist², x, y)
+    data class Edge(val ax: Float, val ay: Float, val bx: Float, val by: Float)
     val edges = listOf(
-        Triple(rx, ry, gx, gy),
-        Triple(gx, gy, bx, by),
-        Triple(bx, by, rx, ry),
+        Edge(rx, ry, gx, gy),
+        Edge(gx, gy, bx, by),
+        Edge(bx, by, rx, ry),
     )
-    for ((ax, ay, bxs, bys) in edges) {
-        val abx = bxs - ax
-        val aby = bys - ay
+    for (edge in edges) {
+        val abx = edge.bx - edge.ax
+        val aby = edge.by - edge.ay
         val denom = abx * abx + aby * aby
-        val t = if (denom <= 0f) 0f else ((x - ax) * abx + (y - ay) * aby) / denom
+        val t = if (denom <= 0f) 0f else ((x - edge.ax) * abx + (y - edge.ay) * aby) / denom
         val tc = t.coerceIn(0f, 1f)
-        val cx = ax + abx * tc
-        val cy = ay + aby * tc
+        val cx = edge.ax + abx * tc
+        val cy = edge.ay + aby * tc
         val d = (cx - x) * (cx - x) + (cy - y) * (cy - y)
         if (best == null || d < best.first) best = Triple(d, cx, cy)
     }
@@ -179,8 +180,8 @@ class HueStreamEncoder(
                         // Black: hold the last chromaticity, send brightness 0.
                         val prev = prevXy[cid] ?: (gamutCentroid())
                         prevXy[cid] = prev
-                        buf.putShort(prev.first.toShortBits())
-                        buf.putShort(prev.second.toShortBits())
+                        buf.putShort(floatTo16(prev.first).toShort())
+                        buf.putShort(floatTo16(prev.second).toShort())
                         buf.putShort(0)
                     } else {
                         val (x, y) = rgbToXy(r / bri, g / bri, b / bri)
