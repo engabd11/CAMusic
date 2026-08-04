@@ -43,8 +43,23 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 private const val TAG = "DirectLightSync"
 private const val KEEPALIVE_INTERVAL_MS = 9000L
-private const val STREAM_FPS = 50
-private const val FRAME_PERIOD_MS = 1000L / STREAM_FPS
+
+/**
+ * Entertainment stream rate. The Hue Entertainment API is streamed at 50–60 Hz;
+ * syncoV2 uses 60 (`const.DEFAULT_STREAM_FPS`) and so does this. Deliberately
+ * higher than the ~50 Hz analysis rate — see [DirectLightSync.renderLoop].
+ */
+private const val STREAM_FPS = 60
+private const val FRAME_PERIOD_NANOS = 1_000_000_000L / STREAM_FPS
+
+/** Longest step the engine may be advanced by after a stall, in seconds. */
+private const val MAX_STEP_S = 0.1f
+
+/** How long without an analysis frame before the room is treated as silent. */
+private const val FRAME_STALE_NANOS = 250_000_000L
+
+/** What the engine renders when nothing is feeding it. */
+private val SILENCE = AnalysisFrame()
 
 class DirectLightSync(
     private val context: Context,
@@ -81,6 +96,13 @@ class DirectLightSync(
     /** Last rendered frame, for keepalive resends. */
     @Volatile private var lastFrame: ByteArray? = null
 
+    /** Latest analysis frame from the audio thread, and when it landed. */
+    @Volatile private var latestFrame: AnalysisFrame? = null
+    @Volatile private var latestFrameAt = 0L
+
+    /** When the last packet went out, so the keepalive knows if it is needed. */
+    @Volatile private var lastSendAt = 0L
+
     /** Whether the stream is active. */
     private val _active = MutableStateFlow(false)
     val active: StateFlow<Boolean> = _active.asStateFlow()
@@ -90,6 +112,7 @@ class DirectLightSync(
     val error: StateFlow<String?> = _error.asStateFlow()
 
     private var keepaliveJob: Job? = null
+    private var renderJob: Job? = null
     private val running = AtomicBoolean(false)
 
     init {
@@ -150,6 +173,8 @@ class DirectLightSync(
             }
 
             // 5. Activate the audio tap.
+            latestFrame = null
+            latestFrameAt = 0L
             audioTap.onFrame = ::onAnalysisFrame
             audioTap.setActive(true)
 
@@ -157,7 +182,8 @@ class DirectLightSync(
             _active.value = true
             _error.value = null
 
-            // 6. Start keepalive loop.
+            // 6. Start the render/send loop and the keepalive.
+            renderJob = scope.launch { renderLoop() }
             keepaliveJob = scope.launch { keepaliveLoop() }
 
             Log.i(TAG, "Direct Light Sync started: ${config.name} (${channels.size} channels)")
@@ -181,6 +207,7 @@ class DirectLightSync(
         audioTap.setActive(false)
         audioTap.onFrame = null
 
+        renderJob?.cancel(); renderJob = null
         keepaliveJob?.cancel(); keepaliveJob = null
 
         engine = null
@@ -211,42 +238,98 @@ class DirectLightSync(
     // ── Analysis frame callback ────────────────────────────────────────────
 
     /**
-     * Called from the ExoPlayer audio thread (~50 Hz) with a new analysis
-     * frame. Runs the engine and sends the result through DTLS.
+     * Called on the ExoPlayer audio thread with a new analysis frame.
      *
-     * Must not block — the audio thread is real-time.
+     * It only hands the frame over. The audio thread is real-time, and the
+     * decoder delivers in chunks rather than one hop at a time — rendering here
+     * would emit several frames back to back whenever a buffer landed, so the
+     * bridge would receive bursts instead of an even stream. [renderLoop] paces
+     * the output instead.
      */
     private fun onAnalysisFrame(frame: AnalysisFrame) {
-        val eng = engine ?: return
-        val enc = encoder ?: return
-        val client = dtls ?: return
-        if (!running.get()) return
+        latestFrame = frame
+        latestFrameAt = System.nanoTime()
+    }
 
-        // dt is the frame period (1/50s = 0.02s)
-        val dt = 0.02f
-        val colors = eng.render(frame, dt)
+    // ── Render loop ─────────────────────────────────────────────────────────
 
-        // Encode + send. The DTLS send is a blocking UDP write but at
-        // 50 Hz with a ~100-byte datagram it completes in microseconds.
-        val packets = enc.buildPackets(colors)
-        for (packet in packets) {
-            try {
-                client.send(packet)
-                lastFrame = packet
-            } catch (e: DtlsPeerClosed) {
-                Log.w(TAG, "Bridge revoked the stream: ${e.message}")
-                running.set(false)
-                _error.value = "The bridge revoked the stream (another app may have taken over)"
-                scope.launch { cleanup() }
-                return
+    /**
+     * Render and send at [STREAM_FPS], independent of the analysis rate.
+     *
+     * This is the rate the Entertainment API is streamed at, which syncoV2 puts
+     * at 60 Hz against a ~50 Hz analysis rate — so some analysis frames are
+     * rendered twice, which is the point: the engine's continuous layers (colour
+     * drift, envelopes, melbank) advance on real elapsed time and come out
+     * smoother than the frames driving them. The bridge relays to bulbs at ~25 Hz
+     * over Zigbee, so this is not about the visible update rate; it is about the
+     * temporal resolution of what gets sampled down to it.
+     *
+     * [dt] is measured, not assumed. The engine integrates everything against it,
+     * so a dropped or late tick has to shorten or lengthen the step rather than
+     * silently bend engine time away from the clock. It is clamped so that a stall
+     * (a GC pause, a thread starved by the decoder) resumes rather than jumping
+     * the animation forward by however long it was gone.
+     */
+    private suspend fun renderLoop() {
+        var last = System.nanoTime()
+        var next = last
+        while (running.get()) {
+            next += FRAME_PERIOD_NANOS
+            val sleep = (next - System.nanoTime()) / 1_000_000L
+            if (sleep > 0) kotlinx.coroutines.delay(sleep)
+            // A long stall would otherwise leave the loop sprinting to catch up
+            // on a backlog of deadlines nobody is waiting for.
+            if (System.nanoTime() - next > FRAME_PERIOD_NANOS * 4) next = System.nanoTime()
+            if (!running.get()) break
+
+            val now = System.nanoTime()
+            val dt = ((now - last) / 1e9f).coerceIn(0f, MAX_STEP_S)
+            last = now
+
+            val eng = engine ?: continue
+            val enc = encoder ?: continue
+            val client = dtls ?: continue
+
+            // A tap that has gone quiet means paused, seeking, or a gap between
+            // tracks. Feeding the last real frame forever would hold the room lit
+            // on whatever was playing when the music stopped; an empty frame lets
+            // the engine's own silence gate take it down.
+            val fresh = (now - latestFrameAt) < FRAME_STALE_NANOS
+            val frame = if (fresh) latestFrame ?: SILENCE else SILENCE
+
+            val packets = try {
+                enc.buildPackets(eng.render(frame, dt))
             } catch (e: Exception) {
-                Log.w(TAG, "DTLS send failed: ${e.message}")
+                Log.w(TAG, "Render failed: ${e.message}")
+                continue
+            }
+
+            for (packet in packets) {
+                try {
+                    client.send(packet)
+                    lastFrame = packet
+                    lastSendAt = now
+                } catch (e: DtlsPeerClosed) {
+                    Log.w(TAG, "Bridge revoked the stream: ${e.message}")
+                    running.set(false)
+                    _error.value = "The bridge revoked the stream (another app may have taken over)"
+                    scope.launch { cleanup() }
+                    return
+                } catch (e: Exception) {
+                    Log.w(TAG, "DTLS send failed: ${e.message}")
+                }
             }
         }
     }
 
     // ── Keepalive ───────────────────────────────────────────────────────────
 
+    /**
+     * Watches for bridge-side alerts, and resends only if the stream has actually
+     * gone quiet. [renderLoop] sends continuously while a session is up, so the
+     * resend is a backstop for a stalled loop rather than the normal path — firing
+     * it regardless would inject a nine-second-old frame into a live stream.
+     */
     private suspend fun keepaliveLoop() {
         while (running.get()) {
             kotlinx.coroutines.delay(KEEPALIVE_INTERVAL_MS)
@@ -270,7 +353,9 @@ class DirectLightSync(
                 // Non-fatal: just log and continue.
             }
 
-            // Resend the last frame to keep the channel alive.
+            // Only if the render loop has gone quiet — otherwise this would be a
+            // stale frame cutting into a stream that is already flowing.
+            if (System.nanoTime() - lastSendAt < KEEPALIVE_INTERVAL_MS * 1_000_000L) continue
             val frame = lastFrame ?: continue
             try {
                 withContext(Dispatchers.IO) { client.send(frame) }

@@ -193,6 +193,35 @@ class SyncoEngineTest {
         }
     }
 
+    /**
+     * The render loop measures dt rather than assuming a fixed step, so the engine
+     * sees jitter: a 60 Hz tick that ran late, a step clamped after a stall, and
+     * the occasional near-zero when two ticks land together. Everything in here
+     * integrates against dt, so none of those may push it out of range.
+     */
+    @Test
+    fun `variable frame timing stays in range`() {
+        val steps = listOf(1f / 60, 1f / 60, 0.0001f, 0.1f, 1f / 50, 0f, 0.033f, 1f / 60)
+        for (mode in SyncMode.entries) {
+            val engine = SyncoEngine(channels())
+            engine.mode = mode
+            repeat(80) { i ->
+                val out = engine.render(frame(i, beat = i % 25 == 0), steps[i % steps.size])
+                for ((ch, rgb) in out) {
+                    val (r, g, b) = rgb
+                    assertTrue(
+                        !r.isNaN() && !g.isNaN() && !b.isNaN(),
+                        "$mode channel $ch went NaN on a ${steps[i % steps.size]}s step",
+                    )
+                    assertTrue(
+                        r in 0f..1f && g in 0f..1f && b in 0f..1f,
+                        "$mode channel $ch out of range on a varying step: $rgb",
+                    )
+                }
+            }
+        }
+    }
+
     /** Silence must not divide by zero or drift the AGC into NaN. */
     @Test
     fun `silence renders without NaN`() {
