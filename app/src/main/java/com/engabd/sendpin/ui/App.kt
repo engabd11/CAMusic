@@ -1,6 +1,8 @@
 package com.engabd.sendpin.ui
 
 import android.app.Activity
+import androidx.compose.ui.res.painterResource
+import com.engabd.sendpin.R
 import androidx.activity.compose.BackHandler
 import androidx.core.view.WindowCompat
 import androidx.compose.ui.platform.LocalView
@@ -196,7 +198,14 @@ fun App() {
                 Box(
                     Modifier.size(78.dp).clip(RoundedCornerShape(24.dp)).background(accent),
                     contentAlignment = Alignment.Center,
-                ) { Text("S", color = Ink, fontWeight = FontWeight.Black, fontSize = 40.sp) }
+                ) {
+                    Icon(
+                        painterResource(R.drawable.ic_mushroom),
+                        contentDescription = null,
+                        tint = Ink,
+                        modifier = Modifier.size(44.dp),
+                    )
+                }
             }
             return@SendspinTheme
         }

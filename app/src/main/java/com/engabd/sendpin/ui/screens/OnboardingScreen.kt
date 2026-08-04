@@ -1,6 +1,8 @@
 package com.engabd.sendpin.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.ui.res.painterResource
+import com.engabd.sendpin.R
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -66,7 +68,14 @@ fun OnboardingScreen(
                 Modifier.size(78.dp).shadow(30.dp, RoundedCornerShape(24.dp), ambientColor = accent, spotColor = accent)
                     .clip(RoundedCornerShape(24.dp)).background(accent),
                 contentAlignment = Alignment.Center,
-            ) { Text("S", color = Ink, fontWeight = FontWeight.Black, fontSize = 40.sp) }
+            ) {
+                Icon(
+                    painterResource(R.drawable.ic_mushroom),
+                    contentDescription = null,
+                    tint = Ink,
+                    modifier = Modifier.size(44.dp),
+                )
+            }
 
             Spacer(Modifier.height(22.dp))
             Text("CAMusic", color = TextPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 28.sp)

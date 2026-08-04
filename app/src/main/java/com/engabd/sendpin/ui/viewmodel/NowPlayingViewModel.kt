@@ -302,10 +302,40 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun targetId() = _target.value.ifBlank { myPlayerId }
+    /**
+     * The player this screen is actually driving.
+     *
+     * [_target] is the user's choice, and blank means this phone. But this phone is
+     * only a Music Assistant player once MA has seen it register, and on a first run —
+     * or with the player disabled, or before the socket is up — it is not in the list
+     * at all. Resolving blindly to [myPlayerId] pointed the whole screen at an id MA
+     * had never heard of: the transport addressed nothing, and the only way out was to
+     * open Speakers and pick something by hand before any music could start.
+     *
+     * So the stored choice is honoured when it names a player that exists, and
+     * otherwise falls through — this phone if MA knows it, then the first *available*
+     * player MA does know, then whatever is left. Availability first, because falling
+     * back to a speaker that is itself offline just moves the dead end.
+     *
+     * Only the resolution changes; the stored preference is untouched. When this phone
+     * finishes registering it satisfies the first branch again and takes back over,
+     * without the user having to re-pick it.
+     *
+     * On Navidrome this cannot fire: that backend has no MA players and the local
+     * session owns the screen.
+     */
+    private fun resolveTarget(players: List<MaPlayer>, target: String): String {
+        val wanted = target.ifBlank { myPlayerId }
+        if (players.isEmpty() || players.any { it.playerId == wanted }) return wanted
+        if (players.any { it.playerId == myPlayerId }) return myPlayerId
+        return players.firstOrNull { it.available }?.playerId
+            ?: players.first().playerId
+    }
+
+    private fun targetId() = resolveTarget(_players.value, _target.value)
 
     private val maState: StateFlow<State> = combine(_players, _target, _queues, localQuality, _lastTrack) { players, target, queues, local, last ->
-        val id = target.ifBlank { myPlayerId }
+        val id = resolveTarget(players, target)
         val p = players.firstOrNull { it.playerId == id }
         val isSelf = id == myPlayerId
         // A synced member plays the leader's stream, so read quality off the leader's queue.
@@ -595,7 +625,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         // the track-scoped controls (heart, lyrics, similar) have no handle to act
         // on and correctly show as unavailable.
         if (l.active) return@combine null
-        val id = target.ifBlank { myPlayerId }
+        val id = resolveTarget(players, target)
         val streamId = players.firstOrNull { it.playerId == id }?.syncedTo ?: id
         queues.firstOrNull { it.queueId == streamId }?.currentItem
     }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
@@ -1310,7 +1340,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         // Remember whatever the selected player last had loaded.
         viewModelScope.launch {
             combine(_players, _target) { players, target ->
-                val id = target.ifBlank { myPlayerId }
+                val id = resolveTarget(players, target)
                 players.firstOrNull { it.playerId == id }?.nowPlaying
             }.collect { np -> if (np != null && np.title.isNotBlank()) _lastTrack.value = np }
         }
