@@ -1251,8 +1251,6 @@ private fun DirectBridgeSetup(
     var discoveredBridges by remember { mutableStateOf(listOf<com.engabd.sendpin.hue.DiscoveredBridge>()) }
     var pairing by remember { mutableStateOf(false) }
     var pairError by remember { mutableStateOf<String?>(null) }
-    var configs by remember { mutableStateOf(listOf<com.engabd.sendpin.hue.EntertainmentConfig>()) }
-    var loadingConfigs by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         bridgeIp = settings.hueBridgeIp.first()
@@ -1330,7 +1328,7 @@ private fun DirectBridgeSetup(
                     Text(it, color = ErrorRed, fontSize = 12.sp)
                 }
             } else {
-                // ── Paired: show bridge + area picker ───────────────────────
+                // ── Paired: show bridge status ───────────────────────────
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Icon(Icons.Default.Router, "Bridge", tint = accent, modifier = Modifier.size(18.dp))
                     Column(Modifier.weight(1f)) {
@@ -1342,57 +1340,13 @@ private fun DirectBridgeSetup(
                             settings.setHueBridge("", "", "")
                             settings.setHueConfigId("")
                             bridgeIp = ""; appKey = ""; configId = ""; paired = false
-                            configs = emptyList()
                         }
                     }
                 }
-
-                // Area picker
-                if (configId.isBlank() && configs.isEmpty() && !loadingConfigs) {
-                    OledButton("Load entertainment areas", accent = accent) {
-                        loadingConfigs = true
-                        scope.launch {
-                            try {
-                                configs = bridge.getEntertainmentConfigs(bridgeIp, appKey)
-                            } catch (e: Exception) {
-                                pairError = e.message ?: "Couldn't reach the bridge"
-                            }
-                            loadingConfigs = false
-                        }
-                    }
-                }
-
-                if (loadingConfigs) {
-                    Text("Loading areas…", color = TextMuted, fontSize = 13.sp)
-                }
-
-                if (configs.isNotEmpty()) {
-                    Text("Entertainment area", color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                    configs.forEach { cfg ->
-                        Row(
-                            Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
-                                .background(if (cfg.id == configId) accent.a(0.10f) else Glass)
-                                .border(1.dp, if (cfg.id == configId) accent.a(0.4f) else Hairline, RoundedCornerShape(12.dp))
-                                .clickable {
-                                    scope.launch { settings.setHueConfigId(cfg.id) }
-                                    configId = cfg.id
-                                }
-                                .padding(horizontal = 14.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Icon(Icons.Default.Lightbulb, null, tint = if (cfg.id == configId) accent else TextMuted, modifier = Modifier.size(16.dp))
-                            Text(cfg.name, color = if (cfg.id == configId) accent else TextSecondary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                        }
-                    }
-                }
-
-                if (configId.isNotBlank()) {
-                    Spacer(Modifier.height(4.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Box(Modifier.size(7.dp).clip(CircleShape).background(accent))
-                        Text("Ready to sync", color = accent, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                    }
+                Spacer(Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Box(Modifier.size(7.dp).clip(CircleShape).background(accent))
+                    Text("Paired. Pick an entertainment area on the Lights tab.", color = accent, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                 }
 
                 pairError?.let {

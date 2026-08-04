@@ -117,7 +117,7 @@ class LocalPlayer(private val context: Context) {
      * The Light Sync audio analysis tap. Shared with [DirectLightSync] which
      * activates/deactivates it. When inactive, ExoPlayer bypasses it entirely.
      */
-    val audioAnalysisTap = com.engabd.sendpin.audio.AudioAnalysisTap()
+    val audioAnalysisTap = AudioAnalysisTap()
 
     /** The user's own volume, kept apart from the ReplayGain factor multiplied onto it. */
     private var userVolume = 1f

@@ -129,7 +129,9 @@ fun LightSyncScreen(onBack: () -> Unit = {}, viewModel: LightSyncViewModel = vie
 
                 // Which player this area follows ("Auto" — whatever is playing).
                 // Hidden in direct mode: there is only one speaker (this phone),
-                // so there is nothing to choose.
+                // so there is nothing to choose. Instead, the entertainment area
+                // selector is shown here — it changes constantly, just like
+                // the HA zone selector does.
                 if (!isDirect) {
                     Spacer(Modifier.height(22.dp))
                     SectionLabel("Follow player")
@@ -139,6 +141,51 @@ fun LightSyncScreen(onBack: () -> Unit = {}, viewModel: LightSyncViewModel = vie
                         players = mediaPlayers,
                         onSelect = viewModel::setFollowPlayer,
                     )
+                } else {
+                    // Direct mode: entertainment area picker (from the bridge).
+                    val context2 = androidx.compose.ui.platform.LocalContext.current
+                    val app = context2.applicationContext as com.engabd.sendpin.SendpinApp
+                    val bridge = app.directLightSync.bridgeClient
+                    var directConfigs by remember { mutableStateOf(listOf<com.engabd.sendpin.hue.EntertainmentConfig>()) }
+                    var directConfigId by remember { mutableStateOf("") }
+                    var loadingDirectConfigs by remember { mutableStateOf(false) }
+                    val directSettings = com.engabd.sendpin.data.AppSettings(context2.applicationContext)
+                    val directScope = rememberCoroutineScope()
+
+                    LaunchedEffect(Unit) {
+                        directConfigId = directSettings.hueEntertainmentConfigId.first()
+                        val ip = directSettings.hueBridgeIp.first()
+                        val key = directSettings.hueAppKey.first()
+                        if (ip.isNotBlank() && key.isNotBlank()) {
+                            loadingDirectConfigs = true
+                            try { directConfigs = bridge.getEntertainmentConfigs(ip, key) } catch (_: Exception) {}
+                            loadingDirectConfigs = false
+                        }
+                    }
+
+                    Spacer(Modifier.height(22.dp))
+                    SectionLabel("Entertainment area")
+                    Spacer(Modifier.height(10.dp))
+
+                    if (loadingDirectConfigs) {
+                        Text("Loading areas from the bridge…", color = TextMuted, fontSize = 13.sp)
+                    } else if (directConfigs.isNotEmpty()) {
+                        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            directConfigs.forEach { cfg ->
+                                AreaChip(
+                                    name = cfg.name,
+                                    selected = cfg.id == directConfigId,
+                                    active = cfg.isStreaming,
+                                    accent = accent,
+                                ) {
+                                    directConfigId = cfg.id
+                                    directScope.launch { directSettings.setHueConfigId(cfg.id) }
+                                }
+                            }
+                        }
+                    } else {
+                        Text("No areas found. Create one in the Hue app.", color = TextFaint, fontSize = 13.sp)
+                    }
                 }
 
                 val modeOptions = a.modeOptions.ifEmpty { ModeFallback }

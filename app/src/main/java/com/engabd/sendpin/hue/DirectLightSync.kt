@@ -270,7 +270,7 @@ class DirectLightSync(
 
     fun setMode(mode: SyncMode) {
         engine?.setMode(mode)
-        scope.launch { settings.setLightSyncMode(mode.wire) }
+        scope.launch { settings.setLightSyncIntensity(mode.wire) }
     }
 
     fun setEffect(effect: SyncEffect) {
