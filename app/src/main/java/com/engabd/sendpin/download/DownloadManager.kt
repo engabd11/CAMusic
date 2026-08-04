@@ -80,13 +80,12 @@ class DownloadManager(
     /** Downloads currently running or failed, so the library can show progress. */
     val jobs: StateFlow<List<DownloadJob>> = _jobs
 
-    /** Whether the device is currently on Wi-Fi (or Ethernet). */
+    /** Whether the device is currently on Wi-Fi. */
     private fun isOnWifi(context: Context): Boolean {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
             ?: return true  // if we can't check, don't block
         val info = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
-        return info.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
-            info.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+        return info.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
     }
 
     /**
