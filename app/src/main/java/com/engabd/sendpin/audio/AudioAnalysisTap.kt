@@ -83,9 +83,8 @@ class AudioAnalysisTap : AudioProcessor {
         return inputFormat  // pass-through: same format out
     }
 
-    override fun queueEndOfStream(): ByteBuffer {
-        // Pass-through: no buffering, signal end immediately with an empty buffer.
-        return ByteBuffer.allocateDirect(0)
+    override fun queueEndOfStream(): Unit {
+        // Pass-through: no buffering, nothing to flush.
     }
 
     override fun queueInput(inputBuffer: ByteBuffer) {

@@ -161,7 +161,7 @@ private fun bandMeans(mag: FloatArray, starts: IntArray, counts: IntArray): Floa
 /** Log-spaced band starts/counts for onset filterbank. */
 private fun makeOnsetFilterbank(freqs: FloatArray, nBands: Int, fmin: Float, fmax: Float): Triple<IntArray, IntArray, Pair<Int, Int>> {
     val edges = FloatArray(nBands + 1) { i ->
-        fmin * kotlin.math.pow((fmax / fmin).toDouble(), (i.toFloat() / nBands).toDouble()).toFloat()
+        (fmin.toDouble() * pow(fmax.toDouble() / fmin.toDouble(), i.toDouble() / nBands)).toFloat()
     }
     val idx = IntArray(nBands + 1) { i ->
         var result = 0
@@ -184,7 +184,7 @@ private fun makeOnsetFilterbank(freqs: FloatArray, nBands: Int, fmin: Float, fma
 /** Log-spaced melbank starts/counts. */
 private fun makeMelbank(freqs: FloatArray, nBins: Int, fmin: Float, fmax: Float): Pair<IntArray, IntArray> {
     val edges = FloatArray(nBins + 1) { i ->
-        fmin * kotlin.math.pow((fmax / fmin).toDouble(), (i.toFloat() / nBins).toDouble()).toFloat()
+        (fmin.toDouble() * pow(fmax.toDouble() / fmin.toDouble(), i.toDouble() / nBins)).toFloat()
     }
     val idx = IntArray(nBins + 1) { i ->
         var result = 0
@@ -477,7 +477,8 @@ class AudioAnalyzer(
         sinceBass = bassResult.third
 
         // Mid beat: attack state machine
-        val eMid = (nBass until nMid).sumOf { lin[it] }
+        var eMid = 0f
+        for (i in nBass until nMid) eMid += lin[i]
         val rising = eMid > midEprev * MID_RISE_RATIO
         var midBeat = false
         var midStrength = 0f
