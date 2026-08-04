@@ -86,6 +86,11 @@ Assistant integration over the HA WebSocket API: per-zone enable, intensity ladd
 effect, brightness ceiling, timing offset, live tunables, and all 19 colour schemes
 previewed with their real gradient colours.
 
+Today that means Light Sync needs Home Assistant *and* syncoV2, and follows an HA
+`media_player` entity — so it cannot see the Navidrome/offline player, which lives
+inside this process where HA has no view of it. Connecting to the Hue Bridge directly
+is the planned answer to both; see **What's planned**.
+
 ## Requirements
 
 - Android 12+ (API 31)
@@ -99,7 +104,7 @@ previewed with their real gradient colours.
 1. Install the APK from [Releases](https://github.com/engabd11/sendspin-nowdroid/releases).
 2. Pick a discovered MA server or enter its URL. Credentials are encrypted at rest with
    the Android Keystore.
-3. The phone appears in Music Assistant under the name in **Settings → This player**.
+3. The phone appears in Music Assistant under the name in **Settings → Sendspin player**.
 4. For Navidrome, add the server under **Settings → Servers**; for Light Sync, add a
    Home Assistant URL and long-lived token in the same place.
 
@@ -138,29 +143,101 @@ Written down because the alternative is discovering them by ear:
 - **Gapless does work on the Navidrome path**, where ExoPlayer owns the whole queue.
 - ReplayGain is applied on the Navidrome path only. MA does its own normalisation
   server-side, and applying it twice would be worse than not applying it.
-- media3 is pinned to 1.8.0: 1.9+ requires compileSdk 36 and AGP 8.7.3 tops out at 35.
-- The XML window theme is still `Theme.Material.NoActionBar` while the Compose layer is
-  Material 3.
-- Everything is a debug build signed with a local key. There is no release signing config.
+- **The quality card says nothing about level.** MA's `StreamDetails` carries `loudness`,
+  `loudness_album` and `volume_normalization_gain_correct` - so whether the server
+  normalised a carefully-mastered file is knowable, and currently unasked.
+- **Releases are signed with the local debug key.** There is no release keystore. Updates
+  work because that key has been stable since v0.1.0; a CI-signed build would have a
+  different signer and Android would refuse to install it over an existing copy.
+- Cleartext is allowed to LAN addresses only. A server reached over plain HTTP on a
+  public hostname is refused rather than sent credentials in the clear - use HTTPS for
+  anything off the local network.
 
 ## What's planned
 
-- **Light Sync for the local player.** syncoV2 follows an HA `media_player` entity, and
-  the Navidrome player is an ExoPlayer inside this process that HA cannot see - so the
-  backend most likely to be used for critical listening is the one the lights ignore.
-  The plan is a second mode that authenticates to HA directly and drives the zone from
-  the app's own playback state. See §17 of the improvement roadmap.
-- **MA player config from the app** - the stream quality per player that currently has
-  to be set in Music Assistant's own UI.
+The full reasoning, file lists and risks for each item are in
+[docs/v0.5.0-analysis.md](docs/v0.5.0-analysis.md). This is the short version, with
+anything already shipped struck from it.
+
+### Audiophile core
+
+- **Gapless on the MA path.** The `stream/end` ambiguity above, solved client-side:
+  after `stream/end`, wait a beat for a `server/state` carrying `playback_speed: 0`. If
+  it arrives it was a pause, so flush; if `stream/start` arrives first it was a track
+  boundary, so keep the tail. The only option of the three that is entirely in our own
+  control and does not trade away buffer resilience.
+- **MA loudness readout** in the quality card - what the server did to the level, not
+  just what format it sent.
+- **Bit-perfect exclusive-mode output** via the native AAudio I24 path in
+  `app/src/main/cpp/`, which is written and deliberately not compiled. Bypasses the
+  Android mixer: no resampling, no system volume, no other app's audio mixed in.
+- **Crossfade on the Navidrome path.** Gapless is right for an album; a crossfade is
+  what a party playlist wants. ExoPlayer supports it natively.
+
+### Feature completion
+
 - **Version picker.** `music/tracks/track_versions` and `album_versions` list every copy
   of a track across every provider; the client layer is done, the UI is not. This is the
   command that speaks to why anyone runs a local library next to streaming.
 - **Cross-device resume** via `getPlayQueue`/`savePlayQueue` - client done, UI not.
-- **MA loudness readout.** `StreamDetails` carries `loudness`, `loudness_album` and
-  `volume_normalization_gain_correct`; the quality card currently says nothing about
-  what MA did to the level.
-- **Bit-perfect exclusive-mode output** via the native AAudio path.
-- Toolchain bump (AGP + compileSdk 36) to unpin media3.
+  Start on the phone, finish at the desk, same second of the same track.
+- **Warm reconnect.** `client/goodbye` with `reason: "restart"` on backgrounding, so MA
+  holds the player slot for ~30 seconds and a quick app switch doesn't drop the phone
+  out of the speaker list. Attempted once and reverted: the first cut disconnected on
+  every backgrounding, including mid-song. It needs to fire only while idle.
+- **A Downloads screen** with sort, search, retry and a storage breakdown, rather than a
+  shelf in the Library.
+
+### Light Sync, direct to the bridge
+
+The direction for Light Sync, and the largest single item on this list.
+
+Today Light Sync goes App → HA WebSocket → syncoV2 → Hue Entertainment API → Bridge, and
+follows an HA `media_player` entity. That has three consequences: it needs Home Assistant
+and the syncoV2 integration, it cannot see the Navidrome/offline player at all — that is
+an ExoPlayer inside this process, invisible to HA — and it reacts at the speed an entity
+updates, which is seconds.
+
+**Direct mode cuts the whole path out: App → Hue Bridge over DTLS/UDP.**
+
+- mDNS discovery of the bridge, the physical link-button auth flow, then the Entertainment
+  API streaming per-light colour at 25–50 Hz.
+- syncoV2's music-reactive algorithm ported from Python to Kotlin and run on-device.
+- Driven by a tap on the **decoded PCM** — `SendspinAudioEngine` on the MA path, an
+  ExoPlayer `AudioProcessor` on the Navidrome path. Real onset detection and per-band FFT
+  at audio frame rate rather than polling an entity.
+
+Which is why this replaces, rather than complements, the older plan of a second HA-driven
+mode for the local player. It is the only approach that reaches the offline player at all,
+it is the only one that works for someone with a Hue Bridge and no Home Assistant, and
+having the samples in hand is strictly better than watching a proxy for them.
+
+The colour schemes, tunables, effect definitions and the whole Light Sync screen carry
+over unchanged — only the transport underneath is different. The hard part is the DTLS
+streaming and the ~2000 lines of beat detection and colour logic to port.
+
+### Platform
+
+- **Android Auto.** media3-session is already a dependency and the `MediaSession`
+  already exists; the work is a manifest declaration and a browse tree.
+- **Home screen widget** (Glance) and a **Quick Settings tile** for Light Sync.
+- **A release keystore and a CI release pipeline.** See Known limits.
+
+### Housekeeping
+
+- Room for the download index, which is a JSON file rewritten in full on every change.
+- Instrumented tests. The 174 unit tests cover protocol, clock and parsing; nothing
+  covers the audio path, the service lifecycle or the UI.
+- Crash reporting - ACRA or similar, self-hosted.
+- The six files over 700 lines, and the 184 `runCatching` sites that swallow a failure
+  without recording it.
+
+### Shipped since the roadmap was written
+
+Wi-Fi-only downloads and the storage cap (both were settings that did nothing) ·
+toggleable background connection for TTS · proguard keep rules · a network security
+config and LAN-only cleartext · MA's output limiter · multi-disc album grouping ·
+composer credits · the frequently-played shelf · the `MaDiscovery` null-listener crash
 
 ## Architecture
 
@@ -194,12 +271,22 @@ companion swatches, which drive every glow, gradient and control tint.
 
 ## Building
 
-JDK 17 and the Android SDK (compileSdk 35). No NDK needed.
+JDK 17 and the Android SDK (compileSdk 36). No NDK needed.
 
 ```bash
-./gradlew assembleDebug          # app/build/outputs/apk/debug/app-debug.apk
-./gradlew :app:testDebugUnitTest # 167 unit tests: protocol, clock, scheduling, parsing
+./gradlew assembleRelease        # app/build/outputs/apk/release/app-release.apk
+./gradlew :app:testDebugUnitTest # 174 unit tests: protocol, clock, scheduling, parsing
 ./gradlew :app:lintDebug
+```
+
+Judge anything about how the app *feels* on a release build. A debug build carries
+Compose composition tracing, skips R8 and runs `debuggable`, which suppresses most of
+ART's optimisation - scroll performance measured on one is measuring the build.
+
+```bash
+./gradlew :app:installRelease -PsideBySide   # installs alongside, own empty data
+./gradlew :app:generateBaselineProfile       # needs a device; WIPES app data
+./gradlew :app:compileReleaseKotlin -PcomposeMetrics   # skippability reports
 ```
 
 Releases are cut **locally**, not from CI: a CI runner generates a fresh debug keystore
@@ -208,6 +295,8 @@ every run, and Android refuses to update an app whose signer changed. See the he
 
 ## Documentation
 
+- [docs/v0.5.0-analysis.md](docs/v0.5.0-analysis.md) - the full codebase analysis and
+  the roadmap the "What's planned" section above summarises
 - [docs/improvement-roadmap.md](docs/improvement-roadmap.md) - the API audit, what
   shipped, and a Corrections section recording where earlier notes were wrong
 - [docs/protocol-alignment.md](docs/protocol-alignment.md) - what MA's Sendspin provider
