@@ -118,6 +118,7 @@ fun AlbumDetailScreen(
                     item {
                         AlbumHero(
                             album = album,
+                            itemId = itemId,
                             albumName = album?.name ?: name,
                             artUrl = albumArt,
                             trackCount = tracks.size,
@@ -227,6 +228,9 @@ private fun AlbumHeader(albumName: String, albumArt: String?, onBack: () -> Unit
 @Composable
 private fun AlbumHero(
     album: MaItem?,
+    /** The route's own id, not [album]'s — the shared-element key has to be right on
+     *  the first frame, and the album itself has not loaded yet at that point. */
+    itemId: String,
     albumName: String,
     artUrl: String?,
     trackCount: Int,
@@ -259,8 +263,12 @@ private fun AlbumHero(
                     model = art,
                     contentDescription = "Album art",
                     contentScale = ContentScale.Crop,
+                    // The far end of the flight from the library's grid tile. The route
+                    // carries the artwork URL, so this renders the same image at once
+                    // rather than flashing empty while the album request lands.
                     modifier = Modifier
                         .fillMaxSize()
+                        .sharedArt(artKey(itemId))
                         .shadow(24.dp, RoundedCornerShape(16.dp))
                         .clip(RoundedCornerShape(16.dp)),
                 )

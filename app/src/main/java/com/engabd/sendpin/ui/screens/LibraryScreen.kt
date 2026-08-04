@@ -597,7 +597,12 @@ private fun androidx.compose.foundation.lazy.grid.LazyGridScope.shelf(
         contentType = { "cover" },
         span = { GridItemSpan(2) },
     ) { entry ->
-        CoverTile(entry, onLongPress = { onLongPress(entry) }) { onOpen(entry) }
+        // Shelves refill in place as the server answers — favourites arrive, then
+        // recently-added, then the rest. Keyed items make that a move rather than a
+        // redraw, and animateItem is what turns the move into something you can follow.
+        Box(Modifier.animateItem()) {
+            CoverTile(entry, onLongPress = { onLongPress(entry) }) { onOpen(entry) }
+        }
     }
 }
 
@@ -638,7 +643,11 @@ private fun androidx.compose.foundation.lazy.grid.LazyGridScope.downloadsSection
             key = { "j_" + it.id },
             contentType = { "job" },
             span = { full() },
-        ) { job -> DownloadJobRow(job, viewModel) }
+        ) { job ->
+            // Jobs appear and vanish as downloads finish, so this list is the one that
+            // most obviously popped without an animation.
+            Box(Modifier.animateItem()) { DownloadJobRow(job, viewModel) }
+        }
     }
     if (items.isEmpty() && jobs.isEmpty()) {
         item(span = { full() }) { SearchEmptyState("Nothing downloaded", "Downloaded tracks play with the server off.") }
@@ -801,7 +810,8 @@ private fun CoverTile(item: MaItem, onLongPress: (() -> Unit)? = null, onClick: 
             if (art != null) {
                 AsyncImage(
                     model = art, contentDescription = item.name, contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize(),
+                    // The near end of the flight into the album screen's hero.
+                    modifier = Modifier.fillMaxSize().sharedArt(artKey(item.itemId)),
                 )
             } else {
                 Icon(Icons.Default.Album, null, tint = TextFaint, modifier = Modifier.size(24.dp))

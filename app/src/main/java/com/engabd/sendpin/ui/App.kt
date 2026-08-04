@@ -1,6 +1,15 @@
 package com.engabd.sendpin.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContentTransitionScope
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.ExperimentalSharedTransitionApi
+import androidx.compose.animation.SharedTransitionLayout
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -37,7 +46,11 @@ import androidx.navigation.navArgument
 import com.engabd.sendpin.ui.design.BottomChromeState
 import com.engabd.sendpin.ui.design.LocalAccent
 import com.engabd.sendpin.ui.design.LocalBottomChrome
+import androidx.navigation.NavBackStackEntry
 import com.engabd.sendpin.ui.design.LocalMiniBarInset
+import com.engabd.sendpin.ui.design.Motion
+import com.engabd.sendpin.ui.design.LocalNavAnimatedScope
+import com.engabd.sendpin.ui.design.LocalSharedTransitionScope
 import com.engabd.sendpin.ui.design.MiniBarHeight
 import com.engabd.sendpin.ui.design.LocalPalette
 import com.engabd.sendpin.ui.design.NavTab
@@ -73,6 +86,26 @@ private val TabTabs = listOf(
     NavTab("settings", "Settings", Icons.Default.Settings),
 )
 
+// Detail screens arrive from the right and leave the way they came, so the back
+// gesture undoes the push rather than dissolving it. The outgoing screen only moves a
+// quarter of the way so it reads as staying put underneath rather than being shoved
+// off — the parallax every platform's push uses.
+//
+// Springs rather than tweens, from the app's own motion tokens — see design/Motion.kt
+// for why these are not MaterialTheme.motionScheme.
+private val pushIn: AnimatedContentTransitionScope<NavBackStackEntry>.() -> EnterTransition = {
+    slideInHorizontally(Motion.screenSlide()) { it } + fadeIn(Motion.effects())
+}
+private val pushOut: AnimatedContentTransitionScope<NavBackStackEntry>.() -> ExitTransition = {
+    slideOutHorizontally(Motion.screenSlide()) { -it / 4 } + fadeOut(Motion.effects())
+}
+private val popIn: AnimatedContentTransitionScope<NavBackStackEntry>.() -> EnterTransition = {
+    slideInHorizontally(Motion.screenSlide()) { -it / 4 } + fadeIn(Motion.effects())
+}
+private val popOut: AnimatedContentTransitionScope<NavBackStackEntry>.() -> ExitTransition = {
+    slideOutHorizontally(Motion.screenSlide()) { it } + fadeOut(Motion.effects())
+}
+
 /** In overlay mode, "Playing" is not a tab — the cover slides over the other four. */
 private val OverlayTabs = listOf(
     NavTab("library", "Library", Icons.Default.LibraryMusic),
@@ -81,7 +114,7 @@ private val OverlayTabs = listOf(
     NavTab("settings", "Settings", Icons.Default.Settings),
 )
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalSharedTransitionApi::class)
 @Composable
 fun App() {
     SendspinTheme {
@@ -220,10 +253,17 @@ fun App() {
                 val tabs = if (isOverlay) OverlayTabs else TabTabs
                 val startDest = if (isOverlay) "library" else "now_playing"
 
+                SharedTransitionLayout {
                 NavHost(
                     navController = navController,
                     startDestination = startDest,
                     modifier = Modifier.fillMaxSize(),
+                    // Tabs cross-fade: they are siblings, and sliding between them
+                    // would imply an order the tab bar doesn't have. Pushing into a
+                    // detail screen slides, because that *is* a direction — see the
+                    // detail destinations below, which override these.
+                    enterTransition = { fadeIn(Motion.effects()) },
+                    exitTransition = { fadeOut(Motion.effects()) },
                 ) {
                     if (!isOverlay) {
                         composable("now_playing") {
@@ -241,12 +281,17 @@ fun App() {
                             val a = item.image?.let { android.net.Uri.encode(it) } ?: ""
                             navController.navigate("$route/${android.net.Uri.encode(item.itemId)}/${android.net.Uri.encode(item.provider)}?name=$n&art=$a")
                         }
-                        LibraryScreen(
-                            viewModel = libraryVm,
-                            onAlbumClick = { navToDetail("album", it) },
-                            onArtistClick = { navToDetail("artist", it) },
-                            onPlaylistClick = { navToDetail("playlist", it) },
-                        )
+                        CompositionLocalProvider(
+                            LocalSharedTransitionScope provides this@SharedTransitionLayout,
+                            LocalNavAnimatedScope provides this@composable,
+                        ) {
+                            LibraryScreen(
+                                viewModel = libraryVm,
+                                onAlbumClick = { navToDetail("album", it) },
+                                onArtistClick = { navToDetail("artist", it) },
+                                onPlaylistClick = { navToDetail("playlist", it) },
+                            )
+                        }
                     }
                     composable(
                         route = "album/{itemId}/{provider}?name={name}&art={art}",
@@ -256,6 +301,11 @@ fun App() {
                             navArgument("name") { type = NavType.StringType; defaultValue = "" },
                             navArgument("art") { type = NavType.StringType; defaultValue = "" },
                         ),
+                        // No slide: the cover itself flies from the grid tile into the
+                        // hero (see LocalSharedTransitionScope), and sliding the screen
+                        // at the same time would drag the artwork along a second path.
+                        enterTransition = { fadeIn(Motion.effects()) },
+                        exitTransition = { fadeOut(Motion.effects()) },
                     ) { backStackEntry ->
                         val aItemId = backStackEntry.arguments?.getString("itemId") ?: ""
                         val aProvider = backStackEntry.arguments?.getString("provider") ?: ""
@@ -263,6 +313,10 @@ fun App() {
                         val aArt = backStackEntry.arguments?.getString("art")?.takeIf { it.isNotBlank() }
                         val aStranded = strandedOnOtherBackend(aProvider)
                         LaunchedEffect(aStranded) { if (aStranded) navController.popBackStack() }
+                        CompositionLocalProvider(
+                            LocalSharedTransitionScope provides this@SharedTransitionLayout,
+                            LocalNavAnimatedScope provides this@composable,
+                        ) {
                         AlbumDetailScreen(
                             itemId = aItemId,
                             provider = aProvider,
@@ -279,6 +333,7 @@ fun App() {
                                 navController.navigate("artist/-/${android.net.Uri.encode(artistProvider)}?name=$n&byName=true")
                             },
                         )
+                        }
                     }
                     composable(
                         route = "artist/{itemId}/{provider}?name={name}&art={art}&byName={byName}",
@@ -289,6 +344,8 @@ fun App() {
                             navArgument("art") { type = NavType.StringType; defaultValue = "" },
                             navArgument("byName") { type = NavType.BoolType; defaultValue = false },
                         ),
+                        enterTransition = pushIn, exitTransition = pushOut,
+                        popEnterTransition = popIn, popExitTransition = popOut,
                     ) { backStackEntry ->
                         val aItemId = backStackEntry.arguments?.getString("itemId") ?: ""
                         val aProvider = backStackEntry.arguments?.getString("provider") ?: ""
@@ -319,6 +376,8 @@ fun App() {
                             navArgument("name") { type = NavType.StringType; defaultValue = "" },
                             navArgument("art") { type = NavType.StringType; defaultValue = "" },
                         ),
+                        enterTransition = pushIn, exitTransition = pushOut,
+                        popEnterTransition = popIn, popExitTransition = popOut,
                     ) { backStackEntry ->
                         val pItemId = backStackEntry.arguments?.getString("itemId") ?: ""
                         val pProvider = backStackEntry.arguments?.getString("provider") ?: ""
@@ -335,9 +394,13 @@ fun App() {
                         )
                     }
                     composable("speakers") { SpeakersScreen(onBack = { navController.popBackStack() }) }
-                    composable("dsp") { DspScreen(onBack = { navController.popBackStack() }) }
+                    composable("dsp", enterTransition = pushIn, exitTransition = pushOut,
+                        popEnterTransition = popIn, popExitTransition = popOut) {
+                        DspScreen(onBack = { navController.popBackStack() })
+                    }
                     composable("light_sync") { LightSyncScreen(onBack = { navController.popBackStack() }) }
                     composable("settings") { SettingsScreen(viewModel = playerVm) }
+                }
                 }
 
                 // In overlay mode, the mini player bar sits above the nav bar.

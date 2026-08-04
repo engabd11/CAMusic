@@ -269,14 +269,17 @@ fun Modifier.dismissOnDragDown(onDismiss: () -> Unit, threshold: Dp = 110.dp): M
                         if (offsetY.value > thresholdPx) {
                             // Slide it the rest of the way out before the caller drops
                             // it, so the sheet leaves rather than blinking away.
-                            offsetY.animateTo(height, tween(180))
+                            offsetY.animateTo(height, Motion.spatial())
                             onDismiss()
                         } else {
-                            offsetY.animateTo(0f, tween(180))
+                            // Springs back rather than easing back: the sheet has just
+                            // been thrown by a finger, and a spring is what carries the
+                            // momentum of that gesture into the settle.
+                            offsetY.animateTo(0f, Motion.spatial())
                         }
                     }
                 },
-                onDragCancel = { scope.launch { offsetY.animateTo(0f, tween(180)) } },
+                onDragCancel = { scope.launch { offsetY.animateTo(0f, Motion.spatial()) } },
                 onVerticalDrag = { change, dy ->
                     change.consume()
                     scope.launch { offsetY.snapTo((offsetY.value + dy).coerceAtLeast(0f)) }
@@ -480,7 +483,9 @@ fun QualityPill(
 @Composable
 fun PlayButton(playing: Boolean, size: Dp = 68.dp, onClick: () -> Unit) {
     val accent = LocalAccent.current
-    val fill by animateColorAsState(accent, tween(400), label = "playFill")
+    // A colour, so an effects spec — a spatial one would overshoot the target hue on
+    // the way in and read as a flicker as the album accent changes.
+    val fill by animateColorAsState(accent, Motion.effects(), label = "playFill")
     Box(Modifier.size(size)) {
         CastGlow(fill, CircleShape, blurRadius = 26.dp, alpha = 0.55f, offsetY = 10.dp)
         Box(
