@@ -79,7 +79,16 @@ class MaDiscovery(private val context: Context) {
                 Log.d(TAG, "Service found: ${serviceInfo.serviceName}")
                 if (serviceInfo.serviceName !in pendingResolves) {
                     pendingResolves.add(serviceInfo.serviceName)
-                    nsdManager.resolveService(serviceInfo, resolveListener!!)
+                    // Guard against a null listener: onStartDiscoveryFailed clears
+                    // _isDiscovering but doesn't null out resolveListener, and a
+                    // service-found callback could still be in flight before the
+                    // discovery listener itself is torn down.
+                    val listener = resolveListener
+                    if (listener != null) {
+                        nsdManager.resolveService(serviceInfo, listener)
+                    } else {
+                        pendingResolves.remove(serviceInfo.serviceName)
+                    }
                 }
             }
 

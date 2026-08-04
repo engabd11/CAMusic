@@ -945,8 +945,14 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         val pending = tracks.filterNot { downloadManager.isDownloaded(it.itemId) }
         if (pending.isEmpty()) { _toast.tryEmit("Already downloaded"); return }
 
-        // Wi-Fi-only guard — skip downloads on mobile data when the setting is on.
-        if (settings.downloadWifiOnly.first()) {
+        // Wi-Fi-only and storage cap are enforced inside downloadAll now,
+        // so the check happens per-file at the moment it starts, not just once
+        // at the queue level. Keeping a pre-check here for the toast: telling
+        // the user "Wi-Fi only" before kicking off 20 silent failures is better
+        // UX than 20 failed rows.
+        val wifiOnly = settings.downloadWifiOnly.first()
+        val storageCap = settings.downloadStorageCapMb.first()
+        if (wifiOnly) {
             val cm = getApplication<Application>().getSystemService(android.content.Context.CONNECTIVITY_SERVICE)
                     as android.net.ConnectivityManager
             val isWifi = cm.activeNetwork?.let { net ->
@@ -959,7 +965,12 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             if (pending.size == 1) "Downloading ${pending.first().name}…"
             else "Downloading ${pending.size} tracks…"
         )
-        val ok = downloadManager.downloadAll(pending, urlFor = { sc.downloadUrl(it.itemId) })
+        val ok = downloadManager.downloadAll(
+            pending,
+            urlFor = { sc.downloadUrl(it.itemId) },
+            wifiOnly = wifiOnly,
+            storageCapMb = storageCap,
+        )
         _toast.tryEmit(
             when {
                 ok == pending.size && ok == 1 -> "Downloaded ${pending.first().name}"

@@ -47,6 +47,7 @@ class AppSettings(private val context: Context) {
         private val RADIO_MODE = booleanPreferencesKey("radio_mode")            // MA keeps the music going past the queue
         private val STATIC_DELAY_MS = stringPreferencesKey("sendspin_static_delay_ms") // per-player latency trim
         private val REPLAY_GAIN = stringPreferencesKey("replay_gain_mode")      // off | track | album
+    private val KEEP_ALIVE_ANNOUNCEMENTS = booleanPreferencesKey("keep_alive_announcements") // persist connection for TTS
 
         /**
          * How far the sync trim can be pushed either way. Matches the range Music
@@ -155,6 +156,19 @@ class AppSettings(private val context: Context) {
 
     /** Only download over Wi-Fi, skip on mobile data. */
     val downloadWifiOnly: Flow<Boolean> = context.dataStore.data.map { it[DOWNLOAD_WIFI_ONLY] ?: false }
+
+    /**
+     * Whether to keep the Sendspin connection alive in the background for HA TTS
+     * announcements. Default true — the connection service holds a wake lock and
+     * wifi lock to receive announcements even while the app is backgrounded. Users
+     * who don't use TTS can disable this to save battery; the connection will only
+     * run during active playback and stop when idle.
+     */
+    val keepAliveForAnnouncements: Flow<Boolean> = context.dataStore.data.map { it[KEEP_ALIVE_ANNOUNCEMENTS] ?: true }
+
+    suspend fun setKeepAliveForAnnouncements(value: Boolean) {
+        context.dataStore.edit { it[KEEP_ALIVE_ANNOUNCEMENTS] = value }
+    }
 
     /**
      * Radio mode: MA keeps generating similar tracks once the queue runs out.

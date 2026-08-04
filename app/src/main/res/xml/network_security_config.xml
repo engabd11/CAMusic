@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!--
+      Cleartext is only for LAN servers: Music Assistant, Navidrome, and Home
+      Assistant all run on the local network and almost never have TLS. Public
+      hosts must use HTTPS — the default for anything not listed below.
+    -->
+    <domain-config cleartextTrafficPermitted="true">
+        <!-- Private IPv4 ranges (RFC 1918) -->
+        <domain includeSubdomains="false">10.0.0.0/8</domain>
+        <domain includeSubdomains="false">172.16.0.0/12</domain>
+        <domain includeSubdomains="false">192.168.0.0/16</domain>
+        <!-- Loopback -->
+        <domain includeSubdomains="false">localhost</domain>
+        <!-- Tailscale / mesh .local mDNS hostnames -->
+        <domain includeSubdomains="true">local</domain>
+    </domain-config>
+    <!-- Everything else: cleartext denied (HTTPS only). -->
+</network-security-config>

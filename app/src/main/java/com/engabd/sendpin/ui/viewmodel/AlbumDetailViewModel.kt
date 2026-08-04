@@ -228,7 +228,11 @@ class AlbumDetailViewModel(
         if (pending.isEmpty()) { _toast.tryEmit("Already downloaded"); return }
         viewModelScope.launch {
             _toast.tryEmit("Downloading ${pending.size} tracks…")
-            val ok = downloads.downloadAll(pending, urlFor = { sc.downloadUrl(it.itemId) })
+            val ok = downloads.downloadAll(
+                pending,
+                urlFor = { sc.downloadUrl(it.itemId) },
+                wifiOnly = settings.downloadWifiOnly.first(),
+                storageCapMb = settings.downloadStorageCapMb.first(),
             _toast.tryEmit(
                 when (ok) {
                     pending.size -> "Downloaded ${_album.value?.name ?: "album"}"

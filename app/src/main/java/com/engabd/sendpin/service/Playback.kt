@@ -219,6 +219,31 @@ class Playback(private val app: Context) {
             if (base.isNotBlank() && user.isNotBlank()) connectToServer(sendspinUrlFrom(base))
             _bootChecked.value = true
         }
+        // Wire the app lifecycle observer for warm reconnect and toggleable
+        // background connection. The observer is registered on SendpinApp; here
+        // we give it the callbacks that control the connection.
+        AppLifecycleObserver.register(app).let { observer ->
+            observer.onBackground = { keepAlive ->
+                if (_connected.value) {
+                    // Warm goodbye: "restart" tells MA to hold the player slot for
+                    // ~30 seconds. "user_request" drops it immediately.
+                    disconnect(
+                        stopService = !keepAlive,
+                        reason = if (keepAlive) "restart" else "user_request",
+                    )
+                }
+            }
+            observer.onForeground = {
+                // Only reconnect if we were connected before backgrounding and
+                // aren't already. Run in a scope because the check reads DataStore.
+                scope.launch {
+                    if (!_connected.value && settings.maBaseUrl.first().isNotBlank()) {
+                        val base = settings.maBaseUrl.first()
+                        if (base.isNotBlank()) connectToServer(sendspinUrlFrom(base))
+                    }
+                }
+            }
+        }
         // Project the playhead between `server/state` messages, so the bar moves
         // smoothly instead of stepping whenever the server happens to speak.
         //
@@ -610,13 +635,6 @@ class Playback(private val app: Context) {
         )
     }
 
-    /**
-     * Bring the player back up, optionally under a new [name].
-     *
-     * The name is saved *here*, before the connection is opened, because the hello is
-     * the only place it's announced — a rename that lands after the socket is up is a
-     * rename the server never hears about.
-     */
     /**
      * Bring the player up under [name], registering afresh if the name has changed.
      *

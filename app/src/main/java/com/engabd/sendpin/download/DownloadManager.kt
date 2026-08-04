@@ -1,6 +1,8 @@
 package com.engabd.sendpin.download
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import com.engabd.sendpin.audio.LocalTrack
 import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.ma.MaItem
@@ -62,7 +64,7 @@ data class DownloadJob(
  * is read from.
  */
 class DownloadManager(
-    context: Context,
+    private val context: Context,
     private val http: OkHttpClient = OkHttpClient(),
 ) {
     private val json = Json { ignoreUnknownKeys = true; prettyPrint = false }
@@ -77,6 +79,31 @@ class DownloadManager(
     private val _jobs = MutableStateFlow<List<DownloadJob>>(emptyList())
     /** Downloads currently running or failed, so the library can show progress. */
     val jobs: StateFlow<List<DownloadJob>> = _jobs
+
+    /** Whether the device is currently on Wi-Fi (or Ethernet). */
+    private fun isOnWifi(context: Context): Boolean {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return true  // if we can't check, don't block
+        val info = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
+        return info.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+            info.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+    }
+
+    /**
+     * Enforce the storage cap: delete the oldest downloaded tracks until the total
+     * is under the cap (in MB). A cap of 0 means unlimited. Called after every
+     * successful download and on app start.
+     */
+    private fun enforceStorageCap(capMb: Int) {
+        if (capMb <= 0) return
+        val capBytes = capMb.toLong() * 1_048_576L
+        while (bytesUsed() > capBytes && _downloads.value.isNotEmpty()) {
+            val oldest = _downloads.value.minByOrNull {
+                runCatching { File(it.filePath).lastModified() }.getOrDefault(Long.MAX_VALUE)
+            } ?: return
+            delete(oldest.id)
+        }
+    }
 
     fun isDownloaded(id: String): Boolean = _downloads.value.any { it.id == id }
     fun localPath(id: String): String? = _downloads.value.firstOrNull { it.id == id }?.filePath
@@ -119,9 +146,23 @@ class DownloadManager(
     /**
      * Fetch [url] (the original file) to local storage and index [item].
      * [coverUrl] is cached beside it when given, so offline playback keeps its art.
+     *
+     * [wifiOnly] and [storageCapMb] are enforced here rather than at the call site:
+     * a Wi-Fi check has to happen at the moment the download starts (not when it
+     * was queued), and the storage cap has to be checked after each file lands.
      */
-    suspend fun download(item: MaItem, url: String, coverUrl: String? = null): Boolean = withContext(Dispatchers.IO) {
+    suspend fun download(
+        item: MaItem,
+        url: String,
+        coverUrl: String? = null,
+        wifiOnly: Boolean = false,
+        storageCapMb: Int = 0,
+    ): Boolean = withContext(Dispatchers.IO) {
         if (isDownloaded(item.itemId)) return@withContext true
+        if (wifiOnly && !isOnWifi(context)) {
+            // Mark as failed so the UI shows why, rather than silently skipping.
+            fail(item)
+        }
         putJob(DownloadJob(item.itemId, item.name, item.subtitle, 0f))
         try {
             val file = File(dir, "${item.itemId.hashCode()}.audio")
@@ -164,6 +205,7 @@ class DownloadManager(
             _downloads.value = list
             saveIndex(list)
             clearJob(item.itemId)
+            enforceStorageCap(storageCapMb)
             true
         } catch (_: Exception) {
             fail(item)
@@ -175,17 +217,22 @@ class DownloadManager(
      * house wifi pulling twenty FLACs at once just makes every one of them slow, and
      * the progress rows become unreadable.
      *
+     * [wifiOnly] and [storageCapMb] are passed through to each [download] call so
+     * the check happens at the moment each file starts, not just the first.
+     *
      * Returns how many landed. Already-downloaded tracks count as successes.
      */
     suspend fun downloadAll(
         items: List<MaItem>,
         urlFor: (MaItem) -> String,
         coverFor: (MaItem) -> String? = { it.image },
+        wifiOnly: Boolean = false,
+        storageCapMb: Int = 0,
     ): Int {
         var ok = 0
         for (item in items) {
             if (item.mediaType != "track") continue
-            if (download(item, urlFor(item), coverFor(item))) ok++
+            if (download(item, urlFor(item), coverFor(item), wifiOnly, storageCapMb)) ok++
         }
         return ok
     }
