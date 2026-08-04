@@ -638,6 +638,10 @@ class Playback(private val app: Context) {
     /**
      * Bring the player up under [name], registering afresh if the name has changed.
      *
+     * The name is saved *here*, before the connection is opened, because the hello
+     * is the only place it's announced — a rename that lands after the socket is up
+     * is a rename the server never hears about.
+     *
      * Music Assistant keys a Sendspin player on its `client_id` and keeps the name it
      * was **first registered under** — the protocol has no rename message, and the
      * official app has no rename call at all, because there a name is chosen before
