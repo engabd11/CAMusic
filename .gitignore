@@ -8,7 +8,9 @@
 .externalNativeBuild
 .cxx
 local.properties
-/app/build
+# Every module's build dir, not just the app's — /app/build alone let the
+# baselineprofile module's intermediates into a commit.
+build/
 /app/release
 *.apk
 *.aab

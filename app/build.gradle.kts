@@ -5,6 +5,7 @@ plugins {
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.serialization")
     id("org.jetbrains.kotlin.plugin.compose")
+    id("androidx.baselineprofile")
 }
 
 android {
@@ -96,6 +97,10 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("androidx.palette:palette-ktx:1.0.0")
+    // Installs the baseline profile at first run. Without it the generated profile is
+    // packaged and then ignored, so this is not optional dressing — it is the half that
+    // does the work on device.
+    implementation("androidx.profileinstaller:profileinstaller:1.4.1")
     implementation("androidx.datastore:datastore-preferences:1.2.1")
     implementation("androidx.media:media:1.7.0")
     // The Navidrome/offline player. MediaPlayer could not do gapless reliably

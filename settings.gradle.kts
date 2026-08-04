@@ -17,3 +17,6 @@ dependencyResolutionManagement {
 
 rootProject.name = "sendpin"
 include(":app")
+// Generates the startup/scroll baseline profile. Never built by a normal assemble —
+// see baselineprofile/build.gradle.kts for how to run it.
+include(":baselineprofile")
