@@ -52,6 +52,14 @@ fun LightSyncScreen(onBack: () -> Unit = {}, viewModel: LightSyncViewModel = vie
     val prefillUrl by viewModel.haUrl.collectAsState()
     val prefillToken by viewModel.haToken.collectAsState()
 
+    // Which transport is active — read once. In direct mode the "Follow
+    // player" section is hidden (there is only one speaker: this phone).
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val lsMode by produceState(initialValue = "ha") {
+        value = com.engabd.sendpin.data.AppSettings(context.applicationContext).lightSyncMode.first()
+    }
+    val isDirect = lsMode == "direct"
+
     val enabled = area?.enabled == true
 
     Box(Modifier.fillMaxSize().background(Ink)) {
@@ -119,15 +127,19 @@ fun LightSyncScreen(onBack: () -> Unit = {}, viewModel: LightSyncViewModel = vie
                     }
                 }
 
-                // Which player this area follows ("" = Auto — whatever is playing).
-                Spacer(Modifier.height(22.dp))
-                SectionLabel("Follow player")
-                Spacer(Modifier.height(10.dp))
-                PlayerRow(
-                    selected = a.mediaPlayer,
-                    players = mediaPlayers,
-                    onSelect = viewModel::setFollowPlayer,
-                )
+                // Which player this area follows ("Auto" — whatever is playing).
+                // Hidden in direct mode: there is only one speaker (this phone),
+                // so there is nothing to choose.
+                if (!isDirect) {
+                    Spacer(Modifier.height(22.dp))
+                    SectionLabel("Follow player")
+                    Spacer(Modifier.height(10.dp))
+                    PlayerRow(
+                        selected = a.mediaPlayer,
+                        players = mediaPlayers,
+                        onSelect = viewModel::setFollowPlayer,
+                    )
+                }
 
                 val modeOptions = a.modeOptions.ifEmpty { ModeFallback }
                 Spacer(Modifier.height(22.dp))
