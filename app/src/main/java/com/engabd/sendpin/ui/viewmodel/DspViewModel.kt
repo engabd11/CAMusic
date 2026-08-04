@@ -193,6 +193,10 @@ class DspViewModel(app: Application) : AndroidViewModel(app) {
         _config.value = _config.value?.copy(outputGain = gain)
     }
 
+    fun setOutputLimiter(on: Boolean) {
+        _config.value = _config.value?.copy(outputLimiter = on)
+    }
+
     // ── Parametric EQ ─────────────────────────────────────────────────────
 
     /** The first parametric EQ filter in the chain, or a fresh one if none. */

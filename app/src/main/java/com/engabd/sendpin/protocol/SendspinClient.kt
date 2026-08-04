@@ -10,6 +10,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import com.engabd.sendpin.data.LanOnlyCleartext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -44,6 +45,7 @@ class SendspinClient(
     val clock = ClockSync()
 
     private val httpClient = OkHttpClient.Builder()
+        .addInterceptor(LanOnlyCleartext)
         .readTimeout(0, TimeUnit.MILLISECONDS)   // stream: no read timeout
         .pingInterval(5, TimeUnit.SECONDS)       // keepalive
         .build()

@@ -13,6 +13,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+import com.engabd.sendpin.data.LanOnlyCleartext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
@@ -65,7 +66,9 @@ data class DownloadJob(
  */
 class DownloadManager(
     private val context: Context,
-    private val http: OkHttpClient = OkHttpClient(),
+    private val http: OkHttpClient = OkHttpClient.Builder()
+        .addInterceptor(LanOnlyCleartext)
+        .build(),
 ) {
     private val json = Json { ignoreUnknownKeys = true; prettyPrint = false }
     private val serializer = ListSerializer(DownloadedTrack.serializer())

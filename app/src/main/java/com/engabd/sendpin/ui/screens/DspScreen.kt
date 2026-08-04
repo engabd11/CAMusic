@@ -414,17 +414,45 @@ private fun ToneSection(
 private fun GainSection(
     inputGain: Float,
     outputGain: Float,
+    outputLimiter: Boolean,
     accent: Color,
     onInput: (Float) -> Unit,
     onOutput: (Float) -> Unit,
+    onLimiter: (Boolean) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         GainSlider("Input gain", inputGain, accent, onInput)
         GainSlider("Output gain", outputGain, accent, onOutput)
-        Text(
-            "The output limiter prevents clipping after positive gain - enabled by default in MA.",
-            color = TextFaint, fontFamily = AppFont, fontSize = 11.sp,
-        )
+        // The last stage of MA's chain, after output gain. This used to be a line of
+        // prose saying the limiter existed and was on by default — true, and no help
+        // at all to someone who wanted it off, since the app then neither read nor
+        // sent the field.
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+                Text(
+                    "Output limiter",
+                    color = TextPrimary, fontFamily = AppFont,
+                    fontWeight = FontWeight.Bold, fontSize = 14.sp,
+                )
+                Text(
+                    "Catches clipping after positive gain. Leave it on unless you are " +
+                        "feeding something that limits downstream.",
+                    color = TextFaint, fontFamily = AppFont, fontSize = 11.sp,
+                )
+            }
+            Switch(
+                checked = outputLimiter,
+                onCheckedChange = onLimiter,
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = accent, checkedTrackColor = accent.a(0.3f),
+                    uncheckedThumbColor = TextMuted, uncheckedTrackColor = Glass,
+                ),
+            )
+        }
     }
 }
 
@@ -792,9 +820,11 @@ internal fun ColumnScope.DspBody(viewModel: DspViewModel, accent: Color) {
                         GainSection(
                             inputGain = cfg.inputGain,
                             outputGain = cfg.outputGain,
+                            outputLimiter = cfg.outputLimiter,
                             accent = accent,
                             onInput = { viewModel.setInputGain(it) },
                             onOutput = { viewModel.setOutputGain(it) },
+                            onLimiter = { viewModel.setOutputLimiter(it) },
                         )
                     }
                 }

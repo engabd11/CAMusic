@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import okhttp3.HttpUrl
 import okhttp3.Interceptor
+import com.engabd.sendpin.data.LanOnlyCleartext
 import okhttp3.OkHttpClient
 import okhttp3.Response
 import java.io.IOException
@@ -159,6 +160,7 @@ class SendpinApp : Application(), ImageLoaderFactory {
             } else res
         }
         val http = OkHttpClient.Builder()
+        .addInterceptor(LanOnlyCleartext)
             .addInterceptor(authInterceptor)
             .addInterceptor(proxyInterceptor)
             .addNetworkInterceptor(cacheInterceptor)

@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.*
+import com.engabd.sendpin.data.LanOnlyCleartext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -49,6 +50,7 @@ class MaApiClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
     enum class State { DISCONNECTED, CONNECTING, CONNECTED, ERROR }
 
     private val http = OkHttpClient.Builder()
+        .addInterceptor(LanOnlyCleartext)
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .pingInterval(30, TimeUnit.SECONDS)
         .build()

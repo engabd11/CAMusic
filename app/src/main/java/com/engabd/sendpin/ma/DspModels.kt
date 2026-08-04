@@ -119,6 +119,15 @@ data class DspConfig(
     val inputGain: Float = 0f,
     val outputGain: Float = 0f,
     val filters: List<DspFilter> = emptyList(),
+    /**
+     * MA's final stage, after output gain.
+     *
+     * Defaults to **true** to match the server. A config parsed from a response that
+     * omits the field comes from an MA where the limiter was simply always on, and
+     * reading that absence as "off" would quietly disable clipping protection the
+     * next time the app saved the config back.
+     */
+    val outputLimiter: Boolean = true,
 )
 
 /**
@@ -156,7 +165,8 @@ object DspParse {
                 }
             }
         }
-        return DspConfig(enabled, inputGain, outputGain, filters)
+        val outputLimiter = (o["output_limiter"] as? JsonPrimitive)?.booleanOrNull ?: true
+        return DspConfig(enabled, inputGain, outputGain, filters, outputLimiter)
     }
 
     fun preset(o: JsonObject): DspPreset? {
@@ -209,6 +219,7 @@ object DspParse {
         put("enabled", jBool(config.enabled))
         put("input_gain", jNum(config.inputGain))
         put("output_gain", jNum(config.outputGain))
+        put("output_limiter", jBool(config.outputLimiter))
         if (config.filters.isNotEmpty()) {
             put("filters", kotlinx.serialization.json.JsonArray(config.filters.map { filterJson(it) }))
         }

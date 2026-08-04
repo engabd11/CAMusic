@@ -7,6 +7,7 @@ import com.engabd.sendpin.ma.MaSearchResults
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.*
+import com.engabd.sendpin.data.LanOnlyCleartext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.IOException
@@ -114,6 +115,7 @@ class SubsonicClient(
          */
         private val shared: OkHttpClient by lazy {
             OkHttpClient.Builder()
+        .addInterceptor(LanOnlyCleartext)
                 .connectTimeout(10, TimeUnit.SECONDS)
                 .readTimeout(20, TimeUnit.SECONDS)
                 .build()

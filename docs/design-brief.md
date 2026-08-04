@@ -1,8 +1,8 @@
-# Sendspin (Android) — Design Brief
+# CAMusic (Android) — Design Brief
 
 ## 1. What this is
 
-**Sendspin** is a native Android **music player** for **Music Assistant** (and a direct
+**CAMusic** is a native Android **music player** for **Music Assistant** (and a direct
 **Navidrome/OpenSubsonic** mode). The phone becomes a Sendspin *player* — Music Assistant streams
 lossless audio to it — and it's also a full on-device controller: browse and search your library,
 play, and **download tracks for offline**. It's part of a larger "Sendspin" ecosystem whose Home

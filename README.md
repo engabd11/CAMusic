@@ -1,4 +1,4 @@
-# CAMusic Sendspin Client for Android.
+# CAMusic - a Sendspin client for Android
 
 **Your phone as a Music Assistant speaker, a remote for every other speaker in the
 house, and a standalone player for your own library when the servers are off.**
