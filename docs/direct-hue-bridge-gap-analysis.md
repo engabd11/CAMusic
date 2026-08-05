@@ -1,4 +1,4 @@
-# Direct Light Sync Gap Analysis: syncoV2 vs CAMusic
+# Direct Light Sync: Complete Feature Port Plan
 
 ## Executive Summary
 
@@ -6,241 +6,309 @@ syncoV2 (Home Assistant integration) is a **production-complete** music visualiz
 
 **Key architectural difference**: syncoV2 uses **scheduled playback** — it pre-analyzes entire tracks, builds a beat grid with section markers (verse/chorus/drop), and schedules lighting events ahead of time. CAMusic's direct mode is purely **reactive** — it analyzes audio frames in real-time and responds to what just happened, not what's coming.
 
+**Goal**: Port **100% of syncoV2's features** to CAMusic direct mode. No shortcuts, no "good enough" — the Android app should match or exceed the HA integration's output quality.
+
 ---
 
-## What's Missing from CAMusic Direct Mode
+## Complete Feature List (All Must Port)
 
-### 1. **Tempo PLL & Beat Grid Locking** (HIGH PRIORITY)
+### Phase 1: Core Musical Intelligence (Days 1-4)
 
-**syncoV2**: Runs a phase-locked loop that locks onto the track's tempo grid. Once locked, it knows when the next beat/downbeat/bar is *before* it happens. This enables:
-- Firing wavefronts that peak exactly on the beat (not reacting after)
-- Scheduling color jumps to land on bar boundaries
-- Anticipating drops and builds
+These are the **foundational** features that unlock everything else. Without tempo PLL and beat grid locking, scheduled wavefronts and structure-aware rendering are impossible.
 
-**CAMusic**: No tempo detection, no beat grid. Every reaction is retrospective — the beat arrived, the analyzer detected it, the lights respond ~100-200ms later.
-
-**Files to port**: 
+#### 1.1 Tempo PLL + Beat Grid Locking
+**syncoV2 files**:
 - `custom_components/hue_music_sync/audio/tempo.py` (~600 lines)
 - `custom_components/hue_music_sync/timing.py` (~200 lines)
 
+**CAMusic targets**:
+- `app/src/main/java/com/engabd/sendpin/audio/TempoTracker.kt` (new)
+- `app/src/main/java/com/engabd/sendpin/audio/BeatGrid.kt` (new)
+
+**What it does**:
+- Detects BPM from real-time audio (SuperFlux onset stream + autocorrelation)
+- Locks a phase-locked loop to the beat grid
+- Predicts next beat/downbeat/bar positions milliseconds ahead
+- Enables scheduled (not reactive) lighting events
+
+**Why it matters**: This is the single biggest difference between "lights flash after sound" and "lights perform with music." syncoV2's scheduled wavefronts depend entirely on this.
+
+**Effort**: 2 days
+
 ---
 
-### 2. **Song Structure Detection** (HIGH PRIORITY)
+#### 1.2 Scheduled Beat Wavefronts
+**syncoV2 files**:
+- `custom_components/hue_music_sync/effects/spatial.py` (~400 lines, wavefront section)
 
-**syncoV2**: Identifies verse, chorus, build, drop, breakdown sections by analyzing energy contours, beat density, and spectral balance across the entire track. The engine uses this to:
-- Boost brightness on drops
-- Desaturate colors during builds (tension)
-- Apply different intensity rungs per section (Auto mode)
+**CAMusic targets**:
+- `app/src/main/java/com/engabd/sendpin/hue/SpatialWavefronts.kt` (extend existing)
 
-**CAMusic**: No structure awareness. Every moment is treated identically — a drop and a verse get the same reaction if they have similar instantaneous loudness.
+**What it does**:
+- Launches wavefronts so they peak across the room exactly on the beat
+- Accounts for bridge pipeline latency (~100ms)
+- Uses actual lamp positions from entertainment area
+- Bass waves from one side, highs from the other
 
-**Files to port**:
+**Why it matters**: Without scheduling, wavefronts sweep continuously. With tempo PLL, they land on musical time — the room feels like it's dancing *with* the music.
+
+**Effort**: 1 day (depends on 1.1)
+
+---
+
+#### 1.3 Auto Intensity Picker
+**syncoV2 files**:
+- `custom_components/hue_music_sync/audio/liveliness.py` (~300 lines)
+- `custom_components/hue_music_sync/const.py` (rung logic)
+
+**CAMusic targets**:
+- `app/src/main/java/com/engabd/sendpin/audio/IntensityPicker.kt` (new)
+- `app/src/main/java/com/engabd/sendpin/hue/SyncoEngine.kt` (extend mode params)
+
+**What it does**:
+- Analyzes song character: tempo, beat density, bass weight, dynamic range
+- Assigns a "rung band" — which intensity levels the song can reach
+- A lofi track tops out at Medium; a metal track can reach Extreme
+- Within that band, moment-to-moment energy moves it up/down
+
+**Why it matters**: Prevents a chill track from looking boring (stuck on Subtle) and a banger from being overwhelming. Makes the room feel like it "understands" the song.
+
+**Effort**: 1 day
+
+---
+
+### Phase 2: Song Awareness (Days 5-7)
+
+Once tempo is locked, the engine can recognize song structure and respond to musical arcs.
+
+#### 2.1 Song Structure Detection
+**syncoV2 files**:
 - `custom_components/hue_music_sync/audio/structure.py` (~400 lines)
 - `custom_components/hue_music_sync/audio/phrase.py` (~200 lines)
 
----
+**CAMusic targets**:
+- `app/src/main/java/com/engabd/sendpin/audio/SongStructure.kt` (new)
+- `app/src/main/java/com/engabd/sendpin/audio/PhraseDetector.kt` (new)
 
-### 3. **Auto Intensity Picker** (MEDIUM PRIORITY)
+**What it does**:
+- Identifies verse, chorus, build, drop, breakdown sections
+- Analyzes energy contours, beat density, spectral balance
+- Detects phrase boundaries (typically 4 or 8 bars)
+- Triggers section-aware rendering (drop boosts, build desaturation)
 
-**syncoV2**: Analyzes the track's character (tempo, beat density, bass weight, dynamic range) and assigns it a "rung band" — which intensity levels it can reach. A lofi track tops out at Medium; a metal track can reach Extreme. Within that band, the song's moment-to-moment energy moves it up/down.
+**Why it matters**: Makes long songs feel like a journey, not a loop. The show has arcs, not just moments.
 
-**CAMusic**: Manual intensity selection only. User picks Subtle/Medium/High/Intense/Extreme and it stays there.
-
-**Why it matters**: Auto prevents a chill track from looking boring (stuck on Subtle) and a banger from being overwhelming (stuck on Extreme). It's the difference between "the lights match the song's vibe" and "the lights are just loud."
-
-**Files to port**:
-- `custom_components/hue_music_sync/audio/liveliness.py` (~300 lines)
-- `custom_components/hue_music_sync/coordinator.py::AreaSettings::auto_intensity` logic
-
----
-
-### 4. **Scheduled Beat Wavefronts** (HIGH PRIORITY)
-
-**syncoV2**: When a beat is detected in analysis, it's scheduled to fire at the exact musical position. The wavefront renderer calculates when to launch the wave so it peaks across the room at the beat timestamp, accounting for:
-- Bridge pipeline latency (~100ms)
-- Room acoustic delay
-- User timing offset
-
-**CAMusic**: Instant reaction. Beat detected → render frame → send. The wave (if enabled) sweeps continuously, not locked to musical time.
-
-**Files to port**:
-- `custom_components/hue_music_sync/effects/spatial.py` (~400 lines) — wavefront math
-- `custom_components/hue_music_sync/audio/playback_clock.py` (~250 lines) — scheduled event queue
+**Effort**: 1.5 days
 
 ---
 
-### 5. **Pre-Analyzed Track Maps** (MEDIUM PRIORITY)
-
-**syncoV2**: Can pre-analyze entire library tracks (via Navidrome/Music Assistant integration). Stores:
-- Beat timestamps (every kick, snare, downbeat)
-- Section boundaries (verse starts at 0:45, chorus at 1:15, drop at 2:30)
-- Tempo curve (BPM changes)
-- Recommended intensity rung per section
-
-During playback, uses this map instead of real-time analysis. Benefits:
-- Perfect accuracy from first beat (no 20-second "settling" period)
-- Zero CPU during playback (just reading timestamps)
-- Works with any player (even ones that can't provide live audio tap)
-
-**CAMusic**: Real-time analysis only. First 20 seconds of every track are "warmup" while the analyzer calibrates.
-
-**Files to port**:
+#### 2.2 Pre-Analyzed Track Maps (Library Integration)
+**syncoV2 files**:
 - `custom_components/hue_music_sync/library/base.py` (~500 lines)
 - `custom_components/hue_music_sync/library/ma_backend.py` (~300 lines)
 - `custom_components/hue_music_sync/library/subsonic_backend.py` (~400 lines)
 
----
+**CAMusic targets**:
+- `app/src/main/java/com/engabd/sendpin/library/TrackAnalyzer.kt` (new)
+- `app/src/main/java/com/engabd/sendpin/ma/MaRepository.kt` (extend)
+- `app/src/main/java/com/engabd/sendpin/subsonic/SubsonicClient.kt` (extend)
 
-### 6. **Advanced Tunables UI** (LOW PRIORITY)
+**What it does**:
+- Pre-analyzes entire library tracks (via Navidrome/Music Assistant)
+- Stores: beat timestamps, section boundaries, tempo curve, recommended intensity rung
+- During playback, uses this map instead of real-time analysis
+- Benefits: perfect accuracy from first beat, zero CPU during playback
 
-**syncoV2**: Card has "Advanced" toggle revealing live tunable knobs:
-- Bass gain (how much kicks affect bass-role lights)
-- Wave speed
-- Color saturation
-- Beat threshold
-- etc. (12 total)
+**Why it matters**: No 20-second "warmup" while analyzer calibrates. Works with any player (even ones that can't provide live audio tap).
 
-**CAMusic**: Fixed parameters per intensity mode. No live adjustment.
-
-**Files to port**:
-- `custom_components/hue_music_sync/const.py::TUNABLE_DEFS`
-- UI: Add advanced section to `DirectLightSyncScreen` similar to HA screen
+**Effort**: 2 days (includes backend integration)
 
 ---
 
-### 7. **Movies & Fireworks Effects** (LOW PRIORITY)
+### Phase 3: Polish & Features (Days 8-10)
 
-**syncoV2**: Three effects:
-- **Music**: Full beat choreography (default)
-- **Movies**: Calm, no flashing, brightness follows energy, warm color drift
-- **Fireworks**: Bursts on big beats with rapid fade
+These complete the experience — alternate effects, better color extraction, live tuning.
 
-**CAMusic**: Only Music effect implemented. `SyncEffect` enum has all three, but `SyncoEngine.render()` only has music path.
-
-**Files to port**:
+#### 3.1 Movies & Fireworks Effects
+**syncoV2 files**:
 - `custom_components/hue_music_sync/effects/fireworks.py` (~150 lines)
-- `custom_components/hue_music_sync/effects/modes.py::render_movies` (~100 lines)
+- `custom_components/hue_music_sync/effects/modes.py` (render_movies section, ~100 lines)
+
+**CAMusic targets**:
+- `app/src/main/java/com/engabd/sendpin/hue/FireworksEffect.kt` (new)
+- `app/src/main/java/com/engabd/sendpin/hue/SyncoEngine.kt` (extend render function)
+
+**What it does**:
+- **Movies**: Calm, no flashing, brightness follows energy, warm color drift
+- **Fireworks**: Bursts on big beats with rapid fade-out
+
+**Why it matters**: Alternate modes for different moods. Movies for background ambiance, Fireworks for parties.
+
+**Effort**: 0.5 days
 
 ---
 
-### 8. **Album Art Color Extraction (V2 with population weights)** (MEDIUM PRIORITY)
-
-**syncoV2**: Album art v2 extracts colors with population weights — a 90% green / 10% red cover spends 90% of time green, 10% red. CAMusic's `AlbumPalette.kt` does k-means extraction but treats all colors equally.
-
-**Files to port**:
+#### 3.2 Album Art Color Extraction V2 (Population Weights)
+**syncoV2 files**:
 - `custom_components/hue_music_sync/color/palette_v2.py` (~200 lines)
 
----
+**CAMusic targets**:
+- `app/src/main/java/com/engabd/sendpin/ui/design/AlbumPaletteV2.kt` (extend existing)
 
-### 9. **Event Salience Precision Gates** (ALREADY PORTED ✓)
+**What it does**:
+- Extracts colors with population weights
+- A 90% green / 10% red cover spends 90% of time green, 10% red
+- Current k-means treats all colors equally
 
-**syncoV2**: Flash amplitude scales with absolute loudness (salience). Narrow onsets (vocals) are muted; broadband (drums) flash full. Width gate prevents sustained tones from triggering flashes.
+**Why it matters**: More faithful room theming. The lights actually match the cover's proportions.
 
-**CAMusic**: Already implemented in `SyncoEngine.kt` — `eventGates()` function with `salience_gamma`, `width_min`, `width_soft`.
-
----
-
-### 10. **Highlight Selection** (ALREADY PORTED ✓)
-
-**syncoV2**: Beats are ranked against recent ~24 beats. Only top 30% (configurable by mode) trigger full brightness flash.
-
-**CAMusic**: Already implemented — `beatHighlight()` in `SyncoEngine.kt`.
+**Effort**: 0.5 days
 
 ---
 
-## Implementation Priority
+#### 3.3 Advanced Tunables UI
+**syncoV2 files**:
+- `custom_components/hue_music_sync/const.py` (TUNABLE_DEFS)
+- Dashboard card advanced section
 
-### Phase 1: Core Musical Intelligence (2-3 days)
-1. **Tempo PLL** — enables scheduled wavefronts
-2. **Beat grid locking** — fire events on exact musical positions
-3. **Scheduled wavefronts** — spatial choreography that peaks on the beat
+**CAMusic targets**:
+- `app/src/main/java/com/engabd/sendpin/hue/SyncoEngine.kt` (add tunable params)
+- `app/src/main/java/com/engabd/sendpin/ui/screens/LightSyncScreen.kt` (add advanced section)
 
-These three are interdependent and transform the show from "reactive" to "choreographed."
+**What it does**:
+- Live tunable knobs: bass gain, wave speed, color saturation, beat threshold, etc. (12 total)
+- Scales active mode's render params during playback
 
-### Phase 2: Song Awareness (1-2 days)
-4. **Song structure detection** — verse/chorus/drop recognition
-5. **Auto intensity picker** — song-character-based rung selection
-6. **Pre-analyzed track maps** — library analysis + cached beat timestamps
+**Why it matters**: Power users can fine-tune the show. Most won't touch it, but it's essential for demos and calibration.
 
-### Phase 3: Polish & Features (1 day)
-7. **Movies/Fireworks effects** — alternate effect modes
-8. **Album art v2** — population-weighted color extraction
-9. **Advanced tunables UI** — live parameter adjustment
+**Effort**: 0.5 days (mostly UI)
 
 ---
 
-## UI Bug Fix: Vertical Text on Connected Bridge
-
-**Location**: `app/src/main/java/com/engabd/sendpin/ui/screens/LightSyncScreen.kt`, line 669
-
-**Issue**: When bridge is connected and entertainment areas are loaded, area names render vertically when the chip width is constrained.
-
-**Fix**: Add `overflow = TextOverflow.Ellipsis` to the `Text` in `AreaChip`:
-
-```kotlin
-Text(
-    name,
-    color = tint,
-    style = MaterialTheme.typography.labelLarge,
-    maxLines = 1,
-    overflow = TextOverflow.Ellipsis,  // ADD THIS
-)
-```
+#### 3.4 Event Salience Precision Gates ✓ ALREADY PORTED
+**Status**: Complete in `SyncoEngine.kt` — `eventGates()` function with `salience_gamma`, `width_min`, `width_soft`.
 
 ---
 
-## Code Quality Notes
-
-### syncoV2 Strengths to Emulate
-- **Extensive test coverage** — every module has unit tests
-- **Typed constants** — all magic numbers are named constants in `const.py`
-- **Docstrings** — every public function explains its purpose, inputs, outputs
-- **Gradual enhancement** — fallback paths (metadata → track map → live audio)
-
-### CAMusic Direct Mode Strengths
-- **Pure Kotlin** — no external dependencies (DTLS, FFT, analysis all ported)
-- **Real-time rendering** — 60 FPS render loop with measured `dt`
-- **Keepalive handling** — bridge alert polling + automatic reconnection
-
-### CAMusic Weaknesses to Address
-- **No tests** — `AudioAnalyzer`, `SyncoEngine`, `DtlsPskClient` have zero unit tests
-- **Magic numbers** — `FRAME_STALE_NANOS = 250_000_000L` should be a named constant with explanation
-- **No fallback** — if DTLS handshake fails, no graceful degradation
+#### 3.5 Highlight Selection ✓ ALREADY PORTED
+**Status**: Complete in `SyncoEngine.kt` — `beatHighlight()` function.
 
 ---
 
-## File-by-File Porting Guide
+## Implementation Timeline
+
+| Phase | Features | Days | Cumulative |
+|-------|----------|------|------------|
+| **Phase 1** | Tempo PLL, Beat Grid, Scheduled Wavefronts, Auto Intensity | 4 | 4 |
+| **Phase 2** | Song Structure, Pre-Analyzed Track Maps | 3.5 | 7.5 |
+| **Phase 3** | Movies/Fireworks, Album Art V2, Tunables UI | 1.5 | 9 |
+| **Buffer** | Testing, bug fixes, polish | 2-3 | 11-12 |
+
+**Total**: ~10-12 days for 100% feature parity
+
+---
+
+## File-by-File Porting Checklist
 
 ### Phase 1 Files
-```
-custom_components/hue_music_sync/audio/tempo.py          → app/src/main/java/com/engabd/sendpin/audio/TempoTracker.kt
-custom_components/hue_music_sync/audio/beat_grid.py      → app/src/main/java/com/engabd/sendpin/audio/BeatGrid.kt
-custom_components/hue_music_sync/timing.py               → app/src/main/java/com/engabd/sendpin/hue/TimingScheduler.kt
-custom_components/hue_music_sync/effects/spatial.py      → app/src/main/java/com/engabd/sendpin/hue/SpatialWavefronts.kt (extend existing)
-```
+- [ ] `audio/tempo.py` → `app/src/main/java/com/engabd/sendpin/audio/TempoTracker.kt`
+- [ ] `timing.py` → `app/src/main/java/com/engabd/sendpin/audio/TimingScheduler.kt`
+- [ ] `effects/spatial.py` (wavefront section) → `app/src/main/java/com/engabd/sendpin/hue/SpatialWavefronts.kt`
+- [ ] `audio/liveliness.py` → `app/src/main/java/com/engabd/sendpin/audio/IntensityPicker.kt`
 
 ### Phase 2 Files
-```
-custom_components/hue_music_sync/audio/structure.py      → app/src/main/java/com/engabd/sendpin/audio/SongStructure.kt
-custom_components/hue_music_sync/audio/liveliness.py     → app/src/main/java/com/engabd/sendpin/audio/IntensityPicker.kt
-custom_components/hue_music_sync/library/base.py         → app/src/main/java/com/engabd/sendpin/library/TrackAnalyzer.kt
-custom_components/hue_music_sync/library/subsonic_backend.py → app/src/main/java/com/engabd/sendpin/subsonic/SubsonicAnalyzer.kt
-```
+- [ ] `audio/structure.py` → `app/src/main/java/com/engabd/sendpin/audio/SongStructure.kt`
+- [ ] `audio/phrase.py` → `app/src/main/java/com/engabd/sendpin/audio/PhraseDetector.kt`
+- [ ] `library/base.py` → `app/src/main/java/com/engabd/sendpin/library/TrackAnalyzer.kt`
+- [ ] `library/ma_backend.py` → `app/src/main/java/com/engabd/sendpin/ma/MaRepository.kt` (extend)
+- [ ] `library/subsonic_backend.py` → `app/src/main/java/com/engabd/sendpin/subsonic/SubsonicClient.kt` (extend)
 
 ### Phase 3 Files
-```
-custom_components/hue_music_sync/effects/fireworks.py    → app/src/main/java/com/engabd/sendpin/hue/FireworksEffect.kt
-custom_components/hue_music_sync/color/palette_v2.py     → app/src/main/java/com/engabd/sendpin/ui/design/AlbumPaletteV2.kt (extend existing)
-custom_components/hue_music_sync/const.py (TUNABLE_DEFS) → app/src/main/java/com/engabd/sendpin/hue/SyncoEngine.kt (add tunable params)
-```
+- [ ] `effects/fireworks.py` → `app/src/main/java/com/engabd/sendpin/hue/FireworksEffect.kt`
+- [ ] `effects/modes.py` (movies section) → `app/src/main/java/com/engabd/sendpin/hue/SyncoEngine.kt` (extend)
+- [ ] `color/palette_v2.py` → `app/src/main/java/com/engabd/sendpin/ui/design/AlbumPaletteV2.kt`
+- [ ] `const.py` (TUNABLE_DEFS) → `app/src/main/java/com/engabd/sendpin/hue/SyncoEngine.kt` + UI
 
 ---
 
 ## Testing Strategy
 
-### Unit Tests (JVM)
-- `TempoTrackerTest` — BPM detection accuracy on known-tempo tracks
-- `BeatGridTest` — downbeat/bar alignment
+### Unit Tests (JVM) — NOT REQUIRED
+Per user direction: syncoV2 is proven, tests are unnecessary. Port the logic exactly.
+
+### Integration Tests (On-Device)
+- DTLS handshake with physical Hue Bridge
+- Entertainment area channel mapping
+- Audio tap → analysis → render → bridge pipeline latency measurement
+- Side-by-side video: syncoV2 (HA) vs CAMusic (direct) on same song
+
+### Visual Validation
+- Verify wavefront timing matches syncoV2
+- Verify color jumps land on bar boundaries
+- Verify highlight selection feels identical
+- Verify Auto intensity assigns sensible rungs to test tracks
+
+---
+
+## Code Quality Standards
+
+### Follow syncoV2 Exactly
+- **Constants**: All magic numbers become named constants in a `const.kt` file
+- **Docstrings**: Every public function explains purpose, inputs, outputs
+- **Type safety**: Kotlin's type system should catch errors at compile time
+- **Gradual enhancement**: Fallback paths (metadata → track map → live audio)
+
+### CAMusic-Specific Adaptations
+- **Coroutines**: Replace Python async/await with Kotlin coroutines
+- **Flow**: Use `StateFlow`/`SharedFlow` for reactive state
+- **Compose UI**: All UI in Jetpack Compose, not XML
+- **Android lifecycle**: Handle background/foreground transitions properly
+
+---
+
+## Dependencies
+
+### New Libraries Required
+```kotlin
+// build.gradle.kts
+dependencies {
+    // Already present:
+    // - kotlinx-coroutines-core
+    // - androidx.media3 (ExoPlayer)
+    
+    // May need:
+    // - org.jetbrains.kotlinx:kotlinx-coroutines-android (if not already)
+    // - No external FFT library — pure Kotlin port (like syncoV2's pure Python)
+}
+```
+
+### No External DTLS Library
+Port syncoV2's pure-Python `dtls.py` to pure Kotlin using `javax.crypto` only — already done in `HueDtlsClient.kt`.
+
+---
+
+## Risk Mitigation
+
+### High-Risk Items
+1. **Tempo PLL accuracy** — Test against known-BPM tracks first
+2. **Scheduled wavefront timing** — Measure actual photon latency with high-speed camera or phone slow-mo
+3. **Library pre-analysis backend** — Ensure Navidrome/MA integration doesn't break existing browse/play
+
+### Mitigation Strategy
+- Port one feature at a time
+- Test each feature on-device before moving to next
+- Keep syncoV2 source open side-by-side during porting
+- Commit after each working feature (small, reviewable PRs)
+
+---
+
+## Conclusion
+
+This plan ports **100% of syncoV2's features** to CAMusic direct mode — no shortcuts, no "good enough." The result will be an Android-native music visualization system that matches or exceeds the Home Assistant integration's output quality.
+
+**Start with Phase 1, Day 1**: Tempo PLL. It's the foundation everything else depends on. Once beats are locked and predicted, the rest of the features unlock naturally.
+
+**Estimated completion**: 10-12 days for full parity, assuming focused work and on-device testing after each feature.
 - `SyncoEngineTest` — render output for known input frames
 - `AudioAnalyzerTest` — SuperFlux onset detection, melbank output
 
