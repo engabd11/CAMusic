@@ -129,14 +129,26 @@ class SendpinApp : Application(), ImageLoaderFactory {
             // bridge client and settings collectors just to stop something that
             // was never running.
             var started = false
+            data class DirectSyncState(val active: Boolean, val mode: String, val enabled: Boolean, val configId: String)
             combine(
                 localPlayer.active,
                 settings.lightSyncMode,
                 settings.lightSyncEnabled,
-            ) { active, mode, enabled -> active && mode == "direct" && enabled }
+                settings.hueEntertainmentConfigId,
+            ) { active, mode, enabled, configId -> DirectSyncState(active, mode, enabled, configId) }
                 .distinctUntilChanged()
-                .collect { shouldRun ->
+                .collect { state ->
+                    val shouldRun = state.active && state.mode == "direct" && state.enabled
+                    // configId is part of what `distinctUntilChanged` watches but not of
+                    // `shouldRun` — a mid-session area change needs the bridge stream
+                    // restarted on the new area's channels, which calling `start()` on
+                    // top of an already-running session won't do (it is a no-op while
+                    // `running` is true). Stopping first also covers the switch-on that
+                    // follows a `start()` which earlier bailed out for want of a
+                    // configured area — enabling the toggle before picking an area used
+                    // to leave the session permanently stuck in that failed state.
                     if (shouldRun) {
+                        if (started) directLightSync.stop()
                         started = true
                         directLightSync.start()
                     } else if (started) {
