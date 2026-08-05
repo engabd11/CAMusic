@@ -117,10 +117,17 @@ class AudioAnalysisTap : AudioProcessor {
 
             // Feed the analyzer if active. Built here when missing so a sink
             // reset mid-session doesn't leave the tap permanently silent.
+            //
+            // analyzeBuffer consumes the buffer's position as it reads through
+            // the PCM data. The same buffer is returned by getOutput() for the
+            // AudioTrack to play, so it must be rewound back to 0 afterwards —
+            // otherwise the AudioTrack sees position == limit and writes silence,
+            // which is exactly what killed local playback when Light Sync was on.
             if (active) {
                 if (analyzer == null) analyzer = AudioAnalyzer()
                 outputBuffer.rewind()
                 analyzeBuffer(outputBuffer)
+                outputBuffer.rewind()
             }
         }
     }
