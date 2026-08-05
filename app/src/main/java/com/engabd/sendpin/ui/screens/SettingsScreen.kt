@@ -1332,8 +1332,22 @@ private fun DirectBridgeSetup(
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Icon(Icons.Default.Router, "Bridge", tint = accent, modifier = Modifier.size(18.dp))
                     Column(Modifier.weight(1f)) {
-                        Text("Hue Bridge", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                        Text(bridgeIp, color = TextFaint, fontFamily = MonoFont, fontSize = 11.sp)
+                        Text(
+                            "Hue Bridge",
+                            color = TextPrimary,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            bridgeIp,
+                            color = TextFaint,
+                            fontFamily = MonoFont,
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
                     }
                     OledButton("Unpair", accent = accent, outline = true) {
                         scope.launch {
