@@ -62,7 +62,9 @@ class AudioAnalysisTap : AudioProcessor {
 
     private var inputAudioFormat: M3AudioFormat? = null
     private var outputBuffer: ByteBuffer = EMPTY_BUFFER
-    private var flushed = false
+
+    /** Set by [queueEndOfStream], cleared on [flush]. See [isEnded]. */
+    private var inputEnded = false
 
     /**
      * Turn analysis on or off. The processor stays in ExoPlayer's chain either
@@ -96,8 +98,8 @@ class AudioAnalysisTap : AudioProcessor {
         return inputFormat  // pass-through: same format out
     }
 
-    override fun queueEndOfStream(): Unit {
-        // Pass-through: no buffering, nothing to flush.
+    override fun queueEndOfStream() {
+        inputEnded = true
     }
 
     override fun queueInput(inputBuffer: ByteBuffer) {
@@ -207,10 +209,18 @@ class AudioAnalysisTap : AudioProcessor {
         return out
     }
 
-    override fun isEnded(): Boolean = true
+    /**
+     * `AudioProcessingPipeline.processData` skips calling `queueInput`/`getOutput` on any
+     * processor that reports ended, so this must only be true once end-of-stream has been
+     * queued *and* every buffer already produced has been drained — never unconditionally,
+     * or the pipeline treats the tap as having nothing left to give it and no audio ever
+     * reaches the sink. (This was the cause of local playback going silent entirely: the
+     * tap sits in the chain regardless of Light Sync mode.)
+     */
+    override fun isEnded(): Boolean = inputEnded && outputBuffer === EMPTY_BUFFER
 
     override fun flush() {
-        flushed = true
+        inputEnded = false
         outputBuffer = EMPTY_BUFFER
         analyzer?.reset()
         resampleAccumulator = 0f
