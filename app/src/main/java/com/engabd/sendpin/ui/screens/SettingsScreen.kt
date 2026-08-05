@@ -33,6 +33,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -66,6 +67,7 @@ import kotlinx.coroutines.withContext
  *   until you have opened it once, and this is a settings screen with two music
  *   servers and a home-automation token in it.
  */
+
 enum class SettingsSection(
     val title: String,
     val subtitle: String,
@@ -112,6 +114,7 @@ enum class SettingsSection(
 }
 
 /** One pickable accent, ticked when it is the chosen one. */
+
 @Composable
 private fun SwatchDot(color: Color, selected: Boolean, onClick: () -> Unit) {
     Box(
@@ -132,6 +135,7 @@ private fun SwatchDot(color: Color, selected: Boolean, onClick: () -> Unit) {
 }
 
 /** One row on the settings index: icon, name, and what is behind it. */
+
 @Composable
 private fun SettingsCategoryRow(section: SettingsSection, accent: Color, onClick: () -> Unit) {
     GlassCard(radius = 16.dp) {
@@ -1170,6 +1174,7 @@ private fun OledButton(
     }
 }
 
+
 @Composable
 private fun ToggleRow(title: String, subtitle: String, checked: Boolean, accent: Color, onChange: (Boolean) -> Unit) {
     Row(
@@ -1232,6 +1237,8 @@ private fun StatusRow(label: String, value: String) {
  * 3. If both are done: show bridge name + area name + status, with a
  *    "Disconnect" button to clear the pairing.
  */
+
+
 @Composable
 private fun DirectBridgeSetup(
     settings: com.engabd.sendpin.data.AppSettings,
