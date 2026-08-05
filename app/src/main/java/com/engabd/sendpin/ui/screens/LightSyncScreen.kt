@@ -666,7 +666,13 @@ private fun AreaChip(name: String, selected: Boolean, active: Boolean, accent: C
             Modifier.size(7.dp).clip(CircleShape)
                 .background(if (active) accent else TextFaint),
         )
-        Text(name, color = tint, style = MaterialTheme.typography.labelLarge, maxLines = 1)
+        Text(
+            name,
+            color = tint,
+            style = MaterialTheme.typography.labelLarge,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
