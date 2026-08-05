@@ -340,6 +340,10 @@ class DtlsPskClient(
         // AAD: seq_bytes(8) + content_type(1) + version(2) + length(2)
         val aad = seqBytes + byteArrayOf(contentType) + DTLS_1_2 + shortToBytesBE(plaintext.size)
         gcmClient!!.init(Cipher.ENCRYPT_MODE, SecretKeySpec(k.clientKey, "AES"), GCMParameterSpec(128, nonce))
+        // GCM's AAD has to be fed to the cipher explicitly — computing it and never
+        // calling updateAAD left every record authenticated over no AAD at all, so
+        // the bridge (which does include it, per spec) could never verify our tag.
+        gcmClient!!.updateAAD(aad)
         val ct = gcmClient!!.doFinal(plaintext)
         return explicitNonce + ct
     }
@@ -352,6 +356,7 @@ class DtlsPskClient(
         val ptLen = ct.size - 16  // minus GCM tag
         val aad = seqBytes + byteArrayOf(contentType) + DTLS_1_2 + shortToBytesBE(ptLen)
         gcmServer!!.init(Cipher.DECRYPT_MODE, SecretKeySpec(k.serverKey, "AES"), GCMParameterSpec(128, nonce))
+        gcmServer!!.updateAAD(aad)
         return gcmServer!!.doFinal(ct)
     }
 
