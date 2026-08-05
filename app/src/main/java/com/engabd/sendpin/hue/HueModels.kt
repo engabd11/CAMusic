@@ -27,7 +27,7 @@ data class EntertainmentConfig(
     val status: String = "inactive",     // "inactive" | "active"
     @SerialName("configuration_type") val configurationType: String = "room",  // "room" | "screen"
     val channels: List<EntertainmentChannel> = emptyList(),
-    @SerialName("active_streamer") val activeStreamer: String? = null,
+    @SerialName("active_streamer") val activeStreamer: ResourceRef? = null,
 ) {
     val isStreaming: Boolean get() = status == "active"
 }
