@@ -176,8 +176,10 @@ class DtlsPskClient(
     private fun doHandshake() {
         clientRandom = ByteArray(32).also { SecureRandom().nextBytes(it) }
 
-        // Flight 1: ClientHello (no cookie). Not recorded in transcript.
-        val ch1 = clientHelloBody(ByteArray(0))
+        // Flight 1: ClientHello (no cookie), message_seq 0 per RFC 6347 §4.2.2.
+        // Not recorded in transcript — the initial ClientHello and the
+        // HelloVerifyRequest it draws are excluded from the Finished-message hash.
+        val ch1 = unrecordedHandshakeMsg(HS_CLIENT_HELLO, clientHelloBody(ByteArray(0)), msgSeq = 0)
         sendRecords(listOf(record(CT_HANDSHAKE, ch1, encrypt = false)))
 
         // Wait for HelloVerifyRequest
@@ -254,6 +256,31 @@ class DtlsPskClient(
     }
 
     // ── Handshake message construction ────────────────────────────────────
+
+    /**
+     * Frames a handshake message with an explicit [msgSeq], without touching
+     * [clientMsgSeq] or [transcript] — for flight 1's ClientHello, the one message
+     * in the handshake that isn't part of the running sequence count or the
+     * Finished-message hash. Every message on the wire still has to be a properly
+     * framed `Handshake` struct (type + length + message_seq + fragment offset/length)
+     * or the peer can't parse it out of the record at all; sending a bare message
+     * body here previously left the bridge with nothing it could read as a
+     * `ClientHello` in the first place, so it never answered — which surfaced as a
+     * handshake timeout with nothing received, not as a rejected/malformed reply.
+     */
+    private fun unrecordedHandshakeMsg(hsType: Byte, body: ByteArray, msgSeq: Int): ByteArray {
+        val header = ByteArray(12)
+        header[0] = hsType
+        header[1] = ((body.size shr 16) and 0xFF).toByte()
+        header[2] = ((body.size shr 8) and 0xFF).toByte()
+        header[3] = (body.size and 0xFF).toByte()
+        header[4] = ((msgSeq shr 8) and 0xFF).toByte()
+        header[5] = (msgSeq and 0xFF).toByte()
+        header[9] = ((body.size shr 16) and 0xFF).toByte()
+        header[10] = ((body.size shr 8) and 0xFF).toByte()
+        header[11] = (body.size and 0xFF).toByte()
+        return header + body
+    }
 
     private fun handshakeMsg(hsType: Byte, body: ByteArray): ByteArray {
         val header = ByteArray(12)
