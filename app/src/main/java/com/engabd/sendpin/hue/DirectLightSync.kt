@@ -219,6 +219,9 @@ class DirectLightSync(
             // 4. Create the stream encoder + effects engine.
             delayQueue.resetDelay(audioLead.leadMs)
             lastSent = null
+            limiterMode = null
+            selectLimiter(SyncMode.fromWire(settings.lightSyncIntensity.first()))
+            safety?.reset()
             encoder = HueStreamEncoder(config.id)
             engine = SyncoEngine(channels).also {
                 it.mode = SyncMode.fromWire(settings.lightSyncIntensity.first())
@@ -416,7 +419,13 @@ class DirectLightSync(
             // without this the lights lead the music rather than trail it.
             delayQueue.updateDelay(audioLead.leadMs, dt)
             delayQueue.offer(colours, now)
-            val due = delayQueue.poll(now) ?: continue
+            val held = delayQueue.poll(now) ?: continue
+
+            // Safety runs on what is about to be sent, at the moment it is sent —
+            // its flash budget is measured in wall-clock seconds, so it has to
+            // sit after the delay queue rather than before it.
+            val guarded = safety?.process(held, dt) ?: held
+            val due = rateLimiter.process(guarded, dt)
 
             // The bridge relays at 25 Hz over Zigbee and the spec asks for a
             // continuous stream because UDP frames are dropped without retry. A
@@ -472,6 +481,43 @@ class DirectLightSync(
 
     /** Rendered frames waiting for the audio they describe to become audible. */
     private val delayQueue = FrameDelayQueue<Map<Int, Rgb>>()
+
+    /**
+     * Eye-safety limiter, or null on Extreme.
+     *
+     * The rung decides which one, following syncoV2: Subtle, Medium and High get
+     * the strict WCAG limiter; Intense gets the relaxed budget, which never
+     * engages on real music but still caps a true strobe; Extreme bypasses it
+     * entirely at the user's explicit request. That last decision lives here
+     * rather than inside [FieldSafety], so it is a deliberate choice at the call
+     * site instead of something inherited by accident.
+     */
+    @Volatile private var safety: FieldSafety? = FieldSafety()
+
+    /**
+     * Philips' 12.5 Hz ceiling. Applied on every rung including Extreme — it is
+     * a statement about what Zigbee can deliver, not a comfort setting, so
+     * exceeding it produces no visible change and only more strobing.
+     */
+    private val rateLimiter = EffectRateLimiter()
+
+    private var limiterMode: SyncMode? = null
+
+    /**
+     * Swap in the limiter this rung calls for, resetting the state so the new
+     * one does not inherit the old one's flash history or anchor.
+     */
+    @Synchronized
+    private fun selectLimiter(mode: SyncMode) {
+        if (mode == limiterMode) return
+        limiterMode = mode
+        safety = when (mode) {
+            SyncMode.EXTREME -> null
+            SyncMode.INTENSE -> FieldSafety(RELAXED_MAX_FLASHES_PER_S, calmGated = false)
+            else -> FieldSafety()
+        }
+        rateLimiter.reset()
+    }
 
     /** The last frame actually put on the wire, for the unchanged check. */
     private var lastSent: Map<Int, Rgb>? = null
@@ -555,7 +601,11 @@ class DirectLightSync(
      */
     private fun observeSettings() {
         scope.launch {
-            settings.lightSyncIntensity.collect { wire -> engine?.mode = SyncMode.fromWire(wire) }
+            settings.lightSyncIntensity.collect { wire ->
+                val mode = SyncMode.fromWire(wire)
+                engine?.mode = mode
+                selectLimiter(mode)
+            }
         }
         scope.launch {
             settings.lightSyncEffect.collect { wire -> engine?.effect = SyncEffect.fromWire(wire) }
