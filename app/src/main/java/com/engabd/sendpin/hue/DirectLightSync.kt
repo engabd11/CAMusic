@@ -11,8 +11,15 @@ import com.engabd.sendpin.audio.BeatGrid
 import com.engabd.sendpin.audio.StructureState
 import com.engabd.sendpin.audio.StructureTracker
 import com.engabd.sendpin.audio.TempoTracker
+import androidx.core.graphics.drawable.toBitmap
+import coil.imageLoader
+import coil.request.ImageRequest
+import coil.request.SuccessResult
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.data.Crypto
+import com.engabd.sendpin.ui.design.lightSyncPalette
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlin.math.abs
 import kotlin.math.max
 import kotlinx.coroutines.CoroutineScope
@@ -111,6 +118,12 @@ class DirectLightSync(
      * change lands when the audio is heard rather than when it was decoded.
      */
     private val audioLead: AudioLead,
+    /**
+     * Cover-art URL of whatever is playing, for the album-art colour schemes.
+     * `album_art_v2` is the persisted default, so without this a fresh install
+     * silently renders the static fallback and the setting reads as a lie.
+     */
+    private val artUrls: Flow<String?>,
     private val settings: AppSettings = AppSettings(context),
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -222,7 +235,12 @@ class DirectLightSync(
             limiterMode = null
             selectLimiter(SyncMode.fromWire(settings.lightSyncIntensity.first()))
             safety?.reset()
-            encoder = HueStreamEncoder(config.id)
+            // Per-channel gamuts where the bridge reported them; anything it
+            // didn't answer for falls back to Gamut C inside the encoder.
+            encoder = HueStreamEncoder(
+                config.id,
+                gamuts = channels.mapNotNull { ch -> ch.gamut?.let { ch.channelId to it } }.toMap(),
+            )
             engine = SyncoEngine(channels, config.configurationType).also {
                 it.mode = SyncMode.fromWire(settings.lightSyncIntensity.first())
                 it.effect = SyncEffect.fromWire(settings.lightSyncEffect.first())
@@ -466,6 +484,40 @@ class DirectLightSync(
     }
 
     /**
+     * Decode the cover at [url] and hand its colours, with their dwell weights,
+     * to the engine.
+     *
+     * Uses the raw extraction rather than the app's UI palette: that one lifts
+     * lightness and saturation so swatches stay legible against a black
+     * background, which is the wrong correction for a bulb that has its own
+     * brightness channel.
+     */
+    private suspend fun applyAlbumArt(url: String?) = withContext(Dispatchers.IO) {
+        if (url.isNullOrBlank()) {
+            engine?.setAlbumColors(emptyList())
+            return@withContext
+        }
+        try {
+            val request = ImageRequest.Builder(context)
+                .data(url)
+                .allowHardware(false)  // getPixels needs a software bitmap
+                .build()
+            val result = context.imageLoader.execute(request)
+            val bitmap = (result as? SuccessResult)?.drawable?.toBitmap() ?: return@withContext
+            val extracted = lightSyncPalette(bitmap) ?: return@withContext
+            val (swatches, weights) = extracted
+            engine?.setAlbumColors(
+                swatches.map { Triple(it[0], it[1], it[2]) },
+                weights,
+            )
+        } catch (e: Exception) {
+            // A cover that will not load is not a reason to stop the show; the
+            // engine keeps whatever palette it already had.
+            Log.w(TAG, "Album art palette failed: ${e.message}")
+        }
+    }
+
+    /**
      * Log at most once per [LOG_THROTTLE_MS]. This loop runs at 60 Hz, so a dead
      * network or a persistent render fault would otherwise emit 60 identical
      * lines a second and bury whatever else is in logcat.
@@ -612,6 +664,12 @@ class DirectLightSync(
         }
         scope.launch {
             settings.lightSyncColor.collect { wire -> engine?.setScheme(ColorScheme.fromWire(wire)) }
+        }
+        // Album artwork. Collected unconditionally rather than only while an
+        // album-art scheme is selected, so switching to one mid-track picks up
+        // the cover already on screen instead of waiting for the next song.
+        scope.launch {
+            artUrls.distinctUntilChanged().collect { url -> applyAlbumArt(url) }
         }
         scope.launch {
             settings.lightSyncBrightness.collect { pct -> engine?.brightness = pct.coerceIn(0, 100) / 100f }

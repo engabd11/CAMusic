@@ -205,8 +205,73 @@ class HueBridgeClient(
     suspend fun getEntertainmentConfigs(host: String, appKey: String): List<EntertainmentConfig> = withContext(Dispatchers.IO) {
         val url = "https://$host/clip/v2/resource/entertainment_configuration"
         val body = getJson(url, appKey)
-        val data = body["data"]?.let { json.decodeFromJsonElement<List<EntertainmentConfig>>(it) } ?: emptyList()
-        data
+        val configs = body["data"]?.let { json.decodeFromJsonElement<List<EntertainmentConfig>>(it) } ?: emptyList()
+
+        // Resolve each channel's own colour triangle, following the same path
+        // the bridge models it on: channel member -> entertainment service ->
+        // device -> light. Without this the encoder clamps everything to Gamut C,
+        // which is wrong for older bulbs and visibly shifts saturated colours on
+        // a mixed room. Best effort — a bridge that will not answer these still
+        // gives a working stream on the default gamut.
+        val gamuts = try {
+            resolveChannelGamuts(host, appKey)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not resolve per-light gamuts, falling back to Gamut C: ${e.message}")
+            emptyMap()
+        }
+        if (gamuts.isEmpty()) return@withContext configs
+
+        configs.map { config ->
+            config.copy(
+                channels = config.channels.map { ch ->
+                    val rid = ch.members.firstNotNullOfOrNull { it.service?.rid }
+                    ch.copy(gamut = gamuts[rid])
+                }
+            )
+        }
+    }
+
+    /**
+     * Map entertainment-service id to that lamp's gamut triangle.
+     *
+     * Two extra GETs, once per area listing rather than per frame. One
+     * `GET /light` serves both the gamut map and the device-to-light map, so it
+     * is not fetched twice.
+     */
+    private suspend fun resolveChannelGamuts(
+        host: String,
+        appKey: String,
+    ): Map<String, List<Pair<Float, Float>>> {
+        val lightsBody = getJson("https://$host/clip/v2/resource/light", appKey)
+        val lights = lightsBody["data"]
+            ?.let { json.decodeFromJsonElement<List<HueLight>>(it) } ?: return emptyMap()
+
+        val gamutByLight = HashMap<String, List<Pair<Float, Float>>>()
+        val lightByDevice = HashMap<String, String>()
+        for (light in lights) {
+            light.color?.gamut?.let { g ->
+                gamutByLight[light.id] = listOf(
+                    g.red.x to g.red.y,
+                    g.green.x to g.green.y,
+                    g.blue.x to g.blue.y,
+                )
+            }
+            val owner = light.owner
+            if (owner?.rtype == "device") lightByDevice[owner.rid] = light.id
+        }
+        if (gamutByLight.isEmpty()) return emptyMap()
+
+        val entBody = getJson("https://$host/clip/v2/resource/entertainment", appKey)
+        val services = entBody["data"]
+            ?.let { json.decodeFromJsonElement<List<EntertainmentService>>(it) } ?: return emptyMap()
+
+        val out = HashMap<String, List<Pair<Float, Float>>>()
+        for (svc in services) {
+            val device = svc.owner?.takeIf { it.rtype == "device" }?.rid ?: continue
+            val lightId = lightByDevice[device] ?: continue
+            gamutByLight[lightId]?.let { out[svc.id] = it }
+        }
+        return out
     }
 
     /**

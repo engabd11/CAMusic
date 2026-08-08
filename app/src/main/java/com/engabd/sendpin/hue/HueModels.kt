@@ -40,6 +40,22 @@ data class EntertainmentConfig(
 data class EntertainmentChannel(
     @SerialName("channel_id") val channelId: Int,
     val position: ChannelPosition = ChannelPosition(),
+    /**
+     * The entertainment services this channel drives. Followed through to the
+     * owning device and its light so the encoder can clamp to the lamp's own
+     * colour triangle — see [HueBridgeClient.getEntertainmentConfigs].
+     */
+    val members: List<ChannelMember> = emptyList(),
+    /**
+     * Resolved colour gamut for this channel's lamp, or null when the bridge
+     * did not report one. Filled in by the client, not by the wire format.
+     */
+    @kotlinx.serialization.Transient val gamut: List<Pair<Float, Float>>? = null,
+)
+
+@Serializable
+data class ChannelMember(
+    val service: ResourceRef? = null,
 )
 
 @Serializable

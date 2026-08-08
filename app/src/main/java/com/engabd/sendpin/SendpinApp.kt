@@ -76,6 +76,7 @@ class SendpinApp : Application(), ImageLoaderFactory {
             this,
             localPlayer.audioAnalysisTap,
             localPlayer.audioLead,
+            localPlayer.current.map { it?.artUrl },
         )
     }
 

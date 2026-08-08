@@ -307,6 +307,12 @@ private fun tintedWhite(rgb: FloatArray, v: Float): FloatArray {
 internal class Extraction(
     val lead: FloatArray,
     val swatches: List<FloatArray>,
+    /**
+     * Share of the cover each swatch came from, parallel to [swatches]. Light
+     * Sync spends time on a colour in proportion to this, so the room reads like
+     * the sleeve rather than cycling every colour equally.
+     */
+    val populations: List<Float> = emptyList(),
     val achromatic: Boolean = false,
 )
 
@@ -361,7 +367,10 @@ internal fun kmeansPalette(pixels: List<FloatArray>, k: Int = 5): Extraction? {
         .filter { it.chroma >= accentFloor }
         .sortedByDescending { it.chroma * kotlin.math.sqrt(it.population) }
 
-    val accents = mutableListOf<FloatArray>()
+    // Each pick carries the share of the cover it came from. Light Sync uses
+    // those as dwell weights, so a sleeve that is mostly one colour reads mostly
+    // that colour instead of cycling all its colours equally.
+    val accents = mutableListOf<Pair<FloatArray, Float>>()
     val pickedHues = mutableListOf<Float>()
     for (c in ranked) {
         if (accents.size >= MAX_ACCENTS) break
@@ -370,7 +379,7 @@ internal fun kmeansPalette(pixels: List<FloatArray>, k: Int = 5): Extraction? {
         // than three shades of the loudest one.
         if (pickedHues.all { hueDistance(h, it) >= HUE_MIN_SEP_DEG }) {
             pickedHues.add(h)
-            accents.add(hsvToRgb(h, c.hsv[1], max(VALUE_FLOOR, c.hsv[2])))
+            accents.add(hsvToRgb(h, c.hsv[1], max(VALUE_FLOOR, c.hsv[2])) to c.population)
         }
     }
 
@@ -382,8 +391,9 @@ internal fun kmeansPalette(pixels: List<FloatArray>, k: Int = 5): Extraction? {
         .sortedByDescending { it.population }
         .take((k - accents.size).coerceAtLeast(0))
         .map { c ->
-            if (c.chroma < ACHROMATIC_C) tintedWhite(c.rgb, c.hsv[2])
+            val rgb = if (c.chroma < ACHROMATIC_C) tintedWhite(c.rgb, c.hsv[2])
             else hsvToRgb(c.hsv[0], c.hsv[1], max(VALUE_FLOOR, c.hsv[2]))
+            rgb to c.population
         }
 
     val out = accents + bases
@@ -392,13 +402,15 @@ internal fun kmeansPalette(pixels: List<FloatArray>, k: Int = 5): Extraction? {
     // The lead is the top-ranked accent. With none, the most *chromatic* cluster leads
     // rather than the most populous — on a sleeve whose colour is a small detail
     // against a big flat field, the field is not what the cover is about.
-    val lead = accents.firstOrNull()
+    val lead = accents.firstOrNull()?.first
         ?: clusters.maxByOrNull { it.chroma }!!.let { hsvToRgb(it.hsv[0], it.hsv[1], max(VALUE_FLOOR, it.hsv[2])) }
 
     // The set is hue-ordered so the cyclic gradient drifts between related hues.
+    val ordered = out.sortedBy { rgbToHsv(it.first[0], it.first[1], it.first[2])[0] }
     return Extraction(
         lead = lead,
-        swatches = out.sortedBy { rgbToHsv(it[0], it[1], it[2])[0] },
+        swatches = ordered.map { it.first },
+        populations = ordered.map { it.second },
         achromatic = accents.isEmpty(),
     )
 }
@@ -423,6 +435,39 @@ internal fun paletteOf(bmp: Bitmap): AlbumPalette? {
 
     val extracted = kmeansPalette(pixels, k = 5) ?: return null
     return liftedPalette(extracted)
+}
+
+/**
+ * Colours and dwell weights for Light Sync, straight off the extraction.
+ *
+ * Deliberately *not* [paletteOf]: that lifts lightness and saturation so swatches
+ * stay legible against the app's black background, which is the wrong correction
+ * for bulbs. A lamp has its own brightness channel, and pre-brightening the
+ * colour only distorts the hue the room is trying to show. Light Sync wants the
+ * cover's colours as extracted, plus how much of the cover each one is.
+ */
+internal fun lightSyncPalette(bmp: Bitmap): Pair<List<FloatArray>, List<Float>>? {
+    val small = if (bmp.width == SAMPLE && bmp.height == SAMPLE) bmp
+    else Bitmap.createScaledBitmap(bmp, SAMPLE, SAMPLE, true)
+    val px = IntArray(SAMPLE * SAMPLE)
+    small.getPixels(px, 0, SAMPLE, 0, 0, SAMPLE, SAMPLE)
+    if (small !== bmp) small.recycle()
+
+    val pixels = ArrayList<FloatArray>(px.size)
+    for (p in px) {
+        pixels.add(
+            floatArrayOf(
+                ((p shr 16) and 0xFF) / 255f,
+                ((p shr 8) and 0xFF) / 255f,
+                (p and 0xFF) / 255f,
+            )
+        )
+    }
+    val e = kmeansPalette(pixels, k = 5) ?: return null
+    if (e.swatches.isEmpty()) return null
+    val weights = if (e.populations.size == e.swatches.size) e.populations
+    else List(e.swatches.size) { 1f }
+    return e.swatches to weights
 }
 
 /**

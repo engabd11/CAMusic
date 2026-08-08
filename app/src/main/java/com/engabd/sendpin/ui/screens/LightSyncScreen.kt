@@ -423,11 +423,11 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                 Spacer(Modifier.height(22.dp))
                 SectionLabel("Colour")
                 Spacer(Modifier.height(10.dp))
-                // A stored album-art/song scheme renders as the engine's fallback,
-                // so show the palette the lights will actually use rather than a
-                // selection that isn't what happens.
-                val shownColour = if (colour in LightSyncRepository.DYNAMIC_COLOURS) FALLBACK_COLOUR else colour
-                ColourPicker(selected = shownColour, showDynamic = false) { scheme ->
+                // Album art is offered here now that the engine is actually fed
+                // it. "Song" still is not — that needs chroma from the analyzer,
+                // which the direct path does not produce yet — so it is filtered
+                // out rather than shown as a choice that renders the fallback.
+                ColourPicker(selected = colour, showDynamic = true, hide = setOf("song")) { scheme ->
                     scope.launch { settings.setLightSyncColor(scheme) }
                 }
 
@@ -443,8 +443,8 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                 Text(
                     "Direct mode syncs this phone's own playback, and needs no timing " +
                         "offset — it measures how far the audio tap runs ahead of the " +
-                        "speaker and compensates exactly. Auto intensity and album-art " +
-                        "colour are on the Home Assistant path only for now.",
+                        "speaker and compensates exactly. Auto intensity is on the Home " +
+                        "Assistant path only for now.",
                     color = TextFaint, style = MaterialTheme.typography.bodySmall,
                 )
             }
@@ -574,7 +574,17 @@ private fun EffectTile(name: String, icon: ImageVector, selected: Boolean, onCli
  * would be three tiles that all quietly do the same thing.
  */
 @Composable
-private fun ColourPicker(selected: String?, showDynamic: Boolean = true, onSelect: (String) -> Unit) {
+private fun ColourPicker(
+    selected: String?,
+    showDynamic: Boolean = true,
+    /**
+     * Dynamic sources to leave out. The direct path drives album art but not
+     * Song, which needs chroma the on-device analyzer does not produce yet —
+     * better to omit the tile than offer one that quietly renders the fallback.
+     */
+    hide: Set<String> = emptySet(),
+    onSelect: (String) -> Unit,
+) {
     val accent = LocalAccent.current
     val palette = LocalPalette.current
 
@@ -597,7 +607,7 @@ private fun ColourPicker(selected: String?, showDynamic: Boolean = true, onSelec
             selected = selected == LightSyncRepository.ALBUM_COLOUR_V1,
         ) { onSelect(LightSyncRepository.ALBUM_COLOUR_V1) }
 
-        if (showDynamic) SwatchTile(
+        if (showDynamic && LightSyncRepository.SONG_COLOUR !in hide) SwatchTile(
             colours = listOf(Color(0xFF33FFC2), Color(0xFF7D40FF), Color(0xFFFF59D1)),
             label = "Song",
             caption = "Harmony",
