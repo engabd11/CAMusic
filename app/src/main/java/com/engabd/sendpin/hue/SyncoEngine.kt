@@ -47,8 +47,16 @@ enum class SyncMode(val wire: String) {
     companion object { fun fromWire(s: String?) = entries.firstOrNull { it.wire == s } ?: HIGH }
 }
 
+/**
+ * Effects the direct engine renders.
+ *
+ * No Movies. syncoV2 offers it, but the direct path is a music player driving a
+ * Hue bridge — there is no video for a calm, brightness-follows-the-soundtrack
+ * mode to accompany. A stored `"movies"` value from the Home Assistant path
+ * falls back to Music rather than selecting something that does nothing.
+ */
 enum class SyncEffect(val wire: String) {
-    MUSIC("music"), MOVIES("movies"), FIREWORKS("fireworks");
+    MUSIC("music"), FIREWORKS("fireworks");
     companion object { fun fromWire(s: String?) = entries.firstOrNull { it.wire == s } ?: MUSIC }
 }
 
@@ -347,6 +355,30 @@ private val BAR_WEIGHT = floatArrayOf(1.0f, 0.72f, 0.86f, 0.72f)
 
 /** Floor on a highlighted beat's pulse weight. */
 private const val HIGHLIGHT_MIN = 0.55f
+
+/** How much of a band's hottest bin is lifted into its glow, versus the mean. */
+private const val EXT_GLOW_PEAKINESS = 0.3f
+
+/** Gamma on the whole-room slam, so only genuinely broadband hits punch. */
+private const val EXT_ROOM_GAMMA = 2.0f
+
+/** Asymmetric per-bin baseline the melbank transient is measured against. */
+private const val MEL_SLOW_RISE = 0.25f
+private const val MEL_SLOW_FALL = 0.06f
+
+/**
+ * Split [bins] melbank bins into [n] contiguous, near-equal `[lo, hi)` spans,
+ * low to high — one per lamp. Every band stays covered at every instant, which
+ * is what lets the rotating map move without leaving a hole in the spectrum.
+ */
+private fun spectralBands(n: Int, bins: Int): List<Pair<Int, Int>> {
+    if (n <= 0 || bins <= 0) return emptyList()
+    return (0 until n).map { i ->
+        val lo = (i.toLong() * bins / n).toInt()
+        val hi = (((i + 1).toLong() * bins) / n).toInt()
+        lo to max(lo + 1, hi)
+    }
+}
 private val ROLE_BASS = 0; private val ROLE_MID = 1; private val ROLE_VOCAL = 2
 
 // ── Engine ─────────────────────────────────────────────────────────────────
@@ -413,6 +445,26 @@ class SyncoEngine(
 
     /** Which phrase origin the next wave launches from. */
     private var originIdx = 0
+
+    /**
+     * Contiguous, near-equal melbank spans — one per lamp, low to high. Extreme
+     * assigns these across the room so instruments separate in space.
+     */
+    private val extBands: List<Pair<Int, Int>> = spectralBands(rankIds.size, MELBANK_BINS)
+
+    /** Slow per-bin baseline; the melbank above it is a fresh attack. */
+    private val melSlow = FloatArray(MELBANK_BINS)
+
+    /** Per-bin novelty transient: the big, surprising peaks. */
+    private val melTransient = FloatArray(MELBANK_BINS)
+
+    /** Per-bin frame-to-frame flux: the groove, re-firing on every hit. */
+    private val melFlux = FloatArray(MELBANK_BINS)
+
+    private val melPrev = FloatArray(MELBANK_BINS)
+
+    /** Position of the rotating lamp-to-band map. */
+    private var spectralRot = 0f
 
     // State
     private val env = mutableMapOf<String, Float>()      // band envelopes
@@ -502,6 +554,28 @@ class SyncoEngine(
         var sum = 0f
         for (w in waves) sum += w.amplitudeAt(info.distToOrigin[w.originIdx])
         return sum
+    }
+
+    // ── Accessors for the alternate renderers ─────────────────────────────
+
+    /** Fireworks owns its own burst state and decay, so it renders separately. */
+    private val fireworks = FireworksEffect()
+
+    /**
+     * Each lamp's `(xrank, height)` — the two axes Fireworks places bursts on.
+     * Exposed rather than handing over the whole channel map, so the effect
+     * depends on a shape it actually needs.
+     */
+    internal val lampLayout: Map<Int, Pair<Float, Float>>
+        get() = cmap.mapValues { (_, info) -> info.xrank to info.pos.z }
+
+    /** Smoothed room loudness, for effects that breathe with the music. */
+    internal val energyEnvValue: Float get() = energyEnv
+
+    /** The active rung's event gates, so alternate renderers share the tuning. */
+    internal fun gatesFor(frame: AnalysisFrame): Pair<Float, Float> {
+        val g = eventGates(frame.salience, frame.onsetWidth)
+        return g.ampScale to g.widthGate
     }
 
     // ── Public setters ────────────────────────────────────────────────────
@@ -640,6 +714,13 @@ class SyncoEngine(
         updateEnv(frame)
 
         val p = params
+
+        // Effect and rung both choose a renderer. Fireworks replaces the whole
+        // path; Extreme is a different renderer rather than a louder music one,
+        // which is why `graphReactive` exists as a flag on the params.
+        if (effect == SyncEffect.FIREWORKS) return fireworks.render(this, frame, dt, p)
+        if (p.graphReactive) return renderExtreme(frame, dt)
+
         val musicGate = if (SILENCE_GATE > 0f) min(1f, loud / SILENCE_GATE) else 1f
 
         // Event-salience gates
@@ -878,6 +959,205 @@ class SyncoEngine(
             state[cid] = nc to newB
         }
 
+        return out
+    }
+
+    /**
+     * Update the per-bin attack measures Extreme runs on.
+     *
+     * Two of them, deliberately. The *transient* is the melbank above a slow
+     * asymmetric baseline, which catches big surprising peaks like a drop but
+     * absorbs a steady pattern once the baseline catches up. The *flux* is the
+     * frame-to-frame rise, which keeps re-firing on every hit of that same
+     * pattern. Taking the larger of the two is what lets the room read a song's
+     * whole detail rather than only its biggest moments.
+     */
+    private fun updateMelTransient(frame: AnalysisFrame) {
+        val mel = frame.melbank
+        if (mel.isEmpty()) return
+        val n = min(MELBANK_BINS, mel.size)
+        for (i in 0 until n) {
+            val v = mel[i]
+            val a = if (v > melSlow[i]) MEL_SLOW_RISE else MEL_SLOW_FALL
+            melSlow[i] += (v - melSlow[i]) * a
+            melTransient[i] = max(0f, v - melSlow[i])
+            melFlux[i] = max(0f, v - melPrev[i])
+            melPrev[i] = v
+        }
+    }
+
+    /**
+     * Extreme: **the song is a graph**, and each lamp reflects a slice of it.
+     *
+     * The melbank is split into contiguous bands spanning low to high and
+     * assigned across the room left to right, so instruments separate in space —
+     * a kick lights the low lamps, a snare or guitar the mids, a cymbal the
+     * highs. Each lamp's brightness is two parts: a smooth glow from its band's
+     * loudness, with the hottest bin lifted in so one loud instrument reads
+     * instead of being averaged into a wash; and a peak flash proportional to a
+     * fresh attack in that band.
+     *
+     * The lamp-to-band map rotates slowly, grid-free and loudness-scaled, so
+     * every lamp takes turns on every instrument while all bands stay covered at
+     * each instant.
+     *
+     * There is deliberately no beat grid here, no scheduled beat and no onset
+     * gating: a held tone has no fresh attack so it only glows and never
+     * strobes, a tail fades as its loudness does, and every real hit at any
+     * tempo flashes as big as it actually is.
+     *
+     * This is the rung the direct path was most wrong about. `graphReactive` was
+     * declared and never read, so Extreme fell through to the ordinary music
+     * path — where it sets `beatThreshold = 99` and zeroes its beat and bass
+     * gains, leaving it the least reactive rung after Subtle.
+     *
+     * Ported from syncoV2 `effects/engine.py::_render_extreme`. Stereo pan and
+     * the absolute-loudness melbank reference are not available from the live
+     * analyzer yet; syncoV2 degrades both to uniform weighting when they are
+     * absent, which is exactly what happens here.
+     */
+    private fun renderExtreme(frame: AnalysisFrame, dt: Float): Map<Int, Rgb> {
+        val p = params
+        updateMelTransient(frame)
+        val musicGate = if (SILENCE_GATE > 0f) min(1f, loud / SILENCE_GATE) else 1f
+
+        // Colour only drifts, never jumps on a beat: brightness carries the song
+        // so the colour field stays coherent underneath it.
+        colourPhase += (p.colourSpeed + p.colourFlow * frame.energy) * dt * musicGate
+
+        val mel = frame.melbank
+        val n = rankIds.size
+        val haveBands = mel.isNotEmpty() && extBands.isNotEmpty()
+
+        // Grid-free rotation: time-driven, faster through busy passages, frozen
+        // in silence by the music gate, so it can add no phantom beats.
+        val rotRate = p.rotateRate + p.rotateSwing * frame.energy
+        if (n > 1 && rotRate > 0f) {
+            spectralRot = (spectralRot + rotRate * dt * musicGate).mod(n.toFloat())
+        }
+
+        fun bandGlow(lo: Int, hi: Int): Float {
+            if (mel.isEmpty() || hi <= lo || hi > mel.size) return 0f
+            var tot = 0f
+            var mx = 0f
+            for (k in lo until hi) {
+                val v = mel[k]
+                tot += v
+                if (v > mx) mx = v
+            }
+            val mean = tot / (hi - lo)
+            return (1f - EXT_GLOW_PEAKINESS) * mean + EXT_GLOW_PEAKINESS * mx
+        }
+
+        fun bandPeak(lo: Int, hi: Int): Float {
+            if (hi <= lo) return 0f
+            var mx = 0f
+            for (k in lo until min(hi, MELBANK_BINS)) {
+                var r = melTransient[k]
+                // Only the part of the groove flux above the ambient floor, so
+                // room tone and reverb wash never flash — real hits do.
+                val fxk = p.melFluxGain * (melFlux[k] - p.melFluxFloor)
+                if (fxk > r) r = fxk
+                if (r > mx) mx = r
+            }
+            return mx
+        }
+
+        for (cid in lightFlash.keys) lightFlash[cid] = lightFlash[cid]!! * p.flashDecay
+
+        // A hit in a quiet passage cannot flash as bright as one in a drop; the
+        // melbank is AGC-relative, so absolute loudness has to come from salience.
+        val loudScale = p.flashLoudFloor + (1f - p.flashLoudFloor) * frame.salience
+
+        // Whole-room slam: a broadband transient spiking many bands at once
+        // punches the entire room in unison, while a single-band tick barely
+        // registers, so the per-band detail survives.
+        var roomSlam = 0f
+        if (p.roomPunch > 0f && haveBands) {
+            var tot = 0f
+            var mx = 0f
+            for (v in melFlux) {
+                val d = v - p.melFluxFloor
+                if (d > 0f) { tot += d; if (d > mx) mx = d }
+            }
+            val roomFx = 0.8f * (tot / melFlux.size) + 0.2f * mx
+            roomSlam = p.roomPunch * roomFx.pow(EXT_ROOM_GAMMA) * p.spectralPop * musicGate * loudScale
+        }
+
+        val out = HashMap<Int, Rgb>(n)
+        for ((rankI, cid) in rankIds.withIndex()) {
+            val info = cmap[cid] ?: continue
+            var level: Float
+            var peak: Float
+            if (haveBands) {
+                // Rotating assignment with a smoothstep crossfade between the two
+                // bands a lamp straddles, so it sits crisply on one band then
+                // moves quickly to the next and separation stays sharp.
+                val pos = (rankI + spectralRot).mod(n.toFloat())
+                val b0 = pos.toInt() % n
+                var frac = pos - pos.toInt()
+                frac = frac * frac * (3f - 2f * frac)
+                val b1 = (b0 + 1) % n
+                val (lo0, hi0) = extBands[b0]
+                val (lo1, hi1) = extBands[b1]
+                level = (1f - frac) * bandGlow(lo0, hi0) + frac * bandGlow(lo1, hi1)
+                peak = (1f - frac) * bandPeak(lo0, hi0) + frac * bandPeak(lo1, hi1)
+            } else {
+                // No melbank at all (minimal frames): fall back to the coarse
+                // band envelope so the room still lives, with no flash.
+                level = max(env["sub_bass"] ?: 0f, env["bass"] ?: 0f)
+                peak = 0f
+            }
+
+            // Expand the contrast so small ticks stay dim and big hits slam, then
+            // scale by absolute loudness so peaks read relatively rather than all
+            // saturating to full.
+            var flash = peak.pow(p.flashGamma) * p.spectralPop * musicGate * loudScale
+            if (roomSlam > flash) flash = roomSlam
+            if (flash > (lightFlash[cid] ?: 0f)) lightFlash[cid] = flash
+
+            // Clamped, as the music path clamps its own target. A real analyzer
+            // melbank is AGC-normalised to 0..1, but the engine writes straight
+            // to the wire: a malformed frame in must not become a malformed
+            // frame out, and the encoder maps these onto xy plus brightness
+            // where a negative is not a wrong colour but a broken packet.
+            val target = (
+                p.melbankFloor +
+                    p.melbankGain * level * musicGate +
+                    p.energyGain * energyEnv
+                ).coerceIn(0f, 1f)
+
+            val (prevColor, prevB) = state[cid] ?: (Triple(0f, 0f, 0f) to 0f)
+            val alpha = if (target >= prevB) p.briAttack else p.briDecay
+            val newB = prevB + (target - prevB) * alpha
+
+            // Colour stays keyed to the lamp's fixed position plus the drift
+            // phase: only the instrument activity rotates, so the room keeps a
+            // coherent colour field.
+            val tgt = palette.sample(info.xrank * p.colourSpread + colourPhase)
+            val m = max(tgt.first, max(tgt.second, tgt.third))
+            val nt = if (m > 1e-6f) Triple(tgt.first / m, tgt.second / m, tgt.third / m)
+            else Triple(0f, 0f, 0f)
+            var nc = Triple(
+                prevColor.first + (nt.first - prevColor.first) * p.colourLerp,
+                prevColor.second + (nt.second - prevColor.second) * p.colourLerp,
+                prevColor.third + (nt.third - prevColor.third) * p.colourLerp,
+            )
+            state[cid] = nc to newB
+
+            if (p.colourSat < 1f) {
+                val s = p.colourSat
+                nc = Triple(nc.first * s + (1 - s), nc.second * s + (1 - s), nc.third * s + (1 - s))
+            }
+            val cval = max(nc.first, max(nc.second, nc.third))
+            val b = min(1f, newB + (lightFlash[cid] ?: 0f)).coerceIn(0f, 1f) *
+                (0.35f + 0.65f * cval) * brightness
+            out[cid] = Triple(
+                (nc.first * b).coerceIn(0f, 1f),
+                (nc.second * b).coerceIn(0f, 1f),
+                (nc.third * b).coerceIn(0f, 1f),
+            )
+        }
         return out
     }
 

@@ -292,6 +292,7 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
     val syncError by direct.error.collectAsState()
     val enabled by settings.lightSyncEnabled.collectAsState(initial = false)
     val intensity by settings.lightSyncIntensity.collectAsState(initial = "high")
+    val effect by settings.lightSyncEffect.collectAsState(initial = "music")
     val colour by settings.lightSyncColor.collectAsState(initial = "album_art_v2")
     val brightnessPct by settings.lightSyncBrightness.collectAsState(initial = 100)
     val bridgeIp by settings.hueBridgeIp.collectAsState(initial = "")
@@ -402,6 +403,24 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                 }
 
                 Spacer(Modifier.height(22.dp))
+                SectionLabel("Effect")
+                Spacer(Modifier.height(10.dp))
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    // Off the engine's own enum, so the tiles can only offer what
+                    // it renders. There is no Movies here: the direct path drives
+                    // lights from this phone's music, with no video to accompany.
+                    com.engabd.sendpin.hue.SyncEffect.entries.forEach { e ->
+                        EffectTile(e.wire, effectIcon(e.wire), e.wire == effect) {
+                            scope.launch { settings.setLightSyncEffect(e.wire) }
+                        }
+                    }
+                }
+                LightSyncRepository.EFFECT_BLURBS[effect]?.let {
+                    Spacer(Modifier.height(9.dp))
+                    Text(it, color = TextFaint, style = MaterialTheme.typography.bodySmall)
+                }
+
+                Spacer(Modifier.height(22.dp))
                 SectionLabel("Colour")
                 Spacer(Modifier.height(10.dp))
                 // A stored album-art/song scheme renders as the engine's fallback,
@@ -422,9 +441,10 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
 
                 Spacer(Modifier.height(22.dp))
                 Text(
-                    "Direct mode syncs this phone's own playback. Auto intensity, " +
-                        "album-art colour, effects and timing offset are on the Home " +
-                        "Assistant path only for now.",
+                    "Direct mode syncs this phone's own playback, and needs no timing " +
+                        "offset — it measures how far the audio tap runs ahead of the " +
+                        "speaker and compensates exactly. Auto intensity and album-art " +
+                        "colour are on the Home Assistant path only for now.",
                     color = TextFaint, style = MaterialTheme.typography.bodySmall,
                 )
             }
