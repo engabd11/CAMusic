@@ -43,6 +43,9 @@ import kotlin.math.roundToInt
 private val ModeFallback = listOf("auto", "subtle", "medium", "high", "intense", "extreme")
 private val EffectFallback = listOf("music", "movies", "fireworks")
 
+/** The intensity wire value that hands the choice to the picker. */
+private const val AUTO_INTENSITY = com.engabd.sendpin.hue.INTENSITY_AUTO
+
 /**
  * What the direct engine renders when the stored scheme is one it can't derive
  * (album art, song). Mirrors `FALLBACK_SCHEME` in `SyncoEngine.kt` — kept in step
@@ -293,6 +296,7 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
     val enabled by settings.lightSyncEnabled.collectAsState(initial = false)
     val intensity by settings.lightSyncIntensity.collectAsState(initial = "high")
     val effect by settings.lightSyncEffect.collectAsState(initial = "music")
+    val autoLevels by settings.lightSyncAutoLevels.collectAsState(initial = listOf("subtle", "medium", "high"))
     val colour by settings.lightSyncColor.collectAsState(initial = "album_art_v2")
     val brightnessPct by settings.lightSyncBrightness.collectAsState(initial = 100)
     val bridgeIp by settings.hueBridgeIp.collectAsState(initial = "")
@@ -408,8 +412,13 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                 SectionLabel("Intensity")
                 Spacer(Modifier.height(10.dp))
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    // Straight off the engine's own enum, so the pills can never
-                    // offer a rung the engine doesn't have.
+                    // Auto is not a rung — it is a choice between rungs, resolved
+                    // per frame from the music's character. The rest come straight
+                    // off the engine's enum, so the pills can never offer a rung
+                    // the engine doesn't have.
+                    Pill("Auto", intensity == AUTO_INTENSITY) {
+                        scope.launch { settings.setLightSyncIntensity(AUTO_INTENSITY) }
+                    }
                     com.engabd.sendpin.hue.SyncMode.entries.forEach { m ->
                         Pill(m.wire.label(), m.wire == intensity) {
                             scope.launch { settings.setLightSyncIntensity(m.wire) }
@@ -419,6 +428,32 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                 LightSyncRepository.MODE_BLURBS[intensity]?.let {
                     Spacer(Modifier.height(9.dp))
                     Text(it, color = TextFaint, style = MaterialTheme.typography.bodySmall)
+                }
+
+                if (intensity == AUTO_INTENSITY) {
+                    Spacer(Modifier.height(9.dp))
+                    Text(
+                        "Follows the music's character, not just its volume. A chill track " +
+                            "tops out low however loud its chorus gets; only a genuinely " +
+                            "heavy one reaches the top of what you allow below.",
+                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Text("Auto may use", color = TextMuted, fontSize = 12.sp)
+                    Spacer(Modifier.height(8.dp))
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        com.engabd.sendpin.hue.SyncMode.entries.forEach { m ->
+                            val on = m.wire in autoLevels
+                            Pill(m.wire.label(), on) {
+                                // Never let the selection empty out — Auto with
+                                // nothing to choose from has no answer to give.
+                                val next = if (on) autoLevels - m.wire else autoLevels + m.wire
+                                if (next.isNotEmpty()) {
+                                    scope.launch { settings.setLightSyncAutoLevels(next) }
+                                }
+                            }
+                        }
+                    }
                 }
 
                 Spacer(Modifier.height(22.dp))

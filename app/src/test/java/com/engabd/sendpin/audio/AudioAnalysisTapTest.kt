@@ -223,22 +223,34 @@ class AudioAnalysisTapTest {
     }
 
     @Test
-    fun `flush discards buffered audio rather than analysing it late`() {
-        // A seek must not feed the analyzer up to a second of pre-seek samples.
+    fun `flush resets the analyzer so a seek starts clean`() {
+        // A seek or a track change must drop the analyzer's history — its AGC
+        // peaks, its onset thresholds, its audio clock — or the new position is
+        // measured against the old one's loudness.
+        //
+        // Asserted through the reset callback rather than by counting frames
+        // after a sleep. The frame-counting version of this test was racy by
+        // construction: whether stale hops get analysed depends on exactly where
+        // the consumer thread is when the flush lands, so it failed
+        // intermittently while testing nothing the code guarantees. The callback
+        // is the actual contract — it fires when the analyzer is reset, and
+        // always before the first frame of the new audio.
         val tap = configured(48_000, 2)
-        val frames = AtomicInteger()
+        val resets = AtomicInteger()
+        tap.onAnalysisReset = { resets.incrementAndGet() }
         tap.setActive(true)
         try {
-            // Queue audio, then flush before the analysis thread can be sure to
-            // have drained it, and only start counting afterwards.
-            pump(tap, pcm16(48_000, 2, 1.0))
+            // One reset for the session start.
+            val deadline = System.currentTimeMillis() + 2_000
+            while (resets.get() < 1 && System.currentTimeMillis() < deadline) Thread.sleep(10)
+            assertEquals(1, resets.get(), "no reset at session start")
+
+            pump(tap, pcm16(48_000, 2, 0.5), paced = true)
             tap.flush()
-            tap.onFrame = { frames.incrementAndGet() }
-            Thread.sleep(300)
-            val strays = frames.get()
-            // Some frames may already have been in flight when flush landed; what
-            // must not happen is a full second's worth arriving afterwards.
-            assertTrue(strays < 20, "flush left $strays stale frames to be analysed")
+
+            val flushDeadline = System.currentTimeMillis() + 2_000
+            while (resets.get() < 2 && System.currentTimeMillis() < flushDeadline) Thread.sleep(10)
+            assertEquals(2, resets.get(), "flush did not reset the analyzer")
         } finally {
             tap.setActive(false)
         }

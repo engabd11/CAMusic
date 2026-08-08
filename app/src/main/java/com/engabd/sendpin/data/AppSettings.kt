@@ -73,7 +73,9 @@ class AppSettings(private val context: Context) {
          */
         private val LIGHT_SYNC_MODE_AUTO = booleanPreferencesKey("light_sync_mode_auto")
         private val LIGHT_SYNC_ENABLED = booleanPreferencesKey("light_sync_enabled") // direct mode master toggle
-        private val LIGHT_SYNC_INTENSITY = stringPreferencesKey("light_sync_intensity") // subtle|medium|high|intense|extreme
+        private val LIGHT_SYNC_INTENSITY = stringPreferencesKey("light_sync_intensity") // auto|subtle|medium|high|intense|extreme
+        /** Rungs Auto may choose between, comma-separated wire keys. */
+        private val LIGHT_SYNC_AUTO_LEVELS = stringPreferencesKey("light_sync_auto_levels")
         private val LIGHT_SYNC_EFFECT = stringPreferencesKey("light_sync_effect") // music|movies|fireworks
         private val LIGHT_SYNC_COLOR = stringPreferencesKey("light_sync_color") // colour scheme wire key
         private val LIGHT_SYNC_BRIGHTNESS = stringPreferencesKey("light_sync_brightness") // 5..100
@@ -374,6 +376,20 @@ class AppSettings(private val context: Context) {
     /** Which Light Sync transport: "ha" (Home Assistant) or "direct" (Hue Bridge). */
     val lightSyncMode: Flow<String> = context.dataStore.data.map { it[LIGHT_SYNC_MODE] ?: "ha" }
 
+    /**
+     * Rungs Auto is allowed to pick between.
+     *
+     * A palette, not a range: the ladder is rescaled onto whatever is enabled
+     * rather than clipped, so a heavy track still reaches the top of a narrow
+     * selection. Defaults to the calmer three, matching syncoV2.
+     */
+    val lightSyncAutoLevels: Flow<List<String>> = context.dataStore.data.map { prefs ->
+        prefs[LIGHT_SYNC_AUTO_LEVELS]
+            ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
+            ?.takeIf { it.isNotEmpty() }
+            ?: listOf("subtle", "medium", "high")
+    }
+
     /** Whether [lightSyncMode] follows the selected library. See the key's docs. */
     val lightSyncModeAuto: Flow<Boolean> =
         context.dataStore.data.map { it[LIGHT_SYNC_MODE_AUTO] ?: true }
@@ -429,6 +445,10 @@ class AppSettings(private val context: Context) {
             it[LIGHT_SYNC_MODE] = mode
             if (manual) it[LIGHT_SYNC_MODE_AUTO] = false
         }
+    }
+
+    suspend fun setLightSyncAutoLevels(levels: List<String>) {
+        context.dataStore.edit { it[LIGHT_SYNC_AUTO_LEVELS] = levels.joinToString(",") }
     }
 
     /** Hand control of the transport back to the library selection. */

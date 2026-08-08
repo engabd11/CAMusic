@@ -74,6 +74,9 @@ private const val TAG = "DirectLightSync"
  */
 private const val KEEPALIVE_INTERVAL_MS = 9000L
 
+/** The wire value that means "let the picker choose". */
+const val INTENSITY_AUTO = "auto"
+
 /** Minimum gap between repeats of a per-frame warning. See `logThrottled`. */
 private const val LOG_THROTTLE_MS = 5000L
 
@@ -265,6 +268,7 @@ class DirectLightSync(
             lastSent = null
             sendFailures = 0
             revoked = false
+            picker.reset()
             limiterMode = null
             selectLimiter(SyncMode.fromWire(settings.lightSyncIntensity.first()))
             safety?.reset()
@@ -460,6 +464,8 @@ class DirectLightSync(
             val fresh = (now - latestFrameAt) < FRAME_STALE_NANOS
             val frame = if (fresh) latestFrame ?: SILENCE else SILENCE
 
+            if (autoIntensity) applyAutoIntensity(eng, frame, dt)
+
             val colours = try {
                 eng.render(frame, dt, latestGrid, latestStructure)
             } catch (e: Exception) {
@@ -566,6 +572,34 @@ class DirectLightSync(
     }
 
     /**
+     * Let the picker choose the rung for this frame.
+     *
+     * Run here rather than on the analysis thread because it is a rendering
+     * decision measured in render frames, and because switching the rung also
+     * has to swap the safety limiter — Intense and Extreme relax or bypass it,
+     * so the two must move together or a rung change could leave the wrong
+     * limiter in place.
+     */
+    private fun applyAutoIntensity(eng: SyncoEngine, frame: AnalysisFrame, dt: Float) {
+        val grid = latestGrid
+        val picked = picker.update(
+            dt = dt,
+            energy = frame.energy,
+            salience = frame.salience,
+            bpm = if (grid?.locked == true) grid.bpm else 0f,
+            beat = frame.beat,
+            allowed = autoLevels,
+            onsetWidth = frame.onsetWidth,
+            centroid = frame.centroid,
+            flux = frame.flux,
+        )
+        if (picked != eng.mode) {
+            eng.mode = picked
+            selectLimiter(picked)
+        }
+    }
+
+    /**
      * Rebuild the bridge session after a network fault, keeping the show going.
      *
      * Only reached from repeated send failures — a bridge-initiated revocation
@@ -645,6 +679,17 @@ class DirectLightSync(
 
     /** Consecutive failed sends, the trigger for a reconnect. */
     private var sendFailures = 0
+
+    /**
+     * Auto rung selection. Kept out of [SyncMode] deliberately — that enum keys
+     * the engine's parameter table, and an "auto" entry there would be a rung
+     * with no parameters. Auto is a *choice between* rungs, so it lives a level
+     * up: the picker resolves it each frame and sets the engine's real rung.
+     */
+    private val picker = AutoIntensityPicker()
+
+    @Volatile private var autoIntensity = false
+    @Volatile private var autoLevels: List<SyncMode> = DEFAULT_AUTO_LEVELS
 
     private var wakeLock: android.os.PowerManager.WakeLock? = null
     private var wifiLock: android.net.wifi.WifiManager.WifiLock? = null
@@ -818,9 +863,16 @@ class DirectLightSync(
     private fun observeSettings() {
         scope.launch {
             settings.lightSyncIntensity.collect { wire ->
-                val mode = SyncMode.fromWire(wire)
-                engine?.mode = mode
-                selectLimiter(mode)
+                autoIntensity = wire == INTENSITY_AUTO
+                if (autoIntensity) {
+                    // Let the picker choose from the next frame rather than
+                    // holding whatever rung was showing when Auto was selected.
+                    picker.reset()
+                } else {
+                    val mode = SyncMode.fromWire(wire)
+                    engine?.mode = mode
+                    selectLimiter(mode)
+                }
             }
         }
         scope.launch {
@@ -828,6 +880,14 @@ class DirectLightSync(
         }
         scope.launch {
             settings.hueBridgeId.collect { pairedBridgeId = it }
+        }
+        scope.launch {
+            settings.lightSyncAutoLevels.collect { wires ->
+                autoLevels = wires.mapNotNull { w -> SyncMode.entries.firstOrNull { it.wire == w } }
+                    .ifEmpty { DEFAULT_AUTO_LEVELS }
+                // A checklist change should feel immediate, not wait out a dwell.
+                picker.allowImmediateRepick()
+            }
         }
         scope.launch {
             settings.lightSyncColor.collect { wire -> engine?.setScheme(ColorScheme.fromWire(wire)) }
