@@ -128,8 +128,14 @@ class DirectLightSync(
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    /**
+     * The paired bridge's id, mirrored off settings so the TLS hostname verifier
+     * can read it synchronously during a handshake.
+     */
+    @Volatile private var pairedBridgeId: String = ""
+
     /** The bridge client — mDNS discovery, CLIP v2 API. */
-    val bridgeClient = HueBridgeClient(context)
+    val bridgeClient = HueBridgeClient(context, expectedBridgeId = { pairedBridgeId })
 
     // Written on the orchestrator scope, read on the ExoPlayer audio thread and
     // by the settings collectors — volatile so a start/stop is seen promptly and
@@ -661,6 +667,9 @@ class DirectLightSync(
         }
         scope.launch {
             settings.lightSyncEffect.collect { wire -> engine?.effect = SyncEffect.fromWire(wire) }
+        }
+        scope.launch {
+            settings.hueBridgeId.collect { pairedBridgeId = it }
         }
         scope.launch {
             settings.lightSyncColor.collect { wire -> engine?.setScheme(ColorScheme.fromWire(wire)) }

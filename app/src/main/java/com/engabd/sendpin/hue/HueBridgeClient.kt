@@ -1,6 +1,7 @@
 package com.engabd.sendpin.hue
 
 import android.content.Context
+import com.engabd.sendpin.R
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.util.Log
@@ -20,9 +21,13 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
 import java.net.URLEncoder
+import java.security.KeyStore
+import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 import java.util.concurrent.TimeUnit
+import javax.net.ssl.HostnameVerifier
 import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManagerFactory
 import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
 
@@ -34,10 +39,13 @@ import javax.net.ssl.X509TrustManager
  * sends `POST /api` with `generateclientkey: true`, and the bridge returns the
  * `username` (app_key) and `clientkey` (PSK) — both stored encrypted.
  *
- * The bridge uses HTTPS with Signify's private root CA. We bundle the CA
- * certificates in `res/raw/hue_root_certs.pem` and trust those specifically.
- * For older bridges with self-signed certs, trust-on-first-use stores the
- * certificate's fingerprint in DataStore.
+ * The bridge uses HTTPS with Signify's private root CA. The CA certificates are
+ * bundled in `res/raw/hue_root_certs.pem` and are the only ones trusted, and
+ * because the connection is made to an IP the certificate's Subject Common Name
+ * is checked against the bridge id in place of hostname verification — both as
+ * the Using HTTPS page specifies. There is no trust-on-first-use: the early
+ * self-signed bridges have all been updated, and the spec says that logic can be
+ * dropped.
  *
  * Ported from syncoV2's `hue/bridge.py`, using OkHttp instead of aiohttp
  * and kotlinx.serialization instead of dict parsing.
@@ -67,7 +75,13 @@ class HueBridgeException(message: String) : Exception(message)
 
 class HueBridgeClient(
     private val context: Context,
-    private val http: OkHttpClient = createHttpClient(),
+    /**
+     * The bridge id the certificate's Common Name must match, when it is known.
+     * A lambda rather than a value because the client is built before pairing,
+     * and the id arrives from discovery afterwards.
+     */
+    private val expectedBridgeId: () -> String = { "" },
+    private val http: OkHttpClient = createHttpClient(context, expectedBridgeId),
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -340,27 +354,81 @@ class HueBridgeClient(
 
     companion object {
         /**
-         * Create an OkHttp client that trusts the Hue Bridge root CA certificates.
-         * For self-signed (older bridges): trust-on-first-use, which the caller
-         * can override by providing a custom SSLContext.
+         * An OkHttp client that validates the bridge the way Philips specifies.
+         *
+         * Two halves, per the Using HTTPS page. The certificate chain is checked
+         * against Signify's two private root CAs, bundled in
+         * `res/raw/hue_root_certs.pem` — which was already in the repo and read
+         * by nothing. And because the connection is made to an IP rather than a
+         * hostname, ordinary hostname verification cannot apply; the spec's
+         * substitute is to check the certificate's Subject Common Name against
+         * the bridge id, which is what [bridgeIdVerifier] does.
+         *
+         * What this replaces trusted every certificate and returned true from
+         * the hostname verifier — the spec is blunt that disabling validation
+         * "must never be used in production", and it meant the application key
+         * and the DTLS pre-shared key crossed a connection any device on the LAN
+         * could read.
+         *
+         * No trust-on-first-use. A small number of early bridges shipped
+         * self-signed certificates, but the spec records that they have all been
+         * updated and says the TOFU logic "can be removed to simplify your app".
+         *
+         * @param expectedBridgeId when known, the CN must equal it. When blank —
+         *   a bridge reached by manual IP, before discovery has named it — the CN
+         *   must still look like a bridge id, so a valid Signify certificate for
+         *   some *other* device is not accepted either.
          */
-        fun createHttpClient(): OkHttpClient {
-            val sslContext = SSLContext.getInstance("TLS")
-            // Trust all for now — the bridge's self-signed cert will be pinned
-            // in a future revision. The cleartext interceptor blocks non-LAN
-            // access, and the bridge is always on the LAN.
-            val trustManager = object : X509TrustManager {
-                override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
-                override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
-                override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
+        fun createHttpClient(context: Context, expectedBridgeId: () -> String = { "" }): OkHttpClient {
+            val trustManager = signifyTrustManager(context)
+            val sslContext = SSLContext.getInstance("TLS").apply {
+                init(null, arrayOf<TrustManager>(trustManager), java.security.SecureRandom())
             }
-            sslContext.init(null, arrayOf<TrustManager>(trustManager), java.security.SecureRandom())
             return OkHttpClient.Builder()
                 .sslSocketFactory(sslContext.socketFactory, trustManager)
-                .hostnameVerifier { _, _ -> true }  // bridge CN = bridge ID, not hostname
+                .hostnameVerifier(bridgeIdVerifier(expectedBridgeId))
                 .connectTimeout(10, TimeUnit.SECONDS)
                 .readTimeout(15, TimeUnit.SECONDS)
                 .build()
         }
+
+        /**
+         * A trust manager over the bundled Signify roots.
+         *
+         * Chain support matters here: the spec notes device certificates are
+         * currently signed directly by a root but will likely gain an
+         * intermediate, and that only the roots need bundling because the bridge
+         * presents the intermediate itself. [TrustManagerFactory] handles that.
+         */
+        private fun signifyTrustManager(context: Context): X509TrustManager {
+            val factory = CertificateFactory.getInstance("X.509")
+            val keyStore = KeyStore.getInstance(KeyStore.getDefaultType()).apply { load(null, null) }
+            context.resources.openRawResource(R.raw.hue_root_certs).use { input ->
+                val certs = factory.generateCertificates(input)
+                require(certs.isNotEmpty()) { "hue_root_certs.pem contained no certificates" }
+                certs.forEachIndexed { i, cert -> keyStore.setCertificateEntry("hue-root-$i", cert) }
+            }
+            val tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm())
+            tmf.init(keyStore)
+            return tmf.trustManagers.filterIsInstance<X509TrustManager>().first()
+        }
+
+        /** 16 hex characters, the shape of every bridge id. */
+        private val BRIDGE_ID = Regex("^[0-9a-fA-F]{16}$")
+
+        private fun bridgeIdVerifier(expected: () -> String) = HostnameVerifier { _, session ->
+            val cn = try {
+                (session.peerCertificates.firstOrNull() as? X509Certificate)?.let { commonName(it) }
+            } catch (e: Exception) {
+                null
+            } ?: return@HostnameVerifier false
+            if (!BRIDGE_ID.matches(cn)) return@HostnameVerifier false
+            val want = expected()
+            want.isBlank() || cn.equals(want, ignoreCase = true)
+        }
+
+        /** Subject Common Name, or null if the certificate has none. */
+        internal fun commonName(cert: X509Certificate): String? =
+            Regex("CN=([^,]+)").find(cert.subjectX500Principal.name)?.groupValues?.get(1)?.trim()
     }
 }

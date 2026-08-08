@@ -55,6 +55,7 @@ class AppSettings(private val context: Context) {
         private val HUE_CLIENT_KEY = stringPreferencesKey("hue_client_key")   // encrypted (PSK)
         private val HUE_APP_ID = stringPreferencesKey("hue_app_id")           // hue-application-id for DTLS PSK identity
         private val HUE_CONFIG_ID = stringPreferencesKey("hue_entertainment_config_id") // entertainment area UUID
+        private val HUE_BRIDGE_ID = stringPreferencesKey("hue_bridge_id")
         private val LIGHT_SYNC_MODE = stringPreferencesKey("light_sync_mode") // "ha" | "direct"
 
         /**
@@ -362,6 +363,14 @@ class AppSettings(private val context: Context) {
     /** The entertainment area UUID to stream to. */
     val hueEntertainmentConfigId: Flow<String> = context.dataStore.data.map { it[HUE_CONFIG_ID] ?: "" }
 
+    /**
+     * The paired bridge's id. The bridge's TLS certificate carries this as its
+     * Subject Common Name, and checking it is how the app knows it is talking to
+     * *that* bridge — ordinary hostname verification cannot apply when the
+     * connection is made to an IP address.
+     */
+    val hueBridgeId: Flow<String> = context.dataStore.data.map { it[HUE_BRIDGE_ID] ?: "" }
+
     /** Which Light Sync transport: "ha" (Home Assistant) or "direct" (Hue Bridge). */
     val lightSyncMode: Flow<String> = context.dataStore.data.map { it[LIGHT_SYNC_MODE] ?: "ha" }
 
@@ -388,12 +397,22 @@ class AppSettings(private val context: Context) {
     /** Master brightness ceiling (5..100). */
     val lightSyncBrightness: Flow<Int> = context.dataStore.data.map { it[LIGHT_SYNC_BRIGHTNESS]?.toIntOrNull() ?: 100 }
 
-    suspend fun setHueBridge(ip: String, appKey: String, clientKey: String, appId: String = "") {
+    suspend fun setHueBridge(
+        ip: String,
+        appKey: String,
+        clientKey: String,
+        appId: String = "",
+        bridgeId: String = "",
+    ) {
         context.dataStore.edit {
             it[HUE_BRIDGE_IP] = ip
             it[HUE_APP_KEY] = Crypto.encrypt(appKey)
             it[HUE_CLIENT_KEY] = Crypto.encrypt(clientKey)
-            if (appId.isNotBlank()) it[HUE_APP_ID] = appId
+            // Cleared along with the rest on unpair, rather than only written
+            // when non-blank: a stale id or application id left behind would be
+            // checked against the *next* bridge paired.
+            it[HUE_APP_ID] = appId
+            it[HUE_BRIDGE_ID] = bridgeId
         }
     }
 

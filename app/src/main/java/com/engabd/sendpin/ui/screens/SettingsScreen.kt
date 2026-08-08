@@ -1332,7 +1332,11 @@ private fun DirectBridgeSetup(
                                     try {
                                         val (key, clientKey) = bridge.pair(b.host)
                                         val id = bridge.fetchApplicationId(b.host, key) ?: ""
-                                        settings.setHueBridge(b.host, key, clientKey, id)
+                                        // The bridge id comes off the mDNS TXT
+                                        // record and is what the certificate's
+                                        // Common Name is checked against on
+                                        // every later connection.
+                                        settings.setHueBridge(b.host, key, clientKey, id, b.bridgeId)
                                         bridgeIp = b.host
                                         appKey = key
                                         appId = id
