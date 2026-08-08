@@ -1,23 +1,28 @@
 package com.engabd.sendpin.audio
 
-import android.media.AudioFormat
 import androidx.annotation.OptIn
 import androidx.media3.common.C
 import androidx.media3.common.audio.AudioProcessor
-import androidx.media3.common.audio.AudioProcessor.AudioFormat as M3AudioFormat
+import androidx.media3.common.audio.BaseAudioProcessor
 import androidx.media3.common.util.UnstableApi
 import java.nio.ByteBuffer
-import java.nio.ByteOrder
-import kotlin.math.abs
+import java.util.concurrent.locks.LockSupport
 
 /**
  * Taps the ExoPlayer audio chain for Light Sync analysis.
  *
- * Sits in the render pipeline as a pass-through [AudioProcessor]: audio
- * flows through unchanged, but each buffer is downsampled to the analysis
- * sample rate (22050 Hz) and fed to the [AudioAnalyzer]. The analyzer runs
- * on the audio thread — it's all float arithmetic and an FFT, which is
- * fast enough at 50 Hz to stay well under a frame budget.
+ * Sits in the render pipeline as a pass-through [AudioProcessor]: audio flows
+ * through unchanged, while a mono copy is downsampled to the analysis rate
+ * (22050 Hz) and handed to [AudioAnalyzer].
+ *
+ * **Nothing but the copy and the downsample happens on the playback thread.**
+ * That thread is what keeps the AudioTrack fed; stall it and the track
+ * underruns, which is heard as glitching and distortion rather than as a
+ * dropped frame. The analysis — an FFT, a filterbank and three median/MAD onset
+ * thresholds, together some tens of KB of garbage per hop — used to run right
+ * here and was the cause. It now runs on [ANALYSIS_THREAD_NAME], fed through a
+ * preallocated single-producer/single-consumer ring. What is left on the
+ * playback thread allocates nothing at all.
  *
  * [isActive] stays true for any PCM format this can read, rather than tracking
  * whether Light Sync is on. ExoPlayer builds the sink's processing pipeline once
@@ -27,225 +32,334 @@ import kotlin.math.abs
  * switched on mid-song; [setActive] then gates the analysis itself, leaving a
  * buffer copy as the cost of being off.
  *
- * The PCM tap is stereo: ExoPlayer downmixes to mono for the analyzer
- * (the analysis is mono-only, matching syncoV2).
+ * Threading: [queueInput], [onConfigure] and [onFlush] all run on ExoPlayer's
+ * playback thread and are the ring's sole producer. The analysis thread is its
+ * sole consumer and the only thread that ever touches the [AudioAnalyzer].
  */
-
 @OptIn(UnstableApi::class)
-class AudioAnalysisTap : AudioProcessor {
+class AudioAnalysisTap : BaseAudioProcessor() {
 
+    /** Whether analysis is running. The pass-through happens either way. */
     @Volatile
     private var active = false
 
-    /** The analyzer, created when first activated. */
-    private var analyzer: AudioAnalyzer? = null
-
-    /** Resample buffer: accumulates input samples at the source rate. */
-    private var resampleAccumulator = 0f
-    private var resampleCounter = 0
-
-    /** Source sample rate (from ExoPlayer's audio format). */
-    private var sourceRate = 48000
-
-    /** Target analysis rate. */
-    private val targetRate = 22050
-
-    /** Analysis hop size in samples at the target rate. */
-    private val hop = 441
-
-    /** Monotonic buffer for the analyzer hop. */
-    private val hopBuf = FloatArray(hop)
-
-    /** Callback for each completed analysis frame. */
+    /**
+     * Callback for each completed analysis frame. Invoked on the analysis
+     * thread, not the playback thread.
+     */
     @Volatile
     var onFrame: ((AnalysisFrame) -> Unit)? = null
 
-    private var inputAudioFormat: M3AudioFormat? = null
-    private var outputBuffer: ByteBuffer = EMPTY_BUFFER
+    // ── Producer-side state (playback thread only) ────────────────────────
 
-    /** Set by [queueEndOfStream], cleared on [flush]. See [isEnded]. */
-    private var inputEnded = false
+    /** Source sample rate, from ExoPlayer's audio format. */
+    private var sourceRate = 48_000
+
+    private var channelCount = 2
+    private var encoding = C.ENCODING_PCM_16BIT
+
+    /**
+     * Fractional resampler phase. Advances by one per input frame and emits
+     * whenever it passes [ratio], carrying the remainder forward.
+     *
+     * An integer counter compared against a float ratio does not work: at 48 kHz
+     * the ratio is 48000/22050 = 2.177, so `counter >= ratio` first passes at 3
+     * and the analyzer is fed 16 kHz while believing it has 22050 — every band
+     * edge off by 1.378x and every envelope constant running slow. Only 44.1 kHz
+     * (ratio exactly 2.0) came out right.
+     */
+    private var resamplePhase = 0f
+
+    /** Box-filter accumulator over the input frames feeding one output sample. */
+    private var accSum = 0f
+    private var accCount = 0
+
+    /** Last emitted output sample, held when upsampling (see [feedRing]). */
+    private var lastEmitted = 0f
+
+    // ── The ring ──────────────────────────────────────────────────────────
+
+    private val ring = MonoRing(RING_CAPACITY)
+
+    /**
+     * Analysis samples lost to ring overrun since construction. Expected to stay
+     * at zero in normal playback; a non-zero value means the analysis thread was
+     * starved long enough to fall a ring behind, which shows up as the lights
+     * briefly ignoring the music.
+     */
+    val droppedSamples: Long get() = ring.dropped
+
+    // ── Consumer-side state (analysis thread only) ────────────────────────
+
+    private var analysisThread: Thread? = null
+
+    @Volatile
+    private var analysisRunning = false
 
     /**
      * Turn analysis on or off. The processor stays in ExoPlayer's chain either
-     * way (see [isActive]); this only decides whether buffers are analysed.
+     * way (see [isActive]); this only decides whether audio is analysed.
      */
+    @Synchronized
     fun setActive(on: Boolean) {
+        if (on == active) return
         active = on
-        if (on && analyzer == null) {
-            analyzer = AudioAnalyzer()
-        }
-        if (!on) {
-            analyzer?.reset()
-            resampleAccumulator = 0f
-            resampleCounter = 0
-        }
+        if (on) startAnalysis() else stopAnalysis()
     }
+
+    // ── AudioProcessor ────────────────────────────────────────────────────
 
     /**
-     * True for any PCM encoding [analyzeBuffer] can read, so the tap is present
-     * in the chain whether or not Light Sync is currently running. See the class
-     * docstring: this is asked once when the sink is configured, not per buffer.
+     * Returns the input format unchanged for any PCM encoding [feedRing] can
+     * read, which is what makes [isActive] true and keeps the tap in the chain
+     * regardless of whether Light Sync is currently on.
      */
-    override fun isActive(): Boolean = when (inputAudioFormat?.encoding) {
-        C.ENCODING_PCM_16BIT, C.ENCODING_PCM_FLOAT -> true
-        else -> false
-    }
-
-    override fun configure(inputFormat: M3AudioFormat): M3AudioFormat {
-        inputAudioFormat = inputFormat
-        sourceRate = inputFormat.sampleRate
-        return inputFormat  // pass-through: same format out
-    }
-
-    override fun queueEndOfStream() {
-        inputEnded = true
+    override fun onConfigure(inputAudioFormat: AudioProcessor.AudioFormat): AudioProcessor.AudioFormat {
+        return when (inputAudioFormat.encoding) {
+            C.ENCODING_PCM_16BIT, C.ENCODING_PCM_FLOAT -> {
+                sourceRate = inputAudioFormat.sampleRate
+                channelCount = inputAudioFormat.channelCount
+                encoding = inputAudioFormat.encoding
+                inputAudioFormat  // pass-through: same format out
+            }
+            else -> AudioProcessor.AudioFormat.NOT_SET
+        }
     }
 
     override fun queueInput(inputBuffer: ByteBuffer) {
-        // Always pass the input through to the output unchanged.
         val remaining = inputBuffer.remaining()
-        if (remaining > 0) {
-            // Create output buffer matching input
-            if (outputBuffer.capacity() < remaining) {
-                outputBuffer = ByteBuffer.allocateDirect(remaining).order(ByteOrder.nativeOrder())
-            }
-            outputBuffer.clear()
-            outputBuffer.put(inputBuffer.duplicate())
-            outputBuffer.flip()
-            inputBuffer.position(inputBuffer.limit())
+        if (remaining == 0) return
 
-            // Feed the analyzer if active. Built here when missing so a sink
-            // reset mid-session doesn't leave the tap permanently silent.
-            //
-            // analyzeBuffer consumes the buffer's position as it reads through
-            // the PCM data. The same buffer is returned by getOutput() for the
-            // AudioTrack to play, so it must be rewound back to 0 afterwards —
-            // otherwise the AudioTrack sees position == limit and writes silence,
-            // which is exactly what killed local playback when Light Sync was on.
-            if (active) {
-                if (analyzer == null) analyzer = AudioAnalyzer()
-                outputBuffer.rewind()
-                analyzeBuffer(outputBuffer)
-                outputBuffer.rewind()
-            }
-        }
+        // Read for analysis with absolute gets so the buffer's position is
+        // untouched, then hand the whole thing to the output. No duplicate() or
+        // asReadOnlyBuffer() — those allocate a wrapper per call.
+        if (active) feedRing(inputBuffer, inputBuffer.position(), remaining)
+
+        // replaceOutputBuffer keeps a persistent scratch buffer and only grows
+        // it when a larger one is needed. The previous hand-rolled version
+        // compared against `outputBuffer`, which getOutput() had already reset to
+        // the zero-capacity EMPTY_BUFFER — so it allocated a fresh direct
+        // ByteBuffer on every single call, for all local playback, Light Sync on
+        // or off.
+        replaceOutputBuffer(remaining).put(inputBuffer).flip()
     }
 
-    private fun analyzeBuffer(buf: ByteBuffer) {
-        val format = inputAudioFormat ?: return
-        val channels = format.channelCount
-        val encoding = format.encoding
-
-        // Only handle 16-bit PCM and float (the two ExoPlayer uses)
-        when (encoding) {
-            C.ENCODING_PCM_16BIT -> analyze16Bit(buf, channels)
-            C.ENCODING_PCM_FLOAT -> analyzeFloat(buf, channels)
-            else -> {}  // unsupported encoding, skip
-        }
+    override fun onFlush() {
+        // Discard buffered audio so a seek doesn't feed the analyzer up to a
+        // second of stale samples, and tell the analysis thread to start clean.
+        ring.clear()
+        resamplePhase = 0f
+        accSum = 0f
+        accCount = 0
+        lastEmitted = 0f
     }
 
-    private fun analyze16Bit(buf: ByteBuffer, channels: Int) {
-        val an = analyzer ?: return
-        val ratio = sourceRate.toFloat() / targetRate.toFloat()
-
-        while (buf.remaining() >= channels * 2) {
-            // Read one frame, downmix to mono
-            var sum = 0f
-            for (c in 0 until channels) {
-                val sample = buf.short.toInt() // big-endian by default in media3
-                sum += sample / 32768f
-            }
-            val mono = sum / channels
-
-            // Linear resample to target rate
-            resampleAccumulator += mono
-            resampleCounter++
-            if (resampleCounter >= ratio) {
-                val sample = resampleAccumulator / resampleCounter
-                resampleAccumulator = 0f
-                resampleCounter = 0
-
-                // Push into hop buffer
-                val hopPos = (analyzerHopCounter++) % hop
-                hopBuf[hopPos] = sample
-
-                if (hopPos == hop - 1) {
-                    // Complete hop → analyze
-                    val frame = an.push(hopBuf.copyOf())
-                    onFrame?.invoke(frame)
-                }
-            }
-        }
-    }
-
-    private fun analyzeFloat(buf: ByteBuffer, channels: Int) {
-        val an = analyzer ?: return
-        val ratio = sourceRate.toFloat() / targetRate.toFloat()
-
-        while (buf.remaining() >= channels * 4) {
-            var sum = 0f
-            for (c in 0 until channels) {
-                sum += buf.float
-            }
-            val mono = sum / channels
-
-            resampleAccumulator += mono
-            resampleCounter++
-            if (resampleCounter >= ratio) {
-                val sample = resampleAccumulator / resampleCounter
-                resampleAccumulator = 0f
-                resampleCounter = 0
-
-                val hopPos = (analyzerHopCounter++) % hop
-                hopBuf[hopPos] = sample
-
-                if (hopPos == hop - 1) {
-                    val frame = an.push(hopBuf.copyOf())
-                    onFrame?.invoke(frame)
-                }
-            }
-        }
-    }
-
-    private var analyzerHopCounter = 0
-
-    override fun getOutput(): ByteBuffer {
-        val out = outputBuffer
-        outputBuffer = EMPTY_BUFFER
-        return out
-    }
-
-    /**
-     * `AudioProcessingPipeline.processData` skips calling `queueInput`/`getOutput` on any
-     * processor that reports ended, so this must only be true once end-of-stream has been
-     * queued *and* every buffer already produced has been drained — never unconditionally,
-     * or the pipeline treats the tap as having nothing left to give it and no audio ever
-     * reaches the sink. (This was the cause of local playback going silent entirely: the
-     * tap sits in the chain regardless of Light Sync mode.)
-     */
-    override fun isEnded(): Boolean = inputEnded && outputBuffer === EMPTY_BUFFER
-
-    override fun flush() {
-        inputEnded = false
-        outputBuffer = EMPTY_BUFFER
-        analyzer?.reset()
-        resampleAccumulator = 0f
-        resampleCounter = 0
-        analyzerHopCounter = 0
-    }
-
-    override fun reset() {
-        flush()
-        analyzer = null
+    override fun onReset() {
         // `active` is owned by DirectLightSync, not by the sink's lifecycle. A
         // reset here means ExoPlayer is reconfiguring, not that the user turned
         // Light Sync off — clearing it would strand a running session with a tap
-        // that silently stopped analysing. The analyzer is rebuilt on the next
-        // buffer instead.
+        // that silently stopped analysing.
+        ring.clear()
+    }
+
+    // ── Downmix + resample (playback thread) ──────────────────────────────
+
+    /**
+     * Downmix to mono, resample to [TARGET_RATE] and write into the ring.
+     * Allocation-free by construction: absolute reads, scalar accumulators, and
+     * a preallocated ring.
+     */
+    private fun feedRing(buf: ByteBuffer, start: Int, byteCount: Int) {
+        val ch = channelCount
+        if (ch <= 0) return
+        val ratio = sourceRate.toFloat() / TARGET_RATE
+        if (ratio <= 0f) return
+
+        val bytesPerSample = if (encoding == C.ENCODING_PCM_FLOAT) 4 else 2
+        val frameBytes = bytesPerSample * ch
+        if (frameBytes <= 0) return
+        val frames = byteCount / frameBytes
+
+        var offset = start
+        for (f in 0 until frames) {
+            var sum = 0f
+            if (encoding == C.ENCODING_PCM_FLOAT) {
+                for (c in 0 until ch) sum += buf.getFloat(offset + c * 4)
+            } else {
+                for (c in 0 until ch) sum += buf.getShort(offset + c * 2) / 32768f
+            }
+            offset += frameBytes
+
+            accSum += sum / ch
+            accCount++
+            resamplePhase += 1f
+            while (resamplePhase >= ratio) {
+                resamplePhase -= ratio
+                if (accCount > 0) {
+                    lastEmitted = accSum / accCount
+                    accSum = 0f
+                    accCount = 0
+                }
+                // When ratio < 1 the source is slower than the analysis rate and
+                // one input frame owes more than one output sample; repeating the
+                // value is a zero-order hold, which beats emitting a gap.
+                ring.write(lastEmitted)
+            }
+        }
+    }
+
+    // ── Analysis thread ───────────────────────────────────────────────────
+
+    private fun startAnalysis() {
+        if (analysisThread != null) return
+        // Safe to reset the indices outright: the previous consumer has been
+        // joined and the next has not started, so there is nobody to race. Going
+        // through clear()/dropAll() would not do here — the incoming thread reads
+        // clearSeq as its baseline and would see no change to react to, and then
+        // analyse whatever the last session left unread.
+        ring.resetWhileIdle()
+        analysisRunning = true
+        analysisThread = Thread(::analysisLoop, ANALYSIS_THREAD_NAME).apply {
+            isDaemon = true
+            start()
+        }
+    }
+
+    private fun stopAnalysis() {
+        analysisRunning = false
+        analysisThread?.let { t ->
+            t.interrupt()
+            t.join(THREAD_JOIN_MS)
+        }
+        analysisThread = null
+    }
+
+    /**
+     * Drains the ring one hop at a time. The analyzer is created and reset here
+     * and nowhere else, so it is never touched by two threads.
+     */
+    private fun analysisLoop() {
+        val analyzer = AudioAnalyzer()
+        val hopBuf = FloatArray(ANALYSIS_HOP)
+        var seenClear = ring.clearSeq
+        while (analysisRunning && !Thread.currentThread().isInterrupted) {
+            val clear = ring.clearSeq
+            if (clear != seenClear) {
+                seenClear = clear
+                ring.dropAll()
+                analyzer.reset()
+                continue
+            }
+            if (!ring.read(hopBuf)) {
+                // Hops arrive every ~20 ms; parking briefly costs far less than
+                // spinning and is well inside the tap's lead over the speaker.
+                LockSupport.parkNanos(IDLE_PARK_NANOS)
+                continue
+            }
+            // push() copies out of hopBuf immediately, so the buffer is reused.
+            val frame = analyzer.push(hopBuf)
+            onFrame?.invoke(frame)
+        }
+    }
+
+    /**
+     * Lock-free single-producer/single-consumer float ring.
+     *
+     * The producer is the playback thread; the consumer is the analysis thread.
+     * On overrun the producer drops the incoming sample rather than blocking —
+     * a stalled analysis thread must never be able to stall audio. Overrun means
+     * the consumer has fallen more than [RING_CAPACITY] samples behind, which at
+     * 22050 Hz is over a second and should not happen.
+     */
+    private class MonoRing(capacity: Int) {
+        init {
+            require(capacity > 0 && capacity and (capacity - 1) == 0) {
+                "ring capacity must be a power of two, got $capacity"
+            }
+        }
+
+        private val buf = FloatArray(capacity)
+        private val mask = capacity - 1
+
+        @Volatile
+        private var writeIdx = 0L
+
+        @Volatile
+        private var readIdx = 0L
+
+        /** Bumped by the producer on flush; the consumer resets when it changes. */
+        @Volatile
+        var clearSeq = 0
+            private set
+
+        /**
+         * Samples discarded to overrun. Producer-owned; read for diagnostics.
+         * Should stay at zero — ExoPlayer paces the sink to roughly real time,
+         * so reaching [RING_CAPACITY] means the analysis thread was starved for
+         * over a second.
+         */
+        @Volatile
+        var dropped = 0L
+            private set
+
+        /** Producer side. */
+        fun write(v: Float) {
+            val w = writeIdx
+            if (w - readIdx >= buf.size) {
+                dropped++  // overrun: drop rather than block, audio comes first
+                return
+            }
+            buf[(w and mask.toLong()).toInt()] = v
+            writeIdx = w + 1  // release: publishes the slot written above
+        }
+
+        /** Producer side. */
+        fun clear() {
+            clearSeq++
+        }
+
+        /**
+         * Full reset, valid **only** with no consumer thread running — it writes
+         * both indices, which are otherwise single-owner. Used between analysis
+         * sessions, where the old thread has been joined and the new one has not
+         * yet started.
+         */
+        fun resetWhileIdle() {
+            readIdx = 0
+            writeIdx = 0
+            dropped = 0
+        }
+
+        /** Consumer side: skip everything currently buffered. */
+        fun dropAll() {
+            readIdx = writeIdx
+        }
+
+        /** Consumer side: fill [out] if a full hop is available. */
+        fun read(out: FloatArray): Boolean {
+            val r = readIdx
+            if (writeIdx - r < out.size) return false  // acquire
+            for (i in out.indices) out[i] = buf[((r + i) and mask.toLong()).toInt()]
+            readIdx = r + out.size
+            return true
+        }
     }
 
     companion object {
-        private val EMPTY_BUFFER: ByteBuffer = ByteBuffer.allocateDirect(0).order(ByteOrder.nativeOrder())
+        private const val TARGET_RATE = ANALYSIS_SAMPLE_RATE
+        private const val ANALYSIS_THREAD_NAME = "light-sync-analysis"
+
+        /**
+         * ~3 s at the analysis rate; a power of two for cheap index masking.
+         * 256 KB buys enough headroom that a briefly descheduled analysis thread
+         * on a loaded phone cannot lose audio, which is worth far more than the
+         * memory.
+         */
+        private const val RING_CAPACITY = 65_536
+
+        /** Hop period is ~20 ms, so a 5 ms park adds negligible latency. */
+        private const val IDLE_PARK_NANOS = 5_000_000L
+
+        private const val THREAD_JOIN_MS = 250L
     }
 }

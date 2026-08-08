@@ -313,6 +313,12 @@ private const val ENV_FALL = 0.10f
 private const val PRESENCE_RISE = 0.04f
 private const val PRESENCE_FALL = 0.008f
 private const val MELBANK_BINS = 16
+
+/**
+ * How many recent beats the highlight quantile ranks against (~12 s at 120 BPM).
+ * Matches syncoV2's rolling accent window in `effects/engine.py`.
+ */
+private const val ACCENT_WINDOW = 24
 private val ROLE_BASS = 0; private val ROLE_MID = 1; private val ROLE_VOCAL = 2
 
 // ── Engine ─────────────────────────────────────────────────────────────────
@@ -436,13 +442,28 @@ class SyncoEngine(
 
     // ── Highlight ranking ─────────────────────────────────────────────────
 
+    /**
+     * Is this beat strong enough to earn a full-brightness flash?
+     *
+     * Ranked against the most recent [ACCENT_WINDOW] beats, not against the whole
+     * song. The window has to be bounded on both counts: an unbounded deque grows
+     * for the life of a session and is re-sorted on every beat, and — the part
+     * that shows — the threshold drifts toward an all-time percentile, so
+     * highlights get steadily less selective the longer the music plays. A
+     * rolling window keeps "loud for this passage" meaning what it says.
+     */
     private fun beatHighlight(accent: Float, append: Boolean): Boolean {
         if (params.highlightQuantile <= 0f) return true
         if (accents.size < 8) return accent >= 0.3f
+        // Ranked before joining the window, matching syncoV2: a beat competes
+        // against its predecessors, not against itself.
         val sorted = accents.sorted()
         val thr = sorted[min(sorted.lastIndex, (params.highlightQuantile * sorted.size).toInt())]
         val ok = accent >= thr
-        if (append) accents.addLast(accent)
+        if (append) {
+            accents.addLast(accent)
+            while (accents.size > ACCENT_WINDOW) accents.removeFirst()
+        }
         return ok
     }
 

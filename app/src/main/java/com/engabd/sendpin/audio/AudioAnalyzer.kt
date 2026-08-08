@@ -25,8 +25,11 @@ import kotlin.math.PI
 
 // ── Constants (mirroring syncoV2 const.py + analyzer.py) ───────────────────
 
-private const val ANALYSIS_SAMPLE_RATE = 22050
-private const val ANALYSIS_HOP = 441        // ~20ms hop → ~50 frames/sec
+// Internal rather than private: AudioAnalysisTap resamples to this rate and
+// hands over hops of exactly this size, so the two files must agree. A local
+// copy of either number in the tap is a silent desync waiting to happen.
+internal const val ANALYSIS_SAMPLE_RATE = 22050
+internal const val ANALYSIS_HOP = 441       // ~20ms hop → ~50 frames/sec
 private const val ANALYSIS_WINDOW = 1024   // FFT window size
 private const val ANALYSIS_NOISE_FLOOR = 2.0e-3f
 private const val NFFT = 2 * ANALYSIS_WINDOW  // zero-padded → ~10.8 Hz bins
@@ -273,7 +276,6 @@ class AudioAnalyzer(
     private var sinceBeat = ONSET_REFRACTORY
     private var sinceBass = ONSET_REFRACTORY
     private var sinceMid = ONSET_REFRACTORY
-    private val beatTimes = ArrayDeque<Double>()
     private var frameIndex = 0
 
     // Salience
@@ -350,40 +352,18 @@ class AudioAnalyzer(
         val melNormed = FloatArray(nMel) { i -> melAgc[i].normalise(melMeans[i]) }
         val melbank = melFilter.update(melNormed)
 
-        // Spectral centroid
+        // Spectral centroid. A silent frame leaves it at zero rather than
+        // dividing by an empty spectrum.
         var total = 0f
         for (m in mag) total += m
-        var weighted = 0f
-        if (total > 1e-9f) {
+        val centroid = if (total > 1e-9f) {
+            var weighted = 0f
             for (i in mag.indices) weighted += freqs[i] * mag[i]
-            val centroidHz = weighted / total
-            val centroid = min(1f, centroidHz / 5000f)
-
-            val tempo = estimateTempo()
-            val tAudio = frameIndex * framePeriod
-            frameIndex++
-
-            return AnalysisFrame(
-                bands = bands,
-                energy = energy,
-                melbank = melbank,
-                beat = onsets.beat,
-                beatStrength = onsets.strength,
-                flux = fluxAgc.normalise(onsets.flux),
-                tAudio = tAudio,
-                centroid = centroid,
-                bassFlux = bassFluxAgc.normalise(onsets.bassFlux),
-                bassBeat = onsets.bassBeat,
-                bassStrength = onsets.bassStrength,
-                midFlux = midFluxAgc.normalise(onsets.midFlux),
-                midBeat = onsets.midBeat,
-                midStrength = onsets.midStrength,
-                salience = salience,
-                onsetWidth = onsets.width,
-            )
+            min(1f, (weighted / total) / 5000f)
+        } else {
+            0f
         }
 
-        val tempo = estimateTempo()
         val tAudio = frameIndex * framePeriod
         frameIndex++
 
@@ -395,6 +375,7 @@ class AudioAnalyzer(
             beatStrength = onsets.strength,
             flux = fluxAgc.normalise(onsets.flux),
             tAudio = tAudio,
+            centroid = centroid,
             bassFlux = bassFluxAgc.normalise(onsets.bassFlux),
             bassBeat = onsets.bassBeat,
             bassStrength = onsets.bassStrength,
@@ -467,7 +448,6 @@ class AudioAnalyzer(
         // Broadband beat
         val (beat, strength) = thresholdOnset(flux, fluxHist, sinceBeat)
         sinceBeat = if (beat) 0 else sinceBeat + 1
-        if (beat) beatTimes.add(frameIndex * framePeriod.toDouble())
 
         // Bass beat: requires bass dominance
         val bassResult = if (bassShare >= BASS_FLUX_SHARE && bassShare >= midShare) {
@@ -528,14 +508,6 @@ class AudioAnalyzer(
         return false to 0f
     }
 
-    private fun estimateTempo(): Float? {
-        if (beatTimes.size < 4) return null
-        val intervals = DoubleArray(beatTimes.size - 1) { i -> beatTimes[i + 1] - beatTimes[i] }
-        val valid = intervals.filter { it > 0.25 && it < 2.0 }
-        if (valid.size < 2) return null
-        return (60.0 / median(valid.toDoubleArray())).toFloat()
-    }
-
     fun reset() {
         for (a in agc.values) a.reset()
         energyAgc.reset()
@@ -544,7 +516,6 @@ class AudioAnalyzer(
         prevLog = null; prevLin = null
         midEprev = 0f; midRiseN = 0; midAttackOk = false; midAttackFlux = 0f
         fluxHist.clear(); bassHist.clear(); midHist.clear()
-        beatTimes.clear()
         sinceBeat = ONSET_REFRACTORY; sinceBass = ONSET_REFRACTORY; sinceMid = ONSET_REFRACTORY
         rmsSmooth = 0f; loudRef = SALIENCE_MIN_REF; bassSlow = 0f; midSlow = 0f
         frameIndex = 0

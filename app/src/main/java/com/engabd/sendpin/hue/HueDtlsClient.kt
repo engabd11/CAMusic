@@ -49,6 +49,12 @@ private val CIPHER_PSK_AES128_GCM_SHA256 = byteArrayOf(0x00, 0xA8.toByte())
 private const val HANDSHAKE_TIMEOUT_MS = 1000
 private const val HANDSHAKE_RETRIES = 6
 
+/**
+ * Timeout for the alert drain in `pollAlert`. Small but non-zero — a healthy
+ * entertainment stream sends nothing back, so this is how the drain terminates.
+ */
+private const val POLL_TIMEOUT_MS = 1
+
 // ── TLS 1.2 PRF (P_SHA256) ────────────────────────────────────────────────
 
 private fun pHash(secret: ByteArray, seed: ByteArray, length: Int): ByteArray {
@@ -305,28 +311,33 @@ class DtlsPskClient(
 
     // ── Record framing ────────────────────────────────────────────────────
 
+    /**
+     * Frame one DTLS record: `type || version || epoch(2) || seq(6) || len(2) || fragment`.
+     *
+     * Synchronized because three threads reach it — the 60 Hz render loop, the
+     * keepalive loop and [close] — and both pieces of shared state it touches are
+     * unsafe to interleave. [sendSeq] feeds the GCM nonce, so two threads taking
+     * the same sequence number would reuse a nonce under one key, which breaks
+     * GCM outright and in practice earns a `bad_record_mac` from the bridge. The
+     * [gcmClient] cipher is also a single re-initialised instance, so the
+     * allocation and the encryption have to stay atomic together.
+     */
+    @Synchronized
     private fun record(contentType: Byte, fragment: ByteArray, encrypt: Boolean): ByteArray {
         val epoch = sendEpoch
         val seq = sendSeq
         sendSeq++
-        val seqBytes = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN)
-            .putShort(epoch.toShort())
-            .putInt((seq shr 16).toInt())
-            .putShort((seq and 0xFFFF).toShort())
-            .array()
-        // Actually the seq is 6 bytes after 2-byte epoch. Let's fix:
-        val seqBytesFixed = ByteArray(8)
-        seqBytesFixed[0] = ((epoch shr 8) and 0xFF).toByte()
-        seqBytesFixed[1] = (epoch and 0xFF).toByte()
-        // 6-byte sequence number
+        val seqBytes = ByteArray(8)
+        seqBytes[0] = ((epoch shr 8) and 0xFF).toByte()
+        seqBytes[1] = (epoch and 0xFF).toByte()
         for (i in 0 until 6) {
-            seqBytesFixed[2 + i] = ((seq shr ((5 - i) * 8)) and 0xFF).toByte()
+            seqBytes[2 + i] = ((seq shr ((5 - i) * 8)) and 0xFF).toByte()
         }
-        val encFragment = if (encrypt) encryptRecord(contentType, seqBytesFixed, fragment) else fragment
+        val encFragment = if (encrypt) encryptRecord(contentType, seqBytes, fragment) else fragment
         val header = ByteBuffer.allocate(13 + encFragment.size).order(ByteOrder.BIG_ENDIAN)
         header.put(contentType)
         header.put(DTLS_1_2)
-        header.put(seqBytesFixed)
+        header.put(seqBytes)
         header.putShort(encFragment.size.toShort())
         header.put(encFragment)
         return header.array()
@@ -488,17 +499,33 @@ class DtlsPskClient(
 
     // ── Application data ───────────────────────────────────────────────────
 
+    /**
+     * Synchronized alongside [record] so a record and its transmission stay
+     * together: allocating sequence numbers under a lock but then racing to the
+     * socket would put records on the wire out of order for no benefit.
+     */
+    @Synchronized
     fun send(data: ByteArray) {
         val s = socket ?: throw DtlsException("DTLS channel not connected")
         val rec = record(CT_APPLICATION_DATA, data, encrypt = true)
         s.send(java.net.DatagramPacket(rec, rec.size, serverAddress, port))
     }
 
-    /** Read any pending DTLS alert; returns (level, description) or null. */
+    /**
+     * Drain any pending DTLS alert; returns (level, description) or null.
+     *
+     * The timeout must be a small positive value, never 0: in Java `SO_TIMEOUT
+     * = 0` means *block forever*, not "don't block". With 0 this parked an IO
+     * thread on the first call and never came back — the loop's only exit is the
+     * `SocketTimeoutException` below, which could never fire. That took the
+     * keepalive resend with it, and the bridge closes an idle entertainment
+     * session after 10 seconds, so the whole revocation-detection and
+     * session-holding path was dead.
+     */
     fun pollAlert(): Pair<Int, Int>? {
         val s = socket ?: return null
         val prevTimeout = s.soTimeout
-        s.soTimeout = 0
+        s.soTimeout = POLL_TIMEOUT_MS
         var alert: Pair<Int, Int>? = null
         try {
             while (true) {

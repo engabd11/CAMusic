@@ -114,8 +114,10 @@ class LocalPlayer(private val context: Context) {
     private var preferredOutput: AudioDeviceInfo? = null
 
     /**
-     * The Light Sync audio analysis tap. Shared with [DirectLightSync] which
-     * activates/deactivates it. When inactive, ExoPlayer bypasses it entirely.
+     * The Light Sync audio analysis tap. Shared with [DirectLightSync], which
+     * activates and deactivates it. The tap stays in ExoPlayer's processor chain
+     * either way — see its docstring for why — so being inactive costs a buffer
+     * copy, not nothing.
      */
     val audioAnalysisTap = AudioAnalysisTap()
 
@@ -260,8 +262,9 @@ class LocalPlayer(private val context: Context) {
         // revisiting behind the bit-perfect setting, measured, not assumed.
         // The Light Sync audio analysis tap is injected via TapRenderersFactory,
         // which overrides buildAudioSink to install the tap in the audio sink's
-        // processor chain. When the tap is inactive (direct Light Sync off),
-        // the sink bypasses it entirely — zero overhead.
+        // processor chain. It stays in the chain whether or not Light Sync is on,
+        // because the sink decides membership once per configuration; the cost
+        // when off is a buffer copy per callback and nothing else.
         val renderers = TapRenderersFactory(context, audioAnalysisTap)
 
         // The defaults are sized for video-on-mobile-data. This is a lossless file

@@ -20,12 +20,16 @@ class Fft(val size: Int) {
     }
 
     /**
-     * Pre-computed twiddle factors (cos, sin) for each stage.
-     * `twiddles[k] = (cos(-2πk/N), sin(-2πk/N))`.
+     * Pre-computed twiddle factors, `w[k] = e^(-2πik/N)`, split into parallel
+     * float arrays rather than an `Array<Pair<Float, Float>>`: a `Pair<Float,
+     * Float>` boxes both components, so the butterfly's innermost loop would
+     * chase two pointers and unbox on every read.
      */
-    private val twiddles: Array<Pair<Float, Float>> = Array(size / 2) { k ->
-        val angle = -2.0 * Math.PI * k / size
-        cos(angle).toFloat() to sin(angle).toFloat()
+    private val twiddleRe = FloatArray(size / 2) { k ->
+        cos(-2.0 * Math.PI * k / size).toFloat()
+    }
+    private val twiddleIm = FloatArray(size / 2) { k ->
+        sin(-2.0 * Math.PI * k / size).toFloat()
     }
 
     /**
@@ -67,7 +71,8 @@ class Fft(val size: Int) {
             for (i in 0 until size step len) {
                 for (j in 0 until halfLen) {
                     val k = j * step
-                    val (wr, wi) = twiddles[k]
+                    val wr = twiddleRe[k]
+                    val wi = twiddleIm[k]
                     val ar = i + j
                     val br = i + j + halfLen
                     val tr = data[br * 2] * wr - data[br * 2 + 1] * wi
@@ -82,20 +87,36 @@ class Fft(val size: Int) {
         }
     }
 
+    /** Scratch complex buffer, reused across calls. See [magnitudePower]. */
+    private val complex = FloatArray(size * 2)
+
+    /** Scratch output buffer, reused across calls. See [magnitudePower]. */
+    private val mags = FloatArray(size / 2 + 1)
+
     /**
-     * One-sided magnitude spectrum of a real-valued window.
-     * Returns `size/2 + 1` magnitudes (re²+im², not sqrt'd — callers that
-     * only compare values can skip the sqrt for speed).
+     * One-sided power spectrum of a real-valued window: `size/2 + 1` bins of
+     * `re² + im²`. Not square-rooted — callers that only compare bins can skip
+     * the sqrt, and [AudioAnalyzer] takes it in place when it does want linear
+     * magnitude.
+     *
+     * The returned array is **owned by this Fft instance** and is overwritten by
+     * the next call. Callers may mutate it (the analyzer square-roots in place)
+     * but must finish with it before pushing another window. This keeps the hop
+     * path allocation-free, which matters because it runs at ~50 Hz for the whole
+     * length of a track.
+     *
+     * Real input goes in the real slots only — `complex[2i]` — leaving the
+     * imaginary slots zero. Packing it any other way (e.g. `arraycopy` straight
+     * into the interleaved buffer) transforms `x[2n] + i·x[2n+1]` instead of the
+     * signal, which is the packed real-FFT trick and is only valid with a
+     * conjugate-symmetry unpacking step this does not do.
      */
     fun magnitudePower(window: FloatArray): FloatArray {
-        // Prepare complex input (real, imag=0), zero-padded if needed.
-        val complex = FloatArray(size * 2)
+        java.util.Arrays.fill(complex, 0f)
         val copyLen = minOf(window.size, size)
-        System.arraycopy(window, 0, complex, 0, copyLen)
+        for (i in 0 until copyLen) complex[i * 2] = window[i]
         forward(complex)
-        val nOut = size / 2 + 1
-        val mags = FloatArray(nOut)
-        for (i in 0 until nOut) {
+        for (i in mags.indices) {
             val re = complex[i * 2]
             val im = complex[i * 2 + 1]
             mags[i] = re * re + im * im

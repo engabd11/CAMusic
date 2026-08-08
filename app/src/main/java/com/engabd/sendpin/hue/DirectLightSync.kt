@@ -42,7 +42,15 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 
 private const val TAG = "DirectLightSync"
+
+/**
+ * The bridge closes an entertainment session after 10 s of silence, so the
+ * keepalive has to beat that. Matches syncoV2's `KEEPALIVE_INTERVAL`.
+ */
 private const val KEEPALIVE_INTERVAL_MS = 9000L
+
+/** Minimum gap between repeats of a per-frame warning. See `logThrottled`. */
+private const val LOG_THROTTLE_MS = 5000L
 
 /**
  * Entertainment stream rate. The Hue Entertainment API is streamed at 50–60 Hz;
@@ -195,15 +203,24 @@ class DirectLightSync(
     }
 
     /**
-     * Stop the direct Light Sync session.
-     * Safe to call multiple times.
+     * Stop the direct Light Sync session and release the entertainment area.
+     *
+     * Suspends until the bridge has actually been told to stop. Two reasons it
+     * cannot be fire-and-forget:
+     *
+     * - Its caller collects on the main dispatcher, and teardown does real
+     *   network I/O — `close()` builds an AES-GCM `close_notify` record and puts
+     *   it on the wire, and `stopStream` is an HTTPS PUT.
+     * - An area change is a stop followed immediately by a start. When the stop's
+     *   PUT was launched asynchronously it could land *after* the start's, and
+     *   kill the session that had just been opened on the new area.
      */
-    fun stop() {
-        if (!running.getAndSet(false)) return
+    suspend fun stop() = withContext(Dispatchers.IO) {
+        if (!running.getAndSet(false)) return@withContext
         cleanup()
     }
 
-    private fun cleanup() {
+    private suspend fun cleanup() {
         audioTap.setActive(false)
         audioTap.onFrame = null
 
@@ -213,22 +230,21 @@ class DirectLightSync(
         engine = null
         encoder = null
 
-        // Close DTLS (sends close_notify).
+        // Close DTLS (sends close_notify) so the bridge frees the session at
+        // once; without it a restart inside the ~10 s linger is ignored.
         dtls?.close()
         dtls = null
 
-        // Stop the stream on the bridge.
-        scope.launch {
-            try {
-                val host = settings.hueBridgeIp.first()
-                val appKey = settings.hueAppKey.first()
-                val configId = settings.hueEntertainmentConfigId.first()
-                if (host.isNotBlank() && appKey.isNotBlank() && configId.isNotBlank()) {
-                    bridgeClient.stopStream(host, appKey, configId)
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to stop stream on bridge: ${e.message}")
+        // Stop the stream on the bridge, inline so callers can sequence against it.
+        try {
+            val host = settings.hueBridgeIp.first()
+            val appKey = settings.hueAppKey.first()
+            val configId = settings.hueEntertainmentConfigId.first()
+            if (host.isNotBlank() && appKey.isNotBlank() && configId.isNotBlank()) {
+                bridgeClient.stopStream(host, appKey, configId)
             }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to stop stream on bridge: ${e.message}")
         }
 
         _active.value = false
@@ -300,7 +316,7 @@ class DirectLightSync(
             val packets = try {
                 enc.buildPackets(eng.render(frame, dt))
             } catch (e: Exception) {
-                Log.w(TAG, "Render failed: ${e.message}")
+                logThrottled("Render failed: ${e.message}")
                 continue
             }
 
@@ -316,11 +332,25 @@ class DirectLightSync(
                     scope.launch { cleanup() }
                     return
                 } catch (e: Exception) {
-                    Log.w(TAG, "DTLS send failed: ${e.message}")
+                    logThrottled("DTLS send failed: ${e.message}")
                 }
             }
         }
     }
+
+    /**
+     * Log at most once per [LOG_THROTTLE_MS]. This loop runs at 60 Hz, so a dead
+     * network or a persistent render fault would otherwise emit 60 identical
+     * lines a second and bury whatever else is in logcat.
+     */
+    private fun logThrottled(message: String) {
+        val now = System.nanoTime()
+        if (now - lastLogAt < LOG_THROTTLE_MS * 1_000_000L) return
+        lastLogAt = now
+        Log.w(TAG, message)
+    }
+
+    private var lastLogAt = 0L
 
     // ── Keepalive ───────────────────────────────────────────────────────────
 

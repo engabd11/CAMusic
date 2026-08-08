@@ -147,6 +147,12 @@ class SendpinApp : Application(), ImageLoaderFactory {
                     // follows a `start()` which earlier bailed out for want of a
                     // configured area — enabling the toggle before picking an area used
                     // to leave the session permanently stuck in that failed state.
+                    //
+                    // The ordering here is load-bearing on an area change, and it holds
+                    // because `stop()` suspends until the bridge has been told to stop.
+                    // While teardown was fire-and-forget, its `action:stop` PUT could
+                    // land after the new area's `action:start` and close the session
+                    // that had just been opened.
                     if (shouldRun) {
                         if (started) directLightSync.stop()
                         started = true
