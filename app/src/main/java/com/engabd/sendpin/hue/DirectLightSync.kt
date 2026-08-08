@@ -223,7 +223,7 @@ class DirectLightSync(
             selectLimiter(SyncMode.fromWire(settings.lightSyncIntensity.first()))
             safety?.reset()
             encoder = HueStreamEncoder(config.id)
-            engine = SyncoEngine(channels).also {
+            engine = SyncoEngine(channels, config.configurationType).also {
                 it.mode = SyncMode.fromWire(settings.lightSyncIntensity.first())
                 it.effect = SyncEffect.fromWire(settings.lightSyncEffect.first())
                 it.setScheme(ColorScheme.fromWire(settings.lightSyncColor.first()))
@@ -408,7 +408,7 @@ class DirectLightSync(
             val frame = if (fresh) latestFrame ?: SILENCE else SILENCE
 
             val colours = try {
-                eng.render(frame, dt)
+                eng.render(frame, dt, latestGrid, latestStructure)
             } catch (e: Exception) {
                 logThrottled("Render failed: ${e.message}")
                 continue

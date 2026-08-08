@@ -1,6 +1,8 @@
 package com.engabd.sendpin.hue
 
 import com.engabd.sendpin.audio.AnalysisFrame
+import com.engabd.sendpin.audio.BeatGrid
+import com.engabd.sendpin.audio.StructureState
 import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
@@ -88,6 +90,8 @@ data class ModeParams(
     val highlightQuantile: Float = 0.30f,
     val weakPulse: Float = 0.25f,
     val downbeatPulse: Float = 0.40f,
+    /** Accents below this barely register, which is what makes a rung selective. */
+    val accentFloor: Float = 0.0f,
     val colourJump: Float = 0.045f,   // palette advance per beat
     val colourSpread: Float = 0.70f,  // per-lamp hue variation
     val fullRoomAccent: Float = 2.0f, // accent at/above which ALL roles slam
@@ -319,6 +323,30 @@ private const val MELBANK_BINS = 16
  * Matches syncoV2's rolling accent window in `effects/engine.py`.
  */
 private const val ACCENT_WINDOW = 24
+
+/** Most wavefronts alive at once. Beyond a handful they read as a wash. */
+private const val MAX_WAVES = 6
+
+/** Wave strength half-life, seconds. */
+private const val WAVE_DECAY_TAU = 0.45f
+
+/** Per-frame decay of the drop swell. */
+private const val SWELL_DECAY = 0.85f
+
+/**
+ * Colour-jump scaling per phrase, so four-phrase cycles don't feel metronomic.
+ */
+private val PHRASE_JUMP = floatArrayOf(1.0f, 0.85f, 1.15f, 0.95f)
+
+/**
+ * Relative weight of each beat in a 4/4 bar: the downbeat hits hardest, beats 2
+ * and 4 land softer. This is the difference between a pulse that feels musical
+ * and one that feels like a metronome.
+ */
+private val BAR_WEIGHT = floatArrayOf(1.0f, 0.72f, 0.86f, 0.72f)
+
+/** Floor on a highlighted beat's pulse weight. */
+private const val HIGHLIGHT_MIN = 0.55f
 private val ROLE_BASS = 0; private val ROLE_MID = 1; private val ROLE_VOCAL = 2
 
 // ── Engine ─────────────────────────────────────────────────────────────────
@@ -331,6 +359,12 @@ private val ROLE_BASS = 0; private val ROLE_MID = 1; private val ROLE_VOCAL = 2
  */
 class SyncoEngine(
     channels: List<EntertainmentChannel>,
+    /**
+     * `"room"` or `"screen"`, from the entertainment configuration. Screen areas
+     * place their lamps relative to a display, so wavefronts should emanate from
+     * the screen rather than the middle of the floor.
+     */
+    private val configurationType: String = "room",
 ) {
     var palette: Palette = getPalette(FALLBACK_SCHEME)
     var mode: SyncMode = SyncMode.HIGH
@@ -352,8 +386,33 @@ class SyncoEngine(
         val xrank: Float,    // 0..1 left→right
         val side: Float,     // -1 (left) .. +1 (right)
         val band: Int,       // frequency band assignment (0=bass, 1=mid, 2=high)
+        /** Normalised position in the room, each axis 0..1. */
+        val pos: Vec3,
+        /**
+         * Distance from each of the four phrase origins, precomputed so the
+         * wave sum needs no square root per lamp per frame.
+         */
+        val distToOrigin: FloatArray,
+        /** Half-open melbank window this lamp averages. */
+        val melLo: Int,
+        val melHi: Int,
     )
+
+    /** Normalised lamp positions, and the phrase-cycle wave origins over them. */
+    private val positions: Map<Int, Vec3> = normalizePositions(channels)
+    private val origins: List<Vec3> = phraseOrigins(positions, configurationType)
+
     private val cmap: Map<Int, ChannelInfo> = buildChannelMap(channels)
+
+    /**
+     * Live wavefronts. Bounded at [MAX_WAVES]: each one costs a distance lookup
+     * per lamp per frame, and more than a handful overlapping reads as a wash
+     * rather than as motion.
+     */
+    private val waves = ArrayList<Wave>(MAX_WAVES)
+
+    /** Which phrase origin the next wave launches from. */
+    private var originIdx = 0
 
     // State
     private val env = mutableMapOf<String, Float>()      // band envelopes
@@ -367,6 +426,16 @@ class SyncoEngine(
     private var barCount = 0
     private var phrase = 0
     private var beatsSeen = 0
+
+    /** Full-field swell released by a drop, decaying back over ~half a second. */
+    private var swell = 0f
+
+    /**
+     * True once a wave has been launched for the upcoming beat, cleared when the
+     * beat arrives. Without it the anticipation window fires a wave on every
+     * frame it is open, which is a burst rather than a pulse.
+     */
+    private var waveArmed = false
     private var roleOffset = 0
     var roles: Map<Int, Int> = emptyMap()                 // channel → ROLE_BASS/MID/VOCAL
     private var roleMixEff: Triple<Float, Float, Float>? = null
@@ -386,6 +455,8 @@ class SyncoEngine(
         val n = sorted.size
         return sorted.mapIndexed { i, ch ->
             val xrank = if (n <= 1) 0.5f else i.toFloat() / (n - 1)
+            val pos = positions[ch.channelId] ?: Vec3(xrank, 0.5f, 0.5f)
+            val (melLo, melHi) = melbankWindow(xrank, MELBANK_BINS)
             ch.channelId to ChannelInfo(
                 xrank = xrank,
                 side = 2f * xrank - 1f,
@@ -395,8 +466,42 @@ class SyncoEngine(
                     i < 2 * n / 3 -> 1   // mid
                     else -> 2            // high
                 },
+                pos = pos,
+                distToOrigin = FloatArray(origins.size) { k -> distance(pos, origins[k]) },
+                melLo = melLo,
+                melHi = melHi,
             )
         }.toMap()
+    }
+
+    /**
+     * Launch a wavefront from the current phrase origin.
+     *
+     * Fired [ModeParams.anticipationMs] *before* the predicted beat so the shell
+     * is crossing the room as the kick lands, rather than starting from the
+     * origin once it already has. That anticipation is the whole reason the beat
+     * grid exists — a purely reactive wave always arrives late.
+     */
+    private fun spawnWave(strength: Float, p: ModeParams) {
+        if (p.waveGain <= 0f || strength <= 0f) return
+        if (waves.size >= MAX_WAVES) waves.removeAt(0)
+        waves.add(
+            Wave(
+                origin = origins[originIdx % origins.size],
+                strength = strength,
+                speed = p.waveSpeed,
+                width = p.waveWidth,
+                originIdx = originIdx % origins.size,
+            )
+        )
+    }
+
+    /** Total wave amplitude at one lamp, using the precomputed distances. */
+    private fun waveAmplitude(info: ChannelInfo): Float {
+        if (waves.isEmpty()) return 0f
+        var sum = 0f
+        for (w in waves) sum += w.amplitudeAt(info.distToOrigin[w.originIdx])
+        return sum
     }
 
     // ── Public setters ────────────────────────────────────────────────────
@@ -483,6 +588,32 @@ class SyncoEngine(
 
     // ── Beat flash ────────────────────────────────────────────────────────
 
+    /**
+     * How hard a *scheduled* beat should pulse, from its accent and its place in
+     * the bar.
+     *
+     * Highlights — the rank-selected top accents of the recent passage — pulse at
+     * full musical size, and selective rungs guarantee at least [HIGHLIGHT_MIN]
+     * so a ranked beat never lands limp. Everything else gets only
+     * [ModeParams.weakPulse], the quiet metronome between hits, which is zero on
+     * Extreme so ordinary beats stay dark. [ModeParams.accentFloor] shapes the
+     * response *within* highlights, and [ModeParams.downbeatPulse] guarantees the
+     * bar's "one" lands either way, so the room never loses the pulse.
+     */
+    private fun pulseWeight(p: ModeParams, accent: Float, beatInBar: Int, highlight: Boolean): Float {
+        var w: Float
+        if (highlight) {
+            var a = (accent - p.accentFloor) / max(1e-6f, 1f - p.accentFloor)
+            a = a.coerceIn(0f, 1f)
+            if (p.highlightQuantile > 0f) a = max(a, HIGHLIGHT_MIN)
+            w = p.weakPulse + (1f - p.weakPulse) * a
+        } else {
+            w = p.weakPulse
+        }
+        if (beatInBar == 0) w = max(w, p.downbeatPulse)
+        return w * BAR_WEIGHT[beatInBar.mod(BAR_WEIGHT.size)]
+    }
+
     private fun kickFlash(visStrength: Float, visBass: Float): Float {
         if (visStrength <= 0f) return 0f
         val knee = if (visStrength > params.beatThreshold) 1f else visStrength / params.beatThreshold
@@ -499,7 +630,12 @@ class SyncoEngine(
      * analysis frame. [beatgrid] and [structure] are deferred (null) in the
      * MVP — the engine renders purely reactively.
      */
-    fun render(frame: AnalysisFrame, dt: Float): Map<Int, Rgb> {
+    fun render(
+        frame: AnalysisFrame,
+        dt: Float,
+        beatgrid: BeatGrid? = null,
+        structure: StructureState? = null,
+    ): Map<Int, Rgb> {
         time += dt
         updateEnv(frame)
 
@@ -509,7 +645,11 @@ class SyncoEngine(
         // Event-salience gates
         val (ampScale, widthGate) = eventGates(frame.salience, frame.onsetWidth)
 
-        // Visible event: detected bass beat
+        // Visible event: reactive first, with the scheduled beat folded in.
+        // Detection still carries the show when the grid is unlocked or wrong;
+        // the grid adds a beat the analyzer may have missed and, more
+        // importantly, lets effects fire *before* the kick rather than after it.
+        val locked = beatgrid?.locked == true
         val visStrength = if (frame.bassBeat) frame.bassStrength * widthGate else 0f
         val visBass = max(frame.bands["sub_bass"] ?: 0f, frame.bands["bass"] ?: 0f)
 
@@ -524,6 +664,35 @@ class SyncoEngine(
         // Loudness scale
         val loudScale = min(min(1f, max(visBass, energyEnv) / LOUD_REF), ampScale)
 
+        // ── Musical structure ────────────────────────────────────────────
+        // Tension through a build desaturates and tightens; the drop releases it
+        // as a full-field swell. Without this every bar of a track gets the same
+        // treatment however the song is shaped.
+        val build = structure?.buildProgress ?: 0f
+        val predrop = if (p.predropDepth > 0f && structure?.dropImminent == true) {
+            p.predropDepth * build * musicGate
+        } else 0f
+        if (structure?.dropNow == true && p.dropBoost > 0f) {
+            swell = max(swell, p.dropBoost * musicGate)
+            // A drop is a new section: reshuffle the room so the same lamps
+            // aren't carrying the same roles through the whole track.
+            if (p.dynamicRoles) { roleOffset++; updateRoles() }
+        }
+        swell *= SWELL_DECAY
+        val satMul = 1f - max(p.buildDesat * build, 0.6f * predrop)
+
+        // ── Phrase ───────────────────────────────────────────────────────
+        // Bars are counted off the grid's downbeats, so the colour shift lands
+        // on a musical boundary rather than every N detected onsets.
+        if (locked && beatgrid!!.predictedBeat && beatgrid.beatInBar == 0) {
+            barCount++
+            if (p.phraseBars > 0 && barCount % p.phraseBars == 0) {
+                phrase++
+                originIdx = phrase % origins.size
+                colourPhase += p.phraseColourShift * musicGate
+            }
+        }
+
         // Colour advance
         colourPhase += p.colourSpeed * dt * musicGate
         if (p.colourFlow > 0f) {
@@ -532,14 +701,53 @@ class SyncoEngine(
         if (beatNow && p.colourJump > 0f) {
             var step = p.colourJump * (0.55f + 0.45f * accNow) * musicGate
             if (highlight) step *= 1.7f
+            step *= PHRASE_JUMP[phrase % PHRASE_JUMP.size]
+            step *= (1f - 0.5f * predrop)  // hold still as the drop approaches
             colourPhase += step
+        }
+
+        // ── Wavefronts ───────────────────────────────────────────────────
+        // Advance and retire first, then launch. Locked, a wave is fired
+        // `anticipationMs` before the predicted beat so its shell is crossing
+        // the room as the kick lands; unlocked, it fires on detection and is
+        // inevitably a little late.
+        if (waves.isNotEmpty()) {
+            for (w in waves) w.advance(dt, WAVE_DECAY_TAU)
+            waves.removeAll { it.dead() }
+        }
+        if (p.waveGain > 0f) {
+            val gate = musicGate * ampScale * (1f - 0.8f * predrop)
+            if (locked) {
+                val g = beatgrid!!
+                val antic = p.anticipationMs / 1000f
+                if (!waveArmed && g.timeToNextBeat <= antic) {
+                    waveArmed = true
+                    val size = (0.45f + 1.05f * g.accent) * g.scheduleStrength
+                    spawnWave(size * gate, p)
+                }
+                if (g.predictedBeat) waveArmed = false
+            } else if (visStrength > 0f) {
+                spawnWave(min(1.5f, 0.5f + visStrength) * gate, p)
+            }
         }
 
         // Flash decay
         for (cid in lightFlash.keys) lightFlash[cid] = lightFlash[cid]!! * p.flashDecay
 
-        // Beat flash assignment
-        val kick = kickFlash(visStrength, visBass) * musicGate * loudScale
+        // Beat flash assignment. Reactive detection is taken as the baseline and
+        // the scheduled pulse folded in with max(), so an unlocked or mistaken
+        // grid can only ever add to the show, never subtract from it.
+        val scheduled = if (locked && beatgrid!!.predictedBeat) {
+            p.beatGain *
+                pulseWeight(p, beatgrid.accentNow, beatgrid.beatInBar, highlight) *
+                (0.6f + 0.4f * visBass) *
+                beatgrid.scheduleStrength
+        } else 0f
+        // hardSnap rungs keep the full flash alongside the wave; the others give
+        // the wave its share so the room doesn't double-hit on every beat.
+        val flashScale = if (p.hardSnap) 1f else 1f - p.waveGain
+        val kick = max(kickFlash(visStrength, visBass), scheduled) *
+            flashScale * musicGate * loudScale * (1f - 0.8f * predrop)
         val midf = if (midStrength > 0f) params.midGain * min(3f, midStrength / params.midThreshold) * musicGate * loudScale else 0f
 
         if (kick > 0f || midf > 0f) {
@@ -573,19 +781,24 @@ class SyncoEngine(
             val info = cmap[cid] ?: continue
             val role = roles[cid] ?: ROLE_BASS
 
-            // Continuous melbank layer
+            // Continuous melbank layer. The window overlaps its neighbours, so
+            // the room reads as a smooth spectral field rather than as hard-edged
+            // frequency bands.
             val mel = frame.melbank
             val melLevel = if (mel.isNotEmpty() && mel.size >= MELBANK_BINS) {
-                val lo = (info.xrank * MELBANK_BINS).toInt().coerceIn(0, MELBANK_BINS - 1)
-                val hi = min(lo + 2, MELBANK_BINS)
                 var sum = 0f
-                for (i in lo until hi) sum += mel[i]
-                sum / (hi - lo)
+                for (i in info.melLo until info.melHi) sum += mel[i]
+                sum / (info.melHi - info.melLo)
             } else 0f
 
-            // Target brightness
-            var target = p.floor + p.melbankFloor
-            target += p.melbankGain * melLevel * musicGate
+            // Target brightness. The melbank floor is the ambient lift that
+            // rides *under* the spectral layer, so it belongs inside the music
+            // gate along with it — syncoV2 applies both as
+            // `(melbank_floor + melbank_gain * drive) * music`. Hoisting the
+            // floor out, as this did, leaves the room glowing through silence
+            // and between tracks.
+            var target = p.floor
+            target += (p.melbankFloor + p.melbankGain * melLevel) * musicGate
             target += p.energyGain * energyEnv
 
             // Role-based brightness
@@ -594,10 +807,27 @@ class SyncoEngine(
                 ROLE_BASS -> target += p.bassGain * bassEnv
                 ROLE_VOCAL -> target += p.vocalDim
             }
+
+            // Height: bass sits on the floor and treble at the ceiling, the way
+            // a room's energy naturally stacks.
+            if (p.heightFreq > 0f) {
+                val band = heightBand(info.pos.z)
+                target += p.heightFreq * (env[band] ?: 0f) * musicGate
+            }
+            // Depth: lamps further back carry a broader wash and less detail.
+            if (p.depthWash > 0f) {
+                target += p.depthWash * energyEnv * (1f - info.pos.y)
+            }
+
+            // Pre-drop compresses the headroom toward the floor, so the drop has
+            // somewhere to go.
+            if (predrop > 0f) target = p.floor + (target - p.floor) * (1f - predrop)
             target = target.coerceIn(0f, 1f)
 
-            // Flash overlay
-            val flash = lightFlash[cid] ?: 0f
+            // Flash overlay: the per-light beat flash, the wavefront sweeping
+            // past, and any drop swell still ringing.
+            val wave = if (p.waveGain > 0f) p.waveGain * waveAmplitude(info) * musicGate else 0f
+            val flash = (lightFlash[cid] ?: 0f) + wave + swell
 
             // Smooth brightness
             val (prevColor, prevB) = state[cid] ?: (Triple(0f, 0f, 0f) to 0f)
@@ -618,8 +848,9 @@ class SyncoEngine(
                 pb + (nb - pb) * p.colourLerp,
             )
 
-            // Saturation
-            val sat = p.colourSat
+            // Saturation. Tension through a build pulls the room toward white,
+            // which reads as strain and makes the drop's return of colour land.
+            val sat = (p.colourSat * satMul).coerceIn(0f, 1f)
             if (sat < 1f) {
                 val (cr, cg, cb) = nc
                 nc = Triple(
