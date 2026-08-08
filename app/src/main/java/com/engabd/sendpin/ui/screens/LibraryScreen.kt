@@ -18,6 +18,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -375,6 +376,28 @@ private fun uniqueIds(vararg lists: List<MaItem>): Set<String> =
         .groupingBy { it.itemId }.eachCount()
         .filterValues { it == 1 }.keys
 
+/**
+ * The lazy key for [item] sitting at [index] of the list [section] draws.
+ *
+ * Keyed by index as well as by item, because a duplicate key is a hard crash in a lazy
+ * list — the moment two items claiming one are composed together, the state holder
+ * throws. `provider|itemId` is not unique enough to bet on: a library item's own
+ * provider is always `library` and Music Assistant numbers library items *per media
+ * type*, so album 5 and track 5 are both `library|5`. Any list mixing types can
+ * collide that way, and `music/recommendations` — folders flattened into one "For you"
+ * shelf — could repeat an item outright.
+ *
+ * The id stays in the key, so a slot whose item really changed still recomposes; the
+ * index goes in front of it, because that is the part nothing on the server can make
+ * collide. [section] separates lists that are on screen together — the same album is
+ * a favourite *and* recently added, and the seven root shelves share one grid.
+ *
+ * The detail screens have always keyed this way. This screen had not, and it crashed
+ * on the way down the root shelves.
+ */
+internal fun itemKey(section: String, index: Int, item: MaItem) =
+    "$section:$index:${item.provider}|${item.itemId}"
+
 private val ArtfulTypes = setOf("album", "playlist")
 private val DownloadableTypes = setOf("track", "album", "playlist")
 private val LongPressableTypes = setOf("track", "album", "artist", "playlist", "radio")
@@ -482,12 +505,12 @@ private fun Browse(
 
         if (depth == 0) {
             // Root shelf: the category grid, then dynamic shelves of content.
-            items(
+            itemsIndexed(
                 node.items,
-                key = { "cat_" + it.itemId },
-                contentType = { "category" },
-                span = { GridItemSpan(3) },
-            ) { cat ->
+                key = { i, cat -> itemKey("cat", i, cat) },
+                contentType = { _, _ -> "category" },
+                span = { _, _ -> GridItemSpan(3) },
+            ) { _, cat ->
                 CategoryCard(cat) { viewModel.open(cat) }
             }
             val openItem: (MaItem) -> Unit = { item ->
@@ -526,12 +549,12 @@ private fun Browse(
         }
 
         if (artful) {
-            items(
+            itemsIndexed(
                 node.items,
-                key = { "t_${it.provider}|${it.itemId}" },
-                contentType = { "cover" },
-                span = { GridItemSpan(2) },
-            ) { entry ->
+                key = { i, entry -> itemKey("t", i, entry) },
+                contentType = { _, _ -> "cover" },
+                span = { _, _ -> GridItemSpan(2) },
+            ) { _, entry ->
                 CoverTile(entry, onLongPress = { onLongPress(entry) }) {
                     when (entry.mediaType) {
                         "album" -> onAlbumClick(entry)
@@ -552,12 +575,12 @@ private fun Browse(
                     )
                 }
             }
-            items(
+            itemsIndexed(
                 node.items,
-                key = { "r_${it.provider}|${it.itemId}" },
-                contentType = { "row" },
-                span = { full() },
-            ) { entry ->
+                key = { i, entry -> itemKey("r", i, entry) },
+                contentType = { _, _ -> "row" },
+                span = { _, _ -> full() },
+            ) { _, entry ->
                 val click: (() -> Unit)? = when (entry.mediaType) {
                     "album" -> { { onAlbumClick(entry) } }
                     "artist" -> { { onArtistClick(entry) } }
@@ -617,12 +640,12 @@ private fun androidx.compose.foundation.lazy.grid.LazyGridScope.shelf(
 ) {
     if (list.isEmpty()) return
     item(key = "hdr_$title", span = { full() }, contentType = { "header" }) { Shelf(title) }
-    items(
+    itemsIndexed(
         list,
-        key = { "$title|${it.provider}|${it.itemId}" },
-        contentType = { "cover" },
-        span = { GridItemSpan(2) },
-    ) { entry ->
+        key = { i, entry -> itemKey(title, i, entry) },
+        contentType = { _, _ -> "cover" },
+        span = { _, _ -> GridItemSpan(2) },
+    ) { _, entry ->
         // Shelves refill in place as the server answers — favourites arrive, then
         // recently-added, then the rest. Keyed items make that a move rather than a
         // redraw, and animateItem is what turns the move into something you can follow.
@@ -646,12 +669,12 @@ private fun androidx.compose.foundation.lazy.grid.LazyGridScope.searchSection(
 ) {
     if (list.isEmpty()) return
     item(key = "shdr_$title", span = { full() }, contentType = { "header" }) { Shelf(title) }
-    items(
+    itemsIndexed(
         list,
-        key = { "s_$title|${it.provider}|${it.itemId}" },
-        contentType = { "row" },
-        span = { full() },
-    ) { entry ->
+        key = { i, entry -> itemKey("s_$title", i, entry) },
+        contentType = { _, _ -> "row" },
+        span = { _, _ -> full() },
+    ) { _, entry ->
         val click: (() -> Unit)? = when (entry.mediaType) {
             "album" -> { { onAlbumClick(entry) } }
             "artist" -> { { onArtistClick(entry) } }
@@ -690,12 +713,12 @@ private fun androidx.compose.foundation.lazy.grid.LazyGridScope.downloadsSection
                 PlayAllBar(items.size, onPlayAll = { viewModel.playAll(items) })
             }
         }
-        items(
+        itemsIndexed(
             items,
-            key = { "d_${it.provider}|${it.itemId}" },
-            contentType = { "row" },
-            span = { full() },
-        ) { entry -> ItemRow(entry, viewModel, rows.of(entry)) }
+            key = { i, entry -> itemKey("d", i, entry) },
+            contentType = { _, _ -> "row" },
+            span = { _, _ -> full() },
+        ) { _, entry -> ItemRow(entry, viewModel, rows.of(entry)) }
     }
 }
 

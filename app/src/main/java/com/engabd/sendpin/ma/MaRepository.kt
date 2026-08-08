@@ -35,6 +35,18 @@ class MaRepository(val api: MaApiClient) {
          * its response is just slow, and failing it turns a wait into an error.
          */
         private const val LIBRARY_TIMEOUT_MS = 60_000L
+
+        /**
+         * The same list with repeats of one media item removed, first copy kept.
+         *
+         * Identity is provider + media type + id, all three. A library item's own
+         * `provider` is always `library` and Music Assistant numbers library items
+         * *per media type*, so album 5 and track 5 are both `library|5` and are not
+         * the same thing — dropping the media type here would silently swallow one
+         * of them.
+         */
+        fun distinctItems(items: List<MaItem>): List<MaItem> =
+            items.distinctBy { "${it.provider}|${it.mediaType}|${it.itemId}" }
     }
 
     suspend fun artists(offset: Int = 0, limit: Int = PAGE_SIZE) =
@@ -122,14 +134,25 @@ class MaRepository(val api: MaApiClient) {
     suspend fun recentlyAdded(limit: Int = 12) =
         MaParse.items(api.sendCommand("music/recently_added_tracks", buildJsonObject { put("limit", limit) }), serverUrl)
 
-    /** Personalised recommendations — returns RecommendationFolder[] with nested items. */
+    /**
+     * Personalised recommendations — `RecommendationFolder[]` with nested items,
+     * flattened into one shelf.
+     *
+     * Flattened *and* deduplicated. The folders are separate answers to separate
+     * questions — "recently played", "favourite artists", "random albums" — so the
+     * same album is routinely in two or three of them, and the flattened shelf listed
+     * it two or three times. Every other shelf comes back from a single command and
+     * cannot do this; this one has to be told.
+     */
     suspend fun recommendations(): List<MaItem> {
         val folders = api.sendCommand("music/recommendations") as? JsonArray ?: return emptyList()
-        return folders.flatMap { f ->
-            val o = f as? JsonObject ?: return@flatMap emptyList()
-            val items = o["items"] as? JsonArray ?: return@flatMap emptyList()
-            MaParse.items(items, serverUrl)
-        }
+        return distinctItems(
+            folders.flatMap { f ->
+                val o = f as? JsonObject ?: return@flatMap emptyList()
+                val items = o["items"] as? JsonArray ?: return@flatMap emptyList()
+                MaParse.items(items, serverUrl)
+            }
+        )
     }
 
     /** Audiobooks and podcasts in progress. */
