@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlin.math.abs
 import kotlin.math.max
+import kotlin.math.min
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -39,22 +40,30 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * Lifecycle:
  * 1. [start] — fetch entertainment configs from the bridge, start the stream
- *    (PUT action:start), open the DTLS channel, create the SyncoEngine.
- * 2. The [AudioAnalysisTap] feeds [AnalysisFrame]s at ~50 Hz from ExoPlayer.
- *    Each frame is passed to [onAnalysisFrame], which runs the engine and
- *    sends the resulting per-channel RGB through the DTLS stream.
- * 3. [stop] — stop the stream (PUT action:stop), close the DTLS channel,
+ *    (PUT action:start), open the DTLS channel, create the [SyncoEngine].
+ * 2. The [AudioAnalysisTap] feeds [AnalysisFrame]s at ~50 Hz. Each one advances
+ *    the rhythm and structure models in [onAnalysisFrame] and is published for
+ *    the render loop; nothing is rendered or sent there.
+ * 3. [renderLoop] runs at 60 Hz on its own coroutine, renders the latest frame,
+ *    holds it in [delayQueue] until the audio it describes is audible, then puts
+ *    it through the safety limiters and the encoder onto the wire.
+ * 4. [stop] — stop the stream (PUT action:stop), close the DTLS channel,
  *    release the engine.
  *
- * The orchestrator runs on a background scope. [onAnalysisFrame] runs on the
- * ExoPlayer audio thread and renders *and sends* inline — a ~100-byte UDP
- * datagram at 50 Hz, which is microseconds in the normal case. It is still a
- * blocking socket write on a real-time thread, so if the on-device test turns
- * up audio glitching under a flaky LAN, this is the first place to look: the
- * fix is a single-slot handoff to a sender coroutine.
+ * Three threads, and the split matters. The tap's analysis thread owns the
+ * analyzer and the two trackers. This orchestrator's IO scope owns the session.
+ * The render loop is what talks to the bridge — deliberately not the analysis
+ * thread, which delivers hops in bursts as the decoder hands over buffers and
+ * would send the bridge clusters of frames instead of an even stream.
  *
- * Keepalive: the bridge drops the DTLS channel after ~10s of silence.
- * A keepalive loop resends the last frame every 9s if the audio is idle.
+ * Keepalive: the bridge drops the entertainment session after ~10 s of silence,
+ * so a loop resends the last frame every 9 s when the render loop has gone
+ * quiet, and watches for bridge-side alerts.
+ *
+ * Failure handling distinguishes two cases. A network fault is retried with
+ * backoff, keeping the engine so the show resumes rather than restarts. A
+ * *bridge-initiated* teardown is never retried — that is the Hue app taking the
+ * area, and grabbing it back is what makes its stop button look broken.
  */
 
 private const val TAG = "DirectLightSync"
@@ -67,6 +76,22 @@ private const val KEEPALIVE_INTERVAL_MS = 9000L
 
 /** Minimum gap between repeats of a per-frame warning. See `logThrottled`. */
 private const val LOG_THROTTLE_MS = 5000L
+
+/**
+ * Consecutive failed sends before the session is rebuilt. Half a second at
+ * 60 Hz — long enough that a single dropped datagram is ignored, short enough
+ * that a real Wi-Fi drop is noticed before the bridge times the area out.
+ */
+private const val SEND_FAILURES_BEFORE_RECONNECT = 30
+
+/**
+ * Reconnect backoff. Matches syncoV2's window: doubling from a second to ten,
+ * over fourteen attempts, is a bit under two minutes of trying — long enough to
+ * ride out a Wi-Fi roam or a router reboot without retrying forever.
+ */
+private const val RECONNECT_ATTEMPTS = 14
+private const val RECONNECT_BASE_MS = 1_000L
+private const val RECONNECT_MAX_MS = 10_000L
 
 /**
  * Longest run of skipped identical frames before one is resent anyway.
@@ -238,6 +263,8 @@ class DirectLightSync(
             // 4. Create the stream encoder + effects engine.
             delayQueue.resetDelay(audioLead.leadMs)
             lastSent = null
+            sendFailures = 0
+            revoked = false
             limiterMode = null
             selectLimiter(SyncMode.fromWire(settings.lightSyncIntensity.first()))
             safety?.reset()
@@ -407,7 +434,7 @@ class DirectLightSync(
     private suspend fun renderLoop() {
         var last = System.nanoTime()
         var next = last
-        while (running.get()) {
+        render@ while (running.get()) {
             next += FRAME_PERIOD_NANOS
             val sleep = (next - System.nanoTime()) / 1_000_000L
             if (sleep > 0) kotlinx.coroutines.delay(sleep)
@@ -471,14 +498,27 @@ class DirectLightSync(
                     lastFrame = packet
                     lastSendAt = now
                 } catch (e: DtlsPeerClosed) {
+                    // Bridge-initiated teardown: the Hue app took the area, or
+                    // the user pressed stop there. Deliberately never retried —
+                    // reconnecting here is what makes that stop button look
+                    // broken, because the app immediately takes the area back.
                     Log.w(TAG, "Bridge revoked the stream: ${e.message}")
+                    revoked = true
                     running.set(false)
                     _error.value = "The bridge revoked the stream (another app may have taken over)"
                     scope.launch { cleanup() }
                     return
                 } catch (e: Exception) {
+                    // A network fault, by elimination. Wi-Fi drops and roams are
+                    // ordinary events on a phone, and until now any of them
+                    // ended the session for good.
                     logThrottled("DTLS send failed: ${e.message}")
+                    if (++sendFailures >= SEND_FAILURES_BEFORE_RECONNECT) {
+                        if (!reconnect()) return
+                        continue@render
+                    }
                 }
+                sendFailures = 0
             }
 
             // Recorded only once the frame has been through the socket. Setting
@@ -524,6 +564,70 @@ class DirectLightSync(
     }
 
     /**
+     * Rebuild the bridge session after a network fault, keeping the show going.
+     *
+     * Only reached from repeated send failures — a bridge-initiated revocation
+     * sets [revoked] and never comes here, because retrying that is what makes
+     * the Hue app's stop button appear not to work.
+     *
+     * The engine is deliberately kept across the reconnect: it holds the
+     * envelopes, the colour phase and the role assignment, so reusing it means
+     * the room picks up where it left off rather than restarting the show. The
+     * encoder is rebuilt, since its sequence numbers belong to the old session.
+     *
+     * Returns false when the attempts are exhausted or the session was stopped
+     * meanwhile, in which case the caller should give up.
+     */
+    private suspend fun reconnect(): Boolean {
+        var delayMs = RECONNECT_BASE_MS
+        for (attempt in 1..RECONNECT_ATTEMPTS) {
+            if (!running.get() || revoked) return false
+            Log.i(TAG, "Reconnecting to the bridge (attempt $attempt of $RECONNECT_ATTEMPTS)")
+            _error.value = "Reconnecting to the bridge…"
+            try {
+                dtls?.close()
+            } catch (e: Exception) {
+                // The old socket is already gone; that is why we are here.
+            }
+            dtls = null
+
+            kotlinx.coroutines.delay(delayMs)
+            delayMs = min(RECONNECT_MAX_MS, delayMs * 2)
+            if (!running.get() || revoked) return false
+
+            try {
+                val host = settings.hueBridgeIp.first()
+                val appKey = settings.hueAppKey.first()
+                val clientKey = settings.hueClientKey.first()
+                val appId = settings.hueAppId.first()
+                val configId = settings.hueEntertainmentConfigId.first()
+                if (host.isBlank() || appKey.isBlank() || clientKey.isBlank() || configId.isBlank()) return false
+
+                bridgeClient.startStream(host, appKey, configId)
+                val psk = clientKey.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+                val identity = (appId.ifBlank { appKey }).toByteArray(Charsets.US_ASCII)
+                val client = DtlsPskClient(host, 2100, identity, psk)
+                client.connect()
+                dtls = client
+                encoder = HueStreamEncoder(configId)
+                sendFailures = 0
+                lastSent = null
+                delayQueue.clear()
+                _error.value = null
+                Log.i(TAG, "Reconnected to the bridge")
+                return true
+            } catch (e: Exception) {
+                Log.w(TAG, "Reconnect attempt $attempt failed: ${e.message}")
+            }
+        }
+        Log.w(TAG, "Giving up on the bridge after $RECONNECT_ATTEMPTS attempts")
+        _error.value = "Lost the connection to the bridge"
+        running.set(false)
+        scope.launch { cleanup() }
+        return false
+    }
+
+    /**
      * Log at most once per [LOG_THROTTLE_MS]. This loop runs at 60 Hz, so a dead
      * network or a persistent render fault would otherwise emit 60 identical
      * lines a second and bury whatever else is in logcat.
@@ -536,6 +640,17 @@ class DirectLightSync(
     }
 
     private var lastLogAt = 0L
+
+    /** Consecutive failed sends, the trigger for a reconnect. */
+    private var sendFailures = 0
+
+    /**
+     * Set when the *bridge* ended the stream. Distinct from a network fault, and
+     * the difference decides whether reconnecting is right: a revoked session
+     * means something else wants the area, and taking it straight back is what
+     * makes the Hue app's stop button look broken.
+     */
+    @Volatile private var revoked = false
 
     /** Rendered frames waiting for the audio they describe to become audible. */
     private val delayQueue = FrameDelayQueue<Map<Int, Rgb>>()
@@ -622,6 +737,9 @@ class DirectLightSync(
                     val (_, desc) = alert
                     if (desc == 0 || desc == 90) {  // close_notify or user_canceled
                         Log.i(TAG, "Bridge closed the stream (alert $desc)")
+                        // Bridge-initiated, so no reconnect — same reasoning as
+                        // the send path.
+                        revoked = true
                         running.set(false)
                         _error.value = "The bridge stopped the stream"
                         scope.launch { cleanup() }
