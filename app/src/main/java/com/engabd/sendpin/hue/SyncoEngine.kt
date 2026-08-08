@@ -656,9 +656,21 @@ class SyncoEngine(
     /** The scheme the user picked, so album art can be applied only when wanted. */
     private var scheme: ColorScheme = FALLBACK_SCHEME
 
+    /** Fresh random colours on each beat. Only built while SONG is selected. */
+    private val songPalette = SongPalette()
+
     fun setScheme(scheme: ColorScheme) {
         this.scheme = scheme
-        palette = albumPalette?.takeIf { scheme.isDynamic } ?: getPalette(scheme)
+        palette = when {
+            scheme == ColorScheme.SONG -> {
+                songPalette.reset()
+                Palette(songPalette.colors())
+            }
+            // Album art keeps whatever was last extracted, so switching to it
+            // mid-track uses the cover already on screen.
+            scheme.isDynamic -> albumPalette ?: getPalette(scheme)
+            else -> getPalette(scheme)
+        }
     }
 
     /** Latest album-art palette, retained across scheme changes. */
@@ -678,7 +690,10 @@ class SyncoEngine(
      */
     fun setAlbumColors(colors: List<Rgb>, weights: List<Float>? = null) {
         albumPalette = if (colors.isEmpty()) null else Palette(colors, weights)
-        if (scheme.isDynamic) palette = albumPalette ?: getPalette(scheme)
+        // Song draws its own colours, so artwork must not overwrite it.
+        if (scheme.isDynamic && scheme != ColorScheme.SONG) {
+            palette = albumPalette ?: getPalette(scheme)
+        }
     }
 
     // ── Role assignment ───────────────────────────────────────────────────
@@ -870,6 +885,14 @@ class SyncoEngine(
                 originIdx = phrase % origins.size
                 colourPhase += p.phraseColourShift * musicGate
             }
+        }
+
+        // Song: turn the palette over on the beat. Gated by musicGate for the
+        // same reason everything else is — a grid ticking through silence must
+        // not keep generating colours for a room nobody is listening in.
+        if (scheme == ColorScheme.SONG && beatNow && musicGate > 0.5f) {
+            songPalette.onBeat(peak = highlight)
+            palette = Palette(songPalette.colors())
         }
 
         // Colour advance

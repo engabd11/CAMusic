@@ -477,11 +477,8 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                 Spacer(Modifier.height(22.dp))
                 SectionLabel("Colour")
                 Spacer(Modifier.height(10.dp))
-                // Album art is offered here now that the engine is actually fed
-                // it. "Song" still is not — that needs chroma from the analyzer,
-                // which the direct path does not produce yet — so it is filtered
-                // out rather than shown as a choice that renders the fallback.
-                ColourPicker(selected = colour, showDynamic = true, hide = setOf("song")) { scheme ->
+                // Every dynamic source works on the direct path now.
+                ColourPicker(selected = colour, showDynamic = true, songFromBeats = true) { scheme ->
                     scope.launch { settings.setLightSyncColor(scheme) }
                 }
 
@@ -632,11 +629,15 @@ private fun ColourPicker(
     selected: String?,
     showDynamic: Boolean = true,
     /**
-     * Dynamic sources to leave out. The direct path drives album art but not
-     * Song, which needs chroma the on-device analyzer does not produce yet —
-     * better to omit the tile than offer one that quietly renders the fallback.
+     * How the Song source derives its colours on this path.
+     *
+     * The two are genuinely different things behind the same name. Home
+     * Assistant runs syncoV2, which reads the track's chroma and colours the
+     * room from its actual key. The direct path has no chroma, so Song there is
+     * fresh random colours turning over on the beat. Describing both as
+     * "harmony" would be a lie on one of them.
      */
-    hide: Set<String> = emptySet(),
+    songFromBeats: Boolean = false,
     onSelect: (String) -> Unit,
 ) {
     val accent = LocalAccent.current
@@ -661,10 +662,10 @@ private fun ColourPicker(
             selected = selected == LightSyncRepository.ALBUM_COLOUR_V1,
         ) { onSelect(LightSyncRepository.ALBUM_COLOUR_V1) }
 
-        if (showDynamic && LightSyncRepository.SONG_COLOUR !in hide) SwatchTile(
+        if (showDynamic) SwatchTile(
             colours = listOf(Color(0xFF33FFC2), Color(0xFF7D40FF), Color(0xFFFF59D1)),
             label = "Song",
-            caption = "Harmony",
+            caption = if (songFromBeats) "On the beat" else "Harmony",
             icon = Icons.Default.MusicNote,
             selected = selected == LightSyncRepository.SONG_COLOUR,
         ) { onSelect(LightSyncRepository.SONG_COLOUR) }
@@ -682,7 +683,9 @@ private fun ColourPicker(
     val blurb = when (selected) {
         LightSyncRepository.ALBUM_COLOUR -> "Colours from the cover, each held in proportion to its share of the artwork."
         LightSyncRepository.ALBUM_COLOUR_V1 -> "Colours from the cover, cycled evenly."
-        LightSyncRepository.SONG_COLOUR -> "Colours derived from the song's own key and harmony."
+        LightSyncRepository.SONG_COLOUR ->
+            if (songFromBeats) "Fresh colours on every beat, turning the room over on the big hits."
+            else "Colours derived from the song's own key and harmony."
         else -> null
     }
     blurb?.let {
