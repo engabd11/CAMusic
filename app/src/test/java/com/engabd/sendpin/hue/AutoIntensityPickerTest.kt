@@ -214,6 +214,70 @@ class AutoIntensityPickerTest {
         assertEquals(null, picker.level, "the rung survived reset")
     }
 
+    /**
+     * A realistic percussive track: onsets a couple of times a second, and
+     * *between* them the onset width collapses, as it does on real material.
+     *
+     * This is the shape the flat live estimator could not handle. Averaging
+     * width over every frame buries the drum hits under the silence between
+     * them, and since attack is the heaviest of the four character terms, the
+     * whole score — and with it the band's ceiling — comes out too low.
+     */
+    private fun realisticPercussive(
+        allowed: List<SyncMode>,
+        seconds: Float = 60f,
+        beatEvery: Int = 25,       // ~2 onsets/second at 50 fps
+        hitWidth: Float = 0.28f,   // a drum hit is broadband
+        betweenWidth: Float = 0.03f,
+    ): SyncMode {
+        val picker = AutoIntensityPicker()
+        var out = SyncMode.SUBTLE
+        for (i in 0 until (seconds / dt).toInt()) {
+            val onset = i % beatEvery == 0
+            out = picker.update(
+                dt = dt,
+                energy = if (onset) 0.85f else 0.45f,
+                salience = 0.8f,
+                bpm = 128f,
+                beat = onset,
+                allowed = allowed,
+                // The value only means anything on a frame that has an onset.
+                onsetWidth = if (onset) hitWidth else betweenWidth,
+                centroid = 0.3f,
+                flux = if (onset) 0.34f else 0.06f,
+            )
+        }
+        return out
+    }
+
+    @Test
+    fun `a percussive track does not sit on the lowest enabled rung`() {
+        // The reported failure, reproduced: with the default three rungs the
+        // picker used to settle on Subtle for real percussive music and stay
+        // there. Measuring attack where an onset actually happened is what
+        // lifts the character score back to something the music has earned.
+        val picked = realisticPercussive(DEFAULT_AUTO_LEVELS)
+        assertTrue(
+            picked != SyncMode.SUBTLE,
+            "a 128 BPM percussive track settled on the lowest rung",
+        )
+    }
+
+    @Test
+    fun `a percussive track still outranks a tonal one on the same rungs`() {
+        // The fix must not simply push everything up — the discrimination is
+        // the point. A sustained tonal track has no broadband onsets to sample,
+        // so its attack term stays genuinely low.
+        val drums = realisticPercussive(DEFAULT_AUTO_LEVELS)
+        val pads = realisticPercussive(
+            DEFAULT_AUTO_LEVELS, beatEvery = 100, hitWidth = 0.05f, betweenWidth = 0.02f,
+        )
+        assertTrue(
+            LADDER_ORDER.indexOf(drums) > LADDER_ORDER.indexOf(pads),
+            "drums ($drums) did not outrank pads ($pads)",
+        )
+    }
+
     @Test
     fun `song character is bounded and ordered`() {
         assertEquals(0f, songCharacter(0f, 0f, 0f, 0f))

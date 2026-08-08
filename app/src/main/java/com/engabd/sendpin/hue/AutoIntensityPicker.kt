@@ -50,6 +50,13 @@ private const val CHAR_BUSY_FULL = 0.34f
  */
 private const val CHAR_NEUTRAL = 0.50f
 
+/**
+ * Per-onset weight for the attack term. Onsets arrive a couple of times a
+ * second rather than fifty, so a dt-based time constant would barely move it;
+ * this settles over roughly thirty hits, a few seconds of music.
+ */
+private const val ATTACK_ONSET_ALPHA = 0.035f
+
 private const val CHAR_TAU_S = 12.0f
 private const val CHAR_WARMUP_S = 20.0f
 private const val CHAR_MIN_ENERGY = 0.15f
@@ -257,9 +264,30 @@ class AutoIntensityPicker {
         // intro or a gap between tracks cannot drag the estimate down.
         if (character == null && energy >= CHAR_MIN_ENERGY) {
             val ema = min(1f, dt / CHAR_TAU_S)
-            charAttack += (onsetWidth - charAttack) * ema
-            charBusy += (flux - charBusy) * ema
-            charBass += ((1f - centroid) - charBass) * ema
+            // Attack is sampled on frames that actually carry an onset.
+            //
+            // This diverges from syncoV2's live estimator, deliberately, and it
+            // is the fix for the picker sitting on the lowest enabled rung. That
+            // estimator averages onsetWidth over *every* frame, but the value is
+            // near zero between transients — which is most frames of any track,
+            // as the CHAR_ATTACK_LO/HI comment itself notes. Attack carries the
+            // largest of the four weights, so its heaviest term was being pulled
+            // toward zero by frames that contain no onset to measure. Character
+            // came out low, the earned band's ceiling collapsed with it, and the
+            // room never climbed.
+            //
+            // syncoV2's *offline* profile does not have this problem: it
+            // energy-weights the mean, so quiet frames get a small vote. Only
+            // the live path — which is the whole of the direct path — was flat.
+            // Sampling where the measurement means something is the same idea,
+            // applied to a stream that cannot see the track in advance.
+            if (beat) charAttack += (onsetWidth - charAttack) * ATTACK_ONSET_ALPHA
+            // Busy and bass are energy-weighted for the same reason, matching
+            // the offline profile: a quiet passage should not vote as loudly as
+            // the body of the track.
+            val w = ema * unit(energy)
+            charBusy += (flux - charBusy) * w
+            charBass += ((1f - centroid) - charBass) * w
             charAge += dt
         }
         val char = character?.let { unit(it) } ?: liveCharacter(tempo)
