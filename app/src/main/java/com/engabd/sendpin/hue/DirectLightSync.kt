@@ -2,12 +2,19 @@ package com.engabd.sendpin.hue
 
 import android.content.Context
 import android.util.Log
+import com.engabd.sendpin.audio.ANALYSIS_HOP
+import com.engabd.sendpin.audio.ANALYSIS_SAMPLE_RATE
 import com.engabd.sendpin.audio.AnalysisFrame
 import com.engabd.sendpin.audio.AudioAnalysisTap
 import com.engabd.sendpin.audio.AudioLead
+import com.engabd.sendpin.audio.BeatGrid
+import com.engabd.sendpin.audio.StructureState
+import com.engabd.sendpin.audio.StructureTracker
+import com.engabd.sendpin.audio.TempoTracker
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.data.Crypto
 import kotlin.math.abs
+import kotlin.math.max
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -134,6 +141,18 @@ class DirectLightSync(
     @Volatile private var latestFrame: AnalysisFrame? = null
     @Volatile private var latestFrameAt = 0L
 
+    /**
+     * Rhythm and structure models, advanced once per analysis hop in
+     * [onAnalysisFrame]. Both are stateful and single-threaded — only the
+     * analysis thread touches them — and their outputs are published as
+     * immutable snapshots for the render loop to read.
+     */
+    private var tempo: TempoTracker? = null
+    private var structure: StructureTracker? = null
+
+    @Volatile private var latestGrid: BeatGrid? = null
+    @Volatile private var latestStructure: StructureState? = null
+
     /** When the last packet went out, so the keepalive knows if it is needed. */
     @Volatile private var lastSendAt = 0L
 
@@ -211,7 +230,15 @@ class DirectLightSync(
             // 5. Activate the audio tap.
             latestFrame = null
             latestFrameAt = 0L
+            latestGrid = null
+            latestStructure = null
+            // The analyzer's frame period, not the render period: these step once
+            // per hop, off the analyzer's own clock.
+            val framePeriod = ANALYSIS_HOP.toFloat() / ANALYSIS_SAMPLE_RATE
+            tempo = TempoTracker(framePeriod)
+            structure = StructureTracker(framePeriod)
             audioTap.onFrame = ::onAnalysisFrame
+            audioTap.onAnalysisReset = ::onAnalysisReset
             audioTap.setActive(true)
 
             running.set(true)
@@ -251,6 +278,11 @@ class DirectLightSync(
     private suspend fun cleanup() {
         audioTap.setActive(false)
         audioTap.onFrame = null
+        audioTap.onAnalysisReset = null
+        tempo = null
+        structure = null
+        latestGrid = null
+        latestStructure = null
 
         renderJob?.cancel(); renderJob = null
         keepaliveJob?.cancel(); keepaliveJob = null
@@ -284,17 +316,46 @@ class DirectLightSync(
     // ── Analysis frame callback ────────────────────────────────────────────
 
     /**
-     * Called on the ExoPlayer audio thread with a new analysis frame.
+     * Called on the tap's analysis thread with a new analysis frame.
      *
-     * It only hands the frame over. The audio thread is real-time, and the
-     * decoder delivers in chunks rather than one hop at a time — rendering here
-     * would emit several frames back to back whenever a buffer landed, so the
-     * bridge would receive bursts instead of an even stream. [renderLoop] paces
-     * the output instead.
+     * The rhythm and structure models are advanced here rather than in
+     * [renderLoop] because both are driven by the analyzer's own `tAudio` clock
+     * and expect exactly one step per hop. Stepping them from the 60 Hz render
+     * loop would advance them at the wrong rate and against a clock they do not
+     * share.
+     *
+     * Rendering still does not happen here. Hops arrive in bursts — the decoder
+     * hands over a buffer at a time — so rendering on arrival would send the
+     * bridge clusters of frames instead of an even stream. [renderLoop] paces
+     * the output.
      */
     private fun onAnalysisFrame(frame: AnalysisFrame) {
+        latestGrid = tempo?.update(
+            tAudio = frame.tAudio,
+            fluxValue = frame.flux,
+            beat = frame.beat,
+            beatStrength = frame.beatStrength,
+            bass = max(frame.bands["sub_bass"] ?: 0f, frame.bands["bass"] ?: 0f),
+        )
+        latestStructure = structure?.update(frame)
         latestFrame = frame
         latestFrameAt = System.nanoTime()
+    }
+
+    /**
+     * Drop rhythm and structure history when the analyzer does.
+     *
+     * A seek or a track change invalidates both: a beat grid locked to the
+     * previous song would keep predicting beats against audio that no longer
+     * matches it, and the structure arc would carry the old track's build into
+     * the new one. Runs on the analysis thread, before the first frame of the
+     * new audio.
+     */
+    private fun onAnalysisReset() {
+        tempo?.reset()
+        structure?.reset()
+        latestGrid = null
+        latestStructure = null
     }
 
     // ── Render loop ─────────────────────────────────────────────────────────

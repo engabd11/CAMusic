@@ -50,6 +50,19 @@ class AudioAnalysisTap : BaseAudioProcessor() {
     @Volatile
     var onFrame: ((AnalysisFrame) -> Unit)? = null
 
+    /**
+     * Invoked on the analysis thread whenever analysis state is discarded — a
+     * seek, a track change, or the start of a session.
+     *
+     * Consumers that carry their own history across frames (the tempo grid, the
+     * structure arc) have to drop it at the same moment the analyzer does, or
+     * they will keep predicting beats for a track that is no longer playing.
+     * Delivered on the analysis thread and always before the first frame of the
+     * new stretch of audio.
+     */
+    @Volatile
+    var onAnalysisReset: (() -> Unit)? = null
+
     // ── Producer-side state (playback thread only) ────────────────────────
 
     /** Source sample rate, from ExoPlayer's audio format. */
@@ -242,12 +255,14 @@ class AudioAnalysisTap : BaseAudioProcessor() {
         val analyzer = AudioAnalyzer()
         val hopBuf = FloatArray(ANALYSIS_HOP)
         var seenClear = ring.clearSeq
+        onAnalysisReset?.invoke()
         while (analysisRunning && !Thread.currentThread().isInterrupted) {
             val clear = ring.clearSeq
             if (clear != seenClear) {
                 seenClear = clear
                 ring.dropAll()
                 analyzer.reset()
+                onAnalysisReset?.invoke()
                 continue
             }
             if (!ring.read(hopBuf)) {
