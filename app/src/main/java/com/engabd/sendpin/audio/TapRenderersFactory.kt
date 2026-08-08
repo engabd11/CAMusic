@@ -24,16 +24,21 @@ import androidx.media3.exoplayer.audio.DefaultAudioSink
 class TapRenderersFactory(
     context: Context,
     private val tap: AudioAnalysisTap,
+    private val lead: AudioLead,
 ) : DefaultRenderersFactory(context) {
     override fun buildAudioSink(
         context: Context,
         enableFloatOutput: Boolean,
         enableAudioOutputPlaybackParams: Boolean,
     ): AudioSink {
-        return DefaultAudioSink.Builder(context)
+        val sink = DefaultAudioSink.Builder(context)
             .setAudioProcessors(arrayOf(tap))
             .setEnableFloatOutput(enableFloatOutput)
             .setEnableAudioTrackPlaybackParams(enableAudioOutputPlaybackParams)
             .build()
+        // Wrapped rather than folded into the processor chain: the lead needs a
+        // buffer's presentation time alongside the sink's current position, and
+        // an AudioProcessor is given neither.
+        return AudioLeadProbe(sink, lead)
     }
 }

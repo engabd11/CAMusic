@@ -121,6 +121,13 @@ class LocalPlayer(private val context: Context) {
      */
     val audioAnalysisTap = AudioAnalysisTap()
 
+    /**
+     * How far the tap runs ahead of the speaker. Shared with [DirectLightSync],
+     * which subtracts Hue's own pipeline latency from it to decide how long to
+     * hold each rendered frame so the light lands on the beat.
+     */
+    val audioLead = AudioLead()
+
     /** The user's own volume, kept apart from the ReplayGain factor multiplied onto it. */
     private var userVolume = 1f
 
@@ -265,7 +272,7 @@ class LocalPlayer(private val context: Context) {
         // processor chain. It stays in the chain whether or not Light Sync is on,
         // because the sink decides membership once per configuration; the cost
         // when off is a buffer copy per callback and nothing else.
-        val renderers = TapRenderersFactory(context, audioAnalysisTap)
+        val renderers = TapRenderersFactory(context, audioAnalysisTap, audioLead)
 
         // The defaults are sized for video-on-mobile-data. This is a lossless file
         // over a LAN, where the sensible trade is a deeper buffer: a 24/96 FLAC is

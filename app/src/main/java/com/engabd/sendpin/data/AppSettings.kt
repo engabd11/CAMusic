@@ -61,7 +61,11 @@ class AppSettings(private val context: Context) {
         private val LIGHT_SYNC_EFFECT = stringPreferencesKey("light_sync_effect") // music|movies|fireworks
         private val LIGHT_SYNC_COLOR = stringPreferencesKey("light_sync_color") // colour scheme wire key
         private val LIGHT_SYNC_BRIGHTNESS = stringPreferencesKey("light_sync_brightness") // 5..100
-        private val LIGHT_SYNC_TIMING = stringPreferencesKey("light_sync_timing") // -500..500 ms
+        // There is deliberately no light_sync_timing key. The Home Assistant path
+        // exposes an offset because syncoV2 can only estimate where the speakers
+        // are; the direct path measures the tap's lead over the AudioTrack exactly
+        // and subtracts Hue's pipeline latency from it, so there is nothing left
+        // for a user to trim. See hue/FrameDelayQueue.
 
         /**
          * How far the sync trim can be pushed either way. Matches the range Music
@@ -346,9 +350,6 @@ class AppSettings(private val context: Context) {
     /** Master brightness ceiling (5..100). */
     val lightSyncBrightness: Flow<Int> = context.dataStore.data.map { it[LIGHT_SYNC_BRIGHTNESS]?.toIntOrNull() ?: 100 }
 
-    /** Timing offset in ms (-500..500). */
-    val lightSyncTiming: Flow<Int> = context.dataStore.data.map { it[LIGHT_SYNC_TIMING]?.toIntOrNull() ?: 0 }
-
     suspend fun setHueBridge(ip: String, appKey: String, clientKey: String, appId: String = "") {
         context.dataStore.edit {
             it[HUE_BRIDGE_IP] = ip
@@ -386,7 +387,4 @@ class AppSettings(private val context: Context) {
         context.dataStore.edit { it[LIGHT_SYNC_BRIGHTNESS] = pct.toString() }
     }
 
-    suspend fun setLightSyncTiming(ms: Int) {
-        context.dataStore.edit { it[LIGHT_SYNC_TIMING] = ms.toString() }
-    }
 }

@@ -72,7 +72,11 @@ class SendpinApp : Application(), ImageLoaderFactory {
      * this stays idle and the existing HA-based path handles Light Sync.
      */
     val directLightSync: com.engabd.sendpin.hue.DirectLightSync by lazy {
-        com.engabd.sendpin.hue.DirectLightSync(this, localPlayer.audioAnalysisTap)
+        com.engabd.sendpin.hue.DirectLightSync(
+            this,
+            localPlayer.audioAnalysisTap,
+            localPlayer.audioLead,
+        )
     }
 
     /**
