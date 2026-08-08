@@ -55,8 +55,22 @@ private const val TAG = "HueBridgeClient"
 private val JSON = Json { ignoreUnknownKeys = true }
 private val JSON_MEDIA = "application/json".toMediaType()
 
+/** Philips rate-limits cloud discovery to one request per 15 minutes per client. */
+private const val CLOUD_DISCOVERY_TTL_MS = 15 * 60 * 1000L
+
+/** One entry from `https://discovery.meethue.com`. */
+@kotlinx.serialization.Serializable
+private data class CloudBridge(
+    val id: String? = null,
+    val internalipaddress: String? = null,
+    val name: String? = null,
+)
+
 /**
- * A discovered Hue Bridge on the network.
+ * A Hue Bridge found on the network, by whichever of the three methods the spec
+ * lists: mDNS, the cloud discovery endpoint, or the user typing an address.
+ * [bridgeId] is empty for a manually entered one, since nothing has told us what
+ * it is yet.
  */
 data class DiscoveredBridge(
     val host: String,
@@ -92,6 +106,20 @@ class HueBridgeClient(
 
     private val _isDiscovering = MutableStateFlow(false)
     val isDiscovering: StateFlow<Boolean> = _isDiscovering.asStateFlow()
+
+    /** Cached cloud-discovery result: (fetched at, bridges). See the 15-minute limit. */
+    private var cloudCache: Pair<Long, List<DiscoveredBridge>>? = null
+
+    /**
+     * A plain client for discovery.meethue.com. Deliberately *not* [http] —
+     * that one trusts only Signify's private bridge roots and checks the CN
+     * against a bridge id, neither of which applies to a public web service
+     * with an ordinary certificate.
+     */
+    private val cloudHttp = OkHttpClient.Builder()
+        .connectTimeout(8, TimeUnit.SECONDS)
+        .readTimeout(8, TimeUnit.SECONDS)
+        .build()
 
     private var nsdManager: NsdManager? = null
     private var discoveryListener: NsdManager.DiscoveryListener? = null
@@ -153,6 +181,83 @@ class HueBridgeClient(
 
         discoveryListener = listener
         nsd.discoverServices("_hue._tcp", NsdManager.PROTOCOL_DNS_SD, listener)
+    }
+
+    /**
+     * Ask Philips' discovery endpoint which bridges are on this network.
+     *
+     * The spec's second discovery method, after mDNS and before manual entry. It
+     * works because the bridge phones home, so the cloud can match this
+     * network's public IP to the bridge's local one — which also means it
+     * returns nothing for a bridge that has never been online, and nothing at
+     * all when the phone is on mobile data.
+     *
+     * Rate limited to **one request per 15 minutes per client**, so results are
+     * cached for that long. Deliberately not called on every scan: mDNS is the
+     * primary and this is what fills in when it finds nothing.
+     *
+     * SSDP is not implemented and should not be — the spec records it as
+     * deprecated and disabled since Q2 2022.
+     */
+    suspend fun discoverViaCloud(): List<DiscoveredBridge> = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        cloudCache?.let { (at, bridges) ->
+            if (now - at < CLOUD_DISCOVERY_TTL_MS) return@withContext bridges
+        }
+        try {
+            val resp = cloudHttp.newCall(
+                Request.Builder().url("https://discovery.meethue.com").get().build()
+            ).execute()
+            val body = resp.use { it.body?.string() } ?: return@withContext emptyList()
+            val found = json.decodeFromString<List<CloudBridge>>(body).mapNotNull { b ->
+                val ip = b.internalipaddress ?: return@mapNotNull null
+                DiscoveredBridge(
+                    host = ip,
+                    bridgeId = b.id ?: "",
+                    name = b.name ?: "Philips Hue",
+                    modelId = "",
+                    swVersion = "",
+                )
+            }
+            cloudCache = now to found
+            found
+        } catch (e: Exception) {
+            Log.w(TAG, "Cloud discovery failed: ${e.message}")
+            // Cached as empty so a network with no internet does not re-ask on
+            // every scan and burn the rate limit.
+            cloudCache = now to emptyList()
+            emptyList()
+        }
+    }
+
+    /**
+     * Merge cloud results into whatever mDNS has found, preferring mDNS — its
+     * entries carry the model id and were resolved on this LAN just now.
+     */
+    suspend fun addCloudDiscovered() {
+        val cloud = discoverViaCloud()
+        if (cloud.isEmpty()) return
+        val known = _discovered.value
+        val extra = cloud.filter { c -> known.none { it.host == c.host } }
+        if (extra.isNotEmpty()) _discovered.value = known + extra
+    }
+
+    /**
+     * Add a bridge the user typed in. The spec's last resort, and a required one:
+     * mDNS is blocked on some networks and cloud discovery returns nothing for a
+     * bridge that has never been online.
+     */
+    fun addManual(host: String) {
+        val trimmed = host.trim()
+        if (trimmed.isBlank()) return
+        if (_discovered.value.any { it.host == trimmed }) return
+        _discovered.value = _discovered.value + DiscoveredBridge(
+            host = trimmed,
+            bridgeId = "",  // unknown until the certificate is seen
+            name = "Bridge at $trimmed",
+            modelId = "",
+            swVersion = "",
+        )
     }
 
     fun stopDiscovery() {

@@ -1283,6 +1283,9 @@ private fun DirectBridgeSetup(
     var paired by remember { mutableStateOf(false) }
     var discovering by remember { mutableStateOf(false) }
     var discoveredBridges by remember { mutableStateOf(listOf<com.engabd.sendpin.hue.DiscoveredBridge>()) }
+    /** Set once a scan has run, so the "nothing found" hint only appears after one. */
+    var triedDiscovery by remember { mutableStateOf(false) }
+    var manualIp by remember { mutableStateOf("") }
     var pairing by remember { mutableStateOf(false) }
     var pairError by remember { mutableStateOf<String?>(null) }
 
@@ -1309,16 +1312,58 @@ private fun DirectBridgeSetup(
                         discovering = true
                         bridge.startDiscovery()
                         scope.launch {
+                            // Philips' order: mDNS first, then the cloud
+                            // endpoint, then a manual address. mDNS is the
+                            // primary and usually answers within a second or two.
                             kotlinx.coroutines.delay(8000)
+                            bridge.stopDiscovery()
+                            if (bridge.discovered.value.isEmpty()) {
+                                // Nothing on mDNS — some networks block
+                                // multicast entirely. The cloud endpoint knows
+                                // this network's bridges if any has ever been
+                                // online, and is cached against its 15-minute
+                                // rate limit.
+                                bridge.addCloudDiscovered()
+                            }
                             discoveredBridges = bridge.discovered.value
                             discovering = false
-                            bridge.stopDiscovery()
+                            triedDiscovery = true
                         }
                     }
                 }
 
                 if (discovering) {
                     Text("Scanning the network…", color = TextMuted, fontSize = 13.sp)
+                }
+
+                if (!discovering && discoveredBridges.isEmpty() && triedDiscovery) {
+                    Text(
+                        "No bridge found. Some networks block the discovery protocol — " +
+                            "you can enter the bridge's IP address instead. It is on the " +
+                            "Hue app's Settings → My Hue System screen, or your router's " +
+                            "device list.",
+                        color = TextMuted, fontSize = 13.sp,
+                    )
+                }
+
+                // Manual entry: the spec's required last resort, since mDNS can
+                // be blocked and the cloud returns nothing for a bridge that has
+                // never been online.
+                if (!discovering) {
+                    OutlinedTextField(
+                        value = manualIp,
+                        onValueChange = { manualIp = it },
+                        label = { Text("Bridge IP address") },
+                        placeholder = { Text("192.168.1.20") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    if (manualIp.isNotBlank()) {
+                        OledButton("Use this address", accent = accent) {
+                            bridge.addManual(manualIp)
+                            discoveredBridges = bridge.discovered.value
+                        }
+                    }
                 }
 
                 discoveredBridges.forEach { b ->
