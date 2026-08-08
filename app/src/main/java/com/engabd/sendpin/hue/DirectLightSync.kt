@@ -294,6 +294,7 @@ class DirectLightSync(
             audioTap.onFrame = ::onAnalysisFrame
             audioTap.onAnalysisReset = ::onAnalysisReset
             audioTap.setActive(true)
+            acquireLocks()
 
             running.set(true)
             _active.value = true
@@ -363,6 +364,7 @@ class DirectLightSync(
             Log.w(TAG, "Failed to stop stream on bridge: ${e.message}")
         }
 
+        releaseLocks()
         _active.value = false
         lastFrame = null
     }
@@ -643,6 +645,44 @@ class DirectLightSync(
 
     /** Consecutive failed sends, the trigger for a reconnect. */
     private var sendFailures = 0
+
+    private var wakeLock: android.os.PowerManager.WakeLock? = null
+    private var wifiLock: android.net.wifi.WifiManager.WifiLock? = null
+
+    /**
+     * Hold the CPU and the Wi-Fi radio awake while streaming.
+     *
+     * Light Sync is the one thing here that keeps working with the screen off,
+     * and it is exactly the case that breaks without this: a 60 Hz UDP sender
+     * driven by `delay` is throttled by doze, and Wi-Fi power-save adds latency
+     * spikes that show as the room stuttering behind the music. The Sendspin
+     * receiver already does this for the same reasons; the local player never
+     * needed to, because ExoPlayer's own foreground service covered it and
+     * nothing depended on a steady send rate.
+     *
+     * `WIFI_MODE_FULL_LOW_LATENCY` rather than `WIFI_MODE_FULL_HIGH_PERF`: the
+     * traffic is tiny and constant, and latency is the thing that matters.
+     */
+    @android.annotation.SuppressLint("WakelockTimeout")
+    private fun acquireLocks() {
+        if (wakeLock == null) {
+            wakeLock = (context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager)
+                .newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "camusic:lightsync")
+                .apply { setReferenceCounted(false); acquire() }
+        }
+        if (wifiLock == null) {
+            wifiLock = (context.applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager)
+                .createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "camusic:lightsync")
+                .apply { setReferenceCounted(false); acquire() }
+        }
+    }
+
+    private fun releaseLocks() {
+        runCatching { wakeLock?.takeIf { it.isHeld }?.release() }
+        runCatching { wifiLock?.takeIf { it.isHeld }?.release() }
+        wakeLock = null
+        wifiLock = null
+    }
 
     /**
      * Set when the *bridge* ended the stream. Distinct from a network fault, and

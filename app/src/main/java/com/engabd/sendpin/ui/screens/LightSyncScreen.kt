@@ -364,6 +364,25 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                     Text(it, color = ErrorRed, fontSize = 12.sp)
                 }
 
+                // Required by the Hue Entertainment API best practices: an app
+                // producing fast-changing light effects has to warn about them.
+                // Shown here rather than once behind a dismiss, because the
+                // intensity rungs are right below it and two of them relax or
+                // bypass the WCAG flash limiter.
+                Spacer(Modifier.height(14.dp))
+                Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Icon(
+                        Icons.Default.WarningAmber, null,
+                        tint = TextFaint, modifier = Modifier.size(15.dp).padding(top = 1.dp),
+                    )
+                    Text(
+                        "Light Sync produces fast-changing light effects. These may trigger " +
+                            "seizures in people with photosensitive epilepsy, including those " +
+                            "with no history of it. Intense and Extreme flash hardest.",
+                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+
                 Spacer(Modifier.height(22.dp))
                 SectionLabel("Entertainment area")
                 Spacer(Modifier.height(10.dp))
