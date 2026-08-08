@@ -317,8 +317,12 @@ fun SettingsScreen(
 
                         // ── Light Sync ───────────────────────────────────────────────
                         item {
-                            var lsMode by remember { mutableStateOf("ha") }
-                            LaunchedEffect(Unit) { lsMode = settings.lightSyncMode.first() }
+                            // Collected, not read once. The transport now follows
+                            // the selected library, so a one-shot read into local
+                            // state would leave this toggle showing something the
+                            // app is no longer doing.
+                            val lsMode by settings.lightSyncMode.collectAsState(initial = "ha")
+                            val lsAuto by settings.lightSyncModeAuto.collectAsState(initial = true)
 
                             SectionHeader(Icons.Default.Lightbulb, "Light Sync", accent)
                             Spacer(Modifier.height(12.dp))
@@ -335,17 +339,39 @@ fun SettingsScreen(
                                         options = listOf("Home Assistant", "Bridge (direct)"),
                                         selectedIndex = if (lsMode == "direct") 1 else 0,
                                     ) {
-                        val newMode = if (it == 1) "direct" else "ha"
-                        lsMode = newMode
-                        scope.launch { settings.setLightSyncMode(newMode) }
-                    }
+                                        // Choosing by hand pins the transport, so
+                                        // the library stops moving it.
+                                        val newMode = if (it == 1) "direct" else "ha"
+                                        scope.launch { settings.setLightSyncMode(newMode, manual = true) }
+                                    }
+                                    if (!lsAuto) {
+                                        Text(
+                                            "Follow the library again",
+                                            color = accent,
+                                            fontSize = 12.sp,
+                                            modifier = Modifier.clickable {
+                                                scope.launch { settings.setLightSyncModeAuto(true) }
+                                            },
+                                        )
+                                    }
                                     Text(
-                                        if (lsMode == "direct")
-                                            "The app talks to the Hue Bridge directly over the LAN — no Home Assistant needed. " +
-                                                "Works with the Navidrome / offline player. The phone is the only speaker."
-                                        else
-                                            "Drives the Hue Synco integration in Home Assistant over its WebSocket API. " +
-                                                "Follows any MA player entity and works with multi-room grouping.",
+                                        buildString {
+                                            append(
+                                                if (lsMode == "direct")
+                                                    "The app talks to the Hue Bridge directly over the LAN — no Home Assistant needed. " +
+                                                        "Works with the Navidrome / offline player. The phone is the only speaker."
+                                                else
+                                                    "Drives the Hue Synco integration in Home Assistant over its WebSocket API. " +
+                                                        "Follows any MA player entity and works with multi-room grouping.",
+                                            )
+                                            if (lsAuto) {
+                                                append(
+                                                    "\n\nChosen automatically from your library: Navidrome plays on this phone, " +
+                                                        "so it uses the bridge directly; Music Assistant can play anywhere, " +
+                                                        "so Home Assistant drives it. Pick one here to override.",
+                                                )
+                                            }
+                                        },
                                         color = TextFaint, style = MaterialTheme.typography.bodySmall,
                                     )
                                 }

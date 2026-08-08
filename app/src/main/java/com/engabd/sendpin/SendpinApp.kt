@@ -21,8 +21,10 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl
 import okhttp3.Interceptor
 import com.engabd.sendpin.data.LanOnlyCleartext
@@ -119,6 +121,36 @@ class SendpinApp : Application(), ImageLoaderFactory {
                 }
             }
         }
+        // Light Sync transport follows the library, because the library is what
+        // decides where the audio actually comes out. Navidrome always plays
+        // through this phone's own player, which the direct bridge path taps;
+        // Music Assistant plays to whatever speaker is targeted, which is Home
+        // Assistant's business — including when that speaker is this phone over
+        // Sendspin, a path the tap cannot see because it bypasses ExoPlayer.
+        //
+        // Here rather than in a ViewModel: this is process-scoped, outlives every
+        // screen, and sits downstream of whoever writes the backend, so it
+        // catches the Settings toggle, a boot restore and any future writer
+        // alike. LibraryViewModel would be the wrong place twice over — it is
+        // Activity-scoped, and it is itself a follower of the same setting, so
+        // writing from there would race the screen that wrote it.
+        appScope.launch {
+            val settings = com.engabd.sendpin.data.AppSettings(this@SendpinApp)
+            combine(settings.backend, settings.lightSyncModeAuto) { backend, auto -> backend to auto }
+                .distinctUntilChanged()
+                .collect { (backend, auto) ->
+                    if (!auto) return@collect  // the user picked a transport by hand
+                    val next = com.engabd.sendpin.data.AppSettings.lightSyncModeFor(backend)
+                    if (settings.lightSyncMode.first() == next) return@collect
+                    // Leaving the Home Assistant transport has to switch its
+                    // areas off. Nothing else will: the Light Sync ViewModel only
+                    // closes its socket when the screen goes away, so an area
+                    // would stay enabled in HA, still following a player that has
+                    // stopped, with no UI left to turn it off from.
+                    if (next == com.engabd.sendpin.data.AppSettings.MODE_DIRECT) disableHaLightSync()
+                    settings.setLightSyncMode(next)
+                }
+        }
         // Direct Light Sync follows the local player's session. Direct mode streams
         // this phone's own decoded audio, so there is exactly one thing that can
         // drive it and exactly one moment worth holding the bridge open for.
@@ -204,6 +236,36 @@ class SendpinApp : Application(), ImageLoaderFactory {
      *    Coil re-fetched every cover on every scroll. They are content-addressed
      *    URLs, so a long max-age is safe and the library stops flickering.
      */
+    /**
+     * Switch every Home Assistant light-sync area off.
+     *
+     * Called when the transport moves away from Home Assistant. Opens a
+     * short-lived connection of its own because the Light Sync ViewModel — the
+     * only other thing that talks to HA — is gone by the time this matters, and
+     * an area left enabled keeps following a player that has stopped.
+     *
+     * Best effort. No Home Assistant configured, or one that cannot be reached,
+     * is not a reason to block the library switch.
+     */
+    private suspend fun disableHaLightSync() = withContext(Dispatchers.IO) {
+        val settings = com.engabd.sendpin.data.AppSettings(this@SendpinApp)
+        val url = settings.haUrl.first()
+        val token = settings.haToken.first()
+        if (url.isBlank() || token.isBlank()) return@withContext
+        val client = com.engabd.sendpin.ha.HaClient()
+        try {
+            client.connect(url, token)
+            val repo = com.engabd.sendpin.ha.LightSyncRepository(client)
+            for (area in repo.discover()) {
+                if (area.enabled) repo.setEnabled(area, false)
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("SendpinApp", "Could not switch off HA light sync: ${e.message}")
+        } finally {
+            client.disconnect()
+        }
+    }
+
     override fun newImageLoader(): ImageLoader {
         val authInterceptor = Interceptor { chain ->
             val req = chain.request()

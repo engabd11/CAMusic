@@ -56,6 +56,21 @@ class AppSettings(private val context: Context) {
         private val HUE_APP_ID = stringPreferencesKey("hue_app_id")           // hue-application-id for DTLS PSK identity
         private val HUE_CONFIG_ID = stringPreferencesKey("hue_entertainment_config_id") // entertainment area UUID
         private val LIGHT_SYNC_MODE = stringPreferencesKey("light_sync_mode") // "ha" | "direct"
+
+        /**
+         * Whether [lightSyncMode] follows the selected library.
+         *
+         * On by default, because the library is what decides where playback
+         * actually happens: Navidrome always plays through this phone's own
+         * player, which the direct bridge path taps, while Music Assistant plays
+         * to whatever speaker is targeted and is Home Assistant's business.
+         *
+         * Kept as an override rather than removed, because Music Assistant with
+         * a Hue bridge and no Home Assistant is a real setup that deriving the
+         * mode purely from the library would strand. Touching the Settings
+         * toggle clears this.
+         */
+        private val LIGHT_SYNC_MODE_AUTO = booleanPreferencesKey("light_sync_mode_auto")
         private val LIGHT_SYNC_ENABLED = booleanPreferencesKey("light_sync_enabled") // direct mode master toggle
         private val LIGHT_SYNC_INTENSITY = stringPreferencesKey("light_sync_intensity") // subtle|medium|high|intense|extreme
         private val LIGHT_SYNC_EFFECT = stringPreferencesKey("light_sync_effect") // music|movies|fireworks
@@ -74,6 +89,25 @@ class AppSettings(private val context: Context) {
          * caps `static_delay_ms` at 0..5000.
          */
         const val MAX_TRIM_MS = 2_000
+
+        const val MODE_HA = "ha"
+        const val MODE_DIRECT = "direct"
+        const val BACKEND_SUBSONIC = "subsonic"
+        const val BACKEND_MA = "ma"
+
+        /**
+         * Which Light Sync transport a library implies.
+         *
+         * The library decides where the audio actually comes out, which is what
+         * the transport has to match. Navidrome always plays through this
+         * phone's own ExoPlayer, and the direct bridge path taps exactly that.
+         * Music Assistant plays to whatever speaker is targeted — possibly this
+         * phone over Sendspin, which uses a raw AudioTrack the tap cannot see —
+         * so Home Assistant, which follows the MA player entity, is the one that
+         * can cover every case.
+         */
+        fun lightSyncModeFor(backend: String): String =
+            if (backend == BACKEND_SUBSONIC) MODE_DIRECT else MODE_HA
     }
 
     val backend: Flow<String> = context.dataStore.data.map { it[BACKEND] ?: "ma" }
@@ -331,6 +365,10 @@ class AppSettings(private val context: Context) {
     /** Which Light Sync transport: "ha" (Home Assistant) or "direct" (Hue Bridge). */
     val lightSyncMode: Flow<String> = context.dataStore.data.map { it[LIGHT_SYNC_MODE] ?: "ha" }
 
+    /** Whether [lightSyncMode] follows the selected library. See the key's docs. */
+    val lightSyncModeAuto: Flow<Boolean> =
+        context.dataStore.data.map { it[LIGHT_SYNC_MODE_AUTO] ?: true }
+
     /**
      * The direct-mode master toggle. The HA path keeps its own per-area `enabled`
      * switch in Home Assistant; direct mode has no HA to hold that state, so it
@@ -363,8 +401,20 @@ class AppSettings(private val context: Context) {
         context.dataStore.edit { it[HUE_CONFIG_ID] = id }
     }
 
-    suspend fun setLightSyncMode(mode: String) {
-        context.dataStore.edit { it[LIGHT_SYNC_MODE] = mode }
+    /**
+     * Set the transport. [manual] marks this as the user's own choice and stops
+     * the library from overriding it; the automatic coordinator passes false.
+     */
+    suspend fun setLightSyncMode(mode: String, manual: Boolean = false) {
+        context.dataStore.edit {
+            it[LIGHT_SYNC_MODE] = mode
+            if (manual) it[LIGHT_SYNC_MODE_AUTO] = false
+        }
+    }
+
+    /** Hand control of the transport back to the library selection. */
+    suspend fun setLightSyncModeAuto(auto: Boolean) {
+        context.dataStore.edit { it[LIGHT_SYNC_MODE_AUTO] = auto }
     }
 
     suspend fun setLightSyncEnabled(on: Boolean) {

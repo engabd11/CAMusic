@@ -249,14 +249,16 @@ fun App() {
         // players. On the Navidrome backend the phone plays on its own, so both tabs
         // are shown greyed rather than offering controls that can't do anything.
         val backend by settings.backend.collectAsState(initial = "ma")
-        // Light Sync is available on the Navidrome backend when the transport
-        // is "direct" (bridge-to-bridge, no HA needed). The HA transport needs
-        // an MA player entity to follow, so it stays off with Navidrome.
+        // Light Sync is available on Navidrome through the direct bridge
+        // transport, which needs no Home Assistant. It is still possible to pin
+        // the HA transport by hand while on Navidrome — where it has no MA player
+        // entity to follow — so the tab is greyed for that combination rather
+        // than offering controls that cannot do anything.
         val lsMode by settings.lightSyncMode.collectAsState(initial = "ha")
         val disabledRoutes = when {
-            backend == "subsonic" && lsMode == "direct" -> setOf("speakers")
-            backend == "subsonic" -> setOf("speakers", "light_sync")
-            else -> emptySet()
+            backend != "subsonic" -> emptySet()
+            lsMode == "direct" -> setOf("speakers")
+            else -> setOf("speakers", "light_sync")
         }
 
         // An album/artist/playlist detail screen belongs to the server it was opened
