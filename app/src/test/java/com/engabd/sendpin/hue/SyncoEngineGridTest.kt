@@ -279,7 +279,10 @@ class SyncoEngineGridTest {
             centroid = 0.3f,
         )
 
-        val eng = SyncoEngine(channels(8)).apply { mode = SyncMode.HIGH }
+        // Intense rather than High: it sets shimmer to zero, and a shimmering
+        // vocal lamp oscillates hard enough to win a "brightest lamp" comparison
+        // on its own, which would measure the sparkle instead of the pop.
+        val eng = SyncoEngine(channels(8)).apply { mode = SyncMode.INTENSE }
         // Settle with a flat spectrum so the per-bin baselines are established.
         repeat(120) {
             eng.render(
@@ -296,7 +299,7 @@ class SyncoEngineGridTest {
         val low = eng.render(frameWith(0), dt, null, StructureState())
         val lowBrightest = low.maxByOrNull { max(it.value.first, max(it.value.second, it.value.third)) }?.key
 
-        val eng2 = SyncoEngine(channels(8)).apply { mode = SyncMode.HIGH }
+        val eng2 = SyncoEngine(channels(8)).apply { mode = SyncMode.INTENSE }
         repeat(120) {
             eng2.render(
                 AnalysisFrame(

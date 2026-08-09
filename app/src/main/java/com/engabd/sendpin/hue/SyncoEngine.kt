@@ -786,6 +786,17 @@ class SyncoEngine(
     // ── Beat flash ────────────────────────────────────────────────────────
 
     /**
+     * Fast per-channel sparkle in 0..1.
+     *
+     * Two detuned sines multiplied, offset per channel, so neighbouring lamps
+     * shimmer out of step with each other and the room glitters rather than
+     * pulsing in unison. Deterministic, so a given lamp behaves the same way
+     * every time rather than looking like noise.
+     */
+    private fun shimmerAt(t: Float, cid: Int): Float =
+        0.5f + 0.5f * sin(t * 23.0f + cid * 2.7f) * sin(t * 8.0f + cid * 1.3f)
+
+    /**
      * Track evidence that the song currently has an actual beat.
      *
      * A locked tempo grid is proof — dense mixes with buried kicks still lock.
@@ -1099,7 +1110,24 @@ class SyncoEngine(
             val bassEnv = max(env["sub_bass"] ?: 0f, env["bass"] ?: 0f)
             when (role) {
                 ROLE_BASS -> target += p.bassGain * bassEnv
-                ROLE_VOCAL -> target += p.vocalDim
+                ROLE_VOCAL -> {
+                    target += p.vocalDim
+                    // The human flavour: a vocal lamp still reacts to the music
+                    // like any other, then shimmers with the singing on top. The
+                    // 0.75 keeps it from simply adding brightness — the sparkle
+                    // replaces part of the steady level rather than piling onto
+                    // it, so a vocal lamp reads as *moving* rather than brighter.
+                    if (p.shimmer > 0f) {
+                        val treble = max(env["mid"] ?: 0f, env["high"] ?: 0f)
+                        val vocalDrive = max(treble, 0.6f * (env["low_mid"] ?: 0f))
+                        target = 0.75f * target + p.shimmer * vocalDrive * shimmerAt(time, cid)
+                    }
+                }
+            }
+            // Rungs with no role split keep the classic everywhere-sparkle.
+            if (p.shimmer > 0f && roles.isEmpty()) {
+                val treble = max(env["mid"] ?: 0f, env["high"] ?: 0f)
+                target += p.shimmer * treble * shimmerAt(time, cid)
             }
 
             // Height: bass sits on the floor and treble at the ceiling, the way
