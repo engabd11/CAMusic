@@ -139,13 +139,17 @@ class LocalRadioTest {
     // ─── Offline ─────────────────────────────────────────────────────────────
 
     @Test
-    fun `offline prefers the seed's genre without playing only that`() {
-        val downloads = List(20) { track("d$it", genre = if (it < 4) "Jazz" else "Metal") }
-        val picked = LocalRadio().offline(downloads, seed = track("seed", genre = "Jazz"), count = 4)
+    fun `offline picks from the seed's genre, not the whole library`() {
+        // Sized so the assertion cannot depend on the shuffle: 12 matching tracks is
+        // exactly the window `offline` considers for count = 4, so every pick has to
+        // come from them. An earlier version of this test had 4 matches in a window of
+        // 12 and asserted that at least one was picked, which is true about 86% of the
+        // time — a test that fails one run in seven is worse than no test.
+        val jazz = List(12) { track("j$it", genre = "Jazz") }
+        val metal = List(8) { track("m$it", genre = "Metal") }
+        val picked = LocalRadio().offline(jazz + metal, seed = track("seed", genre = "Jazz"), count = 4)
         assertEquals(4, picked.size)
-        // The Jazz tracks rank first, and the pool is wider than the count, so this
-        // asserts the ranking held rather than the exact shuffle.
-        assertTrue(picked.any { it.itemId in setOf("d0", "d1", "d2", "d3") })
+        assertTrue(picked.all { it.itemId.startsWith("j") })
     }
 
     @Test
