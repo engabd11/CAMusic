@@ -299,6 +299,9 @@ every run, and Android refuses to update an app whose signer changed. See the he
 
 ## Documentation
 
+- [docs/v0.8-plan.md](docs/v0.8-plan.md) - the plan for the next release: continuous
+  play on the Navidrome path, the quality badge and its pop-up, lyrics, the album and
+  artist screens, live search, the DSP that does nothing, and the roadmap sequenced
 - [docs/v0.5.0-analysis.md](docs/v0.5.0-analysis.md) - the full codebase analysis and
   the roadmap the "What's planned" section above summarises
 - [docs/improvement-roadmap.md](docs/improvement-roadmap.md) - the API audit, what
