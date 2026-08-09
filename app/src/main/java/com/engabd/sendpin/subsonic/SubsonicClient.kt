@@ -1,5 +1,6 @@
 package com.engabd.sendpin.subsonic
 
+import androidx.compose.runtime.Immutable
 import com.engabd.sendpin.ma.MaAudioFormat
 import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ma.MaLyrics
@@ -34,6 +35,25 @@ data class SavedQueue(
     val index: Int,
     val positionMs: Long,
     val changedBy: String?,
+)
+
+/**
+ * What `getArtistInfo2` actually carries. Only the biography was ever read, and the
+ * call explicitly asked for zero similar artists.
+ */
+@Immutable
+data class ArtistInfo(
+    val biography: String? = null,
+    val musicBrainzId: String? = null,
+    val lastFmUrl: String? = null,
+    val similar: List<MaItem> = emptyList(),
+)
+
+/** What `getAlbumInfo2` carries, beyond the notes the app was reading. */
+data class AlbumInfo(
+    val notes: String? = null,
+    val musicBrainzId: String? = null,
+    val lastFmUrl: String? = null,
 )
 
 class SubsonicException(
@@ -305,6 +325,11 @@ class SubsonicClient(
             subtitle = artistObj.int("albumCount")?.let { "$it albums" },
             image = coverUrl(artistObj.str("coverArt") ?: artistObj.str("id")),
             duration = null,
+            // Both were being dropped here while `artistItem` read them correctly, so
+            // a starred artist opened with a hollow heart and re-starring it was the
+            // only way to make the screen agree with the library.
+            favorite = artistObj.str("starred") != null,
+            genres = genreList(artistObj),
         )
         val albums = artistObj["album"]?.jsonArray ?: emptyList()
         return artist to albums.map { albumItem(it.jsonObject) }
@@ -553,21 +578,85 @@ class SubsonicClient(
      *
      * Returns the biography text, or null when the server has nothing.
      */
-    suspend fun getArtistInfo2(id: String): String? {
-        // Try the OpenSubsonic `2` variant first.
-        try {
-            val res = get("getArtistInfo2", mapOf("id" to id, "count" to "0", "includeNotPresent" to "true"))
-            val info = res["artistInfo2"]?.jsonObject
-            return info?.str("biography")?.takeIf { it.isNotBlank() }
-        } catch (_: SubsonicException) {
-            // Fall through to the legacy endpoint.
+    suspend fun getArtistInfo2(id: String): String? = artistInfo(id).biography
+
+    /**
+     * Biography *and* similar artists, in the one call that already carries both.
+     *
+     * `count` used to be hardcoded to `0`, which is Subsonic's way of asking for zero
+     * `similarArtist` entries — the app was explicitly telling the server not to send
+     * the thing it now wants. Only the biography was ever read.
+     *
+     * Similar artists come back as bare `<similarArtist>` elements: an id, a name and
+     * usually a cover. Entries the server doesn't have in the library carry
+     * `id="-1"`, which is a last.fm suggestion rather than something playable, so
+     * those are dropped — a row of artists that go nowhere when tapped is worse than
+     * a shorter row.
+     */
+    suspend fun artistInfo(id: String, similarCount: Int = 0): ArtistInfo {
+        val params = mapOf(
+            "id" to id,
+            "count" to similarCount.toString(),
+            "includeNotPresent" to "false",
+        )
+        // Try the OpenSubsonic `2` variant first; a plain Subsonic server may not
+        // implement it, and the legacy one answers the same questions.
+        for ((endpoint, key) in listOf("getArtistInfo2" to "artistInfo2", "getArtistInfo" to "artistInfo")) {
+            val info = try {
+                get(endpoint, params)[key]?.jsonObject
+            } catch (_: SubsonicException) {
+                continue
+            } ?: continue
+            return ArtistInfo(
+                biography = info.str("biography")?.takeIf { it.isNotBlank() },
+                musicBrainzId = info.str("musicBrainzId"),
+                lastFmUrl = info.str("lastFmUrl"),
+                similar = info["similarArtist"]?.jsonArray.orEmptyArray()
+                    .mapNotNull { el ->
+                        val o = el as? JsonObject ?: return@mapNotNull null
+                        val artistId = o.str("id")?.takeIf { it != "-1" } ?: return@mapNotNull null
+                        MaItem(
+                            itemId = artistId, provider = PROVIDER,
+                            name = o.str("name") ?: return@mapNotNull null,
+                            uri = artistId, mediaType = "artist",
+                            image = coverUrl(o.str("coverArt") ?: artistId),
+                            duration = null,
+                        )
+                    },
+            )
         }
-        return try {
-            val res = get("getArtistInfo", mapOf("id" to id, "count" to "0", "includeNotPresent" to "true"))
-            res["artistInfo"]?.jsonObject?.str("biography")?.takeIf { it.isNotBlank() }
-        } catch (_: SubsonicException) {
-            null
+        return ArtistInfo()
+    }
+
+    /**
+     * The top tracks for an artist, by *name* — `getTopSongs` takes the name, not the
+     * id, which is the one Subsonic endpoint that does.
+     */
+    suspend fun getTopSongs(artistName: String, count: Int = 10): List<MaItem> = try {
+        get("getTopSongs", mapOf("artist" to artistName, "count" to count.toString()))["topSongs"]
+            ?.jsonObject?.get("song")?.jsonArray.orEmptyArray()
+            .map { songItem(it.jsonObject) }
+    } catch (_: SubsonicException) {
+        emptyList()
+    }
+
+    /**
+     * Tracks the server thinks go with this one — the seed for a local radio.
+     *
+     * [id] can be a song, an album or an artist; Navidrome accepts all three. `2` is
+     * the ID3 variant, the legacy one is directory-based; both answer the same shape.
+     */
+    suspend fun getSimilarSongs(id: String, count: Int = 50): List<MaItem> {
+        for ((endpoint, key) in listOf("getSimilarSongs2" to "similarSongs2", "getSimilarSongs" to "similarSongs")) {
+            val songs = try {
+                get(endpoint, mapOf("id" to id, "count" to count.toString()))[key]
+                    ?.jsonObject?.get("song")?.jsonArray
+            } catch (_: SubsonicException) {
+                continue
+            } ?: continue
+            return songs.map { songItem(it.jsonObject) }
         }
+        return emptyList()
     }
 
     /**
@@ -576,19 +665,29 @@ class SubsonicClient(
      * `getAlbumInfo2` is the OpenSubsonic endpoint; `getAlbumInfo` is the
      * legacy equivalent. Same fallback pattern as [getArtistInfo2].
      */
-    suspend fun getAlbumInfo2(id: String): String? {
-        try {
-            val res = get("getAlbumInfo2", mapOf("id" to id))
-            val info = res["albumInfo2"]?.jsonObject
-            return info?.str("notes")?.takeIf { it.isNotBlank() }
-        } catch (_: SubsonicException) {
+    suspend fun getAlbumInfo2(id: String): String? = albumInfo(id).notes
+
+    /**
+     * Album notes plus the identifiers that came with them.
+     *
+     * `musicBrainzId` and `lastFmUrl` sit in the same response and were being parsed
+     * away — they are the difference between "here are some liner notes" and a link
+     * out to the release the notes are about.
+     */
+    suspend fun albumInfo(id: String): AlbumInfo {
+        for ((endpoint, key) in listOf("getAlbumInfo2" to "albumInfo2", "getAlbumInfo" to "albumInfo")) {
+            val info = try {
+                get(endpoint, mapOf("id" to id))[key]?.jsonObject
+            } catch (_: SubsonicException) {
+                continue
+            } ?: continue
+            return AlbumInfo(
+                notes = info.str("notes")?.takeIf { it.isNotBlank() },
+                musicBrainzId = info.str("musicBrainzId"),
+                lastFmUrl = info.str("lastFmUrl"),
+            )
         }
-        return try {
-            val res = get("getAlbumInfo", mapOf("id" to id))
-            res["albumInfo"]?.jsonObject?.str("notes")?.takeIf { it.isNotBlank() }
-        } catch (_: SubsonicException) {
-            null
-        }
+        return AlbumInfo()
     }
 
     /** Everything the user has starred, grouped the way search results are. */
@@ -712,7 +811,25 @@ class SubsonicClient(
         favorite = o.str("starred") != null,
         year = o.int("year"),
         parentId = o.str("artistId"),
+        // Was never parsed, so the Navidrome album header showed a year and a track
+        // count where the MA one showed a genre too — and nothing had a genre to fall
+        // back on when looking for something similar.
+        genres = genreList(o),
     )
+
+    /**
+     * Genres, however this server spells them.
+     *
+     * Plain Subsonic sends a single `genre` string. OpenSubsonic adds a `genres`
+     * array of `{name}` objects. Servers send one, the other, or both, and both
+     * spellings are worth reading.
+     */
+    private fun genreList(o: JsonObject): List<String> {
+        val one = o.str("genre")
+        val many = (o["genres"] as? JsonArray).orEmptyArray()
+            .mapNotNull { (it as? JsonObject)?.str("name") ?: (it as? JsonPrimitive)?.contentOrNull }
+        return (listOfNotNull(one) + many).map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+    }
 
     private fun songItem(o: JsonObject) = MaItem(
         itemId = o.str("id") ?: "", provider = PROVIDER, name = o.str("title") ?: "Unknown title",
@@ -726,6 +843,7 @@ class SubsonicClient(
         parentId = o.str("albumId"),
         album = o.str("album"),
         composer = o.str("composer"),
+        genres = genreList(o),
     )
 
     private fun playlistItem(o: JsonObject) = MaItem(

@@ -9,6 +9,7 @@ import com.engabd.sendpin.discovery.PlayerIdentity
 import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ma.MaRepository
 import com.engabd.sendpin.subsonic.SubsonicClient
+import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel.Load
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -74,6 +75,24 @@ class AlbumDetailViewModel(
     private val _notes = MutableStateFlow<String?>(null)
     val notes: StateFlow<String?> = _notes
 
+    /** A MusicBrainz release id, when the server offered one. */
+    private val _musicBrainzId = MutableStateFlow<String?>(null)
+    val musicBrainzId: StateFlow<String?> = _musicBrainzId
+
+    /**
+     * More to listen to after this record: other albums by the same artist, and
+     * failing that something adjacent.
+     *
+     * Its own load state so it never blocks the track list — the shelf appearing a
+     * moment after the songs is fine; the songs waiting on a recommendation is not.
+     */
+    private val _related = MutableStateFlow<Load<List<MaItem>>>(Load.Idle)
+    val related: StateFlow<Load<List<MaItem>>> = _related
+
+    /** What the related shelf ended up being able to offer, for its heading. */
+    private val _relatedTitle = MutableStateFlow("More like this")
+    val relatedTitle: StateFlow<String> = _relatedTitle
+
     private val _toast = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val toast: SharedFlow<String> = _toast.asSharedFlow()
 
@@ -108,18 +127,103 @@ class AlbumDetailViewModel(
                     if (albumMeta != null) _album.value = albumMeta
                     _tracks.value = trackList
                     // Fetch album notes from Navidrome's getAlbumInfo2.
-                    _notes.value = runCatching { sc.getAlbumInfo2(itemId) }.getOrNull()
+                    runCatching { sc.albumInfo(itemId) }.getOrNull()?.let {
+                        _notes.value = it.notes
+                        _musicBrainzId.value = it.musicBrainzId
+                    }
                 } else {
                     // Fetch full album metadata, then tracks.
                     val ref = MaItem(itemId, provider, initialName, null, "album", null, initialArt, null)
                     val albumMeta = maRepo.getAlbum(ref)
                     if (albumMeta != null) _album.value = albumMeta
                     _tracks.value = maRepo.albumTracks(ref)
+                    // MA's own description has always been parsed — `metadata.description
+                    // ?? metadata.review` — and never shown, so the notes section was
+                    // Navidrome-only for want of one assignment.
+                    _notes.value = albumMeta?.description
                 }
+                loadRelated()
             } catch (e: Exception) {
                 _error.value = e.message ?: "Failed to load album"
             }
             _loading.value = false
+        }
+    }
+
+    /**
+     * What to listen to next, in the order a listener would want it.
+     *
+     * The artist's other records first — that is what "more like this" means when you
+     * have just finished an album. Failing that, records by artists this one is filed
+     * next to, and failing *that*, the same genre. Each rung is a weaker claim than
+     * the one above, so the shelf is titled for whichever rung answered rather than
+     * pretending they are the same thing.
+     *
+     * Anything empty hides the section. A shelf that says "More like this" over
+     * nothing is worse than no shelf.
+     */
+    private fun loadRelated() {
+        viewModelScope.launch {
+            _related.value = Load.Loading
+            val here = _album.value
+            val result = runCatching {
+                byArtist(here)?.takeIf { it.isNotEmpty() }?.also { _relatedTitle.value = "More from ${here?.subtitle ?: "this artist"}" }
+                    ?: bySimilarArtists(here)?.takeIf { it.isNotEmpty() }?.also { _relatedTitle.value = "Similar artists" }
+                    ?: byGenre(here)?.takeIf { it.isNotEmpty() }?.also { _relatedTitle.value = "More ${here?.genres?.firstOrNull() ?: "like this"}" }
+                    ?: emptyList()
+            }.getOrDefault(emptyList())
+            // Never recommend the record you are looking at.
+            _related.value = Load.Ready(result.filter { it.itemId != itemId }.distinctBy { it.itemId }.take(20))
+        }
+    }
+
+    /** The rest of the artist's catalogue. */
+    private suspend fun byArtist(album: MaItem?): List<MaItem>? {
+        if (isSubsonic) {
+            // A Subsonic album carries its artist's id, so no name matching is needed
+            // here — unlike the artist screen, which has to resolve one.
+            val artistId = album?.parentId ?: return null
+            return subsonic?.artistAlbums(artistId)
+        }
+        val name = album?.subtitle?.substringBefore(",")?.trim() ?: return null
+        val artist = maRepo.search(name).artists.firstOrNull { it.name.equals(name, ignoreCase = true) }
+            ?: return null
+        return maRepo.artistAlbums(artist)
+    }
+
+    /** Albums by artists the server files next to this one. */
+    private suspend fun bySimilarArtists(album: MaItem?): List<MaItem>? {
+        if (isSubsonic) {
+            val artistId = album?.parentId ?: return null
+            val similar = subsonic?.artistInfo(artistId, similarCount = 6)?.similar.orEmpty()
+            return similar.take(4).flatMap { runCatching { subsonic?.artistAlbums(it.itemId).orEmpty() }.getOrDefault(emptyList()) }
+        }
+        val name = album?.subtitle?.substringBefore(",")?.trim() ?: return null
+        val artist = maRepo.search(name).artists.firstOrNull { it.name.equals(name, ignoreCase = true) }
+            ?: return null
+        return maRepo.similarArtists(artist).take(4)
+            .flatMap { runCatching { maRepo.artistAlbums(it) }.getOrDefault(emptyList()) }
+    }
+
+    /** Anything in the same genre — the weakest claim, and better than nothing. */
+    private suspend fun byGenre(album: MaItem?): List<MaItem>? {
+        val genre = album?.genres?.firstOrNull()?.takeIf { it.isNotBlank() } ?: return null
+        return if (isSubsonic) {
+            // getSongsByGenre returns tracks; the albums behind them are what a shelf
+            // of covers wants, so they are folded down by album id.
+            subsonic?.songsByGenre(genre, 60)
+                ?.distinctBy { it.parentId }
+                ?.mapNotNull { song ->
+                    song.parentId?.let {
+                        MaItem(
+                            itemId = it, provider = provider, name = song.album ?: song.name,
+                            uri = it, mediaType = "album", subtitle = song.subtitle,
+                            image = song.image, duration = null,
+                        )
+                    }
+                }
+        } else {
+            maRepo.search(genre).albums
         }
     }
 
