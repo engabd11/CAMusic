@@ -665,6 +665,62 @@ fun SettingsScreen(
                     }
 
                     SettingsSection.AUDIO -> {
+                        // ── Continuous play ─────────────────────────────────────────
+                        item(key = "continuous") {
+                            val radioOn by settings.radioMode.collectAsState(initial = false)
+                            val fade by settings.navFadeSeconds.collectAsState(initial = 0)
+                            GlassCard(radius = 16.dp) {
+                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Text(
+                                        "Continuous play",
+                                        color = TextPrimary, fontFamily = AppFont,
+                                        style = MaterialTheme.typography.titleLarge,
+                                    )
+                                    ToggleRow(
+                                        "Keep the music going",
+                                        "When the queue runs out, keep playing something similar. " +
+                                            "Music Assistant does this on the server; on Navidrome the app " +
+                                            "builds the next few tracks itself and adds them before the last " +
+                                            "one ends, so nothing gaps.",
+                                        radioOn, accent,
+                                    ) { on -> scope.launch { settings.setRadioMode(on) } }
+
+                                    Text(
+                                        "Smooth transitions",
+                                        color = TextPrimary, fontFamily = AppFont,
+                                        style = MaterialTheme.typography.titleLarge,
+                                    )
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    ) {
+                                        HSlider(
+                                            value = fade / 12f,
+                                            onChange = {},
+                                            onCommit = { f ->
+                                                scope.launch { settings.setNavFadeSeconds(Math.round(f * 12f)) }
+                                            },
+                                            accented = true,
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                        Text(
+                                            if (fade == 0) "Off" else "${fade}s",
+                                            color = TextSecondary, fontFamily = MonoFont,
+                                            style = MaterialTheme.typography.labelMedium,
+                                        )
+                                    }
+                                    Text(
+                                        "Fades one track out and the next in, on the Navidrome player. " +
+                                            "Off is gapless, which is what an album wants — so this is " +
+                                            "suppressed automatically while the queue is a single record, " +
+                                            "however it is set. It is not a crossfade: the two tracks don't " +
+                                            "overlap, because one player has one output.",
+                                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
+                            }
+                        }
+
                         // ── Audio ───────────────────────────────────────────────────
                         item {
                             var preferHiRes by remember { mutableStateOf(true) }

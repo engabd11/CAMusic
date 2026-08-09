@@ -213,7 +213,10 @@ class LocalPlayer(private val context: Context) {
             _positionMs.value = 0
             _durationMs.value = track?.durationMs ?: 0
             // The gain belongs to the track, so it has to be re-applied at every
-            // boundary — including the gapless ones, where nothing else happens.
+            // boundary — including the gapless ones, where nothing else happens. The
+            // fade resets with it, or a track entered mid-ramp would start quiet and
+            // stay there until the next tick noticed.
+            fadeFactor = 1f
             applyGain()
             track?.let { _started.tryEmit(it) }
         }
@@ -320,6 +323,12 @@ class LocalPlayer(private val context: Context) {
         val start = startIndex.coerceIn(0, tracks.lastIndex)
         _queue.value = tracks
         _hasSession.value = true
+        // Decided here rather than at each call site, because every path that starts
+        // a local queue goes through this one and any of them could forget. A queue
+        // that is one album is a sequenced record: fading between its tracks damages
+        // it, and gapless is the entire reason the list is handed over in one go.
+        smoothQueue = tracks.size < 2 || tracks.mapNotNull { it.album }.distinct().size > 1
+        fadeFactor = 1f
         // The whole list goes to ExoPlayer at once — that is what lets it buffer
         // across a track boundary, and so what makes the transition gapless.
         player.setMediaItems(tracks.map(::mediaItem), start, C.TIME_UNSET)
@@ -332,6 +341,9 @@ class LocalPlayer(private val context: Context) {
         if (tracks.isEmpty()) return
         val wasEmpty = _queue.value.isEmpty()
         _queue.value = _queue.value + tracks
+        // Appending something from off the record — a radio top-up, a queued track —
+        // means this is no longer one album, so the fade applies again.
+        if (!wasEmpty && _queue.value.mapNotNull { it.album }.distinct().size > 1) smoothQueue = true
         player.addMediaItems(tracks.map(::mediaItem))
         if (wasEmpty) {
             _hasSession.value = true
@@ -532,14 +544,71 @@ class LocalPlayer(private val context: Context) {
      */
     private fun applyGain() {
         val factor = ReplayGain.factor(_current.value?.sourceQuality, replayGainMode)
-        player.volume = (userVolume * factor).coerceIn(0f, 1f)
+        player.volume = (userVolume * factor * fadeFactor).coerceIn(0f, 1f)
+    }
+
+    /**
+     * Seconds of fade at each end of a track, or 0 for none.
+     *
+     * Not a crossfade: one ExoPlayer has one output, so two tracks cannot overlap
+     * through it. This is the honest version of what a single player can do — down at
+     * the end, up at the start — which is what a party playlist wants and what an
+     * album emphatically does not. See [smoothQueue].
+     */
+    @Volatile
+    var fadeSeconds: Int = 0
+        set(value) {
+            field = value.coerceIn(0, 12)
+            if (field == 0) { fadeFactor = 1f; applyGain() }
+        }
+
+    /**
+     * Whether the *current queue* should fade at all.
+     *
+     * A record is sequenced; fading between its tracks damages it, and gapless is the
+     * whole reason the queue is handed to ExoPlayer in one go. So the setting says
+     * what the listener wants in general and this says whether it applies here —
+     * set false when the queue is one album.
+     */
+    @Volatile
+    var smoothQueue: Boolean = true
+
+    /** The ramp, multiplied into the output alongside user volume and ReplayGain. */
+    @Volatile
+    private var fadeFactor: Float = 1f
+
+    /**
+     * Where in the track the fade should be, as a multiplier.
+     *
+     * Deliberately linear in *amplitude* rather than dB: over two or three seconds
+     * against a fading song, the difference is inaudible and the arithmetic is one
+     * division.
+     */
+    private fun fadeAt(positionMs: Long, durationMs: Long): Float {
+        val secs = fadeSeconds
+        if (secs <= 0 || !smoothQueue || durationMs <= 0) return 1f
+        val window = secs * 1000L
+        // A track shorter than two windows would spend its whole length fading.
+        if (durationMs < window * 3) return 1f
+        val inFactor = if (positionMs < window) positionMs.toFloat() / window else 1f
+        val remaining = durationMs - positionMs
+        val outFactor = if (remaining in 0..window) remaining.toFloat() / window else 1f
+        return minOf(inFactor, outFactor).coerceIn(0f, 1f)
     }
 
     private fun startTicker() {
         stopTicker()
         ticker = scope.launch {
             while (isActive) {
-                _positionMs.value = player.currentPosition.coerceAtLeast(0)
+                val pos = player.currentPosition.coerceAtLeast(0)
+                _positionMs.value = pos
+                if (fadeSeconds > 0 && smoothQueue) {
+                    val next = fadeAt(pos, _durationMs.value)
+                    if (kotlin.math.abs(next - fadeFactor) > 0.001f) {
+                        fadeFactor = next
+                        applyGain()
+                    }
+                }
                 delay(POSITION_TICK_MS)
             }
         }

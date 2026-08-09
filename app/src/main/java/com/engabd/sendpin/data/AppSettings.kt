@@ -44,7 +44,8 @@ class AppSettings(private val context: Context) {
         private val PREFERRED_AUDIO_DEVICE_ID = stringPreferencesKey("preferred_audio_device_id") // USB DAC routing
         private val DOWNLOAD_STORAGE_CAP_MB = stringPreferencesKey("download_storage_cap_mb") // 0 = unlimited
         private val DOWNLOAD_WIFI_ONLY = booleanPreferencesKey("download_wifi_only") // skip downloads on mobile data
-        private val RADIO_MODE = booleanPreferencesKey("radio_mode")            // MA keeps the music going past the queue
+        private val RADIO_MODE = booleanPreferencesKey("radio_mode")            // keep the music going past the queue
+        private val NAV_FADE_SECONDS = stringPreferencesKey("nav_fade_seconds") // 0 = off, gapless
         private val STATIC_DELAY_MS = stringPreferencesKey("sendspin_static_delay_ms") // per-player latency trim
         private val REPLAY_GAIN = stringPreferencesKey("replay_gain_mode")      // off | track | album
         private val LYRICS_OFFSET_MS = stringPreferencesKey("lyrics_offset_ms") // +ve = lyrics run late
@@ -278,6 +279,21 @@ class AppSettings(private val context: Context) {
      * while the toggle that sets it lives on Now Playing.
      */
     val radioMode: Flow<Boolean> = context.dataStore.data.map { it[RADIO_MODE] ?: false }
+
+    /**
+     * Seconds of fade between tracks on the local player. 0 — the default — is
+     * gapless, which is what an album wants.
+     *
+     * Not a crossfade: one ExoPlayer has one output, so two tracks cannot overlap
+     * through it. This fades one out and the next in, which is what a party playlist
+     * is after; a true overlap needs a second player and is its own piece of work.
+     * Suppressed automatically when the queue is a single album.
+     */
+    val navFadeSeconds: Flow<Int> = context.dataStore.data.map { it[NAV_FADE_SECONDS]?.toIntOrNull() ?: 0 }
+
+    suspend fun setNavFadeSeconds(value: Int) = context.dataStore.edit {
+        it[NAV_FADE_SECONDS] = value.coerceIn(0, 12).toString()
+    }
 
     suspend fun setBackend(value: String) {
         context.dataStore.edit { it[BACKEND] = value }

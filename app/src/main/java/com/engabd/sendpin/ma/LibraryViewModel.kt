@@ -6,7 +6,9 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.audio.FormatNegotiator
+import com.engabd.sendpin.audio.LocalRadio
 import com.engabd.sendpin.audio.LocalTrack
+import com.engabd.sendpin.audio.SubsonicRadioSource
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.PlayerIdentity
 import com.engabd.sendpin.download.DownloadJob
@@ -473,6 +475,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 if (st == MaApiClient.State.ERROR) _connError.value = "Connection failed"
             }
         }
+        startLocalRadio()
+        // The fade belongs to the player, and the setting can change under a queue
+        // that is already running.
+        viewModelScope.launch { settings.navFadeSeconds.collect { localPlayer.fadeSeconds = it } }
         // A local track that actually started is a play worth reporting, so
         // Navidrome's play counts and its "recently played" shelf stay honest.
         //
@@ -842,8 +848,13 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         item: MaItem,
         streamUrl: String? = null,
         scrobbleId: String? = null,
-    ): LocalTrack =
-        downloadManager.toLocalTrack(
+    ): LocalTrack {
+        // Every track that enters a local queue comes through here, which makes this
+        // the one place guaranteed to see the library item behind it. A LocalTrack
+        // carries no genre and no album id, so without this the radio would have
+        // nothing but a title to seed from.
+        rememberSeeds(listOf(item))
+        return downloadManager.toLocalTrack(
             item = item,
             streamUrl = streamUrl
                 ?: item.takeIf { it.provider == SubsonicClient.PROVIDER }?.let { subsonic?.streamUrl(it.itemId) },
@@ -857,6 +868,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                     item.provider == SubsonicClient.PROVIDER || item.provider == DOWNLOAD
                 },
         )
+    }
 
     /**
      * "Play at original quality": when Music Assistant would have to convert a
@@ -1124,6 +1136,74 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         } finally {
             _searching.value = false
         }
+    }
+
+    // --- continuous play (local) ------------------------------------------
+
+    private val radio = LocalRadio()
+
+    /** True while a top-up is in flight, so a burst of transitions asks once. */
+    private var radioFetching = false
+
+    /**
+     * Keep the local queue from running out while radio mode is on.
+     *
+     * The top-up happens **two tracks before the end**, not at it. ExoPlayer is
+     * handed the whole queue at once — that is what makes its transitions gapless —
+     * so appending while there is still something playing keeps the seam intact.
+     * Waiting for the queue to actually empty would mean a silence, a fetch, and then
+     * a fresh `prepare`, which is exactly the gap this backend doesn't have.
+     */
+    private fun startLocalRadio() {
+        viewModelScope.launch {
+            combine(localPlayer.index, localPlayer.queue) { at, queue -> at to queue }
+                .collect { (at, queue) ->
+                    if (!settings.radioMode.first()) return@collect
+                    if (_backend.value != Backend.SUBSONIC) return@collect
+                    if (queue.isEmpty() || at < 0) return@collect
+                    if (queue.size - at > RADIO_TOPUP_AT) return@collect
+                    if (radioFetching) return@collect
+                    radioFetching = true
+                    try {
+                        topUpRadio(queue)
+                    } finally {
+                        radioFetching = false
+                    }
+                }
+        }
+    }
+
+    private suspend fun topUpRadio(queue: List<com.engabd.sendpin.audio.LocalTrack>) {
+        // The seed is what is playing now: the radio should follow where the listener
+        // has got to, not where they started an hour ago.
+        val playing = localPlayer.current.value
+        val seedId = playing?.scrobbleId ?: playing?.id
+        val seed = seedId?.let { id -> lastSeeds[id] }
+        val exclude = queue.mapNotNull { it.scrobbleId ?: it.id }.toSet()
+
+        val picked = if (_offline.value) {
+            radio.offline(downloads.value.map { downloadItem(it) }, seed, RADIO_BATCH, exclude)
+        } else {
+            val sc = subsonic ?: return
+            radio.next(SubsonicRadioSource(sc), seed, RADIO_BATCH, exclude)
+        }
+        if (picked.isEmpty()) return
+        rememberSeeds(picked)
+        localPlayer.addToQueue(picked.map { localTrack(it) })
+    }
+
+    /**
+     * Library items for tracks that have played, keyed by id.
+     *
+     * A [com.engabd.sendpin.audio.LocalTrack] is what the player needs and carries no
+     * genre or artist id, so the radio would have nothing but a title to seed from.
+     * Kept small — only what has actually been queued.
+     */
+    private val lastSeeds = LinkedHashMap<String, MaItem>()
+
+    private fun rememberSeeds(items: List<MaItem>) {
+        items.forEach { lastSeeds[it.itemId] = it }
+        while (lastSeeds.size > 400) lastSeeds.remove(lastSeeds.keys.first())
     }
 
     /** With the server gone, search what's on the phone rather than nothing at all. */
@@ -1616,5 +1696,17 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
         /** Enough to cover backspacing through a word, and no more. */
         const val SEARCH_CACHE_SIZE = 24
+
+        /**
+         * Top up while this many tracks are still ahead of the playhead.
+         *
+         * Two, not zero: ExoPlayer buffers across a boundary it can already see, so
+         * appending early is what keeps the transition gapless. Waiting for the queue
+         * to empty would mean silence, a fetch and a fresh prepare.
+         */
+        const val RADIO_TOPUP_AT = 2
+
+        /** How many to add each time. Enough to cover a fetch failing next round. */
+        const val RADIO_BATCH = 10
     }
 }
