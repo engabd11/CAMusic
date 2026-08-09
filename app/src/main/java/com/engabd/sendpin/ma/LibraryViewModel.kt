@@ -22,7 +22,10 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -140,6 +143,30 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     /** The text in the search box, held here so a tab switch doesn't wipe it. */
     private val _query = MutableStateFlow(""); val query: StateFlow<String> = _query
     fun setQuery(v: String) { _query.value = v }
+
+    /**
+     * A search is in flight for a query the user has already typed past.
+     *
+     * Distinct from [loading], which drives skeletons: results now arrive while the
+     * field is still being typed into, and blanking the list on every keystroke to
+     * show placeholders would flicker worse than the old submit-only search did. The
+     * previous results stay put under a slim progress line until the new ones land.
+     */
+    private val _searching = MutableStateFlow(false); val searching: StateFlow<Boolean> = _searching
+
+    /**
+     * The last few queries and what they returned, so backspacing is instant.
+     *
+     * Small and deliberately unbounded in age rather than time: a search session is
+     * seconds long, and the point is that walking back through "beatl" → "beat" → "bea"
+     * doesn't re-ask the server three times for answers it just gave.
+     */
+    private val searchCache = object : LinkedHashMap<String, MaSearchResults>(0, 0.75f, true) {
+        override fun removeEldestEntry(eldest: Map.Entry<String, MaSearchResults>) = size > SEARCH_CACHE_SIZE
+    }
+
+    /** The query whose results are on screen, so an identical run can be skipped. */
+    private var lastSearched: String? = null
     private val _recent = MutableStateFlow<List<MaItem>>(emptyList()); val recent: StateFlow<List<MaItem>> = _recent
     private val _favoriteAlbums = MutableStateFlow<List<MaItem>>(emptyList()); val favoriteAlbums: StateFlow<List<MaItem>> = _favoriteAlbums
     private val _favoriteArtists = MutableStateFlow<List<MaItem>>(emptyList()); val favoriteArtists: StateFlow<List<MaItem>> = _favoriteArtists
@@ -410,6 +437,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             applyBackend(if (settings.backend.first() == "subsonic") Backend.SUBSONIC else Backend.MA)
             _booted.value = true
         }
+        startLiveSearch()
         viewModelScope.launch { settings.targetPlayer.collect { _targetPlayer.value = it } }
         // This client outlives any one screen, so a format change made in Settings
         // has to reach it rather than waiting for a reconnect.
@@ -515,6 +543,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         _connError.value = null
         _error.value = null
         _favorites.value = emptySet()
+        // Cached hits belong to the library that answered them. Keeping them across a
+        // switch is how the previous backend's albums end up under the new one's name.
+        searchCache.clear()
+        lastSearched = null
         stack.clear()
         _depth.value = 0
         _node.value = Node("Library", emptyList())
@@ -648,6 +680,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         }
         _offline.value = true
         _ready.value = true
+        // Answers from the server the app just lost are not answers about what is on
+        // the phone, and offline search reads a different source entirely.
+        searchCache.clear()
+        lastSearched = null
         showRoot()
     }
 
@@ -1016,26 +1052,78 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     fun isDownloaded(id: String): Boolean = downloadManager.isDownloaded(id)
 
+    /**
+     * The IME "Search" key: run it now, no debounce.
+     *
+     * Typing already searches (see the live pipeline in `init`), so by the time this
+     * fires the answer is usually on screen — but a user who hits Search expects it to
+     * mean something, and a query shorter than [MIN_LIVE_QUERY] has deliberately not
+     * been sent yet. Skipped only when this exact query is already the one showing.
+     */
     fun doSearch(query: String) {
-        if (query.isBlank()) { clearSearch(); return }
+        val q = query.trim()
+        if (q.isBlank()) { clearSearch(); return }
         searchDepth = stack.size
         _searchOpen.value = true
-        viewModelScope.launch { runSearch(query) }
+        if (q == lastSearched && _search.value != null) return
+        viewModelScope.launch { runSearch(q) }
+    }
+
+    /**
+     * Search as the query is typed.
+     *
+     * `collectLatest` is the load-bearing half: it cancels the in-flight request when
+     * the next keystroke lands, so a slow answer for "bea" can never arrive after the
+     * fast one for "beatles" and overwrite it. Without that, results race and the list
+     * settles on whichever request happened to finish last.
+     */
+    private fun startLiveSearch() {
+        viewModelScope.launch {
+            _query
+                .map { it.trim() }
+                .distinctUntilChanged()
+                .debounce(SEARCH_DEBOUNCE_MS)
+                .collectLatest { q ->
+                    if (q.length < MIN_LIVE_QUERY) return@collectLatest
+                    if (q == lastSearched && _search.value != null) return@collectLatest
+                    searchDepth = stack.size
+                    _searchOpen.value = true
+                    runSearch(q)
+                }
+        }
     }
 
     /** The body of [doSearch], so [refresh] can await it rather than fire and forget. */
     private suspend fun runSearch(query: String) {
-        _loading.value = true; _error.value = null
+        // A repeat of something already answered is not worth a round trip, and going
+        // back a character should feel like undo rather than a fresh search.
+        searchCache[query]?.let {
+            _search.value = it
+            lastSearched = query
+            _error.value = null
+            return
+        }
+        _searching.value = true; _error.value = null
         try {
             val r = when {
                 _backend.value == Backend.MA -> maRepo.search(query)
                 _offline.value -> searchDownloads(query)
                 else -> subsonic?.search(query)
             }
-            r?.let { rememberFavorites(it.artists + it.albums + it.tracks + it.playlists) }
+            r?.let {
+                rememberFavorites(it.artists + it.albums + it.tracks + it.playlists)
+                searchCache[query] = it
+            }
             _search.value = r
-        } catch (e: Exception) { _error.value = e.message ?: "Search failed" }
-        _loading.value = false
+            lastSearched = query
+        } catch (e: Exception) {
+            // A cancelled request is the next keystroke arriving, not a failure worth
+            // showing — collectLatest cancels this coroutine on every new query.
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            _error.value = e.message ?: "Search failed"
+        } finally {
+            _searching.value = false
+        }
     }
 
     /** With the server gone, search what's on the phone rather than nothing at all. */
@@ -1054,6 +1142,8 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         _searchOpen.value = false
         _query.value = ""
         searchDepth = -1
+        lastSearched = null
+        _searching.value = false
     }
 
     // --- sonic similarity --------------------------------------------------
@@ -1508,5 +1598,23 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
         /** `getAlbumList2`'s documented maximum `size`. */
         const val SUBSONIC_PAGE = 500
+
+        /**
+         * How long typing has to pause before the query is sent.
+         *
+         * Short enough that it reads as "while I type" rather than "after I stop",
+         * long enough that a whole word is one request instead of six.
+         */
+        const val SEARCH_DEBOUNCE_MS = 220L
+
+        /**
+         * Below this, don't ask. One or two letters match most of a library, so the
+         * server does real work to return something nobody wanted; the IME Search key
+         * still forces it for anyone who means it.
+         */
+        const val MIN_LIVE_QUERY = 2
+
+        /** Enough to cover backspacing through a word, and no more. */
+        const val SEARCH_CACHE_SIZE = 24
     }
 }

@@ -92,6 +92,7 @@ fun LibraryScreen(
     val searchOpen by viewModel.searchOpen.collectAsState()
     val query by viewModel.query.collectAsState()
     val refreshing by viewModel.refreshing.collectAsState()
+    val searching by viewModel.searching.collectAsState()
     val showCreatePlaylist by viewModel.showCreatePlaylist.collectAsState()
     val addingToPlaylist by viewModel.addingToPlaylist.collectAsState()
     val playlistChoices by viewModel.playlistChoices.collectAsState()
@@ -122,6 +123,7 @@ fun LibraryScreen(
                 // Only offer it once there is a library to re-read; on the connect
                 // form it would just be a button that does nothing.
                 onRefresh = if (ready) viewModel::refresh else null,
+                searching = searching,
             )
             // Only offer the connect form once we know there's nothing to connect
             // to. Showing it while a saved server is still handshaking made every
@@ -205,6 +207,7 @@ private fun Header(
     onClearSearch: () -> Unit,
     refreshing: Boolean = false,
     onRefresh: (() -> Unit)? = null,
+    searching: Boolean = false,
 ) {
     Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 14.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -237,7 +240,7 @@ private fun Header(
             }
         }
         Spacer(Modifier.height(12.dp))
-        SearchField(query, onQuery, onSearch, onClearSearch)
+        SearchField(query, onQuery, onSearch, onClearSearch, searching)
         // Sonic search: the same box, read as a description of a *sound* rather
         // than a name. Finding music belongs in the library, not behind the
         // player's queue button.
@@ -313,6 +316,7 @@ private fun SearchField(
     onQuery: (String) -> Unit,
     onSearch: (String) -> Unit,
     onClear: () -> Unit,
+    searching: Boolean = false,
 ) {
     val focus = LocalFocusManager.current
     Row(
@@ -325,7 +329,22 @@ private fun SearchField(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Icon(Icons.Default.Search, null, tint = TextMuted, modifier = Modifier.size(16.dp))
+        // The magnifier becomes the progress indicator while a query is in flight.
+        // Results now arrive as the user types, so the "working" signal has to sit in
+        // the field itself — anything over the list would flash on every keystroke,
+        // and the list is deliberately left showing the previous answer until the new
+        // one lands.
+        Box(Modifier.size(16.dp), contentAlignment = Alignment.Center) {
+            if (searching) {
+                CircularProgressIndicator(
+                    color = LocalAccent.current,
+                    strokeWidth = 1.5.dp,
+                    modifier = Modifier.size(14.dp),
+                )
+            } else {
+                Icon(Icons.Default.Search, null, tint = TextMuted, modifier = Modifier.size(16.dp))
+            }
+        }
         Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
             if (query.isEmpty()) {
                 Text(
@@ -420,6 +439,7 @@ private fun Browse(
     val error by viewModel.error.collectAsState()
     val search by viewModel.search.collectAsState()
     val searchOpen by viewModel.searchOpen.collectAsState()
+    val searching by viewModel.searching.collectAsState()
     val shelves by viewModel.shelves.collectAsState()
     val jobs by viewModel.downloadJobs.collectAsState()
     val offline by viewModel.offline.collectAsState()
@@ -483,6 +503,15 @@ private fun Browse(
             return@LazyVerticalGrid
         }
         if (loading) {
+            items(6, span = { full() }, contentType = { "skeleton" }) { SkeletonRow() }
+            return@LazyVerticalGrid
+        }
+
+        // The first query of a session has no previous results to hold on to, and
+        // falling through to the browse shelves under a search header reads as the
+        // search having done nothing. Every query after this one keeps its old results
+        // on screen instead — see the spinner in the search field.
+        if (searchOpen && s == null && searching) {
             items(6, span = { full() }, contentType = { "skeleton" }) { SkeletonRow() }
             return@LazyVerticalGrid
         }
