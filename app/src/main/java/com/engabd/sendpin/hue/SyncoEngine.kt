@@ -429,6 +429,13 @@ private val BAR_WEIGHT = floatArrayOf(1.0f, 0.72f, 0.86f, 0.72f)
 /** Floor on a highlighted beat's pulse weight. */
 private const val HIGHLIGHT_MIN = 0.55f
 
+/** Rhythm-confidence dynamics: how fast belief in a beat builds and decays. */
+private const val RHYTHM_RISE = 0.10f
+private const val RHYTHM_EVENT_RISE = 0.35f
+private const val RHYTHM_FALL = 0.006f
+private const val RHYTHM_W_LO = 0.13f
+private const val RHYTHM_W_HI = 0.40f
+
 /** How much of a band's hottest bin is lifted into its glow, versus the mean. */
 private const val EXT_GLOW_PEAKINESS = 0.3f
 
@@ -554,6 +561,9 @@ class SyncoEngine(
 
     /** Full-field swell released by a drop, decaying back over ~half a second. */
     private var swell = 0f
+
+    /** Evidence that the song currently has an actual beat. See [updateRhythmConf]. */
+    private var rhythmConf = 0f
 
     /**
      * True once a wave has been launched for the upcoming beat, cleared when the
@@ -776,6 +786,25 @@ class SyncoEngine(
     // ── Beat flash ────────────────────────────────────────────────────────
 
     /**
+     * Track evidence that the song currently has an actual beat.
+     *
+     * A locked tempo grid is proof — dense mixes with buried kicks still lock.
+     * While unlocked, only clearly broadband onsets count, per the onset-width
+     * calibration, so tonal material cannot build confidence and then earn
+     * flashes it should not have.
+     */
+    private fun updateRhythmConf(frame: AnalysisFrame, beatgrid: BeatGrid?) {
+        var c = rhythmConf
+        if (beatgrid != null && beatgrid.locked) {
+            c += (1f - c) * RHYTHM_RISE
+        } else if (frame.bassBeat) {
+            val ev = ((frame.onsetWidth - RHYTHM_W_LO) / (RHYTHM_W_HI - RHYTHM_W_LO)).coerceIn(0f, 1f)
+            if (ev > c) c += (ev - c) * RHYTHM_EVENT_RISE
+        }
+        rhythmConf = c * (1f - RHYTHM_FALL)
+    }
+
+    /**
      * How hard a *scheduled* beat should pulse, from its accent and its place in
      * the bar.
      *
@@ -828,6 +857,11 @@ class SyncoEngine(
 
         val p = params
 
+        // Per-bin transients feed the attack-pop layer below. Updated once per
+        // frame here rather than inside the Extreme renderer, which is where it
+        // used to live and why the music path had no pop at all.
+        updateMelTransient(frame)
+
         // Effect and rung both choose a renderer. Fireworks replaces the whole
         // path; Extreme is a different renderer rather than a louder music one,
         // which is why `graphReactive` exists as a flag on the params.
@@ -844,8 +878,22 @@ class SyncoEngine(
         // the grid adds a beat the analyzer may have missed and, more
         // importantly, lets effects fire *before* the kick rather than after it.
         val locked = beatgrid?.locked == true
-        val visStrength = if (frame.bassBeat) frame.bassStrength * widthGate else 0f
+        var visStrength = if (frame.bassBeat) frame.bassStrength * widthGate else 0f
         val visBass = max(frame.bands["sub_bass"] ?: 0f, frame.bands["bass"] ?: 0f)
+
+        // Flux gate: the phantom-beat killer. A beat arriving with no actual
+        // spectral movement behind it is scaled away, so a grid that has drifted
+        // cannot keep flashing an empty bar. Applied here rather than later so a
+        // phantom never enters the highlight window and skews the ranking.
+        // Only Intense enables it, which is what lets it afford so permissive a
+        // width gate.
+        if (p.fluxGate > 0f) {
+            val lo = 0.35f * p.fluxGate
+            val span = max(1e-6f, p.fluxGate - lo)
+            val bassG = ((frame.bassFlux - lo) / span).coerceIn(0f, 1f)
+            val midG = ((frame.midFlux - lo) / span).coerceIn(0f, 1f) * widthGate
+            visStrength *= max(bassG, midG)
+        }
 
         // Beat detection
         val accNow = if (visStrength > 0f) min(1f, max(0f, (visStrength - 1f) / 2f)) else 0f
@@ -854,6 +902,15 @@ class SyncoEngine(
 
         // Mid onsets (guitar/snare)
         var midStrength = if (frame.midBeat) frame.midStrength * widthGate else 0f
+
+        // Does the song actually have a beat right now? A locked grid is proof;
+        // while unlocked only clearly broadband onsets count, so sung vowels and
+        // tonal swells that slip past a permissive width gate can never build
+        // confidence. Rungs with nobeatFlash below 1 soften their flashes when
+        // this is low, which is what stops Intense strobing through an ambient
+        // passage.
+        updateRhythmConf(frame, beatgrid)
+        val rhythmGate = p.nobeatFlash + (1f - p.nobeatFlash) * rhythmConf
 
         // Loudness scale
         val loudScale = min(min(1f, max(visBass, energyEnv) / LOUD_REF), ampScale)
@@ -949,7 +1006,7 @@ class SyncoEngine(
         // the wave its share so the room doesn't double-hit on every beat.
         val flashScale = if (p.hardSnap) 1f else 1f - p.waveGain
         val kick = max(kickFlash(visStrength, visBass), scheduled) *
-            flashScale * musicGate * loudScale * (1f - 0.8f * predrop)
+            flashScale * musicGate * loudScale * rhythmGate * (1f - 0.8f * predrop)
         val midf = if (midStrength > 0f) params.midGain * min(3f, midStrength / params.midThreshold) * musicGate * loudScale else 0f
 
         if (kick > 0f || midf > 0f) {
@@ -999,9 +1056,27 @@ class SyncoEngine(
             // `(melbank_floor + melbank_gain * drive) * music`. Hoisting the
             // floor out, as this did, leaves the room glowing through silence
             // and between tracks.
-            var target = p.floor
+            var target = p.base
             target += (p.melbankFloor + p.melbankGain * melLevel) * musicGate
             target += p.energyGain * energyEnv
+
+            // Attack pop: this lamp brightens on a *fresh* transient anywhere in
+            // its own slice of the spectrum — a kick pops the low lamps, a snare
+            // the low-mids, a guitar the mids, a cymbal the highs.
+            //
+            // This is the layer that makes a room feel alive between beats, and
+            // it was missing from the music path entirely: every rung sets
+            // spectralPop, but only the Extreme renderer read it, so Subtle
+            // through Intense had no per-instrument detail at all — just the
+            // beat flash and a smooth melbank glow. It is measured against a
+            // slow per-bin baseline, so a held note settles and stops popping
+            // while a repeated hit keeps firing.
+            if (p.spectralPop > 0f && mel.isNotEmpty()) {
+                var pop = 0f
+                for (i in info.melLo until min(info.melHi, MELBANK_BINS)) pop += melTransient[i]
+                pop /= (info.melHi - info.melLo)
+                target += p.spectralPop * pop * musicGate
+            }
 
             // Role-based brightness
             val bassEnv = max(env["sub_bass"] ?: 0f, env["bass"] ?: 0f)
@@ -1139,7 +1214,6 @@ class SyncoEngine(
      */
     private fun renderExtreme(frame: AnalysisFrame, dt: Float): Map<Int, Rgb> {
         val p = params
-        updateMelTransient(frame)
         val musicGate = if (SILENCE_GATE > 0f) min(1f, loud / SILENCE_GATE) else 1f
 
         // Colour only drifts, never jumps on a beat: brightness carries the song

@@ -264,6 +264,60 @@ class SyncoEngineGridTest {
     }
 
     @Test
+    fun `a lamp pops on a transient in its own slice of the spectrum`() {
+        // syncoV2's per-lamp attack layer: a kick lights the low lamps, a cymbal
+        // the high ones. Every rung sets spectralPop, but only the Extreme
+        // renderer read it, so the music path had no per-instrument detail at
+        // all — just the beat flash over a smooth glow. That is most of what
+        // "less lively than the HA version" was.
+        fun frameWith(hotBin: Int) = AnalysisFrame(
+            bands = mapOf("sub_bass" to 0.6f, "bass" to 0.6f, "mid" to 0.4f, "high" to 0.3f),
+            energy = 0.7f,
+            melbank = FloatArray(16) { if (it == hotBin) 0.95f else 0.1f },
+            salience = 1f,
+            onsetWidth = 1f,
+            centroid = 0.3f,
+        )
+
+        val eng = SyncoEngine(channels(8)).apply { mode = SyncMode.HIGH }
+        // Settle with a flat spectrum so the per-bin baselines are established.
+        repeat(120) {
+            eng.render(
+                AnalysisFrame(
+                    bands = mapOf("sub_bass" to 0.6f, "bass" to 0.6f),
+                    energy = 0.7f,
+                    melbank = FloatArray(16) { 0.1f },
+                    salience = 1f, onsetWidth = 1f,
+                ),
+                dt, null, StructureState(),
+            )
+        }
+        // A sudden transient low in the spectrum should favour the low lamps.
+        val low = eng.render(frameWith(0), dt, null, StructureState())
+        val lowBrightest = low.maxByOrNull { max(it.value.first, max(it.value.second, it.value.third)) }?.key
+
+        val eng2 = SyncoEngine(channels(8)).apply { mode = SyncMode.HIGH }
+        repeat(120) {
+            eng2.render(
+                AnalysisFrame(
+                    bands = mapOf("sub_bass" to 0.6f, "bass" to 0.6f),
+                    energy = 0.7f,
+                    melbank = FloatArray(16) { 0.1f },
+                    salience = 1f, onsetWidth = 1f,
+                ),
+                dt, null, StructureState(),
+            )
+        }
+        val high = eng2.render(frameWith(15), dt, null, StructureState())
+        val highBrightest = high.maxByOrNull { max(it.value.first, max(it.value.second, it.value.third)) }?.key
+
+        assertTrue(
+            lowBrightest != highBrightest,
+            "a low and a high transient both peaked at lamp $lowBrightest — no spectral pop",
+        )
+    }
+
+    @Test
     fun `live waves stay bounded`() {
         // Each wave costs a lookup per lamp per frame, and an unbounded list
         // would grow for the length of a track.
