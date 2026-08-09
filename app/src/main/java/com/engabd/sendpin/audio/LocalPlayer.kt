@@ -114,19 +114,23 @@ class LocalPlayer(private val context: Context) {
     private var preferredOutput: AudioDeviceInfo? = null
 
     /**
+     * How far the tap runs ahead of the speaker, and where in the track the
+     * audio entering the sink is. Shared with [DirectLightSync], which subtracts
+     * Hue's own pipeline latency from the lead to decide how long to hold each
+     * rendered frame so the light lands on the beat.
+     *
+     * Declared before the tap because the tap reads the track position out of
+     * it, and Kotlin initialises properties in declaration order.
+     */
+    val audioLead = AudioLead()
+
+    /**
      * The Light Sync audio analysis tap. Shared with [DirectLightSync], which
      * activates and deactivates it. The tap stays in ExoPlayer's processor chain
      * either way — see its docstring for why — so being inactive costs a buffer
      * copy, not nothing.
      */
-    val audioAnalysisTap = AudioAnalysisTap()
-
-    /**
-     * How far the tap runs ahead of the speaker. Shared with [DirectLightSync],
-     * which subtracts Hue's own pipeline latency from it to decide how long to
-     * hold each rendered frame so the light lands on the beat.
-     */
-    val audioLead = AudioLead()
+    val audioAnalysisTap = AudioAnalysisTap(audioLead)
 
     /** The user's own volume, kept apart from the ReplayGain factor multiplied onto it. */
     private var userVolume = 1f

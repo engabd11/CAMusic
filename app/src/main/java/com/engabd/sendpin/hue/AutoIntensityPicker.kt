@@ -16,8 +16,11 @@ private val LADDER = listOf(
 val DEFAULT_AUTO_LEVELS = listOf(SyncMode.SUBTLE, SyncMode.MEDIUM, SyncMode.HIGH)
 
 // ── The loudness window ───────────────────────────────────────────────────
-private const val SIG_LO_REF = 0.25f  // a quiet intro sits at the bottom
-private const val SIG_HI_REF = 0.88f  // a full drop sits at the top
+//
+// Internal so a caller with no offline profile can pass the same defaults
+// explicitly rather than duplicating the numbers at the call site.
+internal const val SIG_LO_REF = 0.25f  // a quiet intro sits at the bottom
+internal const val SIG_HI_REF = 0.88f  // a full drop sits at the top
 
 // ── Layer A: the absolute character score ─────────────────────────────────
 //
@@ -37,12 +40,19 @@ private const val CHAR_W_BUSY = 0.32f
 private const val CHAR_W_ATTACK = 0.34f
 private const val CHAR_W_BASS = 0.14f
 
+// The five constants below are `internal` rather than private because
+// `audio.TrackAnalysis` builds the *offline* intensity profile from exactly the
+// same tuning, and must import them rather than copy them. syncoV2 does the same
+// (`trackmap.py` imports them from `effects.modes`) for the reason that matters:
+// if the offline and live character scores disagree by even a little, a track
+// changes rung the moment its scan lands.
+
 /** Onset broadbandness spans roughly this range on real material. */
-private const val CHAR_ATTACK_LO = 0.04f
-private const val CHAR_ATTACK_HI = 0.30f
+internal const val CHAR_ATTACK_LO = 0.04f
+internal const val CHAR_ATTACK_HI = 0.30f
 
 /** Mean onset flux that reads as constantly busy. */
-private const val CHAR_BUSY_FULL = 0.34f
+internal const val CHAR_BUSY_FULL = 0.34f
 
 /**
  * Character assumed before anything is known. Mid-ladder and deliberately shy
@@ -97,12 +107,23 @@ private const val PICK_ATTACK = 0.10f
 private const val PICK_DECAY = 0.03f
 private const val PICK_SLOW_ATTACK = 0.017f
 private const val PICK_SLOW_DECAY = 0.006f
-private const val PICK_BEAT_FULL = 3.0f
-private const val PICK_BPM_LO = 85.0f
-private const val PICK_BPM_HI = 150.0f
+internal const val PICK_BEAT_FULL = 3.0f
+internal const val PICK_BPM_LO = 85.0f
+internal const val PICK_BPM_HI = 150.0f
 private const val PICK_DYN_REF = 0.26f
 private const val PICK_MOOD_MAX = 0.16f
 private const val PICK_PEAK_GAMMA = 1.3f
+
+/**
+ * How far a song's spectral tilt and tempo slide the picker's operating point.
+ *
+ * Moderate by design, and capped again at [PICK_MOOD_MAX] on the way in, so mood
+ * shades the pick without overruling the loudness spread. Only an offline scan
+ * can supply either term — both are whole-track measures — which is why nothing
+ * fed them until now.
+ */
+internal const val PICK_MOOD_TILT_W = 0.10f   // bass-heavy rides up, bright sits calmer
+internal const val PICK_MOOD_TEMPO_W = 0.08f  // fast rides up, slow sits calmer
 
 private fun unit(x: Float): Float = if (x < 0f) 0f else if (x > 1f) 1f else x
 
@@ -163,7 +184,7 @@ private fun rungCells(rungs: List<SyncMode>): Pair<FloatArray, FloatArray> {
  * Intense. Tempo and percussiveness add a modest steady-state lift, so a fast
  * busy track sits a rung above a sparse one at equal loudness.
  */
-private fun intensitySignal(energy: Float, salience: Float, tempo: Float, perc: Float): Float {
+internal fun intensitySignal(energy: Float, salience: Float, tempo: Float, perc: Float): Float {
     val loud = unit(energy)
     val moment = loud * (0.55f + 0.45f * unit(salience))
     return unit(0.68f * moment + 0.16f * unit(tempo) + 0.16f * unit(perc))

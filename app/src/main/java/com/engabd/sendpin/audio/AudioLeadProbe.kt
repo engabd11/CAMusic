@@ -26,6 +26,23 @@ class AudioLead {
     /** Lead in milliseconds, or null when it isn't known yet. */
     val leadMs: Float? get() = leadUs.takeIf { it != UNKNOWN }?.let { it / 1000f }
 
+    /**
+     * Position **within the current track** of the buffer entering the sink, or
+     * [UNKNOWN].
+     *
+     * Where in the song the audio the tap is about to analyse comes from, exact
+     * and free — the renderer has to know it to queue the buffer at all. Without
+     * it a track scan has nothing to line itself up against: the analyzer's own
+     * `tAudio` counts from wherever the last flush happened, which is not the
+     * same as where the song is.
+     *
+     * Set before the buffer reaches the processor chain, so the tap can pair it
+     * with the samples it is being handed. Written by the playback thread.
+     */
+    @Volatile
+    var mediaTimeUs: Long = UNKNOWN
+        internal set
+
     companion object {
         const val UNKNOWN = Long.MIN_VALUE
     }
@@ -66,11 +83,34 @@ class AudioLeadProbe(
     private val out: AudioLead,
 ) : ForwardingAudioSink(sink) {
 
+    /**
+     * The offset baked into every `presentationTimeUs`, per the [AudioSink]
+     * contract — the renderer adds it to the media timestamp before handing the
+     * buffer over, so that renderer time runs continuously across a gapless
+     * queue instead of restarting at each track.
+     *
+     * Which means `presentationTimeUs` alone is *not* the position in the song:
+     * for the second track of a queue it is the first track's duration plus the
+     * position, and a beat grid lined up against it would be out by minutes.
+     * The renderer tells the sink the offset for exactly this reason, and
+     * subtracting it gives the media time back.
+     */
+    private var streamOffsetUs = 0L
+
+    override fun setOutputStreamOffsetUs(outputStreamOffsetUs: Long) {
+        streamOffsetUs = outputStreamOffsetUs
+        super.setOutputStreamOffsetUs(outputStreamOffsetUs)
+    }
+
     override fun handleBuffer(
         buffer: ByteBuffer,
         presentationTimeUs: Long,
         encodedAccessUnitCount: Int,
     ): Boolean {
+        // Published before delegating, because the processor chain — the audio
+        // tap included — runs inside the delegate. By the time the tap is handed
+        // these samples this already says which part of the track they are.
+        out.mediaTimeUs = presentationTimeUs - streamOffsetUs
         // Sampled before delegating: `presentationTimeUs` describes the buffer
         // about to be queued, so it has to be paired with the position as it
         // stands now, not after this buffer has joined the backlog.
@@ -88,11 +128,13 @@ class AudioLeadProbe(
 
     override fun flush() {
         out.leadUs = AudioLead.UNKNOWN
+        out.mediaTimeUs = AudioLead.UNKNOWN
         super.flush()
     }
 
     override fun reset() {
         out.leadUs = AudioLead.UNKNOWN
+        out.mediaTimeUs = AudioLead.UNKNOWN
         super.reset()
     }
 

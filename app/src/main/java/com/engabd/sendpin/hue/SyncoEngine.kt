@@ -442,6 +442,13 @@ private const val EXT_GLOW_PEAKINESS = 0.3f
 /** Gamma on the whole-room slam, so only genuinely broadband hits punch. */
 private const val EXT_ROOM_GAMMA = 2.0f
 
+/**
+ * Perceptual compression on the per-band absolute-loudness weight. Below 1, so
+ * a much quieter band comes out dimmer but still clearly visible rather than
+ * driven to near-black.
+ */
+private const val BAND_LOUD_COMPRESS = 0.5f
+
 /** Asymmetric per-bin baseline the melbank transient is measured against. */
 private const val MEL_SLOW_RISE = 0.25f
 private const val MEL_SLOW_FALL = 0.06f
@@ -1252,10 +1259,11 @@ class SyncoEngine(
      * path — where it sets `beatThreshold = 99` and zeroes its beat and bass
      * gains, leaving it the least reactive rung after Subtle.
      *
-     * Ported from syncoV2 `effects/engine.py::_render_extreme`. Stereo pan and
-     * the absolute-loudness melbank reference are not available from the live
-     * analyzer yet; syncoV2 degrades both to uniform weighting when they are
-     * absent, which is exactly what happens here.
+     * Ported from syncoV2 `effects/engine.py::_render_extreme`. The
+     * absolute-loudness melbank reference comes from a track scan when the track
+     * has one — a per-bin AGC divides out the very thing it measures, so there
+     * is no live estimate of it to be had — and degrades to uniform weighting
+     * when it does not, which is what syncoV2 does too.
      */
     private fun renderExtreme(frame: AnalysisFrame, dt: Float): Map<Int, Rgb> {
         val p = params
@@ -1269,6 +1277,22 @@ class SyncoEngine(
         val n = rankIds.size
         val haveBands = mel.isNotEmpty() && extBands.isNotEmpty()
 
+        // Per-bin absolute-loudness weight, from a track scan. The melbank is
+        // per-bin normalised, so a hi-hat tick and a kick arrive the same height
+        // and every lamp reads equally bright; this puts the difference back, so
+        // a loud band lights its lamp harder than a quiet one. Perceptually
+        // compressed and strength-blended so quiet instruments stay visible
+        // rather than disappearing. No scan (or no melbank) means uniform
+        // weighting, which is exactly the behaviour that came before.
+        val ref = frame.melbankRef
+        val melWeight: FloatArray? =
+            if (p.bandLoudStrength > 0f && haveBands && ref.size == mel.size) {
+                FloatArray(ref.size) { i ->
+                    (1f - p.bandLoudStrength) +
+                        p.bandLoudStrength * ref[i].coerceIn(0f, 1f).pow(BAND_LOUD_COMPRESS)
+                }
+            } else null
+
         // Grid-free rotation: time-driven, faster through busy passages, frozen
         // in silence by the music gate, so it can add no phantom beats.
         val rotRate = p.rotateRate + p.rotateSwing * frame.energy
@@ -1281,7 +1305,7 @@ class SyncoEngine(
             var tot = 0f
             var mx = 0f
             for (k in lo until hi) {
-                val v = mel[k]
+                val v = mel[k] * (melWeight?.get(k) ?: 1f)
                 tot += v
                 if (v > mx) mx = v
             }
@@ -1293,10 +1317,11 @@ class SyncoEngine(
             if (hi <= lo) return 0f
             var mx = 0f
             for (k in lo until min(hi, MELBANK_BINS)) {
-                var r = melTransient[k]
+                val w = melWeight?.get(k) ?: 1f
+                var r = melTransient[k] * w
                 // Only the part of the groove flux above the ambient floor, so
                 // room tone and reverb wash never flash — real hits do.
-                val fxk = p.melFluxGain * (melFlux[k] - p.melFluxFloor)
+                val fxk = p.melFluxGain * (melFlux[k] - p.melFluxFloor) * w
                 if (fxk > r) r = fxk
                 if (r > mx) mx = r
             }

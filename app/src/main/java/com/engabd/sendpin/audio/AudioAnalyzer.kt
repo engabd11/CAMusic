@@ -30,12 +30,19 @@ import kotlin.math.PI
 // copy of either number in the tap is a silent desync waiting to happen.
 internal const val ANALYSIS_SAMPLE_RATE = 22050
 internal const val ANALYSIS_HOP = 441       // ~20ms hop → ~50 frames/sec
-private const val ANALYSIS_WINDOW = 1024   // FFT window size
+
+// Internal, not private, for the same reason as the two above: [TrackAnalysis]
+// builds its offline filterbanks from this exact geometry. syncoV2 keeps its
+// offline extractor bin-identical to its live one on purpose (`trackmap.py`
+// reuses `make_onset_filterbank` / `make_melbank`), because a replayed frame
+// has to be interchangeable with a live one. A second copy of any of these
+// numbers is a silent desync waiting to happen.
+internal const val ANALYSIS_WINDOW = 1024   // FFT window size
 private const val ANALYSIS_NOISE_FLOOR = 2.0e-3f
-private const val NFFT = 2 * ANALYSIS_WINDOW  // zero-padded → ~10.8 Hz bins
+internal const val NFFT = 2 * ANALYSIS_WINDOW  // zero-padded → ~10.8 Hz bins
 
 // Frequency band edges (Hz): (low, high)
-private val BANDS = mapOf(
+internal val BANDS = mapOf(
     "sub_bass" to (20f to 60f),
     "bass" to (60f to 250f),
     "low_mid" to (250f to 800f),
@@ -44,16 +51,16 @@ private val BANDS = mapOf(
 )
 
 // Melbank
-private const val MELBANK_BINS = 16
-private const val MELBANK_FMIN = 40f
-private const val MELBANK_FMAX = 11000f
+internal const val MELBANK_BINS = 16
+internal const val MELBANK_FMIN = 40f
+internal const val MELBANK_FMAX = 11000f
 
 // Onset detection
 private const val LOG_COMPRESSION = 10.0f
 private const val MAX_FILTER_RADIUS = 3
-private const val ONSET_BANDS = 36
-private const val ONSET_FMIN = 40f
-private const val ONSET_FMAX = 11000f
+internal const val ONSET_BANDS = 36
+internal const val ONSET_FMIN = 40f
+internal const val ONSET_FMAX = 11000f
 private const val BASS_ONSET_HZ = 200f
 private const val MID_ONSET_HZ = 2500f
 private const val MIN_ONSET_FLUX = 2.5f
@@ -61,6 +68,13 @@ private const val BASS_FLUX_SHARE = 0.25f
 private const val MID_FLUX_SHARE = 0.30f
 private const val ONSET_REFRACTORY = 3
 private const val BEAT_SENSITIVITY = 1.2f
+
+/**
+ * Fraction of the passage-scale onset peak that the adaptive threshold may never
+ * fall below. Shared with the offline picker, which needs the same floor: a
+ * ~0.9 s window collapses in a quiet passage until faint residue reads as a beat.
+ */
+internal const val LONG_FLUX_FLOOR_FRAC = 0.20f
 
 // Salience
 private const val SALIENCE_DECAY = 0.9997f
@@ -73,7 +87,6 @@ private const val MEL_AGC_DECAY = 0.9998f
 
 // Long-horizon flux floor
 private const val LONG_FLUX_DECAY = 0.9995f
-private const val LONG_FLUX_FLOOR_FRAC = 0.20f
 
 // Mid-attack state machine
 private const val MID_MAX_ATTACK_FRAMES = 3
@@ -107,6 +120,17 @@ data class AnalysisFrame(
      */
     val pan: FloatArray = FloatArray(0),
     val centroid: Float = 0f,
+    /**
+     * Per-bin **absolute** loudness weight, each bin's reference level relative
+     * to the loudest bin's (0..1). Empty unless a track scan supplied it.
+     *
+     * [melbank] is per-bin normalised, which is what makes a hi-hat tick and a
+     * kick read the same height; multiplying by this recovers how loud each band
+     * actually is, so a quiet instrument lights its lamp dimmer than a loud one.
+     * No live estimate can produce it — a per-bin AGC divides out the very thing
+     * it measures — so it can only come from seeing the whole track at once.
+     */
+    val melbankRef: FloatArray = FloatArray(0),
 )
 
 // ── AGC ────────────────────────────────────────────────────────────────────
@@ -124,7 +148,7 @@ private class Agc(private val decay: Float = AGC_DECAY, private val floor: Float
 
 // ── Exponential filter (envelope follower) ─────────────────────────────────
 
-private class ExpFilter(var state: FloatArray, val alphaRise: Float, val alphaDecay: Float) {
+internal class ExpFilter(var state: FloatArray, val alphaRise: Float, val alphaDecay: Float) {
     fun update(input: FloatArray): FloatArray {
         for (i in input.indices) {
             val a = if (input[i] > state[i]) alphaRise else alphaDecay
@@ -137,13 +161,13 @@ private class ExpFilter(var state: FloatArray, val alphaRise: Float, val alphaDe
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-private fun logSpectrum(mag: FloatArray): FloatArray =
+internal fun logSpectrum(mag: FloatArray): FloatArray =
     FloatArray(mag.size) { ln(1f + LOG_COMPRESSION * mag[it]) }
 
 /**
  * Maximum filter across ±radius bands (SuperFlux vibrato guard).
  */
-private fun maxFilterFreq(logmag: FloatArray, radius: Int = MAX_FILTER_RADIUS): FloatArray {
+internal fun maxFilterFreq(logmag: FloatArray, radius: Int = MAX_FILTER_RADIUS): FloatArray {
     val out = logmag.copyOf()
     for (s in 1..radius) {
         for (i in 0 until out.size - s) out[i] = max(out[i], logmag[i + s])
@@ -153,7 +177,7 @@ private fun maxFilterFreq(logmag: FloatArray, radius: Int = MAX_FILTER_RADIUS): 
 }
 
 /** Band means: aggregate a magnitude spectrum into contiguous band means. */
-private fun bandMeans(mag: FloatArray, starts: IntArray, counts: IntArray): FloatArray {
+internal fun bandMeans(mag: FloatArray, starts: IntArray, counts: IntArray): FloatArray {
     val out = FloatArray(starts.size)
     for (i in starts.indices) {
         var sum = 0f
@@ -167,7 +191,12 @@ private fun bandMeans(mag: FloatArray, starts: IntArray, counts: IntArray): Floa
 }
 
 /** Log-spaced band starts/counts for onset filterbank. */
-private fun makeOnsetFilterbank(freqs: FloatArray, nBands: Int, fmin: Float, fmax: Float): Triple<IntArray, IntArray, Pair<Int, Int>> {
+internal fun makeOnsetFilterbank(
+    freqs: FloatArray,
+    nBands: Int = ONSET_BANDS,
+    fmin: Float = ONSET_FMIN,
+    fmax: Float = ONSET_FMAX,
+): Triple<IntArray, IntArray, Pair<Int, Int>> {
     val ratio = fmax.toDouble() / fmin.toDouble()
     val edges = FloatArray(nBands + 1) { i ->
         (fmin.toDouble() * ratio.pow(i.toDouble() / nBands)).toFloat()
@@ -191,7 +220,12 @@ private fun makeOnsetFilterbank(freqs: FloatArray, nBands: Int, fmin: Float, fma
 }
 
 /** Log-spaced melbank starts/counts. */
-private fun makeMelbank(freqs: FloatArray, nBins: Int, fmin: Float, fmax: Float): Pair<IntArray, IntArray> {
+internal fun makeMelbank(
+    freqs: FloatArray,
+    nBins: Int = MELBANK_BINS,
+    fmin: Float = MELBANK_FMIN,
+    fmax: Float = MELBANK_FMAX,
+): Pair<IntArray, IntArray> {
     val ratio = fmax.toDouble() / fmin.toDouble()
     val edges = FloatArray(nBins + 1) { i ->
         (fmin.toDouble() * ratio.pow(i.toDouble() / nBins)).toFloat()
@@ -213,6 +247,29 @@ private fun makeMelbank(freqs: FloatArray, nBins: Int, fmin: Float, fmax: Float)
 }
 
 // (Float.pow extension removed — use kotlin.math.pow directly via .toDouble().pow().toFloat())
+
+/** Centre frequency of every one-sided FFT bin, for [sampleRate] and [NFFT]. */
+internal fun analysisBinFreqs(sampleRate: Int = ANALYSIS_SAMPLE_RATE): FloatArray =
+    FloatArray(NFFT / 2 + 1) { i -> i.toFloat() * sampleRate.toFloat() / NFFT.toFloat() }
+
+/** `[lo, hi)` bin range of each named output band, in [BANDS] order. */
+internal fun namedBandBins(freqs: FloatArray): List<Pair<Int, Int>> =
+    BANDS.values.map { (lo, hi) ->
+        val loI = binarySearchGe(freqs, lo)
+        loI to max(loI + 1, binarySearchGt(freqs, hi))
+    }
+
+internal fun binarySearchGe(arr: FloatArray, target: Float): Int {
+    var lo = 0; var hi = arr.size
+    while (lo < hi) { val mid = (lo + hi) / 2; if (arr[mid] < target) lo = mid + 1 else hi = mid }
+    return lo
+}
+
+internal fun binarySearchGt(arr: FloatArray, target: Float): Int {
+    var lo = 0; var hi = arr.size
+    while (lo < hi) { val mid = (lo + hi) / 2; if (arr[mid] <= target) lo = mid + 1 else hi = mid }
+    return lo
+}
 
 // ── Analyzer ──────────────────────────────────────────────────────────────
 
@@ -243,16 +300,11 @@ class AudioAnalyzer(
     private val bufR = FloatArray(window)
 
     // Precomputed bin frequencies
-    private val freqs: FloatArray = FloatArray(NFFT / 2 + 1) { i ->
-        i.toFloat() * sampleRate.toFloat() / NFFT.toFloat()
-    }
+    private val freqs: FloatArray = analysisBinFreqs(sampleRate)
 
     // Band bin ranges
-    private val bandBins: Map<String, Pair<Int, Int>> = BANDS.mapValues { (_, range) ->
-        val lo = binarySearchGe(freqs, range.first)
-        val hi = binarySearchGt(freqs, range.second)
-        lo to max(lo + 1, hi)
-    }
+    private val bandBins: Map<String, Pair<Int, Int>> =
+        BANDS.keys.zip(namedBandBins(freqs)).toMap()
 
     // AGC for bands + energy + flux
     private val agc = BANDS.keys.associateWith { Agc() }
@@ -262,7 +314,7 @@ class AudioAnalyzer(
     private val midFluxAgc = Agc()
 
     // Onset filterbank
-    private val fbFilterbank = makeOnsetFilterbank(freqs, ONSET_BANDS, ONSET_FMIN, ONSET_FMAX)
+    private val fbFilterbank = makeOnsetFilterbank(freqs)
     private val fbStarts: IntArray = fbFilterbank.first
     private val fbCounts: IntArray = fbFilterbank.second
     private val bassMidSplit: Pair<Int, Int> = fbFilterbank.third
@@ -270,7 +322,7 @@ class AudioAnalyzer(
     private val nMid: Int = bassMidSplit.second
 
     // Melbank
-    private val melFilterbank = makeMelbank(freqs, MELBANK_BINS, MELBANK_FMIN, MELBANK_FMAX)
+    private val melFilterbank = makeMelbank(freqs)
     private val melStarts: IntArray = melFilterbank.first
     private val melCounts: IntArray = melFilterbank.second
     private val nMel: Int = melStarts.size
@@ -588,16 +640,6 @@ class AudioAnalyzer(
     }
 
     companion object {
-        private fun binarySearchGe(arr: FloatArray, target: Float): Int {
-            var lo = 0; var hi = arr.size
-            while (lo < hi) { val mid = (lo + hi) / 2; if (arr[mid] < target) lo = mid + 1 else hi = mid }
-            return lo
-        }
-        private fun binarySearchGt(arr: FloatArray, target: Float): Int {
-            var lo = 0; var hi = arr.size
-            while (lo < hi) { val mid = (lo + hi) / 2; if (arr[mid] <= target) lo = mid + 1 else hi = mid }
-            return lo
-        }
         private fun median(arr: FloatArray): Float {
             if (arr.isEmpty()) return 0f
             val sorted = arr.sortedArray()

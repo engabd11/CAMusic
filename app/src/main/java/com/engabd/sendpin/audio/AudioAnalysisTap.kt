@@ -39,7 +39,15 @@ import java.util.concurrent.locks.LockSupport
  * sole consumer and the only thread that ever touches the [AudioAnalyzer].
  */
 @OptIn(UnstableApi::class)
-class AudioAnalysisTap : BaseAudioProcessor() {
+class AudioAnalysisTap(
+    /**
+     * The sink probe's view of where in the track the audio being queued is.
+     * Optional only so a test can build a tap without a sink; in the app it is
+     * always the same [AudioLead] the probe writes, and without it
+     * [analysisPositionS] has nothing to report.
+     */
+    private val lead: AudioLead? = null,
+) : BaseAudioProcessor() {
 
     /** Whether analysis is running. The pass-through happens either way. */
     @Volatile
@@ -51,6 +59,26 @@ class AudioAnalysisTap : BaseAudioProcessor() {
      */
     @Volatile
     var onFrame: ((AnalysisFrame) -> Unit)? = null
+
+    /**
+     * Track position of the frame just delivered to [onFrame], in seconds, or
+     * `NaN` when it cannot be known (no sink probe, or the sink has been flushed
+     * and no buffer has arrived since).
+     *
+     * Read it from inside [onFrame] and nowhere else: it describes *that* frame,
+     * and the next hop moves it on.
+     *
+     * Exact rather than estimated. The sink probe publishes the media time of
+     * each buffer as it enters the processor chain; the ring knows how far the
+     * analysis thread is behind the producer in samples; the difference is where
+     * the frame being analysed sits in the song, to within a sample. Nothing
+     * here is inferred from the player's polled position, which is both coarser
+     * and sampled on the wrong thread.
+     */
+    val analysisPositionS: Float get() = framePositionS
+
+    @Volatile
+    private var framePositionS = Float.NaN
 
     /**
      * Invoked on the analysis thread whenever analysis state is discarded — a
@@ -74,16 +102,13 @@ class AudioAnalysisTap : BaseAudioProcessor() {
     private var encoding = C.ENCODING_PCM_16BIT
 
     /**
-     * Fractional resampler phase. Advances by one per input frame and emits
-     * whenever it passes [ratio], carrying the remainder forward.
+     * Fractional resampler phase, shared with the offline scanner so a scanned
+     * frame and a live frame describe the same samples. See [BoxResampleClock].
      *
-     * An integer counter compared against a float ratio does not work: at 48 kHz
-     * the ratio is 48000/22050 = 2.177, so `counter >= ratio` first passes at 3
-     * and the analyzer is fed 16 kHz while believing it has 22050 — every band
-     * edge off by 1.378x and every envelope constant running slow. Only 44.1 kHz
-     * (ratio exactly 2.0) came out right.
+     * Rebuilt on a format change, since the ratio is baked into it.
      */
-    private var resamplePhase = 0f
+    private var resampler = BoxResampleClock(1f)
+    private var resamplerRate = 0
 
     /** Box-filter accumulators over the input frames feeding one output sample. */
     private var accSumL = 0f
@@ -150,7 +175,13 @@ class AudioAnalysisTap : BaseAudioProcessor() {
         // Read for analysis with absolute gets so the buffer's position is
         // untouched, then hand the whole thing to the output. No duplicate() or
         // asReadOnlyBuffer() — those allocate a wrapper per call.
-        if (active) feedRing(inputBuffer, inputBuffer.position(), remaining)
+        if (active) {
+            // Sampled before the ring is fed, because the probe wrote it for
+            // exactly this buffer on the way in.
+            val bufStartUs = lead?.mediaTimeUs ?: AudioLead.UNKNOWN
+            val frames = feedRing(inputBuffer, inputBuffer.position(), remaining)
+            publishClock(bufStartUs, frames)
+        }
 
         // replaceOutputBuffer keeps a persistent scratch buffer and only grows
         // it when a larger one is needed. The previous hand-rolled version
@@ -165,12 +196,14 @@ class AudioAnalysisTap : BaseAudioProcessor() {
         // Discard buffered audio so a seek doesn't feed the analyzer up to a
         // second of stale samples, and tell the analysis thread to start clean.
         ring.clear()
-        resamplePhase = 0f
+        resampler.reset()
         accSumL = 0f
         accSumR = 0f
         accCount = 0
         lastL = 0f
         lastR = 0f
+        // The position of whatever is buffered is about to stop being true.
+        publishClock(AudioLead.UNKNOWN, 0)
     }
 
     override fun onReset() {
@@ -186,17 +219,21 @@ class AudioAnalysisTap : BaseAudioProcessor() {
     /**
      * Downmix to mono, resample to [TARGET_RATE] and write into the ring.
      * Allocation-free by construction: absolute reads, scalar accumulators, and
-     * a preallocated ring.
+     * a preallocated ring. Returns the number of *input* frames consumed, which
+     * is what the media clock needs to know how long this buffer was.
      */
-    private fun feedRing(buf: ByteBuffer, start: Int, byteCount: Int) {
+    private fun feedRing(buf: ByteBuffer, start: Int, byteCount: Int): Int {
         val ch = channelCount
-        if (ch <= 0) return
-        val ratio = sourceRate.toFloat() / TARGET_RATE
-        if (ratio <= 0f) return
+        if (ch <= 0) return 0
+        if (sourceRate <= 0) return 0
+        if (sourceRate != resamplerRate) {
+            resamplerRate = sourceRate
+            resampler = BoxResampleClock(sourceRate.toFloat() / TARGET_RATE)
+        }
 
         val bytesPerSample = if (encoding == C.ENCODING_PCM_FLOAT) 4 else 2
         val frameBytes = bytesPerSample * ch
-        if (frameBytes <= 0) return
+        if (frameBytes <= 0) return 0
         val frames = byteCount / frameBytes
 
         var offset = start
@@ -217,9 +254,8 @@ class AudioAnalysisTap : BaseAudioProcessor() {
             accSumL += l
             accSumR += r
             accCount++
-            resamplePhase += 1f
-            while (resamplePhase >= ratio) {
-                resamplePhase -= ratio
+            var due = resampler.advance()
+            while (due-- > 0) {
                 if (accCount > 0) {
                     lastL = accSumL / accCount
                     lastR = accSumR / accCount
@@ -233,6 +269,57 @@ class AudioAnalysisTap : BaseAudioProcessor() {
                 ring.write(lastL, lastR)
             }
         }
+        return frames
+    }
+
+    // ── The media clock ───────────────────────────────────────────────────
+    //
+    // A seqlock over one (media time, ring position) pair. Two values that have
+    // to be read together, written by the playback thread about a hundred times
+    // a second and read by the analysis thread fifty: a torn read would pair a
+    // new timestamp with a stale position and put the frame ~10 ms out. A lock
+    // is out of the question on the playback thread; an odd/even sequence number
+    // costs two volatile writes and cannot block anybody.
+
+    @Volatile private var clockSeq = 0
+    @Volatile private var clockNewestUs = AudioLead.UNKNOWN
+    @Volatile private var clockWriteSamples = 0L
+
+    /** Producer side: the media time of the newest sample now in the ring. */
+    private fun publishClock(bufStartUs: Long, inputFrames: Int) {
+        val newestUs = if (bufStartUs == AudioLead.UNKNOWN || sourceRate <= 0) {
+            AudioLead.UNKNOWN
+        } else {
+            bufStartUs + inputFrames * 1_000_000L / sourceRate
+        }
+        clockSeq++                       // odd: a write is in progress
+        clockNewestUs = newestUs
+        clockWriteSamples = ring.writeSamples
+        clockSeq++                       // even: consistent again
+    }
+
+    /**
+     * Consumer side: where in the track the samples just read from the ring sit.
+     *
+     * The producer's newest sample, less however far behind it the consumer is.
+     * Gives up after a few attempts rather than spinning — a position that is
+     * briefly unknown costs one frame of scheduled grid, and the causal tracker
+     * is right there underneath it.
+     */
+    private fun readClock(): Float {
+        repeat(CLOCK_READ_ATTEMPTS) {
+            val seq = clockSeq
+            if (seq and 1 == 0) {
+                val newestUs = clockNewestUs
+                val writeSamples = clockWriteSamples
+                if (clockSeq == seq) {
+                    if (newestUs == AudioLead.UNKNOWN) return Float.NaN
+                    val behind = writeSamples - ring.readSamples
+                    return (newestUs / 1e6 - behind.toDouble() / TARGET_RATE).toFloat()
+                }
+            }
+        }
+        return Float.NaN
     }
 
     // ── Analysis thread ───────────────────────────────────────────────────
@@ -286,6 +373,10 @@ class AudioAnalysisTap : BaseAudioProcessor() {
                 LockSupport.parkNanos(IDLE_PARK_NANOS)
                 continue
             }
+            // Read after the hop leaves the ring, so it reflects what this frame
+            // is made of, and published before the callback so a consumer reading
+            // it from inside onFrame sees this frame's position.
+            framePositionS = readClock()
             // pushStereo copies out of both buffers immediately, so they are reused.
             val frame = analyzer.pushStereo(hopL, hopR)
             onFrame?.invoke(frame)
@@ -374,6 +465,15 @@ class AudioAnalysisTap : BaseAudioProcessor() {
             readIdx = writeIdx
         }
 
+        /**
+         * Analysis samples written / read since the last full reset. Both are
+         * absolute and monotonic, so their difference is how far the consumer is
+         * behind — which is what turns a producer-side timestamp into the
+         * consumer's own position. Interleaved stereo, hence the halving.
+         */
+        val writeSamples: Long get() = writeIdx / 2
+        val readSamples: Long get() = readIdx / 2
+
         /** Consumer side: fill both channels if a full hop is available. */
         fun read(outL: FloatArray, outR: FloatArray): Boolean {
             val r = readIdx
@@ -404,5 +504,8 @@ class AudioAnalysisTap : BaseAudioProcessor() {
         private const val IDLE_PARK_NANOS = 5_000_000L
 
         private const val THREAD_JOIN_MS = 250L
+
+        /** Seqlock retries before the position is reported unknown. */
+        private const val CLOCK_READ_ATTEMPTS = 4
     }
 }

@@ -78,8 +78,21 @@ class SendpinApp : Application(), ImageLoaderFactory {
             this,
             localPlayer.audioAnalysisTap,
             localPlayer.audioLead,
-            localPlayer.current.map { it?.artUrl },
+            localPlayer.current,
+            trackScans,
         )
+    }
+
+    /**
+     * Offline track analyses for Light Sync.
+     *
+     * Process-scoped and independent of [directLightSync], because pre-analysing
+     * a library is something you do before the lights are on — with nothing
+     * playing and no bridge connected — and because a scan wanted by the show is
+     * worth keeping long after that particular show ended.
+     */
+    val trackScans: com.engabd.sendpin.audio.TrackScanRepository by lazy {
+        com.engabd.sendpin.audio.TrackScanRepository(this)
     }
 
     /**
@@ -198,6 +211,26 @@ class SendpinApp : Application(), ImageLoaderFactory {
                         started = false
                         directLightSync.stop()
                     }
+                }
+        }
+        // Analyse what is playing, and what is about to.
+        //
+        // Here rather than inside Light Sync, and running whether or not the
+        // bridge is connected, because a scan outlives the session that wanted
+        // it: listening this evening is what makes the lights right at the
+        // weekend. The next queue item matters more than it looks — a scan is
+        // only adopted if it is ready in the first few seconds of a track (see
+        // DirectLightSync), so scanning ahead is the difference between a queue
+        // that is exact from the second song and one that is exact from the
+        // second *listen*.
+        appScope.launch {
+            combine(localPlayer.current, localPlayer.queue, localPlayer.index) { current, queue, at ->
+                current to queue.getOrNull(at + 1)
+            }
+                .distinctUntilChanged()
+                .collect { (current, next) ->
+                    current?.let { trackScans.request(it, urgent = true) }
+                    next?.let { trackScans.request(it) }
                 }
         }
         // A remote speaker playing is as much a reason for a media notification as

@@ -1,0 +1,308 @@
+package com.engabd.sendpin.audio
+
+import com.engabd.sendpin.hue.PICK_MOOD_TEMPO_W
+import com.engabd.sendpin.hue.PICK_MOOD_TILT_W
+import kotlin.math.max
+import kotlin.math.min
+
+/**
+ * What an offline scan of one track knows about it.
+ *
+ * The live tap has to *learn* each song as it plays: the PLL spends about six
+ * seconds finding the beat, the intensity picker twenty warming up, and neither
+ * can ever know what is coming. A scan closes that gap — it is the one thing
+ * standing between the direct path and syncoV2's show, because syncoV2 reads a
+ * precomputed analysis and schedules against it.
+ *
+ * Deliberately *not* a port of syncoV2's `TrackMap`. That carries per-frame
+ * playback features (bands, melbank, pan — some 400 KB a track) so a player it
+ * cannot tap can have its frames replayed at it. We are the player: the frames
+ * come from the tap, live and free. What cannot be had live is what is here —
+ * the grid, the arc, and the two absolute measures a per-track AGC divides out.
+ *
+ * Times are track seconds. Everything is immutable once built.
+ */
+data class TrackScan(
+    val durationS: Float,
+    val bpm: Float,
+    /** 0..1 quality of the offline grid. See `TrackAnalysis.gridConfidence`. */
+    val confidence: Float,
+    /** Beat timestamps, ascending, seconds. */
+    val beats: FloatArray,
+    /** Onset strength at each beat, 0..1, parallel to [beats]. */
+    val accents: FloatArray,
+    /** Index into [beats] of the first bar start, 0..3. */
+    val downbeat: Int,
+    val sections: List<ScanSection>,
+    val intensity: IntensityProfile?,
+    /**
+     * Per-melbank-bin absolute loudness, each bin's reference relative to the
+     * loudest bin's. Handed to the engine as [AnalysisFrame.melbankRef]; see
+     * that field for why no live estimate can produce it.
+     */
+    val melbankRef: FloatArray = FloatArray(0),
+) {
+    /**
+     * The grid is worth scheduling the show against.
+     *
+     * Below this the scan is still useful — sections, the intensity profile and
+     * the melbank reference are all independent of the grid — it just does not
+     * claim to know where the beats are, and the causal tracker keeps the floor.
+     */
+    val gridUsable: Boolean get() = confidence >= MIN_GRID_CONFIDENCE && beats.size >= 8
+
+    /**
+     * The authoritative beat grid at track position [posS].
+     *
+     * [prevPosS] (the previous query) is what makes [BeatGrid.predictedBeat] fire
+     * exactly once per beat as the clock sweeps past it. Null outside the
+     * analysed span and for a grid that did not earn [gridUsable].
+     */
+    fun gridAt(posS: Float, prevPosS: Float?): BeatGrid? {
+        if (!gridUsable || beats.size < 2) return null
+        if (posS < beats.first() - 4f || posS > beats.last() + 4f) return null
+
+        val i = upperBound(beats, posS)  // beats[i-1] <= pos < beats[i]
+        val prevB: Float
+        val nextB: Float
+        val idxPrev: Int
+        when {
+            i <= 0 -> {
+                val period = beats[1] - beats[0]
+                prevB = beats[0] - period
+                nextB = beats[0]
+                idxPrev = -1
+            }
+            i >= beats.size -> {
+                val period = beats[beats.size - 1] - beats[beats.size - 2]
+                prevB = beats.last()
+                nextB = prevB + period
+                idxPrev = beats.size - 1
+            }
+            else -> {
+                prevB = beats[i - 1]
+                nextB = beats[i]
+                idxPrev = i - 1
+            }
+        }
+        val period = max(1e-3f, nextB - prevB)
+        val phase = ((posS - prevB) / period).coerceIn(0f, 1f)
+        val crossed = prevPosS != null && prevPosS < posS && upperBound(beats, prevPosS) != i
+        val beatInBar = Math.floorMod(idxPrev - downbeat, 4)
+        // The accent of the beat about to land (anticipatory waves rise into it)
+        // and of the one that just did (at-beat flashes size to it). Exact per
+        // beat, which is the whole point of having seen the track already.
+        val accentNext = accentAt(idxPrev + 1)
+        val accentNow = accentAt(idxPrev)
+        return BeatGrid(
+            bpm = 60f / period,
+            confidence = confidence,
+            locked = true,
+            periodS = period,
+            phase = phase,
+            timeToNextBeat = max(0f, nextB - posS),
+            nextBeatT = nextB,
+            barPhase = (beatInBar + phase) / 4f,
+            predictedBeat = crossed,
+            accent = accentNext,
+            accentNow = accentNow,
+            beatInBar = beatInBar,
+            // An offline grid is authoritative, so scheduled pulses drive at
+            // full strength. The causal tracker ramps this with its lock quality
+            // precisely because it might be wrong; this one is not guessing.
+            scheduleStrength = 1f,
+        )
+    }
+
+    fun sectionAt(posS: Float): ScanSection? = sections.firstOrNull { posS >= it.startS && posS < it.endS }
+
+    /** `(seconds until, that section's energy)` of the next boundary, if any. */
+    fun nextBoundary(posS: Float): Pair<Float, Float>? =
+        sections.firstOrNull { it.startS > posS }?.let { (it.startS - posS) to it.energy }
+
+    /**
+     * The lag-free section-intensity signal at [posS], sampled a touch ahead.
+     *
+     * The lookahead is not a rounding detail: the picker's rung change drives a
+     * brief render ease-in, and sampling early is what makes that peak land *on*
+     * the section change rather than a beat after it.
+     */
+    fun intensitySignalAt(posS: Float): Float? = intensity?.sampleAt(posS + PROFILE_LOOKAHEAD_S)
+
+    private fun accentAt(index: Int): Float {
+        if (accents.isEmpty()) return 1f
+        return accents[index.coerceIn(0, accents.size - 1)]
+    }
+
+    // FloatArray in a data class: identity equals/hashCode would be wrong and
+    // surprising, and both are cheap enough at these sizes to do properly.
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is TrackScan) return false
+        return durationS == other.durationS && bpm == other.bpm &&
+            confidence == other.confidence && downbeat == other.downbeat &&
+            beats.contentEquals(other.beats) && accents.contentEquals(other.accents) &&
+            sections == other.sections && intensity == other.intensity &&
+            melbankRef.contentEquals(other.melbankRef)
+    }
+
+    override fun hashCode(): Int {
+        var result = durationS.hashCode()
+        result = 31 * result + bpm.hashCode()
+        result = 31 * result + confidence.hashCode()
+        result = 31 * result + beats.contentHashCode()
+        result = 31 * result + accents.contentHashCode()
+        result = 31 * result + downbeat
+        result = 31 * result + sections.hashCode()
+        result = 31 * result + (intensity?.hashCode() ?: 0)
+        result = 31 * result + melbankRef.contentHashCode()
+        return result
+    }
+
+    companion object {
+        /**
+         * Below this the grid is not served. Matches syncoV2's
+         * `trackmap.MIN_MAP_CONFIDENCE`; the constants feeding it are calibrated
+         * against the same measurements, so this threshold means the same thing.
+         */
+        const val MIN_GRID_CONFIDENCE = 0.30f
+
+        /**
+         * Sample the intensity curve this far ahead of the playhead. See
+         * [intensitySignalAt].
+         */
+        const val PROFILE_LOOKAHEAD_S = 0.35f
+
+        /** First index whose value is strictly greater than [target]. */
+        internal fun upperBound(sorted: FloatArray, target: Float): Int {
+            var lo = 0
+            var hi = sorted.size
+            while (lo < hi) {
+                val mid = (lo + hi) ushr 1
+                if (sorted[mid] <= target) lo = mid + 1 else hi = mid
+            }
+            return lo
+        }
+    }
+}
+
+/**
+ * One section of the track — a verse, a chorus, a drop — with how loud it is
+ * relative to the track's own peak.
+ *
+ * [energy] is what lets the show save its range for the chorus instead of
+ * spending it on the first loud bar of the intro.
+ */
+data class ScanSection(val startS: Float, val endS: Float, val energy: Float)
+
+/**
+ * Per-song Auto-intensity shaping.
+ *
+ * Two independent things, and keeping them apart is what makes Auto work:
+ *
+ * - [character] — how hard this song goes on an **absolute** scale comparable
+ *   across tracks, which decides the band of the ladder Auto may use for it.
+ * - the window ([sigLo], [sigHi], [dynamics], [curve]) — where each moment sits
+ *   *within* that band.
+ *
+ * Without the first, per-track normalisation makes a lofi chorus and an EDM drop
+ * look identical, and Auto hands the top rung to everything.
+ */
+data class IntensityProfile(
+    /** ~p10 of the song's section-intensity curve: the window floor. */
+    val sigLo: Float,
+    /** ~p95 of it: the window ceiling. */
+    val sigHi: Float,
+    /** True p95−p10 span — how much the song actually moves, 0..1. */
+    val dynamics: Float,
+    /** Spectral balance: −1 bright, +1 bass-heavy, 0 neutral. */
+    val tilt: Float,
+    /** BPM mapped 0 (ballad) .. 1 (club). */
+    val tempo: Float,
+    /**
+     * How hard the song goes, absolute 0..1, from the shared
+     * `hue.songCharacter` the live picker also uses.
+     */
+    val character: Float,
+    /**
+     * The lag-free section-intensity curve, 0..1, sampled at [curveRateHz].
+     *
+     * Stored decimated rather than per analysis frame: it is a 1.4 s centred
+     * moving average, so anything above a few hertz is describing noise it has
+     * already smoothed away, and a whole library's worth of these has to fit on
+     * a phone.
+     */
+    val curve: FloatArray,
+    val curveRateHz: Float,
+) {
+    /** Combined spectral+tempo shift of the picker's operating point. */
+    val mood: Float get() = PICK_MOOD_TILT_W * tilt + PICK_MOOD_TEMPO_W * (tempo - 0.5f) * 2f
+
+    /** The curve at track position [posS], linearly interpolated. */
+    fun sampleAt(posS: Float): Float? {
+        if (curve.isEmpty() || curveRateHz <= 0f) return null
+        val x = (posS * curveRateHz).coerceAtLeast(0f)
+        val i = x.toInt()
+        if (i >= curve.size - 1) return curve.last()
+        val f = x - i
+        return curve[i] + (curve[i + 1] - curve[i]) * f
+    }
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is IntensityProfile) return false
+        return sigLo == other.sigLo && sigHi == other.sigHi && dynamics == other.dynamics &&
+            tilt == other.tilt && tempo == other.tempo && character == other.character &&
+            curveRateHz == other.curveRateHz && curve.contentEquals(other.curve)
+    }
+
+    override fun hashCode(): Int {
+        var result = sigLo.hashCode()
+        result = 31 * result + sigHi.hashCode()
+        result = 31 * result + dynamics.hashCode()
+        result = 31 * result + tilt.hashCode()
+        result = 31 * result + tempo.hashCode()
+        result = 31 * result + character.hashCode()
+        result = 31 * result + curve.contentHashCode()
+        result = 31 * result + curveRateHz.hashCode()
+        return result
+    }
+}
+
+/**
+ * Why a scan did not produce a usable result, for the UI to show instead of a
+ * track that silently never improves.
+ */
+enum class ScanFailure {
+    /** Could not open or decode the source — worth retrying. */
+    DECODE,
+    /** Decoded, but there was under ~4 s of audio to work with. */
+    TOO_SHORT,
+    /** Decoded, and it is digital silence. */
+    SILENT,
+    /** Cancelled — a track change, or the user stopped the sweep. */
+    CANCELLED,
+}
+
+/** Either a scan or the reason there isn't one. */
+sealed interface ScanResult {
+    data class Ok(val scan: TrackScan) : ScanResult
+    data class Failed(val reason: ScanFailure, val detail: String = "") : ScanResult
+}
+
+/** Clamp to 0..1 — the unit interval nearly everything here lives in. */
+internal fun unitF(x: Float): Float = if (x < 0f) 0f else if (x > 1f) 1f else x
+
+internal fun unitD(x: Double): Double = if (x < 0.0) 0.0 else if (x > 1.0) 1.0 else x
+
+/** numpy's linear-interpolation percentile over a *sorted* copy of [values]. */
+internal fun percentile(values: DoubleArray, pct: Double): Double {
+    if (values.isEmpty()) return 0.0
+    val sorted = values.copyOf()
+    sorted.sort()
+    if (sorted.size == 1) return sorted[0]
+    val pos = (pct / 100.0) * (sorted.size - 1)
+    val lo = pos.toInt()
+    val hi = min(lo + 1, sorted.size - 1)
+    return sorted[lo] + (pos - lo) * (sorted[hi] - sorted[lo])
+}

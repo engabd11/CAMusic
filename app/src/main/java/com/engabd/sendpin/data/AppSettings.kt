@@ -79,6 +79,22 @@ class AppSettings(private val context: Context) {
         private val LIGHT_SYNC_EFFECT = stringPreferencesKey("light_sync_effect") // music|movies|fireworks
         private val LIGHT_SYNC_COLOR = stringPreferencesKey("light_sync_color") // colour scheme wire key
         private val LIGHT_SYNC_BRIGHTNESS = stringPreferencesKey("light_sync_brightness") // 5..100
+
+        /**
+         * Whether tracks are analysed ahead of the show.
+         *
+         * On by default. Everything the direct path could learn from a live tap
+         * it already does; what is left — an exact beat grid from the first bar,
+         * the song's own loudness range, where the sections are — needs the whole
+         * track, and there is no way to have that without reading it first. A
+         * track already on the phone costs a few seconds of a background core;
+         * a streamed one costs a download, which is what [LIGHT_SYNC_PRESCAN_WIFI]
+         * is for.
+         */
+        private val LIGHT_SYNC_PRESCAN = booleanPreferencesKey("light_sync_prescan")
+
+        /** Only fetch remote tracks for analysis on an unmetered network. */
+        private val LIGHT_SYNC_PRESCAN_WIFI = booleanPreferencesKey("light_sync_prescan_wifi_only")
         // There is deliberately no light_sync_timing key. The Home Assistant path
         // exposes an offset because syncoV2 can only estimate where the speakers
         // are; the direct path measures the tap's lead over the AudioTrack exactly
@@ -413,6 +429,13 @@ class AppSettings(private val context: Context) {
     /** Master brightness ceiling (5..100). */
     val lightSyncBrightness: Flow<Int> = context.dataStore.data.map { it[LIGHT_SYNC_BRIGHTNESS]?.toIntOrNull() ?: 100 }
 
+    /** Analyse tracks ahead of the show. See the key's docs for the default. */
+    val lightSyncPrescan: Flow<Boolean> = context.dataStore.data.map { it[LIGHT_SYNC_PRESCAN] ?: true }
+
+    /** Only pull remote tracks down for analysis on an unmetered network. */
+    val lightSyncPrescanWifiOnly: Flow<Boolean> =
+        context.dataStore.data.map { it[LIGHT_SYNC_PRESCAN_WIFI] ?: true }
+
     suspend fun setHueBridge(
         ip: String,
         appKey: String,
@@ -474,6 +497,14 @@ class AppSettings(private val context: Context) {
 
     suspend fun setLightSyncBrightness(pct: Int) {
         context.dataStore.edit { it[LIGHT_SYNC_BRIGHTNESS] = pct.toString() }
+    }
+
+    suspend fun setLightSyncPrescan(on: Boolean) {
+        context.dataStore.edit { it[LIGHT_SYNC_PRESCAN] = on }
+    }
+
+    suspend fun setLightSyncPrescanWifiOnly(on: Boolean) {
+        context.dataStore.edit { it[LIGHT_SYNC_PRESCAN_WIFI] = on }
     }
 
 }

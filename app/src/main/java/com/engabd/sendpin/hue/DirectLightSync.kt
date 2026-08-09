@@ -8,9 +8,13 @@ import com.engabd.sendpin.audio.AnalysisFrame
 import com.engabd.sendpin.audio.AudioAnalysisTap
 import com.engabd.sendpin.audio.AudioLead
 import com.engabd.sendpin.audio.BeatGrid
+import com.engabd.sendpin.audio.LocalTrack
+import com.engabd.sendpin.audio.SongPhase
 import com.engabd.sendpin.audio.StructureState
 import com.engabd.sendpin.audio.StructureTracker
 import com.engabd.sendpin.audio.TempoTracker
+import com.engabd.sendpin.audio.TrackScan
+import com.engabd.sendpin.audio.TrackScanRepository
 import androidx.core.graphics.drawable.toBitmap
 import coil.imageLoader
 import coil.request.ImageRequest
@@ -19,6 +23,7 @@ import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.data.Crypto
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -130,6 +135,27 @@ private const val FRAME_STALE_NANOS = 250_000_000L
 /** What the engine renders when nothing is feeding it. */
 private val SILENCE = AnalysisFrame()
 
+/**
+ * How far into a track a scan may arrive and still be adopted.
+ *
+ * One regime per track, decided once. A grid that appears mid-song replaces a
+ * PLL that has by then found the beat itself, and the handover between two
+ * clocks that agree on tempo but not quite on phase is a visible stumble — the
+ * room skips. Better to stay causal for the rest of this play and be exact from
+ * the first bar of the next one. syncoV2 draws the line in the same place
+ * (`coordinator._MAP_COMMIT_WINDOW_S`) for the same reason.
+ */
+private const val MAP_COMMIT_WINDOW_S = 6f
+
+/**
+ * How far ahead a louder section counts as an approaching drop. Matches
+ * syncoV2's `_PREDROP_WINDOW_S`.
+ */
+private const val PREDROP_WINDOW_S = 2f
+
+/** How much louder the next section must be to read as a drop rather than a change. */
+private const val DROP_LEVEL_STEP = 0.15f
+
 class DirectLightSync(
     private val context: Context,
     /**
@@ -146,11 +172,21 @@ class DirectLightSync(
      */
     private val audioLead: AudioLead,
     /**
-     * Cover-art URL of whatever is playing, for the album-art colour schemes.
-     * `album_art_v2` is the persisted default, so without this a fresh install
-     * silently renders the static fallback and the setting reads as a lie.
+     * Whatever is playing on this phone.
+     *
+     * Two things are taken from it. Its cover art drives the album-art colour
+     * schemes — `album_art_v2` is the persisted default, so without it a fresh
+     * install silently renders the static fallback and the setting reads as a
+     * lie. Its identity is what a track scan is looked up and requested by.
      */
-    private val artUrls: Flow<String?>,
+    private val nowPlaying: Flow<LocalTrack?>,
+    /**
+     * Offline track analyses. Optional: with no scans the direct path behaves
+     * exactly as it did before they existed — causal grid, live-estimated
+     * character, no section knowledge — which is also what happens for any
+     * individual track that has not been scanned yet.
+     */
+    private val scans: TrackScanRepository? = null,
     private val settings: AppSettings = AppSettings(context),
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -198,6 +234,44 @@ class DirectLightSync(
 
     @Volatile private var latestGrid: BeatGrid? = null
     @Volatile private var latestStructure: StructureState? = null
+
+    // ── Track scan state ───────────────────────────────────────────────────
+    //
+    // Written by the orchestrator scope as the track changes, read by the
+    // analysis thread once a hop. The analysis thread is the only place the
+    // scan is *applied*, because that is where the track position and the two
+    // trackers already are.
+
+    /** The scan for the track playing now, once one is available. */
+    @Volatile private var activeScan: TrackScan? = null
+
+    /**
+     * Whether this track's show is scheduled or causal. Null until decided; see
+     * [MAP_COMMIT_WINDOW_S] for why it is decided exactly once.
+     */
+    @Volatile private var mapCommitted: Boolean? = null
+
+    /**
+     * Previous queried position, so a scheduled beat fires exactly once.
+     *
+     * Volatile because a track change clears it from the orchestrator scope
+     * while the analysis thread is reading it — the value only ever goes stale
+     * by a frame, but a stale *non-null* one is what makes a beat fire twice.
+     */
+    @Volatile private var mapPrevPos: Float? = null
+
+    /** The section the playhead was in last frame, for scheduled-drop detection. */
+    @Volatile private var mapSection: com.engabd.sendpin.audio.ScanSection? = null
+
+    /**
+     * The scanned Auto-intensity parameters for this track, or null when it is
+     * being played causally. The picker takes its live-estimated defaults then,
+     * exactly as it did before scans existed.
+     */
+    @Volatile private var activeProfile: com.engabd.sendpin.audio.IntensityProfile? = null
+
+    /** The lag-free intensity signal at the current playhead. */
+    @Volatile private var scannedSignal: Float? = null
 
     /** When the last packet went out, so the keepalive knows if it is needed. */
     @Volatile private var lastSendAt = 0L
@@ -386,16 +460,85 @@ class DirectLightSync(
      * the output.
      */
     private fun onAnalysisFrame(frame: AnalysisFrame) {
-        latestGrid = tempo?.update(
+        // The causal tracker runs every frame whether or not a scan is adopted.
+        // It is the floor: if the scan turns out not to cover this position, or
+        // its grid was never good enough to trust, the room still keeps time.
+        var grid = tempo?.update(
             tAudio = frame.tAudio,
             fluxValue = frame.flux,
             beat = frame.beat,
             beatStrength = frame.beatStrength,
             bass = max(frame.bands["sub_bass"] ?: 0f, frame.bands["bass"] ?: 0f),
         )
-        latestStructure = structure?.update(frame)
-        latestFrame = frame
+        var arc = structure?.update(frame)
+        var published = frame
+
+        val scan = activeScan
+        val pos = audioTap.analysisPositionS
+        if (!pos.isNaN()) {
+            // Decided once per track, and only inside the window. Before it, a
+            // missing scan means "not arrived yet", not "there isn't one".
+            if (mapCommitted == null) {
+                if (scan != null && pos <= MAP_COMMIT_WINDOW_S) mapCommitted = true
+                else if (pos > MAP_COMMIT_WINDOW_S) mapCommitted = false
+            }
+            if (mapCommitted == true && scan != null) {
+                scan.gridAt(pos, mapPrevPos)?.let { grid = it }
+                arc = arc?.let { enrichWithScan(it, scan, pos) }
+                scannedSignal = scan.intensitySignalAt(pos)
+                // The one absolute measure a per-bin AGC cannot leave behind.
+                // Extreme's per-lamp brightness reads it; every other rung
+                // ignores it, so attaching it unconditionally costs nothing.
+                if (scan.melbankRef.isNotEmpty()) {
+                    published = frame.copy(melbankRef = scan.melbankRef)
+                }
+                mapPrevPos = pos
+            }
+        }
+
+        latestGrid = grid
+        latestStructure = arc
+        latestFrame = published
         latestFrameAt = System.nanoTime()
+    }
+
+    /**
+     * Fill in the two things a causal structure tracker cannot know: which
+     * section this is, and when the next one lands.
+     *
+     * The live tracker guesses a drop from "a build that has nearly maxed out",
+     * which is right often enough to be worth having and never early enough to
+     * anticipate. A scanned section list turns that into a countdown, so the
+     * pull-down before a drop can be timed against the boundary instead of
+     * reacting once it has already happened.
+     */
+    private fun enrichWithScan(state: StructureState, scan: TrackScan, pos: Float): StructureState {
+        val section = scan.sectionAt(pos) ?: return state
+        val previous = mapSection
+        mapSection = section
+
+        var dropImminent = state.dropImminent
+        var dropEtaS = state.dropEtaS
+        val boundary = scan.nextBoundary(pos)
+        if (boundary != null &&
+            boundary.first <= PREDROP_WINDOW_S &&
+            boundary.second > section.energy + DROP_LEVEL_STEP
+        ) {
+            dropImminent = true
+            dropEtaS = boundary.first
+        }
+        // Crossing into a clearly louder section *is* the drop, known exactly
+        // rather than inferred from a surge that has already been heard.
+        val dropNow = state.dropNow ||
+            (previous != null && previous !== section && section.energy > previous.energy + DROP_LEVEL_STEP)
+
+        return state.copy(
+            phase = if (dropNow) SongPhase.DROP else state.phase,
+            dropNow = dropNow,
+            dropImminent = dropImminent,
+            dropEtaS = dropEtaS,
+            sectionLevel = section.energy,
+        )
     }
 
     /**
@@ -412,6 +555,10 @@ class DirectLightSync(
         structure?.reset()
         latestGrid = null
         latestStructure = null
+        // The scan itself survives a seek — it describes the whole track, and
+        // seeking does not make it less true. Only the per-query state goes.
+        mapPrevPos = null
+        mapSection = null
     }
 
     // ── Render loop ─────────────────────────────────────────────────────────
@@ -576,6 +723,12 @@ class DirectLightSync(
      */
     private fun applyAutoIntensity(eng: SyncoEngine, frame: AnalysisFrame, dt: Float) {
         val grid = latestGrid
+        // The five parameters the picker has always accepted and nothing has
+        // ever supplied. With them it knows, from the first bar, how hard this
+        // song goes on an absolute scale, how much of its own range it uses, and
+        // where in that range this moment sits — instead of spending twenty
+        // seconds working the first out and never learning the rest.
+        val profile = activeProfile
         val picked = picker.update(
             dt = dt,
             energy = frame.energy,
@@ -586,6 +739,12 @@ class DirectLightSync(
             onsetWidth = frame.onsetWidth,
             centroid = frame.centroid,
             flux = frame.flux,
+            signal = scannedSignal,
+            character = profile?.character,
+            lo = profile?.sigLo ?: SIG_LO_REF,
+            hi = profile?.sigHi ?: SIG_HI_REF,
+            dynamics = profile?.dynamics,
+            mood = profile?.mood ?: 0f,
         )
         if (picked != eng.mode) {
             eng.mode = picked
@@ -890,7 +1049,25 @@ class DirectLightSync(
         // album-art scheme is selected, so switching to one mid-track picks up
         // the cover already on screen instead of waiting for the next song.
         scope.launch {
-            artUrls.distinctUntilChanged().collect { url -> applyAlbumArt(url) }
+            nowPlaying.map { it?.artUrl }.distinctUntilChanged().collect { url -> applyAlbumArt(url) }
+        }
+        // The track itself, for the scan.
+        scope.launch {
+            nowPlaying.distinctUntilChanged { a, b -> scanKeyOf(a) == scanKeyOf(b) }
+                .collect { track -> onTrackChanged(track) }
+        }
+        // A scan that lands while its own track is still inside the adoption
+        // window is adopted right away, which is what makes the very first play
+        // of a local track already exact rather than only the second.
+        scans?.let { repo ->
+            scope.launch {
+                repo.completed.collect { key ->
+                    val track = currentTrack ?: return@collect
+                    if (TrackScanRepository.keyFor(track) != key) return@collect
+                    if (mapCommitted != null) return@collect  // regime already settled
+                    adoptScan(repo.cached(track))
+                }
+            }
         }
         scope.launch {
             settings.lightSyncBrightness.collect { pct -> engine?.brightness = pct.coerceIn(0, 100) / 100f }
@@ -900,6 +1077,47 @@ class DirectLightSync(
     /** Album-art colours, pushed by the player when the track changes. */
     fun setAlbumColors(colors: List<Rgb>) {
         engine?.setAlbumColors(colors)
+    }
+
+    // ── Track scans ─────────────────────────────────────────────────────────
+
+    /** What is playing, for matching a completed scan against. */
+    @Volatile private var currentTrack: LocalTrack? = null
+
+    private fun scanKeyOf(track: LocalTrack?): String? =
+        track?.let { TrackScanRepository.keyFor(it) }
+
+    /**
+     * A new song: drop everything the last one's scan told us, then look for
+     * this one's.
+     *
+     * The clearing happens first and synchronously. The analysis thread may
+     * already be a hop or two into the new audio by the time this runs, and a
+     * grid from the previous track applied to it would be worse than no grid at
+     * all — the beats would be confidently, precisely wrong.
+     */
+    private suspend fun onTrackChanged(track: LocalTrack?) {
+        currentTrack = track
+        activeScan = null
+        activeProfile = null
+        scannedSignal = null
+        mapCommitted = null
+        mapPrevPos = null
+        mapSection = null
+        picker.allowImmediateRepick()
+
+        val repo = scans ?: return
+        val next = track ?: return
+        // Cached first, because that is the fast path and the one that lands
+        // inside the adoption window.
+        adoptScan(repo.cached(next))
+        if (activeScan == null) repo.request(next, urgent = true)
+    }
+
+    private fun adoptScan(scan: TrackScan?) {
+        if (scan == null) return
+        activeScan = scan
+        activeProfile = scan.intensity
     }
 
     /**
