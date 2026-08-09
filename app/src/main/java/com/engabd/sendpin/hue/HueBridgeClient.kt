@@ -95,8 +95,24 @@ class HueBridgeClient(
      * and the id arrives from discovery afterwards.
      */
     private val expectedBridgeId: () -> String = { "" },
-    private val http: OkHttpClient = createHttpClient(context, expectedBridgeId),
 ) {
+    /**
+     * Built on first request, not at construction.
+     *
+     * Constructing it means reading the certificate bundle, filling a KeyStore
+     * and initialising a TrustManagerFactory. This class is instantiated from a
+     * composable, so as a constructor default that work ran on the main thread
+     * during a frame — and anything it threw took the app down while the user
+     * was merely scrolling the settings screen, which is how the empty-bundle
+     * bug presented.
+     *
+     * Deferring it puts the work on whichever IO dispatcher makes the first
+     * call, and turns a TLS setup failure into a failed request the caller can
+     * report instead of a crash. `lazy` is synchronised by default, so the
+     * concurrent first calls this class can see are safe.
+     */
+    private val http: OkHttpClient by lazy { createHttpClient(context, expectedBridgeId) }
+
     private val json = Json { ignoreUnknownKeys = true }
 
     // ── Discovery ─────────────────────────────────────────────────────────
@@ -505,14 +521,46 @@ class HueBridgeClient(
          * intermediate, and that only the roots need bundling because the bridge
          * presents the intermediate itself. [TrustManagerFactory] handles that.
          */
+        /**
+         * A trust manager over the bundled Signify roots.
+         *
+         * The PEM blocks are located and base64-decoded here rather than handing
+         * the file to `generateCertificates`. That returned *zero* certificates
+         * on device while parsing both of them on the JVM, and reported nothing
+         * about why — Android's provider stops at the first block it dislikes and
+         * hands back what it has. The bundle is CRLF, which is what it dislikes.
+         * Both certificates are perfectly valid as DER, so the text handling is
+         * taken out of the question entirely.
+         *
+         * Chain support is intact: the spec notes device certificates are
+         * root-signed today but will likely gain an intermediate, and only the
+         * roots need bundling because the bridge presents the rest.
+         */
         private fun signifyTrustManager(context: Context): X509TrustManager {
             val factory = CertificateFactory.getInstance("X.509")
             val keyStore = KeyStore.getInstance(KeyStore.getDefaultType()).apply { load(null, null) }
-            context.resources.openRawResource(R.raw.hue_root_certs).use { input ->
-                val certs = factory.generateCertificates(input)
-                require(certs.isNotEmpty()) { "hue_root_certs.pem contained no certificates" }
-                certs.forEachIndexed { i, cert -> keyStore.setCertificateEntry("hue-root-$i", cert) }
+
+            val pem = context.resources.openRawResource(R.raw.hue_root_certs)
+                .use { it.readBytes() }
+                .toString(Charsets.US_ASCII)
+            val blocks = Regex(
+                "-----BEGIN CERTIFICATE-----(.*?)-----END CERTIFICATE-----",
+                RegexOption.DOT_MATCHES_ALL,
+            ).findAll(pem).map { it.groupValues[1] }.toList()
+
+            var loaded = 0
+            for ((i, block) in blocks.withIndex()) {
+                try {
+                    val der = android.util.Base64.decode(block, android.util.Base64.DEFAULT)
+                    val cert = factory.generateCertificate(java.io.ByteArrayInputStream(der))
+                    keyStore.setCertificateEntry("hue-root-$i", cert)
+                    loaded++
+                } catch (e: Exception) {
+                    Log.e(TAG, "Hue root $i could not be loaded: ${e.javaClass.simpleName}: ${e.message}")
+                }
             }
+            if (loaded == 0) throw HueBridgeException("No Hue root certificates could be loaded")
+
             val tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm())
             tmf.init(keyStore)
             return tmf.trustManagers.filterIsInstance<X509TrustManager>().first()

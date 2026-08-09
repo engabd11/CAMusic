@@ -215,9 +215,6 @@ class DirectLightSync(
     private var renderJob: Job? = null
     private val running = AtomicBoolean(false)
 
-    init {
-        observeSettings()
-    }
 
     /**
      * Start the direct Light Sync session.
@@ -906,5 +903,23 @@ class DirectLightSync(
     /** Album-art colours, pushed by the player when the track changes. */
     fun setAlbumColors(colors: List<Rgb>) {
         engine?.setAlbumColors(colors)
+    }
+
+    /**
+     * Last in the class body, and that placement is load-bearing.
+     *
+     * Kotlin runs property initialisers and `init` blocks in declaration order,
+     * and [observeSettings] launches collectors that fire immediately — the
+     * settings flows have a value to give straight away. From an `init` block
+     * near the top of the class those collectors reached `picker`,
+     * `rateLimiter`, `safety` and `delayQueue` while their initialisers further
+     * down had not run yet, and read them as null. Kotlin cannot warn about it:
+     * the types are non-null, so the null-check is elided and the crash surfaces
+     * as a bare NullPointerException on a field that "cannot" be null.
+     *
+     * Everything the collectors touch is declared above this point.
+     */
+    init {
+        observeSettings()
     }
 }
