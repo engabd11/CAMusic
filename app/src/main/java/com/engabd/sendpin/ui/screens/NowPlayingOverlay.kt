@@ -378,7 +378,7 @@ fun NowPlayingOverlay(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
-                        TappableQualityChip(playing = st.quality, source = st.sourceQuality, provider = st.streamProvider, localSession = st.isLocalSession)
+                        TappableQualityChip(playing = st.quality, source = st.sourceQuality, provider = st.streamProvider, localSession = st.isLocalSession, dsp = st.dsp)
                         PlayButton(st.isPlaying) { viewModel.playPause() }
                     }
                     TransportIcon(Icons.Default.SkipNext, "Next", 26.dp) { viewModel.next() }

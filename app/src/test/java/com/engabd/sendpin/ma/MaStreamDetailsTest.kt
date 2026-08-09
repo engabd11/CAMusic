@@ -203,4 +203,117 @@ class MaStreamDetailsTest {
         )
         assertEquals(7, explicit.single().index)
     }
+
+    // ─── The DSP state, which the parser used to read past ───────────────────
+
+    @Test
+    fun `the dsp state is carried alongside the format, not instead of it`() {
+        // The whole point: "my EQ does nothing" is a question MA already answers.
+        val q = queue(
+            """
+            {
+              "queue_id": "p1",
+              "current_item": {
+                "queue_item_id": "q1",
+                "streamdetails": {
+                  "audio_format": {"content_type": "flac", "sample_rate": 44100, "bit_depth": 16},
+                  "dsp": {
+                    "p1": {
+                      "state": "disabled",
+                      "output_limiter": true,
+                      "filters": [{"type": "parametric_eq"}, {"type": "tone_control"}],
+                      "output_format": {"content_type": "flac", "sample_rate": 44100, "bit_depth": 16}
+                    }
+                  }
+                }
+              }
+            }
+            """
+        )
+        val dsp = q.dspFor("p1")
+        assertEquals("disabled", dsp?.state)
+        assertEquals(false, dsp?.active)
+        assertEquals(2, dsp?.filterCount)
+        assertEquals(true, dsp?.outputLimiter)
+        // …and the format is still reported, which is the rule the parser has always
+        // followed. Reading the state must not become a reason to drop the entry.
+        assertEquals("flac", q.outputFor("p1")?.codec)
+    }
+
+    @Test
+    fun `a state with no output format still reaches the UI`() {
+        // An entry like this must not win the "lone entry" rung of outputFor, or a
+        // player MA is demonstrably feeding would report no format at all.
+        val q = queue(
+            """
+            {
+              "queue_id": "p1",
+              "current_item": {
+                "queue_item_id": "q1",
+                "streamdetails": {
+                  "audio_format": {"content_type": "flac", "sample_rate": 96000, "bit_depth": 24},
+                  "dsp": {"p1": {"state": "disabled_by_unsupported_group"}}
+                }
+              }
+            }
+            """
+        )
+        assertEquals("disabled_by_unsupported_group", q.dspFor("p1")?.state)
+        // Falls through to what MA opened, exactly as a missing dsp map would.
+        assertEquals("flac", q.outputFor("p1")?.codec)
+        assertEquals(96000, q.outputFor("p1")?.sampleRateHz)
+    }
+
+    @Test
+    fun `an unfamiliar state is passed through rather than swallowed`() {
+        // MA's DSPState is not enumerated in this app on purpose. A value we have
+        // never seen is worth showing verbatim; mapping it to "unknown" would throw
+        // away the one clue that says why the equaliser is silent.
+        val q = queue(
+            """
+            {
+              "queue_id": "p1",
+              "current_item": {
+                "queue_item_id": "q1",
+                "streamdetails": {"dsp": {"p1": {"state": "some_future_state"}}}
+              }
+            }
+            """
+        )
+        assertEquals("some_future_state", q.dspFor("p1")?.state)
+        assertEquals(false, q.dspFor("p1")?.active)
+    }
+
+    @Test
+    fun `a synced member with no entry of its own reads the leader's state`() {
+        val q = queue(
+            """
+            {
+              "queue_id": "lounge",
+              "current_item": {
+                "queue_item_id": "q1",
+                "streamdetails": {"dsp": {"lounge": {"state": "enabled"}}}
+              }
+            }
+            """
+        )
+        assertEquals("enabled", q.dspFor(playerId = "bedroom", leaderId = "lounge")?.state)
+        assertEquals(true, q.dspFor(playerId = "bedroom", leaderId = "lounge")?.active)
+    }
+
+    @Test
+    fun `no dsp entry at all is no claim about the pipeline`() {
+        val q = queue(
+            """
+            {
+              "queue_id": "p1",
+              "current_item": {
+                "queue_item_id": "q1",
+                "streamdetails": {"audio_format": {"content_type": "flac", "sample_rate": 44100}}
+              }
+            }
+            """
+        )
+        assertNull(q.dspFor("p1"))
+    }
 }

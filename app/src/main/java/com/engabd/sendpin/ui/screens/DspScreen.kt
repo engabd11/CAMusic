@@ -37,6 +37,7 @@ import com.engabd.sendpin.ma.DspFilter
 import com.engabd.sendpin.ma.EqBand
 import com.engabd.sendpin.ma.EqBandType
 import com.engabd.sendpin.ma.DspPreset
+import com.engabd.sendpin.ma.MaDspDetails
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.DspViewModel
@@ -62,6 +63,62 @@ private fun WarningBanner() {
                 "Changes take effect immediately on the selected player.",
             color = Color(0xFFF2C574), style = MaterialTheme.typography.bodySmall,
         )
+    }
+}
+
+// ─── What the server says it is doing ────────────────────────────────────
+
+/**
+ * The live counterpart to [WarningBanner].
+ *
+ * That banner *asserts* DSP is applied server-side. This one says whether it actually
+ * is, right now, for this player — off `streamdetails.dsp[<player_id>].state`, which
+ * Music Assistant has always reported and this app used to parse and discard. When the
+ * equaliser is inaudible, this is the server's own answer as to why.
+ *
+ * Renders nothing when there is no reading: MA only reports DSP state against a track
+ * it is currently streaming, and "nothing is playing" is not a fault worth a banner.
+ */
+@Composable
+private fun DspStateBanner(details: MaDspDetails?) {
+    val state = details?.state
+    if (details == null || state == null) return
+    val active = details.active
+    val tint = if (active) PositiveGreen else WarnAmber
+    val text = if (active) Color(0xFF8FE0B0) else Color(0xFFF2C574)
+    val message = when (state) {
+        "enabled" -> {
+            val n = details.filterCount
+            "Music Assistant is filtering this stream" +
+                if (n > 0) " — $n ${if (n == 1) "filter" else "filters"} in the chain." else "."
+        }
+        "disabled" ->
+            "Music Assistant is not filtering this stream. The settings below are saved, " +
+                "but nothing is being applied to the audio you are hearing."
+        // Never guess at a DSPState this app hasn't seen. Showing the server's own word
+        // is worth more than a friendly sentence about the wrong thing.
+        else ->
+            "Music Assistant reports its DSP as \"" +
+                state.replace('_', ' ') +
+                "\" for this player, so the settings below may not be reaching the audio."
+    }
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(tint.a(0.10f))
+            .border(1.dp, tint.a(0.25f), RoundedCornerShape(12.dp))
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Icon(
+            if (active) Icons.Default.GraphicEq else Icons.Default.WarningAmber,
+            null,
+            tint = tint,
+            modifier = Modifier.size(16.dp).padding(top = 1.dp),
+        )
+        Text(message, color = text, style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -622,6 +679,30 @@ private fun ErrorNotice(message: String, onRetry: () -> Unit) {
     }
 }
 
+/**
+ * Why the last save didn't take — the server's own words, not a toast.
+ *
+ * Same recipe as [ErrorNotice] without the retry (the Save button is right above it)
+ * and without the outer padding, because this one lives inside the scrolling column
+ * that already supplies its margins.
+ */
+@Composable
+private fun SaveErrorNotice(message: String) {
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+            .background(ErrorRed.a(0.10f)).border(1.dp, ErrorRed.a(0.25f), RoundedCornerShape(12.dp))
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Icon(
+            Icons.Default.ErrorOutline, null, tint = ErrorRed,
+            modifier = Modifier.size(16.dp).padding(top = 1.dp),
+        )
+        Text(message, color = Color(0xFFE88080), style = MaterialTheme.typography.bodySmall)
+    }
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
 private fun fmtDb(gain: Float): String = "%+.1f dB".format(gain)
@@ -686,6 +767,8 @@ internal fun ColumnScope.DspBody(viewModel: DspViewModel, accent: Color) {
     val showSavePreset by viewModel.showSavePreset.collectAsState()
     val presetName by viewModel.presetName.collectAsState()
     val saving by viewModel.saving.collectAsState()
+    val saveError by viewModel.saveError.collectAsState()
+    val dspDetails by viewModel.dspDetails.collectAsState()
     val context = LocalContext.current
 
     // These belong to the body, not to whatever is hosting it. They used to sit in the
@@ -742,6 +825,14 @@ internal fun ColumnScope.DspBody(viewModel: DspViewModel, accent: Color) {
                     }
                 }
 
+                // ── Why the last save didn't take ────────────────────────
+                // Inline rather than a toast: a refusal that fades in two seconds is a
+                // refusal nobody reads, and this is the one message that explains an
+                // equaliser doing nothing.
+                saveError?.let { SaveErrorNotice(it) }
+
+                // ── What the server says it is doing ─────────────────────
+                DspStateBanner(dspDetails)
 
                 // ── Warning ──────────────────────────────────────────────
                 WarningBanner()

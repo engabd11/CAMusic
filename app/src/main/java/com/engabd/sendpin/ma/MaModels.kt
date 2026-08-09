@@ -172,6 +172,29 @@ data class MaPlayer(
 /** A player's Sendspin sync-delay config value + the (variable) key it lives under. */
 data class SyncDelay(val key: String, val ms: Int)
 
+/**
+ * One entry of `current_item.streamdetails.dsp` — what Music Assistant's per-player
+ * pipeline did to this track, and **whether it ran at all**.
+ *
+ * [state] is MA's `DSPState`, carried verbatim rather than mapped to an enum here.
+ * Only `"disabled"` is confirmed against a real payload; a value this app has never
+ * seen is worth showing as-is, because a guess rendered confidently is worse than an
+ * unfamiliar word rendered honestly. The UI humanises it and falls through.
+ *
+ * This is the server's own answer to "why is my EQ doing nothing", and it was being
+ * parsed and dropped — [MaParse] read the sibling `output_format` and nothing else.
+ */
+@Immutable
+data class MaDspDetails(
+    val state: String? = null,
+    val outputFormat: StreamQuality? = null,
+    val filterCount: Int = 0,
+    val outputLimiter: Boolean = false,
+) {
+    /** MA ran the chain. Anything else — including an unknown state — has not. */
+    val active: Boolean get() = state == "enabled"
+}
+
 /** A player queue: what's streaming, and how the queue itself is set up. */
 @Immutable
 data class MaQueue(
@@ -182,18 +205,19 @@ data class MaQueue(
      * This is the stream job's **input** — the file as the provider hands it over —
      * not what any speaker is fed. The app used to label it "Playing", which is why
      * the codec badge always agreed with the source no matter how much converting
-     * MA did on the way out. See [outputFormats].
+     * MA did on the way out. See [dsp].
      */
     val inputFormat: StreamQuality? = null,
     /**
-     * What each player is actually fed, keyed by player_id, off
-     * `current_item.streamdetails.dsp[<player_id>].output_format`.
+     * MA's per-player DSP pipeline, keyed by player_id, off
+     * `current_item.streamdetails.dsp`.
      *
-     * MA runs a per-player DSP pipeline and reports its output format there; that —
-     * and only that — is the honest answer to "what is this speaker receiving".
-     * Resolve it with [outputFor] rather than indexing directly.
+     * Each entry carries both the format that player is actually fed — that, and only
+     * that, is the honest answer to "what is this speaker receiving" — and whether the
+     * filter chain ran. Resolve with [outputFor] / [dspFor] rather than indexing
+     * directly; a synced member may have no entry of its own.
      */
-    val outputFormats: Map<String, StreamQuality> = emptyMap(),
+    val dsp: Map<String, MaDspDetails> = emptyMap(),
     val shuffleEnabled: Boolean = false,
     val repeatMode: String = "off",   // off | one | all
     val currentIndex: Int? = null,
@@ -227,20 +251,37 @@ data class MaQueue(
     val streamProvider: String? = null,
 ) {
     /**
-     * The format [playerId] is being fed, falling back until something is knowable.
+     * Which entry speaks for [playerId], falling back until something is knowable.
      *
      * A synced member decodes on its own hardware and MA can hand it a different
      * format from the leader's, so its own entry wins. Failing that: the leader's
-     * (some servers only file one entry, under the queue's own id), then a lone
-     * entry when there is no ambiguity to resolve, and finally the input format —
-     * which is at least honest about the file, if not about the wire.
+     * (some servers only file one entry, under the queue's own id), then a lone entry
+     * when there is no ambiguity to resolve.
+     *
+     * Shared by [outputFor] and [dspFor] so the two can never disagree about whose
+     * entry they are reading.
+     */
+    private fun <T : Any> resolve(entries: Map<String, T>, playerId: String, leaderId: String?): T? =
+        entries[playerId]
+            ?: leaderId?.let { entries[it] }
+            ?: entries[queueId]
+            ?: entries.values.singleOrNull()
+
+    /**
+     * The format [playerId] is being fed, or the input format — which is at least
+     * honest about the file, if not about the wire.
+     *
+     * Resolved over the entries that actually carry a format. An entry may now arrive
+     * with a `state` and no `output_format`, and letting one of those win the "lone
+     * entry" rung would report nothing for a player MA is demonstrably feeding.
      */
     fun outputFor(playerId: String, leaderId: String? = null): StreamQuality? =
-        outputFormats[playerId]
-            ?: leaderId?.let { outputFormats[it] }
-            ?: outputFormats[queueId]
-            ?: outputFormats.values.singleOrNull()
+        resolve(dsp.filterValues { it.outputFormat != null }, playerId, leaderId)?.outputFormat
             ?: inputFormat
+
+    /** What MA's pipeline did for [playerId], including whether it ran. */
+    fun dspFor(playerId: String, leaderId: String? = null): MaDspDetails? =
+        resolve(dsp, playerId, leaderId)
 }
 
 /** Grouped search hits. */
@@ -512,11 +553,11 @@ object MaParse {
             val o = el as? JsonObject ?: return@mapNotNull null
             val id = o["queue_id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
             val current = o["current_item"] as? JsonObject
-            val (inputFormat, outputFormats) = streamFormats(current)
+            val (inputFormat, dsp) = streamFormats(current)
             MaQueue(
                 queueId = id,
                 inputFormat = inputFormat,
-                outputFormats = outputFormats,
+                dsp = dsp,
                 shuffleEnabled = o["shuffle_enabled"]?.jsonPrimitive?.booleanOrNull ?: false,
                 repeatMode = o["repeat_mode"]?.jsonPrimitive?.contentOrNull ?: "off",
                 currentIndex = o["current_index"]?.jsonPrimitive?.intOrNull,
@@ -566,22 +607,37 @@ object MaParse {
      * former is why the codec badge always matched the source file.
      *
      * A `dsp` entry whose `state` is disabled still carries an output format, and
-     * that is still the honest answer — no filtering on state.
+     * that is still the honest answer — **no filtering on state**. That rule survives
+     * `state` becoming readable: the temptation is to drop disabled entries now that
+     * there is something to drop them by, and doing so brings back the badge that
+     * always agreed with the source file. The state is reported *alongside* the
+     * format, never instead of it.
+     *
+     * An entry is kept even when it carries no `output_format` at all, so a bare
+     * `state` still reaches the UI. [MaQueue.outputFor] filters those back out.
      */
-    private fun streamFormats(currentItem: JsonElement?): Pair<StreamQuality?, Map<String, StreamQuality>> {
+    private fun streamFormats(currentItem: JsonElement?): Pair<StreamQuality?, Map<String, MaDspDetails>> {
         val sd = (currentItem as? JsonObject)?.get("streamdetails") as? JsonObject
             ?: return null to emptyMap()
         // MA has moved these between the streamdetails root and a nested
         // `audio_format` across versions, so both shapes are accepted.
         val input = audioFormatQuality(sd["audio_format"] as? JsonObject) ?: audioFormatQuality(sd)
         val dsp = sd["dsp"] as? JsonObject ?: return input to emptyMap()
-        val outputs = buildMap {
+        val entries = buildMap {
             for ((playerId, entry) in dsp) {
                 val o = entry as? JsonObject ?: continue
-                audioFormatQuality(o["output_format"] as? JsonObject)?.let { put(playerId, it) }
+                put(
+                    playerId,
+                    MaDspDetails(
+                        state = str(o["state"]),
+                        outputFormat = audioFormatQuality(o["output_format"] as? JsonObject),
+                        filterCount = (o["filters"] as? JsonArray)?.size ?: 0,
+                        outputLimiter = (o["output_limiter"] as? JsonPrimitive)?.booleanOrNull ?: false,
+                    ),
+                )
             }
         }
-        return input to outputs
+        return input to entries
     }
 
     /**

@@ -38,6 +38,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.engabd.sendpin.audio.ReplayGain
 import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.data.AppSettings
+import com.engabd.sendpin.ma.MaDspDetails
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
@@ -296,7 +297,7 @@ fun NowPlayingScreen(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
-                        TappableQualityChip(playing = st.quality, source = st.sourceQuality, provider = st.streamProvider, localSession = st.isLocalSession)
+                        TappableQualityChip(playing = st.quality, source = st.sourceQuality, provider = st.streamProvider, localSession = st.isLocalSession, dsp = st.dsp)
                         PlayButton(st.isPlaying) { viewModel.playPause() }
                     }
                     TransportIcon(Icons.Default.SkipNext, "Next", 26.dp) { viewModel.next() }
@@ -415,6 +416,8 @@ fun TappableQualityChip(
     provider: String? = null,
     /** This phone is decoding, so its ReplayGain setting is the one in effect. */
     localSession: Boolean = false,
+    /** What MA's per-player DSP did to this stream; null on the local path. */
+    dsp: MaDspDetails? = null,
 ) {
     var showDetail by remember { mutableStateOf(false) }
 
@@ -456,6 +459,7 @@ fun TappableQualityChip(
                         source = source,
                         provider = provider,
                         localSession = localSession,
+                        dsp = dsp,
                     )
                 }
             }
@@ -470,6 +474,7 @@ private fun QualityDetailCard(
     source: StreamQuality?,
     provider: String? = null,
     localSession: Boolean = false,
+    dsp: MaDspDetails? = null,
 ) {
     val accent = LocalAccent.current
     // Only meaningful on the local path — Music Assistant does its own gain
@@ -533,6 +538,22 @@ private fun QualityDetailCard(
             Text(
                 "Music Assistant fetched this from $it",
                 color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
+            )
+        }
+        // Whether MA's own equaliser is in the path, off `streamdetails.dsp[…].state`.
+        // Worth saying here because the DSP screen can be full of carefully set bands
+        // that the server is not applying, and nothing else on the phone would tell you.
+        val dspState = dsp?.state
+        if (dsp != null && dspState != null && !localSession) {
+            Text(
+                when (dspState) {
+                    "enabled" -> "DSP active" +
+                        if (dsp.filterCount > 0) " - ${dsp.filterCount} filters" else ""
+                    "disabled" -> "DSP not applied to this stream"
+                    else -> "DSP ${dspState.replace('_', ' ')}"
+                },
+                color = if (dsp.active) TextMuted else WarnAmber,
+                fontFamily = AppFont, fontSize = 11.sp,
             )
         }
     }

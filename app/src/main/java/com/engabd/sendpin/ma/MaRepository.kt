@@ -727,31 +727,38 @@ class MaRepository(val api: MaApiClient) {
     // --- per-player DSP (EQ, tone control, gain) ---------------------------
 
     /**
-     * The DSP configuration for [playerId]. Returns a default config (disabled)
-     * when the player has none set.
+     * The DSP configuration for [playerId], or null when the player has none set.
+     *
+     * **Throws** [MaApiException] rather than swallowing it, unlike most reads here.
+     * A refusal and an unconfigured player are different answers, and collapsing both
+     * to null is what let "the EQ does nothing" go undiagnosed: the caller turned null
+     * into a default config, so a rejected request rendered as a clean, empty,
+     * entirely believable equaliser. Null now means only what it says.
+     *
+     * `as? JsonObject`, not `.jsonObject` — the latter *throws* on an unexpected
+     * shape, which is the crash [MaParse.str] documents.
      */
     suspend fun getDspConfig(playerId: String): DspConfig? {
-        val res = runCatching {
-            api.sendCommand("config/players/dsp/get", buildJsonObject {
-                put("player_id", playerId)
-            })
-        }.getOrNull()?.jsonObject ?: return null
-        return DspParse.config(res)
+        val res = api.sendCommand("config/players/dsp/get", buildJsonObject {
+            put("player_id", playerId)
+        })
+        return (res as? JsonObject)?.let { DspParse.config(it) }
     }
 
     /**
-     * Save a DSP config for [playerId]. Admin-only on the server side.
-     * MA validates the config and applies it live — changes take effect
-     * without restarting playback.
+     * Save a DSP config for [playerId]. **Admin-only on the server side** — a
+     * non-admin login is refused every time, which is the first thing to rule out
+     * when the equaliser is inaudible.
+     *
+     * Throws [MaApiException] carrying the server's own message and error code; see
+     * [getDspConfig] for why this one doesn't swallow.
      */
     suspend fun saveDspConfig(playerId: String, config: DspConfig): DspConfig? {
-        val res = runCatching {
-            api.sendCommand("config/players/dsp/save", buildJsonObject {
-                put("player_id", playerId)
-                put("config", DspParse.toJson(config))
-            })
-        }.getOrNull()?.jsonObject ?: return null
-        return DspParse.config(res)
+        val res = api.sendCommand("config/players/dsp/save", buildJsonObject {
+            put("player_id", playerId)
+            put("config", DspParse.toJson(config))
+        })
+        return (res as? JsonObject)?.let { DspParse.config(it) }
     }
 
     // --- DSP presets (reusable configs across players) ---------------------

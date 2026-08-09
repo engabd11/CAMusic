@@ -10,6 +10,7 @@ import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.PlayerIdentity
 import com.engabd.sendpin.ma.MaApiClient
+import com.engabd.sendpin.ma.MaDspDetails
 import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ma.MaLyrics
 import com.engabd.sendpin.ma.MaNowPlaying
@@ -98,6 +99,15 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         val isLocalSession: Boolean = false,
         /** Radio mode: MA auto-generates a radio queue after the current one ends. */
         val radioMode: Boolean = false,
+        /**
+         * What Music Assistant's per-player DSP did to this stream, and whether it ran
+         * at all — the server's own `streamdetails.dsp[<player_id>].state`.
+         *
+         * MA-path only, and deliberately left null on the local path: the equaliser is
+         * a server-side pipeline, so a phone playing straight from Navidrome has no DSP
+         * for MA to have an opinion about.
+         */
+        val dsp: MaDspDetails? = null,
     )
 
     /** A panel's load state — the UI has to tell "empty" from "not fetched yet". */
@@ -416,6 +426,9 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             powered = p?.powered ?: true,
             canPower = p?.let { "power" in it.supportedFeatures } ?: false,
             radioMode = _radioMode.value,
+            // Same entry [outputQuality] came from, read for whether the chain ran
+            // rather than for what came out of it.
+            dsp = queue?.dspFor(playerId = id, leaderId = streamId),
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, State())
 
