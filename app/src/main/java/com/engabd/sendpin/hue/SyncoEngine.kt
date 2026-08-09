@@ -1045,8 +1045,14 @@ class SyncoEngine(
             // frequency bands.
             val mel = frame.melbank
             val melLevel = if (mel.isNotEmpty() && mel.size >= MELBANK_BINS) {
+                val pan = frame.pan
+                val usePan = p.panGain > 0f && pan.size >= info.melHi
                 var sum = 0f
-                for (i in info.melLo until info.melHi) sum += mel[i]
+                for (i in info.melLo until info.melHi) {
+                    var v = mel[i]
+                    if (usePan) v *= (1f + p.panGain * pan[i] * info.side).coerceIn(0f, 2f)
+                    sum += v
+                }
                 sum / (info.melHi - info.melLo)
             } else 0f
 
@@ -1072,8 +1078,19 @@ class SyncoEngine(
             // slow per-bin baseline, so a held note settles and stops popping
             // while a repeated hit keeps firing.
             if (p.spectralPop > 0f && mel.isNotEmpty()) {
+                // Pan-weighted when the source is stereo: a hit panned left pops
+                // the left of the room harder than the right. The weight is
+                // clamped to 0..2 and divided by the bin count rather than by the
+                // weight sum, so a centred mix comes out exactly as the unweighted
+                // mean and nothing changes for mono material.
+                val pan = frame.pan
+                val usePan = p.panGain > 0f && pan.size >= info.melHi
                 var pop = 0f
-                for (i in info.melLo until min(info.melHi, MELBANK_BINS)) pop += melTransient[i]
+                for (i in info.melLo until min(info.melHi, MELBANK_BINS)) {
+                    var v = melTransient[i]
+                    if (usePan) v *= (1f + p.panGain * pan[i] * info.side).coerceIn(0f, 2f)
+                    pop += v
+                }
                 pop /= (info.melHi - info.melLo)
                 target += p.spectralPop * pop * musicGate
             }

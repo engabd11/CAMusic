@@ -157,6 +157,66 @@ class AudioAnalyzerTest {
     }
 
     @Test
+    fun `stereo analysis matches mono for an identical pair`() {
+        // The mono-parity invariant. Everything except pan must come out exactly
+        // as the (L+R)/2 downmix would, or turning on stereo silently changes
+        // every other feature and the whole port drifts.
+        val sig = burstTrack(60f, 120f, 4f)
+        val mono = AudioAnalyzer()
+        val stereo = AudioAnalyzer()
+        val hop = FloatArray(ANALYSIS_HOP)
+        for (k in 0 until sig.size / ANALYSIS_HOP) {
+            System.arraycopy(sig, k * ANALYSIS_HOP, hop, 0, ANALYSIS_HOP)
+            val a = mono.push(hop)
+            val b = stereo.pushStereo(hop, hop)
+            assertTrue(a.energy == b.energy, "energy diverged at hop $k")
+            assertTrue(a.beat == b.beat && a.bassBeat == b.bassBeat, "onsets diverged at hop $k")
+            assertTrue(a.salience == b.salience, "salience diverged at hop $k")
+        }
+    }
+
+    @Test
+    fun `pan follows the side the sound is on`() {
+        val sr = ANALYSIS_SAMPLE_RATE
+        val n = (sr * 3f).toInt()
+        val tone = FloatArray(n) { i -> (sin(2.0 * PI * 1000.0 * i / sr) * 0.6).toFloat() }
+        val silent = FloatArray(n)
+
+        fun panOf(l: FloatArray, r: FloatArray): Float {
+            val a = AudioAnalyzer()
+            val hl = FloatArray(ANALYSIS_HOP)
+            val hr = FloatArray(ANALYSIS_HOP)
+            var last = AnalysisFrame()
+            for (k in 0 until n / ANALYSIS_HOP) {
+                System.arraycopy(l, k * ANALYSIS_HOP, hl, 0, ANALYSIS_HOP)
+                System.arraycopy(r, k * ANALYSIS_HOP, hr, 0, ANALYSIS_HOP)
+                last = a.pushStereo(hl, hr)
+            }
+            // Average across the bins carrying the tone.
+            val p = last.pan
+            return if (p.isEmpty()) 0f else p.average().toFloat()
+        }
+
+        val left = panOf(tone, silent)
+        val right = panOf(silent, tone)
+        val centre = panOf(tone, tone)
+        assertTrue(left < -0.3f, "a hard-left tone reported pan $left")
+        assertTrue(right > 0.3f, "a hard-right tone reported pan $right")
+        assertTrue(abs(centre) < 0.1f, "a centred tone reported pan $centre")
+    }
+
+    @Test
+    fun `silence leaves pan unknown rather than centred`() {
+        // Empty means "no idea", which is different from "dead centre" — the
+        // engine has to be able to tell those apart.
+        val a = AudioAnalyzer()
+        val hop = FloatArray(ANALYSIS_HOP)
+        var last = AnalysisFrame()
+        repeat(50) { last = a.pushStereo(hop, hop) }
+        assertTrue(last.pan.isEmpty(), "silence reported a pan of ${last.pan.toList()}")
+    }
+
+    @Test
     fun `reset clears state between tracks`() {
         val a = AudioAnalyzer()
         val sig = burstTrack(60f, 120f, 6f)

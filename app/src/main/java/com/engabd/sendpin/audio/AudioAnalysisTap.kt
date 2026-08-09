@@ -12,8 +12,10 @@ import java.util.concurrent.locks.LockSupport
  * Taps the ExoPlayer audio chain for Light Sync analysis.
  *
  * Sits in the render pipeline as a pass-through [AudioProcessor]: audio flows
- * through unchanged, while a mono copy is downsampled to the analysis rate
- * (22050 Hz) and handed to [AudioAnalyzer].
+ * through unchanged, while a stereo copy is downsampled to the analysis rate
+ * (22050 Hz) and handed to [AudioAnalyzer]. Both channels are carried rather
+ * than a downmix, because where a hit sits in the stereo field is what decides
+ * which side of the room reacts to it.
  *
  * **Nothing but the copy and the downsample happens on the playback thread.**
  * That thread is what keeps the AudioTrack fed; stall it and the track
@@ -83,16 +85,18 @@ class AudioAnalysisTap : BaseAudioProcessor() {
      */
     private var resamplePhase = 0f
 
-    /** Box-filter accumulator over the input frames feeding one output sample. */
-    private var accSum = 0f
+    /** Box-filter accumulators over the input frames feeding one output sample. */
+    private var accSumL = 0f
+    private var accSumR = 0f
     private var accCount = 0
 
-    /** Last emitted output sample, held when upsampling (see [feedRing]). */
-    private var lastEmitted = 0f
+    /** Last emitted output sample per channel, held when upsampling. */
+    private var lastL = 0f
+    private var lastR = 0f
 
     // ── The ring ──────────────────────────────────────────────────────────
 
-    private val ring = MonoRing(RING_CAPACITY)
+    private val ring = StereoRing(RING_CAPACITY)
 
     /**
      * Analysis samples lost to ring overrun since construction. Expected to stay
@@ -162,9 +166,11 @@ class AudioAnalysisTap : BaseAudioProcessor() {
         // second of stale samples, and tell the analysis thread to start clean.
         ring.clear()
         resamplePhase = 0f
-        accSum = 0f
+        accSumL = 0f
+        accSumR = 0f
         accCount = 0
-        lastEmitted = 0f
+        lastL = 0f
+        lastR = 0f
     }
 
     override fun onReset() {
@@ -195,28 +201,36 @@ class AudioAnalysisTap : BaseAudioProcessor() {
 
         var offset = start
         for (f in 0 until frames) {
-            var sum = 0f
+            // Left and right kept apart. A mono or multichannel source folds to
+            // the same value on both sides, so downstream never has to care.
+            var l: Float
+            var r: Float
             if (encoding == C.ENCODING_PCM_FLOAT) {
-                for (c in 0 until ch) sum += buf.getFloat(offset + c * 4)
+                l = buf.getFloat(offset)
+                r = if (ch > 1) buf.getFloat(offset + 4) else l
             } else {
-                for (c in 0 until ch) sum += buf.getShort(offset + c * 2) / 32768f
+                l = buf.getShort(offset) / 32768f
+                r = if (ch > 1) buf.getShort(offset + 2) / 32768f else l
             }
             offset += frameBytes
 
-            accSum += sum / ch
+            accSumL += l
+            accSumR += r
             accCount++
             resamplePhase += 1f
             while (resamplePhase >= ratio) {
                 resamplePhase -= ratio
                 if (accCount > 0) {
-                    lastEmitted = accSum / accCount
-                    accSum = 0f
+                    lastL = accSumL / accCount
+                    lastR = accSumR / accCount
+                    accSumL = 0f
+                    accSumR = 0f
                     accCount = 0
                 }
                 // When ratio < 1 the source is slower than the analysis rate and
                 // one input frame owes more than one output sample; repeating the
                 // value is a zero-order hold, which beats emitting a gap.
-                ring.write(lastEmitted)
+                ring.write(lastL, lastR)
             }
         }
     }
@@ -253,7 +267,8 @@ class AudioAnalysisTap : BaseAudioProcessor() {
      */
     private fun analysisLoop() {
         val analyzer = AudioAnalyzer()
-        val hopBuf = FloatArray(ANALYSIS_HOP)
+        val hopL = FloatArray(ANALYSIS_HOP)
+        val hopR = FloatArray(ANALYSIS_HOP)
         var seenClear = ring.clearSeq
         onAnalysisReset?.invoke()
         while (analysisRunning && !Thread.currentThread().isInterrupted) {
@@ -265,20 +280,20 @@ class AudioAnalysisTap : BaseAudioProcessor() {
                 onAnalysisReset?.invoke()
                 continue
             }
-            if (!ring.read(hopBuf)) {
+            if (!ring.read(hopL, hopR)) {
                 // Hops arrive every ~20 ms; parking briefly costs far less than
                 // spinning and is well inside the tap's lead over the speaker.
                 LockSupport.parkNanos(IDLE_PARK_NANOS)
                 continue
             }
-            // push() copies out of hopBuf immediately, so the buffer is reused.
-            val frame = analyzer.push(hopBuf)
+            // pushStereo copies out of both buffers immediately, so they are reused.
+            val frame = analyzer.pushStereo(hopL, hopR)
             onFrame?.invoke(frame)
         }
     }
 
     /**
-     * Lock-free single-producer/single-consumer float ring.
+     * Lock-free single-producer/single-consumer float ring, interleaved stereo.
      *
      * The producer is the playback thread; the consumer is the analysis thread.
      * On overrun the producer drops the incoming sample rather than blocking —
@@ -286,7 +301,7 @@ class AudioAnalysisTap : BaseAudioProcessor() {
      * the consumer has fallen more than [RING_CAPACITY] samples behind, which at
      * 22050 Hz is over a second and should not happen.
      */
-    private class MonoRing(capacity: Int) {
+    private class StereoRing(capacity: Int) {
         init {
             require(capacity > 0 && capacity and (capacity - 1) == 0) {
                 "ring capacity must be a power of two, got $capacity"
@@ -317,15 +332,24 @@ class AudioAnalysisTap : BaseAudioProcessor() {
         var dropped = 0L
             private set
 
-        /** Producer side. */
-        fun write(v: Float) {
+        /**
+         * Producer side. One stereo frame per call, interleaved.
+         *
+         * Stereo rather than the pre-downmixed mono this used to carry: the
+         * analyzer needs both channels to work out where in the room a hit sat,
+         * and downmixing in the tap threw that away before anything could see
+         * it. A mono source writes the same value twice, which costs a slot and
+         * keeps the reader uniform.
+         */
+        fun write(l: Float, r: Float) {
             val w = writeIdx
-            if (w - readIdx >= buf.size) {
+            if (w - readIdx >= buf.size - 1) {
                 dropped++  // overrun: drop rather than block, audio comes first
                 return
             }
-            buf[(w and mask.toLong()).toInt()] = v
-            writeIdx = w + 1  // release: publishes the slot written above
+            buf[(w and mask.toLong()).toInt()] = l
+            buf[((w + 1) and mask.toLong()).toInt()] = r
+            writeIdx = w + 2  // release: publishes both slots written above
         }
 
         /** Producer side. */
@@ -350,12 +374,16 @@ class AudioAnalysisTap : BaseAudioProcessor() {
             readIdx = writeIdx
         }
 
-        /** Consumer side: fill [out] if a full hop is available. */
-        fun read(out: FloatArray): Boolean {
+        /** Consumer side: fill both channels if a full hop is available. */
+        fun read(outL: FloatArray, outR: FloatArray): Boolean {
             val r = readIdx
-            if (writeIdx - r < out.size) return false  // acquire
-            for (i in out.indices) out[i] = buf[((r + i) and mask.toLong()).toInt()]
-            readIdx = r + out.size
+            val need = outL.size * 2L
+            if (writeIdx - r < need) return false  // acquire
+            for (i in outL.indices) {
+                outL[i] = buf[((r + 2 * i) and mask.toLong()).toInt()]
+                outR[i] = buf[((r + 2 * i + 1) and mask.toLong()).toInt()]
+            }
+            readIdx = r + need
             return true
         }
     }
@@ -365,12 +393,12 @@ class AudioAnalysisTap : BaseAudioProcessor() {
         private const val ANALYSIS_THREAD_NAME = "light-sync-analysis"
 
         /**
-         * ~3 s at the analysis rate; a power of two for cheap index masking.
-         * 256 KB buys enough headroom that a briefly descheduled analysis thread
-         * on a loaded phone cannot lose audio, which is worth far more than the
-         * memory.
+         * ~3 s of *stereo* at the analysis rate — two floats per frame — and a
+         * power of two for cheap index masking. Half a megabyte buys enough
+         * headroom that a briefly descheduled analysis thread on a loaded phone
+         * cannot lose audio, which is worth far more than the memory.
          */
-        private const val RING_CAPACITY = 65_536
+        private const val RING_CAPACITY = 131_072
 
         /** Hop period is ~20 ms, so a 5 ms park adds negligible latency. */
         private const val IDLE_PARK_NANOS = 5_000_000L

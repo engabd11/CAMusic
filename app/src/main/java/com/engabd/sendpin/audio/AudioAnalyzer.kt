@@ -101,6 +101,11 @@ data class AnalysisFrame(
     val salience: Float = 1f,
     val onsetWidth: Float = 1f,
     val melbank: FloatArray = FloatArray(0),
+    /**
+     * Per-melbank-bin stereo position, -1 hard left to +1 hard right. Empty on
+     * a mono source or a silent frame, which is how callers know not to use it.
+     */
+    val pan: FloatArray = FloatArray(0),
     val centroid: Float = 0f,
 )
 
@@ -228,6 +233,15 @@ class AudioAnalyzer(
     }
     private val fft = Fft(NFFT)
 
+    /**
+     * A second transform for the stereo channels. Separate from [fft] because
+     * that one hands back a reused scratch buffer, so a third call would
+     * overwrite the mono spectrum the frame is still being built from.
+     */
+    private val fftSide = Fft(NFFT)
+    private val bufL = FloatArray(window)
+    private val bufR = FloatArray(window)
+
     // Precomputed bin frequencies
     private val freqs: FloatArray = FloatArray(NFFT / 2 + 1) { i ->
         i.toFloat() * sampleRate.toFloat() / NFFT.toFloat()
@@ -260,6 +274,12 @@ class AudioAnalyzer(
     private val melStarts: IntArray = melFilterbank.first
     private val melCounts: IntArray = melFilterbank.second
     private val nMel: Int = melStarts.size
+
+    /**
+     * ~100 ms smoothing on the pan estimate. Declared after [nMel] because it is
+     * sized from it, and Kotlin initialises properties in declaration order.
+     */
+    private val panSmooth = ExpFilter(FloatArray(nMel), alphaRise = 0.25f, alphaDecay = 0.25f)
     private val melAgc = Array(nMel) { Agc(MEL_AGC_DECAY) }
     private val melFilter = ExpFilter(FloatArray(nMel), alphaRise = 0.85f, alphaDecay = 0.20f)
 
@@ -291,6 +311,50 @@ class AudioAnalyzer(
     /**
      * Process one hop of mono float32 samples and return features.
      */
+    /**
+     * Process one stereo hop: mono features from the mid, plus per-bin pan.
+     *
+     * The frame is exactly what [push] returns for the (L+R)/2 downmix — the
+     * mono-parity invariant, so nothing about the existing behaviour shifts when
+     * a source happens to be stereo — with [AnalysisFrame.pan] filled in from
+     * two extra transforms. A silent frame leaves pan empty, like every other
+     * optional feature, so callers can tell "centred" from "unknown".
+     */
+    fun pushStereo(hopL: FloatArray, hopR: FloatArray): AnalysisFrame {
+        val n = min(hopL.size, hopR.size)
+        val mid = FloatArray(n) { 0.5f * (hopL[it] + hopR[it]) }
+        val frame = push(mid)
+        if (frame.salience <= 0f) return frame  // noise-gated: pan stays empty
+
+        slide(bufL, hopL)
+        slide(bufR, hopR)
+        val melL = melOf(bufL)
+        val melR = melOf(bufR)
+        val pan = FloatArray(nMel) { i ->
+            ((melR[i] - melL[i]) / (melR[i] + melL[i] + 1e-9f)).coerceIn(-1f, 1f)
+        }
+        return frame.copy(pan = panSmooth.update(pan).copyOf())
+    }
+
+    /** Slide one hop into a window buffer, oldest samples falling off the front. */
+    private fun slide(buf: FloatArray, hop: FloatArray) {
+        val n = hop.size
+        if (n >= window) {
+            System.arraycopy(hop, n - window, buf, 0, window)
+        } else {
+            System.arraycopy(buf, n, buf, 0, window - n)
+            System.arraycopy(hop, 0, buf, window - n, n)
+        }
+    }
+
+    /** Melbank means of one channel's window. Uses [fftSide], not [fft]. */
+    private fun melOf(buf: FloatArray): FloatArray {
+        val windowed = FloatArray(window) { buf[it] * hann[it] }
+        val mag = fftSide.magnitudePower(windowed)
+        for (i in mag.indices) mag[i] = sqrt(mag[i])
+        return bandMeans(mag, melStarts, melCounts)
+    }
+
     fun push(hopData: FloatArray): AnalysisFrame {
         val n = hopData.size
         if (n >= window) {
@@ -515,6 +579,8 @@ class AudioAnalyzer(
         melFilter.reset(FloatArray(nMel))
         prevLog = null; prevLin = null
         midEprev = 0f; midRiseN = 0; midAttackOk = false; midAttackFlux = 0f
+        java.util.Arrays.fill(bufL, 0f); java.util.Arrays.fill(bufR, 0f)
+        panSmooth.reset(FloatArray(nMel))
         fluxHist.clear(); bassHist.clear(); midHist.clear()
         sinceBeat = ONSET_REFRACTORY; sinceBass = ONSET_REFRACTORY; sinceMid = ONSET_REFRACTORY
         rmsSmooth = 0f; loudRef = SALIENCE_MIN_REF; bassSlow = 0f; midSlow = 0f
