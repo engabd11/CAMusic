@@ -438,39 +438,6 @@ internal fun paletteOf(bmp: Bitmap): AlbumPalette? {
 }
 
 /**
- * Colours and dwell weights for Light Sync, straight off the extraction.
- *
- * Deliberately *not* [paletteOf]: that lifts lightness and saturation so swatches
- * stay legible against the app's black background, which is the wrong correction
- * for bulbs. A lamp has its own brightness channel, and pre-brightening the
- * colour only distorts the hue the room is trying to show. Light Sync wants the
- * cover's colours as extracted, plus how much of the cover each one is.
- */
-internal fun lightSyncPalette(bmp: Bitmap): Pair<List<FloatArray>, List<Float>>? {
-    val small = if (bmp.width == SAMPLE && bmp.height == SAMPLE) bmp
-    else Bitmap.createScaledBitmap(bmp, SAMPLE, SAMPLE, true)
-    val px = IntArray(SAMPLE * SAMPLE)
-    small.getPixels(px, 0, SAMPLE, 0, 0, SAMPLE, SAMPLE)
-    if (small !== bmp) small.recycle()
-
-    val pixels = ArrayList<FloatArray>(px.size)
-    for (p in px) {
-        pixels.add(
-            floatArrayOf(
-                ((p shr 16) and 0xFF) / 255f,
-                ((p shr 8) and 0xFF) / 255f,
-                (p and 0xFF) / 255f,
-            )
-        )
-    }
-    val e = kmeansPalette(pixels, k = 5) ?: return null
-    if (e.swatches.isEmpty()) return null
-    val weights = if (e.populations.size == e.swatches.size) e.populations
-    else List(e.swatches.size) { 1f }
-    return e.swatches to weights
-}
-
-/**
  * Turn an [Extraction] into the app's palette: legible against true black, without
  * inventing colour that isn't on the cover.
  *

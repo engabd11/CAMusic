@@ -17,7 +17,6 @@ import coil.request.ImageRequest
 import coil.request.SuccessResult
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.data.Crypto
-import com.engabd.sendpin.ui.design.lightSyncPalette
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlin.math.abs
@@ -538,10 +537,12 @@ class DirectLightSync(
      * Decode the cover at [url] and hand its colours, with their dwell weights,
      * to the engine.
      *
-     * Uses the raw extraction rather than the app's UI palette: that one lifts
-     * lightness and saturation so swatches stay legible against a black
-     * background, which is the wrong correction for a bulb that has its own
-     * brightness channel.
+     * Uses syncoV2's own extraction, not the app's UI palette. The UI one ranks
+     * candidates by `chroma * sqrt(population)` so a small vivid splash outranks
+     * a large flat field, and then lifts lightness and saturation for legibility
+     * against black. Both are right for picking a UI accent and wrong for
+     * lighting a room — they surface colours the sleeve barely contains, which
+     * is what "the album colours are wrong" was.
      */
     private suspend fun applyAlbumArt(url: String?) = withContext(Dispatchers.IO) {
         if (url.isNullOrBlank()) {
@@ -555,12 +556,8 @@ class DirectLightSync(
                 .build()
             val result = context.imageLoader.execute(request)
             val bitmap = (result as? SuccessResult)?.drawable?.toBitmap() ?: return@withContext
-            val extracted = lightSyncPalette(bitmap) ?: return@withContext
-            val (swatches, weights) = extracted
-            engine?.setAlbumColors(
-                swatches.map { Triple(it[0], it[1], it[2]) },
-                weights,
-            )
+            val extracted = extractAlbumColours(bitmap) ?: return@withContext
+            engine?.setAlbumColors(extracted.colors, extracted.weights)
         } catch (e: Exception) {
             // A cover that will not load is not a reason to stop the show; the
             // engine keeps whatever palette it already had.
