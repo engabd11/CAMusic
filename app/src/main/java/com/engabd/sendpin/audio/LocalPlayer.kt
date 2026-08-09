@@ -2,6 +2,7 @@ package com.engabd.sendpin.audio
 
 import android.content.Context
 import android.media.AudioDeviceInfo
+import com.engabd.sendpin.data.AppSettings
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -261,25 +262,34 @@ class LocalPlayer(private val context: Context) {
             .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
             .build()
 
-        // Deliberately stock.
+        // Float output: off unless the listener has asked for bit-perfect.
         //
-        // This used to set `setEnableAudioFloatOutput(true)`, to keep 24-bit sources
-        // off the sink's 16-bit requantisation, and `EXTENSION_RENDERER_MODE_PREFER`.
-        // Both were added on theory. Float output is documented as experimental, is
-        // known to misbehave on some sinks at rates other than the device's native
-        // one — this phone runs at 48 kHz — and 44.1/16 came back audibly distorted
-        // while 48 kHz was clean, which is exactly that shape. The preferred
-        // extension mode was dead configuration: no decoder extensions are in this
-        // build, so it only ever cost some failed reflection at startup.
+        // This was once set unconditionally, on theory, and reverted: float output is
+        // documented as experimental, misbehaves on some sinks at rates other than the
+        // device's native one, and 44.1/16 came back audibly distorted on a 48 kHz
+        // phone while 48 kHz was clean — exactly that shape. (`EXTENSION_RENDERER_MODE_PREFER`
+        // went with it and has not come back: no decoder extensions are in this build,
+        // so it only ever cost failed reflection at startup.)
         //
-        // Neither belongs here without a device to prove it on. Float output is worth
-        // revisiting behind the bit-perfect setting, measured, not assumed.
+        // Without it, a 24/96 FLAC from Navidrome is requantised to 16 on the way to
+        // the sink, which makes the whole hi-res path decorative on this backend — the
+        // Sendspin path has honoured `bitPerfect24Bit` for a while and this one never
+        // read it at all. So it is back, gated on the setting, which is the listener
+        // saying they want the hi-res path and will notice if it misbehaves.
+        //
+        // Read synchronously rather than from the settings Flow: this is a renderer
+        // factory option, fixed when the player is constructed, so there is no later
+        // moment to apply it. A change therefore takes effect on the next player build
+        // — Settings says so.
+        val bitPerfect = AppSettings(context).bootBitPerfect
+
         // The Light Sync audio analysis tap is injected via TapRenderersFactory,
         // which overrides buildAudioSink to install the tap in the audio sink's
         // processor chain. It stays in the chain whether or not Light Sync is on,
         // because the sink decides membership once per configuration; the cost
         // when off is a buffer copy per callback and nothing else.
         val renderers = TapRenderersFactory(context, audioAnalysisTap, audioLead)
+            .setEnableAudioFloatOutput(bitPerfect) as TapRenderersFactory
 
         // The defaults are sized for video-on-mobile-data. This is a lossless file
         // over a LAN, where the sensible trade is a deeper buffer: a 24/96 FLAC is

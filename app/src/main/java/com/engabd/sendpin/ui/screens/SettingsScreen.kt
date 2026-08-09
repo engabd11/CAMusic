@@ -767,6 +767,15 @@ fun SettingsScreen(
                                             "Reconnect to apply.",
                                         color = TextFaint, style = MaterialTheme.typography.bodySmall,
                                     )
+                                    Text(
+                                        "On the Navidrome player this also turns on float output, so a 24-bit " +
+                                            "file isn't requantised to 16 on its way to the sink. That is fixed " +
+                                            "when the player is built, so it applies next time the app starts. " +
+                                            "It is off by default because float output is experimental and has " +
+                                            "been heard to distort 44.1 kHz material on phones whose mixer runs " +
+                                            "at 48 - if that happens, turn this back off.",
+                                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                                    )
                                     Box(Modifier.fillMaxWidth().height(1.dp).background(HairlineSoft))
                                     Text(
                                         "ReplayGain",

@@ -389,8 +389,21 @@ class AppSettings(private val context: Context) {
 
     /** Takes effect on the next stream/start — the AudioTrack is built per stream. */
     suspend fun setBitPerfect24Bit(value: Boolean) {
+        // Mirrored into the synchronous store for the same reason the theme is: the
+        // local player has to know before it builds its renderers, and DataStore is a
+        // Flow. See [bootBitPerfect].
+        bootPrefs.edit().putBoolean("bit_perfect", value).apply()
         context.dataStore.edit { it[BIT_PERFECT] = value }
     }
+
+    /**
+     * Bit-perfect, readable without a coroutine.
+     *
+     * ExoPlayer's float output is a *renderer factory* setting, fixed when the player
+     * is constructed — there is no per-track switch. So the local player needs the
+     * answer synchronously at build time, which is what this is for.
+     */
+    val bootBitPerfect: Boolean get() = bootPrefs.getBoolean("bit_perfect", false)
 
     /** Takes effect on the next stream/start or track open. */
     suspend fun setPreferredAudioDeviceId(value: String) {
