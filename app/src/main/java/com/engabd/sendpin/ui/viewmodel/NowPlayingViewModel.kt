@@ -660,6 +660,15 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     private val _lyrics = MutableStateFlow<Load<MaLyrics?>>(Load.Idle)
     val lyrics: StateFlow<Load<MaLyrics?>> = _lyrics
 
+    /**
+     * The listener's manual trim on synced lyrics, in milliseconds.
+     *
+     * Read here rather than in the pane so the pane stays a renderer and the setting
+     * has one reader.
+     */
+    val lyricsOffsetMs: StateFlow<Int> = settings.lyricsOffsetMs
+        .stateIn(viewModelScope, SharingStarted.Eagerly, 0)
+
     private val _similar = MutableStateFlow<Load<List<MaSimilarTrack>>>(Load.Idle)
     val similar: StateFlow<Load<List<MaSimilarTrack>>> = _similar
 

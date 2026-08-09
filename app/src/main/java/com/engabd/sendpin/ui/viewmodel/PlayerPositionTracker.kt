@@ -216,6 +216,16 @@ class PlayerPositionTracker(
     fun clear() = anchors.update { emptyMap() }
 
     companion object {
-        const val TICK_MS = 500L
+        /**
+         * How often the interpolated playhead is re-emitted.
+         *
+         * 250 ms, matching `LocalPlayer.POSITION_TICK_MS` and the Sendspin path. This
+         * was 500, which is fine for a progress bar and visibly coarse for synced
+         * lyrics: half a second is most of a sung line, so the highlight on a remote
+         * speaker could sit a whole phrase behind the voice. The value is interpolated
+         * locally between server polls, so the extra ticks cost arithmetic, not
+         * traffic.
+         */
+        const val TICK_MS = 250L
     }
 }

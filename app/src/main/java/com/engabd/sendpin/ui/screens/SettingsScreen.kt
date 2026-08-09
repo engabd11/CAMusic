@@ -720,6 +720,55 @@ fun SettingsScreen(
                     }
 
                     SettingsSection.APPEARANCE -> {
+                        // ── Lyrics timing ───────────────────────────────────────────
+                        item(key = "lyrics_offset") {
+                            val offset by settings.lyricsOffsetMs.collectAsState(initial = 0)
+                            GlassCard(radius = 16.dp) {
+                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Text(
+                                        "Lyrics timing",
+                                        color = TextPrimary, fontFamily = AppFont,
+                                        style = MaterialTheme.typography.titleLarge,
+                                    )
+                                    Text(
+                                        "Nudge synced lyrics if they run ahead of or behind the vocal. " +
+                                            "Providers stamp the same track differently, so this is a matter " +
+                                            "of taste rather than a setting with a right answer.",
+                                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                                    )
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    ) {
+                                        HSlider(
+                                            value = (offset + AppSettings.MAX_LYRICS_OFFSET_MS) /
+                                                (2f * AppSettings.MAX_LYRICS_OFFSET_MS),
+                                            onChange = {},
+                                            onCommit = { f ->
+                                                val ms = (f * 2f * AppSettings.MAX_LYRICS_OFFSET_MS -
+                                                    AppSettings.MAX_LYRICS_OFFSET_MS).toInt()
+                                                // Snap to 50 ms — finer than that is
+                                                // below what anyone can hear against a
+                                                // line of sung text.
+                                                scope.launch { settings.setLyricsOffsetMs((ms / 50) * 50) }
+                                            },
+                                            accented = true,
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                        Text(
+                                            if (offset == 0) "0 ms" else "%+d ms".format(offset),
+                                            color = TextSecondary, fontFamily = MonoFont,
+                                            style = MaterialTheme.typography.labelMedium,
+                                        )
+                                    }
+                                    Text(
+                                        "Later ← → earlier",
+                                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
+                            }
+                        }
+
                         // ── Theme ───────────────────────────────────────────────────
                         item(key = "theme") {
                             val themeKey by settings.theme.collectAsState(initial = ThemeChoice.OLED.key)

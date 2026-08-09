@@ -47,6 +47,7 @@ class AppSettings(private val context: Context) {
         private val RADIO_MODE = booleanPreferencesKey("radio_mode")            // MA keeps the music going past the queue
         private val STATIC_DELAY_MS = stringPreferencesKey("sendspin_static_delay_ms") // per-player latency trim
         private val REPLAY_GAIN = stringPreferencesKey("replay_gain_mode")      // off | track | album
+        private val LYRICS_OFFSET_MS = stringPreferencesKey("lyrics_offset_ms") // +ve = lyrics run late
         private val KEEP_ALIVE_ANNOUNCEMENTS = booleanPreferencesKey("keep_alive_announcements") // persist connection for TTS
 
         // Direct Hue Bridge Light Sync
@@ -108,6 +109,9 @@ class AppSettings(private val context: Context) {
          * caps `static_delay_ms` at 0..5000.
          */
         const val MAX_TRIM_MS = 2_000
+
+        /** Two seconds either way covers every provider disagreement worth fixing. */
+        const val MAX_LYRICS_OFFSET_MS = 2_000
 
         const val MODE_HA = "ha"
         const val MODE_DIRECT = "direct"
@@ -233,6 +237,20 @@ class AppSettings(private val context: Context) {
     val replayGainMode: Flow<String> = context.dataStore.data.map { it[REPLAY_GAIN] ?: "album" }
 
     suspend fun setReplayGainMode(mode: String) = context.dataStore.edit { it[REPLAY_GAIN] = mode }
+
+    /**
+     * Manual trim on synced lyrics, in milliseconds. Positive means the words are
+     * arriving late and should be pulled forward.
+     *
+     * Providers disagree by a beat or two — the same track's LRC can be stamped
+     * against a different master, or carry an offset tag nobody applied — and there is
+     * no way to know which is right from here. So it is the listener's dial.
+     */
+    val lyricsOffsetMs: Flow<Int> = context.dataStore.data.map { it[LYRICS_OFFSET_MS]?.toIntOrNull() ?: 0 }
+
+    suspend fun setLyricsOffsetMs(ms: Int) = context.dataStore.edit {
+        it[LYRICS_OFFSET_MS] = ms.coerceIn(-MAX_LYRICS_OFFSET_MS, MAX_LYRICS_OFFSET_MS).toString()
+    }
 
     /** Download storage cap in MB. 0 means unlimited. */
     val downloadStorageCapMb: Flow<Int> = context.dataStore.data.map { it[DOWNLOAD_STORAGE_CAP_MB]?.toIntOrNull() ?: 0 }
