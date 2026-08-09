@@ -152,16 +152,35 @@ class SendpinApp : Application(), ImageLoaderFactory {
             combine(settings.backend, settings.lightSyncModeAuto) { backend, auto -> backend to auto }
                 .distinctUntilChanged()
                 .collect { (backend, auto) ->
-                    if (!auto) return@collect  // the user picked a transport by hand
-                    val next = com.engabd.sendpin.data.AppSettings.lightSyncModeFor(backend)
-                    if (settings.lightSyncMode.first() == next) return@collect
+                    val next = com.engabd.sendpin.data.AppSettings.lightSyncModeChange(
+                        backend, auto, settings.lightSyncMode.first(),
+                    ) ?: return@collect
+
+                    // Written first, and that ordering is the whole fix.
+                    //
+                    // The Home Assistant cleanup below used to run before this
+                    // line. It opens a WebSocket and makes three registry calls
+                    // with a fifteen-second timeout each, on a socket that has
+                    // not finished authenticating — so switching library could
+                    // take the better part of a minute to visibly change
+                    // transport, and against an HA that was asleep or gone it
+                    // looked like the switch simply did nothing. The transport is
+                    // the user-visible state and everything else keys off it; it
+                    // cannot wait on a round trip to the server being left behind.
+                    settings.setLightSyncMode(next)
+
                     // Leaving the Home Assistant transport has to switch its
                     // areas off. Nothing else will: the Light Sync ViewModel only
                     // closes its socket when the screen goes away, so an area
                     // would stay enabled in HA, still following a player that has
                     // stopped, with no UI left to turn it off from.
-                    if (next == com.engabd.sendpin.data.AppSettings.MODE_DIRECT) disableHaLightSync()
-                    settings.setLightSyncMode(next)
+                    //
+                    // Off the collector as well as after the write, so a second
+                    // library switch is not queued behind the first one's
+                    // housekeeping.
+                    if (next == com.engabd.sendpin.data.AppSettings.MODE_DIRECT) {
+                        appScope.launch { disableHaLightSync() }
+                    }
                 }
         }
         // Direct Light Sync follows the local player's session. Direct mode streams

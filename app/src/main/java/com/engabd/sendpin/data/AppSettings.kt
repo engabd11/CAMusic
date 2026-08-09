@@ -127,6 +127,18 @@ class AppSettings(private val context: Context) {
          */
         fun lightSyncModeFor(backend: String): String =
             if (backend == BACKEND_SUBSONIC) MODE_DIRECT else MODE_HA
+
+        /**
+         * The transport a library switch calls for, or null to leave it alone.
+         *
+         * Pulled out of the coordinator so the decision can be tested without a
+         * DataStore, an Application and a Home Assistant: the coordinator around
+         * it is now three lines, and this is the part with the rules in it.
+         */
+        fun lightSyncModeChange(backend: String, auto: Boolean, current: String): String? {
+            if (!auto) return null  // the user pinned a transport by hand
+            return lightSyncModeFor(backend).takeIf { it != current }
+        }
     }
 
     val backend: Flow<String> = context.dataStore.data.map { it[BACKEND] ?: "ma" }

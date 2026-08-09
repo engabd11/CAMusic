@@ -65,13 +65,19 @@ private val FALLBACK_COLOUR = com.engabd.sendpin.hue.ColorScheme.SUNSET.wire
  *
  * Nothing renders until the transport is known, so the HA screen can't flash up
  * for a frame in front of a direct-mode user.
+ *
+ * Collected rather than read once. The transport follows the selected library,
+ * so a one-shot read leaves this screen rendering the transport that was current
+ * when it entered composition — switch library with the Lights tab already open
+ * and it keeps showing the old one, which reads as the switch having failed.
  */
 @Composable
 fun LightSyncScreen(onBack: () -> Unit = {}) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    val lsMode by produceState<String?>(initialValue = null) {
-        value = com.engabd.sendpin.data.AppSettings(context.applicationContext).lightSyncMode.first()
+    val settings = remember(context) {
+        com.engabd.sendpin.data.AppSettings(context.applicationContext)
     }
+    val lsMode by settings.lightSyncMode.collectAsState(initial = null)
     when (lsMode) {
         null -> Box(Modifier.fillMaxSize().background(Ink))
         "direct" -> DirectLightSyncScreen(onBack)
