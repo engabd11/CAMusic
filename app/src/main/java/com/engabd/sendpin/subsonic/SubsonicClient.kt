@@ -750,14 +750,27 @@ class SubsonicClient(
         // entirely, which is why absent stays null rather than becoming 0 dB —
         // "no measurement" and "measured at unity" are different answers.
         val rg = o["replayGain"] as? JsonObject
+        // `bitRate` is optional even on OpenSubsonic, but `size` and `duration` are
+        // plain Subsonic fields every server sends — and a file's average bitrate is
+        // exactly its size over its length. Derived only as a fallback: a server that
+        // states its bitrate knows better than this arithmetic does.
+        val stated = o.int("bitRate") ?: 0
+        val size = o.long("size") ?: 0L
+        val seconds = o.int("duration") ?: 0
+        val derived = if (stated <= 0 && size > 0 && seconds > 0) {
+            (size * 8 / seconds / 1000).toInt()
+        } else 0
         return MaAudioFormat(
             codec = codec,
             sampleRate = o.int("samplingRate") ?: 0,
             bitDepth = o.int("bitDepth") ?: 0,
-            bitRate = o.int("bitRate") ?: 0,
-            channels = o.int("channelCount") ?: 2,
+            bitRate = if (stated > 0) stated else derived,
+            // 0, not 2: a plain Subsonic server saying nothing about channels is not
+            // the same as it saying stereo, and the badge can leave it out.
+            channels = o.int("channelCount") ?: 0,
             replayGainTrack = rg?.float("trackGain"),
             replayGainAlbum = rg?.float("albumGain"),
+            sizeBytes = size,
         )
     }
 

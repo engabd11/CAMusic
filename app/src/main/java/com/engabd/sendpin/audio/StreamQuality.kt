@@ -16,6 +16,10 @@ data class StreamQuality(
     val replayGainTrack: Float? = null,
     /** ReplayGain album-level adjustment in dB, or null when not available. */
     val replayGainAlbum: Float? = null,
+    /** 2 for stereo, 1 for mono, 6 for 5.1. 0 when the source didn't say. */
+    val channels: Int = 0,
+    /** The file's size in bytes, when the library reported it. 0 otherwise. */
+    val sizeBytes: Long = 0,
 ) {
     val lossless: Boolean get() = normalizedCodec in LOSSLESS
 
@@ -65,23 +69,53 @@ data class StreamQuality(
     /** Better than CD: the case worth lighting the badge up for. */
     val hiRes: Boolean get() = lossless && (sampleRateHz > 48_000 || bitDepth > 16)
 
-    /** The badge text, e.g. `FLAC · 96/24 · 1411k` or `OPUS · 320k`. */
+    /**
+     * The rate as a bitrate reads it: `805 kb/s`, `3 Mb/s`.
+     *
+     * `1411k` was accurate and unreadable — a number with a letter stuck on it, in the
+     * one place on the screen that is meant to be an at-a-glance boast. Megabits get a
+     * decimal only when it carries information, so a 3.0 reads as `3 Mb/s`.
+     */
+    val bitrateLabel: String?
+        get() = when {
+            bitrateKbps <= 0 -> null
+            bitrateKbps < 1000 -> "$bitrateKbps kb/s"
+            else -> {
+                val mb = bitrateKbps / 1000.0
+                val rounded = Math.round(mb * 10) / 10.0
+                if (rounded == Math.floor(rounded)) "${rounded.toInt()} Mb/s"
+                else String.format("%.1f Mb/s", rounded)
+            }
+        }
+
+    /** The badge text, e.g. `FLAC • 96/24 • 3 Mb/s` or `AAC • 256 kb/s`. */
     val label: String
         get() {
             val name = displayCodec
             val detail = when {
                 lossless && bitDepth > 0 && sampleRateHz > 0 -> "${khz(sampleRateHz)}/$bitDepth"
-                sampleRateHz > 0 && bitrateKbps > 0 && !lossless -> "${bitrateKbps}k"
+                sampleRateHz > 0 && bitrateKbps > 0 && !lossless -> bitrateLabel
                 sampleRateHz > 0 -> "${khz(sampleRateHz)}kHz"
-                bitrateKbps > 0 -> "${bitrateKbps}k"
+                bitrateKbps > 0 -> bitrateLabel
                 else -> null
             }
             // The bitrate is a bonus on top of a rate/depth pair — never worth
             // appending when `detail` fell back to being the bitrate itself.
-            val br = if (lossless && bitrateKbps > 0 && detail != null && detail != "${bitrateKbps}k") {
-                " · ${bitrateKbps}k"
+            val br = if (lossless && bitrateKbps > 0 && detail != null && detail != bitrateLabel) {
+                " • $bitrateLabel"
             } else ""
-            return if (detail == null) name else "$name · $detail$br"
+            return if (detail == null) name else "$name • $detail$br"
+        }
+
+    /** "Stereo", "Mono", "5.1", or null when the source didn't say. */
+    val channelLabel: String?
+        get() = when (channels) {
+            0 -> null
+            1 -> "Mono"
+            2 -> "Stereo"
+            6 -> "5.1"
+            8 -> "7.1"
+            else -> "$channels channels"
         }
 
     /**

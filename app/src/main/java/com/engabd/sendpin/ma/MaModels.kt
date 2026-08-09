@@ -17,6 +17,8 @@ data class MaAudioFormat(
     /** kbps, off MA's `AudioFormat.bit_rate`. 0 when the provider didn't say. */
     val bitRate: Int = 0,
     val channels: Int = 2,
+    /** The stored file's size in bytes, when the library reported it. */
+    val sizeBytes: Long = 0,
     /**
      * ReplayGain track-level adjustment in dB, off OpenSubsonic's `replayGain`
      * object. Null when the server didn't supply it — plain Subsonic servers omit
@@ -53,6 +55,8 @@ data class MaAudioFormat(
             bitrateKbps = bitRate,
             replayGainTrack = replayGainTrack,
             replayGainAlbum = replayGainAlbum,
+            channels = channels,
+            sizeBytes = sizeBytes,
         )
 }
 
@@ -496,9 +500,14 @@ object MaParse {
                     codec = f["content_type"]?.jsonPrimitive?.contentOrNull
                         ?: f["codec_type"]?.jsonPrimitive?.contentOrNull ?: "?",
                     sampleRate = rate,
-                    bitDepth = f["bit_depth"]?.jsonPrimitive?.intOrNull ?: 16,
+                    // 0, not 16. A provider that doesn't report a depth has not told
+                    // us it is CD depth, and the Subsonic side of the app has always
+                    // defaulted to 0 for exactly that reason — the two disagreeing
+                    // meant the same file read differently depending on which library
+                    // it was browsed through. "Unknown" is a thing the badge can say.
+                    bitDepth = f["bit_depth"]?.jsonPrimitive?.intOrNull ?: 0,
                     bitRate = if (br > 10_000) br / 1000 else br,
-                    channels = (f["channels"] as? JsonPrimitive)?.intOrNull ?: 2,
+                    channels = (f["channels"] as? JsonPrimitive)?.intOrNull ?: 0,
                 )
             }
             ?.maxByOrNull { it.sampleRate.toLong() * 100 + it.bitDepth }
@@ -594,6 +603,7 @@ object MaParse {
             sampleRateHz = (f["sample_rate"] as? JsonPrimitive)?.intOrNull ?: 0,
             bitDepth = (f["bit_depth"] as? JsonPrimitive)?.intOrNull ?: 0,
             bitrateKbps = if (br > 10_000) br / 1000 else br,
+            channels = (f["channels"] as? JsonPrimitive)?.intOrNull ?: 0,
         )
     }
 
