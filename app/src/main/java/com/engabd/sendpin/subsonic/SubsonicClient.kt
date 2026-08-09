@@ -619,6 +619,9 @@ class SubsonicClient(
                             itemId = artistId, provider = PROVIDER,
                             name = o.str("name") ?: return@mapNotNull null,
                             uri = artistId, mediaType = "artist",
+                            // A similarArtist element carries a name and a cover and
+                            // nothing else worth a subtitle — no album count, no genre.
+                            subtitle = null,
                             image = coverUrl(o.str("coverArt") ?: artistId),
                             duration = null,
                         )
