@@ -102,6 +102,15 @@ enum class SettingsSection(
         "Offline copies, storage limit and when to fetch them",
         Icons.Default.Download,
     ),
+    // The Lights *tab* is the live show — intensity, effect, colour scheme. This is
+    // the plumbing behind it: which transport carries the signal, and the bridge or
+    // Home Assistant credentials that transport needs. Different question, and it was
+    // buried at the bottom of Servers where nobody looking for it would think to go.
+    LIGHTS(
+        "Light Sync",
+        "Bridge, transport and how the lights follow the music",
+        Icons.Default.Lightbulb,
+    ),
     APPEARANCE(
         "Appearance",
         "Theme, accent colour and how Now Playing behaves",
@@ -315,6 +324,43 @@ fun SettingsScreen(
                             )
                         }
 
+                        // Home Assistant is a server, but it is only ever configured
+                        // here in service of Light Sync — and which fields you need
+                        // depends on the transport. So the connection lives with the
+                        // thing it drives, and this says where it went.
+                        item(key = "lights_pointer") {
+                            GlassCard(radius = 16.dp) {
+                                Row(
+                                    Modifier.fillMaxWidth().clickable { onSection(SettingsSection.LIGHTS) }
+                                        .padding(16.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                ) {
+                                    Icon(
+                                        Icons.Default.Lightbulb, null, tint = accent,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+                                        Text(
+                                            "Home Assistant and the Hue Bridge",
+                                            color = TextPrimary, fontFamily = AppFont,
+                                            style = MaterialTheme.typography.titleLarge,
+                                        )
+                                        Text(
+                                            "Configured under Light Sync, with the transport that uses them.",
+                                            color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                                        )
+                                    }
+                                    Icon(
+                                        Icons.Default.ChevronRight, null,
+                                        tint = TextMuted, modifier = Modifier.size(20.dp),
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    SettingsSection.LIGHTS -> {
                         // ── Light Sync ───────────────────────────────────────────────
                         item {
                             // Collected, not read once. The transport now follows
