@@ -2,6 +2,7 @@ package com.engabd.sendpin.audio
 
 import android.content.Context
 import android.media.AudioDeviceInfo
+import com.engabd.sendpin.data.AppSettings
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -213,7 +214,10 @@ class LocalPlayer(private val context: Context) {
             _positionMs.value = 0
             _durationMs.value = track?.durationMs ?: 0
             // The gain belongs to the track, so it has to be re-applied at every
-            // boundary — including the gapless ones, where nothing else happens.
+            // boundary — including the gapless ones, where nothing else happens. The
+            // fade resets with it, or a track entered mid-ramp would start quiet and
+            // stay there until the next tick noticed.
+            fadeFactor = 1f
             applyGain()
             track?.let { _started.tryEmit(it) }
         }
@@ -258,25 +262,34 @@ class LocalPlayer(private val context: Context) {
             .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
             .build()
 
-        // Deliberately stock.
+        // Float output: off unless the listener has asked for bit-perfect.
         //
-        // This used to set `setEnableAudioFloatOutput(true)`, to keep 24-bit sources
-        // off the sink's 16-bit requantisation, and `EXTENSION_RENDERER_MODE_PREFER`.
-        // Both were added on theory. Float output is documented as experimental, is
-        // known to misbehave on some sinks at rates other than the device's native
-        // one — this phone runs at 48 kHz — and 44.1/16 came back audibly distorted
-        // while 48 kHz was clean, which is exactly that shape. The preferred
-        // extension mode was dead configuration: no decoder extensions are in this
-        // build, so it only ever cost some failed reflection at startup.
+        // This was once set unconditionally, on theory, and reverted: float output is
+        // documented as experimental, misbehaves on some sinks at rates other than the
+        // device's native one, and 44.1/16 came back audibly distorted on a 48 kHz
+        // phone while 48 kHz was clean — exactly that shape. (`EXTENSION_RENDERER_MODE_PREFER`
+        // went with it and has not come back: no decoder extensions are in this build,
+        // so it only ever cost failed reflection at startup.)
         //
-        // Neither belongs here without a device to prove it on. Float output is worth
-        // revisiting behind the bit-perfect setting, measured, not assumed.
+        // Without it, a 24/96 FLAC from Navidrome is requantised to 16 on the way to
+        // the sink, which makes the whole hi-res path decorative on this backend — the
+        // Sendspin path has honoured `bitPerfect24Bit` for a while and this one never
+        // read it at all. So it is back, gated on the setting, which is the listener
+        // saying they want the hi-res path and will notice if it misbehaves.
+        //
+        // Read synchronously rather than from the settings Flow: this is a renderer
+        // factory option, fixed when the player is constructed, so there is no later
+        // moment to apply it. A change therefore takes effect on the next player build
+        // — Settings says so.
+        val bitPerfect = AppSettings(context).bootBitPerfect
+
         // The Light Sync audio analysis tap is injected via TapRenderersFactory,
         // which overrides buildAudioSink to install the tap in the audio sink's
         // processor chain. It stays in the chain whether or not Light Sync is on,
         // because the sink decides membership once per configuration; the cost
         // when off is a buffer copy per callback and nothing else.
         val renderers = TapRenderersFactory(context, audioAnalysisTap, audioLead)
+            .setEnableAudioFloatOutput(bitPerfect) as TapRenderersFactory
 
         // The defaults are sized for video-on-mobile-data. This is a lossless file
         // over a LAN, where the sensible trade is a deeper buffer: a 24/96 FLAC is
@@ -320,6 +333,12 @@ class LocalPlayer(private val context: Context) {
         val start = startIndex.coerceIn(0, tracks.lastIndex)
         _queue.value = tracks
         _hasSession.value = true
+        // Decided here rather than at each call site, because every path that starts
+        // a local queue goes through this one and any of them could forget. A queue
+        // that is one album is a sequenced record: fading between its tracks damages
+        // it, and gapless is the entire reason the list is handed over in one go.
+        smoothQueue = tracks.size < 2 || tracks.mapNotNull { it.album }.distinct().size > 1
+        fadeFactor = 1f
         // The whole list goes to ExoPlayer at once — that is what lets it buffer
         // across a track boundary, and so what makes the transition gapless.
         player.setMediaItems(tracks.map(::mediaItem), start, C.TIME_UNSET)
@@ -332,6 +351,9 @@ class LocalPlayer(private val context: Context) {
         if (tracks.isEmpty()) return
         val wasEmpty = _queue.value.isEmpty()
         _queue.value = _queue.value + tracks
+        // Appending something from off the record — a radio top-up, a queued track —
+        // means this is no longer one album, so the fade applies again.
+        if (!wasEmpty && _queue.value.mapNotNull { it.album }.distinct().size > 1) smoothQueue = true
         player.addMediaItems(tracks.map(::mediaItem))
         if (wasEmpty) {
             _hasSession.value = true
@@ -532,14 +554,71 @@ class LocalPlayer(private val context: Context) {
      */
     private fun applyGain() {
         val factor = ReplayGain.factor(_current.value?.sourceQuality, replayGainMode)
-        player.volume = (userVolume * factor).coerceIn(0f, 1f)
+        player.volume = (userVolume * factor * fadeFactor).coerceIn(0f, 1f)
+    }
+
+    /**
+     * Seconds of fade at each end of a track, or 0 for none.
+     *
+     * Not a crossfade: one ExoPlayer has one output, so two tracks cannot overlap
+     * through it. This is the honest version of what a single player can do — down at
+     * the end, up at the start — which is what a party playlist wants and what an
+     * album emphatically does not. See [smoothQueue].
+     */
+    @Volatile
+    var fadeSeconds: Int = 0
+        set(value) {
+            field = value.coerceIn(0, 12)
+            if (field == 0) { fadeFactor = 1f; applyGain() }
+        }
+
+    /**
+     * Whether the *current queue* should fade at all.
+     *
+     * A record is sequenced; fading between its tracks damages it, and gapless is the
+     * whole reason the queue is handed to ExoPlayer in one go. So the setting says
+     * what the listener wants in general and this says whether it applies here —
+     * set false when the queue is one album.
+     */
+    @Volatile
+    var smoothQueue: Boolean = true
+
+    /** The ramp, multiplied into the output alongside user volume and ReplayGain. */
+    @Volatile
+    private var fadeFactor: Float = 1f
+
+    /**
+     * Where in the track the fade should be, as a multiplier.
+     *
+     * Deliberately linear in *amplitude* rather than dB: over two or three seconds
+     * against a fading song, the difference is inaudible and the arithmetic is one
+     * division.
+     */
+    private fun fadeAt(positionMs: Long, durationMs: Long): Float {
+        val secs = fadeSeconds
+        if (secs <= 0 || !smoothQueue || durationMs <= 0) return 1f
+        val window = secs * 1000L
+        // A track shorter than two windows would spend its whole length fading.
+        if (durationMs < window * 3) return 1f
+        val inFactor = if (positionMs < window) positionMs.toFloat() / window else 1f
+        val remaining = durationMs - positionMs
+        val outFactor = if (remaining in 0..window) remaining.toFloat() / window else 1f
+        return minOf(inFactor, outFactor).coerceIn(0f, 1f)
     }
 
     private fun startTicker() {
         stopTicker()
         ticker = scope.launch {
             while (isActive) {
-                _positionMs.value = player.currentPosition.coerceAtLeast(0)
+                val pos = player.currentPosition.coerceAtLeast(0)
+                _positionMs.value = pos
+                if (fadeSeconds > 0 && smoothQueue) {
+                    val next = fadeAt(pos, _durationMs.value)
+                    if (kotlin.math.abs(next - fadeFactor) > 0.001f) {
+                        fadeFactor = next
+                        applyGain()
+                    }
+                }
                 delay(POSITION_TICK_MS)
             }
         }

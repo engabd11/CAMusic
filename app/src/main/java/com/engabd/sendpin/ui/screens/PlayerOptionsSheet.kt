@@ -17,6 +17,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -90,6 +92,13 @@ fun BoxScope.PlayerOptionsSheet(onClose: () -> Unit, viewModel: NowPlayingViewMo
                     )
                 }
 
+                // Every copy of this track across every provider — the same song as a
+                // lossy stream and as a FLAC on a NAS. MA only: it is MA that knows
+                // about more than one library at a time.
+                if (!st.isLocalSession && st.hasTrack) {
+                    VersionPicker(viewModel)
+                }
+
                 // Music Assistant only. `player_queues/dont_stop_the_music` is a
                 // property of an MA queue, generated from MA's own similarity model —
                 // Navidrome has no equivalent, and showing the switch there offered a
@@ -138,6 +147,84 @@ fun BoxScope.PlayerOptionsSheet(onClose: () -> Unit, viewModel: NowPlayingViewMo
                         "Applies to this player's queue - useful for audiobooks and podcasts.",
                         color = TextFaint, fontFamily = AppFont, fontSize = 11.sp,
                     )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Which copy of this track to play.
+ *
+ * The same song usually exists more than once — a lossy stream and a FLAC on a NAS —
+ * and Music Assistant has always been able to list them (`music/tracks/track_versions`,
+ * implemented and uncalled). This is the control that speaks to why anyone runs a
+ * local library next to a streaming one.
+ *
+ * Collapsed until asked, because it costs a round trip and most of the time the answer
+ * is "one". A single version means the row says so and offers nothing to tap.
+ */
+@Composable
+private fun VersionPicker(viewModel: NowPlayingViewModel) {
+    val accent = LocalAccent.current
+    val load by viewModel.versions.collectAsState()
+    var open by remember { mutableStateOf(false) }
+
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(
+            Modifier.fillMaxWidth().clickable {
+                open = !open
+                if (open && load is NowPlayingViewModel.Load.Idle) viewModel.loadVersions()
+            },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Default.LibraryMusic, null, tint = TextMuted, modifier = Modifier.size(17.dp))
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+                Text("Other versions", color = TextPrimary, style = MaterialTheme.typography.titleLarge)
+                Text(
+                    when (val l = load) {
+                        is NowPlayingViewModel.Load.Ready ->
+                            if (l.value.isEmpty()) "This is the only copy in your library"
+                            else "${l.value.size} other ${if (l.value.size == 1) "copy" else "copies"} of this track"
+                        is NowPlayingViewModel.Load.Failed -> l.message
+                        NowPlayingViewModel.Load.Loading -> "Looking…"
+                        else -> "Play this song from a different source"
+                    },
+                    color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Icon(
+                if (open) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                null, tint = TextMuted, modifier = Modifier.size(18.dp),
+            )
+        }
+
+        if (open) {
+            (load as? NowPlayingViewModel.Load.Ready)?.value?.forEach { version ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(11.dp))
+                        .background(Glass)
+                        .clickable { viewModel.playVersion(version) }
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+                        Text(
+                            // The provider is the useful identity here — the name is
+                            // the same on every row by definition.
+                            version.providerDomains.firstOrNull()?.replaceFirstChar { it.uppercase() }
+                                ?: version.name,
+                            color = TextPrimary, fontFamily = AppFont,
+                            fontWeight = FontWeight.Bold, fontSize = 13.sp,
+                        )
+                        version.audioFormat?.quality?.label?.let {
+                            Text(it, color = TextMuted, fontFamily = MonoFont, fontSize = 11.sp)
+                        }
+                    }
+                    Icon(Icons.Default.PlayArrow, "Play this version", tint = accent, modifier = Modifier.size(18.dp))
                 }
             }
         }

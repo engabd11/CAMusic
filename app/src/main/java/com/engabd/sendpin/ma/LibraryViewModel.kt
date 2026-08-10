@@ -6,11 +6,14 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.audio.FormatNegotiator
+import com.engabd.sendpin.audio.LocalRadio
 import com.engabd.sendpin.audio.LocalTrack
+import com.engabd.sendpin.audio.SubsonicRadioSource
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.PlayerIdentity
 import com.engabd.sendpin.download.DownloadJob
 import com.engabd.sendpin.download.DownloadedTrack
+import com.engabd.sendpin.subsonic.SavedQueue
 import com.engabd.sendpin.subsonic.SubsonicClient
 import com.engabd.sendpin.subsonic.SubsonicError
 import com.engabd.sendpin.subsonic.SubsonicException
@@ -22,7 +25,10 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -140,6 +146,30 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     /** The text in the search box, held here so a tab switch doesn't wipe it. */
     private val _query = MutableStateFlow(""); val query: StateFlow<String> = _query
     fun setQuery(v: String) { _query.value = v }
+
+    /**
+     * A search is in flight for a query the user has already typed past.
+     *
+     * Distinct from [loading], which drives skeletons: results now arrive while the
+     * field is still being typed into, and blanking the list on every keystroke to
+     * show placeholders would flicker worse than the old submit-only search did. The
+     * previous results stay put under a slim progress line until the new ones land.
+     */
+    private val _searching = MutableStateFlow(false); val searching: StateFlow<Boolean> = _searching
+
+    /**
+     * The last few queries and what they returned, so backspacing is instant.
+     *
+     * Small and deliberately unbounded in age rather than time: a search session is
+     * seconds long, and the point is that walking back through "beatl" → "beat" → "bea"
+     * doesn't re-ask the server three times for answers it just gave.
+     */
+    private val searchCache = object : LinkedHashMap<String, MaSearchResults>(0, 0.75f, true) {
+        override fun removeEldestEntry(eldest: Map.Entry<String, MaSearchResults>) = size > SEARCH_CACHE_SIZE
+    }
+
+    /** The query whose results are on screen, so an identical run can be skipped. */
+    private var lastSearched: String? = null
     private val _recent = MutableStateFlow<List<MaItem>>(emptyList()); val recent: StateFlow<List<MaItem>> = _recent
     private val _favoriteAlbums = MutableStateFlow<List<MaItem>>(emptyList()); val favoriteAlbums: StateFlow<List<MaItem>> = _favoriteAlbums
     private val _favoriteArtists = MutableStateFlow<List<MaItem>>(emptyList()); val favoriteArtists: StateFlow<List<MaItem>> = _favoriteArtists
@@ -410,6 +440,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             applyBackend(if (settings.backend.first() == "subsonic") Backend.SUBSONIC else Backend.MA)
             _booted.value = true
         }
+        startLiveSearch()
         viewModelScope.launch { settings.targetPlayer.collect { _targetPlayer.value = it } }
         // This client outlives any one screen, so a format change made in Settings
         // has to reach it rather than waiting for a reconnect.
@@ -445,6 +476,11 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 if (st == MaApiClient.State.ERROR) _connError.value = "Connection failed"
             }
         }
+        startLocalRadio()
+        startQueueSync()
+        // The fade belongs to the player, and the setting can change under a queue
+        // that is already running.
+        viewModelScope.launch { settings.navFadeSeconds.collect { localPlayer.fadeSeconds = it } }
         // A local track that actually started is a play worth reporting, so
         // Navidrome's play counts and its "recently played" shelf stay honest.
         //
@@ -515,6 +551,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         _connError.value = null
         _error.value = null
         _favorites.value = emptySet()
+        // Cached hits belong to the library that answered them. Keeping them across a
+        // switch is how the previous backend's albums end up under the new one's name.
+        searchCache.clear()
+        lastSearched = null
         stack.clear()
         _depth.value = 0
         _node.value = Node("Library", emptyList())
@@ -598,6 +638,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                     _ready.value = true
                     _offline.value = false
                     showRoot()
+                    // Asked once per connect: the answer only changes when another
+                    // device puts something down, and this is when that becomes
+                    // knowable.
+                    loadSavedQueue()
                 } else {
                     _ready.value = false
                     goOfflineIfPossible(err)
@@ -648,6 +692,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         }
         _offline.value = true
         _ready.value = true
+        // Answers from the server the app just lost are not answers about what is on
+        // the phone, and offline search reads a different source entirely.
+        searchCache.clear()
+        lastSearched = null
         showRoot()
     }
 
@@ -806,8 +854,13 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         item: MaItem,
         streamUrl: String? = null,
         scrobbleId: String? = null,
-    ): LocalTrack =
-        downloadManager.toLocalTrack(
+    ): LocalTrack {
+        // Every track that enters a local queue comes through here, which makes this
+        // the one place guaranteed to see the library item behind it. A LocalTrack
+        // carries no genre and no album id, so without this the radio would have
+        // nothing but a title to seed from.
+        rememberSeeds(listOf(item))
+        return downloadManager.toLocalTrack(
             item = item,
             streamUrl = streamUrl
                 ?: item.takeIf { it.provider == SubsonicClient.PROVIDER }?.let { subsonic?.streamUrl(it.itemId) },
@@ -821,6 +874,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                     item.provider == SubsonicClient.PROVIDER || item.provider == DOWNLOAD
                 },
         )
+    }
 
     /**
      * "Play at original quality": when Music Assistant would have to convert a
@@ -1016,26 +1070,226 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     fun isDownloaded(id: String): Boolean = downloadManager.isDownloaded(id)
 
+    /**
+     * The IME "Search" key: run it now, no debounce.
+     *
+     * Typing already searches (see the live pipeline in `init`), so by the time this
+     * fires the answer is usually on screen — but a user who hits Search expects it to
+     * mean something, and a query shorter than [MIN_LIVE_QUERY] has deliberately not
+     * been sent yet. Skipped only when this exact query is already the one showing.
+     */
     fun doSearch(query: String) {
-        if (query.isBlank()) { clearSearch(); return }
+        val q = query.trim()
+        if (q.isBlank()) { clearSearch(); return }
         searchDepth = stack.size
         _searchOpen.value = true
-        viewModelScope.launch { runSearch(query) }
+        if (q == lastSearched && _search.value != null) return
+        viewModelScope.launch { runSearch(q) }
+    }
+
+    /**
+     * Search as the query is typed.
+     *
+     * `collectLatest` is the load-bearing half: it cancels the in-flight request when
+     * the next keystroke lands, so a slow answer for "bea" can never arrive after the
+     * fast one for "beatles" and overwrite it. Without that, results race and the list
+     * settles on whichever request happened to finish last.
+     */
+    private fun startLiveSearch() {
+        viewModelScope.launch {
+            _query
+                .map { it.trim() }
+                .distinctUntilChanged()
+                .debounce(SEARCH_DEBOUNCE_MS)
+                .collectLatest { q ->
+                    if (q.length < MIN_LIVE_QUERY) return@collectLatest
+                    if (q == lastSearched && _search.value != null) return@collectLatest
+                    searchDepth = stack.size
+                    _searchOpen.value = true
+                    runSearch(q)
+                }
+        }
     }
 
     /** The body of [doSearch], so [refresh] can await it rather than fire and forget. */
     private suspend fun runSearch(query: String) {
-        _loading.value = true; _error.value = null
+        // A repeat of something already answered is not worth a round trip, and going
+        // back a character should feel like undo rather than a fresh search.
+        searchCache[query]?.let {
+            _search.value = it
+            lastSearched = query
+            _error.value = null
+            return
+        }
+        _searching.value = true; _error.value = null
         try {
             val r = when {
                 _backend.value == Backend.MA -> maRepo.search(query)
                 _offline.value -> searchDownloads(query)
                 else -> subsonic?.search(query)
             }
-            r?.let { rememberFavorites(it.artists + it.albums + it.tracks + it.playlists) }
+            r?.let {
+                rememberFavorites(it.artists + it.albums + it.tracks + it.playlists)
+                searchCache[query] = it
+            }
             _search.value = r
-        } catch (e: Exception) { _error.value = e.message ?: "Search failed" }
-        _loading.value = false
+            lastSearched = query
+        } catch (e: Exception) {
+            // A cancelled request is the next keystroke arriving, not a failure worth
+            // showing — collectLatest cancels this coroutine on every new query.
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            _error.value = e.message ?: "Search failed"
+        } finally {
+            _searching.value = false
+        }
+    }
+
+    // --- cross-device resume ----------------------------------------------
+
+    /**
+     * A queue another client left on the server, when there is one worth offering.
+     *
+     * `getPlayQueue` and `savePlayQueue` have been implemented in [SubsonicClient]
+     * with no callers at all — the client half of "start on the phone, finish at the
+     * desk" was done and the feature did not exist.
+     */
+    private val _savedQueue = MutableStateFlow<SavedQueue?>(null)
+    val savedQueue: StateFlow<SavedQueue?> = _savedQueue
+
+    /** Stop offering this one. Not persisted: a new session may want it again. */
+    fun dismissSavedQueue() { _savedQueue.value = null }
+
+    /**
+     * Ask the server what was left playing, and offer it if it is worth offering.
+     *
+     * Silent about failures and silent when there is nothing useful to say. Three
+     * things disqualify a saved queue: it is empty, it is what this phone is already
+     * playing (resuming what you can hear is not an offer), or it was left in the
+     * first few seconds of a track, which is someone starting something rather than
+     * stopping mid-listen.
+     */
+    private suspend fun loadSavedQueue() {
+        val sc = subsonic ?: return
+        val saved = runCatching { sc.playQueue() }.getOrNull() ?: return
+        val currentId = localPlayer.current.value?.scrobbleId
+        val savedId = saved.tracks.getOrNull(saved.index)?.itemId
+        if (savedId != null && savedId == currentId) return
+        if (saved.positionMs < RESUME_MIN_POSITION_MS) return
+        _savedQueue.value = saved
+    }
+
+    /** Pick up where the other device left off. */
+    fun resumeSavedQueue() {
+        val saved = _savedQueue.value ?: return
+        _savedQueue.value = null
+        viewModelScope.launch {
+            runCatching {
+                stopMaPlayback()
+                localPlayer.setShuffle(false)
+                localPlayer.setQueue(saved.tracks.map { localTrack(it) }, saved.index)
+                localPlayer.seekTo(saved.positionMs)
+            }.onFailure { _toast.tryEmit(it.message ?: "Couldn't resume") }
+        }
+    }
+
+    /**
+     * Hand this phone's queue back to the server, so the desk can pick it up.
+     *
+     * On track change and on pause, not on a timer: those are the two moments the
+     * answer actually changes in a way another device would care about, and
+     * `savePlayQueue` rewrites the whole queue every time it is called.
+     */
+    private fun startQueueSync() {
+        viewModelScope.launch {
+            combine(localPlayer.current, localPlayer.playing) { track, playing -> track to playing }
+                .distinctUntilChanged()
+                .collect { (track, playing) ->
+                    if (track == null) return@collect
+                    // Only ours to save when the bytes are Navidrome's.
+                    val sc = subsonic ?: return@collect
+                    if (_offline.value) return@collect
+                    val ids = localPlayer.queue.value.mapNotNull { it.scrobbleId }
+                    if (ids.isEmpty()) return@collect
+                    runCatching {
+                        sc.savePlayQueue(
+                            songIds = ids,
+                            currentId = track.scrobbleId,
+                            positionMs = localPlayer.positionMs.value,
+                        )
+                    }
+                    // A queue this phone is actively playing supersedes whatever was
+                    // being offered, or the offer would compete with itself.
+                    if (playing) _savedQueue.value = null
+                }
+        }
+    }
+
+    // --- continuous play (local) ------------------------------------------
+
+    private val radio = LocalRadio()
+
+    /** True while a top-up is in flight, so a burst of transitions asks once. */
+    private var radioFetching = false
+
+    /**
+     * Keep the local queue from running out while radio mode is on.
+     *
+     * The top-up happens **two tracks before the end**, not at it. ExoPlayer is
+     * handed the whole queue at once — that is what makes its transitions gapless —
+     * so appending while there is still something playing keeps the seam intact.
+     * Waiting for the queue to actually empty would mean a silence, a fetch, and then
+     * a fresh `prepare`, which is exactly the gap this backend doesn't have.
+     */
+    private fun startLocalRadio() {
+        viewModelScope.launch {
+            combine(localPlayer.index, localPlayer.queue) { at, queue -> at to queue }
+                .collect { (at, queue) ->
+                    if (!settings.radioMode.first()) return@collect
+                    if (_backend.value != Backend.SUBSONIC) return@collect
+                    if (queue.isEmpty() || at < 0) return@collect
+                    if (queue.size - at > RADIO_TOPUP_AT) return@collect
+                    if (radioFetching) return@collect
+                    radioFetching = true
+                    try {
+                        topUpRadio(queue)
+                    } finally {
+                        radioFetching = false
+                    }
+                }
+        }
+    }
+
+    private suspend fun topUpRadio(queue: List<com.engabd.sendpin.audio.LocalTrack>) {
+        // The seed is what is playing now: the radio should follow where the listener
+        // has got to, not where they started an hour ago.
+        val playing = localPlayer.current.value
+        val seedId = playing?.scrobbleId ?: playing?.id
+        val seed = seedId?.let { id -> lastSeeds[id] }
+        val exclude = queue.mapNotNull { it.scrobbleId ?: it.id }.toSet()
+
+        val picked = if (_offline.value) {
+            radio.offline(downloads.value.map { downloadItem(it) }, seed, RADIO_BATCH, exclude)
+        } else {
+            val sc = subsonic ?: return
+            radio.next(SubsonicRadioSource(sc), seed, RADIO_BATCH, exclude)
+        }
+        if (picked.isEmpty()) return
+        rememberSeeds(picked)
+        localPlayer.addToQueue(picked.map { localTrack(it) })
+    }
+
+    /**
+     * Library items for tracks that have played, keyed by id.
+     *
+     * A [com.engabd.sendpin.audio.LocalTrack] is what the player needs and carries no
+     * genre or artist id, so the radio would have nothing but a title to seed from.
+     * Kept small — only what has actually been queued.
+     */
+    private val lastSeeds = LinkedHashMap<String, MaItem>()
+
+    private fun rememberSeeds(items: List<MaItem>) {
+        items.forEach { lastSeeds[it.itemId] = it }
+        while (lastSeeds.size > 400) lastSeeds.remove(lastSeeds.keys.first())
     }
 
     /** With the server gone, search what's on the phone rather than nothing at all. */
@@ -1054,6 +1308,8 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         _searchOpen.value = false
         _query.value = ""
         searchDepth = -1
+        lastSearched = null
+        _searching.value = false
     }
 
     // --- sonic similarity --------------------------------------------------
@@ -1508,5 +1764,41 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
         /** `getAlbumList2`'s documented maximum `size`. */
         const val SUBSONIC_PAGE = 500
+
+        /**
+         * How long typing has to pause before the query is sent.
+         *
+         * Short enough that it reads as "while I type" rather than "after I stop",
+         * long enough that a whole word is one request instead of six.
+         */
+        const val SEARCH_DEBOUNCE_MS = 220L
+
+        /**
+         * Below this, don't ask. One or two letters match most of a library, so the
+         * server does real work to return something nobody wanted; the IME Search key
+         * still forces it for anyone who means it.
+         */
+        const val MIN_LIVE_QUERY = 2
+
+        /** Enough to cover backspacing through a word, and no more. */
+        const val SEARCH_CACHE_SIZE = 24
+
+        /**
+         * Below this, a saved queue is someone starting something rather than
+         * stopping mid-listen, and "resume" is the wrong word for it.
+         */
+        const val RESUME_MIN_POSITION_MS = 15_000L
+
+        /**
+         * Top up while this many tracks are still ahead of the playhead.
+         *
+         * Two, not zero: ExoPlayer buffers across a boundary it can already see, so
+         * appending early is what keeps the transition gapless. Waiting for the queue
+         * to empty would mean silence, a fetch and a fresh prepare.
+         */
+        const val RADIO_TOPUP_AT = 2
+
+        /** How many to add each time. Enough to cover a fetch failing next round. */
+        const val RADIO_BATCH = 10
     }
 }

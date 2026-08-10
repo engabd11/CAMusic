@@ -8,6 +8,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -35,12 +36,66 @@ import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.ArtistDetailViewModel
+import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
 import com.engabd.sendpin.ui.viewmodel.ArtistDetailViewModelFactory
 
 /** A section label used between content blocks. */
 @Composable
 private fun Shelf(text: String) {
     Box(Modifier.padding(top = 12.dp, bottom = 2.dp)) { SectionLabel(text) }
+}
+
+/**
+ * Who else to try, as a row of faces.
+ *
+ * Only artists the server actually holds: `getArtistInfo2` also returns last.fm
+ * suggestions that aren't in the library, filed under `id="-1"`, and a face that goes
+ * nowhere when tapped is worse than a shorter row. Those are dropped in the client.
+ */
+@Composable
+private fun SimilarArtists(artists: List<MaItem>, onClick: (MaItem) -> Unit) {
+    Column(Modifier.padding(top = 14.dp)) {
+        Shelf("Similar artists")
+        Spacer(Modifier.height(8.dp))
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 20.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            itemsIndexed(
+                artists,
+                key = { i, a -> "similar:$i:${a.itemId}" },
+            ) { index, artist ->
+                Column(
+                    Modifier.width(84.dp).clickable { onClick(artist) },
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    val art = rememberArtRequest(artist.image, pixels = 200)
+                    Box(
+                        Modifier.size(72.dp).clip(CircleShape).background(Glass),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        if (art != null) {
+                            AsyncImage(
+                                model = art,
+                                contentDescription = null,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                        } else {
+                            GradientAvatar(artist.name.firstOrNull()?.uppercase() ?: "?", index)
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        artist.name, color = TextSecondary, fontFamily = AppFont,
+                        fontWeight = FontWeight.Bold, fontSize = 11.sp, lineHeight = 14.sp,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+            }
+        }
+    }
 }
 
 /**
@@ -86,6 +141,8 @@ fun ArtistDetailScreen(
     artUrl: String?,
     onBack: () -> Unit,
     onAlbumClick: (MaItem) -> Unit,
+    /** Open another artist — the similar-artists row. */
+    onArtistClick: (String, String) -> Unit = { _, _ -> },
     /** [itemId] is a placeholder and [name] is the real key — see the album screen. */
     resolveByName: Boolean = false,
 ) {
@@ -103,6 +160,8 @@ fun ArtistDetailScreen(
     val loading by viewModel.loading.collectAsState()
     val error by viewModel.error.collectAsState()
     val biography by viewModel.biography.collectAsState()
+    val top by viewModel.topTracks.collectAsState()
+    val similar by viewModel.similar.collectAsState()
     val snackbar = remember { SnackbarHostState() }
     var actionsFor by remember { mutableStateOf<MaItem?>(null) }
 
@@ -170,6 +229,30 @@ fun ArtistDetailScreen(
                         item(key = "bio") { Biography(bio) }
                     }
 
+                    // ── Top tracks ───────────────────────────────────────────
+                    // Before the discography, because "what should I put on" is a
+                    // faster question than "what did they release". Both endpoints
+                    // behind this were already written and had no callers.
+                    (top as? NowPlayingViewModel.Load.Ready)?.value
+                        ?.takeIf { it.isNotEmpty() }
+                        ?.let { tracks ->
+                            item(key = "top_header") { Shelf("Top tracks") }
+                            itemsIndexed(
+                                tracks,
+                                key = { i, t -> "top:$i:${t.itemId}" },
+                                contentType = { _, _ -> "track" },
+                            ) { i, track ->
+                                TrackRow(
+                                    track = track,
+                                    index = i,
+                                    accent = artistPalette.accent,
+                                    onPlay = { viewModel.playTrack(track) },
+                                    onFavorite = { viewModel.toggleTrackFavorite(track) },
+                                    onLongPress = { actionsFor = track },
+                                )
+                            }
+                        }
+
                     // Albums. Keyed by index as well as id: MA numbers library items
                     // per media type and can answer the same album twice, and a
                     // duplicate key is a hard crash in a lazy list.
@@ -190,6 +273,19 @@ fun ArtistDetailScreen(
                     } else if (!loading) {
                         item { EmptyState("No albums", "This artist has no albums in your library.") }
                     }
+
+                    // ── Similar artists ──────────────────────────────────────
+                    // Navidrome has always been able to answer this; the app was
+                    // asking `getArtistInfo2` for count=0 of them.
+                    (similar as? NowPlayingViewModel.Load.Ready)?.value
+                        ?.takeIf { it.isNotEmpty() }
+                        ?.let { artists ->
+                            item(key = "similar") {
+                                SimilarArtists(artists) { a ->
+                                    onArtistClick(a.itemId, a.provider)
+                                }
+                            }
+                        }
                 }
             }
 

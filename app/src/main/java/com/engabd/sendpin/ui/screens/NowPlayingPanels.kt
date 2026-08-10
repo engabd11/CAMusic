@@ -1,6 +1,7 @@
 package com.engabd.sendpin.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -420,11 +421,27 @@ fun SleepTimerChip(viewModel: NowPlayingViewModel) {
     }
 
     if (picking) {
+        // Not focusable. A focusable popup takes window focus, which puts the activity
+        // through its soft-input resize path, and the album art behind — the only
+        // weighted child of the player's column — absorbs the whole delta and visibly
+        // shrinks. The quality card was moved out of a Popup entirely for this; this
+        // one still needs its own window to escape the sheet, so it settles for not
+        // taking focus, with a scrim for dismissal and a BackHandler for the gesture
+        // focusability would otherwise have provided.
+        BackHandler { picking = false }
         Popup(
             popupPositionProvider = WindowCenterPosition,
-            onDismissRequest = { picking = false },
-            properties = PopupProperties(focusable = true),
+            properties = PopupProperties(focusable = false, dismissOnClickOutside = false),
         ) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) { picking = false },
+                contentAlignment = Alignment.Center,
+            ) {
             var sliderMinutes by remember { mutableStateOf(minutes.coerceAtLeast(5)) }
             Column(
                 Modifier
@@ -432,6 +449,11 @@ fun SleepTimerChip(viewModel: NowPlayingViewModel) {
                     .clip(RoundedCornerShape(20.dp))
                     .background(Ink2)
                     .border(1.dp, Hairline, RoundedCornerShape(20.dp))
+                    // Swallow taps so the card doesn't dismiss under its own content.
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) { }
                     .padding(18.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
@@ -471,6 +493,7 @@ fun SleepTimerChip(viewModel: NowPlayingViewModel) {
                         viewModel.setSleepTimer(sliderMinutes); picking = false
                     }
                 }
+            }
             }
         }
     }

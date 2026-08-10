@@ -442,6 +442,16 @@ fun App() {
                                 val n = android.net.Uri.encode(artistName)
                                 navController.navigate("artist/-/${android.net.Uri.encode(artistProvider)}?name=$n&byName=true")
                             },
+                            // The related shelf goes album → album. `launchSingleTop`
+                            // is deliberate: hopping sideways through five related
+                            // records should not leave five copies on the back stack.
+                            onAlbumClick = { other ->
+                                val n = android.net.Uri.encode(other.name)
+                                val art = android.net.Uri.encode(other.image.orEmpty())
+                                navController.navigate(
+                                    "album/${android.net.Uri.encode(other.itemId)}/${android.net.Uri.encode(other.provider)}?name=$n&art=$art"
+                                )
+                            },
                         )
                         }
                     }
@@ -475,6 +485,14 @@ fun App() {
                                 val n = android.net.Uri.encode(album.name)
                                 val a = album.image?.let { android.net.Uri.encode(it) } ?: ""
                                 navController.navigate("album/${android.net.Uri.encode(album.itemId)}/${android.net.Uri.encode(album.provider)}?name=$n&art=$a")
+                            },
+                            // Similar artists carry a real id (the "-1" last.fm-only
+                            // suggestions are dropped in the client), so this one does
+                            // not need the by-name lookup the album screen does.
+                            onArtistClick = { id, prov ->
+                                navController.navigate(
+                                    "artist/${android.net.Uri.encode(id)}/${android.net.Uri.encode(prov)}"
+                                )
                             },
                         )
                     }

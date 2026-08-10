@@ -2,6 +2,11 @@ package com.engabd.sendpin.ui.screens
 
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -23,8 +28,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
@@ -32,12 +39,14 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Popup
-import androidx.compose.ui.window.PopupProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
+import coil.compose.AsyncImage
+import com.engabd.sendpin.audio.FormatNegotiator
 import com.engabd.sendpin.audio.ReplayGain
 import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.data.AppSettings
+import com.engabd.sendpin.ma.MaDspDetails
+import com.engabd.sendpin.ma.MaLoudness
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
@@ -68,6 +77,9 @@ fun NowPlayingScreen(
     var speakers by remember { mutableStateOf(false) }
     // Lyrics are a *mode* of the player, not an overlay: they take the cover's place.
     var showLyrics by rememberSaveable { mutableStateOf(false) }
+    // Hoisted out of the badge so the detail can be drawn as a sibling of the whole
+    // player rather than inside the transport row — see QualityDetailOverlay.
+    var showQuality by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         viewModel.toast.collect { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }
@@ -296,7 +308,7 @@ fun NowPlayingScreen(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
-                        TappableQualityChip(playing = st.quality, source = st.sourceQuality, provider = st.streamProvider, localSession = st.isLocalSession)
+                        TappableQualityChip(playing = st.quality) { showQuality = true }
                         PlayButton(st.isPlaying) { viewModel.playPause() }
                     }
                     TransportIcon(Icons.Default.SkipNext, "Next", 26.dp) { viewModel.next() }
@@ -350,6 +362,21 @@ fun NowPlayingScreen(
             if (speakers) {
                 SpeakerPickerSheet(onClose = { speakers = false })
             }
+            // A sibling of the player column, not a child of it — this is what stops
+            // the panel moving the album art. See QualityDetailOverlay.
+            QualityDetailOverlay(
+                visible = showQuality,
+                playing = st.quality,
+                source = st.sourceQuality,
+                onDismiss = { showQuality = false },
+                provider = st.streamProvider,
+                localSession = st.isLocalSession,
+                dsp = st.dsp,
+                loudness = st.loudness,
+                artworkUrl = st.artworkUrl,
+                title = st.title,
+                artist = st.artist,
+            )
         }
     }
 }
@@ -401,141 +428,293 @@ private fun TopBar(playerName: String, isSelf: Boolean, groupSize: Int, onOpenSp
 }
 
 /**
- * The tappable quality badge: shows what's actually playing, and tapping reveals
- * both the original source format and the playing (output) format.
+ * The tappable quality badge: what's actually playing, and a way in to the detail.
  *
- * The detail is a real [Popup] — its own window, centred on the screen. Drawn
- * inline it grew the badge's own Box, which shoved the transport row apart every
- * time it opened; an info panel has no business moving the play button.
+ * The badge only reports the tap. Where the detail is *drawn* is the screen's
+ * business, and it matters more than it looks — see [QualityDetailOverlay].
  */
 @Composable
 fun TappableQualityChip(
     playing: StreamQuality?,
-    source: StreamQuality?,
-    provider: String? = null,
-    /** This phone is decoding, so its ReplayGain setting is the one in effect. */
-    localSession: Boolean = false,
+    onClick: () -> Unit,
 ) {
-    var showDetail by remember { mutableStateOf(false) }
-
-    Box(Modifier.clickable { showDetail = true }) {
+    Box(Modifier.clip(RoundedCornerShape(50)).clickable(onClick = onClick)) {
         if (playing == null) QualityPill("-", lossless = false, compact = true)
         else QualityPill(playing.label, hiRes = playing.hiRes, lossless = playing.lossless, compact = true)
     }
+}
 
-    if (showDetail) {
-        BackHandler { showDetail = false }
-        // Deliberately NOT a focusable popup. A focusable popup takes window focus,
-        // which puts the activity through its soft-input resize path — the album art
-        // behind visibly shrank the moment the badge was tapped. This popup never takes
-        // focus; the scrim below is what closes it, and BackHandler covers the back
-        // gesture that focusability would otherwise have given us.
-        Popup(
-            popupPositionProvider = WindowCenterPosition,
-            properties = PopupProperties(focusable = false, dismissOnClickOutside = false),
+/**
+ * The quality detail, drawn as an overlay sibling in the player's root `Box`.
+ *
+ * Where this lives is load-bearing. The album cover is the only `weight(1f)` child of
+ * the player's column, so it absorbs every dp any sibling gains — and this panel has
+ * now moved twice because of it. Drawn inline it grew the badge's own column, which
+ * grew the transport row, which shrank the art. Moved into a *focusable* `Popup` it
+ * took window focus, put the activity through its soft-input resize path, and shrank
+ * the art again. A non-focusable `Popup` fixed that, but it is still a second window
+ * with its own insets — a fix by avoidance rather than by construction.
+ *
+ * An overlay sibling inside a `Box` cannot change any sibling's measured size, and
+ * there is no window involved to have opinions about focus or insets. The class of bug
+ * is gone rather than dodged.
+ */
+@Composable
+fun BoxScope.QualityDetailOverlay(
+    visible: Boolean,
+    playing: StreamQuality?,
+    source: StreamQuality?,
+    onDismiss: () -> Unit,
+    provider: String? = null,
+    /** This phone is decoding, so its ReplayGain setting is the one in effect. */
+    localSession: Boolean = false,
+    /** What MA's per-player DSP did to this stream; null on the local path. */
+    dsp: MaDspDetails? = null,
+    loudness: MaLoudness = MaLoudness(),
+    artworkUrl: String? = null,
+    title: String = "",
+    artist: String = "",
+) {
+    if (visible) BackHandler { onDismiss() }
+
+    // Two visibilities off one flag: the scrim only fades, because scaling a
+    // full-bleed wash drags its edges in off the screen.
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(Motion.effects()),
+        exit = fadeOut(Motion.effects()),
+        modifier = Modifier.matchParentSize(),
+    ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(Ink.copy(alpha = 0.72f))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) { onDismiss() }
+        )
+    }
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(Motion.effects()) + scaleIn(Motion.spatial(), 0.92f),
+        exit = fadeOut(Motion.effects()) + scaleOut(Motion.effects(), 0.96f),
+        modifier = Modifier.align(Alignment.Center),
+    ) {
+        // Swallow taps on the card so it doesn't dismiss under its own content.
+        Box(
+            Modifier.clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+            ) { }
         ) {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                    ) { showDetail = false },
-                contentAlignment = Alignment.Center,
-            ) {
-                // Swallow taps on the card itself so it doesn't dismiss under its own
-                // content.
-                Box(
-                    Modifier.clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                    ) { }
-                ) {
-                    QualityDetailCard(
-                        playing = playing,
-                        source = source,
-                        provider = provider,
-                        localSession = localSession,
-                    )
-                }
-            }
+            QualityDetailCard(
+                playing = playing,
+                source = source,
+                provider = provider,
+                localSession = localSession,
+                dsp = dsp,
+                loudness = loudness,
+                artworkUrl = artworkUrl,
+                title = title,
+                artist = artist,
+            )
         }
     }
 }
 
-/** A small card showing both the original source and the playing format. */
+/**
+ * Everything knowable about what is coming out of the pipe, lit by the album.
+ *
+ * The pill it opens from is a boast; this is the receipt behind it. Three blocks —
+ * what the format is, what the output chain did to it, and what happened to the level
+ * and where the bytes came from — because a flat list of eleven grey lines is a
+ * spec sheet, and this is meant to be worth opening twice.
+ */
 @Composable
 private fun QualityDetailCard(
     playing: StreamQuality?,
     source: StreamQuality?,
     provider: String? = null,
     localSession: Boolean = false,
+    dsp: MaDspDetails? = null,
+    loudness: MaLoudness = MaLoudness(),
+    artworkUrl: String? = null,
+    title: String = "",
+    artist: String = "",
 ) {
     val accent = LocalAccent.current
+    val palette = LocalPalette.current
     // Only meaningful on the local path — Music Assistant does its own gain
     // server-side, so the app's setting has no say in what a speaker plays.
     val context = LocalContext.current
     val settings = remember(context) { AppSettings(context) }
     val gainMode by settings.replayGainMode.collectAsState(initial = ReplayGain.ALBUM)
+    val bitPerfect by settings.bitPerfect24Bit.collectAsState(initial = false)
     // Both rows always render when both readings exist, and the line underneath says
     // whether they differ. Hiding "Source" on a match was the old behaviour, and it
     // meant the common case — a direct, untranscoded stream — showed a single
     // unexplained row that read as the card having failed to load the other one.
     val transcoded = playing != null && source != null && !source.sameFormatAs(playing)
-    Column(
-        Modifier
-            .widthIn(max = 300.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .background(Ink2)
-            .border(1.dp, Hairline, RoundedCornerShape(16.dp))
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        Text(
-            "Quality",
-            color = TextFaint, fontFamily = AppFont, fontWeight = FontWeight.Bold,
-            fontSize = 11.sp, letterSpacing = 1.sp,
-        )
-        QualityRow("Playing", playing, accent)
-        if (source != null) QualityRow("Source", source, accent)
-        if (playing != null && source != null) {
-            Text(
-                if (transcoded) "Transcoded from ${source.label} to ${playing.label}"
-                else "Direct - no transcoding",
-                color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
-            )
-        }
-        // ReplayGain. The card says whether the tag is being *acted on*, not just
-        // that the file carries one: on the local path the applied figure can differ
-        // from the tag (a boost is capped to keep it out of the ceiling), and on a
-        // Music Assistant player the app's setting has no say at all.
-        source?.gainLabel?.let { tag ->
-            val applied = if (localSession) ReplayGain.decibels(source, gainMode) else null
-            Text(
+    val shape = RoundedCornerShape(20.dp)
+    val art = rememberArtRequest(artworkUrl, pixels = 96)
+
+    Box(Modifier.padding(24.dp)) {
+        // The album's own colour under the card rather than a grey drop shadow, the
+        // same way the play button and the hi-res pill are lit.
+        CastGlow(palette.swatch(0), shape, blurRadius = 40.dp, alpha = 0.30f, offsetY = 10.dp)
+        Column(
+            Modifier
+                .widthIn(max = 340.dp)
+                .clip(shape)
+                .background(Brush.verticalGradient(listOf(Ink2, accent.a(0.10f))))
+                .border(1.dp, accent.a(0.30f), shape)
+                .padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            // Whose receipt this is. Without it the card is a set of numbers that
+            // could belong to any track on the queue.
+            if (title.isNotBlank()) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    if (art != null) {
+                        AsyncImage(
+                            model = art,
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.size(38.dp).clip(RoundedCornerShape(8.dp)),
+                        )
+                    }
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+                        Text(
+                            title, color = TextPrimary, fontFamily = AppFont,
+                            fontWeight = FontWeight.Bold, fontSize = 13.sp,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        )
+                        if (artist.isNotBlank()) {
+                            Text(
+                                artist, color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+            }
+
+            // ── Format ────────────────────────────────────────────────────
+            QualityBlock("Format") {
+                QualityRow("Playing", playing, accent)
+                if (source != null) QualityRow("Source", source, accent)
+                if (playing != null && source != null) {
+                    QualityNote(
+                        if (transcoded) "Transcoded from ${source.label} to ${playing.label}"
+                        else "Direct - no transcoding",
+                    )
+                }
+                val facts = listOfNotNull(
+                    (playing ?: source)?.channelLabel,
+                    (source ?: playing)?.sizeBytes?.takeIf { it > 0 }?.let { fileSize(it) },
+                )
+                if (facts.isNotEmpty()) QualityNote(facts.joinToString(" • "))
+            }
+
+            // ── Output ────────────────────────────────────────────────────
+            // What happens to the stream after the format is decided: this phone's
+            // own 24-bit setting, whether the Android mixer is resampling under it,
+            // and — on a Music Assistant player — whether MA's DSP chain ran.
+            val deviceRate = remember(bitPerfect) { FormatNegotiator.deviceOutputQuality(bitPerfect) }
+            val dspState = dsp?.state
+            val showOutput = localSession || dspState != null
+            if (showOutput) {
+                QualityBlock("Output") {
+                    if (localSession) {
+                        QualityNote(if (bitPerfect) "Bit-perfect on - 24-bit requested where the source has it" else "Bit-perfect off - 16-bit output")
+                        val out = deviceRate.sampleRateHz
+                        val inRate = playing?.sampleRateHz ?: 0
+                        if (out > 0 && inRate > 0 && out != inRate) {
+                            QualityNote(
+                                "Resampled ${StreamQuality.khz(inRate)} - ${StreamQuality.khz(out)} kHz by the Android mixer",
+                                warn = true,
+                            )
+                        } else if (out > 0) {
+                            QualityNote("Device output ${StreamQuality.khz(out)} kHz")
+                        }
+                    }
+                    // Whether MA's own equaliser is in the path. Worth saying here
+                    // because the DSP panel can be full of carefully set bands that
+                    // the server is not applying, and nothing else would tell you.
+                    if (dsp != null && dspState != null && !localSession) {
+                        QualityNote(
+                            when (dspState) {
+                                "enabled" -> "DSP active" +
+                                    if (dsp.filterCount > 0) " - ${dsp.filterCount} filters" else ""
+                                "disabled" -> "DSP not applied to this stream"
+                                else -> "DSP ${dspState.replace('_', ' ')}"
+                            },
+                            warn = !dsp.active,
+                        )
+                    }
+                }
+            }
+
+            // ── Level and origin ──────────────────────────────────────────
+            val gainLine = source?.gainLabel?.let { tag ->
+                val applied = if (localSession) ReplayGain.decibels(source, gainMode) else null
                 when {
                     !localSession -> "ReplayGain $tag - applied by Music Assistant"
                     applied == null -> "ReplayGain $tag - not applied"
                     else -> "ReplayGain %+.1f dB applied".format(applied)
-                },
-                color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
-            )
-        }
-        // Where Music Assistant pulled the bytes from — `StreamDetails.provider`.
-        //
-        // Named in full rather than as "From X". It sat in the corner badge once and
-        // was read as the thing playing; moving it here kept the ambiguity, because
-        // "From Subsonic" on a screen whose player is MA still reads as a claim about
-        // the library or the player. It is neither: MA's own library is backed by
-        // providers, and this says which one held the file. Worth keeping — it is the
-        // difference between a local rip and a lossy stream — but only if it cannot be
-        // mistaken for anything else.
-        provider?.takeIf { !localSession }?.let {
-            Text(
-                "Music Assistant fetched this from $it",
-                color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
-            )
+                }
+            }
+            // Where Music Assistant pulled the bytes from — `StreamDetails.provider`.
+            // Named in full rather than as "From X": "From Subsonic" on a screen whose
+            // player is MA reads as a claim about the library or the player, and it is
+            // neither. MA's own library is backed by providers, and this says which one
+            // held the file — the difference between a local rip and a lossy stream.
+            val providerLine = provider?.takeIf { !localSession }
+                ?.let { "Music Assistant fetched this from $it" }
+            // What MA did to the level, which the card has never been able to say.
+            // A carefully mastered record pulled to a target LUFS looked exactly like
+            // one left alone, and the difference is the whole reason someone opens
+            // this card twice.
+            val loudnessLine = loudness.summary?.takeIf { !localSession }
+            if (gainLine != null || providerLine != null || loudnessLine != null) {
+                QualityBlock("Level and origin") {
+                    loudnessLine?.let { QualityNote(it) }
+                    gainLine?.let { QualityNote(it) }
+                    providerLine?.let { QualityNote(it) }
+                }
+            }
         }
     }
+}
+
+/** An eyebrow and the lines under it, so the card reads as sections not a list. */
+@Composable
+private fun QualityBlock(title: String, content: @Composable ColumnScope.() -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+        SectionLabel(title)
+        content()
+    }
+}
+
+/** One explanatory line. [warn] for the ones that mean something is not happening. */
+@Composable
+private fun QualityNote(text: String, warn: Boolean = false) {
+    Text(
+        text,
+        color = if (warn) WarnAmber else TextMuted,
+        fontFamily = AppFont, fontSize = 11.sp, lineHeight = 15.sp,
+    )
+}
+
+/** `4.2 MB`, `812 KB`. */
+private fun fileSize(bytes: Long): String = when {
+    bytes >= 1024L * 1024 * 1024 -> String.format("%.1f GB", bytes / (1024.0 * 1024 * 1024))
+    bytes >= 1024L * 1024 -> String.format("%.1f MB", bytes / (1024.0 * 1024))
+    else -> "${bytes / 1024} KB"
 }
 
 @Composable

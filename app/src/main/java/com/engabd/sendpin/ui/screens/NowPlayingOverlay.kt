@@ -77,6 +77,9 @@ fun NowPlayingOverlay(
     var speakers by remember { mutableStateOf(false) }
     // Lyrics are a *mode* of the player, not an overlay: they take the cover's place.
     var showLyrics by rememberSaveable { mutableStateOf(false) }
+    // Hoisted out of the badge so the detail can be drawn as a sibling of the whole
+    // player rather than inside the transport row — see QualityDetailOverlay.
+    var showQuality by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         viewModel.toast.collect { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }
@@ -378,7 +381,7 @@ fun NowPlayingOverlay(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
-                        TappableQualityChip(playing = st.quality, source = st.sourceQuality, provider = st.streamProvider, localSession = st.isLocalSession)
+                        TappableQualityChip(playing = st.quality) { showQuality = true }
                         PlayButton(st.isPlaying) { viewModel.playPause() }
                     }
                     TransportIcon(Icons.Default.SkipNext, "Next", 26.dp) { viewModel.next() }
@@ -432,6 +435,21 @@ fun NowPlayingOverlay(
             if (speakers) {
                 SpeakerPickerSheet(onClose = { speakers = false })
             }
+            // A sibling of the player column, not a child of it — this is what stops
+            // the panel moving the album art. See QualityDetailOverlay.
+            QualityDetailOverlay(
+                visible = showQuality,
+                playing = st.quality,
+                source = st.sourceQuality,
+                onDismiss = { showQuality = false },
+                provider = st.streamProvider,
+                localSession = st.isLocalSession,
+                dsp = st.dsp,
+                loudness = st.loudness,
+                artworkUrl = st.artworkUrl,
+                title = st.title,
+                artist = st.artist,
+            )
         }
     }
 }

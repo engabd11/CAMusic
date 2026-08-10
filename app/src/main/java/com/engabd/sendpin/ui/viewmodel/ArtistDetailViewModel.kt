@@ -10,6 +10,7 @@ import com.engabd.sendpin.discovery.PlayerIdentity
 import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ma.MaRepository
 import com.engabd.sendpin.subsonic.SubsonicClient
+import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel.Load
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -19,6 +20,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /**
@@ -97,6 +99,29 @@ class ArtistDetailViewModel(
     private val _biography = MutableStateFlow<String?>(null)
     val biography: StateFlow<String?> = _biography
 
+    /**
+     * The artist's best-known tracks.
+     *
+     * `music/artists/top_tracks` has been implemented in [MaRepository] with no
+     * callers at all, and Subsonic's `getTopSongs` was never bound. Both are one
+     * call, and "what should I put on" is the first question an artist page should
+     * answer.
+     */
+    private val _topTracks = MutableStateFlow<Load<List<MaItem>>>(Load.Idle)
+    val topTracks: StateFlow<Load<List<MaItem>>> = _topTracks
+
+    /**
+     * Who else to try. `music/artists/similar_artists` was also implemented and
+     * uncalled, and on the Navidrome side `getArtistInfo2` was being asked for
+     * `count=0` similar artists — the app was telling the server not to send them.
+     */
+    private val _similar = MutableStateFlow<Load<List<MaItem>>>(Load.Idle)
+    val similar: StateFlow<Load<List<MaItem>>> = _similar
+
+    /** Outbound links from the server's metadata, when it had any. */
+    private val _lastFmUrl = MutableStateFlow<String?>(null)
+    val lastFmUrl: StateFlow<String?> = _lastFmUrl
+
     private val _toast = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val toast: SharedFlow<String> = _toast.asSharedFlow()
 
@@ -125,8 +150,13 @@ class ArtistDetailViewModel(
                     val (artistMeta, albumList) = sc.artistDetail(ref.itemId)
                     if (artistMeta != null) { ref = artistMeta; _artist.value = artistMeta }
                     _albums.value = albumList.distinctBy { it.itemId }
-                    // Fetch biography from Navidrome's getArtistInfo2.
-                    _biography.value = runCatching { sc.getArtistInfo2(ref.itemId) }.getOrNull()
+                    // One call now carries the biography, the links and the similar
+                    // artists it was previously asked not to send.
+                    runCatching { sc.artistInfo(ref.itemId, similarCount = 12) }.getOrNull()?.let {
+                        _biography.value = it.biography
+                        _lastFmUrl.value = it.lastFmUrl
+                        _similar.value = Load.Ready(it.similar)
+                    } ?: run { _similar.value = Load.Ready(emptyList()) }
                 } else {
                     if (!resolveRef()) return@launch
                     val artistMeta = maRepo.getArtist(ref)
@@ -140,11 +170,38 @@ class ArtistDetailViewModel(
                     _biography.value = ref.description
                         ?: artistMeta?.description
                         ?: navidromeBiographyFor(ref.name)
+                    _similar.value = Load.Ready(
+                        runCatching { maRepo.similarArtists(ref).distinctBy { it.itemId } }
+                            .getOrDefault(emptyList()),
+                    )
                 }
+                loadTopTracks()
             } catch (e: Exception) {
                 _error.value = e.message ?: "Failed to load artist"
             }
             _loading.value = false
+        }
+    }
+
+    /**
+     * Top tracks, after the albums rather than before them.
+     *
+     * Its own coroutine and its own load state: this is a bonus shelf, and an artist
+     * whose top tracks time out should still show a discography.
+     */
+    private fun loadTopTracks() {
+        viewModelScope.launch {
+            _topTracks.value = Load.Loading
+            val tracks = runCatching {
+                if (isSubsonic) {
+                    // getTopSongs is the one Subsonic endpoint keyed by artist *name*
+                    // rather than id.
+                    subsonic?.getTopSongs(ref.name, count = 10).orEmpty()
+                } else {
+                    maRepo.topTracks(ref).take(10)
+                }
+            }.getOrDefault(emptyList())
+            _topTracks.value = Load.Ready(tracks)
         }
     }
 
@@ -320,6 +377,62 @@ class ArtistDetailViewModel(
                     }
                 )
             } catch (e: Exception) { _toast.tryEmit(e.message ?: "Couldn't play") }
+        }
+    }
+
+    /**
+     * Play one of the top tracks, with the rest of that shelf behind it.
+     *
+     * The shelf is the queue, not the artist's whole catalogue: tapping the third of
+     * ten best-known songs means "play these", and replacing that with 300 album
+     * tracks would be a different request than the one made.
+     */
+    fun playTrack(track: MaItem) {
+        val shelf = (_topTracks.value as? Load.Ready)?.value.orEmpty()
+        viewModelScope.launch {
+            try {
+                if (isSubsonic) {
+                    val start = shelf.indexOfFirst { it.itemId == track.itemId }.coerceAtLeast(0)
+                    localPlayer.setShuffle(false)
+                    localPlayer.setQueue(localTracks(shelf), start)
+                } else {
+                    // MA's play_media with "replace" always starts at index 0, so the
+                    // tapped track goes first and the rest follows it.
+                    track.uri?.let { maRepo.playOn(playTarget(), listOf(it), "replace") }
+                    val rest = shelf.mapNotNull { it.uri }.filter { it != track.uri }
+                    if (rest.isNotEmpty()) maRepo.playOn(playTarget(), rest, "add")
+                    maRepo.play(playTarget())
+                }
+                _toast.tryEmit("Playing ${track.name}")
+            } catch (e: Exception) {
+                _toast.tryEmit(e.message ?: "Couldn't play")
+            }
+        }
+    }
+
+    /** Star or unstar one of the top tracks, optimistically. */
+    fun toggleTrackFavorite(track: MaItem) {
+        val want = !track.favorite
+        _topTracks.update { load ->
+            if (load !is Load.Ready) load
+            else Load.Ready(load.value.map { if (it.itemId == track.itemId) it.copy(favorite = want) else it })
+        }
+        viewModelScope.launch {
+            val ok = runCatching {
+                if (isSubsonic) { subsonic?.setStarred(track, want); true }
+                else {
+                    if (want) maRepo.addFavorite(track) else maRepo.removeFavorite(track)
+                    true
+                }
+            }.getOrDefault(false)
+            if (!ok) {
+                // Put it back rather than leaving the heart lying about the server.
+                _topTracks.update { load ->
+                    if (load !is Load.Ready) load
+                    else Load.Ready(load.value.map { if (it.itemId == track.itemId) it.copy(favorite = !want) else it })
+                }
+                _toast.tryEmit("Couldn't update favourite")
+            }
         }
     }
 

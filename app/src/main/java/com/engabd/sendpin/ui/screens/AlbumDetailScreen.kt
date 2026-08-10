@@ -9,6 +9,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -25,6 +27,7 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -36,6 +39,7 @@ import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.AlbumDetailViewModel
+import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
 
 /**
  * The album detail screen — a Symphonium-style view where the album art leads,
@@ -56,6 +60,8 @@ fun AlbumDetailScreen(
     artUrl: String?,
     onBack: () -> Unit,
     onArtistClick: (String, String) -> Unit = { _, _ -> },
+    /** Open another album — the related shelf's rows. */
+    onAlbumClick: (MaItem) -> Unit = {},
 ) {
     val context = LocalContext.current
     val viewModel: AlbumDetailViewModel = viewModel(
@@ -91,6 +97,30 @@ fun AlbumDetailScreen(
     // Multi-disc grouping: when tracks span 2+ discs, a "Disc N" header goes between
     // groups. A single disc (or all null/1) renders flat as before.
     val discGroups = remember(tracks) { tracks.groupBy { it.discNumber ?: 1 } }
+
+    val musicBrainzId by viewModel.musicBrainzId.collectAsState()
+    val related by viewModel.related.collectAsState()
+    val relatedTitle by viewModel.relatedTitle.collectAsState()
+
+    // The facts worth stating about a record, gathered once rather than inside the
+    // LazyListScope body (which is not composable and has no `remember`).
+    val facts = remember(album, tracks, totalDuration, discGroups) {
+        val a = album
+        buildList {
+            a?.year?.takeIf { it > 0 }?.let { add("Released" to it.toString()) }
+            a?.genres?.takeIf { it.isNotEmpty() }?.let { add("Genre" to it.take(3).joinToString(", ")) }
+            if (discGroups.size > 1) add("Discs" to discGroups.size.toString())
+            if (tracks.isNotEmpty()) {
+                add("Tracks" to tracks.size.toString())
+                add("Length" to formatDuration(totalDuration))
+            }
+            // What the record is actually stored as — the audiophile question, and
+            // already on every track row individually.
+            tracks.mapNotNull { it.audioFormat?.quality?.shortLabel }.distinct()
+                .takeIf { it.isNotEmpty() }
+                ?.let { add("Format" to it.joinToString(", ")) }
+        }
+    }
 
     CompositionLocalProvider(
         LocalAccent provides albumPalette.accent,
@@ -133,11 +163,6 @@ fun AlbumDetailScreen(
                         )
                     }
 
-                    // Liner notes, when the server has them (Navidrome's getAlbumInfo2).
-                    notes?.takeIf { it.isNotBlank() }?.let { text ->
-                        item(key = "notes") { AlbumNotes(text) }
-                    }
-
                     // Track list
                     if (loading && tracks.isEmpty()) {
                         items(6, contentType = { "skeleton" }) { SkeletonTrackRow() }
@@ -172,6 +197,35 @@ fun AlbumDetailScreen(
                             runningIndex += discTracks.size
                         }
                     }
+
+                    // ── About ────────────────────────────────────────────────
+                    // After the songs, not before them: nobody opens a record to
+                    // read about it first. The notes were Navidrome-only until now
+                    // for want of one assignment on the MA path.
+                    if (!notes.isNullOrBlank() || facts.isNotEmpty()) {
+                        item(key = "about") {
+                            AboutAlbum(
+                                notes = notes,
+                                facts = facts,
+                                musicBrainzId = musicBrainzId,
+                            )
+                        }
+                    }
+
+                    // ── Related ──────────────────────────────────────────────
+                    // Hidden entirely when there is nothing to say, rather than a
+                    // heading over an empty row.
+                    (related as? NowPlayingViewModel.Load.Ready)?.value
+                        ?.takeIf { it.isNotEmpty() }
+                        ?.let { albums ->
+                            item(key = "related") {
+                                RelatedAlbums(
+                                    title = relatedTitle,
+                                    albums = albums,
+                                    onClick = onAlbumClick,
+                                )
+                            }
+                        }
                 }
             }
 
@@ -478,6 +532,109 @@ private fun AlbumNotes(text: String) {
             .clickable { expanded = !expanded }
             .padding(horizontal = 20.dp, vertical = 8.dp),
     )
+}
+
+/**
+ * What the record is, under what it sounds like.
+ *
+ * Sits after the track list because that is the order the questions arrive in: play
+ * it, then wonder about it. The facts grid is the part that is genuinely new — year
+ * and genre were buried in one comma-joined line in the hero, and the formats the
+ * album is *stored* in were only visible per track.
+ */
+@Composable
+private fun AboutAlbum(notes: String?, facts: List<Pair<String, String>>, musicBrainzId: String?) {
+    Column(Modifier.padding(top = 26.dp)) {
+        Box(Modifier.padding(horizontal = 20.dp)) { SectionLabel("About") }
+        Spacer(Modifier.height(10.dp))
+        if (!notes.isNullOrBlank()) {
+            AlbumNotes(notes)
+            Spacer(Modifier.height(6.dp))
+        }
+        facts.forEach { (label, value) ->
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 5.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    label, color = TextFaint, fontFamily = AppFont,
+                    fontWeight = FontWeight.Bold, fontSize = 12.sp,
+                    modifier = Modifier.width(72.dp),
+                )
+                Text(
+                    value, color = TextSecondary, fontFamily = AppFont, fontSize = 12.sp,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+        musicBrainzId?.takeIf { it.isNotBlank() }?.let { mbid ->
+            val uri = LocalUriHandler.current
+            Text(
+                "Look up on MusicBrainz",
+                color = LocalAccent.current, fontFamily = AppFont,
+                fontWeight = FontWeight.Bold, fontSize = 12.sp,
+                modifier = Modifier
+                    .padding(horizontal = 20.dp, vertical = 8.dp)
+                    .clickable { runCatching { uri.openUri("https://musicbrainz.org/release/$mbid") } },
+            )
+        }
+    }
+}
+
+/**
+ * A shelf of covers to go to next.
+ *
+ * The title is passed in rather than fixed, because what this row *is* depends on
+ * which rung of the fallback answered — the artist's other records, artists filed
+ * next to them, or the same genre. Calling all three "Related" would flatten a real
+ * difference in how strong the claim is.
+ */
+@Composable
+private fun RelatedAlbums(title: String, albums: List<MaItem>, onClick: (MaItem) -> Unit) {
+    Column(Modifier.padding(top = 26.dp)) {
+        Box(Modifier.padding(horizontal = 20.dp)) { SectionLabel(title) }
+        Spacer(Modifier.height(12.dp))
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 20.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            items(albums, key = { it.provider + "|" + it.itemId }) { album ->
+                Column(
+                    Modifier.width(124.dp).clickable { onClick(album) },
+                    verticalArrangement = Arrangement.spacedBy(TitleGap),
+                ) {
+                    val art = rememberArtRequest(album.image, pixels = 320)
+                    Box(
+                        Modifier
+                            .size(124.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Glass),
+                    ) {
+                        if (art != null) {
+                            AsyncImage(
+                                model = art,
+                                contentDescription = null,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        album.name, color = TextPrimary, fontFamily = AppFont,
+                        fontWeight = FontWeight.Bold, fontSize = 12.sp,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis, lineHeight = 15.sp,
+                    )
+                    album.subtitle?.let {
+                        Text(
+                            it, color = TextFaint, fontFamily = AppFont, fontSize = 11.sp,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+        }
+    }
 }
 
 // --- multi-disc header ---------------------------------------------------

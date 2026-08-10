@@ -10,7 +10,9 @@ import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.PlayerIdentity
 import com.engabd.sendpin.ma.MaApiClient
+import com.engabd.sendpin.ma.MaDspDetails
 import com.engabd.sendpin.ma.MaItem
+import com.engabd.sendpin.ma.MaLoudness
 import com.engabd.sendpin.ma.MaLyrics
 import com.engabd.sendpin.ma.MaNowPlaying
 import com.engabd.sendpin.ma.MaParse
@@ -98,6 +100,22 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         val isLocalSession: Boolean = false,
         /** Radio mode: MA auto-generates a radio queue after the current one ends. */
         val radioMode: Boolean = false,
+        /**
+         * What Music Assistant's per-player DSP did to this stream, and whether it ran
+         * at all — the server's own `streamdetails.dsp[<player_id>].state`.
+         *
+         * MA-path only, and deliberately left null on the local path: the equaliser is
+         * a server-side pipeline, so a phone playing straight from Navidrome has no DSP
+         * for MA to have an opinion about.
+         */
+        val dsp: MaDspDetails? = null,
+        /**
+         * What Music Assistant did to the *level* of this stream.
+         *
+         * MA-path only. On the local path the app's own ReplayGain setting is what
+         * acts on the level, and the card already says so.
+         */
+        val loudness: MaLoudness = MaLoudness(),
     )
 
     /** A panel's load state — the UI has to tell "empty" from "not fetched yet". */
@@ -416,6 +434,10 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             powered = p?.powered ?: true,
             canPower = p?.let { "power" in it.supportedFeatures } ?: false,
             radioMode = _radioMode.value,
+            // Same entry [outputQuality] came from, read for whether the chain ran
+            // rather than for what came out of it.
+            dsp = queue?.dspFor(playerId = id, leaderId = streamId),
+            loudness = queue?.loudness ?: MaLoudness(),
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, State())
 
@@ -646,6 +668,15 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _lyrics = MutableStateFlow<Load<MaLyrics?>>(Load.Idle)
     val lyrics: StateFlow<Load<MaLyrics?>> = _lyrics
+
+    /**
+     * The listener's manual trim on synced lyrics, in milliseconds.
+     *
+     * Read here rather than in the pane so the pane stays a renderer and the setting
+     * has one reader.
+     */
+    val lyricsOffsetMs: StateFlow<Int> = settings.lyricsOffsetMs
+        .stateIn(viewModelScope, SharingStarted.Eagerly, 0)
 
     private val _similar = MutableStateFlow<Load<List<MaSimilarTrack>>>(Load.Idle)
     val similar: StateFlow<Load<List<MaSimilarTrack>>> = _similar
@@ -1093,6 +1124,57 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     // --- sonic similarity ---------------------------------------------------
 
     /** Acoustically similar tracks to what's playing. */
+    /**
+     * Every copy of this track Music Assistant can see, across every provider.
+     *
+     * `music/tracks/track_versions` has been in [MaRepository] with no callers. It is
+     * the command that speaks to why anyone runs a local library next to a streaming
+     * one: the same song exists as a lossy stream and as a FLAC on a NAS, and until
+     * now there was no way to say which one to play.
+     *
+     * The version being played is filtered out — offering to switch to what is
+     * already playing is not an offer — and the rest are ordered best-format-first,
+     * because that is the ranking someone opening this list has in mind.
+     */
+    private val _versions = MutableStateFlow<Load<List<MaItem>>>(Load.Idle)
+    val versions: StateFlow<Load<List<MaItem>>> = _versions
+
+    fun loadVersions() {
+        val item = currentItem.value ?: run {
+            _versions.value = Load.Failed("Nothing playing")
+            return
+        }
+        _versions.value = Load.Loading
+        viewModelScope.launch {
+            _versions.value = try {
+                val all = repo.trackVersions(item)
+                    .filterNot { it.uri != null && it.uri == item.uri }
+                    .sortedByDescending { v ->
+                        val f = v.audioFormat
+                        // Lossless first, then rate, then depth — a stable ordering
+                        // that puts the copy worth switching to at the top.
+                        val lossless = if (f?.quality?.lossless == true) 1L else 0L
+                        lossless * 1_000_000_000L +
+                            (f?.sampleRate?.toLong() ?: 0L) * 100L +
+                            (f?.bitDepth?.toLong() ?: 0L)
+                    }
+                Load.Ready(all)
+            } catch (e: Exception) {
+                Load.Failed(e.message ?: "Couldn't list versions")
+            }
+        }
+    }
+
+    /** Play a specific copy of the current track, in place of the one playing. */
+    fun playVersion(version: MaItem) {
+        val uri = version.uri ?: return
+        viewModelScope.launch {
+            runCatching { repo.playOn(targetId(), listOf(uri), "replace") }
+                .onSuccess { _toast.tryEmit("Playing ${version.audioFormat?.quality?.shortLabel ?: version.name}") }
+                .onFailure { _toast.tryEmit(it.message ?: "Couldn't switch version") }
+        }
+    }
+
     fun loadSimilar() {
         val item = currentItem.value ?: run {
             _similar.value = Load.Failed("Nothing playing")

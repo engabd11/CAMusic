@@ -102,6 +102,15 @@ enum class SettingsSection(
         "Offline copies, storage limit and when to fetch them",
         Icons.Default.Download,
     ),
+    // The Lights *tab* is the live show — intensity, effect, colour scheme. This is
+    // the plumbing behind it: which transport carries the signal, and the bridge or
+    // Home Assistant credentials that transport needs. Different question, and it was
+    // buried at the bottom of Servers where nobody looking for it would think to go.
+    LIGHTS(
+        "Light Sync",
+        "Bridge, transport and how the lights follow the music",
+        Icons.Default.Lightbulb,
+    ),
     APPEARANCE(
         "Appearance",
         "Theme, accent colour and how Now Playing behaves",
@@ -315,6 +324,43 @@ fun SettingsScreen(
                             )
                         }
 
+                        // Home Assistant is a server, but it is only ever configured
+                        // here in service of Light Sync — and which fields you need
+                        // depends on the transport. So the connection lives with the
+                        // thing it drives, and this says where it went.
+                        item(key = "lights_pointer") {
+                            GlassCard(radius = 16.dp) {
+                                Row(
+                                    Modifier.fillMaxWidth().clickable { onSection(SettingsSection.LIGHTS) }
+                                        .padding(16.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                ) {
+                                    Icon(
+                                        Icons.Default.Lightbulb, null, tint = accent,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+                                        Text(
+                                            "Home Assistant and the Hue Bridge",
+                                            color = TextPrimary, fontFamily = AppFont,
+                                            style = MaterialTheme.typography.titleLarge,
+                                        )
+                                        Text(
+                                            "Configured under Light Sync, with the transport that uses them.",
+                                            color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                                        )
+                                    }
+                                    Icon(
+                                        Icons.Default.ChevronRight, null,
+                                        tint = TextMuted, modifier = Modifier.size(20.dp),
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    SettingsSection.LIGHTS -> {
                         // ── Light Sync ───────────────────────────────────────────────
                         item {
                             // Collected, not read once. The transport now follows
@@ -619,6 +665,62 @@ fun SettingsScreen(
                     }
 
                     SettingsSection.AUDIO -> {
+                        // ── Continuous play ─────────────────────────────────────────
+                        item(key = "continuous") {
+                            val radioOn by settings.radioMode.collectAsState(initial = false)
+                            val fade by settings.navFadeSeconds.collectAsState(initial = 0)
+                            GlassCard(radius = 16.dp) {
+                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Text(
+                                        "Continuous play",
+                                        color = TextPrimary, fontFamily = AppFont,
+                                        style = MaterialTheme.typography.titleLarge,
+                                    )
+                                    ToggleRow(
+                                        "Keep the music going",
+                                        "When the queue runs out, keep playing something similar. " +
+                                            "Music Assistant does this on the server; on Navidrome the app " +
+                                            "builds the next few tracks itself and adds them before the last " +
+                                            "one ends, so nothing gaps.",
+                                        radioOn, accent,
+                                    ) { on -> scope.launch { settings.setRadioMode(on) } }
+
+                                    Text(
+                                        "Smooth transitions",
+                                        color = TextPrimary, fontFamily = AppFont,
+                                        style = MaterialTheme.typography.titleLarge,
+                                    )
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    ) {
+                                        HSlider(
+                                            value = fade / 12f,
+                                            onChange = {},
+                                            onCommit = { f ->
+                                                scope.launch { settings.setNavFadeSeconds(Math.round(f * 12f)) }
+                                            },
+                                            accented = true,
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                        Text(
+                                            if (fade == 0) "Off" else "${fade}s",
+                                            color = TextSecondary, fontFamily = MonoFont,
+                                            style = MaterialTheme.typography.labelMedium,
+                                        )
+                                    }
+                                    Text(
+                                        "Fades one track out and the next in, on the Navidrome player. " +
+                                            "Off is gapless, which is what an album wants — so this is " +
+                                            "suppressed automatically while the queue is a single record, " +
+                                            "however it is set. It is not a crossfade: the two tracks don't " +
+                                            "overlap, because one player has one output.",
+                                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
+                            }
+                        }
+
                         // ── Audio ───────────────────────────────────────────────────
                         item {
                             var preferHiRes by remember { mutableStateOf(true) }
@@ -663,6 +765,15 @@ fun SettingsScreen(
                                             "44.1 and 48 kHz are always offered, so CD-rate files stream " +
                                             "untouched. Output is ${if (bitPerfect) "up to 24-bit" else "16-bit"}. " +
                                             "Reconnect to apply.",
+                                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                                    )
+                                    Text(
+                                        "On the Navidrome player this also turns on float output, so a 24-bit " +
+                                            "file isn't requantised to 16 on its way to the sink. That is fixed " +
+                                            "when the player is built, so it applies next time the app starts. " +
+                                            "It is off by default because float output is experimental and has " +
+                                            "been heard to distort 44.1 kHz material on phones whose mixer runs " +
+                                            "at 48 - if that happens, turn this back off.",
                                         color = TextFaint, style = MaterialTheme.typography.bodySmall,
                                     )
                                     Box(Modifier.fillMaxWidth().height(1.dp).background(HairlineSoft))
@@ -720,6 +831,55 @@ fun SettingsScreen(
                     }
 
                     SettingsSection.APPEARANCE -> {
+                        // ── Lyrics timing ───────────────────────────────────────────
+                        item(key = "lyrics_offset") {
+                            val offset by settings.lyricsOffsetMs.collectAsState(initial = 0)
+                            GlassCard(radius = 16.dp) {
+                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Text(
+                                        "Lyrics timing",
+                                        color = TextPrimary, fontFamily = AppFont,
+                                        style = MaterialTheme.typography.titleLarge,
+                                    )
+                                    Text(
+                                        "Nudge synced lyrics if they run ahead of or behind the vocal. " +
+                                            "Providers stamp the same track differently, so this is a matter " +
+                                            "of taste rather than a setting with a right answer.",
+                                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                                    )
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    ) {
+                                        HSlider(
+                                            value = (offset + AppSettings.MAX_LYRICS_OFFSET_MS) /
+                                                (2f * AppSettings.MAX_LYRICS_OFFSET_MS),
+                                            onChange = {},
+                                            onCommit = { f ->
+                                                val ms = (f * 2f * AppSettings.MAX_LYRICS_OFFSET_MS -
+                                                    AppSettings.MAX_LYRICS_OFFSET_MS).toInt()
+                                                // Snap to 50 ms — finer than that is
+                                                // below what anyone can hear against a
+                                                // line of sung text.
+                                                scope.launch { settings.setLyricsOffsetMs((ms / 50) * 50) }
+                                            },
+                                            accented = true,
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                        Text(
+                                            if (offset == 0) "0 ms" else "%+d ms".format(offset),
+                                            color = TextSecondary, fontFamily = MonoFont,
+                                            style = MaterialTheme.typography.labelMedium,
+                                        )
+                                    }
+                                    Text(
+                                        "Later ← → earlier",
+                                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
+                            }
+                        }
+
                         // ── Theme ───────────────────────────────────────────────────
                         item(key = "theme") {
                             val themeKey by settings.theme.collectAsState(initial = ThemeChoice.OLED.key)

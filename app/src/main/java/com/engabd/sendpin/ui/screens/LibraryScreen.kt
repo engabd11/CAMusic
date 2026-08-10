@@ -63,6 +63,7 @@ import com.engabd.sendpin.download.DownloadJob
 import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ma.LibraryViewModel.Backend
 import com.engabd.sendpin.ma.MaItem
+import com.engabd.sendpin.subsonic.SavedQueue
 import com.engabd.sendpin.subsonic.SubsonicClient
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
@@ -92,6 +93,7 @@ fun LibraryScreen(
     val searchOpen by viewModel.searchOpen.collectAsState()
     val query by viewModel.query.collectAsState()
     val refreshing by viewModel.refreshing.collectAsState()
+    val searching by viewModel.searching.collectAsState()
     val showCreatePlaylist by viewModel.showCreatePlaylist.collectAsState()
     val addingToPlaylist by viewModel.addingToPlaylist.collectAsState()
     val playlistChoices by viewModel.playlistChoices.collectAsState()
@@ -122,6 +124,7 @@ fun LibraryScreen(
                 // Only offer it once there is a library to re-read; on the connect
                 // form it would just be a button that does nothing.
                 onRefresh = if (ready) viewModel::refresh else null,
+                searching = searching,
             )
             // Only offer the connect form once we know there's nothing to connect
             // to. Showing it while a saved server is still handshaking made every
@@ -205,6 +208,7 @@ private fun Header(
     onClearSearch: () -> Unit,
     refreshing: Boolean = false,
     onRefresh: (() -> Unit)? = null,
+    searching: Boolean = false,
 ) {
     Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 14.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -237,7 +241,7 @@ private fun Header(
             }
         }
         Spacer(Modifier.height(12.dp))
-        SearchField(query, onQuery, onSearch, onClearSearch)
+        SearchField(query, onQuery, onSearch, onClearSearch, searching)
         // Sonic search: the same box, read as a description of a *sound* rather
         // than a name. Finding music belongs in the library, not behind the
         // player's queue button.
@@ -313,6 +317,7 @@ private fun SearchField(
     onQuery: (String) -> Unit,
     onSearch: (String) -> Unit,
     onClear: () -> Unit,
+    searching: Boolean = false,
 ) {
     val focus = LocalFocusManager.current
     Row(
@@ -325,7 +330,22 @@ private fun SearchField(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Icon(Icons.Default.Search, null, tint = TextMuted, modifier = Modifier.size(16.dp))
+        // The magnifier becomes the progress indicator while a query is in flight.
+        // Results now arrive as the user types, so the "working" signal has to sit in
+        // the field itself — anything over the list would flash on every keystroke,
+        // and the list is deliberately left showing the previous answer until the new
+        // one lands.
+        Box(Modifier.size(16.dp), contentAlignment = Alignment.Center) {
+            if (searching) {
+                CircularProgressIndicator(
+                    color = LocalAccent.current,
+                    strokeWidth = 1.5.dp,
+                    modifier = Modifier.size(14.dp),
+                )
+            } else {
+                Icon(Icons.Default.Search, null, tint = TextMuted, modifier = Modifier.size(16.dp))
+            }
+        }
         Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
             if (query.isEmpty()) {
                 Text(
@@ -420,6 +440,8 @@ private fun Browse(
     val error by viewModel.error.collectAsState()
     val search by viewModel.search.collectAsState()
     val searchOpen by viewModel.searchOpen.collectAsState()
+    val searching by viewModel.searching.collectAsState()
+    val savedQueue by viewModel.savedQueue.collectAsState()
     val shelves by viewModel.shelves.collectAsState()
     val jobs by viewModel.downloadJobs.collectAsState()
     val offline by viewModel.offline.collectAsState()
@@ -478,11 +500,31 @@ private fun Browse(
         if (offline) {
             item(span = { full() }) { OfflineNotice { viewModel.connect() } }
         }
+        // Something another device left mid-track. An offer, not an interruption:
+        // it sits above the shelves and goes away when dismissed or superseded.
+        savedQueue?.let { saved ->
+            item(span = { full() }, key = "resume") {
+                ResumeCard(
+                    saved = saved,
+                    onResume = { viewModel.resumeSavedQueue() },
+                    onDismiss = { viewModel.dismissSavedQueue() },
+                )
+            }
+        }
         if (error != null) {
             item(span = { full() }) { SearchErrorState(error!!) { viewModel.connect() } }
             return@LazyVerticalGrid
         }
         if (loading) {
+            items(6, span = { full() }, contentType = { "skeleton" }) { SkeletonRow() }
+            return@LazyVerticalGrid
+        }
+
+        // The first query of a session has no previous results to hold on to, and
+        // falling through to the browse shelves under a search header reads as the
+        // search having done nothing. Every query after this one keeps its old results
+        // on screen instead — see the spinner in the search field.
+        if (searchOpen && s == null && searching) {
             items(6, span = { full() }, contentType = { "skeleton" }) { SkeletonRow() }
             return@LazyVerticalGrid
         }
@@ -1132,6 +1174,64 @@ private fun PlayAllBar(count: Int, onPlayAll: () -> Unit, onDownloadAll: (() -> 
                 modifier = Modifier.size(20.dp).clip(CircleShape).clickable(onClick = it),
             )
         }
+    }
+}
+
+/**
+ * "You were listening to this somewhere else."
+ *
+ * Navidrome keeps one saved queue per user, and every client that supports it writes
+ * to the same slot — so this is genuinely "start on the phone, finish at the desk".
+ * Named after the client that left it where the server said which one that was:
+ * "Resume from your laptop" is a different offer from "resume from this phone", and
+ * the difference is most of why anyone would tap it.
+ *
+ * An offer, not a prompt. It never blocks the library, it goes away on dismissal, and
+ * starting anything here supersedes it.
+ */
+@Composable
+private fun ResumeCard(saved: SavedQueue, onResume: () -> Unit, onDismiss: () -> Unit) {
+    val accent = LocalAccent.current
+    val track = saved.tracks.getOrNull(saved.index)
+    val minutes = (saved.positionMs / 60_000).toInt()
+    val seconds = ((saved.positionMs / 1000) % 60).toInt()
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp, vertical = 8.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(accent.a(0.10f))
+            .border(1.dp, accent.a(0.28f), RoundedCornerShape(14.dp))
+            .clickable(onClick = onResume)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Icon(
+            Icons.Default.History, null, tint = accent,
+            modifier = Modifier.size(20.dp),
+        )
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+            Text(
+                saved.changedBy?.takeIf { it.isNotBlank() }
+                    ?.let { "Pick up from $it" } ?: "Pick up where you left off",
+                color = TextPrimary, fontFamily = AppFont,
+                fontWeight = FontWeight.Bold, fontSize = 13.sp,
+            )
+            Text(
+                buildString {
+                    track?.let { append(it.name); it.subtitle?.let { a -> append(" · $a") } }
+                    append("  ")
+                    append("%d:%02d in".format(minutes, seconds))
+                },
+                color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Icon(
+            Icons.Default.Close, "Dismiss", tint = TextMuted,
+            modifier = Modifier.size(18.dp).clip(CircleShape).clickable(onClick = onDismiss),
+        )
     }
 }
 

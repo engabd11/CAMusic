@@ -17,19 +17,19 @@ data class MaAudioFormat(
     /** kbps, off MA's `AudioFormat.bit_rate`. 0 when the provider didn't say. */
     val bitRate: Int = 0,
     val channels: Int = 2,
+    /** The stored file's size in bytes, when the library reported it. */
+    val sizeBytes: Long = 0,
     /**
      * ReplayGain track-level adjustment in dB, off OpenSubsonic's `replayGain`
      * object. Null when the server didn't supply it — plain Subsonic servers omit
      * it entirely, so callers must read null as "no measurement" rather than 0 dB.
      *
-     * Not populated on the Music Assistant path — but that is a **gap, not a
-     * limitation**, and this comment used to claim otherwise. MA's `StreamDetails`
-     * schema carries `loudness`, `loudness_album`, `prefer_album_loudness`,
-     * `volume_normalization_mode`, `volume_normalization_gain_correct` and
-     * `target_loudness`; the measurement and the correction MA actually applied are
-     * both there to read, in different fields under a different name. Reading them
-     * would let the quality card say what MA did to the loudness rather than going
-     * quiet about it. Not wired yet.
+     * Not populated on the Music Assistant path, and it should not be: MA reports
+     * level under a different name and a different model. `streamdetails` carries
+     * `loudness`, `loudness_album`, `volume_normalization_mode`,
+     * `volume_normalization_gain_correct` and `target_loudness` — the measurement and
+     * the correction MA actually applied — and those are read into [MaLoudness] and
+     * shown on the quality card. This field stays Subsonic's.
      */
     val replayGainTrack: Float? = null,
     /**
@@ -53,6 +53,8 @@ data class MaAudioFormat(
             bitrateKbps = bitRate,
             replayGainTrack = replayGainTrack,
             replayGainAlbum = replayGainAlbum,
+            channels = channels,
+            sizeBytes = sizeBytes,
         )
 }
 
@@ -172,6 +174,80 @@ data class MaPlayer(
 /** A player's Sendspin sync-delay config value + the (variable) key it lives under. */
 data class SyncDelay(val key: String, val ms: Int)
 
+/**
+ * One entry of `current_item.streamdetails.dsp` — what Music Assistant's per-player
+ * pipeline did to this track, and **whether it ran at all**.
+ *
+ * [state] is MA's `DSPState`, carried verbatim rather than mapped to an enum here.
+ * Only `"disabled"` is confirmed against a real payload; a value this app has never
+ * seen is worth showing as-is, because a guess rendered confidently is worse than an
+ * unfamiliar word rendered honestly. The UI humanises it and falls through.
+ *
+ * This is the server's own answer to "why is my EQ doing nothing", and it was being
+ * parsed and dropped — [MaParse] read the sibling `output_format` and nothing else.
+ */
+/**
+ * What Music Assistant did to the *level*, off `streamdetails`.
+ *
+ * The quality card has always been able to say what format arrived and never what
+ * happened to the loudness on the way — so a carefully mastered record being pulled
+ * to a target LUFS looked identical to one left alone. MA measures the track
+ * ([loudness] / [loudnessAlbum], LUFS), decides a correction, and reports the dB it
+ * actually applied in [gainCorrect]. All three are optional; a server that measured
+ * nothing sends nothing, which is different from measuring zero.
+ */
+@Immutable
+data class MaLoudness(
+    /** Track loudness in LUFS, as measured. */
+    val loudness: Float? = null,
+    /** Album loudness in LUFS. */
+    val loudnessAlbum: Float? = null,
+    /** dB MA applied to reach its target. This is the one that answers "what did you do". */
+    val gainCorrect: Float? = null,
+    /** `disabled`, `dynamic`, `measurement_only`, `fixed_gain`… — MA's own wire value. */
+    val mode: String? = null,
+    /** The LUFS MA was aiming for. */
+    val target: Float? = null,
+) {
+    /** Nothing was reported, so there is nothing to say. */
+    val empty: Boolean get() =
+        loudness == null && loudnessAlbum == null && gainCorrect == null && mode == null
+
+    /**
+     * One line for the quality card, or null.
+     *
+     * Says what was *done* before what was measured: "normalised −3.2 dB" is the
+     * answer to the question someone opened the card with, and the LUFS figure is
+     * the supporting detail.
+     */
+    val summary: String?
+        get() {
+            if (empty) return null
+            val applied = gainCorrect?.takeIf { kotlin.math.abs(it) >= 0.05f }
+            val measured = (loudnessAlbum ?: loudness)?.let { "%.1f LUFS".format(it) }
+            return when {
+                applied != null && measured != null ->
+                    "Music Assistant normalised %+.1f dB (measured $measured)".format(applied)
+                applied != null -> "Music Assistant normalised %+.1f dB".format(applied)
+                // Measured and left alone is a real answer, and a reassuring one.
+                measured != null && mode == "disabled" -> "Measured $measured - level left alone"
+                measured != null -> "Measured $measured - no correction applied"
+                else -> null
+            }
+        }
+}
+
+@Immutable
+data class MaDspDetails(
+    val state: String? = null,
+    val outputFormat: StreamQuality? = null,
+    val filterCount: Int = 0,
+    val outputLimiter: Boolean = false,
+) {
+    /** MA ran the chain. Anything else — including an unknown state — has not. */
+    val active: Boolean get() = state == "enabled"
+}
+
 /** A player queue: what's streaming, and how the queue itself is set up. */
 @Immutable
 data class MaQueue(
@@ -182,18 +258,19 @@ data class MaQueue(
      * This is the stream job's **input** — the file as the provider hands it over —
      * not what any speaker is fed. The app used to label it "Playing", which is why
      * the codec badge always agreed with the source no matter how much converting
-     * MA did on the way out. See [outputFormats].
+     * MA did on the way out. See [dsp].
      */
     val inputFormat: StreamQuality? = null,
     /**
-     * What each player is actually fed, keyed by player_id, off
-     * `current_item.streamdetails.dsp[<player_id>].output_format`.
+     * MA's per-player DSP pipeline, keyed by player_id, off
+     * `current_item.streamdetails.dsp`.
      *
-     * MA runs a per-player DSP pipeline and reports its output format there; that —
-     * and only that — is the honest answer to "what is this speaker receiving".
-     * Resolve it with [outputFor] rather than indexing directly.
+     * Each entry carries both the format that player is actually fed — that, and only
+     * that, is the honest answer to "what is this speaker receiving" — and whether the
+     * filter chain ran. Resolve with [outputFor] / [dspFor] rather than indexing
+     * directly; a synced member may have no entry of its own.
      */
-    val outputFormats: Map<String, StreamQuality> = emptyMap(),
+    val dsp: Map<String, MaDspDetails> = emptyMap(),
     val shuffleEnabled: Boolean = false,
     val repeatMode: String = "off",   // off | one | all
     val currentIndex: Int? = null,
@@ -225,22 +302,44 @@ data class MaQueue(
      * which backend holds the file.
      */
     val streamProvider: String? = null,
+    /**
+     * What MA did to the level of the current item — see [MaLoudness]. Never null;
+     * a server that says nothing yields an empty one.
+     */
+    val loudness: MaLoudness = MaLoudness(),
 ) {
     /**
-     * The format [playerId] is being fed, falling back until something is knowable.
+     * Which entry speaks for [playerId], falling back until something is knowable.
      *
      * A synced member decodes on its own hardware and MA can hand it a different
      * format from the leader's, so its own entry wins. Failing that: the leader's
-     * (some servers only file one entry, under the queue's own id), then a lone
-     * entry when there is no ambiguity to resolve, and finally the input format —
-     * which is at least honest about the file, if not about the wire.
+     * (some servers only file one entry, under the queue's own id), then a lone entry
+     * when there is no ambiguity to resolve.
+     *
+     * Shared by [outputFor] and [dspFor] so the two can never disagree about whose
+     * entry they are reading.
+     */
+    private fun <T : Any> resolve(entries: Map<String, T>, playerId: String, leaderId: String?): T? =
+        entries[playerId]
+            ?: leaderId?.let { entries[it] }
+            ?: entries[queueId]
+            ?: entries.values.singleOrNull()
+
+    /**
+     * The format [playerId] is being fed, or the input format — which is at least
+     * honest about the file, if not about the wire.
+     *
+     * Resolved over the entries that actually carry a format. An entry may now arrive
+     * with a `state` and no `output_format`, and letting one of those win the "lone
+     * entry" rung would report nothing for a player MA is demonstrably feeding.
      */
     fun outputFor(playerId: String, leaderId: String? = null): StreamQuality? =
-        outputFormats[playerId]
-            ?: leaderId?.let { outputFormats[it] }
-            ?: outputFormats[queueId]
-            ?: outputFormats.values.singleOrNull()
+        resolve(dsp.filterValues { it.outputFormat != null }, playerId, leaderId)?.outputFormat
             ?: inputFormat
+
+    /** What MA's pipeline did for [playerId], including whether it ran. */
+    fun dspFor(playerId: String, leaderId: String? = null): MaDspDetails? =
+        resolve(dsp, playerId, leaderId)
 }
 
 /** Grouped search hits. */
@@ -455,9 +554,14 @@ object MaParse {
                     codec = f["content_type"]?.jsonPrimitive?.contentOrNull
                         ?: f["codec_type"]?.jsonPrimitive?.contentOrNull ?: "?",
                     sampleRate = rate,
-                    bitDepth = f["bit_depth"]?.jsonPrimitive?.intOrNull ?: 16,
+                    // 0, not 16. A provider that doesn't report a depth has not told
+                    // us it is CD depth, and the Subsonic side of the app has always
+                    // defaulted to 0 for exactly that reason — the two disagreeing
+                    // meant the same file read differently depending on which library
+                    // it was browsed through. "Unknown" is a thing the badge can say.
+                    bitDepth = f["bit_depth"]?.jsonPrimitive?.intOrNull ?: 0,
                     bitRate = if (br > 10_000) br / 1000 else br,
-                    channels = (f["channels"] as? JsonPrimitive)?.intOrNull ?: 2,
+                    channels = (f["channels"] as? JsonPrimitive)?.intOrNull ?: 0,
                 )
             }
             ?.maxByOrNull { it.sampleRate.toLong() * 100 + it.bitDepth }
@@ -512,11 +616,11 @@ object MaParse {
             val o = el as? JsonObject ?: return@mapNotNull null
             val id = o["queue_id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
             val current = o["current_item"] as? JsonObject
-            val (inputFormat, outputFormats) = streamFormats(current)
+            val (inputFormat, dsp) = streamFormats(current)
             MaQueue(
                 queueId = id,
                 inputFormat = inputFormat,
-                outputFormats = outputFormats,
+                dsp = dsp,
                 shuffleEnabled = o["shuffle_enabled"]?.jsonPrimitive?.booleanOrNull ?: false,
                 repeatMode = o["repeat_mode"]?.jsonPrimitive?.contentOrNull ?: "off",
                 currentIndex = o["current_index"]?.jsonPrimitive?.intOrNull,
@@ -529,6 +633,7 @@ object MaParse {
                 elapsedTimeLastUpdated = o["elapsed_time_last_updated"]?.jsonPrimitive?.doubleOrNull,
                 streamProvider = (current?.get("streamdetails") as? JsonObject)
                     ?.get("provider")?.jsonPrimitive?.contentOrNull,
+                loudness = loudnessOf(current?.get("streamdetails") as? JsonObject),
             )
         }
     }
@@ -553,6 +658,7 @@ object MaParse {
             sampleRateHz = (f["sample_rate"] as? JsonPrimitive)?.intOrNull ?: 0,
             bitDepth = (f["bit_depth"] as? JsonPrimitive)?.intOrNull ?: 0,
             bitrateKbps = if (br > 10_000) br / 1000 else br,
+            channels = (f["channels"] as? JsonPrimitive)?.intOrNull ?: 0,
         )
     }
 
@@ -566,22 +672,56 @@ object MaParse {
      * former is why the codec badge always matched the source file.
      *
      * A `dsp` entry whose `state` is disabled still carries an output format, and
-     * that is still the honest answer — no filtering on state.
+     * that is still the honest answer — **no filtering on state**. That rule survives
+     * `state` becoming readable: the temptation is to drop disabled entries now that
+     * there is something to drop them by, and doing so brings back the badge that
+     * always agreed with the source file. The state is reported *alongside* the
+     * format, never instead of it.
+     *
+     * An entry is kept even when it carries no `output_format` at all, so a bare
+     * `state` still reaches the UI. [MaQueue.outputFor] filters those back out.
      */
-    private fun streamFormats(currentItem: JsonElement?): Pair<StreamQuality?, Map<String, StreamQuality>> {
+    /**
+     * The loudness half of `streamdetails`, which the app has never read.
+     *
+     * Every field is optional and each is read independently: MA fills in what it
+     * measured and what it applied separately, and a version that reports one and not
+     * the other should still say what it knows.
+     */
+    private fun loudnessOf(sd: JsonObject?): MaLoudness {
+        if (sd == null) return MaLoudness()
+        fun f(key: String) = (sd[key] as? JsonPrimitive)?.floatOrNull
+        return MaLoudness(
+            loudness = f("loudness"),
+            loudnessAlbum = f("loudness_album"),
+            gainCorrect = f("volume_normalization_gain_correct"),
+            mode = str(sd["volume_normalization_mode"]),
+            target = f("target_loudness"),
+        )
+    }
+
+    private fun streamFormats(currentItem: JsonElement?): Pair<StreamQuality?, Map<String, MaDspDetails>> {
         val sd = (currentItem as? JsonObject)?.get("streamdetails") as? JsonObject
             ?: return null to emptyMap()
         // MA has moved these between the streamdetails root and a nested
         // `audio_format` across versions, so both shapes are accepted.
         val input = audioFormatQuality(sd["audio_format"] as? JsonObject) ?: audioFormatQuality(sd)
         val dsp = sd["dsp"] as? JsonObject ?: return input to emptyMap()
-        val outputs = buildMap {
+        val entries = buildMap {
             for ((playerId, entry) in dsp) {
                 val o = entry as? JsonObject ?: continue
-                audioFormatQuality(o["output_format"] as? JsonObject)?.let { put(playerId, it) }
+                put(
+                    playerId,
+                    MaDspDetails(
+                        state = str(o["state"]),
+                        outputFormat = audioFormatQuality(o["output_format"] as? JsonObject),
+                        filterCount = (o["filters"] as? JsonArray)?.size ?: 0,
+                        outputLimiter = (o["output_limiter"] as? JsonPrimitive)?.booleanOrNull ?: false,
+                    ),
+                )
             }
         }
-        return input to outputs
+        return input to entries
     }
 
     /**
