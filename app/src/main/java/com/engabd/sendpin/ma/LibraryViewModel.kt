@@ -66,6 +66,7 @@ data class LibraryShelves(
  * Backs the OLED library UI: a root shelf of categories plus dynamic shelves, then
  * a browse stack, with search, downloads and connection state alongside.
  */
+@OptIn(kotlinx.coroutines.FlowPreview::class)
 class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     enum class Backend { MA, SUBSONIC }

@@ -37,6 +37,7 @@ import kotlinx.coroutines.launch
  * It also owns the three panels hung off that track — queue, lyrics and sonically
  * similar tracks — which load on demand rather than on every poll.
  */
+@OptIn(kotlinx.coroutines.FlowPreview::class)
 class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
 
     data class State(

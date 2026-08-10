@@ -47,6 +47,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * and keeping them apart means the notification can change without touching the Now
  * Playing screen.
  */
+@OptIn(kotlinx.coroutines.FlowPreview::class)
 class MaNowPlaying(app: Context) {
 
     /** Everything the shade needs about the selected player. */

@@ -23,6 +23,7 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -190,11 +191,11 @@ fun SettingsScreen(
     BackHandler(enabled = section != null) { onSection(null) }
 
     val accent = LocalAccent.current
-    val discoveredServers by viewModel.discoveredServers.collectAsState()
-    val isDiscovering by viewModel.isDiscovering.collectAsState()
-    val connected by viewModel.connected.collectAsState()
-    val serverUrl by viewModel.serverUrl.collectAsState()
-    val currentFormat by viewModel.currentFormat.collectAsState()
+    val discoveredServers by viewModel.discoveredServers.collectAsStateWithLifecycle()
+    val isDiscovering by viewModel.isDiscovering.collectAsStateWithLifecycle()
+    val connected by viewModel.connected.collectAsStateWithLifecycle()
+    val serverUrl by viewModel.serverUrl.collectAsStateWithLifecycle()
+    val currentFormat by viewModel.currentFormat.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
     val scope = rememberCoroutineScope()
@@ -207,7 +208,7 @@ fun SettingsScreen(
     var haTokenLocked by remember { mutableStateOf(false) }
     var playerName by remember { mutableStateOf("") }
     var sendspinCodec by remember { mutableStateOf("auto") }
-    val configStatus by viewModel.configStatus.collectAsState()
+    val configStatus by viewModel.configStatus.collectAsStateWithLifecycle()
     var navFormat by remember { mutableStateOf("raw") }
     val backend by settings.backend.collectAsState(initial = "ma")
     // The same activity-scoped instance the Library tab uses, so edits here land on
@@ -1029,14 +1030,14 @@ private fun NavidromeCard(
     format: String,
     onFormat: (String) -> Unit,
 ) {
-    val url by vm.navUrl.collectAsState()
-    val user by vm.navUser.collectAsState()
-    val pass by vm.navPass.collectAsState()
-    val connecting by vm.connecting.collectAsState()
-    val ready by vm.ready.collectAsState()
-    val offline by vm.offline.collectAsState()
-    val connError by vm.connError.collectAsState()
-    val onSubsonic by vm.backend.collectAsState()
+    val url by vm.navUrl.collectAsStateWithLifecycle()
+    val user by vm.navUser.collectAsStateWithLifecycle()
+    val pass by vm.navPass.collectAsStateWithLifecycle()
+    val connecting by vm.connecting.collectAsStateWithLifecycle()
+    val ready by vm.ready.collectAsStateWithLifecycle()
+    val offline by vm.offline.collectAsStateWithLifecycle()
+    val connError by vm.connError.collectAsStateWithLifecycle()
+    val onSubsonic by vm.backend.collectAsStateWithLifecycle()
     var passVisible by remember { mutableStateOf(false) }
 
     SectionHeader(Icons.Default.Storage, "Navidrome server", accent)
@@ -1073,7 +1074,7 @@ private fun NavidromeCard(
             // active backend. When it isn't, the server is still asked directly —
             // downloads and "play at original quality" both go to it from the MA
             // backend, so whether it answers is a real question either way.
-            val probe by vm.navStatus.collectAsState()
+            val probe by vm.navStatus.collectAsStateWithLifecycle()
             LaunchedEffect(url) { if (url.isNotBlank()) vm.checkNavidrome() }
             val status = when {
                 onSubsonic == LibraryViewModel.Backend.SUBSONIC && connecting -> "Connecting…"
@@ -1187,7 +1188,7 @@ private fun OutputDevicePicker(accent: Color) {
 /** What's on the phone for offline listening, and the one way to get it back. */
 @Composable
 private fun DownloadsCard(vm: LibraryViewModel, accent: Color) {
-    val downloads by vm.downloads.collectAsState()
+    val downloads by vm.downloads.collectAsStateWithLifecycle()
     var confirming by remember { mutableStateOf(false) }
     // Measuring means stat-ing every file, so it happens off the main thread and
     // only when the list itself changes.

@@ -20,6 +20,7 @@ import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -71,12 +72,12 @@ fun AlbumDetailScreen(
         )
     )
 
-    val album by viewModel.album.collectAsState()
-    val tracks by viewModel.tracks.collectAsState()
-    val loading by viewModel.loading.collectAsState()
-    val error by viewModel.error.collectAsState()
-    val albumDownloaded by viewModel.allDownloaded.collectAsState()
-    val notes by viewModel.notes.collectAsState()
+    val album by viewModel.album.collectAsStateWithLifecycle()
+    val tracks by viewModel.tracks.collectAsStateWithLifecycle()
+    val loading by viewModel.loading.collectAsStateWithLifecycle()
+    val error by viewModel.error.collectAsStateWithLifecycle()
+    val albumDownloaded by viewModel.allDownloaded.collectAsStateWithLifecycle()
+    val notes by viewModel.notes.collectAsStateWithLifecycle()
     val accent = LocalAccent.current
     val snackbar = remember { SnackbarHostState() }
     // The track whose long-press menu is open, if any.
@@ -98,9 +99,9 @@ fun AlbumDetailScreen(
     // groups. A single disc (or all null/1) renders flat as before.
     val discGroups = remember(tracks) { tracks.groupBy { it.discNumber ?: 1 } }
 
-    val musicBrainzId by viewModel.musicBrainzId.collectAsState()
-    val related by viewModel.related.collectAsState()
-    val relatedTitle by viewModel.relatedTitle.collectAsState()
+    val musicBrainzId by viewModel.musicBrainzId.collectAsStateWithLifecycle()
+    val related by viewModel.related.collectAsStateWithLifecycle()
+    val relatedTitle by viewModel.relatedTitle.collectAsStateWithLifecycle()
 
     // The facts worth stating about a record, gathered once rather than inside the
     // LazyListScope body (which is not composable and has no `remember`).

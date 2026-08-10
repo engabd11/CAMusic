@@ -18,6 +18,7 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -35,13 +36,13 @@ import com.engabd.sendpin.ui.viewmodel.SpeakersViewModel.SpeakerUi
 @Composable
 fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewModel()) {
     val accent = LocalAccent.current
-    val joined by viewModel.joined.collectAsState()
-    val available by viewModel.available.collectAsState()
-    val groupVolume by viewModel.groupVolume.collectAsState()
-    val connected by viewModel.connected.collectAsState()
-    val error by viewModel.error.collectAsState()
-    val canGroup by viewModel.leaderCanGroup.collectAsState()
-    val somethingPlaying by viewModel.leaderIsPlaying.collectAsState()
+    val joined by viewModel.joined.collectAsStateWithLifecycle()
+    val available by viewModel.available.collectAsStateWithLifecycle()
+    val groupVolume by viewModel.groupVolume.collectAsStateWithLifecycle()
+    val connected by viewModel.connected.collectAsStateWithLifecycle()
+    val error by viewModel.error.collectAsStateWithLifecycle()
+    val canGroup by viewModel.leaderCanGroup.collectAsStateWithLifecycle()
+    val somethingPlaying by viewModel.leaderIsPlaying.collectAsStateWithLifecycle()
 
     val total = joined.size + available.size
     val allJoined = available.isEmpty() && joined.isNotEmpty()

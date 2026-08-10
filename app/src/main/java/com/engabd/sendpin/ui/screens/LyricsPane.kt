@@ -24,7 +24,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
@@ -68,10 +68,10 @@ fun LyricsPane(
     positionMs: Long,
     modifier: Modifier = Modifier,
 ) {
-    val load by viewModel.lyrics.collectAsState()
+    val load by viewModel.lyrics.collectAsStateWithLifecycle()
     val accent = LocalAccent.current
-    val currentItem by viewModel.currentItem.collectAsState()
-    val offsetMs by viewModel.lyricsOffsetMs.collectAsState()
+    val currentItem by viewModel.currentItem.collectAsStateWithLifecycle()
+    val offsetMs by viewModel.lyricsOffsetMs.collectAsStateWithLifecycle()
 
     // Keyed on the track, not on `Unit`. A new track resets the lyrics to Idle in the
     // view model, but a `LaunchedEffect(Unit)` had already run for the life of this

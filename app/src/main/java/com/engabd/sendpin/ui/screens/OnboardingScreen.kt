@@ -19,6 +19,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -40,10 +41,10 @@ fun OnboardingScreen(
     onSkip: () -> Unit = {},
 ) {
     val accent = LocalAccent.current
-    val servers by viewModel.discoveredServers.collectAsState()
-    val discovering by viewModel.isDiscovering.collectAsState()
-    val status by viewModel.connectionStatus.collectAsState()
-    val log by viewModel.connectionLog.collectAsState()
+    val servers by viewModel.discoveredServers.collectAsStateWithLifecycle()
+    val discovering by viewModel.isDiscovering.collectAsStateWithLifecycle()
+    val status by viewModel.connectionStatus.collectAsStateWithLifecycle()
+    val log by viewModel.connectionLog.collectAsStateWithLifecycle()
     var manual by remember { mutableStateOf("") }
     var user by remember { mutableStateOf("") }
     var pass by remember { mutableStateOf("") }

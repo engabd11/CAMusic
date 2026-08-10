@@ -27,6 +27,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -142,8 +143,8 @@ fun BoxScope.NowPlayingSheet(
 
 @Composable
 private fun ColumnScope.QueuePanel(viewModel: NowPlayingViewModel, accent: Color) {
-    val load by viewModel.queueItems.collectAsState()
-    val st by viewModel.state.collectAsState()
+    val load by viewModel.queueItems.collectAsStateWithLifecycle()
+    val st by viewModel.state.collectAsStateWithLifecycle()
     var naming by remember { mutableStateOf(false) }
     var playlistName by remember { mutableStateOf("") }
     var confirmClear by remember { mutableStateOf(false) }
@@ -397,8 +398,8 @@ private fun QueueRow(
  */
 @Composable
 fun SleepTimerChip(viewModel: NowPlayingViewModel) {
-    val minutes by viewModel.sleepTimerMin.collectAsState()
-    val remainingMs by viewModel.sleepTimerRemainingMs.collectAsState()
+    val minutes by viewModel.sleepTimerMin.collectAsStateWithLifecycle()
+    val remainingMs by viewModel.sleepTimerRemainingMs.collectAsStateWithLifecycle()
     val accent = LocalAccent.current
     var picking by remember { mutableStateOf(false) }
     val running = minutes > 0

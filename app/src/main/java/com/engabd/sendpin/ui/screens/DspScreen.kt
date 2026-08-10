@@ -21,6 +21,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -754,21 +755,21 @@ private fun sliderToQ(s: Float): Float {
  */
 @Composable
 internal fun ColumnScope.DspBody(viewModel: DspViewModel, accent: Color) {
-    val config by viewModel.config.collectAsState()
-    val loading by viewModel.loading.collectAsState()
-    val error by viewModel.error.collectAsState()
-    val connected by viewModel.connected.collectAsState()
-    val playerName by viewModel.playerName.collectAsState()
-    val presets by viewModel.presets.collectAsState()
-    val eqExpanded by viewModel.eqExpanded.collectAsState()
-    val toneExpanded by viewModel.toneExpanded.collectAsState()
-    val gainExpanded by viewModel.gainExpanded.collectAsState()
-    val presetsExpanded by viewModel.presetsExpanded.collectAsState()
-    val showSavePreset by viewModel.showSavePreset.collectAsState()
-    val presetName by viewModel.presetName.collectAsState()
-    val saving by viewModel.saving.collectAsState()
-    val saveError by viewModel.saveError.collectAsState()
-    val dspDetails by viewModel.dspDetails.collectAsState()
+    val config by viewModel.config.collectAsStateWithLifecycle()
+    val loading by viewModel.loading.collectAsStateWithLifecycle()
+    val error by viewModel.error.collectAsStateWithLifecycle()
+    val connected by viewModel.connected.collectAsStateWithLifecycle()
+    val playerName by viewModel.playerName.collectAsStateWithLifecycle()
+    val presets by viewModel.presets.collectAsStateWithLifecycle()
+    val eqExpanded by viewModel.eqExpanded.collectAsStateWithLifecycle()
+    val toneExpanded by viewModel.toneExpanded.collectAsStateWithLifecycle()
+    val gainExpanded by viewModel.gainExpanded.collectAsStateWithLifecycle()
+    val presetsExpanded by viewModel.presetsExpanded.collectAsStateWithLifecycle()
+    val showSavePreset by viewModel.showSavePreset.collectAsStateWithLifecycle()
+    val presetName by viewModel.presetName.collectAsStateWithLifecycle()
+    val saving by viewModel.saving.collectAsStateWithLifecycle()
+    val saveError by viewModel.saveError.collectAsStateWithLifecycle()
+    val dspDetails by viewModel.dspDetails.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
     // These belong to the body, not to whatever is hosting it. They used to sit in the
