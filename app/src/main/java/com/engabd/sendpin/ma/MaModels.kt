@@ -10,6 +10,7 @@ import java.net.URLEncoder
  * decide whether Music Assistant would have to convert a track to stream it — see
  * [com.engabd.sendpin.audio.FormatNegotiator].
  */
+@kotlinx.serialization.Serializable
 data class MaAudioFormat(
     val codec: String,
     val sampleRate: Int,

@@ -1,9 +1,8 @@
 package com.engabd.sendpin.audio
 
 import android.content.Context
-import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.download.DownloadManager
-import com.engabd.sendpin.subsonic.SubsonicClient
+import com.engabd.sendpin.library.MusicSource
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -14,12 +13,15 @@ import kotlinx.coroutines.withContext
 /**
  * Every track a library sweep should analyse.
  *
- * Deliberately only the Navidrome/OpenSubsonic library and whatever has been
- * downloaded. Those are exactly the tracks this phone's own player can play, and
- * the direct bridge path only ever sees this phone's own playback — a Music
- * Assistant library is routed to whatever speaker is targeted, which is Home
+ * Deliberately only the library **this phone plays itself**, plus whatever has been
+ * downloaded. Those are exactly the tracks the direct bridge path can ever see: a
+ * Music Assistant library is routed to whatever speaker is targeted, which is Home
  * Assistant's business and never reaches the tap. Analysing it would be hours of
  * decoding for a show that cannot use any of it.
+ *
+ * Which library that is comes from the live [MusicSource] rather than from the stored
+ * Navidrome address — that address is a mirror kept for downloads, so reading it meant
+ * a Jellyfin-only install swept nothing but its downloads.
  *
  * Downloads come first. They cost no network and decode fastest, so a sweep that
  * gets interrupted has spent its time on the cheapest wins.
@@ -35,28 +37,26 @@ object ScanLibrarySource {
     private const val MAX_ALBUM_PAGES = 200
     private const val ALBUM_PAGE = 500
 
-    suspend fun tracks(context: Context, downloads: DownloadManager): List<LocalTrack> =
+    suspend fun tracks(
+        context: Context,
+        downloads: DownloadManager,
+        source: MusicSource? =
+            (context.applicationContext as com.engabd.sendpin.SendpinApp).musicSource.value,
+    ): List<LocalTrack> =
         withContext(Dispatchers.IO) {
-            val settings = AppSettings(context)
             val out = LinkedHashMap<String, LocalTrack>()
 
             for (track in downloads.downloads.value) {
                 out[track.id] = track.toLocalTrack()
             }
 
-            val url = settings.navUrl.first().trim()
-            if (url.isNotBlank()) {
-                val client = SubsonicClient(
-                    url,
-                    settings.navUsername.first(),
-                    settings.navPassword.first(),
-                ).also { it.streamFormat = settings.navStreamFormat.first() }
-
+            val client = source
+            if (client != null) {
                 var offset = 0
                 for (page in 0 until MAX_ALBUM_PAGES) {
                     currentCoroutineContext().ensureActive()
                     val albums = try {
-                        client.albumList("alphabeticalByName", ALBUM_PAGE, offset)
+                        client.albums(offset = offset, limit = ALBUM_PAGE)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -70,7 +70,7 @@ object ScanLibrarySource {
                     for (album in albums) {
                         currentCoroutineContext().ensureActive()
                         val tracks = try {
-                            client.albumTracks(album.itemId)
+                            client.albumDetail(album.itemId).second
                         } catch (e: CancellationException) {
                             throw e
                         } catch (e: Exception) {

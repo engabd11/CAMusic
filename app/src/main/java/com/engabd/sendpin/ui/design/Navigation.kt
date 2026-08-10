@@ -16,8 +16,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
@@ -131,6 +135,16 @@ fun SendspinNavBar(
      * library backend changes.
      */
     disabledRoutes: Set<String> = emptySet(),
+    /**
+     * Why a disabled route is disabled, keyed by route.
+     *
+     * A tab that swallows a tap in silence is its own small mystery — the user is
+     * left unsure whether they missed, whether the app is wedged, or whether the tab
+     * means anything at all. This says so out loud instead. It is deliberately *not*
+     * an affordance: the tab still looks and behaves as dead as it is.
+     */
+    disabledReasons: Map<String, String> = emptyMap(),
+    onDisabledTap: (String) -> Unit = {},
     onSelect: (String) -> Unit,
 ) {
     val accent = LocalAccent.current
@@ -158,19 +172,33 @@ fun SendspinNavBar(
                 val off = tab.route in disabledRoutes
                 val on = currentRoute == tab.route && !off
                 val tint = when {
-                    off -> TextFaint.a(0.45f)
+                    off -> TextFaint
                     on -> accent
                     else -> TextMuted
                 }
+                val reason = disabledReasons[tab.route]
                 Column(
                     Modifier
                         .weight(1f)
                         .fillMaxHeight()
+                        // The fade goes on the whole tab rather than on the tint, so
+                        // icon and label recede together and by the same amount.
+                        // Tinting alone left `TextFaint` close enough to the ordinary
+                        // `TextMuted` of a live tab that the two read the same, and a
+                        // dead tab looked merely unselected.
+                        .alpha(if (off) 0.32f else 1f)
                         .clickable(
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null,
-                            enabled = !off,
-                        ) { onSelect(tab.route) },
+                        ) { if (off) onDisabledTap(tab.route) else onSelect(tab.route) }
+                        // Announced as disabled, and carrying the reason, so the bar
+                        // says the same thing to TalkBack that it says on screen.
+                        .semantics {
+                            if (off) {
+                                disabled()
+                                reason?.let { stateDescription = it }
+                            }
+                        },
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,
                 ) {

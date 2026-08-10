@@ -8,7 +8,8 @@ import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.PlayerIdentity
 import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ma.MaRepository
-import com.engabd.sendpin.subsonic.SubsonicClient
+import com.engabd.sendpin.library.MusicSource
+import com.engabd.sendpin.library.MusicSources
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel.Load
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -31,7 +32,7 @@ import kotlinx.coroutines.launch
  * immediately while tracks load in the background.
  *
  * Both backends are handled: Music Assistant via [MaRepository] and Navidrome via
- * [SubsonicClient]. The backend is chosen from the saved setting at load time.
+ * [MusicSource]. Which one is decided by the item's own provider tag.
  */
 class AlbumDetailViewModel(
     app: Application,
@@ -54,10 +55,27 @@ class AlbumDetailViewModel(
     private val localPlayer = (app as SendpinApp).localPlayer
     private val downloads = (app as SendpinApp).downloads
 
-    /** Built once per load rather than per action. Null until the album resolves. */
-    private var subsonic: SubsonicClient? = null
+    /**
+     * The library this phone plays itself, when this album came from one.
+     *
+     * Read from the process-scoped holder rather than built here. This screen used to
+     * construct its own Subsonic client on every load — a second connection pool
+     * against a server the library tab was already talking to, and a second place to
+     * edit when Jellyfin arrived.
+     */
+    private val sourceHolder = (app as SendpinApp).musicSource
+    /**
+     * Null unless the live source is the one this screen's items came from.
+     *
+     * The provider check is load-bearing now that there can be two locally-played
+     * libraries: without it, switching from Navidrome to Jellyfin while an album was
+     * open left the screen building stream URLs out of Jellyfin for Navidrome ids.
+     */
+    private val source: MusicSource?
+        get() = sourceHolder.value?.takeIf { it.providerId == provider }
 
-    private val isSubsonic get() = provider == SubsonicClient.PROVIDER
+    /** This album belongs to the library this phone plays, rather than to MA. */
+    private val isLocal get() = MusicSources.isLocalProvider(provider)
 
     private val _album = MutableStateFlow<MaItem?>(null)
     val album: StateFlow<MaItem?> = _album
@@ -117,16 +135,14 @@ class AlbumDetailViewModel(
             _loading.value = true
             _error.value = null
             try {
-                if (isSubsonic) {
-                    val url = settings.navUrl.first().trim()
-                    if (url.isBlank()) { _error.value = "No Navidrome server configured"; return@launch }
-                    val sc = SubsonicClient(url, settings.navUsername.first(), settings.navPassword.first())
-                    sc.streamFormat = settings.navStreamFormat.first()
-                    subsonic = sc
+                if (isLocal) {
+                    val sc = source
+                    if (sc == null) { _error.value = "That library isn't connected"; return@launch }
                     val (albumMeta, trackList) = sc.albumDetail(itemId)
                     if (albumMeta != null) _album.value = albumMeta
                     _tracks.value = trackList
-                    // Fetch album notes from Navidrome's getAlbumInfo2.
+                    // Liner notes, where the server has them. Absent on a source
+                    // without METADATA, which is why this never blocks the tracks.
                     runCatching { sc.albumInfo(itemId) }.getOrNull()?.let {
                         _notes.value = it.notes
                         _musicBrainzId.value = it.musicBrainzId
@@ -179,11 +195,12 @@ class AlbumDetailViewModel(
 
     /** The rest of the artist's catalogue. */
     private suspend fun byArtist(album: MaItem?): List<MaItem>? {
-        if (isSubsonic) {
-            // A Subsonic album carries its artist's id, so no name matching is needed
-            // here — unlike the artist screen, which has to resolve one.
+        if (isLocal) {
+            // A self-hosted library's album carries its artist's id, so no name
+            // matching is needed here — unlike the artist screen, which has to
+            // resolve one.
             val artistId = album?.parentId ?: return null
-            return subsonic?.artistAlbums(artistId)
+            return source?.artistDetail(artistId)?.second
         }
         val name = album?.subtitle?.substringBefore(",")?.trim() ?: return null
         val artist = maRepo.search(name).artists.firstOrNull { it.name.equals(name, ignoreCase = true) }
@@ -193,10 +210,12 @@ class AlbumDetailViewModel(
 
     /** Albums by artists the server files next to this one. */
     private suspend fun bySimilarArtists(album: MaItem?): List<MaItem>? {
-        if (isSubsonic) {
+        if (isLocal) {
             val artistId = album?.parentId ?: return null
-            val similar = subsonic?.artistInfo(artistId, similarCount = 6)?.similar.orEmpty()
-            return similar.take(4).flatMap { runCatching { subsonic?.artistAlbums(it.itemId).orEmpty() }.getOrDefault(emptyList()) }
+            val similar = source?.artistInfo(artistId, similarCount = 6)?.similar.orEmpty()
+            return similar.take(4).flatMap {
+                runCatching { source?.artistDetail(it.itemId)?.second.orEmpty() }.getOrDefault(emptyList())
+            }
         }
         val name = album?.subtitle?.substringBefore(",")?.trim() ?: return null
         val artist = maRepo.search(name).artists.firstOrNull { it.name.equals(name, ignoreCase = true) }
@@ -208,10 +227,10 @@ class AlbumDetailViewModel(
     /** Anything in the same genre — the weakest claim, and better than nothing. */
     private suspend fun byGenre(album: MaItem?): List<MaItem>? {
         val genre = album?.genres?.firstOrNull()?.takeIf { it.isNotBlank() } ?: return null
-        return if (isSubsonic) {
-            // getSongsByGenre returns tracks; the albums behind them are what a shelf
+        return if (isLocal) {
+            // Genre browsing returns tracks; the albums behind them are what a shelf
             // of covers wants, so they are folded down by album id.
-            subsonic?.songsByGenre(genre, 60)
+            source?.songsByGenre(genre, 60)
                 ?.distinctBy { it.parentId }
                 ?.mapNotNull { song ->
                     song.parentId?.let {
@@ -235,7 +254,7 @@ class AlbumDetailViewModel(
         if (uris.isEmpty()) return
         viewModelScope.launch {
             try {
-                if (isSubsonic) {
+                if (isLocal) {
                     stopMaPlayback()
                     localPlayer.setShuffle(false)
                     localPlayer.setQueue(localTracks())
@@ -255,7 +274,7 @@ class AlbumDetailViewModel(
         if (uris.isEmpty()) return
         viewModelScope.launch {
             try {
-                if (isSubsonic) {
+                if (isLocal) {
                     stopMaPlayback()
                     // Shuffle on *before* the queue is set, so the play order is
                     // built shuffled rather than starting on track 1 and jumping.
@@ -278,7 +297,7 @@ class AlbumDetailViewModel(
         if (uris.isEmpty()) return
         viewModelScope.launch {
             try {
-                if (isSubsonic) {
+                if (isLocal) {
                     localPlayer.addToQueue(localTracks())
                     _toast.tryEmit("Added ${_tracks.value.size} tracks to queue")
                 } else {
@@ -301,7 +320,7 @@ class AlbumDetailViewModel(
     fun enqueueTrack(track: MaItem, option: String) {
         viewModelScope.launch {
             try {
-                if (isSubsonic) {
+                if (isLocal) {
                     val one = localTracks().filter { it.id == track.itemId }
                     if (one.isEmpty()) { _toast.tryEmit("Couldn't queue that"); return@launch }
                     if (option == "next") localPlayer.playNext(one) else localPlayer.addToQueue(one)
@@ -317,7 +336,11 @@ class AlbumDetailViewModel(
     }
 
     /** Only Navidrome hands over the file; MA streams, so there is nothing to keep. */
-    val canDownload: Boolean get() = isSubsonic
+    // Keyed on the item's own provider, not on a live source read during
+    // composition — the source is null for a moment around a reconnect, and a plain
+    // getter read at that instant dropped the Download action and never brought it
+    // back. Every library this phone plays can hand over its files.
+    val canDownload: Boolean get() = isLocal
 
     /** Every track of this album is already on the phone. */
     val allDownloaded: StateFlow<Boolean> = combine(_tracks, downloads.downloads) { tracks, index ->
@@ -326,8 +349,8 @@ class AlbumDetailViewModel(
 
     /** Download the whole album for offline. */
     fun downloadAll() {
-        val sc = subsonic
-        if (!isSubsonic || sc == null) { _toast.tryEmit("Only Navidrome albums can be downloaded"); return }
+        val sc = source
+        if (!isLocal || sc == null) { _toast.tryEmit("That library isn't connected"); return }
         val pending = _tracks.value.filterNot { downloads.isDownloaded(it.itemId) }
         if (pending.isEmpty()) { _toast.tryEmit("Already downloaded"); return }
         viewModelScope.launch {
@@ -352,7 +375,7 @@ class AlbumDetailViewModel(
     fun playTrack(track: MaItem) {
         viewModelScope.launch {
             try {
-                if (isSubsonic) {
+                if (isLocal) {
                     // The album is the queue; the tapped track is where it starts.
                     val start = _tracks.value.indexOfFirst { it.itemId == track.itemId }.coerceAtLeast(0)
                     stopMaPlayback()
@@ -388,7 +411,7 @@ class AlbumDetailViewModel(
 
     /** The album as a local queue, offline copies preferred over the stream. */
     private fun localTracks() = _tracks.value.map {
-        downloads.toLocalTrack(it, streamUrl = subsonic?.streamUrl(it.itemId))
+        downloads.toLocalTrack(it, streamUrl = source?.streamUrl(it.itemId))
     }
 
     // --- favorites --------------------------------------------------------
@@ -400,10 +423,10 @@ class AlbumDetailViewModel(
         _tracks.value = _tracks.value.map { if (it.itemId == track.itemId) it.copy(favorite = wanted) else it }
         viewModelScope.launch {
             try {
-                val sc = subsonic
+                val sc = source
                 when {
-                    isSubsonic && sc != null -> sc.setStarred(track, wanted)
-                    isSubsonic -> throw IllegalStateException("Navidrome isn't connected")
+                    isLocal && sc != null -> sc.setStarred(track, wanted)
+                    isLocal -> throw IllegalStateException("That library isn't connected")
                     wanted -> maRepo.addFavorite(track)
                     else -> maRepo.removeFavorite(track)
                 }
@@ -429,10 +452,10 @@ class AlbumDetailViewModel(
         _album.value = current.copy(favorite = wanted)
         viewModelScope.launch {
             try {
-                val sc = subsonic
+                val sc = source
                 when {
-                    isSubsonic && sc != null -> sc.setStarred(current, wanted)
-                    isSubsonic -> throw IllegalStateException("Navidrome isn't connected")
+                    isLocal && sc != null -> sc.setStarred(current, wanted)
+                    isLocal -> throw IllegalStateException("That library isn't connected")
                     wanted -> maRepo.addFavorite(current)
                     else -> maRepo.removeFavorite(current)
                 }

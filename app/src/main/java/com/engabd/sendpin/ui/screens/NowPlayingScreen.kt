@@ -1,5 +1,7 @@
 package com.engabd.sendpin.ui.screens
 
+import android.content.Context
+import android.media.AudioManager
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
@@ -42,10 +44,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
+import com.engabd.sendpin.audio.DeviceCapabilities
 import com.engabd.sendpin.audio.FormatNegotiator
 import com.engabd.sendpin.audio.ReplayGain
 import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.data.AppSettings
+import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ma.MaDspDetails
 import com.engabd.sendpin.ma.MaLoudness
 import com.engabd.sendpin.ui.design.*
@@ -61,6 +65,14 @@ import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
 @Composable
 fun NowPlayingScreen(
     viewModel: NowPlayingViewModel = viewModel(),
+    /**
+     * The *shared* library view model, passed in rather than resolved with
+     * `viewModel()` here: inside a `NavHost` destination that would build a second
+     * instance scoped to this back-stack entry, with its own Navidrome connection and
+     * its own idea of what is downloaded. The download chip has to read the same index
+     * the Library tab writes.
+     */
+    libraryViewModel: LibraryViewModel,
     onOpenSpeakers: () -> Unit = {},
     onBrowse: () -> Unit = {},
 ) {
@@ -81,9 +93,20 @@ fun NowPlayingScreen(
     // Hoisted out of the badge so the detail can be drawn as a sibling of the whole
     // player rather than inside the transport row — see QualityDetailOverlay.
     var showQuality by remember { mutableStateOf(false) }
+    // What this phone's output can do. Hoisted for the same reason, and drawn as the
+    // same kind of sibling — see DeviceDetailOverlay.
+    var showDevice by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         viewModel.toast.collect { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }
+    }
+    // Downloading from the player is a library action, so its replies ("Wi-Fi only",
+    // "Downloaded X") come from the library — but on its own channel. The library's
+    // general `toast` already has a collector in LibraryScreen, which in the overlay
+    // layout is composed underneath this: collecting it here too would announce every
+    // library action twice, once as a snackbar and once as a Toast.
+    LaunchedEffect(Unit) {
+        libraryViewModel.playerToast.collect { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }
     }
 
     // App.kt already derives the palette from this same artwork and provides it to
@@ -165,7 +188,8 @@ fun NowPlayingScreen(
                     playerName = st.playerName,
                     isSelf = st.isSelf,
                     groupSize = st.groupSize,
-                    onOpenSpeakers = { speakers = true },
+                    localSession = st.isLocalSession,
+                    onTap = { if (st.isLocalSession) showDevice = true else speakers = true },
                 )
 
                 Spacer(Modifier.height(4.dp))
@@ -207,6 +231,10 @@ fun NowPlayingScreen(
                         panel = if (panel == Panel.QUEUE) null else Panel.QUEUE
                     }
                     IconChip(Icons.Default.Tune, "Player options", active = options) { options = !options }
+                    // Only on the local player: an MA speaker is fed by the server and
+                    // there is no file here to keep. Hidden rather than disabled when
+                    // there is nothing behind the track Navidrome could serve.
+                    DownloadChip(libraryViewModel)
                     // DSP is Music Assistant's server-side pipeline, configured per MA
                     // player over `config/players/dsp/*`. The local player decodes on
                     // this phone and MA has never heard of it, so opening this while
@@ -378,6 +406,11 @@ fun NowPlayingScreen(
                 title = st.title,
                 artist = st.artist,
             )
+            DeviceDetailOverlay(
+                visible = showDevice,
+                onDismiss = { showDevice = false },
+                playingRateHz = st.quality?.sampleRateHz ?: 0,
+            )
         }
     }
 }
@@ -387,9 +420,22 @@ fun NowPlayingScreen(
  * an accent half that opens the speaker picker. The design's minimize/overflow
  * icons are dropped — this app is tab-based (nothing to minimize to) and their
  * menu items already live in the chip row under the cover.
+ *
+ * Its trailing icon is the promise about what the tap does, so it has to follow
+ * [localSession]: with Music Assistant behind the player the pill picks *which
+ * speaker to drive*, and the chain link says so. On the Navidrome and offline paths
+ * there is exactly one player and nothing to pick, so the same tap opens the device
+ * card instead and the icon becomes an ⓘ. Offering a link there was a promise the
+ * screen could not keep.
  */
 @Composable
-private fun TopBar(playerName: String, isSelf: Boolean, groupSize: Int, onOpenSpeakers: () -> Unit) {
+internal fun TopBar(
+    playerName: String,
+    isSelf: Boolean,
+    groupSize: Int,
+    localSession: Boolean,
+    onTap: () -> Unit,
+) {
     val accent = LocalAccent.current
     Row(
         Modifier.fillMaxWidth().padding(vertical = 6.dp),
@@ -401,7 +447,7 @@ private fun TopBar(playerName: String, isSelf: Boolean, groupSize: Int, onOpenSp
                 Modifier
                     .clip(RoundedCornerShape(topStart = 100.dp, bottomStart = 100.dp))
                     .background(GlassStrong)
-                    .clickable(onClick = onOpenSpeakers)
+                    .clickable(onClick = onTap)
                     .padding(start = 14.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -421,10 +467,60 @@ private fun TopBar(playerName: String, isSelf: Boolean, groupSize: Int, onOpenSp
                 Modifier
                     .clip(RoundedCornerShape(topEnd = 100.dp, bottomEnd = 100.dp))
                     .background(accent)
-                    .clickable(onClick = onOpenSpeakers)
+                    .clickable(onClick = onTap)
                     .padding(horizontal = 13.dp, vertical = 9.dp),
-            ) { Icon(Icons.Default.Link, "Speakers", tint = Ink, modifier = Modifier.size(14.dp)) }
+            ) {
+                Icon(
+                    if (localSession) Icons.Default.Info else Icons.Default.Link,
+                    if (localSession) "Output details" else "Speakers",
+                    tint = Ink, modifier = Modifier.size(14.dp),
+                )
+            }
         }
+    }
+}
+
+/**
+ * Keep the track that is playing.
+ *
+ * Downloading used to mean leaving the player, finding the track again in the library
+ * and long-pressing it — which is the wrong way round: the moment you decide you want
+ * to keep a song is the moment you are listening to it.
+ *
+ * Absent rather than greyed when there is nothing to download. A chip that can never
+ * do anything is worse than no chip: on a Music Assistant speaker there is no file on
+ * this phone to keep, and the row is already six chips long.
+ */
+@Composable
+fun DownloadChip(libraryViewModel: LibraryViewModel) {
+    val state by libraryViewModel.currentTrackDownload.collectAsStateWithLifecycle()
+    if (state == LibraryViewModel.TrackDownload.UNAVAILABLE) return
+
+    // Two taps to delete, the same as "Delete analyses" in Light Sync — this throws
+    // away a file the user deliberately kept, and one stray tap should not.
+    var confirmDelete by remember { mutableStateOf(false) }
+    LaunchedEffect(state) { confirmDelete = false }
+
+    when (state) {
+        LibraryViewModel.TrackDownload.READY ->
+            IconChip(Icons.Default.Download, "Download for offline") {
+                libraryViewModel.downloadCurrentTrack()
+            }
+        LibraryViewModel.TrackDownload.IN_FLIGHT ->
+            IconChip(Icons.Default.Downloading, "Downloading", active = true, tint = TextMuted)
+        LibraryViewModel.TrackDownload.DONE ->
+            IconChip(
+                if (confirmDelete) Icons.Default.DeleteOutline else Icons.Default.DownloadDone,
+                if (confirmDelete) "Tap again to delete the offline copy" else "Downloaded - tap to remove",
+                active = true,
+                tint = if (confirmDelete) ErrorRed else null,
+            ) {
+                if (confirmDelete) {
+                    libraryViewModel.deleteCurrentTrackDownload()
+                    confirmDelete = false
+                } else confirmDelete = true
+            }
+        LibraryViewModel.TrackDownload.UNAVAILABLE -> Unit
     }
 }
 
@@ -632,16 +728,7 @@ private fun QualityDetailCard(
                 QualityBlock("Output") {
                     if (localSession) {
                         QualityNote(if (bitPerfect) "Bit-perfect on - 24-bit requested where the source has it" else "Bit-perfect off - 16-bit output")
-                        val out = deviceRate.sampleRateHz
-                        val inRate = playing?.sampleRateHz ?: 0
-                        if (out > 0 && inRate > 0 && out != inRate) {
-                            QualityNote(
-                                "Resampled ${StreamQuality.khz(inRate)} - ${StreamQuality.khz(out)} kHz by the Android mixer",
-                                warn = true,
-                            )
-                        } else if (out > 0) {
-                            QualityNote("Device output ${StreamQuality.khz(out)} kHz")
-                        }
+                        MixerNote(playingRateHz = playing?.sampleRateHz ?: 0, mixerRateHz = deviceRate.sampleRateHz)
                     }
                     // Whether MA's own equaliser is in the path. Worth saying here
                     // because the DSP panel can be full of carefully set bands that
@@ -692,6 +779,189 @@ private fun QualityDetailCard(
     }
 }
 
+/**
+ * What the Android mixer is doing to the rate underneath everything else.
+ *
+ * Shared by the quality card and the device card, because they are two views of the
+ * same fact and the worst outcome would be one of them saying a 96 kHz file plays
+ * untouched while the other says the mixer is running at 48.
+ */
+@Composable
+private fun MixerNote(playingRateHz: Int, mixerRateHz: Int) {
+    if (mixerRateHz <= 0) return
+    if (playingRateHz > 0 && playingRateHz != mixerRateHz) {
+        QualityNote(
+            "Resampled ${StreamQuality.khz(playingRateHz)} - ${StreamQuality.khz(mixerRateHz)} kHz by the Android mixer",
+            warn = true,
+        )
+    } else {
+        QualityNote("Device output ${StreamQuality.khz(mixerRateHz)} kHz")
+    }
+}
+
+/**
+ * What this phone's output chain can do, drawn where the speaker picker would be.
+ *
+ * On Music Assistant the pill at the top of the player names a *player*, and tapping
+ * it to change which speaker you are driving is the whole point. On the Navidrome and
+ * offline paths there is only ever one player — this phone — so that tap opened a
+ * picker with a single entry and nothing to pick. The interesting question there is
+ * the one the app could never answer: this phone plays 44.1/16 through its own
+ * speaker, and something else entirely through a USB DAC or a Bluetooth dongle, and
+ * *what the far end can take* is what decides whether a hi-res file was worth
+ * downloading.
+ *
+ * Drawn as an overlay sibling in the player's root `Box`, for the reason recorded at
+ * length on [QualityDetailOverlay]: the album cover is the only `weight(1f)` child of
+ * the player's column, so it absorbs every dp any sibling gains, and both an inline
+ * panel and a focusable `Popup` shrank the artwork. Do not move this.
+ */
+@Composable
+fun BoxScope.DeviceDetailOverlay(
+    visible: Boolean,
+    onDismiss: () -> Unit,
+    /** The rate actually being decoded, so the card can say if the mixer resamples it. */
+    playingRateHz: Int = 0,
+) {
+    if (visible) BackHandler { onDismiss() }
+
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(Motion.effects()),
+        exit = fadeOut(Motion.effects()),
+        modifier = Modifier.matchParentSize(),
+    ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(Ink.copy(alpha = 0.72f))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) { onDismiss() }
+        )
+    }
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(Motion.effects()) + scaleIn(Motion.spatial(), 0.92f),
+        exit = fadeOut(Motion.effects()) + scaleOut(Motion.effects(), 0.96f),
+        modifier = Modifier.align(Alignment.Center),
+    ) {
+        Box(
+            Modifier.clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+            ) { }
+        ) { DeviceDetailCard(playingRateHz = playingRateHz) }
+    }
+}
+
+/**
+ * The device receipt: where the sound is going, what that thing accepts, and what is
+ * happening to it on the way.
+ *
+ * Read once per opening rather than observed. Plugging a DAC in while this card is on
+ * screen is rare enough that closing and reopening it is a fair price for not holding
+ * an [android.media.AudioDeviceCallback] here — the same trade the Settings output
+ * picker makes.
+ */
+@Composable
+private fun DeviceDetailCard(playingRateHz: Int) {
+    val accent = LocalAccent.current
+    val palette = LocalPalette.current
+    val context = LocalContext.current
+    val settings = remember(context) { AppSettings(context) }
+    val bitPerfect by settings.bitPerfect24Bit.collectAsState(initial = false)
+    val preferredId by settings.preferredAudioDeviceId.collectAsState(initial = "")
+
+    val am = remember(context) { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
+    // Keyed on the pinned id so choosing a different output in Settings is reflected
+    // the next time the card is opened rather than the next time the app is started.
+    val route = remember(preferredId) { DeviceCapabilities.activeRoute(am, preferredId) }
+    val mixerRate = remember { DeviceCapabilities.mixerRateHz() }
+    val frames = remember { DeviceCapabilities.framesPerBuffer(am) }
+
+    val shape = RoundedCornerShape(20.dp)
+    Box(Modifier.padding(24.dp)) {
+        CastGlow(palette.swatch(0), shape, blurRadius = 40.dp, alpha = 0.30f, offsetY = 10.dp)
+        Column(
+            Modifier
+                .widthIn(max = 340.dp)
+                .clip(shape)
+                .background(Brush.verticalGradient(listOf(Ink2, accent.a(0.10f))))
+                .border(1.dp, accent.a(0.30f), shape)
+                .padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Icon(
+                    if (route?.isUsb == true) Icons.Default.Usb
+                    else if (route?.isBluetooth == true) Icons.Default.Bluetooth
+                    else Icons.Default.Smartphone,
+                    null, tint = accent, modifier = Modifier.size(20.dp),
+                )
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+                    Text(
+                        "This phone", color = TextPrimary, fontFamily = AppFont,
+                        fontWeight = FontWeight.Bold, fontSize = 13.sp,
+                    )
+                    Text(
+                        android.os.Build.MODEL, color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+
+            if (route == null) {
+                // The platform declined to list its outputs. Saying so is better than
+                // an empty card that reads as a failure to load.
+                QualityBlock("Output") {
+                    QualityNote("Android didn't report an output device.", warn = true)
+                }
+            } else {
+                // ── Playing through ───────────────────────────────────────
+                QualityBlock("Playing through") {
+                    QualityRow("Output", route.label, accent, lit = true)
+                    QualityNote(
+                        if (route.pinned) "Pinned to this output in Settings"
+                        else "Chosen by Android - normally the last thing you plugged in",
+                    )
+                }
+
+                // ── What it accepts ───────────────────────────────────────
+                // The whole reason this card exists: the phone's own speaker and a
+                // USB DAC are different instruments, and until now nothing said so.
+                val accepts = listOfNotNull(
+                    route.sampleRateLabel,
+                    route.bitDepthLabel,
+                    route.channelLabel,
+                )
+                if (accepts.isNotEmpty()) {
+                    QualityBlock("What it accepts") {
+                        route.sampleRateLabel?.let { QualityRow("Rates", it, accent) }
+                        route.bitDepthLabel?.let { QualityRow("Depth", it, accent) }
+                        route.channelLabel?.let { QualityRow("Channels", it, accent) }
+                    }
+                }
+
+                // ── Right now ─────────────────────────────────────────────
+                QualityBlock("Right now") {
+                    MixerNote(playingRateHz = playingRateHz, mixerRateHz = mixerRate)
+                    QualityNote(
+                        if (bitPerfect) "Bit-perfect on - 24-bit requested where the source has it"
+                        else "Bit-perfect off - 16-bit output",
+                    )
+                    frames?.let { QualityNote("Mixer buffer $it frames") }
+                    route.bluetoothCodecNote?.let { QualityNote(it) }
+                }
+            }
+        }
+    }
+}
+
 /** An eyebrow and the lines under it, so the card reads as sections not a list. */
 @Composable
 private fun QualityBlock(title: String, content: @Composable ColumnScope.() -> Unit) {
@@ -720,17 +990,30 @@ private fun fileSize(bytes: Long): String = when {
 
 @Composable
 private fun QualityRow(label: String, q: StreamQuality?, accent: Color) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Box(Modifier.size(6.dp).clip(CircleShape).background(if (q?.lossless == true) accent else TextMuted))
+    QualityRow(label, q?.label ?: "-", accent, lit = q?.lossless == true)
+}
+
+/**
+ * One labelled fact. [lit] puts the accent in the leading dot — reserved for the
+ * readings worth noticing (a lossless stream, the output actually in use) so the dot
+ * still means something when the card is a dozen rows long.
+ */
+@Composable
+private fun QualityRow(label: String, value: String, accent: Color, lit: Boolean = false) {
+    Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Box(
+            Modifier.padding(top = 4.dp).size(6.dp).clip(CircleShape)
+                .background(if (lit) accent else TextMuted)
+        )
         Text(
             label,
             color = TextMuted, fontFamily = AppFont, fontWeight = FontWeight.Bold,
-            fontSize = 12.sp, modifier = Modifier.width(50.dp),
+            fontSize = 12.sp, lineHeight = 17.sp, modifier = Modifier.width(62.dp),
         )
         Text(
-            q?.label ?: "-",
+            value,
             color = TextPrimary, fontFamily = MonoFont, fontWeight = FontWeight.Bold,
-            fontSize = 13.sp,
+            fontSize = 13.sp, lineHeight = 17.sp,
         )
     }
 }

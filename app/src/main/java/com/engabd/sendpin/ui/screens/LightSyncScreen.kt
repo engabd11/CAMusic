@@ -31,7 +31,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.engabd.sendpin.audio.ScanLibrarySource
 import com.engabd.sendpin.ha.HaMediaPlayer
 import com.engabd.sendpin.ha.LightArea
 import com.engabd.sendpin.ha.LightSyncRepository
@@ -499,185 +498,22 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                 }, "$brightnessPct%")
 
                 Spacer(Modifier.height(22.dp))
-                TrackAnalysisSection(settings, accent)
-
-                Spacer(Modifier.height(22.dp))
                 Text(
                     "Direct mode syncs this phone's own playback, and needs no timing " +
                         "offset — it measures how far the audio tap runs ahead of the " +
-                        "speaker and compensates exactly.",
+                        "speaker and compensates exactly.\n\n" +
+                        // Track analysis used to sit above this, between the colour
+                        // picker and the brightness slider. It is a background job with
+                        // a storage cost rather than a light-show control, so it now
+                        // lives with the bridge pairing it belongs beside — and this
+                        // says where it went, for anyone who knew where it was.
+                        "Reading tracks ahead of the show has moved to Settings → Light Sync → " +
+                        "Bridge & analysis.",
                     color = TextFaint, style = MaterialTheme.typography.bodySmall,
                 )
             }
         }
     }
-}
-
-/**
- * Track analysis: the controls for reading songs ahead of playing them.
- *
- * Everything the show can learn from the music as it arrives, it already does.
- * What is left needs the whole track — where the beats are before the first one
- * has sounded, how loud this song gets compared to other songs, where its
- * sections are — and the only way to have that is to have read it first. This is
- * where that is turned on, kicked off for a whole library, and undone.
- */
-@Composable
-private fun TrackAnalysisSection(
-    settings: com.engabd.sendpin.data.AppSettings,
-    accent: Color,
-) {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val app = context.applicationContext as com.engabd.sendpin.SendpinApp
-    val scans = app.trackScans
-    val scope = rememberCoroutineScope()
-
-    val on by settings.lightSyncPrescan.collectAsState(initial = true)
-    val wifiOnly by settings.lightSyncPrescanWifiOnly.collectAsState(initial = true)
-    val progress by scans.progress.collectAsStateWithLifecycle()
-    val playing by app.localPlayer.current.collectAsStateWithLifecycle()
-
-    // Polled rather than recomputed per completed scan: counting the directory
-    // is a listing, and doing one per track would turn a five-thousand-track
-    // sweep into five thousand listings of a directory that is still growing.
-    var usage by remember { mutableStateOf(0 to 0L) }
-    var confirmDelete by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
-        while (true) {
-            usage = scans.usage()
-            kotlinx.coroutines.delay(if (scans.progress.value.busy) 4_000L else 30_000L)
-        }
-    }
-
-    SectionLabel("Track analysis")
-    Spacer(Modifier.height(10.dp))
-
-    GlassCard(radius = 18.dp, fill = if (on) accent.a(0.10f) else Glass) {
-        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                Modifier.size(42.dp).clip(RoundedCornerShape(13.dp))
-                    .background(if (on) accent.a(0.18f) else Glass)
-                    .border(1.dp, if (on) accent.a(0.4f) else Hairline, RoundedCornerShape(13.dp)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    Icons.Default.GraphicEq, null,
-                    tint = if (on) accent else TextMuted, modifier = Modifier.size(20.dp),
-                )
-            }
-            Spacer(Modifier.width(13.dp))
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
-                Text("Read tracks ahead", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                Text(
-                    when {
-                        progress.current != null -> "Analysing ${progress.current}"
-                        progress.pending > 0 -> "${progress.pending} queued"
-                        on -> "New tracks are analysed in the background"
-                        else -> "The show works it out as it goes"
-                    },
-                    color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis,
-                )
-            }
-            AccentSwitch(on) { checked -> scope.launch { settings.setLightSyncPrescan(checked) } }
-        }
-    }
-
-    Spacer(Modifier.height(9.dp))
-    Text(
-        "A song that has been read is exact from its first bar: the beat grid is " +
-            "known rather than found, drops are counted down to instead of noticed, " +
-            "and Auto sizes the room to how hard the song actually goes. Songs that " +
-            "haven't been read still work — they are just learnt as they play.",
-        color = TextFaint, style = MaterialTheme.typography.bodySmall,
-    )
-
-    if (!on) return
-
-    Spacer(Modifier.height(14.dp))
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
-            Text("Wi-Fi only", color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-            Text(
-                "Streamed tracks are downloaded to be read. Downloaded ones are " +
-                    "always analysed, network or not.",
-                color = TextFaint, style = MaterialTheme.typography.bodySmall,
-            )
-        }
-        Spacer(Modifier.width(12.dp))
-        AccentSwitch(wifiOnly) { checked ->
-            scope.launch { settings.setLightSyncPrescanWifiOnly(checked) }
-        }
-    }
-
-    Spacer(Modifier.height(14.dp))
-    val (count, bytes) = usage
-    Text(
-        if (count == 0) "Nothing analysed yet" else "$count analysed · ${formatBytes(bytes)}",
-        color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
-    )
-
-    if (progress.sweeping && progress.sweepTotal > 0) {
-        Spacer(Modifier.height(6.dp))
-        Text(
-            "Library sweep: ${progress.sweepDone} of ${progress.sweepTotal}",
-            color = accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
-        )
-    }
-    if (progress.failed > 0) {
-        Spacer(Modifier.height(6.dp))
-        Text(
-            "${progress.failed} could not be analysed this session" +
-                (progress.error?.let { " — $it" } ?: ""),
-            color = TextFaint, style = MaterialTheme.typography.bodySmall,
-        )
-    }
-
-    Spacer(Modifier.height(12.dp))
-    Row(
-        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        if (progress.sweeping) {
-            Pill("Stop sweep", true) { scans.cancelSweep() }
-        } else {
-            Pill("Analyse library", false) {
-                scans.sweep { ScanLibrarySource.tracks(context.applicationContext, app.downloads) }
-            }
-        }
-        playing?.let { track ->
-            Pill("Re-analyse this track", false) { scans.rescan(track) }
-        }
-        // Two taps, because this can throw away hours of decoding — and on a
-        // streamed library, a gigabyte of transfer — that nothing can get back
-        // except by doing it all again.
-        Pill(if (confirmDelete) "Delete them all?" else "Delete analyses", confirmDelete) {
-            if (confirmDelete) {
-                confirmDelete = false
-                scope.launch {
-                    scans.deleteAll()
-                    usage = 0 to 0L
-                }
-            } else {
-                confirmDelete = true
-            }
-        }
-    }
-
-    Spacer(Modifier.height(9.dp))
-    Text(
-        "The library sweep covers downloads and the Navidrome library — the tracks " +
-            "this phone plays itself, which are the only ones direct mode ever sees. " +
-            "It skips anything already analysed, so stopping and starting it again " +
-            "picks up where it left off.",
-        color = TextFaint, style = MaterialTheme.typography.bodySmall,
-    )
-}
-
-private fun formatBytes(bytes: Long): String = when {
-    bytes >= 1_048_576L -> "%.1f MB".format(bytes / 1_048_576.0)
-    bytes >= 1024L -> "${bytes / 1024} KB"
-    else -> "$bytes B"
 }
 
 @Composable

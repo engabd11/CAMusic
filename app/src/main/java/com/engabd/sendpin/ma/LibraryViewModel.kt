@@ -13,10 +13,16 @@ import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.PlayerIdentity
 import com.engabd.sendpin.download.DownloadJob
 import com.engabd.sendpin.download.DownloadedTrack
+import com.engabd.sendpin.library.MusicSource
+import com.engabd.sendpin.library.MusicSources
+import com.engabd.sendpin.library.ServerConfig
+import com.engabd.sendpin.library.ServerKind
+import com.engabd.sendpin.library.SourceAuthException
+import com.engabd.sendpin.library.SourceError
+import com.engabd.sendpin.library.SubsonicSource
 import com.engabd.sendpin.subsonic.SavedQueue
 import com.engabd.sendpin.subsonic.SubsonicClient
 import com.engabd.sendpin.subsonic.SubsonicError
-import com.engabd.sendpin.subsonic.SubsonicException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -88,7 +94,36 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     private val maApi = (app as SendpinApp).maApi
     private val maRepo = MaRepository(maApi)
-    private var subsonic: SubsonicClient? = null
+
+    /**
+     * The library this phone browses and plays itself, or null on Music Assistant.
+     *
+     * Was a `SubsonicClient?`, with `when (backend)` around every call — which made
+     * Navidrome not one library among several but a hard-coded half of the app. It is
+     * now a [MusicSource]: Jellyfin arrived through that interface without any of the
+     * call sites below knowing, and the next one will too.
+     *
+     * Backed by the process-scoped holder so the three detail view models see the
+     * same live connection instead of each building a client of their own.
+     */
+    private val sourceHolder = (app as SendpinApp).musicSource
+    private var source: MusicSource?
+        get() = sourceHolder.value
+        set(value) { sourceHolder.value = value }
+
+    /** The active server's stored config, so a connect knows what it is connecting to. */
+    private var activeConfig: ServerConfig? = null
+
+    /**
+     * What to call the active library in a message.
+     *
+     * Every one of these strings used to say "Navidrome" because there was only ever
+     * one thing it could be. Told a Jellyfin user their Jellyfin server wasn't
+     * connected under someone else's product name, which is the kind of small lie
+     * that makes an app feel like it was built for someone else.
+     */
+    private fun libraryName(): String =
+        activeConfig?.displayName ?: source?.kind?.label ?: "the library"
 
     /**
      * The in-flight Navidrome connect, so a newer attempt can supersede it.
@@ -233,6 +268,17 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         .map { list -> list.map { it.id }.toSet() }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
     private val _toast = MutableSharedFlow<String>(extraBufferCapacity = 8); val toast: SharedFlow<String> = _toast.asSharedFlow()
+
+    /**
+     * Replies to actions started from the Now Playing screen, which has no snackbar.
+     *
+     * A separate channel rather than a second collector on [toast]: in the overlay
+     * layout the player is drawn *over* the Library tab, so both screens are composed
+     * at once and every library action would be announced twice — a snackbar under a
+     * Toast saying the same thing.
+     */
+    private val _playerToast = MutableSharedFlow<String>(extraBufferCapacity = 8)
+    val playerToast: SharedFlow<String> = _playerToast.asSharedFlow()
     private val stack = ArrayDeque<Node>()
 
     // --- playlist create / delete (both backends) --------------------------
@@ -267,7 +313,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             _playlistChoices.value = try {
                 when (_backend.value) {
                     Backend.MA -> maRepo.playlists()
-                    Backend.SUBSONIC -> subsonic?.playlists().orEmpty()
+                    Backend.SUBSONIC -> source?.playlists().orEmpty()
                 }
             } catch (_: Exception) { emptyList() }
         }
@@ -288,10 +334,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                     if (item.mediaType == "track") listOf(item) else childrenOf(item)
                         .filter { it.mediaType == "track" }
                 if (tracks.isEmpty()) { _toast.tryEmit("Nothing to add"); return@launch }
-                when (playlist.provider) {
-                    SubsonicClient.PROVIDER -> {
-                        val sc = subsonic ?: throw IllegalStateException("Navidrome isn't connected")
-                        sc.updatePlaylist(playlist.itemId, addSongIds = tracks.map { it.itemId })
+                when {
+                    MusicSources.isLocalProvider(playlist.provider) -> {
+                        val sc = source ?: throw IllegalStateException("${libraryName()} isn't connected")
+                        sc.addToPlaylist(playlist.itemId, tracks.map { it.itemId })
                     }
                     // MA identifies playlist members by uri, not by library id.
                     else -> maRepo.addPlaylistTracks(playlist, tracks.mapNotNull { it.uri })
@@ -323,7 +369,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                         refresh()
                     }
                     Backend.SUBSONIC -> {
-                        val sc = subsonic ?: throw IllegalStateException("Navidrome isn't connected")
+                        val sc = source ?: throw IllegalStateException("${libraryName()} isn't connected")
                         sc.createPlaylist(name.trim())
                         _toast.tryEmit("Created \"${name.trim()}\"")
                         refresh()
@@ -343,9 +389,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     fun deletePlaylist(item: MaItem) {
         viewModelScope.launch {
             try {
-                when (item.provider) {
-                    SubsonicClient.PROVIDER -> {
-                        val sc = subsonic ?: throw IllegalStateException("Navidrome isn't connected")
+                when {
+                    MusicSources.isLocalProvider(item.provider) -> {
+                        val sc = source ?: throw IllegalStateException("${libraryName()} isn't connected")
                         sc.deletePlaylist(item.itemId)
                     }
                     else -> maRepo.deletePlaylist(item)
@@ -435,17 +481,51 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             _maUrl.value = settings.maBaseUrl.first(); _maUser.value = settings.maUsername.first(); _maPass.value = settings.maPassword.first()
             _navUrl.value = settings.navUrl.first(); _navUser.value = settings.navUsername.first(); _navPass.value = settings.navPassword.first()
+            activeConfig = settings.activeServer.first()
+            // The connect form's fields are seeded from the *active server* rather
+            // than only from the legacy Navidrome keys. Those keys are only written
+            // for Subsonic-speaking servers, so a Jellyfin-only install came back from
+            // a restart with a blank address and never reconnected.
+            activeConfig?.takeIf { it.kind.playsLocally }?.let {
+                _navUrl.value = it.url
+                _navUser.value = it.username
+                _navPass.value = it.password
+            }
             // Backend first, then booted: the settings collector below only acts
             // once booted, so this ordering keeps boot from racing it into two
             // connects for the same backend.
             applyBackend(if (settings.backend.first() == "subsonic") Backend.SUBSONIC else Backend.MA)
             _booted.value = true
         }
+        // Which server is active is the Settings screen's to decide and this screen's
+        // to obey. Without this, "Browse this library" moved the Active pill and
+        // nothing else: the app stayed connected to whatever it had already opened,
+        // because the connect path only ever read the one stored Navidrome address.
+        //
+        // Keyed on the id rather than the whole config, so editing a server's *other*
+        // fields (its name, its stream format) doesn't tear the connection down.
+        viewModelScope.launch {
+            settings.activeServerId.distinctUntilChanged().collect { id ->
+                if (!_booted.value || id.isBlank()) return@collect
+                if (activeConfig?.id == id && (source != null || _backend.value == Backend.MA)) return@collect
+                val config = settings.activeServer.first() ?: return@collect
+                switchTo(config)
+            }
+        }
         startLiveSearch()
         viewModelScope.launch { settings.targetPlayer.collect { _targetPlayer.value = it } }
         // This client outlives any one screen, so a format change made in Settings
         // has to reach it rather than waiting for a reconnect.
-        viewModelScope.launch { settings.navStreamFormat.collect { subsonic?.streamFormat = it } }
+        // Per server, not global. The stored `navStreamFormat` is a mirror kept for
+        // downloads and "play at original quality" — pushing it onto whatever source
+        // happened to be connected meant editing server B's stream quality changed
+        // server A's playback.
+        viewModelScope.launch {
+            settings.activeServer
+                .map { it?.option(ServerConfig.OPT_STREAM_FORMAT) ?: "raw" }
+                .distinctUntilChanged()
+                .collect { source?.streamFormat = it }
+        }
         // The backend belongs to Settings, so follow it rather than owning it.
         // [setBackend] no-ops on an unchanged value, so this doesn't feed back.
         viewModelScope.launch {
@@ -491,18 +571,18 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         // app used to do — counted every one-second skip as a full play.
         viewModelScope.launch {
             localPlayer.started.collect { track ->
-                // Keyed on the track carrying a Navidrome id, not on the selected
+                // Keyed on the track carrying a library id, not on the selected
                 // backend. "Play at original quality" streams straight from Navidrome
                 // while the *MA* backend is selected, and the old `Backend.SUBSONIC`
                 // gate meant precisely the listening this audience does most —
                 // untouched, straight from the source — was the listening that never
                 // counted towards play counts or "recently played".
-                val sc = subsonic ?: return@collect
                 val songId = track.scrobbleId ?: return@collect
+                val sink = scrobbleSink(track.scrobbleProvider) ?: return@collect
                 val startedAtMs = System.currentTimeMillis()
-                sc.scrobble(songId, submission = false)
+                runCatching { sink.scrobble(songId, completed = false) }
                 submissionJob?.cancel()
-                submissionJob = viewModelScope.launch { submitWhenPlayed(sc, songId, startedAtMs) }
+                submissionJob = viewModelScope.launch { submitWhenPlayed(sink, songId, startedAtMs) }
             }
         }
         viewModelScope.launch { localPlayer.errors.collect { _toast.tryEmit(it) } }
@@ -513,6 +593,44 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             downloads.collect { list ->
                 if (_node.value.title == DOWNLOADS_TITLE) _node.value = Node(DOWNLOADS_TITLE, downloadItems(list))
             }
+        }
+    }
+
+    /**
+     * Point the library at [config] and connect to it.
+     *
+     * The entry point for "the user picked a different server". [setBackend] handles
+     * the Music-Assistant-or-not half of that — stopping whatever the old library was
+     * playing, clearing the browse stack — and this adds the half it cannot know
+     * about: *which* local library, when there is more than one.
+     */
+    fun switchTo(config: ServerConfig) {
+        val want = if (config.kind.playsLocally) Backend.SUBSONIC else Backend.MA
+        val changedServer = activeConfig?.id != config.id
+        activeConfig = config
+        if (config.kind.playsLocally) {
+            // Keep the legacy form fields in step: they are what the connect form
+            // shows and what `connect()` reads back.
+            _navUrl.value = config.url
+            _navUser.value = config.username
+            _navPass.value = config.password
+        } else {
+            _maUrl.value = config.url
+            _maUser.value = config.username
+            _maPass.value = config.password
+        }
+        if (_backend.value != want) {
+            setBackend(want)
+        } else if (changedServer) {
+            // Same *kind* of backend, different server — `setBackend` would no-op, and
+            // the old server's albums would sit on screen under the new one's name.
+            localPlayer.stop()
+            source = null
+            applyBackend(want)
+            // `applyBackend` short-circuits on an already-open Music Assistant socket,
+            // which is right when the address hasn't changed and wrong here: two MA
+            // servers would swap labels without the connection ever moving.
+            if (want == Backend.MA) connect()
         }
     }
 
@@ -568,6 +686,11 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         clearSearch()
 
         if (b == Backend.MA) {
+            // The local source is not merely unused on Music Assistant — it is
+            // published in a process-scoped holder that the detail screens, the
+            // download chip and the scrobble sink all read. Left live, it answered
+            // for a library nobody was browsing.
+            source = null
             if (maApi.state.value == MaApiClient.State.CONNECTED) {
                 _ready.value = true
                 showRoot()
@@ -575,7 +698,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 connect()
             }
         } else {
-            subsonic = null
+            source = null
             // With no server on file the connect form is the right answer, even if
             // there are downloads — the user has not set this backend up yet.
             if (_navUrl.value.isNotBlank()) connect()
@@ -617,27 +740,65 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 _connecting.value = false
             }
         } else {
-            viewModelScope.launch { settings.setNavidrome(_navUrl.value.trim(), _navUser.value, _navPass.value) }
             val url = _navUrl.value.trim()
-            if (url.isBlank()) { subsonic = null; _ready.value = false; return }
+            if (url.isBlank()) { source = null; _ready.value = false; return }
             _connecting.value = true
             // Abandon whatever address was being tried before this one.
             navConnectJob?.cancel()
-            val sc = SubsonicClient(url, _navUser.value, _navPass.value); subsonic = sc
             navConnectJob = viewModelScope.launch {
-                sc.streamFormat = settings.navStreamFormat.first()
-                val err = sc.pingResult()
+                val config = resolveActiveConfig(url)
+                // The legacy Navidrome keys are written **only for a server that
+                // speaks Subsonic**. They are not "the active library" — they back
+                // downloads and "play at original quality", both of which go to
+                // Navidrome from either backend — so stamping a Jellyfin address into
+                // them pointed a `SubsonicClient` at a Jellyfin host and took every
+                // download with it.
+                if (config.kind == ServerKind.NAVIDROME || config.kind == ServerKind.SUBSONIC) {
+                    settings.setNavidrome(url, _navUser.value, _navPass.value)
+                }
+                val next = MusicSources.create(config)
+                if (next == null) {
+                    // A kind with no adapter yet — the settings picker greys those
+                    // out, so this is only reachable by editing the stored list.
+                    _connecting.value = false
+                    _ready.value = false
+                    _connError.value = "${config.kind.label} isn't supported yet"
+                    return@launch
+                }
+                source = next
+                activeConfig = config
+                next.streamFormat = config.option(ServerConfig.OPT_STREAM_FORMAT)
+                    ?: settings.navStreamFormat.first()
+                // Signing in, and asking what the server can do. Both can fail, and a
+                // failure here is a connection failure like any other.
+                val err = try {
+                    activeConfig = MusicSources.prepare(next, config)
+                    next.probe()
+                } catch (e: SourceAuthException) {
+                    SourceError(e.message ?: "Sign-in was refused", isAuth = true)
+                } catch (e: Exception) {
+                    // Not an auth failure. Calling everything one meant a Jellyfin
+                    // server that was merely unreachable kept the connect form up with
+                    // "check your password" — and suppressed the fallback to
+                    // downloads, which is the whole point of having them.
+                    SourceError(e.message ?: "Couldn't reach the server", isAuth = false)
+                }
                 // Belt as well as braces. `cancel()` above only takes effect at a
                 // suspension point, and a ping blocked on a TCP connect to an address
                 // with nothing on it may not reach one until the socket times out — so
                 // a superseded attempt can still arrive here with an answer nobody
                 // asked for. Whether it is stale is not a matter of timing: it is
-                // whether the client it used is still the current one.
-                if (subsonic !== sc) return@launch
+                // whether the source it used is still the current one.
+                if (source !== next) return@launch
                 _connecting.value = false
                 if (err == null) {
                     _ready.value = true
                     _offline.value = false
+                    // Anything `prepare` learned — a Jellyfin token, its user and
+                    // library ids — is worth keeping, or the next launch signs in
+                    // again and leaves another device session behind in the server's
+                    // dashboard.
+                    persistActiveConfig()
                     showRoot()
                     // Asked once per connect: the answer only changes when another
                     // device puts something down, and this is when that becomes
@@ -652,6 +813,45 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * Which server this connect is for.
+     *
+     * [activeConfig] is the answer whenever the Settings screen has told us — it is
+     * the only thing that knows the *kind*, and building a Jellyfin session out of
+     * Navidrome's stored address is exactly the failure this replaced.
+     *
+     * [url] is what the connect form is holding, which can be a keystroke ahead of
+     * what is stored, so "Save & connect" tries what was typed. Falling all the way
+     * back to a fresh Navidrome config covers an install that predates the server
+     * list, where the credentials fields have only ever meant one thing.
+     */
+    private suspend fun resolveActiveConfig(url: String): ServerConfig {
+        // The store first, the latched value second. `activeConfig` is set optimistically
+        // by [switchTo] and can be a step behind when two settings collectors race a
+        // library switch — and being a step behind here means building, say, a Jellyfin
+        // session against Navidrome's address.
+        val stored = settings.activeServer.first()?.takeIf { it.kind.playsLocally }
+            ?: activeConfig?.takeIf { it.kind.playsLocally }
+        return stored?.copy(url = url, username = _navUser.value, password = _navPass.value)
+            ?: ServerConfig(
+                kind = ServerKind.NAVIDROME,
+                url = url,
+                username = _navUser.value,
+                password = _navPass.value,
+            )
+    }
+
+    /** Write [activeConfig] back into the stored list, in place. */
+    private suspend fun persistActiveConfig() {
+        val config = activeConfig ?: return
+        val list = settings.servers.first()
+        val merged =
+            if (list.any { it.id == config.id }) list.map { if (it.id == config.id) config else it }
+            else list + config
+        settings.saveServers(merged)
+        settings.setActiveServer(config.id)
+    }
+
+    /**
      * Ask the Navidrome server whether it is there and whether it accepts these
      * credentials, whichever backend the library is currently showing.
      */
@@ -660,7 +860,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             val url = settings.navUrl.first().trim()
             if (url.isBlank()) { _navStatus.value = "Not set up"; return@launch }
             _navStatus.value = "Checking…"
-            val sc = subsonic ?: navidromeClient()
+            val sc = navidromeClient()
             if (sc == null) { _navStatus.value = "Not set up"; return@launch }
             val err = sc.pingResult()
             _navStatus.value = when {
@@ -681,11 +881,12 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * reach" would be a lie and dropping to offline would hide the one thing the
      * user can actually fix. Those keep the form up whatever is downloaded.
      */
-    private fun goOfflineIfPossible(error: SubsonicException) {
-        val auth = SubsonicError.isAuth(error.code)
+    private fun goOfflineIfPossible(error: SourceError) {
+        val auth = error.isAuth
+        val name = activeConfig?.displayName ?: "the server"
         _connError.value =
-            if (auth) error.message.orEmpty()
-            else "Couldn't reach Navidrome - ${error.message}"
+            if (auth) error.message
+            else "Couldn't reach $name - ${error.message}"
         if (auth || downloads.value.isEmpty()) {
             _offline.value = false
             _ready.value = false
@@ -755,7 +956,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 when {
                     item.provider == DOWNLOAD -> playLocal(downloadContext(item), option)
-                    item.provider == SubsonicClient.PROVIDER -> playLocal(subsonicContext(item), option)
+                    MusicSources.isLocalProvider(item.provider) -> playLocal(localContext(item), option)
                     else -> {
                         val direct = if (option == "replace") navidromeDirect(item) else null
                         if (direct != null) {
@@ -823,10 +1024,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * is the thing that made this backend feel broken. A container resolves to all
      * of its tracks.
      */
-    private suspend fun subsonicContext(item: MaItem): PlayContext {
-        val sc = subsonic
+    private suspend fun localContext(item: MaItem): PlayContext {
+        val sc = source
         if (item.mediaType == "track") {
-            val siblings = visibleTracks().filter { it.provider == SubsonicClient.PROVIDER }
+            val siblings = visibleTracks().filter { it.provider == item.provider }
             val list = siblings.ifEmpty { listOf(item) }
             val start = list.indexOfFirst { it.itemId == item.itemId }.coerceAtLeast(0)
             return PlayContext(list.map { localTrack(it) }, start, "Playing ${item.name}")
@@ -864,17 +1065,22 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         return downloadManager.toLocalTrack(
             item = item,
             streamUrl = streamUrl
-                ?: item.takeIf { it.provider == SubsonicClient.PROVIDER }?.let { subsonic?.streamUrl(it.itemId) },
+                ?: item.takeIf { it.provider == source?.providerId }?.let { source?.streamUrl(it.itemId) },
             // A DOWNLOAD item carries its file path as its uri; everything else has
             // to be looked up in the index by id.
             localPathFallback = item.uri?.takeIf { item.provider == DOWNLOAD },
-        ).copy(
-            // Downloads are Subsonic-only, so their id is a Navidrome id too.
-            scrobbleId = scrobbleId
-                ?: item.itemId.takeIf {
-                    item.provider == SubsonicClient.PROVIDER || item.provider == DOWNLOAD
-                },
-        )
+        ).let { track ->
+            // `toLocalTrack` fills in the library id and the library it belongs to for
+            // every caller — it used to be done here, so the three detail screens built
+            // tracks that carried neither, and a song started from an album page was
+            // silently unscrobbleable and undownloadable from the player.
+            //
+            // The one case it cannot know about is this one: a Music Assistant item
+            // streamed straight from Navidrome by "play at original quality", where
+            // the caller holds the Navidrome id and the item does not.
+            if (scrobbleId == null) track
+            else track.copy(scrobbleId = scrobbleId, scrobbleProvider = SubsonicClient.PROVIDER)
+        }
     }
 
     /**
@@ -900,7 +1106,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         val hiRes = settings.preferHiRes.first()
         if (FormatNegotiator.canStreamUntouched(fmt.sampleRate, fmt.bitDepth, hiRes)) return null
 
-        val sc = subsonic ?: navidromeClient() ?: return null
+        val sc = navidromeClient() ?: return null
         // MA and Navidrome have different ids for the same file, so match by name.
         val match = try {
             sc.search("${item.name} ${item.subtitle.orEmpty()}".trim()).tracks
@@ -914,12 +1120,64 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     /** A Navidrome stream for a Music Assistant item, with the id Navidrome knows it by. */
     private data class DirectStream(val url: String, val songId: String)
 
-    /** Build (and cache) a Navidrome client from saved settings, if there is one. */
+    /**
+     * The Navidrome server itself, whichever library is active.
+     *
+     * Distinct from [source] on purpose. Two features reach past the active library
+     * straight to Navidrome — every download comes from it, and "play at original
+     * quality" streams from it while *Music Assistant* is the library — so this is
+     * "the Subsonic server on file", not "the library being browsed". Conflating the
+     * two is why this used to overwrite the active client as a side effect of asking
+     * whether Navidrome was reachable.
+     *
+     * Cached rather than rebuilt per call, so the connection pool is reused, and
+     * rebuilt when the saved address changes.
+     */
+    private var navClient: SubsonicClient? = null
+    private var navClientKey: String = ""
+    private var navSource: SubsonicSource? = null
+
+    /** The Navidrome server as a [MusicSource], for the paths that speak that language. */
+    private suspend fun navidromeSource(): MusicSource? {
+        val client = navidromeClient() ?: return null
+        return navSource?.takeIf { it.subsonic === client }
+            ?: SubsonicSource(client).also { navSource = it }
+    }
+
+    /**
+     * Where to report a play against [provider].
+     *
+     * An id is only meaningful to the library it came from — a Jellyfin guid sent to
+     * Navidrome names nothing there — so this refuses rather than guessing when the
+     * active library is not the one that produced the track.
+     *
+     * The two exceptions are the two cases where the id outlives its library on
+     * screen: a Navidrome id from "play at original quality", which is reported while
+     * *Music Assistant* is the library, and a download, whose provider tag records
+     * that it came off disk rather than which server it came from originally.
+     */
+    private suspend fun scrobbleSink(provider: String?): MusicSource? = when (provider) {
+        null -> null
+        SubsonicClient.PROVIDER -> source?.takeIf { it.providerId == provider } ?: navidromeSource()
+        else -> source?.takeIf { it.providerId == provider }
+    }
+
     private suspend fun navidromeClient(): SubsonicClient? {
         val url = settings.navUrl.first().trim()
         if (url.isBlank()) return null
-        return SubsonicClient(url, settings.navUsername.first(), settings.navPassword.first())
-            .also { it.streamFormat = settings.navStreamFormat.first(); subsonic = it }
+        val user = settings.navUsername.first()
+        val pass = settings.navPassword.first()
+        val key = "$url|$user|$pass"
+        navClient?.takeIf { navClientKey == key }?.let {
+            it.streamFormat = settings.navStreamFormat.first()
+            return it
+        }
+        return SubsonicClient(url, user, pass)
+            .also {
+                it.streamFormat = settings.navStreamFormat.first()
+                navClient = it
+                navClientKey = key
+            }
     }
 
     /**
@@ -967,26 +1225,56 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * artist resolves to its tracks and downloads the lot — downloading an album
      * one track at a time through the UI was not a real answer.
      */
-    fun download(item: MaItem) {
-        val sc = subsonic
-        if (sc == null) { _toast.tryEmit("Connect to Navidrome to download"); return }
-        if (item.provider != SubsonicClient.PROVIDER) { _toast.tryEmit("Only Navidrome tracks can be downloaded"); return }
+    fun download(item: MaItem, replyTo: MutableSharedFlow<String> = _toast) {
         viewModelScope.launch {
+            // Resolved from the *item's* library rather than the active one. A track
+            // being played through "play at original quality" is a Navidrome file
+            // while Music Assistant is the library, and it is downloadable — asking
+            // the active source about it either refused or, worse, handed a Navidrome
+            // id to a server that had never seen it.
+            val sc = sourceFor(item.provider)
+            if (sc == null) {
+                // Music Assistant streams are the server's to serve, not ours to keep.
+                replyTo.tryEmit(
+                    if (MusicSources.isLocalProvider(item.provider)) "Connect to that library to download"
+                    else "Only tracks from your own library can be downloaded"
+                )
+                return@launch
+            }
             val tracks = try {
                 sc.tracksUnder(item)
             } catch (e: Exception) {
-                _toast.tryEmit(e.message ?: "Couldn't list that")
+                replyTo.tryEmit(e.message ?: "Couldn't list that")
                 return@launch
             }
-            runDownload(tracks, sc)
+            runDownload(tracks, sc, replyTo)
         }
+    }
+
+    /**
+     * The live source that can answer for [provider], or null.
+     *
+     * The active library where it matches, and the Navidrome server otherwise —
+     * because two features deliberately reach past the active library to it: every
+     * download, and "play at original quality", which streams from Navidrome while
+     * Music Assistant is what is being browsed.
+     */
+    private suspend fun sourceFor(provider: String): MusicSource? = when {
+        !MusicSources.isLocalProvider(provider) -> null
+        source?.providerId == provider -> source
+        // Navidrome is reachable whichever library is active — it backs every download
+        // and "play at original quality". No other provider gets that treatment,
+        // because guessing which server an id belongs to is how a Navidrome id ends up
+        // being offered to Jellyfin.
+        provider == SubsonicClient.PROVIDER -> navidromeSource()
+        else -> null
     }
 
     /** Download a list already on screen — an album's tracks, a playlist, a search. */
     fun downloadAll(items: List<MaItem>) {
-        val sc = subsonic
-        if (sc == null) { _toast.tryEmit("Connect to Navidrome to download"); return }
-        val tracks = items.filter { it.provider == SubsonicClient.PROVIDER && it.mediaType == "track" }
+        val sc = source
+        if (sc == null) { _toast.tryEmit("Connect to a library to download"); return }
+        val tracks = items.filter { it.provider == sc.providerId && it.mediaType == "track" }
         if (tracks.isEmpty()) { _toast.tryEmit("Nothing here to download"); return }
         viewModelScope.launch { runDownload(tracks, sc) }
     }
@@ -996,9 +1284,14 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * 20-track album is a single sequential job with one summary at the end, rather
      * than 20 jobs racing each other for the same wifi.
      */
-    private suspend fun runDownload(tracks: List<MaItem>, sc: SubsonicClient) {
+    private suspend fun runDownload(
+        tracks: List<MaItem>,
+        sc: MusicSource,
+        /** Where the running commentary goes — see [playerToast] for why it varies. */
+        replyTo: MutableSharedFlow<String> = _toast,
+    ) {
         val pending = tracks.filterNot { downloadManager.isDownloaded(it.itemId) }
-        if (pending.isEmpty()) { _toast.tryEmit("Already downloaded"); return }
+        if (pending.isEmpty()) { replyTo.tryEmit("Already downloaded"); return }
 
         // Wi-Fi-only and storage cap are enforced inside downloadAll now,
         // so the check happens per-file at the moment it starts, not just once
@@ -1013,10 +1306,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             val isWifi = cm.activeNetwork?.let { net ->
                 cm.getNetworkCapabilities(net)?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)
             } ?: false
-            if (!isWifi) { _toast.tryEmit("Wi-Fi only - connect to Wi-Fi to download"); return }
+            if (!isWifi) { replyTo.tryEmit("Wi-Fi only - connect to Wi-Fi to download"); return }
         }
 
-        _toast.tryEmit(
+        replyTo.tryEmit(
             if (pending.size == 1) "Downloading ${pending.first().name}…"
             else "Downloading ${pending.size} tracks…"
         )
@@ -1026,7 +1319,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             wifiOnly = wifiOnly,
             storageCapMb = storageCap,
         )
-        _toast.tryEmit(
+        replyTo.tryEmit(
             when {
                 ok == pending.size && ok == 1 -> "Downloaded ${pending.first().name}"
                 ok == pending.size -> "Downloaded $ok tracks"
@@ -1051,9 +1344,110 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 downloadManager.delete(entry.id)
             }
             if (downloadManager.bytesUsed() > capBytes) {
-                _toast.tryEmit("Downloads are over the ${capMb / 1000} GB limit")
+                replyTo.tryEmit("Downloads are over the ${capMb / 1000} GB limit")
             }
         }
+    }
+
+    // --- the track that is playing right now -------------------------------
+
+    /**
+     * Whether the track on the local player can be, is being, or has been downloaded.
+     *
+     * Its own state rather than something the player screen works out, because the
+     * answer needs three things that live here — the download index, the jobs list and
+     * whether a Navidrome connection exists at all — and none of them belong to
+     * Now Playing.
+     */
+    enum class TrackDownload {
+        /** Nothing playing locally, or nothing behind it that Navidrome could serve. */
+        UNAVAILABLE,
+        READY,
+        IN_FLIGHT,
+        DONE,
+    }
+
+    /**
+     * The Navidrome song id behind a locally-playing track, or null when there isn't
+     * one.
+     *
+     * `scrobbleId` is already exactly this: it is set for a Navidrome track, for a
+     * download (downloads are Subsonic-only), and for a Music Assistant item being
+     * played through a Navidrome stream by "play at original quality" — where the
+     * item's own id belongs to MA and would name a song Navidrome has never heard of.
+     * Reusing it means the download chip is offered in precisely the cases a download
+     * can actually succeed.
+     */
+    private val LocalTrack.navId: String? get() = scrobbleId
+
+    val currentTrackDownload: StateFlow<TrackDownload> =
+        combine(localPlayer.current, downloadedIds, downloadJobs) { track, done, jobs ->
+            val id = track?.navId ?: return@combine TrackDownload.UNAVAILABLE
+            when {
+                // Keyed on the index rather than on `track.offline`, which is fixed
+                // when the track is built: deleting the copy left the chip saying
+                // "Downloaded" for the rest of the song.
+                id in done -> TrackDownload.DONE
+                jobs.any { it.id == id && !it.failed } -> TrackDownload.IN_FLIGHT
+                else -> TrackDownload.READY
+            }
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, TrackDownload.UNAVAILABLE)
+
+    /**
+     * Download whatever is playing on this phone, from the player rather than from
+     * the library.
+     *
+     * Goes through [download] rather than around it, so the Wi-Fi-only rule, the
+     * storage cap, the progress rows and every toast are the ones the library already
+     * uses. The item is synthesised from the track because the local player holds a
+     * [LocalTrack] and not the library row it came from — including its format, so a
+     * track downloaded from here keeps its quality badge offline.
+     */
+    fun downloadCurrentTrack() {
+        val t = localPlayer.current.value
+        if (t == null) { _playerToast.tryEmit("Nothing playing"); return }
+        if (t.offline) { _playerToast.tryEmit("Already on this phone"); return }
+        val id = t.navId
+        if (id == null) { _playerToast.tryEmit("Only Navidrome tracks can be downloaded"); return }
+        download(
+            MaItem(
+                itemId = id,
+                // The library the id belongs to, not whichever one is active. On the
+                // play-original path the track is a Navidrome file while Music
+                // Assistant is the library, and tagging it with the active provider
+                // sent a Navidrome id to a server that had never heard of it.
+                provider = t.scrobbleProvider ?: SubsonicClient.PROVIDER,
+                name = t.title,
+                uri = id,
+                mediaType = "track",
+                subtitle = t.artist,
+                image = t.artUrl,
+                duration = (t.durationMs / 1000).toInt().takeIf { it > 0 },
+                album = t.album,
+                composer = t.composer,
+                audioFormat = t.sourceQuality?.let {
+                    MaAudioFormat(
+                        codec = it.codec,
+                        sampleRate = it.sampleRateHz,
+                        bitDepth = it.bitDepth,
+                        bitRate = it.bitrateKbps,
+                        channels = it.channels,
+                        sizeBytes = it.sizeBytes,
+                        replayGainTrack = it.replayGainTrack,
+                        replayGainAlbum = it.replayGainAlbum,
+                    )
+                },
+            ),
+            replyTo = _playerToast,
+        )
+    }
+
+    /** Remove the offline copy of whatever is playing, from the player. */
+    fun deleteCurrentTrackDownload() {
+        val id = localPlayer.current.value?.navId ?: return
+        if (!downloadManager.isDownloaded(id)) return
+        downloadManager.delete(id)
+        _playerToast.tryEmit("Offline copy deleted")
     }
 
     fun deleteDownload(id: String) = downloadManager.delete(id)
@@ -1127,7 +1521,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             val r = when {
                 _backend.value == Backend.MA -> maRepo.search(query)
                 _offline.value -> searchDownloads(query)
-                else -> subsonic?.search(query)
+                else -> source?.search(query)
             }
             r?.let {
                 rememberFavorites(it.artists + it.albums + it.tracks + it.playlists)
@@ -1170,8 +1564,8 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * stopping mid-listen.
      */
     private suspend fun loadSavedQueue() {
-        val sc = subsonic ?: return
-        val saved = runCatching { sc.playQueue() }.getOrNull() ?: return
+        val sc = source ?: return
+        val saved = runCatching { sc.savedQueue() }.getOrNull() ?: return
         val currentId = localPlayer.current.value?.scrobbleId
         val savedId = saved.tracks.getOrNull(saved.index)?.itemId
         if (savedId != null && savedId == currentId) return
@@ -1207,12 +1601,12 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 .collect { (track, playing) ->
                     if (track == null) return@collect
                     // Only ours to save when the bytes are Navidrome's.
-                    val sc = subsonic ?: return@collect
+                    val sc = source ?: return@collect
                     if (_offline.value) return@collect
                     val ids = localPlayer.queue.value.mapNotNull { it.scrobbleId }
                     if (ids.isEmpty()) return@collect
                     runCatching {
-                        sc.savePlayQueue(
+                        sc.saveQueue(
                             songIds = ids,
                             currentId = track.scrobbleId,
                             positionMs = localPlayer.positionMs.value,
@@ -1271,8 +1665,15 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         val picked = if (_offline.value) {
             radio.offline(downloads.value.map { downloadItem(it) }, seed, RADIO_BATCH, exclude)
         } else {
-            val sc = subsonic ?: return
-            radio.next(SubsonicRadioSource(sc), seed, RADIO_BATCH, exclude)
+            // The radio generator is Subsonic's `getSimilarSongs`; a source
+            // without SIMILAR has nothing to seed from and falls back to the
+            // offline picker over what is on the phone.
+            val sc = (source as? SubsonicSource)?.subsonic
+            if (sc == null) {
+                radio.offline(downloads.value.map { downloadItem(it) }, seed, RADIO_BATCH, exclude)
+            } else {
+                radio.next(SubsonicRadioSource(sc), seed, RADIO_BATCH, exclude)
+            }
         }
         if (picked.isEmpty()) return
         rememberSeeds(picked)
@@ -1350,10 +1751,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     // --- internals --------------------------------------------------------
 
-    private suspend fun childrenOf(item: MaItem): List<MaItem> = when (item.provider) {
-        SubsonicClient.PROVIDER -> subsonic?.children(item) ?: emptyList()
-        else -> maRepo.children(item)
-    }
+    private suspend fun childrenOf(item: MaItem): List<MaItem> =
+        if (MusicSources.isLocalProvider(item.provider)) source?.children(item) ?: emptyList()
+        else maRepo.children(item)
 
     private fun openCategory(id: String, title: String) {
         if (id == "downloads") {
@@ -1381,18 +1781,19 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 maRepo.allLibraryItems(page, onPage = onPartial)
             } else {
-                val sc = subsonic ?: throw IllegalStateException("Navidrome isn't connected")
+                val sc = source ?: throw IllegalStateException("${libraryName()} isn't connected")
                 when (id) {
                     "artists" -> sc.artists()
-                    // Paged, not one 5000-item request: the spec caps `getAlbumList2`
-                    // at 500 per call, and a server that enforces it answered the old
-                    // request with an error rather than a truncated list. Batches are
-                    // published as they land, so the wall of art fills in.
+                    // Paged, not one 5000-item request: the Subsonic spec caps
+                    // `getAlbumList2` at 500 per call, and a server that enforces it
+                    // answered the old request with an error rather than a truncated
+                    // list. Batches are published as they land, so the wall of art
+                    // fills in.
                     "albums" -> allAlbums(sc, onPartial)
-                    "newest" -> sc.albumList("newest", size = 200)
+                    "newest" -> sc.recentlyAdded(200)
                     "playlists" -> sc.playlists()
                     "genres" -> sc.genres()
-                    "starred" -> sc.starred().let { it.albums + it.artists + it.tracks }
+                    "starred" -> sc.favorites().let { it.albums + it.artists + it.tracks }
                     "random" -> sc.randomSongs(100)
                     else -> emptyList()
                 }
@@ -1401,14 +1802,15 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Every album on a Navidrome server, a page at a time.
+     * Every album on the server, a page at a time.
      *
-     * `getAlbumList2` documents a maximum `size` of 500, so the whole library has to
-     * be walked with `offset`. [cap] backstops a server that ignores `offset` and
-     * hands back the same page for ever.
+     * Subsonic documents a maximum `size` of 500 on `getAlbumList2` and Jellyfin has
+     * its own limits, so the whole library is walked with an offset either way. [cap]
+     * backstops a server that ignores the offset and hands back the same page for
+     * ever.
      */
     private suspend fun allAlbums(
-        sc: SubsonicClient,
+        sc: MusicSource,
         onPartial: (List<MaItem>) -> Unit,
         cap: Int = 20_000,
     ): List<MaItem> {
@@ -1416,7 +1818,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         val seen = mutableSetOf<String>()
         var offset = 0
         while (offset < cap) {
-            val page = sc.albumList("alphabeticalByName", size = SUBSONIC_PAGE, offset = offset)
+            val page = sc.albums(offset = offset, limit = SUBSONIC_PAGE)
             if (page.isEmpty()) break
             val fresh = page.filterNot { it.itemId in seen }
             fresh.forEach { seen += it.itemId }
@@ -1510,7 +1912,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         return viewModelScope.launch {
             _recent.value = try {
                 if (_backend.value == Backend.MA) maRepo.recentlyPlayed()
-                else subsonic?.albumList("recent", size = 12).orEmpty()
+                else source?.recentlyPlayed(12).orEmpty()
             } catch (_: Exception) { emptyList() }
             // The only loader that used to skip this, which is why "Recently played"
             // was the one shelf whose hearts never came up filled.
@@ -1529,7 +1931,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * track that was skipped is not a play, which is the whole point of splitting this
      * off from the "now playing" ping.
      */
-    private suspend fun submitWhenPlayed(sc: SubsonicClient, id: String, startedAtMs: Long) {
+    private suspend fun submitWhenPlayed(sink: MusicSource, id: String, startedAtMs: Long) {
         // Both conditions are watched together rather than one after the other: the
         // position stops emitting the moment playback ends, so waiting on it alone
         // would leave this suspended for ever on a queue that simply ran out.
@@ -1544,7 +1946,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 else -> null                                                // still listening
             }
         }.first { it != null }
-        if (played == true) sc.scrobble(id, submission = true, timeMs = startedAtMs)
+        if (played == true) runCatching { sink.scrobble(id, completed = true, startedAtMs = startedAtMs) }
     }
 
     private fun loadFavoriteAlbums(): Job? {
@@ -1552,7 +1954,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         return viewModelScope.launch {
             _favoriteAlbums.value = try {
                 if (_backend.value == Backend.MA) maRepo.favoriteAlbums()
-                else subsonic?.albumList("starred", size = 12).orEmpty()
+                else source?.favorites()?.albums?.take(12).orEmpty()
             } catch (_: Exception) { emptyList() }
             rememberFavorites(_favoriteAlbums.value)
         }
@@ -1563,7 +1965,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         return viewModelScope.launch {
             _favoriteArtists.value = try {
                 if (_backend.value == Backend.MA) maRepo.favoriteArtists()
-                else subsonic?.starred()?.artists?.take(12).orEmpty()
+                else source?.favorites()?.artists?.take(12).orEmpty()
             } catch (_: Exception) { emptyList() }
             rememberFavorites(_favoriteArtists.value)
         }
@@ -1574,7 +1976,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         return viewModelScope.launch {
             _recentlyAdded.value = try {
                 if (_backend.value == Backend.MA) maRepo.recentlyAdded()
-                else subsonic?.albumList("newest", size = 12).orEmpty()
+                else source?.recentlyAdded(12).orEmpty()
             } catch (_: Exception) { emptyList() }
             rememberFavorites(_recentlyAdded.value)
         }
@@ -1586,7 +1988,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         return viewModelScope.launch {
             _recommendations.value = try {
                 if (_backend.value == Backend.MA) maRepo.recommendations()
-                else subsonic?.albumList("random", size = 12).orEmpty()
+                else source?.randomAlbums(12).orEmpty()
             } catch (_: Exception) { emptyList() }
             rememberFavorites(_recommendations.value)
         }
@@ -1604,7 +2006,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private fun loadFrequent(): Job? {
         if (_backend.value != Backend.SUBSONIC) { _frequent.value = emptyList(); return null }
         return viewModelScope.launch {
-            _frequent.value = try { subsonic?.albumList("frequent", size = 12).orEmpty() } catch (_: Exception) { emptyList() }
+            _frequent.value = try { source?.mostPlayed(12).orEmpty() } catch (_: Exception) { emptyList() }
             rememberFavorites(_frequent.value)
         }
     }
@@ -1635,8 +2037,8 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         _favorites.update { if (isFav) it - item.itemId else it + item.itemId }
         viewModelScope.launch {
             try {
-                if (item.provider == SubsonicClient.PROVIDER) {
-                    val sc = subsonic ?: throw IllegalStateException("Navidrome isn't connected")
+                if (MusicSources.isLocalProvider(item.provider)) {
+                    val sc = source ?: throw IllegalStateException("${libraryName()} isn't connected")
                     sc.setStarred(item, !isFav)
                 } else if (isFav) {
                     maRepo.removeFavorite(item)
@@ -1746,6 +2148,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         itemId = d.id, provider = DOWNLOAD, name = d.title, uri = d.filePath, mediaType = "track",
         subtitle = d.artist, image = d.artUri, duration = (d.durationMs / 1000).toInt().takeIf { it > 0 },
         album = d.album, parentId = d.albumId, trackNumber = d.trackNumber,
+        // Recorded when the file was fetched, so the Downloads shelf can show what is
+        // actually on disk with the server unreachable — which is the one time it
+        // matters most.
+        audioFormat = d.format,
     )
 
     override fun onCleared() {

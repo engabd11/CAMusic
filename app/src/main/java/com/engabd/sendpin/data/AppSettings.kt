@@ -5,8 +5,13 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.engabd.sendpin.library.ServerConfig
+import com.engabd.sendpin.library.ServerKind
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
 
 private val Context.dataStore by preferencesDataStore(name = "sendpin_settings")
 
@@ -18,6 +23,18 @@ private val Context.dataStore by preferencesDataStore(name = "sendpin_settings")
 class AppSettings(private val context: Context) {
     companion object {
         private val BACKEND = stringPreferencesKey("library_backend")         // "ma" | "subsonic"
+        /**
+         * Every configured server, as a JSON list of [ServerConfig].
+         *
+         * The app has outgrown one Music Assistant plus one Navidrome: Jellyfin,
+         * Plex, Emby and the rest are all "another library", and a pair of fixed
+         * credential slots cannot hold a third. Secrets inside are encrypted
+         * individually rather than the blob as a whole, so a config can be read for
+         * its address and label without decrypting its password.
+         */
+        private val SERVERS = stringPreferencesKey("servers")
+        /** Which of [SERVERS] the Library tab browses. */
+        private val ACTIVE_SERVER = stringPreferencesKey("active_server_id")
         private val MA_BASE_URL = stringPreferencesKey("ma_base_url")          // e.g. http://192.168.0.10:8095
         private val MA_USERNAME = stringPreferencesKey("ma_username")
         private val MA_PASSWORD = stringPreferencesKey("ma_password")
@@ -120,6 +137,19 @@ class AppSettings(private val context: Context) {
         const val BACKEND_MA = "ma"
 
         /**
+         * Stable ids for the two servers an install predating the list already had.
+         *
+         * Fixed rather than generated, so the list synthesised from the old keys is
+         * the same list on every read until something is written — a random id would
+         * make the active-server pointer refer to a server that no longer exists the
+         * moment the flow re-emitted.
+         */
+        private const val LEGACY_MA_ID = "legacy-music-assistant"
+        private const val LEGACY_NAV_ID = "legacy-navidrome"
+
+        private val serverJson = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+
+        /**
          * Which Light Sync transport a library implies.
          *
          * The library decides where the audio actually comes out, which is what
@@ -145,6 +175,178 @@ class AppSettings(private val context: Context) {
             return lightSyncModeFor(backend).takeIf { it != current }
         }
     }
+
+    // ── The server list ───────────────────────────────────────────────────
+    //
+    // Two things are true at once and both have to stay true: the app now keeps a
+    // list of servers of many kinds, and half the app still reads the old fixed
+    // keys. `Playback` reads MA's address, `App.kt` decides which tabs are alive
+    // from `library_backend`, the download path reads Navidrome's credentials, and
+    // Light Sync picks its transport from the backend. Rewriting all of that in the
+    // same change as introducing the list is how a refactor becomes a week of
+    // regressions.
+    //
+    // So the list is the source of truth and the old keys are a **mirror**: every
+    // write through [saveServers] / [setActiveServer] restates them, and the first
+    // read synthesises the list from them. Nothing downstream has to know yet.
+
+    /**
+     * The list as stored, falling back to the legacy keys when there is nothing to
+     * read — or nothing readable. See [decodeServers] for why those two are the same
+     * answer here.
+     */
+    private fun storedServers(
+        prefs: androidx.datastore.preferences.core.Preferences,
+    ): List<ServerConfig> = prefs[SERVERS]?.let { decodeServers(it) } ?: legacyServers(prefs)
+
+    /** Every configured server, oldest first. Secrets are already decrypted. */
+    val servers: Flow<List<ServerConfig>> = context.dataStore.data.map { prefs ->
+        storedServers(prefs)
+    }
+
+    /** The id of the server the Library tab browses, or "" before anything is set up. */
+    val activeServerId: Flow<String> = context.dataStore.data.map { prefs ->
+        resolveActiveId(prefs, storedServers(prefs))
+    }
+
+    /**
+     * Which server is active, given what is stored.
+     *
+     * Derived rather than read straight out of [ACTIVE_SERVER], because that key is
+     * empty until something writes it and a stored id can outlive the server it named.
+     * Falling back to the *old* `library_backend` key is what keeps an upgrade landing
+     * on the library the user was already browsing — reading the key naively, and
+     * defaulting to the first entry in the list, silently moved every existing install
+     * from Navidrome to Music Assistant on first launch.
+     */
+    private fun resolveActiveId(
+        prefs: androidx.datastore.preferences.core.Preferences,
+        list: List<ServerConfig>,
+    ): String =
+        prefs[ACTIVE_SERVER]?.takeIf { id -> list.any { it.id == id } }
+            ?: list.firstOrNull { it.kind.playsLocally == (prefs[BACKEND] == BACKEND_SUBSONIC) }?.id
+            ?: list.firstOrNull()?.id
+            ?: ""
+
+    /** The active server itself, or null when nothing is set up. */
+    val activeServer: Flow<ServerConfig?> =
+        combine(servers, activeServerId) { list, id -> list.firstOrNull { it.id == id } }
+
+    /**
+     * Replace the whole list. Callers add, edit and remove by transforming the list
+     * they already collected — there is no partial write, because a rename and a
+     * credential change are the same operation to the store and splitting them would
+     * only invite two writes racing.
+     */
+    suspend fun saveServers(list: List<ServerConfig>) {
+        context.dataStore.edit { prefs ->
+            prefs[SERVERS] = encodeServers(list)
+            mirrorLegacyKeys(prefs, list, resolveActiveId(prefs, list))
+        }
+    }
+
+    suspend fun setActiveServer(id: String) {
+        context.dataStore.edit { prefs ->
+            prefs[ACTIVE_SERVER] = id
+            val list = storedServers(prefs)
+            mirrorLegacyKeys(prefs, list, id)
+        }
+    }
+
+    /**
+     * Restate the old fixed keys from the list.
+     *
+     * Everything that has not been ported to the server list keeps reading these, so
+     * they have to stay correct rather than merely present. A kind with no legacy
+     * equivalent — Jellyfin, and everything after it — mirrors as `subsonic`, because
+     * what the old key really encoded was "the app plays this itself", and that is
+     * exactly what the rest of the app uses it to decide.
+     */
+    private fun mirrorLegacyKeys(
+        prefs: androidx.datastore.preferences.core.MutablePreferences,
+        list: List<ServerConfig>,
+        activeId: String?,
+    ) {
+        val active = list.firstOrNull { it.id == activeId } ?: list.firstOrNull()
+        prefs[BACKEND] = if (active?.kind?.playsLocally == false) BACKEND_MA else BACKEND_SUBSONIC
+
+        // Written *and cleared*. A mirror that only ever writes is a mirror that lies
+        // after a removal: deleting the Navidrome server left its address on file, and
+        // the next launch cheerfully connected to a server the user had taken off the
+        // list.
+        val ma = list.firstOrNull { it.kind == ServerKind.MUSIC_ASSISTANT }
+        prefs[MA_BASE_URL] = ma?.url.orEmpty()
+        prefs[MA_USERNAME] = ma?.username.orEmpty()
+        prefs[MA_PASSWORD] = Crypto.encrypt(ma?.password.orEmpty())
+
+        // The Navidrome keys back downloads and "play at original quality", which work
+        // from either backend — so they follow the first Subsonic-speaking server in
+        // the list rather than the active one.
+        val nav = list.firstOrNull { it.kind == ServerKind.NAVIDROME || it.kind == ServerKind.SUBSONIC }
+        prefs[NAV_URL] = nav?.url.orEmpty()
+        prefs[NAV_USERNAME] = nav?.username.orEmpty()
+        prefs[NAV_PASSWORD] = Crypto.encrypt(nav?.password.orEmpty())
+        prefs[NAV_STREAM_FORMAT] = nav?.option(ServerConfig.OPT_STREAM_FORMAT) ?: "raw"
+    }
+
+    /**
+     * The list an install that predates it should start with.
+     *
+     * Derived rather than written on first run: a migration that writes on read
+     * races every other reader, and there is nothing here that cannot be recomputed.
+     * The first real edit persists it. A slot with no address is left out — an empty
+     * "Navidrome" card in Settings would look like something had gone wrong.
+     */
+    private fun legacyServers(
+        prefs: androidx.datastore.preferences.core.Preferences,
+    ): List<ServerConfig> = buildList {
+        prefs[MA_BASE_URL]?.takeIf { it.isNotBlank() }?.let {
+            add(
+                ServerConfig(
+                    id = LEGACY_MA_ID,
+                    kind = ServerKind.MUSIC_ASSISTANT,
+                    url = it,
+                    username = prefs[MA_USERNAME].orEmpty(),
+                    password = Crypto.decrypt(prefs[MA_PASSWORD] ?: ""),
+                )
+            )
+        }
+        prefs[NAV_URL]?.takeIf { it.isNotBlank() }?.let {
+            add(
+                ServerConfig(
+                    id = LEGACY_NAV_ID,
+                    kind = ServerKind.NAVIDROME,
+                    url = it,
+                    username = prefs[NAV_USERNAME].orEmpty(),
+                    password = Crypto.decrypt(prefs[NAV_PASSWORD] ?: ""),
+                    options = mapOf(
+                        ServerConfig.OPT_STREAM_FORMAT to (prefs[NAV_STREAM_FORMAT] ?: "raw"),
+                    ),
+                )
+            )
+        }
+    }
+
+    private fun encodeServers(list: List<ServerConfig>): String =
+        serverJson.encodeToString(
+            ListSerializer(ServerConfig.serializer()),
+            list.map { it.copy(password = Crypto.encrypt(it.password), token = Crypto.encrypt(it.token)) },
+        )
+
+    /**
+     * The stored list, or **null** when it could not be read.
+     *
+     * Null rather than an empty list, and the distinction is the whole point: an empty
+     * list is a real answer that [mirrorLegacyKeys] acts on by blanking every stored
+     * credential. Returning one for a decode failure turned a recoverable read error
+     * into permanent loss of the addresses and passwords — the caller falls back to
+     * the legacy keys instead, which is exactly the data that would otherwise be
+     * destroyed.
+     */
+    private fun decodeServers(raw: String): List<ServerConfig>? = runCatching {
+        serverJson.decodeFromString(ListSerializer(ServerConfig.serializer()), raw)
+            .map { it.copy(password = Crypto.decrypt(it.password), token = Crypto.decrypt(it.token)) }
+    }.getOrNull()
 
     val backend: Flow<String> = context.dataStore.data.map { it[BACKEND] ?: "ma" }
     val maBaseUrl: Flow<String> = context.dataStore.data.map { it[MA_BASE_URL] ?: "" }

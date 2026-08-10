@@ -58,7 +58,7 @@ object AudioOutputs {
     fun list(am: AudioManager): List<Output> =
         am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
             .filter { it.type in INTERESTING }
-            .map { Output(it.id.toString(), label(it), it.type in USB_TYPES) }
+            .map { Output(it.id.toString(), describe(it), it.type in USB_TYPES) }
             .distinctBy { it.label }
             .sortedBy { RANK.indexOf(it.isUsb) }
 
@@ -73,13 +73,19 @@ object AudioOutputs {
             .firstOrNull { it.id.toString() == deviceId }
     }
 
-    private fun label(d: AudioDeviceInfo): String {
+    /**
+     * How a listener would name an output. Shared with [DeviceCapabilities] so the
+     * Settings picker and the "This phone" card can never call the same DAC two
+     * different things.
+     */
+    fun describe(d: AudioDeviceInfo): String {
         val kind = when (d.type) {
             AudioDeviceInfo.TYPE_USB_DEVICE, AudioDeviceInfo.TYPE_USB_ACCESSORY -> "USB DAC"
             AudioDeviceInfo.TYPE_USB_HEADSET -> "USB headset"
             AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> "Headphones"
             AudioDeviceInfo.TYPE_WIRED_HEADSET -> "Headset"
             AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "Bluetooth"
+            AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "Bluetooth (call audio)"
             AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "Phone speaker"
             else -> "Output"
         }

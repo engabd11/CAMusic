@@ -4,8 +4,10 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import com.engabd.sendpin.audio.LocalTrack
-import com.engabd.sendpin.audio.StreamQuality
+import com.engabd.sendpin.library.MusicSources
+import com.engabd.sendpin.ma.MaAudioFormat
 import com.engabd.sendpin.ma.MaItem
+import com.engabd.sendpin.subsonic.SubsonicClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -33,6 +35,28 @@ data class DownloadedTrack(
     val trackNumber: Int? = null,
     /** The album this came from, so a downloaded album can be grouped and played whole. */
     val albumId: String? = null,
+    /**
+     * The stored file's own format, recorded at download time.
+     *
+     * A download is the original file, so the library's reading of it stays true for
+     * as long as the file exists — and offline is exactly when there is no server left
+     * to ask. Without it, playing from the Downloads shelf fell back to describing the
+     * phone's *output* ("PCM 48/16") rather than the FLAC actually on disk.
+     *
+     * Defaulted, so an index written before this field existed still loads; those
+     * entries simply have nothing to say until they are downloaded again.
+     */
+    val format: MaAudioFormat? = null,
+    /**
+     * The library this file came from, as a `MusicSource.providerId`.
+     *
+     * Downloads used to be Subsonic-only, so "which server does this id belong to" had
+     * one answer and nobody had to ask. With a second library that can serve them, an
+     * id alone is ambiguous — and reporting a Navidrome play to Jellyfin is a play
+     * neither of them records. Defaulted for indexes written before this existed;
+     * those entries fall back to Navidrome, which is what they were.
+     */
+    val sourceProvider: String? = null,
 ) {
     /** Cover art that works with the server gone: the local copy if we cached one. */
     val artUri: String? get() = coverPath?.takeIf { File(it).exists() }?.let { "file://$it" } ?: image
@@ -40,6 +64,7 @@ data class DownloadedTrack(
     fun toLocalTrack(streamUrl: String? = null) = LocalTrack(
         id = id, title = title, artist = artist, album = album,
         durationMs = durationMs, artUrl = artUri, streamUrl = streamUrl, localPath = filePath,
+        sourceQuality = format?.quality,
     )
 }
 
@@ -99,13 +124,27 @@ class DownloadManager(
     private fun enforceStorageCap(capMb: Int) {
         if (capMb <= 0) return
         val capBytes = capMb.toLong() * 1_048_576L
-        while (bytesUsed() > capBytes && _downloads.value.isNotEmpty()) {
-            val oldest = _downloads.value.minByOrNull {
-                runCatching { File(it.filePath).lastModified() }.getOrDefault(Long.MAX_VALUE)
-            } ?: return
+        // Never the track being listened to. Deleting the file out from under the
+        // player is the one eviction a user would experience as the app breaking, and
+        // it is also what the Downloads settings page promises does not happen.
+        val playing = protectedId
+        while (bytesUsed() > capBytes) {
+            val oldest = _downloads.value
+                .filterNot { it.id == playing }
+                .minByOrNull { runCatching { File(it.filePath).lastModified() }.getOrDefault(Long.MAX_VALUE) }
+                ?: return   // nothing left that may be evicted
             delete(oldest.id)
         }
     }
+
+    /**
+     * A download the cap may not evict — the one currently playing.
+     *
+     * Published by whoever owns playback rather than read from it, so this class keeps
+     * no reference to the player.
+     */
+    @Volatile
+    var protectedId: String? = null
 
     fun isDownloaded(id: String): Boolean = _downloads.value.any { it.id == id }
     fun localPath(id: String): String? = _downloads.value.firstOrNull { it.id == id }?.filePath
@@ -131,14 +170,28 @@ class DownloadManager(
             artUrl = dl?.artUri ?: item.image,
             streamUrl = streamUrl,
             localPath = dl?.filePath ?: localPathFallback,
-            sourceQuality = item.audioFormat?.let {
-                StreamQuality(
-                    it.codec, it.sampleRate, it.bitDepth,
-                    replayGainTrack = it.replayGainTrack,
-                    replayGainAlbum = it.replayGainAlbum,
-                )
-            },
+            // `MaAudioFormat.quality` rather than a hand-rolled copy: this used to
+            // list the fields positionally and stop after `bitDepth`, so the bitrate,
+            // the channel count and the file size were dropped on the floor for every
+            // Navidrome and offline track — which is the whole reason the badge read
+            // "FLAC • 96/24" for a file the server had already told us was 3 Mb/s.
+            //
+            // The index entry is the fallback, not the first choice: the library's
+            // live reading is the fresher one, and a download recorded before this
+            // field existed has nothing stored at all.
+            sourceQuality = (item.audioFormat ?: dl?.format)?.quality,
             composer = item.composer,
+            // The library id and the library it belongs to, filled in here rather than
+            // by one caller. `LibraryViewModel` set them and the three detail screens
+            // did not, so a track started from an album page carried no library at
+            // all — which silently took its scrobble and its download chip with it.
+            scrobbleId = item.itemId.takeIf { MusicSources.isLocalProvider(item.provider) },
+            scrobbleProvider = when {
+                item.provider == MusicSources.DOWNLOAD_PROVIDER ->
+                    dl?.sourceProvider ?: SubsonicClient.PROVIDER
+                MusicSources.isLocalProvider(item.provider) -> item.provider
+                else -> null
+            },
         )
     }
 
@@ -204,6 +257,8 @@ class DownloadManager(
                 album = item.album, coverPath = cover?.absolutePath,
                 durationMs = (item.duration ?: 0).toLong() * 1000,
                 trackNumber = item.trackNumber, albumId = item.parentId,
+                format = item.audioFormat,
+                sourceProvider = item.provider,
             )
             _downloads.value = list
             saveIndex(list)

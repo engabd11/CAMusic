@@ -40,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.engabd.sendpin.audio.StreamQuality
+import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
@@ -59,6 +60,8 @@ import kotlin.math.roundToInt
 @Composable
 fun NowPlayingOverlay(
     viewModel: NowPlayingViewModel = viewModel(),
+    /** The shared instance — see the same parameter on [NowPlayingScreen]. */
+    libraryViewModel: LibraryViewModel,
     onOpenSpeakers: () -> Unit = {},
     onBrowse: () -> Unit = {},
     expanded: Boolean,
@@ -81,9 +84,15 @@ fun NowPlayingOverlay(
     // Hoisted out of the badge so the detail can be drawn as a sibling of the whole
     // player rather than inside the transport row — see QualityDetailOverlay.
     var showQuality by remember { mutableStateOf(false) }
+    // What this phone's output can do — see DeviceDetailOverlay.
+    var showDevice by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         viewModel.toast.collect { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }
+    }
+    // Player-initiated library actions only — see LibraryViewModel.playerToast.
+    LaunchedEffect(Unit) {
+        libraryViewModel.playerToast.collect { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }
     }
 
     // Provided by App.kt from this same artwork, so every other screen matches.
@@ -251,7 +260,8 @@ fun NowPlayingOverlay(
                     playerName = st.playerName,
                     isSelf = st.isSelf,
                     groupSize = st.groupSize,
-                    onOpenSpeakers = { speakers = true },
+                    localSession = st.isLocalSession,
+                    onTap = { if (st.isLocalSession) showDevice = true else speakers = true },
                 )
 
                 Spacer(Modifier.height(4.dp))
@@ -307,6 +317,8 @@ fun NowPlayingOverlay(
                     }
                     // Playback speed + player options
                     IconChip(Icons.Default.Tune, "Player options", active = options) { options = !options }
+                    // Local-player only: see the note on the same chip in NowPlayingScreen.
+                    DownloadChip(libraryViewModel)
                     // MA-only: see the note on the same chip in NowPlayingScreen.
                     if (!st.isLocalSession) {
                         IconChip(Icons.Default.GraphicEq, "DSP / Equalizer", active = panel == Panel.DSP) {
@@ -451,6 +463,11 @@ fun NowPlayingOverlay(
                 title = st.title,
                 artist = st.artist,
             )
+            DeviceDetailOverlay(
+                visible = showDevice,
+                onDismiss = { showDevice = false },
+                playingRateHz = st.quality?.sampleRateHz ?: 0,
+            )
         }
     }
 }
@@ -565,45 +582,8 @@ fun MiniPlayerBar(
 
 // --- Helpers (shared between overlay and tab versions) -------------------
 
-@Composable
-private fun TopBar(playerName: String, isSelf: Boolean, groupSize: Int, onOpenSpeakers: () -> Unit) {
-    val accent = LocalAccent.current
-    Row(
-        Modifier.fillMaxWidth().padding(vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.Center,
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Row(
-                Modifier
-                    .clip(RoundedCornerShape(topStart = 100.dp, bottomStart = 100.dp))
-                    .background(GlassStrong)
-                    .clickable(onClick = onOpenSpeakers)
-                    .padding(start = 14.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Icon(
-                    if (isSelf) Icons.Default.Smartphone else Icons.Default.Speaker, null,
-                    tint = inkOn(0.85f), modifier = Modifier.size(14.dp),
-                )
-                Text(
-                    if (groupSize > 1) "$playerName ($groupSize)" else playerName,
-                    color = TextPrimary, fontFamily = AppFont, fontWeight = FontWeight.Bold,
-                    fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.widthIn(max = 150.dp),
-                )
-            }
-            Box(
-                Modifier
-                    .clip(RoundedCornerShape(topEnd = 100.dp, bottomEnd = 100.dp))
-                    .background(accent)
-                    .clickable(onClick = onOpenSpeakers)
-                    .padding(horizontal = 13.dp, vertical = 9.dp),
-            ) { Icon(Icons.Default.Link, "Speakers", tint = Ink, modifier = Modifier.size(14.dp)) }
-        }
-    }
-}
+// TopBar is shared with NowPlayingScreen — it had been copied here verbatim, so the
+// two drifted apart the moment either changed. See `NowPlayingScreen.TopBar`.
 
 @Composable
 private fun TransportIcon(

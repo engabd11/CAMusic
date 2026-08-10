@@ -1,120 +1,96 @@
 package com.engabd.sendpin.ui.screens
 
-import android.content.Context
-import android.content.Intent
-import android.media.AudioManager
-import android.net.Uri
-import androidx.compose.foundation.background
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.border
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.engabd.sendpin.BuildConfig
-import com.engabd.sendpin.audio.AudioOutputs
-import com.engabd.sendpin.audio.ReplayGain
 import com.engabd.sendpin.data.AppSettings
+import com.engabd.sendpin.library.ServerKind
 import com.engabd.sendpin.ma.LibraryViewModel
-import com.engabd.sendpin.ui.design.*
-import com.engabd.sendpin.ui.design.TitleGap
+import com.engabd.sendpin.ui.design.LocalAccent
+import com.engabd.sendpin.ui.design.navBarInset
+import com.engabd.sendpin.ui.screens.settings.*
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.PlayerViewModel
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /**
  * The top level of Settings.
  *
- * Everything used to live on one scroll: seven headed cards, server credentials and
- * audio switches and a version string, all in a single column you had to travel to
- * find anything in. Splitting it costs a tap and buys a screen you can read.
+ * Everything used to live on one scroll, then on eight flat categories grouped by
+ * *which class implements it* — which is why Music Assistant's address lived under
+ * "Servers" while the choice of whether to browse it lived under "Library", and why
+ * the Hue bridge and Home Assistant sat at the bottom of a page about music servers.
  *
- * Grouped by *what you are configuring*, not by which class implements it - which is
- * why the Navidrome server sits with Music Assistant and Home Assistant under
- * Servers, while "which library the app browses" is its own thing. They are the same
- * server in the code and two different questions to the person asking them.
+ * The sections are now the questions someone actually arrives with:
  *
- * @param subtitle what is actually behind the row. A one-word category is a guess
- *   until you have opened it once, and this is a settings screen with two music
- *   servers and a home-automation token in it.
+ * - **Libraries** — where the music comes from, as a list of servers rather than a
+ *   two-way switch that could not express a third.
+ * - **CAMusic player** — this phone as something Music Assistant plays *to*.
+ * - **Playback & audio** — everything between the file and the speaker.
+ * - **Downloads** — music kept on the phone.
+ * - **Light Sync** — the plumbing behind the light show (the show itself is a tab).
+ * - **Appearance** — how the app looks and how the player behaves.
+ * - **About**.
+ *
+ * Two levels deep, not one: a server has its own page, and so does the Hue bridge.
+ * Both are routed by [detail], hoisted alongside [section] so that re-tapping the
+ * Settings tab comes all the way back to the index.
  */
-
 enum class SettingsSection(
     val title: String,
+    /** What is actually behind the row. A one-word category is a guess until opened. */
     val subtitle: String,
     val icon: ImageVector,
 ) {
-    SERVERS(
-        "Servers",
-        "Music Assistant, Navidrome and Home Assistant connections",
-        Icons.Default.Cloud,
-    ),
-    LIBRARY(
-        "Library",
-        "Which server the Library tab browses",
+    LIBRARIES(
+        "Libraries",
+        "Your music servers, and which one the Library tab browses",
         Icons.Default.LibraryMusic,
     ),
-    // "This player" was true and told you nothing — every settings screen is about
-    // this device. What is being configured is the player this app registers with
-    // Music Assistant, so it is named after that.
     PLAYER(
         "CAMusic player",
         "The name this phone shows in Music Assistant, and how it takes the stream",
         Icons.Default.Smartphone,
     ),
     AUDIO(
-        "Audio quality",
-        "Sample rates, bit depth, ReplayGain and output device",
+        "Playback & audio",
+        "Output device, streaming quality, loudness and what happens between tracks",
         Icons.Default.GraphicEq,
     ),
     DOWNLOADS(
         "Downloads",
-        "Offline copies, storage limit and when to fetch them",
+        "Offline copies, when to fetch them and how much room they may take",
         Icons.Default.Download,
     ),
-    // The Lights *tab* is the live show — intensity, effect, colour scheme. This is
-    // the plumbing behind it: which transport carries the signal, and the bridge or
-    // Home Assistant credentials that transport needs. Different question, and it was
-    // buried at the bottom of Servers where nobody looking for it would think to go.
     LIGHTS(
         "Light Sync",
-        "Bridge, transport and how the lights follow the music",
+        "Home Assistant or the Hue Bridge, and reading tracks ahead of the show",
         Icons.Default.Lightbulb,
     ),
     APPEARANCE(
         "Appearance",
-        "Theme, accent colour and how Now Playing behaves",
+        "Theme, accent colour, the Now Playing layout and lyrics timing",
         Icons.Default.Palette,
     ),
     ABOUT(
@@ -124,115 +100,55 @@ enum class SettingsSection(
     ),
 }
 
-/** One pickable accent, ticked when it is the chosen one. */
-
-@Composable
-private fun SwatchDot(color: Color, selected: Boolean, onClick: () -> Unit) {
-    Box(
-        Modifier
-            .size(34.dp)
-            .clip(CircleShape)
-            .background(color)
-            // The ring is drawn in the page's own ink rather than a fixed white, so the
-            // selected swatch reads on a light theme as well as a black one.
-            .border(if (selected) 2.dp else 1.dp, if (selected) TextPrimary else Hairline, CircleShape)
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        if (selected) {
-            Icon(Icons.Default.Check, "Selected", tint = Ink, modifier = Modifier.size(18.dp))
-        }
-    }
-}
-
-/** One row on the settings index: icon, name, and what is behind it. */
-
-@Composable
-private fun SettingsCategoryRow(section: SettingsSection, accent: Color, onClick: () -> Unit) {
-    GlassCard(radius = 16.dp) {
-        Row(
-            Modifier.fillMaxWidth().clickable(onClick = onClick).padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            Box(
-                Modifier.size(34.dp).clip(RoundedCornerShape(10.dp)).background(accent.a(0.14f)),
-                contentAlignment = Alignment.Center,
-            ) { Icon(section.icon, null, tint = accent, modifier = Modifier.size(18.dp)) }
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
-                Text(
-                    section.title, color = TextPrimary, fontFamily = AppFont,
-                    style = MaterialTheme.typography.titleLarge,
-                )
-                Text(
-                    section.subtitle, color = TextFaint, fontFamily = AppFont,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            Icon(Icons.Default.ChevronRight, null, tint = TextMuted, modifier = Modifier.size(20.dp))
-        }
-    }
-}
-
 @Composable
 fun SettingsScreen(
     viewModel: PlayerViewModel = viewModel(),
     /**
+     * The *shared* library view model. Passed in rather than resolved with
+     * `viewModel()` here: inside a `NavHost` destination that builds a second instance
+     * scoped to this back-stack entry, so editing a server's credentials in Settings
+     * would connect a client the Library tab never sees.
+     */
+    libraryViewModel: LibraryViewModel,
+    /**
      * Which category is open, or null for the index.
      *
      * Hoisted rather than held here so the tab bar can close it: tapping Settings
-     * while a category is open should come back to the index, the same way tapping
-     * Library while browsing comes back to the shelves. Still saveable at the caller,
-     * so a rotation or a trip to another tab returns where it was.
+     * while a category is open comes back to the index, the same way tapping Library
+     * while browsing comes back to the shelves.
      */
     section: SettingsSection? = null,
     onSection: (SettingsSection?) -> Unit = {},
+    /** The page *within* a section — a server, or the Hue bridge. */
+    detail: String? = null,
+    onDetail: (String?) -> Unit = {},
 ) {
-    BackHandler(enabled = section != null) { onSection(null) }
+    // Back unwinds one level at a time, so a server's page returns to the server list
+    // rather than all the way out of Settings.
+    BackHandler(enabled = section != null) {
+        if (detail != null) onDetail(null) else onSection(null)
+    }
 
     val accent = LocalAccent.current
-    val discoveredServers by viewModel.discoveredServers.collectAsStateWithLifecycle()
-    val isDiscovering by viewModel.isDiscovering.collectAsStateWithLifecycle()
-    val connected by viewModel.connected.collectAsStateWithLifecycle()
-    val serverUrl by viewModel.serverUrl.collectAsStateWithLifecycle()
-    val currentFormat by viewModel.currentFormat.collectAsStateWithLifecycle()
     val context = LocalContext.current
-
     val scope = rememberCoroutineScope()
-    val settings = remember { AppSettings(context) }
+    val settings = remember(context) { AppSettings(context) }
+
+    val servers by settings.servers.collectAsStateWithLifecycle(initialValue = emptyList())
+    val hasMaServer = servers.any { it.kind == ServerKind.MUSIC_ASSISTANT }
+
+    // Home Assistant's credentials are read once and held here rather than inside the
+    // Light Sync section, so navigating into the bridge page and back doesn't lose a
+    // half-typed token.
     var haUrl by remember { mutableStateOf("") }
     var haToken by remember { mutableStateOf("") }
-    var haSaved by remember { mutableStateOf(false) }
-    var haTokenVisible by remember { mutableStateOf(false) }
-    /** A saved token is sealed: shown as dots, not editable until explicitly replaced. */
-    var haTokenLocked by remember { mutableStateOf(false) }
-    var playerName by remember { mutableStateOf("") }
-    var sendspinCodec by remember { mutableStateOf("auto") }
-    val configStatus by viewModel.configStatus.collectAsStateWithLifecycle()
-    var navFormat by remember { mutableStateOf("raw") }
-    val backend by settings.backend.collectAsState(initial = "ma")
-    // The same activity-scoped instance the Library tab uses, so edits here land on
-    // the live client rather than on a copy that has to be restarted to be read.
-    val libraryVm: LibraryViewModel = viewModel()
-
     LaunchedEffect(Unit) {
-        // Only start discovery if it's not already running — avoids re-scanning
-        // every time the user switches to the Settings tab.
-        if (!isDiscovering && discoveredServers.isEmpty()) {
-            viewModel.startDiscovery()
-        }
         haUrl = settings.haUrl.first()
         haToken = settings.haToken.first()
-        haTokenLocked = haToken.isNotBlank()
-        playerName = settings.playerName.first()
-        sendspinCodec = settings.sendspinCodec.first()
-        navFormat = settings.navStreamFormat.first()
     }
 
     Box(Modifier.fillMaxSize().background(Ink)) {
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars)) {
-            // Header. Inside a section it carries a back arrow and that section's
-            // name, so there is never a doubt about which list you are looking at.
             Row(
                 Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, top = 16.dp, bottom = 14.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -240,778 +156,72 @@ fun SettingsScreen(
                 if (section != null) {
                     Icon(
                         Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = TextSecondary,
-                        modifier = Modifier.size(24.dp).clip(CircleShape).clickable { onSection(null) },
+                        modifier = Modifier.size(24.dp).clip(CircleShape).clickable {
+                            if (detail != null) onDetail(null) else onSection(null)
+                        },
                     )
                     Spacer(Modifier.width(12.dp))
                 }
                 Text(
-                    section?.title ?: "Settings", color = TextPrimary, fontFamily = AppFont,
-                    fontWeight = FontWeight.ExtraBold, fontSize = 26.sp,
-                    letterSpacing = (-0.5).sp,
+                    headerTitle(section, detail), color = TextPrimary, fontFamily = AppFont,
+                    fontWeight = FontWeight.ExtraBold, fontSize = 26.sp, letterSpacing = (-0.5).sp,
                 )
             }
 
             LazyColumn(
                 Modifier.weight(1f).fillMaxWidth(),
                 contentPadding = PaddingValues(start = 18.dp, end = 18.dp, bottom = navBarInset() + 16.dp),
-                verticalArrangement = Arrangement.spacedBy(if (section == null) 10.dp else 22.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                when (section) {
-                    // The index. Every row says what lives behind it, because a
-                    // one-word category is a guess until you have opened it once.
-                    null -> items(
-                        SettingsSection.entries,
-                        key = { it.name },
-                        contentType = { "category" },
-                    ) { s ->
-                        SettingsCategoryRow(s, accent) { onSection(s) }
+                if (section == null) {
+                    // The index. Every row says what lives behind it.
+                    items(SettingsSection.entries, key = { it.name }, contentType = { "category" }) { s ->
+                        NavRow(s.icon, s.title, s.subtitle, accent) { onSection(s); onDetail(null) }
                     }
-
-                    SettingsSection.SERVERS -> {
-                        // ── Connection ──────────────────────────────────────────────
-                        item {
-                            var manualUrl by remember { mutableStateOf("") }
-                            SectionHeader(Icons.Default.Cloud, "Connection", accent)
-                            Spacer(Modifier.height(12.dp))
-                            GlassCard(radius = 16.dp) {
-                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    if (isDiscovering) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = accent)
-                                            Spacer(Modifier.width(10.dp))
-                                            Text("Scanning…", color = TextMuted, fontSize = 13.sp)
-                                        }
-                                    }
-                                    if (!isDiscovering && discoveredServers.isEmpty()) {
-                                        Text("No servers found on the network", color = TextFaint, fontSize = 13.sp)
-                                    }
-                                    discoveredServers.forEach { server ->
-                                        ServerRow(
-                                            name = server.name,
-                                            host = "${server.host}:${server.port}",
-                                            connected = serverUrl == server.webSocketUrl && connected,
-                                            accent = accent,
-                                        ) { viewModel.connectToServer(server.webSocketUrl) }
-                                    }
-                                    OledField(manualUrl, { manualUrl = it }, "WebSocket URL", "ws://192.168.0.100:8095/ws", accent)
-                                    OledButton(
-                                        if (connected) "Reconnect" else "Connect",
-                                        enabled = manualUrl.isNotBlank(),
-                                        accent = accent,
-                                    ) { viewModel.connectToServer(manualUrl) }
-                                    if (connected) {
-                                        // Disconnecting drops the player out of Music
-                                        // Assistant — that's a destructive action and it
-                                        // should look like one rather than a spare grey chip.
-                                        OledButton("Disconnect", accent = accent, danger = true) { viewModel.disconnect() }
-                                    }
-                                }
-                            }
-                        }
-
-                        // ── Navidrome server ────────────────────────────────────────
-                        // The server details used to be reachable only from the Library
-                        // tab's connect form, which is hidden the moment a connection
-                        // works — so a moved server or a changed password could not be
-                        // fixed from inside the app at all.
-                        item {
-                            // Quality lives in this card rather than a section of its own:
-                            // it is a property of the Navidrome connection, not of the app.
-                            NavidromeCard(
-                                vm = libraryVm,
+                } else {
+                    // One item per section: each is a page of cards, and a page is not
+                    // a list worth recycling. The index above is, and gets `items`.
+                    item(key = section.name) {
+                        when (section) {
+                            SettingsSection.LIBRARIES -> LibrariesSection(
+                                settings = settings,
+                                libraryVm = libraryViewModel,
                                 accent = accent,
-                                format = navFormat,
-                                onFormat = { navFormat = it; scope.launch { settings.setNavStreamFormat(it) } },
+                                scope = scope,
+                                detail = detail,
+                                onDetail = onDetail,
                             )
-                        }
 
-                        // Home Assistant is a server, but it is only ever configured
-                        // here in service of Light Sync — and which fields you need
-                        // depends on the transport. So the connection lives with the
-                        // thing it drives, and this says where it went.
-                        item(key = "lights_pointer") {
-                            GlassCard(radius = 16.dp) {
-                                Row(
-                                    Modifier.fillMaxWidth().clickable { onSection(SettingsSection.LIGHTS) }
-                                        .padding(16.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                ) {
-                                    Icon(
-                                        Icons.Default.Lightbulb, null, tint = accent,
-                                        modifier = Modifier.size(18.dp),
-                                    )
-                                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
-                                        Text(
-                                            "Home Assistant and the Hue Bridge",
-                                            color = TextPrimary, fontFamily = AppFont,
-                                            style = MaterialTheme.typography.titleLarge,
-                                        )
-                                        Text(
-                                            "Configured under Light Sync, with the transport that uses them.",
-                                            color = TextFaint, style = MaterialTheme.typography.bodySmall,
-                                        )
-                                    }
-                                    Icon(
-                                        Icons.Default.ChevronRight, null,
-                                        tint = TextMuted, modifier = Modifier.size(20.dp),
-                                    )
-                                }
-                            }
+                            SettingsSection.PLAYER -> PlayerSection(
+                                viewModel = viewModel,
+                                settings = settings,
+                                accent = accent,
+                                scope = scope,
+                                hasMaServer = hasMaServer,
+                            )
+
+                            SettingsSection.AUDIO -> AudioSection(viewModel, settings, accent, scope)
+
+                            SettingsSection.DOWNLOADS ->
+                                DownloadsSection(libraryViewModel, settings, accent, scope)
+
+                            SettingsSection.LIGHTS -> LightSyncSection(
+                                settings = settings,
+                                accent = accent,
+                                scope = scope,
+                                detail = detail,
+                                onDetail = onDetail,
+                                haUrl = haUrl,
+                                onHaUrl = { haUrl = it },
+                                haToken = haToken,
+                                onHaToken = { haToken = it },
+                            )
+
+                            SettingsSection.APPEARANCE -> AppearanceSection(settings, accent, scope)
+
+                            SettingsSection.ABOUT -> AboutSection(accent)
                         }
                     }
-
-                    SettingsSection.LIGHTS -> {
-                        // ── Light Sync ───────────────────────────────────────────────
-                        item {
-                            // Collected, not read once. The transport now follows
-                            // the selected library, so a one-shot read into local
-                            // state would leave this toggle showing something the
-                            // app is no longer doing.
-                            val lsMode by settings.lightSyncMode.collectAsState(initial = "ha")
-                            val lsAuto by settings.lightSyncModeAuto.collectAsState(initial = true)
-
-                            SectionHeader(Icons.Default.Lightbulb, "Light Sync", accent)
-                            Spacer(Modifier.height(12.dp))
-
-                            // Transport selector: Home Assistant or direct to the bridge.
-                            GlassCard(radius = 16.dp) {
-                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    Text(
-                                        "How the lights react to music",
-                                        color = TextPrimary, fontFamily = AppFont,
-                                        style = MaterialTheme.typography.titleLarge,
-                                    )
-                                    SegmentedToggle(
-                                        options = listOf("Home Assistant", "Bridge (direct)"),
-                                        selectedIndex = if (lsMode == "direct") 1 else 0,
-                                    ) {
-                                        // Choosing by hand pins the transport, so
-                                        // the library stops moving it.
-                                        val newMode = if (it == 1) "direct" else "ha"
-                                        scope.launch { settings.setLightSyncMode(newMode, manual = true) }
-                                    }
-                                    if (!lsAuto) {
-                                        Text(
-                                            "Follow the library again",
-                                            color = accent,
-                                            fontSize = 12.sp,
-                                            modifier = Modifier.clickable {
-                                                scope.launch { settings.setLightSyncModeAuto(true) }
-                                            },
-                                        )
-                                    }
-                                    Text(
-                                        buildString {
-                                            append(
-                                                if (lsMode == "direct")
-                                                    "The app talks to the Hue Bridge directly over the LAN — no Home Assistant needed. " +
-                                                        "Works with the Navidrome / offline player. The phone is the only speaker."
-                                                else
-                                                    "Drives the Hue Synco integration in Home Assistant over its WebSocket API. " +
-                                                        "Follows any MA player entity and works with multi-room grouping.",
-                                            )
-                                            if (lsAuto) {
-                                                append(
-                                                    "\n\nChosen automatically from your library: Navidrome plays on this phone, " +
-                                                        "so it uses the bridge directly; Music Assistant can play anywhere, " +
-                                                        "so Home Assistant drives it. Pick one here to override.",
-                                                )
-                                            }
-                                        },
-                                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
-                                    )
-                                }
-                            }
-
-                            Spacer(Modifier.height(12.dp))
-
-                            if (lsMode == "direct") {
-                                // ── Direct bridge setup ────────────────────────────────
-                                DirectBridgeSetup(settings = settings, scope = scope, accent = accent)
-                            } else {
-                                // ── HA setup (existing) ─────────────────────────────────
-                                GlassCard(radius = 16.dp) {
-                                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                        Text(
-                                            "Drives the Hue Synco light-sync integration. Use a long-lived access token (Profile → Security).",
-                                            color = TextMuted, fontSize = 13.sp,
-                                        )
-                                        OledField(haUrl, { haUrl = it; haSaved = false }, "HA URL", "http://192.168.0.10:8123", accent)
-                                        if (haTokenLocked) {
-                                            OledField(
-                                                "•".repeat(24), {}, "Long-lived access token", "", accent,
-                                                enabled = false,
-                                                trailingIcon = {
-                                                    Icon(
-                                                        Icons.Default.Lock, "Saved",
-                                                        tint = TextMuted, modifier = Modifier.size(18.dp),
-                                                    )
-                                                },
-                                            )
-                                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                                OledButton(
-                                                    if (haSaved) "Saved" else "Save",
-                                                    enabled = haUrl.isNotBlank() && !haSaved,
-                                                    accent = accent, modifier = Modifier.weight(1f),
-                                                ) {
-                                                    scope.launch {
-                                                        settings.setHomeAssistant(haUrl.trim(), haToken.trim()); haSaved = true
-                                                    }
-                                                }
-                                                OledButton("Replace token", accent = accent, outline = true, modifier = Modifier.weight(1f)) {
-                                                    haToken = ""; haTokenVisible = false; haSaved = false; haTokenLocked = false
-                                                }
-                                            }
-                                        } else {
-                                            OledField(
-                                                haToken, { haToken = it; haSaved = false },
-                                                "Long-lived access token", "eyJ…", accent,
-                                                visualTransformation = if (haTokenVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                                                trailingIcon = {
-                                                    Box(Modifier.size(20.dp).clip(CircleShape).clickable { haTokenVisible = !haTokenVisible }) {
-                                                        Icon(
-                                                            if (haTokenVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                                            if (haTokenVisible) "Hide" else "Show",
-                                                            tint = TextMuted, modifier = Modifier.size(20.dp),
-                                                        )
-                                                    }
-                                                },
-                                            )
-                                            OledButton(
-                                                if (haSaved) "Saved" else "Save",
-                                                enabled = haUrl.isNotBlank() && haToken.isNotBlank(),
-                                                accent = accent,
-                                            ) {
-                                                scope.launch {
-                                                    settings.setHomeAssistant(haUrl.trim(), haToken.trim())
-                                                    haSaved = true
-                                                    haTokenVisible = false
-                                                    haTokenLocked = true
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    SettingsSection.LIBRARY -> {
-                        // ── Library ─────────────────────────────────────────────────
-                        item {
-                            GlassCard(radius = 16.dp) {
-                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    Text(
-                                        "Where the Library tab browses from",
-                                        color = TextPrimary, fontFamily = AppFont,
-                                        style = MaterialTheme.typography.titleLarge,
-                                    )
-                                    SegmentedToggle(
-                                        options = listOf("Music Assistant", "Navidrome"),
-                                        selectedIndex = if (backend == "subsonic") 1 else 0,
-                                    ) { scope.launch { settings.setBackend(if (it == 1) "subsonic" else "ma") } }
-                                    Text(
-                                        if (backend == "subsonic")
-                                            "Navidrome plays on this phone only. Speaker grouping runs through " +
-                                                "Music Assistant, so that tab is off. Light Sync is available when " +
-                                                "set to direct bridge mode in Settings."
-                                        else
-                                            "Music Assistant browses the whole library, plays to any speaker, and " +
-                                                "keeps grouping and Light Sync available.",
-                                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    SettingsSection.PLAYER -> {
-                        // ── Player ──────────────────────────────────────────────────
-                        item {
-                            GlassCard(radius = 16.dp) {
-                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    // The name is editable at any time: it is Music Assistant's
-                                    // per-player config that decides the displayed name, not the
-                                    // hello, so a rename is a config write and needs no reconnect.
-                                    OledField(
-                                        playerName,
-                                        { playerName = it },
-                                        "Player name",
-                                        "e.g. Abdullah's phone",
-                                        accent,
-                                    )
-                                    Text(
-                                        "Shown in Music Assistant.",
-                                        color = TextFaint, fontSize = 11.sp,
-                                    )
-                                    // A rename can only be refused by the server —
-                                    // `config/players/save` is an admin command — and a refusal
-                                    // used to be swallowed, so the name simply stayed wrong with
-                                    // no explanation.
-                                    configStatus.takeIf { it.isNotBlank() }?.let {
-                                        Text(it, color = WarnAmber, style = MaterialTheme.typography.bodySmall)
-                                    }
-
-                                    // Stream codec. Sits here rather than under Audio because it
-                                    // is announced in the same hello as the name.
-                                    Text(
-                                        "Stream format",
-                                        color = TextSecondary, fontFamily = AppFont,
-                                        style = MaterialTheme.typography.labelLarge
-                                    )
-                                    SegmentedToggle(
-                                        options = CodecLabels,
-                                        selectedIndex = CodecValues.indexOf(sendspinCodec).coerceAtLeast(0),
-                                        modifier = Modifier.fillMaxWidth(),
-                                    ) { i ->
-                                        sendspinCodec = CodecValues[i]
-                                        scope.launch { settings.setSendspinCodec(CodecValues[i]) }
-                                    }
-                                    Text(
-                                        when (sendspinCodec) {
-                                            "flac" -> "Lossless, about half the bandwidth of PCM. Music Assistant " +
-                                                "must send FLAC - it is the only format offered."
-                                            "pcm" -> "Lossless and uncompressed. Highest bandwidth, no decode cost."
-                                            "opus" -> "Compressed. Lowest bandwidth, 48 kHz only."
-                                            else -> "Offer all three and let Music Assistant choose - FLAC first, " +
-                                                "then PCM, then Opus."
-                                        },
-                                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
-                                    )
-
-                                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        if (connected) {
-                                            OledButton("Save name", modifier = Modifier.weight(1f), accent = accent) {
-                                                viewModel.renamePlayer(playerName.trim())
-                                            }
-                                            OledButton("Disable", modifier = Modifier.weight(1f), accent = accent) { viewModel.disablePlayer() }
-                                        } else {
-                                            OledButton("Enable player", modifier = Modifier.weight(1f), accent = accent) {
-                                                viewModel.enablePlayer(playerName.trim(), sendspinCodec)
-                                            }
-                                        }
-                                    }
-                                    if (connected) {
-                                        // On "Auto" the hello advertised every codec, so the
-                                        // server is free to switch to any of them on request —
-                                        // `client/request_format`, answered with a fresh
-                                        // stream/start. Connect on a single codec and the
-                                        // advertised list has one entry, so there is nothing
-                                        // to switch to without reconnecting.
-                                        val live = viewModel.canSwitchFormatLive && sendspinCodec != "auto"
-                                        if (live) {
-                                            OledButton(
-                                                "Switch to ${CodecLabels[CodecValues.indexOf(sendspinCodec)]} now",
-                                                modifier = Modifier.fillMaxWidth(), accent = accent,
-                                            ) { viewModel.requestFormat(sendspinCodec) }
-                                        }
-                                        Text(
-                                            if (live)
-                                                "This connection offered every format, so the change can be " +
-                                                    "applied to the running stream. It sticks for good on the " +
-                                                    "next reconnect."
-                                            else
-                                                "A format change needs the player disabled and enabled again - " +
-                                                    "it is only announced when the connection opens.",
-                                            color = TextFaint, style = MaterialTheme.typography.bodySmall,
-                                        )
-                                    }
-
-                                    // Last resort for a name Music Assistant won't let go of.
-                                    // MA keys a player on its client id and keeps the name it
-                                    // was first registered under; the protocol has no rename
-                                    // message, so when the config edit is refused, arriving as
-                                    // a new player is the only thing left.
-                                    Spacer(Modifier.height(2.dp))
-                                    Box(Modifier.fillMaxWidth().height(1.dp).background(HairlineSoft))
-                                    Text(
-                                        "Still showing the old name? Music Assistant keeps the name a player " +
-                                            "was first registered under. Registering again arrives as a new " +
-                                            "player under the name above - the old entry stays in Music " +
-                                            "Assistant, greyed out, for you to delete.",
-                                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
-                                    )
-                                    OledButton("Register again as a new player", accent = accent) {
-                                        viewModel.reregister(playerName.trim())
-                                    }
-                                }
-                            }
-                        }
-
-                        // ── Background connection ───────────────────────────────────
-                        item(key = "keepalive") {
-                            var keepAlive by remember { mutableStateOf(true) }
-                            LaunchedEffect(Unit) { keepAlive = settings.keepAliveForAnnouncements.first() }
-                            GlassCard(radius = 16.dp) {
-                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    SectionHeader(Icons.Default.Campaign, "Announcements", accent)
-                                    ToggleRow(
-                                        "Stay reachable in the background",
-                                        "Keeps this phone connected so Home Assistant can speak to it - " +
-                                            "doorbells, timers, anything that announces. Turn it off to save " +
-                                            "battery if you never send announcements here: the connection, " +
-                                            "the wake lock and the ongoing notification all go with it.",
-                                        keepAlive, accent,
-                                    ) { keepAlive = it; scope.launch { settings.setKeepAliveForAnnouncements(it) } }
-                                    Text(
-                                        "Playback is unaffected either way - music started here keeps " +
-                                            "playing in the background, and the connection comes back when " +
-                                            "you reopen the app.",
-                                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    SettingsSection.AUDIO -> {
-                        // ── Continuous play ─────────────────────────────────────────
-                        item(key = "continuous") {
-                            val radioOn by settings.radioMode.collectAsState(initial = false)
-                            val fade by settings.navFadeSeconds.collectAsState(initial = 0)
-                            GlassCard(radius = 16.dp) {
-                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    Text(
-                                        "Continuous play",
-                                        color = TextPrimary, fontFamily = AppFont,
-                                        style = MaterialTheme.typography.titleLarge,
-                                    )
-                                    ToggleRow(
-                                        "Keep the music going",
-                                        "When the queue runs out, keep playing something similar. " +
-                                            "Music Assistant does this on the server; on Navidrome the app " +
-                                            "builds the next few tracks itself and adds them before the last " +
-                                            "one ends, so nothing gaps.",
-                                        radioOn, accent,
-                                    ) { on -> scope.launch { settings.setRadioMode(on) } }
-
-                                    Text(
-                                        "Smooth transitions",
-                                        color = TextPrimary, fontFamily = AppFont,
-                                        style = MaterialTheme.typography.titleLarge,
-                                    )
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                    ) {
-                                        HSlider(
-                                            value = fade / 12f,
-                                            onChange = {},
-                                            onCommit = { f ->
-                                                scope.launch { settings.setNavFadeSeconds(Math.round(f * 12f)) }
-                                            },
-                                            accented = true,
-                                            modifier = Modifier.weight(1f),
-                                        )
-                                        Text(
-                                            if (fade == 0) "Off" else "${fade}s",
-                                            color = TextSecondary, fontFamily = MonoFont,
-                                            style = MaterialTheme.typography.labelMedium,
-                                        )
-                                    }
-                                    Text(
-                                        "Fades one track out and the next in, on the Navidrome player. " +
-                                            "Off is gapless, which is what an album wants — so this is " +
-                                            "suppressed automatically while the queue is a single record, " +
-                                            "however it is set. It is not a crossfade: the two tracks don't " +
-                                            "overlap, because one player has one output.",
-                                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
-                                    )
-                                }
-                            }
-                        }
-
-                        // ── Audio ───────────────────────────────────────────────────
-                        item {
-                            var preferHiRes by remember { mutableStateOf(true) }
-                            var preferFlac by remember { mutableStateOf(true) }
-                            var preferOriginal by remember { mutableStateOf(false) }
-                            var bitPerfect by remember { mutableStateOf(false) }
-                            var replayGain by remember { mutableStateOf("album") }
-                            LaunchedEffect(Unit) {
-                                preferHiRes = settings.preferHiRes.first()
-                                preferFlac = settings.preferFlac.first()
-                                preferOriginal = settings.preferOriginal.first()
-                                bitPerfect = settings.bitPerfect24Bit.first()
-                                replayGain = settings.replayGainMode.first()
-                            }
-                            GlassCard(radius = 16.dp) {
-                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    ToggleRow(
-                                        "Offer hi-res rates",
-                                        "Also accept 88.2/96 kHz so hi-res masters aren't downsampled to 48 kHz",
-                                        preferHiRes, accent,
-                                    ) { preferHiRes = it; scope.launch { settings.setPreferHiRes(it) } }
-                                    ToggleRow(
-                                        "Prefer FLAC over PCM",
-                                        "Lossless either way - FLAC uses about half the bandwidth",
-                                        preferFlac, accent,
-                                    ) { preferFlac = it; scope.launch { settings.setPreferFlac(it) } }
-                                    ToggleRow(
-                                        "Play at original quality",
-                                        "Stream straight from Navidrome when Music Assistant would have " +
-                                            "to resample. Plays on this phone only - no queue, no grouping.",
-                                        preferOriginal, accent,
-                                    ) { preferOriginal = it; scope.launch { settings.setPreferOriginal(it) } }
-                                    ToggleRow(
-                                        "Bit-perfect (24-bit)",
-                                        "Ask for 24-bit instead of 16 and render whatever depth the decoder " +
-                                            "reports. Costs bandwidth, and a phone whose mixer runs at 16-bit " +
-                                            "gains nothing - leave it off unless you're on a USB DAC.",
-                                        bitPerfect, accent,
-                                    ) { bitPerfect = it; scope.launch { settings.setBitPerfect24Bit(it) } }
-                                    Text(
-                                        "Music Assistant may only send a format this phone advertises. " +
-                                            "44.1 and 48 kHz are always offered, so CD-rate files stream " +
-                                            "untouched. Output is ${if (bitPerfect) "up to 24-bit" else "16-bit"}. " +
-                                            "Reconnect to apply.",
-                                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
-                                    )
-                                    Text(
-                                        "On the Navidrome player this also turns on float output, so a 24-bit " +
-                                            "file isn't requantised to 16 on its way to the sink. That is fixed " +
-                                            "when the player is built, so it applies next time the app starts. " +
-                                            "It is off by default because float output is experimental and has " +
-                                            "been heard to distort 44.1 kHz material on phones whose mixer runs " +
-                                            "at 48 - if that happens, turn this back off.",
-                                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
-                                    )
-                                    Box(Modifier.fillMaxWidth().height(1.dp).background(HairlineSoft))
-                                    Text(
-                                        "ReplayGain",
-                                        color = TextSecondary, fontFamily = AppFont,
-                                        style = MaterialTheme.typography.labelLarge
-                                    )
-                                    SegmentedToggle(
-                                        options = ReplayGainLabels,
-                                        selectedIndex = ReplayGainValues.indexOf(replayGain).coerceAtLeast(0),
-                                        modifier = Modifier.fillMaxWidth(),
-                                    ) {
-                                        replayGain = ReplayGainValues[it]
-                                        scope.launch { settings.setReplayGainMode(ReplayGainValues[it]) }
-                                    }
-                                    Text(
-                                        when (replayGain) {
-                                            ReplayGain.ALBUM -> "Levels whole albums against each other and keeps " +
-                                                "the dynamics within one. What you want for records."
-                                            ReplayGain.TRACK -> "Levels every track to the same loudness. Better " +
-                                                "for shuffled singles; flattens an album's quiet passages."
-                                            else -> "Play files at their mastered level. A 1985 master and a " +
-                                                "2015 one can land 10 dB apart."
-                                        },
-                                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
-                                    )
-                                    Text(
-                                        "Applies to Navidrome and offline playback. Music Assistant does its " +
-                                            "own gain server-side, so this would double it there. Boosts are " +
-                                            "capped at +${ReplayGain.MAX_BOOST_DB.toInt()} dB to avoid clipping.",
-                                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
-                                    )
-                                    OutputDevicePicker(accent)
-                                    // Status readout
-                                    Column(
-                                        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
-                                            .background(Ink3).padding(14.dp),
-                                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                                    ) {
-                                        StatusRow("Connection", if (connected) "Connected" else "Disconnected")
-                                        StatusRow("Format", currentFormat)
-                                        StatusRow("Player ID", viewModel.playerId.take(12) + "…")
-                                        StatusRow("Player name", playerName.ifBlank { viewModel.deviceName })
-                                        StatusRow("Device", viewModel.deviceName)
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    SettingsSection.DOWNLOADS -> {
-                        // ── Downloads ───────────────────────────────────────────────
-                        item { DownloadsCard(libraryVm, accent) }
-                    }
-
-                    SettingsSection.APPEARANCE -> {
-                        // ── Lyrics timing ───────────────────────────────────────────
-                        item(key = "lyrics_offset") {
-                            val offset by settings.lyricsOffsetMs.collectAsState(initial = 0)
-                            GlassCard(radius = 16.dp) {
-                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    Text(
-                                        "Lyrics timing",
-                                        color = TextPrimary, fontFamily = AppFont,
-                                        style = MaterialTheme.typography.titleLarge,
-                                    )
-                                    Text(
-                                        "Nudge synced lyrics if they run ahead of or behind the vocal. " +
-                                            "Providers stamp the same track differently, so this is a matter " +
-                                            "of taste rather than a setting with a right answer.",
-                                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
-                                    )
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                    ) {
-                                        HSlider(
-                                            value = (offset + AppSettings.MAX_LYRICS_OFFSET_MS) /
-                                                (2f * AppSettings.MAX_LYRICS_OFFSET_MS),
-                                            onChange = {},
-                                            onCommit = { f ->
-                                                val ms = (f * 2f * AppSettings.MAX_LYRICS_OFFSET_MS -
-                                                    AppSettings.MAX_LYRICS_OFFSET_MS).toInt()
-                                                // Snap to 50 ms — finer than that is
-                                                // below what anyone can hear against a
-                                                // line of sung text.
-                                                scope.launch { settings.setLyricsOffsetMs((ms / 50) * 50) }
-                                            },
-                                            accented = true,
-                                            modifier = Modifier.weight(1f),
-                                        )
-                                        Text(
-                                            if (offset == 0) "0 ms" else "%+d ms".format(offset),
-                                            color = TextSecondary, fontFamily = MonoFont,
-                                            style = MaterialTheme.typography.labelMedium,
-                                        )
-                                    }
-                                    Text(
-                                        "Later ← → earlier",
-                                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
-                                    )
-                                }
-                            }
-                        }
-
-                        // ── Theme ───────────────────────────────────────────────────
-                        item(key = "theme") {
-                            val themeKey by settings.theme.collectAsState(initial = ThemeChoice.OLED.key)
-                            val current = ThemeChoice.from(themeKey)
-                            GlassCard(radius = 16.dp) {
-                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    Text(
-                                        "Theme",
-                                        color = TextPrimary, fontFamily = AppFont,
-                                        style = MaterialTheme.typography.titleLarge,
-                                    )
-                                    Text(
-                                        current.description,
-                                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
-                                    )
-                                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        ThemeChoice.entries.forEach { choice ->
-                                            ToggleChip(choice.label, choice == current) {
-                                                scope.launch { settings.setTheme(choice.key) }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // ── Accent ──────────────────────────────────────────────────
-                        item(key = "accent") {
-                            val accentKey by settings.accentSource.collectAsState(initial = AccentChoice.ALBUM.key)
-                            val fixedHex by settings.fixedAccent.collectAsState(initial = "")
-                            val current = AccentChoice.from(accentKey)
-                            GlassCard(radius = 16.dp) {
-                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    Text(
-                                        "Accent colour",
-                                        color = TextPrimary, fontFamily = AppFont,
-                                        style = MaterialTheme.typography.titleLarge,
-                                    )
-                                    Text(
-                                        current.description,
-                                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
-                                    )
-                                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        AccentChoice.entries.forEach { choice ->
-                                            ToggleChip(choice.label, choice == current) {
-                                                scope.launch { settings.setAccentSource(choice.key) }
-                                            }
-                                        }
-                                    }
-                                    // The swatches only mean anything once the accent has
-                                    // stopped following the artwork.
-                                    if (current == AccentChoice.FIXED) {
-                                        val picked = parseAccent(fixedHex)
-                                        FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                            FallbackPalette.forEach { swatch ->
-                                                SwatchDot(swatch, swatch == picked) {
-                                                    scope.launch { settings.setFixedAccent(swatch.toAccentHex()) }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // ── Now Playing ─────────────────────────────────────────────
-                        item {
-                            var npLayout by remember { mutableStateOf("tab") }
-                            LaunchedEffect(Unit) { npLayout = settings.nowPlayingLayout.first() }
-                            GlassCard(radius = 16.dp) {
-                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    Text(
-                                        "Layout style",
-                                        color = TextPrimary, fontFamily = AppFont,
-                                        style = MaterialTheme.typography.titleLarge,
-                                    )
-                                    Text(
-                                        "Overlay: the cover slides over the app; swipe down to minimize into a bar. " +
-                                            "Tab: the classic full-screen player as a bottom tab.",
-                                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
-                                    )
-                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        ToggleChip("Tab (classic)", npLayout == "tab") {
-                                            npLayout = "tab"
-                                            scope.launch { settings.setNowPlayingLayout("tab") }
-                                        }
-                                        ToggleChip("Overlay", npLayout == "overlay") {
-                                            npLayout = "overlay"
-                                            scope.launch { settings.setNowPlayingLayout("overlay") }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    SettingsSection.ABOUT -> {
-                        // ── About ────────────────────────────────────────────────────
-                        item {
-                            GlassCard(radius = 16.dp) {
-                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                                    Text(
-                                        "CAMusic - a Music Assistant player & controller for Android.\n\n" +
-                                        "Plays FLAC / Opus 16-bit as an MA player, with Navidrome-direct " +
-                                        "browse + offline downloads and Hue light-sync controls.",
-                                        color = TextMuted, fontSize = 13.sp,
-                                    )
-                                    Row(
-                                        Modifier.clip(RoundedCornerShape(100)).background(Glass)
-                                            .border(1.dp, Hairline, RoundedCornerShape(100))
-                                            .clickable {
-                                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/engabd11/sendspin-nowdroid")))
-                                            }
-                                            .padding(horizontal = 16.dp, vertical = 10.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    ) {
-                                        Icon(Icons.Default.Code, null, tint = accent, modifier = Modifier.size(16.dp))
-                                        Text("GitHub Repository", color = TextSecondary, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                    }
-                                    // Read from the build rather than retyped here — the
-                                    // hard-coded string had been stale since 0.1.3.
-                                    Text(
-                                        "v${BuildConfig.VERSION_NAME} (code ${BuildConfig.VERSION_CODE})",
-                                        color = TextFaint, fontFamily = MonoFont, fontSize = 11.sp,
-                                    )
-                                }
-                            }
-                        }
-                    }
-
                 }
             }
         }
@@ -1019,598 +229,17 @@ fun SettingsScreen(
 }
 
 /**
- * The Navidrome / OpenSubsonic server, editable at any time. Saving reconnects
- * immediately so the result — connected, or the server's own complaint — is
- * visible right here instead of on a different tab.
- */
-@Composable
-private fun NavidromeCard(
-    vm: LibraryViewModel,
-    accent: Color,
-    format: String,
-    onFormat: (String) -> Unit,
-) {
-    val url by vm.navUrl.collectAsStateWithLifecycle()
-    val user by vm.navUser.collectAsStateWithLifecycle()
-    val pass by vm.navPass.collectAsStateWithLifecycle()
-    val connecting by vm.connecting.collectAsStateWithLifecycle()
-    val ready by vm.ready.collectAsStateWithLifecycle()
-    val offline by vm.offline.collectAsStateWithLifecycle()
-    val connError by vm.connError.collectAsStateWithLifecycle()
-    val onSubsonic by vm.backend.collectAsStateWithLifecycle()
-    var passVisible by remember { mutableStateOf(false) }
-
-    SectionHeader(Icons.Default.Storage, "Navidrome server", accent)
-    Spacer(Modifier.height(12.dp))
-    GlassCard(radius = 16.dp) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text(
-                "Browsing, playback on this phone, and offline downloads. Works with " +
-                    "Music Assistant and Home Assistant both down.",
-                color = TextMuted, fontSize = 13.sp,
-            )
-            OledField(url, vm::setNavUrl, "Server URL", "http://192.168.0.10:4533", accent)
-            OledField(user, vm::setNavUser, "Username", "", accent)
-            OledField(
-                pass, vm::setNavPass, "Password", "", accent,
-                visualTransformation = if (passVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                trailingIcon = {
-                    Box(Modifier.size(20.dp).clip(CircleShape).clickable { passVisible = !passVisible }) {
-                        Icon(
-                            if (passVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                            if (passVisible) "Hide" else "Show",
-                            tint = TextMuted, modifier = Modifier.size(20.dp),
-                        )
-                    }
-                },
-            )
-            OledButton(
-                if (connecting) "Connecting…" else "Save & connect",
-                enabled = url.isNotBlank() && !connecting,
-                accent = accent,
-            ) { vm.saveNavidrome() }
-
-            // The library's own state is only meaningful while Navidrome is the
-            // active backend. When it isn't, the server is still asked directly —
-            // downloads and "play at original quality" both go to it from the MA
-            // backend, so whether it answers is a real question either way.
-            val probe by vm.navStatus.collectAsStateWithLifecycle()
-            LaunchedEffect(url) { if (url.isNotBlank()) vm.checkNavidrome() }
-            val status = when {
-                onSubsonic == LibraryViewModel.Backend.SUBSONIC && connecting -> "Connecting…"
-                onSubsonic == LibraryViewModel.Backend.SUBSONIC && offline -> "Offline - playing downloads"
-                onSubsonic == LibraryViewModel.Backend.SUBSONIC && ready -> "Connected"
-                onSubsonic == LibraryViewModel.Backend.SUBSONIC && connError != null -> connError!!
-                url.isBlank() -> "Not set up"
-                probe != null -> "$probe - not the active library"
-                else -> "Checking…"
-            }
-            val bad = status.startsWith("Unreachable") ||
-                status.contains("rejected", ignoreCase = true) ||
-                (connError != null && onSubsonic == LibraryViewModel.Backend.SUBSONIC && !ready)
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    status,
-                    color = if (bad) ErrorRed else TextFaint,
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.weight(1f),
-                )
-                Text(
-                    "Re-check",
-                    color = accent,
-                    style = MaterialTheme.typography.labelLarge,
-                    modifier = Modifier.clickable { vm.checkNavidrome() }.padding(start = 10.dp),
-                )
-            }
-
-            Spacer(Modifier.height(2.dp))
-            Box(Modifier.fillMaxWidth().height(1.dp).background(HairlineSoft))
-            Text(
-                "Stream quality",
-                color = TextSecondary, fontFamily = AppFont,
-                style = MaterialTheme.typography.labelLarge
-            )
-            SegmentedToggle(
-                options = NavFormatLabels,
-                selectedIndex = NavFormatValues.indexOf(format).coerceAtLeast(0),
-                modifier = Modifier.fillMaxWidth(),
-            ) { onFormat(NavFormatValues[it]) }
-            Text(
-                when (format) {
-                    "raw" -> "The stored file, untouched. Best quality; needs the bandwidth " +
-                        "the file was encoded at."
-                    "flac" -> "Transcoded to FLAC. Still lossless, and a predictable size " +
-                        "even when the library holds huge hi-res masters."
-                    else -> "Transcoded, lossy. Worth it on a slow or metered connection."
-                },
-                color = TextFaint, style = MaterialTheme.typography.bodySmall,
-            )
-            Text(
-                "Applies to the next track. Downloads always take the original file.",
-                color = TextFaint, fontFamily = AppFont, fontSize = 11.sp,
-            )
-        }
-    }
-}
-
-/**
- * Pin playback to one output device. Android normally routes for you, and for a
- * USB DAC it usually gets it right — but "usually" is not good enough for the
- * one person who went and bought a DAC, and the system offers no way to say so.
+ * What the header says.
  *
- * The list is read once per composition rather than observed: plugging a DAC in
- * while this screen is open is rare enough that reopening Settings is a fair
- * price for not holding an [android.media.AudioDeviceCallback] here.
+ * A detail page under a section is still that section as far as the user is concerned
+ * — but "Libraries" over a form for one server is less use than naming the thing in
+ * front of them, so the sub-pages that have a name of their own use it.
  */
 @Composable
-private fun OutputDevicePicker(accent: Color) {
-    val context = LocalContext.current
-    val settings = remember { AppSettings(context) }
-    val scope = rememberCoroutineScope()
-    val am = remember { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
-    val outputs = remember { AudioOutputs.list(am) }
-    var selected by remember { mutableStateOf("") }
-    LaunchedEffect(Unit) { selected = settings.preferredAudioDeviceId.first() }
-
-    // Nothing to choose between on a phone with only its own speaker.
-    if (outputs.size < 2) return
-
-    Spacer(Modifier.height(2.dp))
-    Text(
-        "Output device",
-        color = TextSecondary, fontFamily = AppFont,
-        style = MaterialTheme.typography.labelLarge
-    )
-    val labels = listOf("Automatic") + outputs.map { it.label }
-    val ids = listOf("") + outputs.map { it.id }
-    SegmentedToggle(
-        options = labels,
-        selectedIndex = ids.indexOf(selected).coerceAtLeast(0),
-        modifier = Modifier.fillMaxWidth(),
-    ) { i ->
-        selected = ids[i]
-        scope.launch { settings.setPreferredAudioDeviceId(ids[i]) }
-    }
-    Text(
-        if (selected.isBlank())
-            "Android picks the route - normally the last thing you plugged in."
-        else
-            "Playback is pinned to this output. If it's unplugged, Android routes " +
-                "normally again until it's back.",
-        color = TextFaint, style = MaterialTheme.typography.bodySmall,
-    )
-}
-
-/** What's on the phone for offline listening, and the one way to get it back. */
-@Composable
-private fun DownloadsCard(vm: LibraryViewModel, accent: Color) {
-    val downloads by vm.downloads.collectAsStateWithLifecycle()
-    var confirming by remember { mutableStateOf(false) }
-    // Measuring means stat-ing every file, so it happens off the main thread and
-    // only when the list itself changes.
-    var bytes by remember { mutableStateOf(0L) }
-    LaunchedEffect(downloads) { bytes = withContext(Dispatchers.IO) { vm.downloadBytes() } }
-
-    val context = LocalContext.current
-    val settings = remember { AppSettings(context) }
-    val scope = rememberCoroutineScope()
-    var wifiOnly by remember { mutableStateOf(false) }
-    var capMb by remember { mutableStateOf(0) }
-    LaunchedEffect(Unit) {
-        wifiOnly = settings.downloadWifiOnly.first()
-        capMb = settings.downloadStorageCapMb.first()
-    }
-
-    SectionHeader(Icons.Default.Download, "Downloads", accent)
-    Spacer(Modifier.height(12.dp))
-    GlassCard(radius = 16.dp) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text(
-                "Original files, not transcodes - a downloaded track plays at the " +
-                    "quality it was stored at, with or without a network.",
-                color = TextMuted, fontSize = 13.sp,
-            )
-            Column(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Ink3).padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                StatusRow("Tracks", downloads.size.toString())
-                StatusRow("On disk", formatBytes(bytes))
-                if (capMb > 0) StatusRow("Limit", "${capMb} MB")
-            }
-            ToggleRow(
-                "Wi-Fi only",
-                "Skip downloads on mobile data rather than spending the allowance on them",
-                wifiOnly, accent,
-            ) { wifiOnly = it; scope.launch { settings.setDownloadWifiOnly(it) } }
-            Text(
-                "Storage limit",
-                color = TextPrimary, fontFamily = AppFont,
-                style = MaterialTheme.typography.titleLarge,
-            )
-            // Fixed steps rather than a free text field: the number only has to be
-            // roughly right, and a slider or keyboard here would be more precision
-            // than the setting deserves.
-            SegmentedToggle(
-                options = listOf("Off", "1 GB", "5 GB", "20 GB"),
-                selectedIndex = when (capMb) {
-                    1_000 -> 1
-                    5_000 -> 2
-                    20_000 -> 3
-                    else -> 0
-                },
-            ) { i ->
-                val mb = listOf(0, 1_000, 5_000, 20_000)[i]
-                capMb = mb
-                scope.launch { settings.setDownloadStorageCapMb(mb) }
-            }
-            Text(
-                if (capMb > 0)
-                    "The oldest downloads are deleted once the total goes past the limit."
-                else
-                    "No limit - downloads are only removed when you delete them.",
-                color = TextFaint, style = MaterialTheme.typography.bodySmall,
-            )
-            if (downloads.isNotEmpty()) {
-                OledButton(
-                    if (confirming) "Tap again to delete all" else "Delete all downloads",
-                    accent = accent, danger = true,
-                ) {
-                    if (confirming) { vm.deleteAllDownloads(); confirming = false } else confirming = true
-                }
-            }
-        }
-    }
-}
-
-private fun formatBytes(bytes: Long): String = when {
-    bytes >= 1_000_000_000 -> "%.1f GB".format(bytes / 1_000_000_000.0)
-    bytes >= 1_000_000 -> "%.0f MB".format(bytes / 1_000_000.0)
-    bytes >= 1_000 -> "%.0f KB".format(bytes / 1_000.0)
-    else -> "$bytes B"
-}
-
-// ─── Reusable OLED design components for settings ──────────────────────────
-
-@Composable
-private fun SectionHeader(icon: ImageVector, title: String, accent: Color) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        Box(
-            Modifier.size(32.dp).clip(RoundedCornerShape(10.dp)).background(accent.a(0.12f))
-                .border(1.dp, accent.a(0.3f), RoundedCornerShape(10.dp)),
-            contentAlignment = Alignment.Center,
-        ) { Icon(icon, null, tint = accent, modifier = Modifier.size(16.dp)) }
-        Text(title, color = TextPrimary, fontFamily = AppFont, fontWeight = FontWeight.ExtraBold, fontSize = 18.sp)
-    }
-}
-
-@Composable
-private fun ServerRow(name: String, host: String, connected: Boolean, accent: Color, onClick: () -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
-            .background(if (connected) accent.a(0.08f) else Glass)
-            .border(1.dp, if (connected) accent.a(0.3f) else Hairline, RoundedCornerShape(12.dp))
-            .clickable(onClick = onClick).padding(12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
-            Text(name, color = TextPrimary, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1)
-            Text(host, color = TextMuted, fontSize = 11.sp)
-        }
-        if (connected) Icon(Icons.Default.CheckCircle, null, tint = accent, modifier = Modifier.size(18.dp))
-    }
-}
-
-@Composable
-private fun OledField(
-    value: String, onChange: (String) -> Unit, label: String, placeholder: String, accent: Color,
-    visualTransformation: VisualTransformation = VisualTransformation.None,
-    enabled: Boolean = true,
-    trailingIcon: @Composable (() -> Unit)? = null,
-) {
-    OutlinedTextField(
-        value = value, onValueChange = onChange,
-        label = { Text(label) }, placeholder = { Text(placeholder) },
-        singleLine = true, modifier = Modifier.fillMaxWidth(),
-        enabled = enabled,
-        visualTransformation = visualTransformation,
-        colors = OutlinedTextFieldDefaults.colors(
-            focusedBorderColor = accent, cursorColor = accent, focusedLabelColor = accent,
-            disabledBorderColor = Hairline, disabledTextColor = TextMuted, disabledLabelColor = TextMuted,
-        ),
-        trailingIcon = trailingIcon,
-    )
-}
-
-@Composable
-private fun OledButton(
-    text: String, accent: Color, enabled: Boolean = true, outline: Boolean = false,
-    danger: Boolean = false, modifier: Modifier = Modifier, onClick: () -> Unit,
-) {
-    val fill = when {
-        !enabled -> Glass
-        danger -> ErrorRed.a(0.14f)
-        outline -> Glass
-        else -> accent
-    }
-    val border = when {
-        danger && enabled -> ErrorRed.a(0.55f)
-        outline -> Hairline
-        else -> Color.Transparent
-    }
-    val label = when {
-        !enabled -> TextMuted
-        danger -> ErrorRed
-        outline -> TextMuted
-        else -> Ink
-    }
-    Box(
-        modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(13.dp))
-            .background(fill)
-            .border(1.dp, border, RoundedCornerShape(13.dp))
-            .clickable(enabled = enabled, onClick = onClick)
-            .padding(vertical = 13.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(text, color = label, fontFamily = AppFont, fontWeight = FontWeight.ExtraBold, fontSize = 13.sp)
-    }
-}
-
-
-@Composable
-private fun ToggleRow(title: String, subtitle: String, checked: Boolean, accent: Color, onChange: (Boolean) -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Ink3)
-            .border(1.dp, Hairline, RoundedCornerShape(12.dp)).clickable { onChange(!checked) }
-            .padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
-            Text(title, color = TextPrimary, style = MaterialTheme.typography.titleLarge)
-            Text(subtitle, color = TextFaint, fontSize = 11.sp)
-        }
-        Box(
-            Modifier.size(44.dp, 24.dp).clip(RoundedCornerShape(100))
-                .background(if (checked) accent else Glass)
-                .border(1.dp, if (checked) accent.a(0.5f) else Hairline, RoundedCornerShape(100))
-                .padding(2.dp),
-            contentAlignment = if (checked) Alignment.CenterEnd else Alignment.CenterStart,
-        ) { Box(Modifier.size(18.dp).clip(CircleShape).background(if (checked) Ink else TextMuted)) }
-    }
-}
-
-/**
- * What this phone tells Music Assistant it can decode. "Auto" offers all three;
- * naming one narrows the advertised list to it alone, which is what actually forces
- * the server's hand — see `FormatNegotiator.supportedFormats`.
- */
-private val CodecValues = listOf("auto", "flac", "pcm", "opus")
-private val CodecLabels = listOf("Auto", "FLAC", "PCM", "Opus")
-
-/**
- * What Navidrome should send for a direct stream, as `format` (and `maxBitRate` where
- * the codec is lossy) on `/rest/stream`. "raw" hands back the stored file untouched.
- */
-private val NavFormatValues = listOf("raw", "flac", "mp3-320", "mp3-192", "opus-128")
-private val NavFormatLabels = listOf("Original", "FLAC", "MP3 320", "MP3 192", "Opus 128")
-
-private val ReplayGainValues = listOf(ReplayGain.OFF, ReplayGain.TRACK, ReplayGain.ALBUM)
-private val ReplayGainLabels = listOf("Off", "Track", "Album")
-
-@Composable
-private fun StatusRow(label: String, value: String) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(label, color = TextMuted, fontSize = 12.sp)
-        Text(value, color = TextSecondary, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-    }
-}
-
-// ── Direct Hue Bridge setup ───────────────────────────────────────────────
-
-/**
- * The bridge discovery, pairing and area-pick UI shown in Settings when
- * "Bridge (direct)" is selected as the Light Sync transport.
- *
- * Flow:
- * 1. If no bridge is paired: "Discover bridges" button → mDNS scan → list
- *    of found bridges → tap one → "Press the link button" prompt → pair.
- * 2. If a bridge is paired but no area is selected: fetch entertainment
- *    configs → list areas → tap to select.
- * 3. If both are done: show bridge name + area name + status, with a
- *    "Disconnect" button to clear the pairing.
- */
-
-
-@Composable
-private fun DirectBridgeSetup(
-    settings: com.engabd.sendpin.data.AppSettings,
-    scope: kotlinx.coroutines.CoroutineScope,
-    accent: Color,
-) {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val app = context.applicationContext as com.engabd.sendpin.SendpinApp
-    val bridge = app.directLightSync.bridgeClient
-
-    var bridgeIp by remember { mutableStateOf("") }
-    var appKey by remember { mutableStateOf("") }
-    var configId by remember { mutableStateOf("") }
-    var appId by remember { mutableStateOf("") }
-    var paired by remember { mutableStateOf(false) }
-    var discovering by remember { mutableStateOf(false) }
-    var discoveredBridges by remember { mutableStateOf(listOf<com.engabd.sendpin.hue.DiscoveredBridge>()) }
-    /** Set once a scan has run, so the "nothing found" hint only appears after one. */
-    var triedDiscovery by remember { mutableStateOf(false) }
-    var manualIp by remember { mutableStateOf("") }
-    var pairing by remember { mutableStateOf(false) }
-    var pairError by remember { mutableStateOf<String?>(null) }
-
-    LaunchedEffect(Unit) {
-        bridgeIp = settings.hueBridgeIp.first()
-        appKey = settings.hueAppKey.first()
-        configId = settings.hueEntertainmentConfigId.first()
-        appId = settings.hueAppId.first()
-        paired = bridgeIp.isNotBlank() && appKey.isNotBlank()
-    }
-
-    GlassCard(radius = 16.dp) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (!paired) {
-                // ── Discovery + pairing ────────────────────────────────────
-                Text("Pair a Hue Bridge", color = TextPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 17.sp)
-                Text(
-                    "The app connects to the Hue Bridge directly on your LAN. Press the link button on the bridge when prompted.",
-                    color = TextMuted, fontSize = 13.sp,
-                )
-
-                if (!discovering && discoveredBridges.isEmpty()) {
-                    OledButton("Discover bridges", accent = accent) {
-                        discovering = true
-                        bridge.startDiscovery()
-                        scope.launch {
-                            // Philips' order: mDNS first, then the cloud
-                            // endpoint, then a manual address. mDNS is the
-                            // primary and usually answers within a second or two.
-                            kotlinx.coroutines.delay(8000)
-                            bridge.stopDiscovery()
-                            if (bridge.discovered.value.isEmpty()) {
-                                // Nothing on mDNS — some networks block
-                                // multicast entirely. The cloud endpoint knows
-                                // this network's bridges if any has ever been
-                                // online, and is cached against its 15-minute
-                                // rate limit.
-                                bridge.addCloudDiscovered()
-                            }
-                            discoveredBridges = bridge.discovered.value
-                            discovering = false
-                            triedDiscovery = true
-                        }
-                    }
-                }
-
-                if (discovering) {
-                    Text("Scanning the network…", color = TextMuted, fontSize = 13.sp)
-                }
-
-                if (!discovering && discoveredBridges.isEmpty() && triedDiscovery) {
-                    Text(
-                        "No bridge found. Some networks block the discovery protocol — " +
-                            "you can enter the bridge's IP address instead. It is on the " +
-                            "Hue app's Settings → My Hue System screen, or your router's " +
-                            "device list.",
-                        color = TextMuted, fontSize = 13.sp,
-                    )
-                }
-
-                // Manual entry: the spec's required last resort, since mDNS can
-                // be blocked and the cloud returns nothing for a bridge that has
-                // never been online.
-                if (!discovering) {
-                    OutlinedTextField(
-                        value = manualIp,
-                        onValueChange = { manualIp = it },
-                        label = { Text("Bridge IP address") },
-                        placeholder = { Text("192.168.1.20") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    if (manualIp.isNotBlank()) {
-                        OledButton("Use this address", accent = accent) {
-                            bridge.addManual(manualIp)
-                            discoveredBridges = bridge.discovered.value
-                        }
-                    }
-                }
-
-                discoveredBridges.forEach { b ->
-                    Row(
-                        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
-                            .background(Glass).border(1.dp, Hairline, RoundedCornerShape(12.dp))
-                            .clickable {
-                                pairing = true
-                                pairError = null
-                                scope.launch {
-                                    try {
-                                        val (key, clientKey) = bridge.pair(b.host)
-                                        val id = bridge.fetchApplicationId(b.host, key) ?: ""
-                                        // The bridge id comes off the mDNS TXT
-                                        // record and is what the certificate's
-                                        // Common Name is checked against on
-                                        // every later connection.
-                                        settings.setHueBridge(b.host, key, clientKey, id, b.bridgeId)
-                                        bridgeIp = b.host
-                                        appKey = key
-                                        appId = id
-                                        paired = true
-                                    } catch (e: com.engabd.sendpin.hue.LinkButtonNotPressed) {
-                                        pairError = "Press the link button on the bridge, then tap again"
-                                    } catch (e: Exception) {
-                                        pairError = e.message ?: "Pairing failed"
-                                    }
-                                    pairing = false
-                                }
-                            }
-                            .padding(horizontal = 14.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        Icon(Icons.Default.Router, null, tint = accent, modifier = Modifier.size(18.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(b.name, color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                            Text(b.host, color = TextFaint, fontFamily = MonoFont, fontSize = 11.sp)
-                        }
-                        if (pairing) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                    }
-                }
-
-                pairError?.let {
-                    Text(it, color = ErrorRed, fontSize = 12.sp)
-                }
-            } else {
-                // ── Paired: show bridge status ───────────────────────────
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Icon(Icons.Default.Router, "Bridge", tint = accent, modifier = Modifier.size(18.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            "Hue Bridge",
-                            color = TextPrimary,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Text(
-                            bridgeIp,
-                            color = TextFaint,
-                            fontFamily = MonoFont,
-                            fontSize = 11.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    OledButton("Unpair", accent = accent, outline = true) {
-                        scope.launch {
-                            settings.setHueBridge("", "", "")
-                            settings.setHueConfigId("")
-                            bridgeIp = ""; appKey = ""; configId = ""; paired = false
-                        }
-                    }
-                }
-                Spacer(Modifier.height(4.dp))
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Box(Modifier.size(7.dp).clip(CircleShape).background(accent))
-                    Text("Paired. Pick an entertainment area on the Lights tab.", color = accent, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                }
-
-                pairError?.let {
-                    Text(it, color = ErrorRed, fontSize = 12.sp)
-                }
-            }
-        }
-    }
+private fun headerTitle(section: SettingsSection?, detail: String?): String = when {
+    section == null -> "Settings"
+    section == SettingsSection.LIBRARIES && detail == PICK_ROUTE -> "Add a server"
+    section == SettingsSection.LIBRARIES && detail != null -> "Server"
+    section == SettingsSection.LIGHTS && detail == BRIDGE_ROUTE -> "Bridge & analysis"
+    else -> section.title
 }

@@ -19,6 +19,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
@@ -104,6 +105,23 @@ class SendpinApp : Application(), ImageLoaderFactory {
      */
     val maNowPlaying: MaNowPlaying by lazy { MaNowPlaying(this) }
 
+    /**
+     * The library the app browses and plays itself — Navidrome, Jellyfin, or whatever
+     * else is added next. Null while Music Assistant is the active library, or before
+     * anything has connected.
+     *
+     * Process-scoped and published by [com.engabd.sendpin.ma.LibraryViewModel], which
+     * owns the connect lifecycle. It lives here because four view models need it and
+     * each used to build *its own client* from the saved credentials — four connection
+     * pools against one server, four separate ideas of whether it was reachable, and
+     * four places to edit when a second kind of server arrived.
+     *
+     * A plain holder rather than a manager: connecting is a stateful business with
+     * retries, superseded attempts and an offline fallback, and that logic already
+     * exists in one careful place. This is only how everything else finds the result.
+     */
+    val musicSource = MutableStateFlow<com.engabd.sendpin.library.MusicSource?>(null)
+
     private val appScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
     override fun onCreate() {
@@ -112,6 +130,12 @@ class SendpinApp : Application(), ImageLoaderFactory {
         // Register the process lifecycle observer for warm reconnect and
         // toggleable background connection (TTS battery saver).
         AppLifecycleObserver.register(this)
+        // The storage cap evicts oldest-first, and the one file it must never take is
+        // the one being listened to. Published here rather than looked up inside the
+        // download manager, which has no business holding a reference to the player.
+        appScope.launch {
+            localPlayer.current.collect { downloads.protectedId = it?.id }
+        }
         // The media notification follows the local player's session rather than being
         // started by whichever screen happened to press play.
         //

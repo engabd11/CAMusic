@@ -64,7 +64,7 @@ import com.engabd.sendpin.ui.design.SendspinNavBar
 import com.engabd.sendpin.ui.design.rememberAlbumPalette
 import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ma.MaItem
-import com.engabd.sendpin.subsonic.SubsonicClient
+import com.engabd.sendpin.library.MusicSources
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
 import com.engabd.sendpin.ui.screens.AlbumDetailScreen
 import com.engabd.sendpin.ui.screens.ArtistDetailScreen
@@ -256,11 +256,21 @@ fun App() {
         // entity to follow — so the tab is greyed for that combination rather
         // than offering controls that cannot do anything.
         val lsMode by settings.lightSyncMode.collectAsState(initial = "ha")
+        // Which self-hosted library is actually connected, for [strandedOnOtherBackend].
+        val liveSource by (context.applicationContext as com.engabd.sendpin.SendpinApp)
+            .musicSource.collectAsStateWithLifecycle()
         val disabledRoutes = when {
             backend != "subsonic" -> emptySet()
             lsMode == "direct" -> setOf("speakers")
             else -> setOf("speakers", "light_sync")
         }
+        // Why each one is off. A greyed tab that eats the tap without a word is a
+        // dead end; this is the one line that turns it into an explanation, and it
+        // is the same sentence Settings uses about the active library.
+        val disabledReasons = mapOf(
+            "speakers" to "Speaker grouping needs Music Assistant. Navidrome plays on this phone.",
+            "light_sync" to "Light Sync needs Home Assistant, or the Hue Bridge transport under Settings → Light Sync.",
+        )
 
         // An album/artist/playlist detail screen belongs to the server it was opened
         // from, so switching libraries has to leave it.
@@ -288,16 +298,33 @@ fun App() {
          * travels in the route, so no extra state is needed to know.
          */
         fun strandedOnOtherBackend(itemProvider: String): Boolean {
-            val subsonicItem = itemProvider == SubsonicClient.PROVIDER || itemProvider == "download"
-            return if (backend == "subsonic") !subsonicItem else subsonicItem
+            // A download is never stranded — it plays from disk, whatever the library
+            // is pointed at.
+            if (itemProvider == MusicSources.DOWNLOAD_PROVIDER) return false
+            // Compared against the *live source's* provider rather than against
+            // "is it local at all". With one self-hosted library those were the same
+            // question; with two they are not, and a Navidrome album left open while
+            // the user switched to Jellyfin would have stayed on screen backed by a
+            // server that had never heard of it.
+            val active = liveSource?.providerId
+            return if (backend == "subsonic") itemProvider != active
+            else MusicSources.isLocalProvider(itemProvider)
         }
 
         // Overlay expand/collapse state.
         var overlayExpanded by rememberSaveable { mutableStateOf(false) }
 
-        // Which category Settings has open, held here rather than inside the screen so
-        // that re-tapping the Settings tab can close it. See [SettingsScreen.section].
+        // Which category Settings has open, and which page inside it — held here
+        // rather than inside the screen so that re-tapping the Settings tab can close
+        // both. See [SettingsScreen.section].
         var settingsSection by rememberSaveable { mutableStateOf<SettingsSection?>(null) }
+        var settingsDetail by rememberSaveable { mutableStateOf<String?>(null) }
+
+        fun explainDisabled(route: String) {
+            disabledReasons[route]?.let {
+                android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
 
         fun go(route: String) {
             if (route in disabledRoutes) return
@@ -317,7 +344,7 @@ fun App() {
                 // are no-ops when already at the top, so a stray tap costs nothing.
                 when (route) {
                     "library" -> libraryVm.goToRoot()
-                    "settings" -> settingsSection = null
+                    "settings" -> { settingsSection = null; settingsDetail = null }
                 }
                 return
             }
@@ -381,6 +408,7 @@ fun App() {
                         composable("now_playing") {
                             NowPlayingScreen(
                                 viewModel = nowPlayingVm,
+                                libraryViewModel = libraryVm,
                                 onOpenSpeakers = { go("speakers") },
                                 onBrowse = { go("library") },
                             )
@@ -527,8 +555,14 @@ fun App() {
                     composable("settings") {
                         SettingsScreen(
                             viewModel = playerVm,
+                            libraryViewModel = libraryVm,
                             section = settingsSection,
-                            onSection = { settingsSection = it },
+                            // Leaving a section has to clear the page inside it, or
+                            // reopening a different section lands on the last
+                            // section's sub-page.
+                            onSection = { settingsSection = it; settingsDetail = null },
+                            detail = settingsDetail,
+                            onDetail = { settingsDetail = it },
                         )
                     }
                 }
@@ -556,6 +590,8 @@ fun App() {
                             tabs = tabs,
                             currentRoute = sectionOf(currentRoute),
                             disabledRoutes = disabledRoutes,
+                            disabledReasons = disabledReasons,
+                            onDisabledTap = ::explainDisabled,
                             onSelect = ::go,
                         )
                     }
@@ -566,6 +602,7 @@ fun App() {
                         BackHandler { overlayExpanded = false }
                         NowPlayingOverlay(
                             viewModel = nowPlayingVm,
+                            libraryViewModel = libraryVm,
                             onOpenSpeakers = { overlayExpanded = false; go("speakers") },
                             onBrowse = { overlayExpanded = false; go("library") },
                             expanded = overlayExpanded,
@@ -580,6 +617,8 @@ fun App() {
                             currentRoute = sectionOf(currentRoute),
                             modifier = Modifier.align(Alignment.BottomCenter),
                             disabledRoutes = disabledRoutes,
+                            disabledReasons = disabledReasons,
+                            onDisabledTap = ::explainDisabled,
                             onSelect = ::go,
                         )
                     }

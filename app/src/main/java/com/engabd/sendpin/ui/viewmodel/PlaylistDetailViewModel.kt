@@ -9,7 +9,8 @@ import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.PlayerIdentity
 import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ma.MaRepository
-import com.engabd.sendpin.subsonic.SubsonicClient
+import com.engabd.sendpin.library.MusicSource
+import com.engabd.sendpin.library.MusicSources
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -44,9 +45,19 @@ class PlaylistDetailViewModel(
     private val downloads = (app as SendpinApp).downloads
 
     /** Built once per load rather than per action. Null until the playlist resolves. */
-    private var subsonic: SubsonicClient? = null
+    /** The library this phone plays itself — see the same field on [AlbumDetailViewModel]. */
+    private val sourceHolder = (app as SendpinApp).musicSource
+    /**
+     * Null unless the live source is the one this screen's items came from.
+     *
+     * The provider check is load-bearing now that there can be two locally-played
+     * libraries: without it, switching from Navidrome to Jellyfin while an album was
+     * open left the screen building stream URLs out of Jellyfin for Navidrome ids.
+     */
+    private val source: MusicSource?
+        get() = sourceHolder.value?.takeIf { it.providerId == provider }
 
-    private val isSubsonic get() = provider == SubsonicClient.PROVIDER
+    private val isLocal get() = MusicSources.isLocalProvider(provider)
 
     private val _playlist = MutableStateFlow<MaItem?>(null)
     val playlist: StateFlow<MaItem?> = _playlist
@@ -82,12 +93,9 @@ class PlaylistDetailViewModel(
             _error.value = null
             try {
                 val ref = MaItem(itemId, provider, initialName, null, "playlist", null, initialArt, null)
-                if (isSubsonic) {
-                    val url = settings.navUrl.first().trim()
-                    if (url.isBlank()) { _error.value = "No Navidrome server configured"; return@launch }
-                    val sc = SubsonicClient(url, settings.navUsername.first(), settings.navPassword.first())
-                    sc.streamFormat = settings.navStreamFormat.first()
-                    subsonic = sc
+                if (isLocal) {
+                    val sc = source
+                    if (sc == null) { _error.value = "That library isn't connected"; return@launch }
                     _tracks.value = sc.playlistTracks(itemId)
                 } else {
                     _tracks.value = maRepo.playlistTracks(ref)
@@ -105,7 +113,7 @@ class PlaylistDetailViewModel(
         if (_tracks.value.isEmpty()) return
         viewModelScope.launch {
             try {
-                if (isSubsonic) {
+                if (isLocal) {
                     stopMaPlayback()
                     localPlayer.setShuffle(false)
                     localPlayer.setQueue(localTracks())
@@ -121,7 +129,7 @@ class PlaylistDetailViewModel(
         if (_tracks.value.isEmpty()) return
         viewModelScope.launch {
             try {
-                if (isSubsonic) {
+                if (isLocal) {
                     stopMaPlayback()
                     // Shuffle on *before* the queue is set, so the play order is built
                     // shuffled rather than starting on track 1 and jumping.
@@ -141,7 +149,7 @@ class PlaylistDetailViewModel(
         if (tracks.isEmpty()) return
         viewModelScope.launch {
             try {
-                if (isSubsonic) localPlayer.addToQueue(localTracks())
+                if (isLocal) localPlayer.addToQueue(localTracks())
                 else maRepo.enqueue(playTarget(), tracks.mapNotNull { it.uri }, "add")
                 _toast.tryEmit("Added ${tracks.size} tracks to queue")
             } catch (e: Exception) { _toast.tryEmit(e.message ?: "Couldn't add to queue") }
@@ -152,7 +160,7 @@ class PlaylistDetailViewModel(
     fun enqueueTrack(track: MaItem, option: String) {
         viewModelScope.launch {
             try {
-                if (isSubsonic) {
+                if (isLocal) {
                     val one = localTracks().filter { it.id == track.itemId }
                     if (one.isEmpty()) { _toast.tryEmit("Couldn't queue that"); return@launch }
                     if (option == "next") localPlayer.playNext(one) else localPlayer.addToQueue(one)
@@ -168,7 +176,7 @@ class PlaylistDetailViewModel(
     fun playTrack(track: MaItem) {
         viewModelScope.launch {
             try {
-                if (isSubsonic) {
+                if (isLocal) {
                     // The playlist is the queue; the tapped track is where it starts.
                     val start = _tracks.value.indexOfFirst { it.itemId == track.itemId }.coerceAtLeast(0)
                     stopMaPlayback()
@@ -200,10 +208,10 @@ class PlaylistDetailViewModel(
         _tracks.value = _tracks.value.map { if (it.itemId == track.itemId) it.copy(favorite = wanted) else it }
         viewModelScope.launch {
             try {
-                val sc = subsonic
+                val sc = source
                 when {
-                    isSubsonic && sc != null -> sc.setStarred(track, wanted)
-                    isSubsonic -> throw IllegalStateException("Navidrome isn't connected")
+                    isLocal && sc != null -> sc.setStarred(track, wanted)
+                    isLocal -> throw IllegalStateException("That library isn't connected")
                     wanted -> maRepo.addFavorite(track)
                     else -> maRepo.removeFavorite(track)
                 }
@@ -225,7 +233,7 @@ class PlaylistDetailViewModel(
      */
     fun togglePlaylistFavorite() {
         val current = _playlist.value ?: return
-        if (isSubsonic) { _toast.tryEmit("Navidrome can't star playlists"); return }
+        if (isLocal) { _toast.tryEmit("This library can't star playlists"); return }
         val wanted = !current.favorite
         _playlist.value = current.copy(favorite = wanted)
         viewModelScope.launch {
@@ -241,7 +249,7 @@ class PlaylistDetailViewModel(
 
     /** The playlist as a local queue, offline copies preferred over the stream. */
     private fun localTracks() = _tracks.value.map {
-        downloads.toLocalTrack(it, streamUrl = subsonic?.streamUrl(it.itemId))
+        downloads.toLocalTrack(it, streamUrl = source?.streamUrl(it.itemId))
     }
 
     /**

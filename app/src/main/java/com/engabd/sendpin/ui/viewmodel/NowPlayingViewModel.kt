@@ -1098,8 +1098,17 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             _lyrics.value = Load.Loading
             viewModelScope.launch {
                 _lyrics.value = try {
-                    val sc = subsonicClient()
-                    val lyrics: MaLyrics? = sc?.getLyrics(track.id)
+                    // Asked of the *library this track came from*, not of Navidrome by
+                    // name. This built its own Subsonic client, so on Jellyfin it
+                    // either found nothing or — with both servers configured — sent a
+                    // Jellyfin guid to Navidrome and asked why it had no lyrics.
+                    val id = track.scrobbleId ?: track.id
+                    val lyrics: MaLyrics? = lyricsSource(track)?.lyrics(id)
+                        // The play-original path plays a Navidrome file while Music
+                        // Assistant is the library, so there is no live source to ask
+                        // — but the lyrics are there, and this is where they come from.
+                        ?: subsonicClient()?.takeIf { track.scrobbleProvider == SubsonicClient.PROVIDER }
+                            ?.getLyrics(id)
                     if (lyrics != null) Load.Ready(lyrics)
                     else Load.Failed("No lyrics found")
                 } catch (e: Exception) {
@@ -1235,6 +1244,21 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                 _toast.tryEmit(e.message ?: "Couldn't queue that")
             }
         }
+    }
+
+    /**
+     * The library that can answer for a locally-playing track.
+     *
+     * `scrobbleProvider` is the track's record of which server its id belongs to, so
+     * this refuses rather than guessing when the live source is a different one —
+     * a Jellyfin guid asked of Navidrome is not a lookup that can succeed, and the
+     * "no lyrics found" it produces looks like a missing lyric rather than a
+     * misrouted request.
+     */
+    private fun lyricsSource(track: LocalTrack): com.engabd.sendpin.library.MusicSource? {
+        val live = (getApplication<Application>() as SendpinApp).musicSource.value ?: return null
+        val want = track.scrobbleProvider ?: return live
+        return live.takeIf { it.providerId == want }
     }
 
     /** Built on demand for the local-queue path; null when no Navidrome is configured. */

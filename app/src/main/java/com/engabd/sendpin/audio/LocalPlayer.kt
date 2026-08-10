@@ -52,6 +52,14 @@ data class LocalTrack(
      */
     val scrobbleId: String? = null,
     /**
+     * Which library [scrobbleId] belongs to, as a `MusicSource.providerId`.
+     *
+     * An id alone is not enough to report a play against: a Jellyfin guid sent to
+     * Navidrome names nothing, and there is now more than one library it could have
+     * come from. Null when the track has no library behind it at all.
+     */
+    val scrobbleProvider: String? = null,
+    /**
      * The file's own format, when the library reported one — the "Source" half of the
      * quality badge. Null on a server that doesn't say (plain Subsonic sends no
      * `samplingRate`), in which case the badge shows Playing alone.
