@@ -438,9 +438,8 @@ every run, and Android refuses to update an app whose signer changed. See the he
 ## Credits
 
 The Sendspin client and audio engine are modelled on
-[massdroid](https://github.com/sfortis/massdroid_native) (MIT) and Music Assistant's own
-mobile app (Apache-2.0). The Light Sync effects engine is a port of
-[syncoV2](https://github.com/engabd11/syncoV2).
+MA and Navidrome APIs. The Light Sync effects engine is a port of
+[syncoV2](https://github.com/engabd11/syncoV2). Fully compatible with Philips Hue official API and specs.
 
 Built by **Cyborg Automation AU** (cyborgautomation.com.au)
 
