@@ -1124,6 +1124,57 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     // --- sonic similarity ---------------------------------------------------
 
     /** Acoustically similar tracks to what's playing. */
+    /**
+     * Every copy of this track Music Assistant can see, across every provider.
+     *
+     * `music/tracks/track_versions` has been in [MaRepository] with no callers. It is
+     * the command that speaks to why anyone runs a local library next to a streaming
+     * one: the same song exists as a lossy stream and as a FLAC on a NAS, and until
+     * now there was no way to say which one to play.
+     *
+     * The version being played is filtered out — offering to switch to what is
+     * already playing is not an offer — and the rest are ordered best-format-first,
+     * because that is the ranking someone opening this list has in mind.
+     */
+    private val _versions = MutableStateFlow<Load<List<MaItem>>>(Load.Idle)
+    val versions: StateFlow<Load<List<MaItem>>> = _versions
+
+    fun loadVersions() {
+        val item = currentItem.value ?: run {
+            _versions.value = Load.Failed("Nothing playing")
+            return
+        }
+        _versions.value = Load.Loading
+        viewModelScope.launch {
+            _versions.value = try {
+                val all = repo.trackVersions(item)
+                    .filterNot { it.uri != null && it.uri == item.uri }
+                    .sortedByDescending { v ->
+                        val f = v.audioFormat
+                        // Lossless first, then rate, then depth — a stable ordering
+                        // that puts the copy worth switching to at the top.
+                        val lossless = if (f?.quality?.lossless == true) 1L else 0L
+                        lossless * 1_000_000_000L +
+                            (f?.sampleRate?.toLong() ?: 0L) * 100L +
+                            (f?.bitDepth?.toLong() ?: 0L)
+                    }
+                Load.Ready(all)
+            } catch (e: Exception) {
+                Load.Failed(e.message ?: "Couldn't list versions")
+            }
+        }
+    }
+
+    /** Play a specific copy of the current track, in place of the one playing. */
+    fun playVersion(version: MaItem) {
+        val uri = version.uri ?: return
+        viewModelScope.launch {
+            runCatching { repo.playOn(targetId(), listOf(uri), "replace") }
+                .onSuccess { _toast.tryEmit("Playing ${version.audioFormat?.quality?.shortLabel ?: version.name}") }
+                .onFailure { _toast.tryEmit(it.message ?: "Couldn't switch version") }
+        }
+    }
+
     fun loadSimilar() {
         val item = currentItem.value ?: run {
             _similar.value = Load.Failed("Nothing playing")
