@@ -445,6 +445,7 @@ fun NowPlayingOverlay(
                 provider = st.streamProvider,
                 localSession = st.isLocalSession,
                 dsp = st.dsp,
+                loudness = st.loudness,
                 artworkUrl = st.artworkUrl,
                 title = st.title,
                 artist = st.artist,

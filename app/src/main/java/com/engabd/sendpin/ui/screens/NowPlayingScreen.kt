@@ -46,6 +46,7 @@ import com.engabd.sendpin.audio.ReplayGain
 import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.ma.MaDspDetails
+import com.engabd.sendpin.ma.MaLoudness
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
@@ -371,6 +372,7 @@ fun NowPlayingScreen(
                 provider = st.streamProvider,
                 localSession = st.isLocalSession,
                 dsp = st.dsp,
+                loudness = st.loudness,
                 artworkUrl = st.artworkUrl,
                 title = st.title,
                 artist = st.artist,
@@ -468,6 +470,7 @@ fun BoxScope.QualityDetailOverlay(
     localSession: Boolean = false,
     /** What MA's per-player DSP did to this stream; null on the local path. */
     dsp: MaDspDetails? = null,
+    loudness: MaLoudness = MaLoudness(),
     artworkUrl: String? = null,
     title: String = "",
     artist: String = "",
@@ -511,6 +514,7 @@ fun BoxScope.QualityDetailOverlay(
                 provider = provider,
                 localSession = localSession,
                 dsp = dsp,
+                loudness = loudness,
                 artworkUrl = artworkUrl,
                 title = title,
                 artist = artist,
@@ -534,6 +538,7 @@ private fun QualityDetailCard(
     provider: String? = null,
     localSession: Boolean = false,
     dsp: MaDspDetails? = null,
+    loudness: MaLoudness = MaLoudness(),
     artworkUrl: String? = null,
     title: String = "",
     artist: String = "",
@@ -670,8 +675,14 @@ private fun QualityDetailCard(
             // held the file — the difference between a local rip and a lossy stream.
             val providerLine = provider?.takeIf { !localSession }
                 ?.let { "Music Assistant fetched this from $it" }
-            if (gainLine != null || providerLine != null) {
+            // What MA did to the level, which the card has never been able to say.
+            // A carefully mastered record pulled to a target LUFS looked exactly like
+            // one left alone, and the difference is the whole reason someone opens
+            // this card twice.
+            val loudnessLine = loudness.summary?.takeIf { !localSession }
+            if (gainLine != null || providerLine != null || loudnessLine != null) {
                 QualityBlock("Level and origin") {
+                    loudnessLine?.let { QualityNote(it) }
                     gainLine?.let { QualityNote(it) }
                     providerLine?.let { QualityNote(it) }
                 }

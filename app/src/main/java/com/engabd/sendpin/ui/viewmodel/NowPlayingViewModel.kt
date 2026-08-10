@@ -12,6 +12,7 @@ import com.engabd.sendpin.discovery.PlayerIdentity
 import com.engabd.sendpin.ma.MaApiClient
 import com.engabd.sendpin.ma.MaDspDetails
 import com.engabd.sendpin.ma.MaItem
+import com.engabd.sendpin.ma.MaLoudness
 import com.engabd.sendpin.ma.MaLyrics
 import com.engabd.sendpin.ma.MaNowPlaying
 import com.engabd.sendpin.ma.MaParse
@@ -108,6 +109,13 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
          * for MA to have an opinion about.
          */
         val dsp: MaDspDetails? = null,
+        /**
+         * What Music Assistant did to the *level* of this stream.
+         *
+         * MA-path only. On the local path the app's own ReplayGain setting is what
+         * acts on the level, and the card already says so.
+         */
+        val loudness: MaLoudness = MaLoudness(),
     )
 
     /** A panel's load state — the UI has to tell "empty" from "not fetched yet". */
@@ -429,6 +437,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             // Same entry [outputQuality] came from, read for whether the chain ran
             // rather than for what came out of it.
             dsp = queue?.dspFor(playerId = id, leaderId = streamId),
+            loudness = queue?.loudness ?: MaLoudness(),
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, State())
 

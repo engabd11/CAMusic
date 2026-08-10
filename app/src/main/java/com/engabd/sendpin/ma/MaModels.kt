@@ -24,14 +24,12 @@ data class MaAudioFormat(
      * object. Null when the server didn't supply it — plain Subsonic servers omit
      * it entirely, so callers must read null as "no measurement" rather than 0 dB.
      *
-     * Not populated on the Music Assistant path — but that is a **gap, not a
-     * limitation**, and this comment used to claim otherwise. MA's `StreamDetails`
-     * schema carries `loudness`, `loudness_album`, `prefer_album_loudness`,
-     * `volume_normalization_mode`, `volume_normalization_gain_correct` and
-     * `target_loudness`; the measurement and the correction MA actually applied are
-     * both there to read, in different fields under a different name. Reading them
-     * would let the quality card say what MA did to the loudness rather than going
-     * quiet about it. Not wired yet.
+     * Not populated on the Music Assistant path, and it should not be: MA reports
+     * level under a different name and a different model. `streamdetails` carries
+     * `loudness`, `loudness_album`, `volume_normalization_mode`,
+     * `volume_normalization_gain_correct` and `target_loudness` — the measurement and
+     * the correction MA actually applied — and those are read into [MaLoudness] and
+     * shown on the quality card. This field stays Subsonic's.
      */
     val replayGainTrack: Float? = null,
     /**
@@ -188,6 +186,57 @@ data class SyncDelay(val key: String, val ms: Int)
  * This is the server's own answer to "why is my EQ doing nothing", and it was being
  * parsed and dropped — [MaParse] read the sibling `output_format` and nothing else.
  */
+/**
+ * What Music Assistant did to the *level*, off `streamdetails`.
+ *
+ * The quality card has always been able to say what format arrived and never what
+ * happened to the loudness on the way — so a carefully mastered record being pulled
+ * to a target LUFS looked identical to one left alone. MA measures the track
+ * ([loudness] / [loudnessAlbum], LUFS), decides a correction, and reports the dB it
+ * actually applied in [gainCorrect]. All three are optional; a server that measured
+ * nothing sends nothing, which is different from measuring zero.
+ */
+@Immutable
+data class MaLoudness(
+    /** Track loudness in LUFS, as measured. */
+    val loudness: Float? = null,
+    /** Album loudness in LUFS. */
+    val loudnessAlbum: Float? = null,
+    /** dB MA applied to reach its target. This is the one that answers "what did you do". */
+    val gainCorrect: Float? = null,
+    /** `disabled`, `dynamic`, `measurement_only`, `fixed_gain`… — MA's own wire value. */
+    val mode: String? = null,
+    /** The LUFS MA was aiming for. */
+    val target: Float? = null,
+) {
+    /** Nothing was reported, so there is nothing to say. */
+    val empty: Boolean get() =
+        loudness == null && loudnessAlbum == null && gainCorrect == null && mode == null
+
+    /**
+     * One line for the quality card, or null.
+     *
+     * Says what was *done* before what was measured: "normalised −3.2 dB" is the
+     * answer to the question someone opened the card with, and the LUFS figure is
+     * the supporting detail.
+     */
+    val summary: String?
+        get() {
+            if (empty) return null
+            val applied = gainCorrect?.takeIf { kotlin.math.abs(it) >= 0.05f }
+            val measured = (loudnessAlbum ?: loudness)?.let { "%.1f LUFS".format(it) }
+            return when {
+                applied != null && measured != null ->
+                    "Music Assistant normalised %+.1f dB (measured $measured)".format(applied)
+                applied != null -> "Music Assistant normalised %+.1f dB".format(applied)
+                // Measured and left alone is a real answer, and a reassuring one.
+                measured != null && mode == "disabled" -> "Measured $measured - level left alone"
+                measured != null -> "Measured $measured - no correction applied"
+                else -> null
+            }
+        }
+}
+
 @Immutable
 data class MaDspDetails(
     val state: String? = null,
@@ -253,6 +302,11 @@ data class MaQueue(
      * which backend holds the file.
      */
     val streamProvider: String? = null,
+    /**
+     * What MA did to the level of the current item — see [MaLoudness]. Never null;
+     * a server that says nothing yields an empty one.
+     */
+    val loudness: MaLoudness = MaLoudness(),
 ) {
     /**
      * Which entry speaks for [playerId], falling back until something is knowable.
@@ -579,6 +633,7 @@ object MaParse {
                 elapsedTimeLastUpdated = o["elapsed_time_last_updated"]?.jsonPrimitive?.doubleOrNull,
                 streamProvider = (current?.get("streamdetails") as? JsonObject)
                     ?.get("provider")?.jsonPrimitive?.contentOrNull,
+                loudness = loudnessOf(current?.get("streamdetails") as? JsonObject),
             )
         }
     }
@@ -626,6 +681,25 @@ object MaParse {
      * An entry is kept even when it carries no `output_format` at all, so a bare
      * `state` still reaches the UI. [MaQueue.outputFor] filters those back out.
      */
+    /**
+     * The loudness half of `streamdetails`, which the app has never read.
+     *
+     * Every field is optional and each is read independently: MA fills in what it
+     * measured and what it applied separately, and a version that reports one and not
+     * the other should still say what it knows.
+     */
+    private fun loudnessOf(sd: JsonObject?): MaLoudness {
+        if (sd == null) return MaLoudness()
+        fun f(key: String) = (sd[key] as? JsonPrimitive)?.floatOrNull
+        return MaLoudness(
+            loudness = f("loudness"),
+            loudnessAlbum = f("loudness_album"),
+            gainCorrect = f("volume_normalization_gain_correct"),
+            mode = str(sd["volume_normalization_mode"]),
+            target = f("target_loudness"),
+        )
+    }
+
     private fun streamFormats(currentItem: JsonElement?): Pair<StreamQuality?, Map<String, MaDspDetails>> {
         val sd = (currentItem as? JsonObject)?.get("streamdetails") as? JsonObject
             ?: return null to emptyMap()
