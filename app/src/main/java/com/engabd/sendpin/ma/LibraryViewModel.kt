@@ -1455,6 +1455,69 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     /** Drop a failed download row once the user has acknowledged it. */
     fun dismissDownload(id: String) = downloadManager.dismissJob(id)
 
+    /**
+     * Try a failed download again.
+     *
+     * Rebuilt from the job rather than from the library, because the library may not
+     * be on that screen — or on that server — any more. The job records which provider
+     * it was for, so a retry goes back to the library that actually has the file.
+     */
+    fun retryDownload(id: String) {
+        val job = downloadJobs.value.firstOrNull { it.id == id && it.failed } ?: return
+        val provider = job.provider ?: SubsonicClient.PROVIDER
+        viewModelScope.launch {
+            val sc = sourceFor(provider)
+            if (sc == null) {
+                // Left in place rather than cleared. Dismissing first and failing
+                // silently made the row vanish with no explanation, which reads as the
+                // retry having worked.
+                _playerToast.tryEmit("That library isn't connected")
+                return@launch
+            }
+            // Re-fetched rather than rebuilt from the job. The job carries a title and
+            // an artist because that is all a progress row needs; an item built from
+            // those alone would be written into the index with no duration, no track
+            // number, no album id and no format — a download that plays but sorts
+            // wrongly and shows no quality badge. The library still has the real one.
+            val item = runCatching { sc.song(id) }.getOrNull()
+                ?: MaItem(
+                    itemId = id,
+                    provider = provider,
+                    name = job.title,
+                    uri = id,
+                    mediaType = "track",
+                    subtitle = job.artist,
+                    image = job.image,
+                    duration = null,
+                    album = job.album,
+                )
+            downloadManager.dismissJob(id)
+            runDownload(listOf(item), sc, _playerToast)
+        }
+    }
+
+    /**
+     * Play a downloaded track from the Downloads screen.
+     *
+     * Goes through [play] with a rebuilt library item rather than straight to the
+     * player, so it takes the same download play context the library shelf does — the
+     * whole downloads list as the queue, starting here — and plays from disk without
+     * reaching for a server that may not be there.
+     */
+    fun playDownload(track: DownloadedTrack) = play(downloadItem(track))
+
+    /**
+     * Bytes on disk per downloaded track.
+     *
+     * Stat-ing every file, so it is the caller's job to keep this off the main thread
+     * and to ask only when the list changes — the Downloads screen does both. Missing
+     * files count as zero rather than being dropped: a row that has lost its file is
+     * exactly what someone opening this screen needs to see.
+     */
+    fun downloadSizes(): Map<String, Long> = downloadManager.downloads.value.associate {
+        it.id to runCatching { java.io.File(it.filePath).length() }.getOrDefault(0L)
+    }
+
     fun deleteAllDownloads() {
         downloadManager.deleteAll()
         _toast.tryEmit("Downloads cleared")

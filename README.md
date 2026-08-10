@@ -21,14 +21,15 @@ The app has two independent playback paths, and the badge in the top right of No
 Playing always says which one you are on. They share a UI and almost nothing else, which
 is why most features here had to be answered twice.
 
-| | **Music Assistant** | **Navidrome / OpenSubsonic** |
+| | **Music Assistant** | **Your own library** |
 |---|---|---|
+| Servers | Music Assistant | Navidrome, Subsonic / OpenSubsonic, Jellyfin |
 | Where audio is decoded | This phone, from MA's stream | This phone, from the file |
 | Plays to | Any MA speaker, or this phone | This phone only |
 | Grouping | Yes | No - an MA feature |
 | Server-side DSP / EQ | Yes | No |
 | Continuous play (radio) | Yes, server-side | Yes, generated on device |
-| Gapless | A server-side setting | Yes |
+| Gapless | MA's own per-player setting, driven from the app | Yes |
 | Light Sync | Home Assistant path | Direct to the bridge |
 | Works with MA down | No | Yes |
 | Works with no network | No | Yes, for downloads |
@@ -52,6 +53,11 @@ is why most features here had to be answered twice.
 - **Per-player parametric EQ** through MA's own server-side DSP pipeline: bands with
   frequency, Q, gain and filter type, tone controls, preamp, and presets. When the server
   refuses a change it now says why, rather than reporting success and doing nothing.
+- **Music Assistant's own per-player settings, from here.** Gapless and crossfade are
+  MA's - it applies them to the stream before it reaches the phone - so the app reads the
+  `ConfigEntry` list the server declares and renders whatever it finds, labels and
+  permitted options included. A build that renames a setting, or grows a fourth mode,
+  needs no release here.
 - Home Assistant TTS announcements arrive like any other MA player.
 - mDNS discovery on the LAN, or type the URL.
 
@@ -80,9 +86,21 @@ is why most features here had to be answered twice.
 - Favourites, preview, playback speed, radio mode, sleep timer.
 - Speaker grouping around a leader, with per-player and group volume.
 
-## Standalone: Navidrome / OpenSubsonic
+## Standalone: your own library
 
-Switch the Library tab in **Settings → Library**. No Music Assistant in the path.
+Add servers under **Settings → Libraries** and pick which one the Library tab browses.
+**Navidrome**, any **Subsonic / OpenSubsonic** server, and **Jellyfin** are supported;
+the settings picker also lists what is planned, with
+[docs/providers.md](docs/providers.md) carrying the endpoints each one needs.
+
+No Music Assistant in the path - the phone talks to the server and decodes the file
+itself, which is what makes downloads and offline playback possible.
+
+- **A list of servers, not a switch.** Each is a card with its own credentials, status
+  and stream-quality setting; one is marked Active. Capabilities are **probed** rather
+  than assumed, so a plain Subsonic server is not offered a lyrics pane it can only fill
+  with a shrug, while Navidrome and Jellyfin - which report codec, rate, depth and
+  bitrate per track - get the full quality badge.
 
 - Browse artists, albums, playlists, genres and starred items, and search all of it.
 - A **real queue** on **ExoPlayer**: gapless album playback, exact seek, shuffle,
@@ -104,7 +122,10 @@ Switch the Library tab in **Settings → Library**. No Music Assistant in the pa
   at +3 dB, because a boost multiplies samples already mastered against full scale.
 - Original files by default (`format=raw`), so a FLAC stays a FLAC.
 - **Download** a track, album or playlist for offline, audio and cover art, with a
-  storage cap and a Wi-Fi-only option.
+  storage cap and a Wi-Fi-only option - or keep whatever is playing, from the chip on the
+  player. A **Downloads screen** searches and sorts them, retries what failed, shows the
+  format each file actually is, and breaks the space down by album so the thing worth
+  deleting is findable. The storage cap never evicts the track you are listening to.
 - With the server unreachable the library drops to **Offline** and runs on what is on
   the phone.
 - Stars, ratings and scrobbles are written back, including on the "play at original
@@ -114,6 +135,9 @@ Switch the Library tab in **Settings → Library**. No Music Assistant in the pa
 
 Two transports, picked in **Settings → Light Sync**, which follows the library backend
 automatically unless you pin it by hand.
+
+A **Quick Settings tile** toggles the direct path from the notification shade, which is
+where you want it when someone walks into the room.
 
 ### Direct to the Hue Bridge
 
@@ -160,7 +184,8 @@ this phone is not playing through - and what stops it seeing the local player.
 - Android 12+ (API 31)
 - A [Music Assistant](https://music-assistant.io) server (2.9+) with the Sendspin player
   provider enabled
-- *Optional:* Navidrome / OpenSubsonic, as a standalone backend
+- *Optional:* Navidrome, a Subsonic / OpenSubsonic server, or Jellyfin, as a standalone
+  library
 - *Optional:* a Philips Hue Bridge with an entertainment area, for direct Light Sync
 - *Optional:* Home Assistant with syncoV2, for Light Sync through HA
 
@@ -170,9 +195,9 @@ this phone is not playing through - and what stops it seeing the local player.
 2. Pick a discovered MA server or enter its URL. Credentials are encrypted at rest with
    the Android Keystore.
 3. The phone appears in Music Assistant under the name in **Settings → CAMusic player**.
-4. For Navidrome, add the server under **Settings → Servers**. For Light Sync, choose a
-   transport under **Settings → Light Sync** - pair a bridge, or add a Home Assistant URL
-   and long-lived token.
+4. For a library of your own, add the server under **Settings → Libraries** and tap
+   *Browse this library*. For Light Sync, choose a transport under **Settings → Light
+   Sync** - pair a bridge, or add a Home Assistant URL and long-lived token.
 
 ## Audio
 
@@ -202,15 +227,16 @@ is a future phase, not a current feature.
 
 Written down because the alternative is discovering them by ear:
 
-- **Gapless on the MA path is a server setting this app doesn't expose yet.** Music
-  Assistant decides it per player - disabled, standard or smart - the same way it decides
-  crossfade, so it is changed in MA's own UI rather than here. Not a protocol problem to
-  solve client-side: an earlier attempt to infer track boundaries by holding the read-ahead
-  buffer through `stream/end` broke the pause button instead, because MA sends a
-  byte-identical `stream/end` for both and 4 MB of held buffer meant pause kept playing
-  for half a minute.
-- **Gapless does work on the Navidrome path**, where ExoPlayer owns the whole queue.
-- ReplayGain is applied on the Navidrome path only. MA does its own normalisation
+- **Gapless on the MA path is Music Assistant's to decide, not this app's.** MA applies
+  it per player - disabled, standard or smart, the same three-way choice it offers for
+  crossfade - to the stream *before* it reaches the phone. There is no client-side gapless
+  to implement, and an earlier attempt to fake one by holding the read-ahead buffer
+  through `stream/end` broke the pause button instead: MA sends a byte-identical
+  `stream/end` for a track boundary and a pause, and 4 MB of held buffer meant pause kept
+  playing for half a minute. **Settings → CAMusic player** now drives MA's own setting, so
+  changing it no longer means opening Music Assistant.
+- **Gapless does work on the standalone path**, where ExoPlayer owns the whole queue.
+- ReplayGain is applied on the standalone path only. MA does its own normalisation
   server-side, and applying it twice would be worse than not applying it.
 - **Whether the MA DSP actually reaches the audio is still open.** The app no longer
   hides the server's answer, and MA's per-track DSP state is shown - but the remaining
@@ -231,31 +257,23 @@ order it is expected to happen.
 
 ### Audiophile core
 
-- **MA player config, from the app.** Gapless (disabled / standard / smart) and crossfade
-  are per-player settings Music Assistant already owns; today they mean a trip to MA's own
-  UI. A UI job rather than a protocol one - `MaRepository.playerConfigEntry()` already
-  reads an arbitrary `ConfigEntry` with the server's declared `options`, and handles MA's
-  protocol-wrapped key names.
-- **Gapless on the MA path.** The approach is chosen: after `stream/end`, watch for
-  `server/state` with `playback_speed: 0` inside a short window to tell a track boundary
-  from a pause. Do not repeat the held-buffer attempt.
 - **Bit-perfect exclusive-mode output** via the native AAudio I24 path, which is written
   and deliberately not compiled. `flac_decode()` is still a skeleton and the ring buffer
   is byte-level rather than frame-level. The largest single audio item.
-- **True overlapping crossfade** on the Navidrome path - a second ExoPlayer ping-ponged
+- **True overlapping crossfade** on the standalone path - a second ExoPlayer ping-ponged
   with volume ramps, which moves queue ownership and touches ReplayGain, the notification
   and the analysis tap. The shipped smooth transitions are the cheap half.
-- **USB DAC readouts** - the device's supported rates and depths, and a plain statement
-  of when the Android mixer is resampling. Routing itself already works.
-
 ### Feature completion
 
 - **Warm reconnect.** `client/goodbye` with `reason: "restart"` on backgrounding, so MA
   holds the player slot for ~30 seconds and a quick app switch doesn't drop the phone out
   of the speaker list. Attempted once and reverted because it fired mid-song; it must fire
   only while idle.
-- **A Downloads screen** with sort, search, retry and a storage breakdown, replacing the
-  shelf in the Library.
+- **More libraries.** The `MusicSource` interface and the server list are in; Emby, Plex,
+  Audiobookshelf and Kodi are adapters against it. SMB, WebDAV and the cloud drives are a
+  different class of work - they are folders rather than APIs, so they need a crawler, a
+  tag reader and a local index the app does not have yet. Endpoints and auth for each are
+  written up in [docs/providers.md](docs/providers.md).
 
 ### Light Sync
 
@@ -266,18 +284,18 @@ order it is expected to happen.
 
 - **Android Auto.** media3-session is already a dependency and the `MediaSession` already
   exists; the work is a manifest declaration and a browse tree.
-- **A Glance home-screen widget** and a **Quick Settings tile** for Light Sync.
+- **A Glance home-screen widget.**
 - **A release keystore and CI signing.** See Known limits.
 
 ### Housekeeping
 
 - **Room** for the download index, which is a JSON file rewritten in full on every change.
-- **Instrumented tests.** The 432 unit tests cover protocol, clock, DSP, parsing and the
-  Light Sync engine; nothing covers the audio path, the service lifecycle or the UI.
+- **Instrumented tests.** The 463 unit tests cover protocol, clock, DSP, parsing, the
+  server list and the Light Sync engine; nothing covers the audio path, the service
+  lifecycle or the UI.
 - **Crash reporting** - ACRA or similar, self-hosted.
-- **The 17 files over 700 lines**, and the 87 `runCatching` sites that swallow a failure
-  without recording it. `NowPlayingScreen` and `NowPlayingOverlay` are near-duplicates, so
-  every player change has to be made twice.
+- **The files over 700 lines**, and the 87 `runCatching` sites that swallow a failure
+  without recording it.
 
 ## Architecture
 
@@ -324,7 +342,7 @@ JDK 17 and the Android SDK (compileSdk 36). No NDK needed.
 
 ```bash
 ./gradlew assembleRelease        # app/build/outputs/apk/release/app-release.apk
-./gradlew :app:testDebugUnitTest # 432 unit tests across 51 classes
+./gradlew :app:testDebugUnitTest # 463 unit tests across 54 classes
 ./gradlew :app:lintDebug
 ```
 
@@ -354,6 +372,8 @@ every run, and Android refuses to update an app whose signer changed. See the he
   roadmap grew out of
 - [docs/improvement-roadmap.md](docs/improvement-roadmap.md) - the API audit, and a
   Corrections section recording where earlier notes were wrong
+- [docs/providers.md](docs/providers.md) - the `MusicSource` adapter recipe, and the
+  auth and endpoints every planned provider needs
 - [docs/protocol-alignment.md](docs/protocol-alignment.md) - what MA's Sendspin provider
   actually speaks
 - [docs/architecture-decision.md](docs/architecture-decision.md)

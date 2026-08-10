@@ -122,6 +122,11 @@ fun SettingsScreen(
     /** The page *within* a section — a server, or the Hue bridge. */
     detail: String? = null,
     onDetail: (String?) -> Unit = {},
+    /**
+     * Downloads get a screen of their own rather than a sub-page here: it is a list
+     * to search and sort, which is a screen, not a settings card.
+     */
+    onOpenDownloads: () -> Unit = {},
 ) {
     // Back unwinds one level at a time, so a server's page returns to the server list
     // rather than all the way out of Settings.
@@ -203,7 +208,7 @@ fun SettingsScreen(
                             SettingsSection.AUDIO -> AudioSection(viewModel, settings, accent, scope)
 
                             SettingsSection.DOWNLOADS ->
-                                DownloadsSection(libraryViewModel, settings, accent, scope)
+                                DownloadsSection(libraryViewModel, settings, accent, scope, onOpenDownloads)
 
                             SettingsSection.LIGHTS -> LightSyncSection(
                                 settings = settings,

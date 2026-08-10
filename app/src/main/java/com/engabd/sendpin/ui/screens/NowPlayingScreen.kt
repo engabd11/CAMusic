@@ -73,7 +73,6 @@ fun NowPlayingScreen(
      * the Library tab writes.
      */
     libraryViewModel: LibraryViewModel,
-    onOpenSpeakers: () -> Unit = {},
     onBrowse: () -> Unit = {},
 ) {
     val st by viewModel.state.collectAsStateWithLifecycle()
@@ -82,20 +81,11 @@ fun NowPlayingScreen(
     val currentItem by viewModel.currentItem.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
-    // Which overlay is open, if any. Null = just the player.
-    var panel by remember { mutableStateOf<Panel?>(null) }
-    var options by remember { mutableStateOf(false) }
-    // The output picker. Local state rather than a nav route: switching speaker
-    // should not take the user off the screen showing what's playing.
-    var speakers by remember { mutableStateOf(false) }
+    // Which sheet or card is up, if any. Shared with the overlay layout so the two
+    // cannot drift — see PlayerSheetState.
+    val sheets = rememberPlayerSheets()
     // Lyrics are a *mode* of the player, not an overlay: they take the cover's place.
     var showLyrics by rememberSaveable { mutableStateOf(false) }
-    // Hoisted out of the badge so the detail can be drawn as a sibling of the whole
-    // player rather than inside the transport row — see QualityDetailOverlay.
-    var showQuality by remember { mutableStateOf(false) }
-    // What this phone's output can do. Hoisted for the same reason, and drawn as the
-    // same kind of sibling — see DeviceDetailOverlay.
-    var showDevice by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         viewModel.toast.collect { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }
@@ -115,30 +105,7 @@ fun NowPlayingScreen(
     val palette = LocalPalette.current
     val accent = palette.accent
 
-    // Position is driven by the ViewModel's server-anchored ticker — no local
-    // interpolation loop needed. `scrubbing` freezes the bar so a poll landing
-    // mid-drag can't fight the finger. After release, `seekTarget` holds the
-    // target position until the server catches up (within 2s), preventing the
-    // bar from snapping back during the seek round-trip.
-    var scrubbing by remember { mutableStateOf(false) }
-    var scrubPos by remember { mutableStateOf(0L) }
-    var seekTarget by remember { mutableStateOf(-1L) }  // -1 = no hold
-    val livePos by viewModel.positionMs.collectAsStateWithLifecycle()
-
-    // Release the hold once the server position catches up within 2 seconds.
-    LaunchedEffect(livePos, seekTarget) {
-        if (seekTarget >= 0 && !scrubbing && kotlin.math.abs(livePos - seekTarget) < 2_000L) {
-            seekTarget = -1L
-        }
-    }
-
-    val pos = when {
-        scrubbing -> scrubPos
-        seekTarget >= 0 -> seekTarget
-        else -> livePos
-    }
-    val dur = st.durationMs
-    val progress = if (dur > 0) (pos.toFloat() / dur).coerceIn(0f, 1f) else 0f
+    val scrubber = rememberScrubber(viewModel)
 
     // How far up a swipe has to travel before it means "show me the queue".
     val queueRevealPx = with(LocalDensity.current) { 56.dp.toPx() }
@@ -151,13 +118,13 @@ fun NowPlayingScreen(
                 // Swipe up anywhere on the player to pull the queue over it. The
                 // sheets handle their own dismissal, so this stands down while one
                 // is open rather than reopening what the user just swiped away.
-                .pointerInput(panel, options, speakers) {
-                    if (panel != null || options || speakers) return@pointerInput
+                .pointerInput(sheets.sheetOpen) {
+                    if (sheets.sheetOpen) return@pointerInput
                     var travelled = 0f
                     detectVerticalDragGestures(
                         onDragStart = { travelled = 0f },
                         onDragCancel = { travelled = 0f },
-                        onDragEnd = { if (travelled < -queueRevealPx) panel = Panel.QUEUE },
+                        onDragEnd = { if (travelled < -queueRevealPx) sheets.panel = Panel.QUEUE },
                         onVerticalDrag = { _, amount -> travelled += amount },
                     )
                 }
@@ -189,7 +156,7 @@ fun NowPlayingScreen(
                     isSelf = st.isSelf,
                     groupSize = st.groupSize,
                     localSession = st.isLocalSession,
-                    onTap = { if (st.isLocalSession) showDevice = true else speakers = true },
+                    onTap = { if (st.isLocalSession) sheets.device = true else sheets.speakers = true },
                 )
 
                 Spacer(Modifier.height(4.dp))
@@ -199,7 +166,7 @@ fun NowPlayingScreen(
                 if (showLyrics) {
                     LyricsPane(
                         viewModel = viewModel,
-                        positionMs = pos,
+                        positionMs = scrubber.positionMs,
                         modifier = Modifier.fillMaxWidth().weight(1f),
                     )
                 } else {
@@ -227,10 +194,10 @@ fun NowPlayingScreen(
                         showLyrics = !showLyrics
                     }
                     SleepTimerChip(viewModel)
-                    IconChip(Icons.AutoMirrored.Filled.QueueMusic, "Queue", active = panel == Panel.QUEUE) {
-                        panel = if (panel == Panel.QUEUE) null else Panel.QUEUE
+                    IconChip(Icons.AutoMirrored.Filled.QueueMusic, "Queue", active = sheets.panel == Panel.QUEUE) {
+                        sheets.panel = if (sheets.panel == Panel.QUEUE) null else Panel.QUEUE
                     }
-                    IconChip(Icons.Default.Tune, "Player options", active = options) { options = !options }
+                    IconChip(Icons.Default.Tune, "Player options", active = sheets.options) { sheets.options = !sheets.options }
                     // Only on the local player: an MA speaker is fed by the server and
                     // there is no file here to keep. Hidden rather than disabled when
                     // there is nothing behind the track Navidrome could serve.
@@ -241,8 +208,8 @@ fun NowPlayingScreen(
                     // Navidrome is playing showed — and would have saved — settings for
                     // a completely different player.
                     if (!st.isLocalSession) {
-                        IconChip(Icons.Default.GraphicEq, "DSP / Equalizer", active = panel == Panel.DSP) {
-                            panel = if (panel == Panel.DSP) null else Panel.DSP
+                        IconChip(Icons.Default.GraphicEq, "DSP / Equalizer", active = sheets.panel == Panel.DSP) {
+                            sheets.panel = if (sheets.panel == Panel.DSP) null else Panel.DSP
                         }
                     }
                     // Radio mode is a parameter of play_media, so it colours what you
@@ -274,143 +241,24 @@ fun NowPlayingScreen(
                     Spacer(Modifier.height(12.dp))
                 }
 
-                Text(
-                    if (st.blank) "Nothing playing" else st.title,
-                    color = if (st.idle) TextSecondary else TextPrimary,
-                    fontFamily = AppFont, fontWeight = FontWeight.ExtraBold,
-                    fontSize = 27.sp, letterSpacing = (-0.5).sp, maxLines = 1,
-                    overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
-                )
-                if (st.artist.isNotBlank()) {
-                    Spacer(Modifier.height(5.dp))
-                    Text(
-                        st.artist, color = inkOn(0.62f), fontFamily = AppFont,
-                        fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1,
-                        overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
-                    )
-                }
-                if (st.composer.isNotBlank()) {
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        st.composer, color = TextFaint, fontFamily = AppFont, fontSize = 12.sp,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
-                    )
-                }
-                if (st.album.isNotBlank()) {
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        st.album, color = TextFaint, style = MaterialTheme.typography.bodyMedium,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
-                    )
-                }
+                TrackTitleBlock(st)
 
                 Spacer(Modifier.height(20.dp))
 
-                HSlider(
-                    progress,
-                    onChange = { f -> scrubbing = true; scrubPos = (f * dur).toLong() },
-                    onCommit = { f ->
-                        scrubPos = (f * dur).toLong()
-                        seekTarget = scrubPos
-                        scrubbing = false
-                        viewModel.seekTo(f)
-                    },
-                    label = { f -> fmtTime((f * dur).toLong()) },
-                )
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    TimeText(fmtTime(pos))
-                    TimeText(if (dur > 0) fmtTime(dur) else "--:--")
-                }
+                SeekRow(scrubber, st.durationMs)
 
                 Spacer(Modifier.height(14.dp))
 
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.Bottom,
-                ) {
-                    TransportIcon(Icons.Default.Shuffle, "Shuffle", 20.dp, st.shuffle) { viewModel.toggleShuffle() }
-                    TransportIcon(Icons.Default.SkipPrevious, "Previous", 26.dp) { viewModel.previous() }
-                    // Quality badge floats above the play button. The Column is
-                    // bottom-aligned so the play button lines up with the skip buttons.
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        TappableQualityChip(playing = st.quality) { showQuality = true }
-                        PlayButton(st.isPlaying) { viewModel.playPause() }
-                    }
-                    TransportIcon(Icons.Default.SkipNext, "Next", 26.dp) { viewModel.next() }
-                    TransportIcon(
-                        if (st.repeatMode == "one") Icons.Default.RepeatOne else Icons.Default.Repeat,
-                        "Repeat", 20.dp, st.repeatMode != "off",
-                    ) { viewModel.cycleRepeat() }
-                }
+                TransportRow(st, viewModel) { sheets.quality = true }
 
                 Spacer(Modifier.height(18.dp))
 
-                Row(
-                    Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(11.dp),
-                ) {
-                    Icon(Icons.AutoMirrored.Filled.VolumeUp, "Volume", tint = TextMuted, modifier = Modifier.size(16.dp))
-                    HSlider(
-                        st.volume.coerceIn(0f, 1f), { viewModel.setVolume(it) },
-                        modifier = Modifier.weight(1f), knob = 12.dp, accented = false,
-                    )
-                    Text(
-                        "${(st.volume * 100).toInt()}", color = TextMuted, fontFamily = MonoFont,
-                        fontWeight = FontWeight.Bold, fontSize = 11.sp,
-                        modifier = Modifier.width(22.dp), textAlign = TextAlign.End,
-                    )
-                }
+                VolumeRow(st.volume) { viewModel.setVolume(it) }
             }
 
-            // The overlays sit in the same Box as the player, so the album wash
-            // still reads behind their top edge. Anything still visible above a
-            // sheet dismisses it, and so does system Back — otherwise Back would
-            // leave the screen entirely with a panel open over it.
-            if (panel != null || options || speakers) {
-                BackHandler { panel = null; options = false; speakers = false }
-                Box(
-                    Modifier
-                        .matchParentSize()
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                        ) { panel = null; options = false; speakers = false }
-                )
-            }
-            if (panel != null) {
-                NowPlayingSheet(onClose = { panel = null }, viewModel = viewModel, panel = panel!!)
-            }
-            if (options) {
-                PlayerOptionsSheet(onClose = { options = false }, viewModel = viewModel)
-            }
-            if (speakers) {
-                SpeakerPickerSheet(onClose = { speakers = false })
-            }
-            // A sibling of the player column, not a child of it — this is what stops
-            // the panel moving the album art. See QualityDetailOverlay.
-            QualityDetailOverlay(
-                visible = showQuality,
-                playing = st.quality,
-                source = st.sourceQuality,
-                onDismiss = { showQuality = false },
-                provider = st.streamProvider,
-                localSession = st.isLocalSession,
-                dsp = st.dsp,
-                loudness = st.loudness,
-                artworkUrl = st.artworkUrl,
-                title = st.title,
-                artist = st.artist,
-            )
-            DeviceDetailOverlay(
-                visible = showDevice,
-                onDismiss = { showDevice = false },
-                playingRateHz = st.quality?.sampleRateHz ?: 0,
-            )
+            // Every sheet and card that sits over the player, in one call so the two
+            // layouts cannot disagree about their order — see PlayerOverlays.
+            PlayerOverlays(st, sheets, viewModel)
         }
     }
 }
@@ -1044,72 +892,3 @@ fun SourceBadge(source: String, modifier: Modifier = Modifier) {
     }
 }
 
-@Composable
-private fun TransportIcon(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    cd: String,
-    size: androidx.compose.ui.unit.Dp,
-    active: Boolean = false,
-    onClick: () -> Unit,
-) {
-    val accent = LocalAccent.current
-    Box(
-        Modifier.clip(CircleShape).clickable(onClick = onClick).padding(6.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        if (active) Bloom(accent, size * 1.8f, 0.dp, 0.dp, 0.5f)
-        Icon(icon, cd, tint = if (active) accent else inkOn(0.9f), modifier = Modifier.size(size))
-    }
-}
-
-@Composable
-private fun TimeText(text: String) {
-    Text(text, color = TextMuted, fontFamily = MonoFont, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
-}
-
-private fun fmtTime(ms: Long): String {
-    val s = (ms / 1000).coerceAtLeast(0)
-    return "%d:%02d".format(s / 60, s % 60)
-}
-
-@Composable
-private fun OfflineBanner() {
-    Row(
-        Modifier.fillMaxWidth().padding(bottom = 6.dp).clip(RoundedCornerShape(12.dp))
-            .background(WarnAmber.a(0.14f)).border(1.dp, WarnAmber.a(0.35f), RoundedCornerShape(12.dp))
-            .padding(horizontal = 14.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Icon(Icons.Default.CloudOff, null, tint = WarnAmber, modifier = Modifier.size(15.dp))
-        Text(
-            "Reconnecting…", color = Color(0xFFF2C574),
-            style = MaterialTheme.typography.labelLarge
-        )
-    }
-}
-
-/**
- * Shown in place of nothing when the player is quiet. It sits inside the normal
- * layout so the screen never changes shape — the art above it is the last thing
- * that played, dimmed, and everything else stays where the user left it.
- */
-@Composable
-private fun IdleNotice(playerName: String, blank: Boolean, onBrowse: () -> Unit) {
-    Row(
-        Modifier
-            .clip(RoundedCornerShape(100))
-            .background(Glass)
-            .border(1.dp, Hairline, RoundedCornerShape(100))
-            .clickable(onClick = onBrowse)
-            .padding(start = 14.dp, end = 16.dp, top = 9.dp, bottom = 9.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Icon(Icons.Default.PauseCircleOutline, null, tint = TextMuted, modifier = Modifier.size(15.dp))
-        Text(
-            if (blank) "Nothing playing on $playerName - browse" else "Nothing playing - browse",
-            color = TextSecondary, fontFamily = AppFont, fontWeight = FontWeight.Bold,
-            fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-        )
-    }
-}

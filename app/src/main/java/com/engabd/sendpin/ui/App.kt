@@ -67,6 +67,7 @@ import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.library.MusicSources
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
 import com.engabd.sendpin.ui.screens.AlbumDetailScreen
+import com.engabd.sendpin.ui.screens.DownloadsScreen
 import com.engabd.sendpin.ui.screens.ArtistDetailScreen
 import com.engabd.sendpin.ui.screens.LibraryScreen
 import com.engabd.sendpin.ui.screens.LightSyncScreen
@@ -127,6 +128,8 @@ private val popOut: AnimatedContentTransitionScope<NavBackStackEntry>.() -> Exit
 private fun sectionOf(route: String?): String? = when {
     route == null -> null
     route.startsWith("album/") || route.startsWith("artist/") || route.startsWith("playlist/") -> "library"
+    // Reached from Settings, so that is the tab that stays lit while it is open.
+    route == "downloads" -> "settings"
     else -> route
 }
 
@@ -409,7 +412,6 @@ fun App() {
                             NowPlayingScreen(
                                 viewModel = nowPlayingVm,
                                 libraryViewModel = libraryVm,
-                                onOpenSpeakers = { go("speakers") },
                                 onBrowse = { go("library") },
                             )
                         }
@@ -550,6 +552,12 @@ fun App() {
                             onBack = { navController.popBackStack() },
                         )
                     }
+                    composable("downloads") {
+                        DownloadsScreen(
+                            viewModel = libraryVm,
+                            onBack = { navController.popBackStack() },
+                        )
+                    }
                     composable("speakers") { SpeakersScreen(onBack = { navController.popBackStack() }) }
                     composable("light_sync") { LightSyncScreen(onBack = { navController.popBackStack() }) }
                     composable("settings") {
@@ -563,6 +571,7 @@ fun App() {
                             onSection = { settingsSection = it; settingsDetail = null },
                             detail = settingsDetail,
                             onDetail = { settingsDetail = it },
+                            onOpenDownloads = { navController.navigate("downloads") },
                         )
                     }
                 }
@@ -603,10 +612,8 @@ fun App() {
                         NowPlayingOverlay(
                             viewModel = nowPlayingVm,
                             libraryViewModel = libraryVm,
-                            onOpenSpeakers = { overlayExpanded = false; go("speakers") },
                             onBrowse = { overlayExpanded = false; go("library") },
                             expanded = overlayExpanded,
-                            onExpand = { overlayExpanded = true },
                             onCollapse = { overlayExpanded = false },
                         )
                     }

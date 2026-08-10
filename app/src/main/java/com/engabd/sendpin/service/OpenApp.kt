@@ -41,4 +41,5 @@ object OpenAppRequest {
     const val CONNECTION = 100
     const val MEDIA = 101
     const val LOCAL = 102
+    const val TILE = 103
 }

@@ -75,6 +75,15 @@ data class DownloadJob(
     val artist: String?,
     val fraction: Float,
     val failed: Boolean = false,
+    /**
+     * The library this download was for, so a failed one can be retried against the
+     * server that has the file. Without it a retry is a guess, and with two libraries
+     * configured a guess is wrong half the time.
+     */
+    val provider: String? = null,
+    /** Kept so a retry can rebuild the request without the library screen's help. */
+    val album: String? = null,
+    val image: String? = null,
 )
 
 /**
@@ -219,7 +228,7 @@ class DownloadManager(
             fail(item)
             return@withContext false
         }
-        putJob(DownloadJob(item.itemId, item.name, item.subtitle, 0f))
+        putJob(job(item, 0f))
         try {
             val file = File(dir, "${item.itemId.hashCode()}.audio")
             http.newCall(Request.Builder().url(url).build()).execute().use { resp ->
@@ -243,7 +252,7 @@ class DownloadManager(
                                 // of times per file.
                                 if (f - lastPublished >= 0.01f) {
                                     lastPublished = f
-                                    putJob(DownloadJob(item.itemId, item.name, item.subtitle, f))
+                                    putJob(job(item, f))
                                 }
                             }
                         }
@@ -318,9 +327,21 @@ class DownloadManager(
     }
 
     private fun fail(item: MaItem): Boolean {
-        putJob(DownloadJob(item.itemId, item.name, item.subtitle, 0f, failed = true))
+        putJob(job(item, 0f, failed = true))
         return false
     }
+
+    /** A progress row for [item], carrying enough to retry it unaided. */
+    private fun job(item: MaItem, fraction: Float, failed: Boolean = false) = DownloadJob(
+        id = item.itemId,
+        title = item.name,
+        artist = item.subtitle,
+        fraction = fraction,
+        failed = failed,
+        provider = item.provider,
+        album = item.album,
+        image = item.image,
+    )
 
     private fun putJob(job: DownloadJob) {
         _jobs.value = _jobs.value.filterNot { it.id == job.id } + job

@@ -38,6 +38,26 @@
             </intent-filter>
         </activity>
 
+        <!--
+          Light Sync in the notification shade. `TOGGLEABLE_TILE` is what lets the
+          user add it from Quick Settings' own edit screen without opening the app;
+          `BIND_QUICK_SETTINGS_TILE` is the system's guarantee that only SystemUI can
+          bind it, which is why the service is exported.
+        -->
+        <service
+            android:name=".service.LightSyncTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_light_sync_tile"
+            android:label="@string/light_sync_tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.service.quicksettings.TOGGLEABLE_TILE"
+                android:value="true" />
+        </service>
+
         <service
             android:name=".service.SendspinConnectionService"
             android:foregroundServiceType="mediaPlayback"

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The app draws its own text in Compose, so this file holds only the strings the
+  *system* renders on our behalf — where a hard-coded Kotlin string would never
+  reach the surface it has to appear on.
+-->
+<resources>
+    <string name="app_name" translatable="false">CAMusic</string>
+
+    <!-- Quick Settings tile. `light_sync_tile_label` is also the service's manifest
+         label, which is what the system shows in the tile picker. -->
+    <string name="light_sync_tile_label">Light Sync</string>
+    <string name="light_sync_tile_on">Following the music</string>
+    <string name="light_sync_tile_off">Lights are steady</string>
+    <string name="light_sync_tile_ha">Set in Home Assistant</string>
+</resources>

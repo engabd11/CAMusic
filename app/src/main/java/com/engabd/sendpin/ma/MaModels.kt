@@ -60,6 +60,39 @@ data class MaAudioFormat(
 }
 
 /**
+ * One of Music Assistant's own per-player settings, as the server describes it.
+ *
+ * Deliberately a *description* rather than a typed struct of known settings. These
+ * are MA's, not ours: it declares the label, the help text, the type and the
+ * permitted options, and it has changed all four across versions. Rendering what the
+ * server sends means a new MA setting appears in CAMusic without a release, and one
+ * that goes away stops being offered rather than writing a key nothing reads.
+ */
+@Immutable
+data class MaConfigEntry(
+    /** The key as the server spells it, wrapping and all — save it back verbatim. */
+    val key: String,
+    /** The key with any `<sub>||protocol||` wrapping stripped, for matching. */
+    val plainKey: String,
+    val label: String,
+    val description: String?,
+    /** MA's own `ConfigEntryType`: `boolean`, `string`, `integer`, `float`, `label`. */
+    val type: String,
+    /** The value in force, falling back to the declared default. */
+    val value: JsonPrimitive?,
+    /** `value to title`, for the settings that are a choice between named options. */
+    val options: List<Pair<String, String>> = emptyList(),
+    val rangeMin: Double? = null,
+    val rangeMax: Double? = null,
+    /** MA hides some entries from its own UI; there is no reason for ours to differ. */
+    val hidden: Boolean = false,
+) {
+    val boolValue: Boolean? get() = value?.booleanOrNull
+    val stringValue: String? get() = value?.contentOrNull
+    val numberValue: Double? get() = value?.doubleOrNull
+}
+
+/**
  * A Music Assistant media item (artist / album / track / playlist / radio).
  *
  * `@Immutable` because [providerDomains] and [genres] are `List<String>`, which Compose
@@ -453,6 +486,51 @@ data class MaSimilarTrack(
 )
 
 object MaParse {
+
+    /**
+     * One `ConfigEntry` object as a [MaConfigEntry].
+     *
+     * Every field is read defensively and independently: this is the one place in the
+     * app that renders a shape the *server* decides, so a build that omits a
+     * description or spells a type we have never seen must produce a usable entry
+     * rather than nothing at all.
+     *
+     * The key arrives protocol-wrapped on some builds (`<sub>||protocol||crossfade`),
+     * which is why [MaConfigEntry.plainKey] exists — matching is done on the plain
+     * form and the save goes back under the original.
+     */
+    fun configEntry(key: String, o: JsonObject): MaConfigEntry? {
+        val type = str(o["type"]) ?: return null
+        val plain = key.substringAfterLast("||")
+        return MaConfigEntry(
+            key = key,
+            plainKey = plain,
+            // A server that sends no label is describing a setting nobody can name, so
+            // the key itself is the honest fallback — "crossfade_duration" beats blank.
+            label = str(o["label"]) ?: plain.replace('_', ' ').replaceFirstChar { it.uppercase() },
+            description = str(o["description"]),
+            type = type,
+            // `value` is what is in force; `default_value` is what it would be if
+            // nothing had been set. Reading only the first shows an unset setting as
+            // empty rather than as its default.
+            value = (o["value"] as? JsonPrimitive)?.takeIf { it !is JsonNull }
+                ?: (o["default_value"] as? JsonPrimitive)?.takeIf { it !is JsonNull },
+            options = (o["options"] as? JsonArray).orEmpty().mapNotNull { el ->
+                val opt = el as? JsonObject ?: return@mapNotNull null
+                val value = str(opt["value"]) ?: return@mapNotNull null
+                value to (str(opt["title"]) ?: value)
+            },
+            // Both spellings. MA has serialised the bounds as a two-element `range`
+            // tuple and as separate `range_min` / `range_max` keys across versions,
+            // and reading only one of them leaves the slider dead — the setting then
+            // renders as uneditable text with no hint that anything is wrong.
+            rangeMin = (o["range_min"] as? JsonPrimitive)?.doubleOrNull
+                ?: ((o["range"] as? JsonArray)?.getOrNull(0) as? JsonPrimitive)?.doubleOrNull,
+            rangeMax = (o["range_max"] as? JsonPrimitive)?.doubleOrNull
+                ?: ((o["range"] as? JsonArray)?.getOrNull(1) as? JsonPrimitive)?.doubleOrNull,
+            hidden = (o["hidden"] as? JsonPrimitive)?.booleanOrNull ?: false,
+        )
+    }
 
     /**
      * The *upstream* music provider MA is pulling the bytes from, as a listener would

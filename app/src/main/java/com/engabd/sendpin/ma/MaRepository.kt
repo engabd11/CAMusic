@@ -713,6 +713,42 @@ class MaRepository(val api: MaApiClient) {
         return chosen
     }
 
+    // --- per-player playback config (gapless, crossfade, …) ----------------
+
+    /**
+     * Every `ConfigEntry` Music Assistant declares for a player, as it declares it.
+     *
+     * Read rather than assumed. MA owns these settings and their spelling has moved
+     * between versions — `crossfade` has been a boolean and a three-way mode, and the
+     * keys arrive protocol-wrapped on some builds — so hard-coding a list here is a
+     * guess that goes stale. The server states its own label, description, type and
+     * permitted options for each one, and the UI renders whatever it is given. A
+     * server that has never heard of a setting simply doesn't list it, and nothing has
+     * to know why.
+     */
+    suspend fun playerConfigEntries(playerId: String): List<MaConfigEntry> {
+        val res = api.sendCommand("config/players/get", buildJsonObject { put("player_id", playerId) })
+            ?.jsonObject ?: return emptyList()
+        val values = res["values"] as? JsonObject ?: return emptyList()
+        return values.mapNotNull { (key, raw) -> MaParse.configEntry(key, raw as? JsonObject ?: return@mapNotNull null) }
+    }
+
+    /**
+     * Write one config value back.
+     *
+     * **Admin-only on the server side**, like every other `config/players/save` — a
+     * non-admin login is refused every time, which is the first thing to rule out when
+     * a setting won't stick. The exception carries the server's own message rather
+     * than being swallowed, because "it didn't save" and "it saved and did nothing"
+     * are the two answers a user needs told apart.
+     */
+    suspend fun savePlayerConfigValue(playerId: String, key: String, value: JsonElement) {
+        api.sendCommand("config/players/save", buildJsonObject {
+            put("player_id", playerId)
+            put("values", buildJsonObject { put(key, value) })
+        })
+    }
+
     /** One `ConfigEntry` from a player's config, by key. */
     private suspend fun playerConfigEntry(playerId: String, key: String): JsonObject? {
         val res = api.sendCommand("config/players/get", buildJsonObject { put("player_id", playerId) })

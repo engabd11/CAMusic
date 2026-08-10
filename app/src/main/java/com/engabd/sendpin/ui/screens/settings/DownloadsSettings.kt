@@ -1,6 +1,8 @@
 package com.engabd.sendpin.ui.screens.settings
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.runtime.*
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
@@ -26,6 +28,7 @@ internal fun DownloadsSection(
     settings: AppSettings,
     accent: Color,
     scope: CoroutineScope,
+    onOpenDownloads: () -> Unit,
 ) {
     val downloads by vm.downloads.collectAsStateWithLifecycle()
     var confirming by remember { mutableStateOf(false) }
@@ -54,6 +57,14 @@ internal fun DownloadsSection(
             }
             Note("Download a track from its long-press menu, or from the player while it is playing.")
         }
+
+        NavRow(
+            Icons.Default.Download,
+            "Manage downloads",
+            "Search, sort by size, retry what failed, and see where the space went",
+            accent,
+            onClick = onOpenDownloads,
+        )
 
         SettingsCard(
             title = "When to fetch them",
