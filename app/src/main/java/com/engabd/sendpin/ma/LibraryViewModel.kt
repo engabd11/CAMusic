@@ -13,6 +13,7 @@ import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.PlayerIdentity
 import com.engabd.sendpin.download.DownloadJob
 import com.engabd.sendpin.download.DownloadedTrack
+import com.engabd.sendpin.subsonic.SavedQueue
 import com.engabd.sendpin.subsonic.SubsonicClient
 import com.engabd.sendpin.subsonic.SubsonicError
 import com.engabd.sendpin.subsonic.SubsonicException
@@ -476,6 +477,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         startLocalRadio()
+        startQueueSync()
         // The fade belongs to the player, and the setting can change under a queue
         // that is already running.
         viewModelScope.launch { settings.navFadeSeconds.collect { localPlayer.fadeSeconds = it } }
@@ -636,6 +638,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                     _ready.value = true
                     _offline.value = false
                     showRoot()
+                    // Asked once per connect: the answer only changes when another
+                    // device puts something down, and this is when that becomes
+                    // knowable.
+                    loadSavedQueue()
                 } else {
                     _ready.value = false
                     goOfflineIfPossible(err)
@@ -1135,6 +1141,86 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             _error.value = e.message ?: "Search failed"
         } finally {
             _searching.value = false
+        }
+    }
+
+    // --- cross-device resume ----------------------------------------------
+
+    /**
+     * A queue another client left on the server, when there is one worth offering.
+     *
+     * `getPlayQueue` and `savePlayQueue` have been implemented in [SubsonicClient]
+     * with no callers at all — the client half of "start on the phone, finish at the
+     * desk" was done and the feature did not exist.
+     */
+    private val _savedQueue = MutableStateFlow<SavedQueue?>(null)
+    val savedQueue: StateFlow<SavedQueue?> = _savedQueue
+
+    /** Stop offering this one. Not persisted: a new session may want it again. */
+    fun dismissSavedQueue() { _savedQueue.value = null }
+
+    /**
+     * Ask the server what was left playing, and offer it if it is worth offering.
+     *
+     * Silent about failures and silent when there is nothing useful to say. Three
+     * things disqualify a saved queue: it is empty, it is what this phone is already
+     * playing (resuming what you can hear is not an offer), or it was left in the
+     * first few seconds of a track, which is someone starting something rather than
+     * stopping mid-listen.
+     */
+    private suspend fun loadSavedQueue() {
+        val sc = subsonic ?: return
+        val saved = runCatching { sc.playQueue() }.getOrNull() ?: return
+        val currentId = localPlayer.current.value?.scrobbleId
+        val savedId = saved.tracks.getOrNull(saved.index)?.itemId
+        if (savedId != null && savedId == currentId) return
+        if (saved.positionMs < RESUME_MIN_POSITION_MS) return
+        _savedQueue.value = saved
+    }
+
+    /** Pick up where the other device left off. */
+    fun resumeSavedQueue() {
+        val saved = _savedQueue.value ?: return
+        _savedQueue.value = null
+        viewModelScope.launch {
+            runCatching {
+                stopMaPlayback()
+                localPlayer.setShuffle(false)
+                localPlayer.setQueue(saved.tracks.map { localTrack(it) }, saved.index)
+                localPlayer.seekTo(saved.positionMs)
+            }.onFailure { _toast.tryEmit(it.message ?: "Couldn't resume") }
+        }
+    }
+
+    /**
+     * Hand this phone's queue back to the server, so the desk can pick it up.
+     *
+     * On track change and on pause, not on a timer: those are the two moments the
+     * answer actually changes in a way another device would care about, and
+     * `savePlayQueue` rewrites the whole queue every time it is called.
+     */
+    private fun startQueueSync() {
+        viewModelScope.launch {
+            combine(localPlayer.current, localPlayer.playing) { track, playing -> track to playing }
+                .distinctUntilChanged()
+                .collect { (track, playing) ->
+                    if (track == null) return@collect
+                    // Only ours to save when the bytes are Navidrome's.
+                    val sc = subsonic ?: return@collect
+                    if (_offline.value) return@collect
+                    val ids = localPlayer.queue.value.mapNotNull { it.scrobbleId }
+                    if (ids.isEmpty()) return@collect
+                    runCatching {
+                        sc.savePlayQueue(
+                            songIds = ids,
+                            currentId = track.scrobbleId,
+                            positionMs = localPlayer.positionMs.value,
+                        )
+                    }
+                    // A queue this phone is actively playing supersedes whatever was
+                    // being offered, or the offer would compete with itself.
+                    if (playing) _savedQueue.value = null
+                }
         }
     }
 
@@ -1696,6 +1782,12 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
         /** Enough to cover backspacing through a word, and no more. */
         const val SEARCH_CACHE_SIZE = 24
+
+        /**
+         * Below this, a saved queue is someone starting something rather than
+         * stopping mid-listen, and "resume" is the wrong word for it.
+         */
+        const val RESUME_MIN_POSITION_MS = 15_000L
 
         /**
          * Top up while this many tracks are still ahead of the playhead.

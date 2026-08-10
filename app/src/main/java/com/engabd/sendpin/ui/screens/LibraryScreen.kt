@@ -63,6 +63,7 @@ import com.engabd.sendpin.download.DownloadJob
 import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ma.LibraryViewModel.Backend
 import com.engabd.sendpin.ma.MaItem
+import com.engabd.sendpin.subsonic.SavedQueue
 import com.engabd.sendpin.subsonic.SubsonicClient
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
@@ -440,6 +441,7 @@ private fun Browse(
     val search by viewModel.search.collectAsState()
     val searchOpen by viewModel.searchOpen.collectAsState()
     val searching by viewModel.searching.collectAsState()
+    val savedQueue by viewModel.savedQueue.collectAsState()
     val shelves by viewModel.shelves.collectAsState()
     val jobs by viewModel.downloadJobs.collectAsState()
     val offline by viewModel.offline.collectAsState()
@@ -497,6 +499,17 @@ private fun Browse(
         // once, at the top, and let the rest of the screen behave normally.
         if (offline) {
             item(span = { full() }) { OfflineNotice { viewModel.connect() } }
+        }
+        // Something another device left mid-track. An offer, not an interruption:
+        // it sits above the shelves and goes away when dismissed or superseded.
+        savedQueue?.let { saved ->
+            item(span = { full() }, key = "resume") {
+                ResumeCard(
+                    saved = saved,
+                    onResume = { viewModel.resumeSavedQueue() },
+                    onDismiss = { viewModel.dismissSavedQueue() },
+                )
+            }
         }
         if (error != null) {
             item(span = { full() }) { SearchErrorState(error!!) { viewModel.connect() } }
@@ -1169,6 +1182,65 @@ private fun PlayAllBar(count: Int, onPlayAll: () -> Unit, onDownloadAll: (() -> 
  * the feature working, not an error, so it reads as a state rather than a fault —
  * with the one action that matters if the server is actually back.
  */
+@Composable
+/**
+ * "You were listening to this somewhere else."
+ *
+ * Navidrome keeps one saved queue per user, and every client that supports it writes
+ * to the same slot — so this is genuinely "start on the phone, finish at the desk".
+ * Named after the client that left it where the server said which one that was:
+ * "Resume from your laptop" is a different offer from "resume from this phone", and
+ * the difference is most of why anyone would tap it.
+ *
+ * An offer, not a prompt. It never blocks the library, it goes away on dismissal, and
+ * starting anything here supersedes it.
+ */
+@Composable
+private fun ResumeCard(saved: SavedQueue, onResume: () -> Unit, onDismiss: () -> Unit) {
+    val accent = LocalAccent.current
+    val track = saved.tracks.getOrNull(saved.index)
+    val minutes = (saved.positionMs / 60_000).toInt()
+    val seconds = ((saved.positionMs / 1000) % 60).toInt()
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp, vertical = 8.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(accent.a(0.10f))
+            .border(1.dp, accent.a(0.28f), RoundedCornerShape(14.dp))
+            .clickable(onClick = onResume)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Icon(
+            Icons.Default.History, null, tint = accent,
+            modifier = Modifier.size(20.dp),
+        )
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+            Text(
+                saved.changedBy?.takeIf { it.isNotBlank() }
+                    ?.let { "Pick up from $it" } ?: "Pick up where you left off",
+                color = TextPrimary, fontFamily = AppFont,
+                fontWeight = FontWeight.Bold, fontSize = 13.sp,
+            )
+            Text(
+                buildString {
+                    track?.let { append(it.name); it.subtitle?.let { a -> append(" · $a") } }
+                    append("  ")
+                    append("%d:%02d in".format(minutes, seconds))
+                },
+                color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Icon(
+            Icons.Default.Close, "Dismiss", tint = TextMuted,
+            modifier = Modifier.size(18.dp).clip(CircleShape).clickable(onClick = onDismiss),
+        )
+    }
+}
+
 @Composable
 private fun OfflineNotice(onRetry: () -> Unit) {
     val accent = LocalAccent.current
