@@ -264,6 +264,16 @@ class DirectLightSync(
     @Volatile private var mapSection: com.engabd.sendpin.audio.ScanSection? = null
 
     /**
+     * The last album-art colours extracted, cached so they survive the race
+     * between the `init` collector (which fires before [start] creates the
+     * engine) and the engine becoming available. Applied in [start] if present.
+     */
+    @Volatile private var lastAlbumColours: AlbumColours? = null
+
+    /** The art URL the collector last saw, for re-extraction on scheme change. */
+    @Volatile private var lastArtUrl: String? = null
+
+    /**
      * The scanned Auto-intensity parameters for this track, or null when it is
      * being played causally. The picker takes its live-estimated defaults then,
      * exactly as it did before scans existed.
@@ -353,6 +363,17 @@ class DirectLightSync(
                 it.effect = SyncEffect.fromWire(settings.lightSyncEffect.first())
                 it.setScheme(ColorScheme.fromWire(settings.lightSyncColor.first()))
                 it.brightness = settings.lightSyncBrightness.first() / 100f
+                // Apply cached album colours if the collector already extracted
+                // them before the engine existed. Without this the first track's
+                // colours are silently lost — the collector fired from init, the
+                // engine was null, and distinctUntilChanged won't re-emit.
+                val ac = lastAlbumColours
+                val scheme = ColorScheme.fromWire(settings.lightSyncColor.first())
+                if (ac != null && (scheme == ColorScheme.ALBUM_ART || scheme == ColorScheme.ALBUM_ART_V2)) {
+                    // v1 passes null weights (even interpolation); v2 passes real weights.
+                    val w = if (scheme == ColorScheme.ALBUM_ART) null else ac.weights
+                    it.setAlbumColors(ac.colors, w)
+                }
             }
 
             // 5. Activate the audio tap.
@@ -690,9 +711,20 @@ class DirectLightSync(
      * against black. Both are right for picking a UI accent and wrong for
      * lighting a room — they surface colours the sleeve barely contains, which
      * is what "the album colours are wrong" was.
+     *
+     * Two extraction modes, matching syncoV2:
+     * - `album_art` (even): v1 — accent/base separation, uniform palette.
+     * - `album_art_v2` (weighted): v2 — population-weighted, dwell-time faithful.
+     *
+     * The extracted colours are cached in [lastAlbumColours] so they survive the
+     * race between this collector (which fires from `init`) and [start] (which
+     * creates the engine). Without the cache, the first extraction lands while
+     * the engine is still null and is silently lost; `distinctUntilChanged` then
+     * suppresses the re-emit, and the room stays on the Sunset fallback.
      */
     private suspend fun applyAlbumArt(url: String?) = withContext(Dispatchers.IO) {
         if (url.isNullOrBlank()) {
+            lastAlbumColours = null
             engine?.setAlbumColors(emptyList())
             return@withContext
         }
@@ -703,8 +735,19 @@ class DirectLightSync(
                 .build()
             val result = context.imageLoader.execute(request)
             val bitmap = (result as? SuccessResult)?.drawable?.toBitmap() ?: return@withContext
-            val extracted = extractAlbumColours(bitmap) ?: return@withContext
-            engine?.setAlbumColors(extracted.colors, extracted.weights)
+            val scheme = ColorScheme.fromWire(settings.lightSyncColor.first())
+            val extracted = when (scheme) {
+                ColorScheme.ALBUM_ART -> extractAlbumColoursV1(bitmap)
+                ColorScheme.ALBUM_ART_V2 -> extractAlbumColours(bitmap)
+                else -> extractAlbumColours(bitmap)  // SONG and statics don't use album colours
+            } ?: return@withContext
+            lastAlbumColours = extracted
+            // v1 (album_art/even) has no weights — pass null so the engine uses
+            // pure even interpolation (Palette.evenSample), matching syncoV2's
+            // Palette(colors, weights=None). v2 passes the real population weights
+            // for dwell-time-faithful hold-and-crossfade sampling.
+            val paletteWeights = if (scheme == ColorScheme.ALBUM_ART) null else extracted.weights
+            engine?.setAlbumColors(extracted.colors, paletteWeights)
         } catch (e: Exception) {
             // A cover that will not load is not a reason to stop the show; the
             // engine keeps whatever palette it already had.
@@ -1043,13 +1086,27 @@ class DirectLightSync(
             }
         }
         scope.launch {
-            settings.lightSyncColor.collect { wire -> engine?.setScheme(ColorScheme.fromWire(wire)) }
+            settings.lightSyncColor.collect { wire ->
+                val scheme = ColorScheme.fromWire(wire)
+                engine?.setScheme(scheme)
+                // Switching between album_art (v1/even) and album_art_v2
+                // (v2/weighted) changes the extraction algorithm. Re-extract
+                // the cached cover with the right one so the room reads the
+                // sleeve the way the selected option promises.
+                if (scheme == ColorScheme.ALBUM_ART || scheme == ColorScheme.ALBUM_ART_V2) {
+                    val url = lastArtUrl
+                    if (url != null) applyAlbumArt(url)
+                }
+            }
         }
         // Album artwork. Collected unconditionally rather than only while an
         // album-art scheme is selected, so switching to one mid-track picks up
         // the cover already on screen instead of waiting for the next song.
         scope.launch {
-            nowPlaying.map { it?.artUrl }.distinctUntilChanged().collect { url -> applyAlbumArt(url) }
+            nowPlaying.map { it?.artUrl }.distinctUntilChanged().collect { url ->
+                lastArtUrl = url
+                applyAlbumArt(url)
+            }
         }
         // The track itself, for the scan.
         scope.launch {
