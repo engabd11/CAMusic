@@ -7,8 +7,9 @@ show that talks straight to the Hue Bridge.**
 CAMusic joins Music Assistant as a real Sendspin player, so MA can stream to it, group
 it with your other speakers and speak Home Assistant announcements through it. The same
 app browses the library, drives whichever player you are actually listening to, and can
-drop Music Assistant entirely and play straight from Navidrome - including with no
-network at all, once tracks are downloaded.
+drop Music Assistant entirely and play straight from your own server - Navidrome, any
+Subsonic-compatible server, or Jellyfin - including with no network at all, once tracks
+are downloaded.
 
 Current release: **v0.8.0**. See [Releases](https://github.com/engabd11/CAMusic/releases)
 and [docs/release-notes/](docs/release-notes/).
@@ -28,7 +29,7 @@ is why most features here had to be answered twice.
 | Plays to | Any MA speaker, or this phone | This phone only |
 | Grouping | Yes | No - an MA feature |
 | Server-side DSP / EQ | Yes | No |
-| Continuous play (radio) | Yes, server-side | Yes, generated on device |
+| Continuous play (radio) | Yes, server-side | Generated on device, where the server can suggest |
 | Gapless | MA's own per-player setting, driven from the app | Yes |
 | Light Sync | Home Assistant path | Direct to the bridge |
 | Works with MA down | No | Yes |
@@ -89,29 +90,81 @@ is why most features here had to be answered twice.
 ## Standalone: your own library
 
 Add servers under **Settings → Libraries** and pick which one the Library tab browses.
-**Navidrome**, any **Subsonic / OpenSubsonic** server, and **Jellyfin** are supported;
-the settings picker also lists what is planned, with
-[docs/providers.md](docs/providers.md) carrying the endpoints each one needs.
-
 No Music Assistant in the path - the phone talks to the server and decodes the file
 itself, which is what makes downloads and offline playback possible.
 
-- **A list of servers, not a switch.** Each is a card with its own credentials, status
-  and stream-quality setting; one is marked Active. Capabilities are **probed** rather
-  than assumed, so a plain Subsonic server is not offered a lyrics pane it can only fill
-  with a shrug, while Navidrome and Jellyfin - which report codec, rate, depth and
-  bitrate per track - get the full quality badge.
+**A list of servers, not a switch.** Each is a card with its own credentials, status and
+stream-quality setting; one is marked Active. Adding a provider is an adapter against
+the `MusicSource` interface, not a change to the app around it.
+
+### Supported today
+
+| Provider | Sign-in | Notes |
+|---|---|---|
+| **Navidrome** | Username + password | The reference implementation. Its OpenSubsonic extensions give synced lyrics, ReplayGain tags and an exact per-track format, so the quality badge reads `FLAC • 96/24 • 3 Mb/s` rather than just the codec. |
+| **Subsonic / OpenSubsonic** | Username + password | Gonic, Airsonic, Astiga, Ampache's Subsonic API - anything speaking the protocol. Same client as Navidrome; what differs is how much of it the server implements. |
+| **Jellyfin** | Username + password | Browses the music library and streams the original file. Its `MediaStreams` carry codec, rate, depth, bitrate and channels per track, so it gets the full quality badge too. |
+| **Music Assistant** | Optional credentials | Not a `MusicSource` - it owns a server-side queue and plays to speakers this app never decodes for. It is the app's other half, not another library. |
+
+**Capabilities are probed, not assumed.** A plain Subsonic server is never offered a
+lyrics pane it can only fill with a shrug: the app asks `getOpenSubsonicExtensions` and
+lights up only what the server actually declared. Where a provider genuinely lacks
+something, the feature is left out rather than shown empty.
+
+The one place that shows today: **on-device radio needs a similar-tracks endpoint**,
+which only the Subsonic protocol has. On Jellyfin, continuous play falls back to ranking
+your downloads, so with nothing downloaded it has nothing to offer. Everything else in
+the list below works the same on all three.
+
+### Planned
+
+Listed in the app's own provider picker, greyed, so the roadmap is visible where it is
+asked about. Auth and endpoints for each are written up in
+[docs/providers.md](docs/providers.md).
+
+**HTTP APIs** - the same shape as what exists, so these are adapters rather than
+projects:
+
+| Provider | Sign-in | What it needs |
+|---|---|---|
+| **Emby** | Username + password | Jellyfin's ancestor; near-identical API behind its own auth header |
+| **Plex** | plex.tv PIN flow | No server password is ever typed - a browser round-trip and a polled `/pins/{id}` |
+| **Audiobookshelf** | Bearer token | `/api/libraries`, and a music library alongside the audiobooks |
+| **Kodi** | Username + password | JSON-RPC rather than REST; browses the library Kodi already scanned |
+
+**Filesystems** - a different class of work, and worth saying so plainly. These are
+folders rather than APIs: nothing answers "list the artists", so each needs a crawler, a
+**tag reader** (the app has none today) and a local index. The argument is for one
+`IndexedFileSource` that the transports plug into rather than eight separate adapters.
+
+| Provider | Transport | Sign-in |
+|---|---|---|
+| **This device** | `MediaStore.Audio` | A runtime permission |
+| **SMB (v2/v3)** | jcifs-ng | Username / password / domain |
+| **WebDAV** | OkHttp `PROPFIND` | Basic or bearer |
+| **Google Drive** | Drive REST v3 | OAuth |
+| **OneDrive** | Microsoft Graph | OAuth |
+| **Dropbox** | Dropbox HTTP API | OAuth |
+| **Box** | Box API | OAuth |
+| **pCloud** | pCloud API | OAuth |
+
+`MediaStore` is the cheapest of the eight by a distance - Android has already crawled and
+tagged the phone's own music, so it needs no crawler, no tag reader and no index. It is
+the right one to build first, and it proves the shared shape before any OAuth is written.
+
+### On any of them
 
 - Browse artists, albums, playlists, genres and starred items, and search all of it.
 - A **real queue** on **ExoPlayer**: gapless album playback, exact seek, shuffle,
   repeat, and a lock-screen media notification.
-- **Continuous play, generated on device.** Radio mode and "don't stop the music" are MA
-  *server* features, so this backend used to simply stop at the end of the album. It now
-  builds the next batch itself, on a ladder that stops at the first rung that answers:
-  tracks like this one, then tracks from around this record, then the artist's best-known
-  songs, then the genre, then anything at all. It tops up two tracks early so ExoPlayer's
-  gapless transitions survive, keeps a rolling history so it doesn't circle back, and
-  falls back to ranking your downloads offline.
+- **Continuous play, generated on device** *(Navidrome and Subsonic; see above)*. Radio
+  mode and "don't stop the music" are MA *server* features, so this backend used to
+  simply stop at the end of the album. It now builds the next batch itself, on a ladder
+  that stops at the first rung that answers: tracks like this one, then tracks from
+  around this record, then the artist's best-known songs, then the genre, then anything
+  at all. It tops up two tracks early so ExoPlayer's gapless transitions survive, keeps a
+  rolling history so it doesn't circle back, and falls back to ranking your downloads
+  offline.
 - **Smooth transitions**, 1-12 seconds, off by default - and deliberately not called
   crossfade, because one ExoPlayer has one output and two tracks cannot overlap through
   it. Suppressed automatically while the queue is a single album, because a record is
@@ -128,8 +181,10 @@ itself, which is what makes downloads and offline playback possible.
   deleting is findable. The storage cap never evicts the track you are listening to.
 - With the server unreachable the library drops to **Offline** and runs on what is on
   the phone.
-- Stars, ratings and scrobbles are written back, including on the "play at original
-  quality" path where MA is selected but Navidrome serves the bytes.
+- Stars and plays are written back **to the library the track came from** - a Jellyfin
+  guid is not something Navidrome can record a play against - including on the "play at
+  original quality" path, where Music Assistant is selected but Navidrome serves the
+  bytes.
 
 ## Light Sync
 
@@ -184,8 +239,8 @@ this phone is not playing through - and what stops it seeing the local player.
 - Android 12+ (API 31)
 - A [Music Assistant](https://music-assistant.io) server (2.9+) with the Sendspin player
   provider enabled
-- *Optional:* Navidrome, a Subsonic / OpenSubsonic server, or Jellyfin, as a standalone
-  library
+- *Optional:* a library of your own as a standalone backend - Navidrome, any Subsonic /
+  OpenSubsonic server, or Jellyfin. See [Standalone: your own library](#standalone-your-own-library)
 - *Optional:* a Philips Hue Bridge with an entertainment area, for direct Light Sync
 - *Optional:* Home Assistant with syncoV2, for Light Sync through HA
 
@@ -269,11 +324,11 @@ order it is expected to happen.
   holds the player slot for ~30 seconds and a quick app switch doesn't drop the phone out
   of the speaker list. Attempted once and reverted because it fired mid-song; it must fire
   only while idle.
-- **More libraries.** The `MusicSource` interface and the server list are in; Emby, Plex,
-  Audiobookshelf and Kodi are adapters against it. SMB, WebDAV and the cloud drives are a
-  different class of work - they are folders rather than APIs, so they need a crawler, a
-  tag reader and a local index the app does not have yet. Endpoints and auth for each are
-  written up in [docs/providers.md](docs/providers.md).
+- **More libraries.** The `MusicSource` interface and the server list are in, so each
+  remaining provider is an adapter rather than a change to the app. The full list, split
+  by how much work each actually is, is under
+  [Planned](#planned) - and `MediaStore` (the phone's own music) is the one to build
+  first, because Android has already done the crawling and tagging the other seven need.
 
 ### Light Sync
 
