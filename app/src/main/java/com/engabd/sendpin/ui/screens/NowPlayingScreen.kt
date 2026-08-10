@@ -23,6 +23,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -63,10 +64,10 @@ fun NowPlayingScreen(
     onOpenSpeakers: () -> Unit = {},
     onBrowse: () -> Unit = {},
 ) {
-    val st by viewModel.state.collectAsState()
-    val connected by viewModel.connected.collectAsState()
-    val favorite by viewModel.favorite.collectAsState()
-    val currentItem by viewModel.currentItem.collectAsState()
+    val st by viewModel.state.collectAsStateWithLifecycle()
+    val connected by viewModel.connected.collectAsStateWithLifecycle()
+    val favorite by viewModel.favorite.collectAsStateWithLifecycle()
+    val currentItem by viewModel.currentItem.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
     // Which overlay is open, if any. Null = just the player.
@@ -99,7 +100,7 @@ fun NowPlayingScreen(
     var scrubbing by remember { mutableStateOf(false) }
     var scrubPos by remember { mutableStateOf(0L) }
     var seekTarget by remember { mutableStateOf(-1L) }  // -1 = no hold
-    val livePos by viewModel.positionMs.collectAsState()
+    val livePos by viewModel.positionMs.collectAsStateWithLifecycle()
 
     // Release the hold once the server position catches up within 2 seconds.
     LaunchedEffect(livePos, seekTarget) {

@@ -15,7 +15,7 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -42,7 +42,7 @@ private val SpeedPresets = listOf(0.75f, 1f, 1.25f, 1.5f, 2f)
 @Composable
 fun BoxScope.PlayerOptionsSheet(onClose: () -> Unit, viewModel: NowPlayingViewModel) {
     HideBottomChrome()
-    val st by viewModel.state.collectAsState()
+    val st by viewModel.state.collectAsStateWithLifecycle()
     val accent = LocalAccent.current
 
     Box(
@@ -167,7 +167,7 @@ fun BoxScope.PlayerOptionsSheet(onClose: () -> Unit, viewModel: NowPlayingViewMo
 @Composable
 private fun VersionPicker(viewModel: NowPlayingViewModel) {
     val accent = LocalAccent.current
-    val load by viewModel.versions.collectAsState()
+    val load by viewModel.versions.collectAsStateWithLifecycle()
     var open by remember { mutableStateOf(false) }
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {

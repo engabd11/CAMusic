@@ -19,6 +19,7 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -88,13 +89,13 @@ fun LightSyncScreen(onBack: () -> Unit = {}) {
 @Composable
 private fun HaLightSyncScreen(onBack: () -> Unit, viewModel: LightSyncViewModel = viewModel()) {
     val accent = LocalAccent.current
-    val connected by viewModel.connected.collectAsState()
-    val areas by viewModel.areas.collectAsState()
-    val area by viewModel.selectedArea.collectAsState()
-    val error by viewModel.error.collectAsState()
-    val mediaPlayers by viewModel.mediaPlayers.collectAsState()
-    val prefillUrl by viewModel.haUrl.collectAsState()
-    val prefillToken by viewModel.haToken.collectAsState()
+    val connected by viewModel.connected.collectAsStateWithLifecycle()
+    val areas by viewModel.areas.collectAsStateWithLifecycle()
+    val area by viewModel.selectedArea.collectAsStateWithLifecycle()
+    val error by viewModel.error.collectAsStateWithLifecycle()
+    val mediaPlayers by viewModel.mediaPlayers.collectAsStateWithLifecycle()
+    val prefillUrl by viewModel.haUrl.collectAsStateWithLifecycle()
+    val prefillToken by viewModel.haToken.collectAsStateWithLifecycle()
 
     val enabled = area?.enabled == true
 
@@ -298,8 +299,8 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
     val direct = app.directLightSync
     val scope = rememberCoroutineScope()
 
-    val live by direct.active.collectAsState()
-    val syncError by direct.error.collectAsState()
+    val live by direct.active.collectAsStateWithLifecycle()
+    val syncError by direct.error.collectAsStateWithLifecycle()
     val enabled by settings.lightSyncEnabled.collectAsState(initial = false)
     val intensity by settings.lightSyncIntensity.collectAsState(initial = "high")
     val effect by settings.lightSyncEffect.collectAsState(initial = "music")
@@ -533,8 +534,8 @@ private fun TrackAnalysisSection(
 
     val on by settings.lightSyncPrescan.collectAsState(initial = true)
     val wifiOnly by settings.lightSyncPrescanWifiOnly.collectAsState(initial = true)
-    val progress by scans.progress.collectAsState()
-    val playing by app.localPlayer.current.collectAsState()
+    val progress by scans.progress.collectAsStateWithLifecycle()
+    val playing by app.localPlayer.current.collectAsStateWithLifecycle()
 
     // Polled rather than recomputed per completed scan: counting the directory
     // is a listing, and doing one per track would turn a five-thousand-track

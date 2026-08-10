@@ -15,6 +15,7 @@ import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -58,10 +59,10 @@ fun PlaylistDetailScreen(
         )
     )
 
-    val playlist by viewModel.playlist.collectAsState()
-    val tracks by viewModel.tracks.collectAsState()
-    val loading by viewModel.loading.collectAsState()
-    val error by viewModel.error.collectAsState()
+    val playlist by viewModel.playlist.collectAsStateWithLifecycle()
+    val tracks by viewModel.tracks.collectAsStateWithLifecycle()
+    val loading by viewModel.loading.collectAsStateWithLifecycle()
+    val error by viewModel.error.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     // The track whose long-press menu is open, if any.
     var actionsFor by remember { mutableStateOf<MaItem?>(null) }

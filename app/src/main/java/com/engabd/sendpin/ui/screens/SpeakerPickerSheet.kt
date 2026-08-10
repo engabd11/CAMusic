@@ -19,7 +19,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -63,9 +63,9 @@ fun BoxScope.SpeakerPickerSheet(
 ) {
     HideBottomChrome()
     val accent = LocalAccent.current
-    val joined by viewModel.joined.collectAsState()
-    val available by viewModel.available.collectAsState()
-    val connected by viewModel.connected.collectAsState()
+    val joined by viewModel.joined.collectAsStateWithLifecycle()
+    val available by viewModel.available.collectAsStateWithLifecycle()
+    val connected by viewModel.connected.collectAsStateWithLifecycle()
 
     // Joined players first (they're what's actually playing), then everything else.
     // Both lists already carry `isTarget`, so the tick needs no extra bookkeeping.

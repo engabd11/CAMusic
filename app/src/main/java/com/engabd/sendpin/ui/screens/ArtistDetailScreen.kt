@@ -18,6 +18,7 @@ import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -154,14 +155,14 @@ fun ArtistDetailScreen(
         )
     )
 
-    val artist by viewModel.artist.collectAsState()
-    val albums by viewModel.albums.collectAsState()
-    val downloaded by viewModel.allDownloaded.collectAsState()
-    val loading by viewModel.loading.collectAsState()
-    val error by viewModel.error.collectAsState()
-    val biography by viewModel.biography.collectAsState()
-    val top by viewModel.topTracks.collectAsState()
-    val similar by viewModel.similar.collectAsState()
+    val artist by viewModel.artist.collectAsStateWithLifecycle()
+    val albums by viewModel.albums.collectAsStateWithLifecycle()
+    val downloaded by viewModel.allDownloaded.collectAsStateWithLifecycle()
+    val loading by viewModel.loading.collectAsStateWithLifecycle()
+    val error by viewModel.error.collectAsStateWithLifecycle()
+    val biography by viewModel.biography.collectAsStateWithLifecycle()
+    val top by viewModel.topTracks.collectAsStateWithLifecycle()
+    val similar by viewModel.similar.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     var actionsFor by remember { mutableStateOf<MaItem?>(null) }
 

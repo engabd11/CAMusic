@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -184,13 +185,13 @@ fun App() {
         val playerVm: PlayerViewModel = viewModel()
         // Boot/onboarding run before the Now Playing VM exists, so they colour
         // themselves from this phone's own stream.
-        val localArt by playerVm.artworkUrl.collectAsState()
+        val localArt by playerVm.artworkUrl.collectAsStateWithLifecycle()
         val bootPalette = rememberAlbumPalette(localArt)
         val accent = accentChoice.resolve(bootPalette.accent, fixedAccent, MaterialTheme.colorScheme.primary)
 
-        val connected by playerVm.connected.collectAsState()
-        val hasSavedServer by playerVm.hasSavedServer.collectAsState()
-        val bootChecked by playerVm.bootChecked.collectAsState()
+        val connected by playerVm.connected.collectAsStateWithLifecycle()
+        val hasSavedServer by playerVm.hasSavedServer.collectAsStateWithLifecycle()
+        val bootChecked by playerVm.bootChecked.collectAsStateWithLifecycle()
         var skipped by rememberSaveable { mutableStateOf(false) }
 
         if (!bootChecked) {
@@ -228,7 +229,7 @@ fun App() {
         // which is not necessarily this phone. Deriving the app palette from the
         // local Sendspin stream meant that casting to a speaker left every screen
         // but Now Playing on the default accent.
-        val npState by nowPlayingVm.state.collectAsState()
+        val npState by nowPlayingVm.state.collectAsStateWithLifecycle()
         val appPalette = rememberAlbumPalette(npState.artworkUrl ?: localArt)
         // Only the album-art source lets the artwork drive the accent. On the other two
         // the user asked for one colour that does not move, so the palette is still

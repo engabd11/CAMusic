@@ -40,6 +40,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -81,22 +82,22 @@ fun LibraryScreen(
     onArtistClick: (MaItem) -> Unit = { viewModel.open(it) },
     onPlaylistClick: (MaItem) -> Unit = { viewModel.open(it) },
 ) {
-    val ready by viewModel.ready.collectAsState()
-    val booted by viewModel.booted.collectAsState()
-    val connecting by viewModel.connecting.collectAsState()
-    val hasServer by viewModel.hasServer.collectAsState()
-    val connError by viewModel.connError.collectAsState()
-    val backend by viewModel.backend.collectAsState()
-    val node by viewModel.node.collectAsState()
-    val depth by viewModel.depth.collectAsState()
-    val search by viewModel.search.collectAsState()
-    val searchOpen by viewModel.searchOpen.collectAsState()
-    val query by viewModel.query.collectAsState()
-    val refreshing by viewModel.refreshing.collectAsState()
-    val searching by viewModel.searching.collectAsState()
-    val showCreatePlaylist by viewModel.showCreatePlaylist.collectAsState()
-    val addingToPlaylist by viewModel.addingToPlaylist.collectAsState()
-    val playlistChoices by viewModel.playlistChoices.collectAsState()
+    val ready by viewModel.ready.collectAsStateWithLifecycle()
+    val booted by viewModel.booted.collectAsStateWithLifecycle()
+    val connecting by viewModel.connecting.collectAsStateWithLifecycle()
+    val hasServer by viewModel.hasServer.collectAsStateWithLifecycle()
+    val connError by viewModel.connError.collectAsStateWithLifecycle()
+    val backend by viewModel.backend.collectAsStateWithLifecycle()
+    val node by viewModel.node.collectAsStateWithLifecycle()
+    val depth by viewModel.depth.collectAsStateWithLifecycle()
+    val search by viewModel.search.collectAsStateWithLifecycle()
+    val searchOpen by viewModel.searchOpen.collectAsStateWithLifecycle()
+    val query by viewModel.query.collectAsStateWithLifecycle()
+    val refreshing by viewModel.refreshing.collectAsStateWithLifecycle()
+    val searching by viewModel.searching.collectAsStateWithLifecycle()
+    val showCreatePlaylist by viewModel.showCreatePlaylist.collectAsStateWithLifecycle()
+    val addingToPlaylist by viewModel.addingToPlaylist.collectAsStateWithLifecycle()
+    val playlistChoices by viewModel.playlistChoices.collectAsStateWithLifecycle()
     val palette = LocalPalette.current
     val snackbar = remember { SnackbarHostState() }
     // Long-press target. Hoisted to the screen so the sheet is a sibling of the
@@ -434,25 +435,25 @@ private fun Browse(
     // extensions, which are not composable and can't read a CompositionLocal.
     onLongPress: (MaItem) -> Unit,
 ) {
-    val node by viewModel.node.collectAsState()
-    val depth by viewModel.depth.collectAsState()
-    val loading by viewModel.loading.collectAsState()
-    val error by viewModel.error.collectAsState()
-    val search by viewModel.search.collectAsState()
-    val searchOpen by viewModel.searchOpen.collectAsState()
-    val searching by viewModel.searching.collectAsState()
-    val savedQueue by viewModel.savedQueue.collectAsState()
-    val shelves by viewModel.shelves.collectAsState()
-    val jobs by viewModel.downloadJobs.collectAsState()
-    val offline by viewModel.offline.collectAsState()
+    val node by viewModel.node.collectAsStateWithLifecycle()
+    val depth by viewModel.depth.collectAsStateWithLifecycle()
+    val loading by viewModel.loading.collectAsStateWithLifecycle()
+    val error by viewModel.error.collectAsStateWithLifecycle()
+    val search by viewModel.search.collectAsStateWithLifecycle()
+    val searchOpen by viewModel.searchOpen.collectAsStateWithLifecycle()
+    val searching by viewModel.searching.collectAsStateWithLifecycle()
+    val savedQueue by viewModel.savedQueue.collectAsStateWithLifecycle()
+    val shelves by viewModel.shelves.collectAsStateWithLifecycle()
+    val jobs by viewModel.downloadJobs.collectAsStateWithLifecycle()
+    val offline by viewModel.offline.collectAsStateWithLifecycle()
 
     // Collected once for the whole grid. These three used to be read *inside* ItemRow
     // and its children, so every visible row stood up three flow collectors of its
     // own, each torn down and rebuilt as rows recycled during a scroll. The rows now
     // take plain booleans, which also lets them skip when nothing about them changed.
-    val downloadedIds by viewModel.downloadedIds.collectAsState()
-    val favorites by viewModel.favorites.collectAsState()
-    val previewingId by viewModel.previewing.collectAsState()
+    val downloadedIds by viewModel.downloadedIds.collectAsStateWithLifecycle()
+    val favorites by viewModel.favorites.collectAsStateWithLifecycle()
+    val previewingId by viewModel.previewing.collectAsStateWithLifecycle()
     val rows = RowState(downloadedIds, favorites, previewingId)
 
     val s = if (searchOpen) search else null
@@ -1350,8 +1351,8 @@ private fun SearchErrorState(message: String, onRetry: () -> Unit) {
 
 @Composable
 private fun ConnectForm(viewModel: LibraryViewModel, backend: Backend) {
-    val connecting by viewModel.connecting.collectAsState()
-    val connError by viewModel.connError.collectAsState()
+    val connecting by viewModel.connecting.collectAsStateWithLifecycle()
+    val connError by viewModel.connError.collectAsStateWithLifecycle()
     val accent = LocalAccent.current
 
     Column(
@@ -1364,17 +1365,17 @@ private fun ConnectForm(viewModel: LibraryViewModel, backend: Backend) {
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         if (backend == Backend.MA) {
-            val url by viewModel.maUrl.collectAsState()
-            val user by viewModel.maUser.collectAsState()
-            val pass by viewModel.maPass.collectAsState()
+            val url by viewModel.maUrl.collectAsStateWithLifecycle()
+            val user by viewModel.maUser.collectAsStateWithLifecycle()
+            val pass by viewModel.maPass.collectAsStateWithLifecycle()
             SectionLabel("Music Assistant server")
             GlassField("Server URL", url, viewModel::setMaUrl, "http://192.168.0.10:8095")
             GlassField("Username", user, viewModel::setMaUser)
             GlassField("Password", pass, viewModel::setMaPass, secret = true)
         } else {
-            val url by viewModel.navUrl.collectAsState()
-            val user by viewModel.navUser.collectAsState()
-            val pass by viewModel.navPass.collectAsState()
+            val url by viewModel.navUrl.collectAsStateWithLifecycle()
+            val user by viewModel.navUser.collectAsStateWithLifecycle()
+            val pass by viewModel.navPass.collectAsStateWithLifecycle()
             SectionLabel("Navidrome / OpenSubsonic")
             Text(
                 "Direct mode plays on this phone and can download for offline - it works even when Music Assistant is down.",
