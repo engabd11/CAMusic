@@ -1178,12 +1178,6 @@ private fun PlayAllBar(count: Int, onPlayAll: () -> Unit, onDownloadAll: (() -> 
 }
 
 /**
- * The server is out of reach and the phone is running on its downloads. This is
- * the feature working, not an error, so it reads as a state rather than a fault —
- * with the one action that matters if the server is actually back.
- */
-@Composable
-/**
  * "You were listening to this somewhere else."
  *
  * Navidrome keeps one saved queue per user, and every client that supports it writes
@@ -1241,6 +1235,11 @@ private fun ResumeCard(saved: SavedQueue, onResume: () -> Unit, onDismiss: () ->
     }
 }
 
+/**
+ * The server is out of reach and the phone is running on its downloads. This is
+ * the feature working, not an error, so it reads as a state rather than a fault —
+ * with the one action that matters if the server is actually back.
+ */
 @Composable
 private fun OfflineNotice(onRetry: () -> Unit) {
     val accent = LocalAccent.current
