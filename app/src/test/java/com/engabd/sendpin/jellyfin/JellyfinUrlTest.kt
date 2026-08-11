@@ -77,6 +77,12 @@ class JellyfinUrlTest {
         assertTrue("api_key=tok123" in client("192.168.0.10:8096").streamUrl("song1"))
     }
 
+    @Test
+    fun `the user id rides on the stream URL for permission checks`() {
+        val url = client("192.168.0.10:8096").streamUrl("song1")
+        assertTrue("userId=u1" in url, url)
+    }
+
     // ─── Download and cover ──────────────────────────────────────────────────
 
     @Test
