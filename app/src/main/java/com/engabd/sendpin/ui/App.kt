@@ -577,6 +577,7 @@ fun App() {
                             onOpenDownloads = { navController.navigate("downloads") },
                         )
                     }
+                    } // NavHost
                     } // CompositionLocalProvider
                 } // SharedTransitionLayout
 
