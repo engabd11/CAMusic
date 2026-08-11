@@ -227,7 +227,9 @@ private fun JoinedCard(p: SpeakerUi, onSelect: () -> Unit, onUnjoin: () -> Unit,
                 HSlider(p.volume, onVol, modifier = Modifier.weight(1f))
                 Text("${(p.volume * 100).toInt()}", color = TextSecondary, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 11.sp)
             }
-            // Sync offset only for members (the active/leader player is the reference clock).
+            // Sync offset only for members. The leader is the reference clock of the
+            // group; nudging it would move the whole group, so per-speaker latency trim
+            // is exposed only for joined followers.
             if (!p.isTarget) {
                 Spacer(Modifier.height(10.dp))
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {

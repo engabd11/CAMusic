@@ -7,9 +7,11 @@ import coil.ImageLoaderFactory
 import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import com.engabd.sendpin.audio.LocalPlayer
+import com.engabd.sendpin.crash.CrashReporter
 import com.engabd.sendpin.download.DownloadManager
 import com.engabd.sendpin.ma.MaApiClient
 import com.engabd.sendpin.service.AppLifecycleObserver
+import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.service.LocalPlaybackService
 import com.engabd.sendpin.service.MaNowPlaying
 import com.engabd.sendpin.service.Playback
@@ -127,6 +129,9 @@ class SendpinApp : Application(), ImageLoaderFactory {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        // Catch and store crashes locally before anything else starts. The previous
+        // handler is chained so the app still terminates as the platform expects.
+        CrashReporter.install(this)
         // Register the process lifecycle observer for warm reconnect and
         // toggleable background connection (TTS battery saver).
         AppLifecycleObserver.register(this)
@@ -135,6 +140,23 @@ class SendpinApp : Application(), ImageLoaderFactory {
         // download manager, which has no business holding a reference to the player.
         appScope.launch {
             localPlayer.current.collect { downloads.protectedId = it?.id }
+        }
+        // When the app is crashing and we already know about it, optionally open a
+        // GitHub issue automatically if the user has supplied a PAT. Do this in a
+        // fire-and-forget IO coroutine; we must not block the crash path.
+        appScope.launch {
+            val settings = AppSettings(this@SendpinApp)
+            if (settings.crashAutoUpload.first()) {
+                val token = settings.crashGitHubToken.first()
+                val repo = settings.crashGitHubRepo.first()
+                if (token.isNotBlank() && repo.isNotBlank()) {
+                    CrashReporter.lastUnreported()?.let { report ->
+                        CrashReporter.postToGitHub(repo, token, report).onSuccess {
+                            CrashReporter.markLastReported()
+                        }
+                    }
+                }
+            }
         }
         // The media notification follows the local player's session rather than being
         // started by whichever screen happened to press play.

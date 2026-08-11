@@ -345,7 +345,13 @@ class SendspinService : Service() {
             // the whole song. -1 is the documented value for an unknown duration, and
             // the system draws an indeterminate scrubber for it instead of a wrong one.
             .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, meta.durationMs.takeIf { it > 0 } ?: -1L)
-        cachedArtwork?.let { md.putBitmap(MediaMetadataCompat.METADATA_KEY_ART, it) }
+        cachedArtwork?.let {
+            // Some Android versions/launchers look for ART, others for ALBUM_ART.
+            // Set both so the lock screen, the shade and Bluetooth head units all
+            // resolve the cover rather than showing a grey placeholder.
+            md.putBitmap(MediaMetadataCompat.METADATA_KEY_ART, it)
+            md.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, it)
+        }
         mediaSession?.setMetadata(md.build())
     }
 
@@ -370,6 +376,9 @@ class SendspinService : Service() {
                 val result = imageLoader.execute(req)
                 if (result is SuccessResult) {
                     cachedArtwork = result.drawable.toBitmap()
+                    // Refresh both the media session metadata and the notification so
+                    // the cover appears the moment it is decoded, not only on the next
+                    // play/pause state change.
                     updateMetadata(currentMetadata())
                     updateNotification()
                 }

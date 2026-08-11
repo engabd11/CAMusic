@@ -141,6 +141,10 @@ class JellyfinClient(
         val params = buildMap {
             put("api_key", token)
             put("deviceId", deviceId)
+            // The user id is required for permission checks even when api_key is present.
+            // Without it, Jellyfin may return 401 on the stream endpoint or redirect to
+            // a transcoding URL that loses the token on the redirect.
+            if (userId.isNotBlank()) put("userId", userId)
             if (container == "raw") {
                 put("static", "true")
             } else {
