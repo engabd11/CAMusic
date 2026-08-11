@@ -92,6 +92,18 @@ private const val LONG_FLUX_DECAY = 0.9995f
 private const val MID_MAX_ATTACK_FRAMES = 3
 private const val MID_RISE_RATIO = 1.05f
 
+// Live chroma range: narrower than offline analysis because the 1024-sample
+// window's ~21.5 Hz bins are too coarse to name pitches below ~80 Hz, and
+// cymbal/hiss harmonics above ~2 kHz muddy the key. Matches syncoV2.
+private const val CHROMA_FMIN = 80f
+private const val CHROMA_FMAX = 2000f
+
+// Live tempo estimate: how many recent beat times to keep, and the valid
+// interval window (30-240 BPM). Matches syncoV2's _estimate_tempo().
+private const val MAX_BEAT_TIMES = 8
+private const val MIN_BEAT_INTERVAL_S = 0.25f
+private const val MAX_BEAT_INTERVAL_S = 2.0f
+
 // ── Analysis frame ─────────────────────────────────────────────────────────
 
 /**
@@ -131,6 +143,17 @@ data class AnalysisFrame(
      * it measures — so it can only come from seeing the whole track at once.
      */
     val melbankRef: FloatArray = FloatArray(0),
+    /**
+     * Live tempo estimate in BPM, derived from recent detected beat intervals.
+     * Mirrors syncoV2's `AnalysisFrame.tempo_bpm`; 0 means not enough onsets yet.
+     */
+    val tempoBpm: Float = 0f,
+    /**
+     * 12-bin pitch-class energy (0=C .. 11=B), unnormalised. Mirrors syncoV2's
+     * live chroma so the Song colour scheme can follow the track's actual harmony
+     * instead of picking random hues.
+     */
+    val chroma: FloatArray = FloatArray(0),
 )
 
 // ── AGC ────────────────────────────────────────────────────────────────────
@@ -246,6 +269,26 @@ internal fun makeMelbank(
     return starts to counts
 }
 
+/**
+ * Pitch-class projection matrix for live chroma.
+ *
+ * Each FFT bin maps to the nearest semitone (0=C .. 11=B) if its frequency
+ * lies inside [fmin, fmax]; otherwise it contributes nothing. Mirrors
+ * syncoV2 `audio/analyzer.py:chroma_projection()`.
+ */
+internal fun chromaProjection(freqs: FloatArray, fmin: Float, fmax: Float): FloatArray {
+    val out = FloatArray(freqs.size * 12)
+    for (i in freqs.indices) {
+        val f = freqs[i]
+        if (f in fmin..fmax) {
+            val midi = 69.0 + 12.0 * kotlin.math.log2(f / 440.0)
+            val pc = kotlin.math.round(midi).toInt().mod(12)
+            out[i * 12 + pc] = 1.0f
+        }
+    }
+    return out
+}
+
 // (Float.pow extension removed — use kotlin.math.pow directly via .toDouble().pow().toFloat())
 
 /** Centre frequency of every one-sided FFT bin, for [sampleRate] and [NFFT]. */
@@ -327,6 +370,9 @@ class AudioAnalyzer(
     private val melCounts: IntArray = melFilterbank.second
     private val nMel: Int = melStarts.size
 
+    // Live chroma: 12 pitch classes folded from FFT magnitudes (80-2000 Hz).
+    private val chromaProj: FloatArray = chromaProjection(freqs, CHROMA_FMIN, CHROMA_FMAX)
+
     /**
      * ~100 ms smoothing on the pan estimate. Declared after [nMel] because it is
      * sized from it, and Kotlin initialises properties in declaration order.
@@ -357,6 +403,9 @@ class AudioAnalyzer(
     // Long-horizon flux peaks
     private var bassSlow = 0f
     private var midSlow = 0f
+
+    // Live tempo estimate: recent beat times on the analyzer's tAudio clock.
+    private val beatTimes = ArrayDeque<Float>(MAX_BEAT_TIMES)
 
     val framePeriod: Float get() = hop.toFloat() / sampleRate.toFloat()
 
@@ -423,12 +472,23 @@ class AudioAnalyzer(
 
         if (rms < ANALYSIS_NOISE_FLOOR) {
             frameIndex++
-            // Maintain onset state coherence through silence.
+            // Maintain onset state coherence through silence. Compute the current
+            // spectrum so the previous-frame reference stays near-silent; without
+            // this the first flux after silence compares against a loud spectrum
+            // and either misses or over-triggers.
             sinceBeat++; sinceBass++; sinceMid++
             midRiseN = 0
             // Let melbank decay.
             val zeros = FloatArray(nMel)
             val mel = melFilter.update(zeros)
+            // Silent-frame spectrum reference: keeps the next onset detection sane.
+            val silentWindowed = FloatArray(window) { buf[it] * hann[it] }
+            val silentMag = fft.magnitudePower(silentWindowed)
+            for (i in silentMag.indices) silentMag[i] = sqrt(silentMag[i])
+            val silentLin = bandMeans(silentMag, fbStarts, fbCounts)
+            val silentLog = logSpectrum(silentLin)
+            prevLin = silentLin
+            prevLog = silentLog
             return AnalysisFrame(
                 bands = BANDS.keys.associateWith { 0f },
                 tAudio = (frameIndex - 1) * framePeriod,
@@ -483,6 +543,22 @@ class AudioAnalyzer(
         val tAudio = frameIndex * framePeriod
         frameIndex++
 
+        // Live chroma: fold magnitude spectrum into pitch classes.
+        val chroma = FloatArray(12)
+        if (chromaProj.isNotEmpty()) {
+            for (i in mag.indices) {
+                val m = mag[i]
+                if (m <= 0f) continue
+                val base = i * 12
+                for (p in 0 until 12) {
+                    chroma[p] += m * chromaProj[base + p]
+                }
+            }
+        }
+
+        // Live tempo estimate from recent detected beat times.
+        val tempoBpm = estimateTempo()
+
         return AnalysisFrame(
             bands = bands,
             energy = energy,
@@ -500,6 +576,8 @@ class AudioAnalyzer(
             midStrength = onsets.midStrength,
             salience = salience,
             onsetWidth = onsets.width,
+            chroma = chroma,
+            tempoBpm = tempoBpm,
         )
     }
 
@@ -564,6 +642,11 @@ class AudioAnalyzer(
         // Broadband beat
         val (beat, strength) = thresholdOnset(flux, fluxHist, sinceBeat)
         sinceBeat = if (beat) 0 else sinceBeat + 1
+        if (beat) {
+            val bt = frameIndex * framePeriod
+            beatTimes.addLast(bt)
+            if (beatTimes.size > MAX_BEAT_TIMES) beatTimes.removeFirst()
+        }
 
         // Bass beat: requires bass dominance
         val bassResult = if (bassShare >= BASS_FLUX_SHARE && bassShare >= midShare) {
@@ -624,6 +707,24 @@ class AudioAnalyzer(
         return false to 0f
     }
 
+    /**
+     * Live BPM estimate from recent beat intervals. Mirrors syncoV2's
+     * `_estimate_tempo()`: keep the last [MAX_BEAT_TIMES] beat times, drop
+     * intervals outside 30-240 BPM, and return 60 / median(interval).
+     */
+    private fun estimateTempo(): Float {
+        if (beatTimes.size < 4) return 0f
+        val intervals = FloatArray(beatTimes.size - 1) { i ->
+            beatTimes.elementAt(i + 1) - beatTimes.elementAt(i)
+        }
+        val valid = intervals.filter { it in MIN_BEAT_INTERVAL_S..MAX_BEAT_INTERVAL_S }
+        if (valid.size < 2) return 0f
+        val sorted = valid.toFloatArray().sortedArray()
+        val mid = sorted.size / 2
+        val median = if (sorted.size % 2 == 0) (sorted[mid - 1] + sorted[mid]) / 2f else sorted[mid]
+        return if (median > 1e-9f) 60f / median else 0f
+    }
+
     fun reset() {
         for (a in agc.values) a.reset()
         energyAgc.reset()
@@ -634,6 +735,7 @@ class AudioAnalyzer(
         java.util.Arrays.fill(bufL, 0f); java.util.Arrays.fill(bufR, 0f)
         panSmooth.reset(FloatArray(nMel))
         fluxHist.clear(); bassHist.clear(); midHist.clear()
+        beatTimes.clear()
         sinceBeat = ONSET_REFRACTORY; sinceBass = ONSET_REFRACTORY; sinceMid = ONSET_REFRACTORY
         rmsSmooth = 0f; loudRef = SALIENCE_MIN_REF; bassSlow = 0f; midSlow = 0f
         frameIndex = 0

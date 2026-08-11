@@ -2,7 +2,11 @@ package com.engabd.sendpin.hue
 
 import java.util.Random
 import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.ln
 import kotlin.math.min
+import kotlin.math.sqrt
+import kotlin.math.PI
 
 /** How many hues the room holds at once, spread across it by `colourSpread`. */
 private const val SONG_COLOURS = 5
@@ -22,24 +26,22 @@ private const val SONG_SAT = 0.92f
 private const val SONG_VAL = 1.0f
 
 /**
- * The Song colour source: fresh random colours, changing with the music.
+ * The synesthetic chromatic rainbow (C=red, D~yellow, ..., B~violet). Index 0
+ * = C. A plain chromatic wheel keeps adjacent semitones adjacent in hue, so a
+ * key and its neighbours give a coherent, smoothly-drifting palette — exactly
+ * what syncoV2's offline chroma-based palette does.
+ */
+private val PITCH_HUE = FloatArray(12) { it / 12f }
+
+/**
+ * The Song colour source: fresh colours drawn from the music's live harmony.
  *
- * Deliberately simple. syncoV2 derives this from the track's chroma — its actual
- * key and harmony — which needs a pitch-class projection the live analyzer does
- * not compute, and which is a lot of machinery for something the room reads as
- * "the colours keep changing". This does the thing that reads, directly.
- *
- * A ring of [SONG_COLOURS] hues, so the palette still spreads across the room
- * the way every other scheme does rather than flooding it with one colour. Each
- * qualifying beat retires the oldest hue and introduces a new one, so the room
- * evolves continuously and never repeats — a peak swaps two at once, so the big
- * moments visibly turn the room over.
- *
- * New hues are chosen away from the ones already showing, because uniform random
- * picks cluster: without a separation rule roughly a third of changes land close
- * enough to the previous colour to read as no change at all.
- *
- * Not thread-safe; owned by the engine's render loop.
+ * Deliberately simple, but not random. syncoV2 derives its Song palette from
+ * the track's chroma — its actual key and pitch-class energy — which gives hues
+ * that match the music. The live analyzer now supplies a 12-bin chroma, so this
+ * biases new hues toward the strongest pitch classes. A chroma peak must reach
+ * [PEAK_FRAC] of the strongest class to earn its own anchor; otherwise only the
+ * dominant pitch class drives the colour.
  */
 class SongPalette(seed: Long? = null) {
 
@@ -61,28 +63,41 @@ class SongPalette(seed: Long? = null) {
      *
      * @param peak true on a highlighted beat, which turns two colours over
      *   instead of one so the moment lands.
+     * @param chroma optional 12-bin pitch-class energy; when present the new hue
+     *   is biased toward the music's current harmony, not purely random.
      */
-    fun onBeat(peak: Boolean) {
-        rotate()
-        if (peak) rotate()
+    fun onBeat(peak: Boolean, chroma: FloatArray? = null) {
+        rotate(chroma)
+        if (peak) rotate(chroma)
     }
 
     /** The current colours, oldest first, ready for [Palette]. */
     fun colors(): List<Rgb> = hues.map { hsvToRgbSong(it, SONG_SAT, SONG_VAL) }
 
-    private fun rotate() {
+    private fun rotate(chroma: FloatArray?) {
         // Shift down and append, so the room turns over gradually rather than
         // every lamp changing at once.
         for (i in 0 until hues.size - 1) hues[i] = hues[i + 1]
-        hues[hues.size - 1] = pickHue()
+        hues[hues.size - 1] = pickHue(chroma)
     }
 
-    /** A hue as far as reasonably possible from the ones already showing. */
-    private fun pickHue(): Float {
+    /**
+     * A hue as far as reasonably possible from the ones already showing,
+     * biased toward the live chroma when one is provided.
+     */
+    private fun pickHue(chroma: FloatArray? = null): Float {
+        val anchor = chromaAnchor(chroma)
         var best = rng.nextFloat()
         var bestGap = -1f
         repeat(HUE_TRIES) {
-            val candidate = rng.nextFloat()
+            // If a chroma anchor exists, spend most of the search near it,
+            // but allow one outlier pick so the room doesn't get stuck in one
+            // key for an entire song.
+            val candidate = if (anchor != null && it < HUE_TRIES - 2) {
+                (anchor + rng.nextGaussian(0.08f)).mod1()
+            } else {
+                rng.nextFloat()
+            }
             var gap = 1f
             for (h in hues) {
                 if (h < 0f) continue  // unset
@@ -97,11 +112,48 @@ class SongPalette(seed: Long? = null) {
         return best
     }
 
+    /**
+     * Map a 12-bin chroma vector to a dominant hue. Only pitch classes that
+     * reach [PEAK_FRAC] of the strongest class get their own hue slot; if none
+     * do, only the dominant class drives the colour.
+     */
+    private fun chromaAnchor(chroma: FloatArray?): Float? {
+        if (chroma == null || chroma.size != 12) return null
+        val c = chroma.copyOf()
+        var mx = c[0]
+        for (v in c) if (v > mx) mx = v
+        if (mx <= 1e-9f) return null
+        // Normalise and find peaks above the fraction threshold.
+        val threshold = mx * PEAK_FRAC
+        var total = 0f
+        var weighted = 0f
+        for (i in c.indices) {
+            if (c[i] >= threshold) {
+                val w = c[i] / mx
+                total += w
+                weighted += w * PITCH_HUE[i]
+            }
+        }
+        return if (total > 1e-9f) weighted / total else {
+            var idx = 0
+            for (i in c.indices) if (c[i] > c[idx]) idx = i
+            PITCH_HUE[idx]
+        }
+    }
+
     private companion object {
+        private const val PEAK_FRAC = 0.45f
+
         /** Distance on the hue wheel, 0..0.5. */
         fun hueDistance(a: Float, b: Float): Float {
             val d = abs(a - b) % 1f
             return min(d, 1f - d)
+        }
+
+        /** Wrap into [0, 1). */
+        fun Float.mod1(): Float {
+            val m = this % 1f
+            return if (m < 0f) m + 1f else m
         }
 
         /**
@@ -125,4 +177,13 @@ class SongPalette(seed: Long? = null) {
             }
         }
     }
+}
+
+/** Gaussian-ish perturbation around zero, scaled by [sigma]. */
+private fun Random.nextGaussian(sigma: Float): Float {
+    val u1 = nextFloat()
+    val u2 = nextFloat()
+    val r = sqrt(-2f * ln(u1.coerceAtLeast(1e-7f)))
+    val theta = 2f * PI * u2
+    return (sigma * r * cos(theta)).toFloat()
 }

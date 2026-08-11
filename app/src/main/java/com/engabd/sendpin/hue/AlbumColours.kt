@@ -94,29 +94,20 @@ fun extractAlbumColoursV1(bmp: Bitmap, k: Int = 5): AlbumColours? =
     extractAlbumColoursV1(thumbnail(bmp), k)
 
 /**
- * The cover as a [THUMB]×[THUMB] thumbnail, by area average.
+ * The cover as a [THUMB]×[THUMB] thumbnail.
  *
- * Not `Bitmap.createScaledBitmap(..., filter = true)`, which is a 2×2 bilinear
- * sample: reducing an 800px sleeve to 64px that way reads four source pixels
- * per output pixel and ignores the other ~99% of the image. On anything with
- * grain, thin type or fine detail that is not a smaller picture of the cover,
- * it is an aliased one, and the palette then describes pixels that happened to
- * land under the sample points rather than the sleeve.
- *
- * Averaging the full source rectangle behind each output pixel is also the
- * measurement the weights claim to be: "what fraction of the cover is this
- * colour". A resampler that can overshoot would put colours in the palette
- * that are not on the sleeve at all, which is the defect this whole file
- * exists to avoid.
- *
- * Rows are pulled a strip at a time rather than as one big `getPixels`, so a
- * large cover costs `width × (height / THUMB + 1)` ints instead of the whole
- * bitmap.
+ * syncoV2 downsamples artwork with ffmpeg's default scaler, which is bilinear.
+ * That smooths grain and fine detail, so the palette describes the sleeve's
+ * dominant colours rather than its noise. The area-average path below is kept
+ * testable and may be re-enabled later, but bilinear is the reference behaviour.
  */
-private fun thumbnail(bmp: Bitmap): IntArray =
-    areaThumbnail(bmp.width, bmp.height) { y, count, into ->
-        bmp.getPixels(into, 0, bmp.width, 0, y, bmp.width, count)
-    }
+private fun thumbnail(bmp: Bitmap): IntArray {
+    val scaled = Bitmap.createScaledBitmap(bmp, THUMB, THUMB, true /* bilinear */)
+    val out = IntArray(THUMB * THUMB)
+    scaled.getPixels(out, 0, THUMB, 0, 0, THUMB, THUMB)
+    if (scaled !== bmp) scaled.recycle()
+    return out
+}
 
 /**
  * Area-average downscale to [THUMB]×[THUMB] over an abstract row source.
@@ -124,6 +115,8 @@ private fun thumbnail(bmp: Bitmap): IntArray =
  * [readRows] must fill `into` with `count` rows of ARGB starting at row `y`,
  * packed at `width` stride. Taking rows through a lambda keeps the arithmetic
  * testable on the JVM, where there is no [Bitmap] to read.
+ * Currently unused in production (bilinear thumbnail is the syncoV2 reference),
+ * but retained for unit tests and future experimentation.
  */
 internal fun areaThumbnail(
     width: Int,

@@ -110,6 +110,7 @@ data class ModeParams(
     /** Accents below this barely register, which is what makes a rung selective. */
     val accentFloor: Float = 0.0f,
     val colourJump: Float = 0.045f,   // palette advance per beat
+    val colourBeatStep: Float = 0.0f, // tempo-locked rolling colour step
     val colourSpread: Float = 0.70f,  // per-lamp hue variation
     val fullRoomAccent: Float = 2.0f, // accent at/above which ALL roles slam
     val melbankGain: Float = 0.45f,   // continuous brightness from melbank slice
@@ -158,10 +159,11 @@ val MODE_PARAMS = mapOf(
         base = 0.80f, floor = 0.80f, bassGain = 0f, beatGain = 0f, beatThreshold = 99f,
         colourSpeed = 0.04f, shimmer = 0f, colourSat = 1f,
         colourLerp = 0.10f, briAttack = 0.12f, briDecay = 0.08f,
-        highlightQuantile = 0f, colourJump = 0.020f, colourSpread = 1f,
+        highlightQuantile = 0f,
+        colourJump = 0.020f,
+        colourBeatStep = 0.008f,
+        colourSpread = 1.0f,
         salienceGamma = 1.6f, widthMin = 0.20f,
-        melbankGain = 0f, melbankFloor = 0f, colourFlow = 0f, spectralPop = 0f,
-        energyGain = 0f,
     ),
     SyncMode.MEDIUM to ModeParams(
         base = 0.12f, floor = 0.05f, bassGain = 0.14f, beatGain = 0.9f, beatThreshold = 1.4f,
@@ -453,6 +455,15 @@ private const val BAND_LOUD_COMPRESS = 0.5f
 private const val MEL_SLOW_RISE = 0.25f
 private const val MEL_SLOW_FALL = 0.06f
 
+/** Pre-drop anticipation constants. Mirror syncoV2 `effects/engine.py`. */
+private const val PREDROP_RAMP_S = 1.2f
+private const val PREDROP_CONFIRM = 10
+private const val PREDROP_HEUR_CAP = 0.6f
+private const val PREDROP_TIMEOUT_S = 3.0f
+private const val PREDROP_REFRACTORY_S = 8.0f
+private const val PREDROP_RISE = 0.10f
+private const val PREDROP_FALL = 0.04f
+
 /**
  * Split [bins] melbank bins into [n] contiguous, near-equal `[lo, hi)` spans,
  * low to high — one per lamp. Every band stays covered at every instant, which
@@ -568,6 +579,19 @@ class SyncoEngine(
 
     /** Full-field swell released by a drop, decaying back over ~half a second. */
     private var swell = 0f
+
+    /**
+     * Depth held the moment a drop landed. A deeper pre-drop pull-back earns a
+     * bigger detonation; mirrors syncoV2 `predrop_released`.
+     */
+    private var predropReleased = 0f
+
+    /** Pre-drop state machine: rendered envelope 0..1. */
+    private var predrop = 0f
+    private var predropCommit = false
+    private var predropStreak = 0
+    private var predropCommitT = 0f
+    private var predropBlockUntil = 0f
 
     /** Evidence that the song currently has an actual beat. See [updateRhythmConf]. */
     private var rhythmConf = 0f
@@ -750,6 +774,66 @@ class SyncoEngine(
     }
 
     // ── Highlight ranking ─────────────────────────────────────────────────
+
+    /**
+     * Advance the pre-drop pull-down envelope and return its 0..1 value.
+     *
+     * Ported from syncoV2 `effects/engine.py:_update_predrop`. A scheduled drop
+     * (known ETA) ramps to full depth; a heuristic build is treated with
+     * suspicion: it must persist [PREDROP_CONFIRM] frames, is capped at
+     * [PREDROP_HEUR_CAP], times out after [PREDROP_TIMEOUT_S], and then blocks
+     * re-commit for [PREDROP_REFRACTORY_S].
+     */
+    private fun updatePredrop(structure: StructureState?): Float {
+        predropReleased = 0f
+        if (structure == null) {
+            predrop = 0f
+            predropCommit = false
+            predropStreak = 0
+            return 0f
+        }
+
+        if (structure.dropNow) {
+            if (predrop > 0.05f) predropReleased = predrop
+            predrop = 0f
+            predropCommit = false
+            predropStreak = 0
+            return 0f
+        }
+
+        val scheduled = structure.dropEtaS >= 0f
+        val target: Float
+        if (scheduled) {
+            predropCommit = true
+            predropCommitT = time
+            target = (1f - structure.dropEtaS / PREDROP_RAMP_S).coerceIn(0f, 1f)
+        } else if (predropCommit) {
+            if (time - predropCommitT > PREDROP_TIMEOUT_S) {
+                predropCommit = false
+                predropStreak = 0
+                predropBlockUntil = time + PREDROP_REFRACTORY_S
+                target = 0f
+            } else {
+                target = PREDROP_HEUR_CAP
+            }
+        } else if (structure.dropImminentHeuristic && time >= predropBlockUntil) {
+            predropStreak++
+            if (predropStreak >= PREDROP_CONFIRM) {
+                predropCommit = true
+                predropCommitT = time
+            }
+            target = 0f
+        } else {
+            predropStreak = 0
+            target = 0f
+        }
+
+        predrop = if (target > predrop)
+            min(target, predrop + PREDROP_RISE)
+        else
+            max(target, predrop - PREDROP_FALL)
+        return predrop
+    }
 
     /**
      * Is this beat strong enough to earn a full-brightness flash?
@@ -938,11 +1022,10 @@ class SyncoEngine(
         // as a full-field swell. Without this every bar of a track gets the same
         // treatment however the song is shaped.
         val build = structure?.buildProgress ?: 0f
-        val predrop = if (p.predropDepth > 0f && structure?.dropImminent == true) {
-            p.predropDepth * build * musicGate
-        } else 0f
+        val sectionLevel = structure?.sectionLevel ?: 1f
+        val predrop = updatePredrop(structure) * p.predropDepth * musicGate
         if (structure?.dropNow == true && p.dropBoost > 0f) {
-            swell = max(swell, p.dropBoost * musicGate)
+            swell = max(swell, p.dropBoost * (1f + 0.35f * predropReleased) * musicGate)
             // A drop is a new section: reshuffle the room so the same lamps
             // aren't carrying the same roles through the whole track.
             if (p.dynamicRoles) { roleOffset++; updateRoles() }
@@ -966,7 +1049,7 @@ class SyncoEngine(
         // same reason everything else is — a grid ticking through silence must
         // not keep generating colours for a room nobody is listening in.
         if (scheme == ColorScheme.SONG && beatNow && musicGate > 0.5f) {
-            songPalette.onBeat(peak = highlight)
+            songPalette.onBeat(peak = highlight, chroma = frame.chroma)
             palette = Palette(songPalette.colors())
         }
 
@@ -975,12 +1058,20 @@ class SyncoEngine(
         if (p.colourFlow > 0f) {
             colourPhase += p.colourFlow * (0.25f + 0.75f * frame.energy) * dt * musicGate
         }
+        val rolling = locked && beatgrid!!.periodS > 0.05f && p.colourBeatStep > 0f
+        val sectionMul = 0.6f + 0.4f * sectionLevel
         if (beatNow && p.colourJump > 0f) {
             var step = p.colourJump * (0.55f + 0.45f * accNow) * musicGate
             if (highlight) step *= 1.7f
             step *= PHRASE_JUMP[phrase % PHRASE_JUMP.size]
+            step *= sectionMul
             step *= (1f - 0.5f * predrop)  // hold still as the drop approaches
             colourPhase += step
+            if (rolling) {
+                colourPhase += p.colourBeatStep * 0.2f * (dt / beatgrid.periodS) * sectionMul
+            }
+        } else if (rolling) {
+            colourPhase += p.colourBeatStep * 0.7f * (dt / beatgrid.periodS) * sectionMul
         }
 
         // ── Wavefronts ───────────────────────────────────────────────────
@@ -1430,6 +1521,10 @@ class SyncoEngine(
      * Idle glow for paused/stopped state: colours flow gently across the room.
      */
     fun renderIdle(t: Float, level: Float = 0.20f): Map<Int, Rgb> {
+        predrop = 0f
+        predropCommit = false
+        predropStreak = 0
+        predropReleased = 0f
         val dim = level * brightness
         val out = HashMap<Int, Rgb>()
         for (cid in rankIds) {
