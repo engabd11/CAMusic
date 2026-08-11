@@ -372,6 +372,129 @@ class AlbumColoursTest {
         assertTrue(abs(out.weights[1] - 0.100098f) < 1e-4f, "expected 0.1001, got ${out.weights[1]}")
     }
 
+    // ── downscale ────────────────────────────────────────────────────────
+
+    /** An image as a row reader, standing in for `Bitmap.getPixels`. */
+    private fun rows(src: IntArray, w: Int) = { y: Int, count: Int, into: IntArray ->
+        System.arraycopy(src, y * w, into, 0, count * w)
+    }
+
+    private fun solid(w: Int, h: Int, colour: Int) = IntArray(w * h) { colour }
+
+    private fun red(p: Int) = (p shr 16) and 0xFF
+    private fun green(p: Int) = (p shr 8) and 0xFF
+    private fun blue(p: Int) = p and 0xFF
+
+    @Test
+    fun `a flat cover downscales to exactly that colour`() {
+        val src = solid(512, 512, argb(90, 25, 128))
+        val out = areaThumbnail(512, 512, rows(src, 512))
+        assertEquals(64 * 64, out.size)
+        for (p in out) {
+            assertTrue(
+                red(p) == 90 && green(p) == 25 && blue(p) == 128,
+                "flat cover produced ${red(p)},${green(p)},${blue(p)}",
+            )
+        }
+    }
+
+    @Test
+    fun `an aligned split downscales without inventing a blend`() {
+        // 128 -> 64 is exactly 2:1, so every output pixel sits wholly inside one
+        // half. A blended pixel on the seam would mean the sample grid is
+        // misaligned.
+        val w = 128
+        val src = IntArray(w * w) { i -> if (i % w < w / 2) argb(255, 0, 0) else argb(0, 0, 255) }
+        val out = areaThumbnail(w, w, rows(src, w))
+        for (y in 0 until 64) {
+            for (x in 0 until 64) {
+                val p = out[y * 64 + x]
+                val wantRed = x < 32
+                assertTrue(
+                    if (wantRed) red(p) == 255 && blue(p) == 0 else red(p) == 0 && blue(p) == 255,
+                    "pixel ($x,$y) blended across the seam: ${red(p)},${green(p)},${blue(p)}",
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `fine detail is averaged in, not sampled past`() {
+        // Every third row bright on a dark ground, at 192x192 so each output row
+        // covers exactly three source rows. The honest answer is the mean of the
+        // three. A 2x2 bilinear sample reads two adjacent rows and lands on a
+        // value that depends on which rows the grid happened to hit — the
+        // aliasing this downscale exists to remove.
+        val w = 192
+        val src = IntArray(w * w) { i -> if ((i / w) % 3 == 0) argb(240, 240, 240) else argb(30, 30, 30) }
+        val out = areaThumbnail(w, w, rows(src, w))
+        val want = (240 + 30 + 30) / 3
+        for (p in out) {
+            assertTrue(
+                abs(red(p) - want) <= 1,
+                "expected the 3-row mean ~$want, got ${red(p)} — detail was sampled past, not averaged",
+            )
+        }
+    }
+
+    @Test
+    fun `the thumbnail preserves the cover's mean`() {
+        // The property that makes the weights mean anything: no colour gains or
+        // loses share in the downscale.
+        val w = 256
+        var seed = 12345
+        val src = IntArray(w * w) {
+            seed = seed * 1103515245 + 12345
+            argb((seed ushr 16) and 0xFF, (seed ushr 8) and 0xFF, seed and 0xFF)
+        }
+        val out = areaThumbnail(w, w, rows(src, w))
+        val srcMean = src.sumOf { red(it).toLong() }.toDouble() / src.size
+        val outMean = out.sumOf { red(it).toLong() }.toDouble() / out.size
+        assertTrue(
+            abs(srcMean - outMean) < 1.0,
+            "mean drifted in the downscale: source $srcMean, thumbnail $outMean",
+        )
+    }
+
+    @Test
+    fun `a non-integer ratio still preserves the mean`() {
+        // 100 -> 64 leaves partial source pixels at every output boundary; they
+        // must count for the fraction they cover.
+        val w = 100
+        val src = IntArray(w * w) { i -> argb(i % 256, (i / 7) % 256, (i / 13) % 256) }
+        val out = areaThumbnail(w, w, rows(src, w))
+        val srcMean = src.sumOf { green(it).toLong() }.toDouble() / src.size
+        val outMean = out.sumOf { green(it).toLong() }.toDouble() / out.size
+        assertTrue(
+            abs(srcMean - outMean) < 2.0,
+            "mean drifted on a fractional ratio: source $srcMean, thumbnail $outMean",
+        )
+    }
+
+    @Test
+    fun `a cover already at thumbnail size passes through unchanged`() {
+        val src = IntArray(64 * 64) { i -> argb(i % 256, (i * 3) % 256, (i * 7) % 256) }
+        val out = areaThumbnail(64, 64, rows(src, 64))
+        for (i in src.indices) {
+            assertTrue(
+                red(out[i]) == red(src[i]) && green(out[i]) == green(src[i]) && blue(out[i]) == blue(src[i]),
+                "pixel $i changed at 1:1",
+            )
+        }
+    }
+
+    @Test
+    fun `a cover smaller than the thumbnail is handled`() {
+        val src = solid(32, 48, argb(12, 200, 70))
+        val out = areaThumbnail(32, 48, rows(src, 32))
+        for (p in out) {
+            assertTrue(
+                red(p) == 12 && green(p) == 200 && blue(p) == 70,
+                "upscale changed a flat colour: ${red(p)},${green(p)},${blue(p)}",
+            )
+        }
+    }
+
     @Test
     fun `colourless art falls back to syncoV2's neutral, both versions`() {
         // Below the luma floor everywhere, so both extractions take the shared

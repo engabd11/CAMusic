@@ -3,9 +3,12 @@ package com.engabd.sendpin.hue
 import android.graphics.Bitmap
 import kotlin.math.abs
 import kotlin.math.cbrt
+import kotlin.math.ceil
+import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
+import kotlin.math.roundToInt
 
 /**
  * Album-art colour extraction for Light Sync, ported from syncoV2
@@ -78,14 +81,8 @@ data class AlbumColours(val colors: List<Rgb>, val weights: List<Float>)
  * Returns null when the bitmap yields nothing usable, which the caller should
  * treat as "keep the palette you have" rather than as a reason to go dark.
  */
-fun extractAlbumColours(bmp: Bitmap, k: Int = 4): AlbumColours? {
-    val small = if (bmp.width == THUMB && bmp.height == THUMB) bmp
-    else Bitmap.createScaledBitmap(bmp, THUMB, THUMB, true)
-    val px = IntArray(THUMB * THUMB)
-    small.getPixels(px, 0, THUMB, 0, 0, THUMB, THUMB)
-    if (small !== bmp) small.recycle()
-    return extractAlbumColours(px, k)
-}
+fun extractAlbumColours(bmp: Bitmap, k: Int = 4): AlbumColours? =
+    extractAlbumColours(thumbnail(bmp), k)
 
 /**
  * v1 extraction from a [Bitmap]: accent/base separation, uniform palette.
@@ -93,13 +90,121 @@ fun extractAlbumColours(bmp: Bitmap, k: Int = 4): AlbumColours? {
  * Use when the colour scheme is `album_art` (the "even" option). The palette
  * has no weights — the engine interpolates evenly across the colours.
  */
-fun extractAlbumColoursV1(bmp: Bitmap, k: Int = 5): AlbumColours? {
-    val small = if (bmp.width == THUMB && bmp.height == THUMB) bmp
-    else Bitmap.createScaledBitmap(bmp, THUMB, THUMB, true)
-    val px = IntArray(THUMB * THUMB)
-    small.getPixels(px, 0, THUMB, 0, 0, THUMB, THUMB)
-    if (small !== bmp) small.recycle()
-    return extractAlbumColoursV1(px, k)
+fun extractAlbumColoursV1(bmp: Bitmap, k: Int = 5): AlbumColours? =
+    extractAlbumColoursV1(thumbnail(bmp), k)
+
+/**
+ * The cover as a [THUMB]×[THUMB] thumbnail, by area average.
+ *
+ * Not `Bitmap.createScaledBitmap(..., filter = true)`, which is a 2×2 bilinear
+ * sample: reducing an 800px sleeve to 64px that way reads four source pixels
+ * per output pixel and ignores the other ~99% of the image. On anything with
+ * grain, thin type or fine detail that is not a smaller picture of the cover,
+ * it is an aliased one, and the palette then describes pixels that happened to
+ * land under the sample points rather than the sleeve.
+ *
+ * Averaging the full source rectangle behind each output pixel is also the
+ * measurement the weights claim to be: "what fraction of the cover is this
+ * colour". A resampler that can overshoot would put colours in the palette
+ * that are not on the sleeve at all, which is the defect this whole file
+ * exists to avoid.
+ *
+ * Rows are pulled a strip at a time rather than as one big `getPixels`, so a
+ * large cover costs `width × (height / THUMB + 1)` ints instead of the whole
+ * bitmap.
+ */
+private fun thumbnail(bmp: Bitmap): IntArray =
+    areaThumbnail(bmp.width, bmp.height) { y, count, into ->
+        bmp.getPixels(into, 0, bmp.width, 0, y, bmp.width, count)
+    }
+
+/**
+ * Area-average downscale to [THUMB]×[THUMB] over an abstract row source.
+ *
+ * [readRows] must fill `into` with `count` rows of ARGB starting at row `y`,
+ * packed at `width` stride. Taking rows through a lambda keeps the arithmetic
+ * testable on the JVM, where there is no [Bitmap] to read.
+ */
+internal fun areaThumbnail(
+    width: Int,
+    height: Int,
+    readRows: (y: Int, count: Int, into: IntArray) -> Unit,
+): IntArray {
+    val out = IntArray(THUMB * THUMB)
+    if (width <= 0 || height <= 0) return out
+
+    val colFirst = IntArray(THUMB)
+    val colWeights = axisWeights(width, colFirst)
+    val rowFirst = IntArray(THUMB)
+    val rowWeights = axisWeights(height, rowFirst)
+
+    val strip = IntArray(width * rowWeights.maxOf { it.size })
+    for (dy in 0 until THUMB) {
+        val wy = rowWeights[dy]
+        readRows(rowFirst[dy], wy.size, strip)
+        for (dx in 0 until THUMB) {
+            val wx = colWeights[dx]
+            val x0 = colFirst[dx]
+            var r = 0f
+            var g = 0f
+            var b = 0f
+            for (i in wy.indices) {
+                val rowWeight = wy[i]
+                if (rowWeight == 0f) continue
+                val rowOff = i * width
+                var sr = 0f
+                var sg = 0f
+                var sb = 0f
+                for (j in wx.indices) {
+                    val colWeight = wx[j]
+                    if (colWeight == 0f) continue
+                    val p = strip[rowOff + x0 + j]
+                    sr += colWeight * ((p shr 16) and 0xFF)
+                    sg += colWeight * ((p shr 8) and 0xFF)
+                    sb += colWeight * (p and 0xFF)
+                }
+                r += rowWeight * sr
+                g += rowWeight * sg
+                b += rowWeight * sb
+            }
+            out[dy * THUMB + dx] = (0xFF shl 24) or
+                (r.roundToInt().coerceIn(0, 255) shl 16) or
+                (g.roundToInt().coerceIn(0, 255) shl 8) or
+                b.roundToInt().coerceIn(0, 255)
+        }
+    }
+    return out
+}
+
+/**
+ * Per-output-pixel source weights along one axis, normalised to sum to 1.
+ *
+ * Output pixel `d` covers the source interval `[d·srcLen/THUMB,
+ * (d+1)·srcLen/THUMB)`; each source index in that span contributes the length
+ * it overlaps, so partial pixels at the ends count for the fraction they cover.
+ */
+private fun axisWeights(srcLen: Int, firstOut: IntArray): Array<FloatArray> {
+    val scale = srcLen.toDouble() / THUMB
+    return Array(THUMB) { d ->
+        val lo = d * scale
+        val hi = (d + 1) * scale
+        val i0 = floor(lo).toInt().coerceIn(0, srcLen - 1)
+        val i1 = ceil(hi).toInt().coerceIn(i0 + 1, srcLen)
+        firstOut[d] = i0
+        val w = FloatArray(i1 - i0)
+        var sum = 0.0
+        for (i in i0 until i1) {
+            val overlap = min(hi, (i + 1).toDouble()) - max(lo, i.toDouble())
+            if (overlap > 0.0) {
+                w[i - i0] = overlap.toFloat()
+                sum += overlap
+            }
+        }
+        // An output pixel narrower than one source pixel (upscaling a tiny
+        // cover) lands entirely inside it.
+        if (sum > 0.0) for (j in w.indices) w[j] = (w[j] / sum).toFloat() else w[0] = 1f
+        w
+    }
 }
 
 /**
