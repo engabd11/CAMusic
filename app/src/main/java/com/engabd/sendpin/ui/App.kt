@@ -55,6 +55,8 @@ import com.engabd.sendpin.ui.design.LocalMiniBarInset
 import com.engabd.sendpin.ui.design.Motion
 import com.engabd.sendpin.ui.design.MiniBarHeight
 import com.engabd.sendpin.ui.design.LocalPalette
+import androidx.compose.material3.windowsizeclass.WindowSizeClass
+import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
 import com.engabd.sendpin.ui.design.NavTab
 import com.engabd.sendpin.ui.design.SendspinNavBar
 import com.engabd.sendpin.ui.design.rememberAlbumPalette
@@ -159,9 +161,9 @@ private fun SystemBars() {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, androidx.compose.animation.ExperimentalSharedTransitionApi::class)
 @Composable
-fun App() {
+fun App(windowSizeClass: WindowSizeClass? = null) {
     // Appearance is read before the theme rather than inside it, because it *is* the
     // theme. Defaults match the app as designed, so the first frame of a fresh install
     // — drawn before DataStore has answered — is the same OLED black it settles on,
@@ -223,6 +225,16 @@ fun App() {
 
         val nowPlayingVm: NowPlayingViewModel = viewModel()
         val libraryVm: LibraryViewModel = viewModel()
+
+        // Adaptive grid columns: the library's 6-column base was designed for phones.
+        // On tablets and foldables (Medium/Expanded width), scale up so covers aren't
+        // oversized. The span math (covers span 2, categories span 3, rows span 6)
+        // stays the same — only the base count grows, so the layout proportions hold.
+        val gridCols = when (windowSizeClass?.widthSizeClass) {
+            WindowWidthSizeClass.Medium -> 8       // tablets / unfolded foldables
+            WindowWidthSizeClass.Expanded -> 12    // large tablets / desktop
+            else -> 6                              // phones (Compact or unknown)
+        }
 
         // The whole app is tinted by whatever the *controlled player* is playing —
         // which is not necessarily this phone. Deriving the app palette from the
@@ -419,6 +431,7 @@ fun App() {
                         }
                         LibraryScreen(
                             viewModel = libraryVm,
+                            gridCols = gridCols,
                             onAlbumClick = { navToDetail("album", it) },
                             onArtistClick = { navToDetail("artist", it) },
                             onPlaylistClick = { navToDetail("playlist", it) },

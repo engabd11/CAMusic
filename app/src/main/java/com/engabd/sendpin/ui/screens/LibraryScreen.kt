@@ -78,6 +78,7 @@ import com.engabd.sendpin.ui.theme.*
 @Composable
 fun LibraryScreen(
     viewModel: LibraryViewModel = viewModel(),
+    gridCols: Int = 6,
     onAlbumClick: (MaItem) -> Unit = { viewModel.open(it) },
     onArtistClick: (MaItem) -> Unit = { viewModel.open(it) },
     onPlaylistClick: (MaItem) -> Unit = { viewModel.open(it) },
@@ -377,8 +378,8 @@ private fun SearchField(
 
 // --- browse ---------------------------------------------------------------
 
-private const val COLS = 6              // 6-col base: covers span 2, categories 3, rows 6
-private fun full() = GridItemSpan(COLS)
+private const val DEFAULT_COLS = 6         // 6-col base: covers span 2, categories 3, rows 6
+private fun full(cols: Int = DEFAULT_COLS) = GridItemSpan(cols)
 
 // Media-type sets, hoisted out of the per-item lambdas that test against them. Written
 // inline as `mediaType in setOf(...)` these built a fresh Set for every item, on every
@@ -466,7 +467,7 @@ private fun Browse(
     val downloadable = remember(tracks) { tracks.filter { it.provider == "subsonic" } }
 
     LazyVerticalGrid(
-        columns = GridCells.Fixed(COLS),
+        columns = GridCells.Fixed(gridCols),
         modifier = Modifier.fillMaxSize().imePadding(),
         contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 4.dp, bottom = navBarInset() + 16.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -475,12 +476,12 @@ private fun Browse(
         // Running on downloads alone is a working state, not a failure — say so
         // once, at the top, and let the rest of the screen behave normally.
         if (offline) {
-            item(span = { full() }) { OfflineNotice { viewModel.connect() } }
+            item(span = { full(gridCols) }) { OfflineNotice { viewModel.connect() } }
         }
         // Something another device left mid-track. An offer, not an interruption:
         // it sits above the shelves and goes away when dismissed or superseded.
         savedQueue?.let { saved ->
-            item(span = { full() }, key = "resume") {
+            item(span = { full(gridCols) }, key = "resume") {
                 ResumeCard(
                     saved = saved,
                     onResume = { viewModel.resumeSavedQueue() },
@@ -489,11 +490,11 @@ private fun Browse(
             }
         }
         if (error != null) {
-            item(span = { full() }) { SearchErrorState(error!!) { viewModel.connect() } }
+            item(span = { full(gridCols) }) { SearchErrorState(error!!) { viewModel.connect() } }
             return@LazyVerticalGrid
         }
         if (loading) {
-            items(6, span = { full() }, contentType = { "skeleton" }) { SkeletonRow() }
+            items(6, span = { full(gridCols) }, contentType = { "skeleton" }) { SkeletonRow() }
             return@LazyVerticalGrid
         }
 
@@ -502,7 +503,7 @@ private fun Browse(
         // search having done nothing. Every query after this one keeps its old results
         // on screen instead — see the spinner in the search field.
         if (searchOpen && s == null && searching) {
-            items(6, span = { full() }, contentType = { "skeleton" }) { SkeletonRow() }
+            items(6, span = { full(gridCols) }, contentType = { "skeleton" }) { SkeletonRow() }
             return@LazyVerticalGrid
         }
 
@@ -512,7 +513,7 @@ private fun Browse(
             searchSection("Tracks", s.tracks, viewModel, rows, onAlbumClick, onArtistClick, onPlaylistClick, onLongPress)
             searchSection("Playlists", s.playlists, viewModel, rows, onAlbumClick, onArtistClick, onPlaylistClick, onLongPress)
             if (s.artists.isEmpty() && s.albums.isEmpty() && s.tracks.isEmpty() && s.playlists.isEmpty()) {
-                item(span = { full() }) { SearchEmptyState() }
+                item(span = { full(gridCols) }) { SearchEmptyState() }
             }
             return@LazyVerticalGrid
         }
@@ -559,11 +560,11 @@ private fun Browse(
         // playlists yet would be the one place you can't make one.
         val inPlaylists = !searchOpen && node.title == "Playlists"
         if (inPlaylists) {
-            item(span = { full() }) { NewPlaylistRow(viewModel::openCreatePlaylist) }
+            item(span = { full(gridCols) }) { NewPlaylistRow(viewModel::openCreatePlaylist) }
         }
 
         if (node.items.isEmpty()) {
-            item(span = { full() }) { if (inPlaylists) Unit else SearchEmptyState() }
+            item(span = { full(gridCols) }) { if (inPlaylists) Unit else SearchEmptyState() }
             return@LazyVerticalGrid
         }
 
@@ -585,7 +586,7 @@ private fun Browse(
             }
         } else {
             if (tracks.size > 1) {
-                item(key = "playall", span = { full() }, contentType = { "playall" }) {
+                item(key = "playall", span = { full(gridCols) }, contentType = { "playall" }) {
                     PlayAllBar(
                         count = tracks.size,
                         onPlayAll = { viewModel.playAll(tracks) },
@@ -598,7 +599,7 @@ private fun Browse(
                 node.items,
                 key = { i, entry -> itemKey("r", i, entry) },
                 contentType = { _, _ -> "row" },
-                span = { _, _ -> full() },
+                span = { _, _ -> full(gridCols) },
             ) { _, entry ->
                 val click: (() -> Unit)? = when (entry.mediaType) {
                     "album" -> { { onAlbumClick(entry) } }
@@ -656,7 +657,7 @@ private fun androidx.compose.foundation.lazy.grid.LazyGridScope.shelf(
     onLongPress: (MaItem) -> Unit,
 ) {
     if (list.isEmpty()) return
-    item(key = "hdr_$title", span = { full() }, contentType = { "header" }) { Shelf(title) }
+    item(key = "hdr_$title", span = { full(gridCols) }, contentType = { "header" }) { Shelf(title) }
     itemsIndexed(
         list,
         key = { i, entry -> itemKey(title, i, entry) },
@@ -681,12 +682,12 @@ private fun androidx.compose.foundation.lazy.grid.LazyGridScope.searchSection(
     onLongPress: (MaItem) -> Unit,
 ) {
     if (list.isEmpty()) return
-    item(key = "shdr_$title", span = { full() }, contentType = { "header" }) { Shelf(title) }
+    item(key = "shdr_$title", span = { full(gridCols) }, contentType = { "header" }) { Shelf(title) }
     itemsIndexed(
         list,
         key = { i, entry -> itemKey("s_$title", i, entry) },
         contentType = { _, _ -> "row" },
-        span = { _, _ -> full() },
+        span = { _, _ -> full(gridCols) },
     ) { _, entry ->
         val click: (() -> Unit)? = when (entry.mediaType) {
             "album" -> { { onAlbumClick(entry) } }
@@ -703,12 +704,12 @@ private fun androidx.compose.foundation.lazy.grid.LazyGridScope.downloadsSection
     rows: RowState,
 ) {
     if (jobs.isNotEmpty()) {
-        item(key = "hdr_inprogress", span = { full() }, contentType = { "header" }) { Shelf("In progress") }
+        item(key = "hdr_inprogress", span = { full(gridCols) }, contentType = { "header" }) { Shelf("In progress") }
         items(
             jobs,
             key = { "j_" + it.id },
             contentType = { "job" },
-            span = { full() },
+            span = { full(gridCols) },
         ) { job ->
             // Jobs appear and vanish as downloads finish, so this list is the one that
             // most obviously popped without an animation.
@@ -716,13 +717,13 @@ private fun androidx.compose.foundation.lazy.grid.LazyGridScope.downloadsSection
         }
     }
     if (items.isEmpty() && jobs.isEmpty()) {
-        item(span = { full() }) { SearchEmptyState("Nothing downloaded", "Downloaded tracks play with the server off.") }
+        item(span = { full(gridCols) }) { SearchEmptyState("Nothing downloaded", "Downloaded tracks play with the server off.") }
         return
     }
     if (items.isNotEmpty()) {
-        item(key = "hdr_ondevice", span = { full() }, contentType = { "header" }) { Shelf("On this device") }
+        item(key = "hdr_ondevice", span = { full(gridCols) }, contentType = { "header" }) { Shelf("On this device") }
         if (items.size > 1) {
-            item(key = "dl_playall", span = { full() }, contentType = { "playall" }) {
+            item(key = "dl_playall", span = { full(gridCols) }, contentType = { "playall" }) {
                 PlayAllBar(items.size, onPlayAll = { viewModel.playAll(items) })
             }
         }
@@ -730,7 +731,7 @@ private fun androidx.compose.foundation.lazy.grid.LazyGridScope.downloadsSection
             items,
             key = { i, entry -> itemKey("d", i, entry) },
             contentType = { _, _ -> "row" },
-            span = { _, _ -> full() },
+            span = { _, _ -> full(gridCols) },
         ) { _, entry -> ItemRow(entry, viewModel, rows.of(entry)) }
     }
 }
