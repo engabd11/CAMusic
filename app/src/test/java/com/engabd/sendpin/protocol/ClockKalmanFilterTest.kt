@@ -98,6 +98,105 @@ class ClockKalmanFilterTest {
         assertTrue(f.isSynced())
     }
 
+    /**
+     * The bug behind "sometimes it takes five seconds to start".
+     *
+     * A converged filter is a *confident* filter, and its gain is proportional to
+     * that confidence — so an offset that moves under it by seconds is walked off a
+     * couple of percent per sample while [errorUs] goes on reporting a few hundred
+     * microseconds. The audio engine believes that error bar, schedules the head of
+     * the stream against an offset that is seconds wrong, and the song sits there.
+     *
+     * The step here is the one a phone actually produces: `CLOCK_BOOTTIME` is used
+     * now precisely so a suspend cannot cause it (see [MonotonicClock]), but a
+     * server whose own clock is stepped by NTP is not ours to prevent.
+     */
+    @Test
+    fun `a clock step is re-seeded rather than crawled to`() {
+        val f = ClockKalmanFilter()
+        var localSend = 0L
+        repeat(40) {
+            feed(f, localSend, offsetUs = 1_000_000L, rttUs = 4_000, procUs = 1_000)
+            localSend += 300_000L
+        }
+        assertTrue(f.isReadyForPlaybackStart(), "should be converged before the step")
+
+        // The offset jumps by 30 seconds between one sample and the next.
+        val stepped = 1_000_000L + 30_000_000L
+
+        // First sample after the step: nothing is re-seeded on one reading, but the
+        // filter must stop claiming it can be scheduled against.
+        feed(f, localSend, offsetUs = stepped, rttUs = 4_000, procUs = 1_000)
+        localSend += 300_000L
+        assertTrue(f.isStepSuspected(), "a residual of 30s is not measurement noise")
+        assertFalse(f.isReadyForPlaybackStart(), "must not schedule against a suspect offset")
+
+        // Second: confirmed, so the estimate restarts from the measurement.
+        feed(f, localSend, offsetUs = stepped, rttUs = 4_000, procUs = 1_000)
+        assertFalse(f.isStepSuspected())
+        assertTrue(
+            f.isReadyForPlaybackStart(),
+            "a re-seed on a 4ms link is immediately good enough: err=${f.errorUs()}us",
+        )
+        val localNow = 90_000_000L
+        val recovered = f.serverToLocalUs(localNow + stepped)
+        assertTrue(
+            abs(recovered - localNow) < 5_000,
+            "offset should be back within milliseconds, not seconds: off by ${recovered - localNow}us",
+        )
+    }
+
+    /**
+     * The other half of the same contract: one wild sample must not be allowed to
+     * throw away a converged estimate. A slow reply carries a wide error bar of its
+     * own, and the step threshold scales with it, so this one is not even suspected.
+     */
+    @Test
+    fun `a single slow reply is not a step`() {
+        val f = ClockKalmanFilter()
+        var localSend = 0L
+        repeat(40) {
+            feed(f, localSend, offsetUs = 1_000_000L, rttUs = 4_000, procUs = 1_000)
+            localSend += 300_000L
+        }
+
+        // One reply that took a second to come back, arriving 300ms out.
+        feed(f, localSend, offsetUs = 1_300_000L, rttUs = 1_000_000, procUs = 1_000)
+        // Past the reply itself, so the next T4 is still after this one's.
+        localSend += 1_300_000L
+        assertFalse(f.isStepSuspected(), "300ms inside a 500ms error bar is noise, not a step")
+
+        // …and the estimate it produced is still the old one, near enough.
+        repeat(3) {
+            feed(f, localSend, offsetUs = 1_000_000L, rttUs = 4_000, procUs = 1_000)
+            localSend += 300_000L
+        }
+        val localNow = 20_000_000L
+        val recovered = f.serverToLocalUs(localNow + 1_000_000L)
+        assertTrue(abs(recovered - localNow) < 20_000, "off by ${recovered - localNow}us")
+    }
+
+    /**
+     * Jitter well inside the round-trip's own error bar must never trip the step
+     * detector — a false re-seed would throw away a good estimate every few seconds
+     * and stand the player down from "ready" while it did.
+     */
+    @Test
+    fun `ordinary jitter never looks like a step`() {
+        val f = ClockKalmanFilter()
+        var localSend = 0L
+        val wobble = longArrayOf(0, 1_500, -2_000, 900, -1_100, 2_000, -700, 300)
+        repeat(60) { i ->
+            feed(
+                f, localSend,
+                offsetUs = 1_000_000L + wobble[i % wobble.size],
+                rttUs = 20_000, procUs = 1_000,
+            )
+            localSend += 300_000L
+            assertFalse(f.isStepSuspected(), "sample $i: ±2ms on a 20ms link is not a step")
+        }
+    }
+
     @Test
     fun `reset clears state`() {
         val f = ClockKalmanFilter()

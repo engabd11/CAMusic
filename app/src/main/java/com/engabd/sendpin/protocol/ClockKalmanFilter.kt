@@ -20,8 +20,15 @@ import kotlin.math.sqrt
  * timestamps in microseconds (the client stamps **T4** at the WebSocket
  * `onMessage` callback — stamping later biases the offset and plays late), then
  * use [serverToLocalUs] to place server-scheduled audio on the local clock.
+ *
+ * @param nowUs the local monotonic clock, in microseconds. Production passes
+ *   [MonotonicClock.nowUs] — see there for why the default is not what runs on a
+ *   phone. The default keeps this class constructible from a JVM unit test, which
+ *   is the whole reason it has no Android dependency of its own.
  */
-class ClockKalmanFilter {
+class ClockKalmanFilter(
+    private val nowUs: () -> Long = { System.nanoTime() / 1000 },
+) {
 
     private companion object {
         const val ADAPTIVE_FORGETTING_CUTOFF = 2.0
@@ -31,6 +38,20 @@ class ClockKalmanFilter {
         const val MAX_DRIFT = 0.999          // guards the (1 + drift) divisor
         const val READY_MIN_SAMPLES = 8
         const val READY_MAX_ERROR_US = 5_000L
+
+        /**
+         * A residual this far outside the measurement's own error bar is not noise.
+         *
+         * Both tests have to pass, and they guard different things. The multiple of
+         * `maxError` (half the round-trip) is what makes a slow reply — where the
+         * measurement really could be out by that much — fail to count: a 1 s RTT
+         * spike carries an error bar of 500 ms, so its residual has to clear 4 s
+         * before it is believed. The absolute floor is what keeps ordinary jitter on
+         * a fast LAN, where the error bar is a couple of milliseconds, from clearing
+         * the multiple on its own.
+         */
+        const val STEP_RESIDUAL_FACTOR = 8.0
+        const val STEP_MIN_RESIDUAL_US = 50_000.0
     }
 
     private var offset = 0.0
@@ -43,21 +64,44 @@ class ClockKalmanFilter {
     private var useDrift = false
     private var lastRttUs = 0L
 
+    /**
+     * The last sample's residual was too big to be measurement noise — the clock
+     * underneath us may have stepped. Held until the next sample either confirms it
+     * (→ re-seed) or comes back normal (→ it was an outlier after all).
+     *
+     * Zero when nothing is in doubt; otherwise the signed residual, so the
+     * confirming sample can be required to point the same way.
+     */
+    private var suspectResidual = 0.0
+
     private val offsetProcessVariance = OFFSET_PROCESS_STD_DEV * OFFSET_PROCESS_STD_DEV
     private val forgetVarianceFactor = FORGET_FACTOR * FORGET_FACTOR
     private val driftSignificanceSquared = DRIFT_SIGNIFICANCE_THRESHOLD * DRIFT_SIGNIFICANCE_THRESHOLD
 
     val sampleCount: Int get() = count
 
-    fun nowMonotonicUs(): Long = System.nanoTime() / 1000
+    fun nowMonotonicUs(): Long = nowUs()
     fun lastRttUs(): Long = lastRttUs
     fun errorUs(): Long = round(sqrt(offsetCovariance.coerceAtLeast(0.0))).toLong()
     fun isSynced(): Boolean = count >= 1 && offsetCovariance < Double.MAX_VALUE
     fun driftPpm(): Double = if (useDrift) drift * 1_000_000.0 else 0.0
 
-    /** Safe to start grouped playback: enough low-error samples have converged. */
+    /** The last residual was too big to be noise, and nothing has resolved it yet. */
+    fun isStepSuspected(): Boolean = suspectResidual != 0.0
+
+    /**
+     * Safe to start grouped playback: enough low-error samples have converged, and
+     * nothing has just happened to suggest the offset moved under us.
+     *
+     * The covariance alone cannot answer the second half. After a clock step the
+     * filter is *confidently wrong* — its error estimate stays in the hundreds of
+     * microseconds while the offset it hands out is seconds off — so a gate that
+     * only read [errorUs] would schedule the head of a stream against it and hold
+     * the song silent until it landed. Saying "not ready" for the one sample it
+     * takes to confirm the step costs a few hundred milliseconds and is the truth.
+     */
     fun isReadyForPlaybackStart(): Boolean =
-        count >= READY_MIN_SAMPLES && errorUs() <= READY_MAX_ERROR_US
+        count >= READY_MIN_SAMPLES && errorUs() <= READY_MAX_ERROR_US && !isStepSuspected()
 
     /**
      * Feed one `server/time` round-trip. All args in microseconds:
@@ -112,6 +156,37 @@ class ClockKalmanFilter {
         var pDriftCov = driftCovariance
 
         val residual = measurement - predictedOffset
+
+        // ── Step detection ────────────────────────────────────────────────────
+        //
+        // A residual far outside this measurement's own error bar means the offset
+        // moved, not that this sample was noisy — a server whose clock was stepped
+        // by NTP, say. The Kalman update cannot cope with that on its own: its gain
+        // is proportional to how sure it is, and after a few minutes of steady
+        // samples it is very sure, so a step of seconds is walked off at a few
+        // percent per sample — a minute of handing out an offset that is seconds
+        // wrong while claiming a few hundred microseconds of error. Long enough
+        // that a track tapped in that window is scheduled seconds into the future
+        // and simply sits there.
+        //
+        // So: re-seed from the measurement instead of crawling to it. One sample of
+        // corroboration first, because a single wild residual should not be allowed
+        // to throw away a converged estimate — and the sample after a real step
+        // agrees with it, while an outlier's successor does not.
+        val stepThreshold = maxOf(STEP_MIN_RESIDUAL_US, maxError * STEP_RESIDUAL_FACTOR)
+        if (abs(residual) > stepThreshold) {
+            if (suspectResidual != 0.0 && (residual > 0) == (suspectResidual > 0)) {
+                reseedFrom(measurement, measurementVariance, dt)
+                return
+            }
+            // First sighting: flag it — which also stands the player down from
+            // "ready", so nothing schedules against the old offset in the meantime
+            // — and let the ordinary update have this sample, in case it was noise.
+            suspectResidual = residual
+        } else {
+            suspectResidual = 0.0
+        }
+
         if (count < 100) {
             count++
         } else if (abs(residual) > maxError * ADAPTIVE_FORGETTING_CUTOFF) {
@@ -134,6 +209,33 @@ class ClockKalmanFilter {
         // Only apply drift once it is statistically significant vs its uncertainty.
         useDrift = drift * drift > driftSignificanceSquared * driftCovariance
         if (count >= 100) count++
+    }
+
+    /**
+     * Throw the offset away and start again from [measurement], keeping the sample
+     * count.
+     *
+     * The count stays because it is not what the step invalidated: it stands for
+     * "this link has been measured enough to be worth believing", and the link is
+     * the same one. What is unknown again is the offset — so its covariance goes
+     * back to this single measurement's own error bar, which on a LAN is a couple
+     * of milliseconds and clears [READY_MAX_ERROR_US] immediately, and on a slower
+     * link does not, leaving the player honestly unready until more samples land.
+     *
+     * The drift estimate goes with it: a step tells us nothing about the rate, and
+     * the residual it produced would otherwise be read as an enormous one. Its
+     * covariance is re-seeded the same way the second-ever sample seeds it, rather
+     * than zeroed — a zero there is a claim to know the drift exactly, and the gain
+     * it implies would stop the filter ever learning the rate again.
+     */
+    private fun reseedFrom(measurement: Double, measurementVariance: Double, dt: Double) {
+        offset = measurement
+        offsetCovariance = measurementVariance
+        offsetDriftCovariance = 0.0
+        drift = 0.0
+        driftCovariance = if (dt != 0.0) 2 * measurementVariance / (dt * dt) else 0.0
+        useDrift = false
+        suspectResidual = 0.0
     }
 
     private fun effectiveDrift(): Double =
@@ -168,5 +270,6 @@ class ClockKalmanFilter {
         count = 0
         useDrift = false
         lastRttUs = 0L
+        suspectResidual = 0.0
     }
 }

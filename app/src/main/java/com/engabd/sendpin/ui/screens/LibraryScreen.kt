@@ -385,19 +385,6 @@ private fun full() = GridItemSpan(COLS)
 // pass over the list — once per row for the membership tests, and once per *element*
 // for the `artful` count that decides tiles-or-rows.
 /**
- * The ids that appear exactly once across [lists], and so can safely own a
- * shared-element key.
- *
- * An id that turns up twice is dropped entirely rather than given to whichever copy
- * came first: both tiles are on screen, both would claim the key, and picking one
- * silently would animate a tile the user did not touch.
- */
-private fun uniqueIds(vararg lists: List<MaItem>): Set<String> =
-    lists.asSequence().flatten()
-        .groupingBy { it.itemId }.eachCount()
-        .filterValues { it == 1 }.keys
-
-/**
  * The lazy key for [item] sitting at [index] of the list [section] draws.
  *
  * Keyed by index as well as by item, because a duplicate key is a hard crash in a lazy
@@ -478,17 +465,6 @@ private fun Browse(
     // the whole list is one tap from disk.
     val downloadable = remember(tracks) { tracks.filter { it.provider == "subsonic" } }
 
-    // Which covers may fly into the album screen. Computed over the whole of what is on
-    // screen at once — all seven shelves together on the root, the browse list below it
-    // — because the constraint is global to the SharedTransitionLayout, not per section.
-    val browseArtIds = remember(node.items) { uniqueIds(node.items) }
-    val shelfArtIds = remember(shelves) {
-        uniqueIds(
-            shelves.favoriteAlbums, shelves.favoriteArtists, shelves.inProgress,
-            shelves.recentlyAdded, shelves.recommendations, shelves.recent, shelves.frequent,
-        )
-    }
-
     LazyVerticalGrid(
         columns = GridCells.Fixed(COLS),
         modifier = Modifier.fillMaxSize().imePadding(),
@@ -566,15 +542,15 @@ private fun Browse(
             }
             // Favourites lead: what you chose to keep is a better front page than
             // whatever the scanner saw last. The rest keep their old order behind them.
-            shelf("Favourite albums", shelves.favoriteAlbums, shelfArtIds, openItem, onLongPress)
-            shelf("Favourite artists", shelves.favoriteArtists, shelfArtIds, openItem, onLongPress)
-            shelf("Continue listening", shelves.inProgress, shelfArtIds, openItem, onLongPress)
-            shelf("Recently added", shelves.recentlyAdded, shelfArtIds, openItem, onLongPress)
-            shelf("For you", shelves.recommendations, shelfArtIds, openItem, onLongPress)
-            shelf("Recently played", shelves.recent, shelfArtIds, openItem, onLongPress)
+            shelf("Favourite albums", shelves.favoriteAlbums, openItem, onLongPress)
+            shelf("Favourite artists", shelves.favoriteArtists, openItem, onLongPress)
+            shelf("Continue listening", shelves.inProgress, openItem, onLongPress)
+            shelf("Recently added", shelves.recentlyAdded, openItem, onLongPress)
+            shelf("For you", shelves.recommendations, openItem, onLongPress)
+            shelf("Recently played", shelves.recent, openItem, onLongPress)
             // Navidrome only — MA has no equivalent of getAlbumList2(frequent), so
             // the list is empty on that backend and the shelf hides itself.
-            shelf("Played most", shelves.frequent, shelfArtIds, openItem, onLongPress)
+            shelf("Played most", shelves.frequent, openItem, onLongPress)
             return@LazyVerticalGrid
         }
 
@@ -676,8 +652,6 @@ private data class RowFlags(
 private fun androidx.compose.foundation.lazy.grid.LazyGridScope.shelf(
     title: String,
     list: List<MaItem>,
-    /** Ids safe to fly — unique across *all* shelves, not just this one. */
-    sharedArtIds: Set<String>,
     onOpen: (MaItem) -> Unit,
     onLongPress: (MaItem) -> Unit,
 ) {
@@ -693,11 +667,7 @@ private fun androidx.compose.foundation.lazy.grid.LazyGridScope.shelf(
         // recently-added, then the rest. Keyed items make that a move rather than a
         // redraw, and animateItem is what turns the move into something you can follow.
         Box(Modifier.animateItem()) {
-            CoverTile(
-                entry,
-                sharedKey = artKey(entry.itemId).takeIf { entry.itemId in sharedArtIds },
-                onLongPress = { onLongPress(entry) },
-            ) { onOpen(entry) }
+            CoverTile(entry, onLongPress = { onLongPress(entry) }) { onOpen(entry) }
         }
     }
 }
@@ -883,18 +853,6 @@ private fun categoryIcon(id: String): ImageVector = when (id) {
 @Composable
 private fun CoverTile(
     item: MaItem,
-    /**
-     * Shared-element key for the artwork, or null for no flight.
-     *
-     * Null is not an oversight — it is the safe default. Two visible elements claiming
-     * one shared-element key have no resolution, and this app can produce that in two
-     * ways: the same album sits in several root shelves at once (a favourite that was
-     * also added recently), and Music Assistant numbers library items per media type
-     * and will answer the same album twice within a single list — the detail screens
-     * key their lazy items by index for exactly that reason. So the *caller* decides,
-     * having looked at the whole list; see [uniqueIds].
-     */
-    sharedKey: String? = null,
     onLongPress: (() -> Unit)? = null,
     onClick: () -> Unit,
 ) {
@@ -922,11 +880,7 @@ private fun CoverTile(
             if (art != null) {
                 AsyncImage(
                     model = art, contentDescription = item.name, contentScale = ContentScale.Crop,
-                    // The near end of the flight into the album screen's hero — when the
-                    // caller has established this tile is the only one showing this id.
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .then(if (sharedKey != null) Modifier.sharedArt(sharedKey) else Modifier),
+                    modifier = Modifier.fillMaxSize(),
                 )
             } else {
                 Icon(Icons.Default.Album, null, tint = TextFaint, modifier = Modifier.size(24.dp))

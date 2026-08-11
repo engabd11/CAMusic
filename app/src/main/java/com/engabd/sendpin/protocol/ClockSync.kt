@@ -9,7 +9,9 @@ package com.engabd.sendpin.protocol
  */
 class ClockSync {
 
-    val filter = ClockKalmanFilter()
+    // The filter's own default is `System.nanoTime`, which is JVM-portable and
+    // wrong on a phone — see [MonotonicClock].
+    val filter = ClockKalmanFilter(MonotonicClock::nowUs)
 
     /** Feed one server/time round-trip (all microseconds; T4 stamped at WS onMessage). */
     fun onServerTime(clientTransmittedUs: Long, serverReceivedUs: Long, serverTransmittedUs: Long, clientReceivedUs: Long) =

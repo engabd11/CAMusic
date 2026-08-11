@@ -61,6 +61,9 @@ class SendspinClient(
     private var builtUrl = ""
     private var attempt = 0
 
+    /** When a socket was last opened, for [reconnectNow]'s rate limit. */
+    @Volatile private var lastDialAtMs = 0L
+
     private var clientId = ""
     private var clientName = ""
     private var deviceInfo: DeviceInfo? = null
@@ -155,6 +158,13 @@ class SendspinClient(
     private val inboxDepth = AtomicInteger(0)
     private var ingestJob: Job? = null
 
+    /**
+     * Wakes the `client/time` loop out of its wait. Conflated: several requests
+     * before the loop gets to look are one request, and one that arrives while it
+     * is already sending simply shortens the next wait instead of being lost.
+     */
+    private val timeKick = Channel<Unit>(Channel.CONFLATED)
+
     /** Frames dropped because the consumer stalled — surfaced for the debug trace. */
     private val _droppedFrames = MutableStateFlow(0L)
     val droppedFrames: StateFlow<Long> = _droppedFrames.asStateFlow()
@@ -233,6 +243,7 @@ class SendspinClient(
     }
 
     private fun openSocket() {
+        lastDialAtMs = android.os.SystemClock.elapsedRealtime()
         webSocket = httpClient.newWebSocket(Request.Builder().url(builtUrl).build(), listener)
     }
 
@@ -251,6 +262,35 @@ class SendspinClient(
                 openSocket()
             }
         }
+    }
+
+    /**
+     * Reconnect now instead of at the end of the backoff.
+     *
+     * Same argument as [com.engabd.sendpin.ma.MaApiClient.reconnectNow], and the
+     * same moment: the user has asked for music. This socket is the only way Music
+     * Assistant can reach this phone with audio, so a player still counting down a
+     * fifteen-second retry is a player MA cannot start a stream on — the command
+     * lands and nothing plays until the timer happens to run out.
+     *
+     * Does nothing while a socket is up or on its way, and no more often than
+     * [RECONNECT_MIN_GAP_MS].
+     */
+    fun reconnectNow() {
+        if (userClosed || builtUrl.isBlank()) return
+        when (_state.value) {
+            State.CONNECTED, State.CONNECTING, State.AUTHENTICATING -> return
+            else -> {}
+        }
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lastDialAtMs < RECONNECT_MIN_GAP_MS) return
+        lastDialAtMs = now
+        reconnectJob?.cancel()
+        attempt = 0
+        _state.value = State.CONNECTING
+        _statusText.value = "Reconnecting…"
+        dbg("reconnecting now (user asked for playback)")
+        openSocket()
     }
 
     /**
@@ -341,7 +381,7 @@ class SendspinClient(
             // Stamp T4 here and nowhere later: this is the earliest point the frame
             // exists locally, and measuring it after a parse or a coroutine hop
             // biases the clock offset low, which makes the player play late.
-            offer(Inbound.Text(text, System.nanoTime() / 1000))
+            offer(Inbound.Text(text, MonotonicClock.nowUs()))
         }
 
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
@@ -427,6 +467,9 @@ class SendspinClient(
             }
             is SendspinIncoming.GroupUpdate -> _groupUpdates.tryEmit(msg)
             is SendspinIncoming.StreamStart -> {
+                // The head of this stream is about to be scheduled against the clock,
+                // so take a fresh reading of it now rather than at the next tick.
+                resyncClock()
                 _streamFormat.value = msg.payload.player
                 sink?.onStreamStart(msg.payload.player)
             }
@@ -468,12 +511,37 @@ class SendspinClient(
         timeJob?.cancel()
         timeJob = scope.launch {
             while (isActive) {
-                val t1 = System.nanoTime() / 1000
+                val t1 = MonotonicClock.nowUs()
                 webSocket?.send(json.encodeToString(SendspinClientTime(payload = ClientTimePayload(t1))))
-                // Fast cadence until the filter has enough samples, then relax.
-                delay(if (clock.filter.sampleCount < 50) 300L else 2000L)
+                // Fast while the filter cannot be scheduled against, relaxed once it
+                // can. Keyed on **readiness**, not only on the sample count: a
+                // connection that has been up for hours has thousands of samples and
+                // can still be knocked out of convergence — by a step the filter has
+                // just spotted, or by a link whose jitter widened — and at the
+                // relaxed cadence it would then take a sample every two seconds to
+                // come back, which is dead air at the start of whatever the user
+                // just tapped. The two conditions together mean "not fit to play
+                // against", which is exactly when samples are worth paying for.
+                val settled = clock.filter.sampleCount >= 50 && clock.isReadyForPlaybackStart()
+                val cadence = if (settled) SLOW_TIME_SYNC_MS else FAST_TIME_SYNC_MS
+                // A resync request cuts the wait short — see [resyncClock].
+                withTimeoutOrNull(cadence) { timeKick.receive() }
             }
         }
+    }
+
+    /**
+     * Ask for a `client/time` round-trip now rather than at the next tick.
+     *
+     * Called when a stream is about to start, which is the one moment the offset is
+     * about to be *used* — the head of the stream is scheduled against it, so a
+     * sample taken here is worth more than several taken while nothing is playing.
+     * It is also what turns the step detector around quickly: the first suspect
+     * residual stands the clock down from ready, which drops the loop to the fast
+     * cadence, and the confirming sample lands a few hundred milliseconds later.
+     */
+    fun resyncClock() {
+        timeKick.trySend(Unit)
     }
 
     /**
@@ -525,5 +593,14 @@ class SendspinClient(
 
         /** The spec's range for `static_delay_ms` in `client/state`. */
         const val MAX_STATIC_DELAY_MS = 5_000
+
+        /** Nothing reopens the player socket faster than this. */
+        const val RECONNECT_MIN_GAP_MS = 750L
+
+        /** `client/time` cadence while the clock is not fit to schedule against. */
+        const val FAST_TIME_SYNC_MS = 300L
+
+        /** …and once it is: enough to hold a converged filter, and no more. */
+        const val SLOW_TIME_SYNC_MS = 2_000L
     }
 }
