@@ -10,6 +10,7 @@ import com.engabd.sendpin.ma.MaApiClient
 import com.engabd.sendpin.ma.MaPlayer
 import com.engabd.sendpin.ma.MaRepository
 import com.engabd.sendpin.ma.SyncDelay
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -64,6 +65,8 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
     private val _syncDelays = MutableStateFlow<Map<String, SyncDelay>>(emptyMap())
     private val _target = MutableStateFlow("")       // selected play-to player ("" = this phone)
     private val _error = MutableStateFlow<String?>(null); val error: StateFlow<String?> = _error
+    private val _refreshing = MutableStateFlow(false); val refreshing: StateFlow<Boolean> = _refreshing
+    private var refreshJob: Job? = null
 
     // Un-acknowledged local intents, laid over MA's answer.
     private val _volumeIntent = MutableStateFlow<Map<String, Intent<Int>>>(emptyMap())
@@ -160,26 +163,47 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun refresh() {
-        viewModelScope.launch {
+        if (refreshJob?.isActive == true) return
+        refreshJob = viewModelScope.launch { doRefresh() }
+    }
+
+    /**
+     * The same fetch as [refresh], but drives [refreshing] so the Speakers screen's
+     * refresh button can show a spinner. Kept separate from [refresh] because that one
+     * also runs silently every 5s and on every MA/group push — spinning the button on
+     * every one of those would read as constant, meaningless activity.
+     */
+    fun manualRefresh() {
+        if (refreshJob?.isActive == true) return
+        refreshJob = viewModelScope.launch {
+            _refreshing.value = true
             try {
-                val players = repo.players()
-                _players.value = players
-                retireSettledIntents(players)
-                // Fetch sync-delays for currently-joined non-self players (best effort).
-                val leader = leaderIdOf(players, _target.value)
-                val members = joinedIds(players, emptyMap(), leader)
-                val delays = _syncDelays.value.toMutableMap()
-                for (p in players) {
-                    if (p.playerId == myPlayerId || p.playerId !in members) continue
-                    if (!delays.containsKey(p.playerId)) {
-                        repo.getSyncDelay(p.playerId)?.let { delays[p.playerId] = it }
-                    }
-                }
-                _syncDelays.value = delays
-                _error.value = null
-            } catch (e: Exception) {
-                _error.value = e.message
+                doRefresh()
+            } finally {
+                _refreshing.value = false
             }
+        }
+    }
+
+    private suspend fun doRefresh() {
+        try {
+            val players = repo.players()
+            _players.value = players
+            retireSettledIntents(players)
+            // Fetch sync-delays for currently-joined non-self players (best effort).
+            val leader = leaderIdOf(players, _target.value)
+            val members = joinedIds(players, emptyMap(), leader)
+            val delays = _syncDelays.value.toMutableMap()
+            for (p in players) {
+                if (p.playerId == myPlayerId || p.playerId !in members) continue
+                if (!delays.containsKey(p.playerId)) {
+                    repo.getSyncDelay(p.playerId)?.let { delays[p.playerId] = it }
+                }
+            }
+            _syncDelays.value = delays
+            _error.value = null
+        } catch (e: Exception) {
+            _error.value = e.message
         }
     }
 

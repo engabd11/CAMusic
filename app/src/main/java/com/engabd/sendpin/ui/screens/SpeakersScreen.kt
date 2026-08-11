@@ -1,5 +1,10 @@
 package com.engabd.sendpin.ui.screens
 
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -22,6 +27,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -43,6 +49,7 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
     val error by viewModel.error.collectAsStateWithLifecycle()
     val canGroup by viewModel.leaderCanGroup.collectAsStateWithLifecycle()
     val somethingPlaying by viewModel.leaderIsPlaying.collectAsStateWithLifecycle()
+    val refreshing by viewModel.refreshing.collectAsStateWithLifecycle()
 
     val total = joined.size + available.size
     val allJoined = available.isEmpty() && joined.isNotEmpty()
@@ -67,7 +74,9 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
                     Pill(if (allJoined) "Ungroup" else "Group all", allJoined) {
                         if (allJoined) viewModel.ungroupAll() else viewModel.groupAll()
                     }
+                    Spacer(Modifier.width(10.dp))
                 }
+                RefreshButton(refreshing = refreshing, onClick = viewModel::manualRefresh)
             }
 
             if (error != null) {
@@ -202,14 +211,15 @@ private fun JoinedCard(p: SpeakerUi, onSelect: () -> Unit, onUnjoin: () -> Unit,
                     Text(p.name, color = TextPrimary, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(if (p.isTarget) "Playing here" else p.meta, color = if (p.isTarget) accent else TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
                 }
-                // In the group, so the switch is on. The leader is the group — it
-                // cannot leave itself — so its switch is disabled rather than absent,
-                // which keeps the column of switches aligned and says why.
-                GroupSwitch(
-                    checked = true,
-                    enabled = !p.isTarget,
-                    onCheckedChange = { onUnjoin() },
-                )
+                // The leader is the group — it cannot leave itself — so it gets no
+                // switch at all rather than a disabled one. The spacer matches an M3
+                // switch's footprint so the leader row's right edge still lines up
+                // with the members below it.
+                if (!p.isTarget) {
+                    GroupSwitch(checked = true, enabled = true, onCheckedChange = { onUnjoin() })
+                } else {
+                    Spacer(Modifier.width(52.dp))
+                }
             }
             Spacer(Modifier.height(12.dp))
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -336,5 +346,33 @@ private fun StepBtn(label: String, onClick: () -> Unit) {
 private fun CircleIconButton(icon: ImageVector, cd: String, onClick: () -> Unit) {
     Box(Modifier.size(34.dp).clip(CircleShape).background(Glass).border(1.dp, Hairline, CircleShape).clickable(onClick = onClick), contentAlignment = Alignment.Center) {
         Icon(icon, cd, tint = TextSecondary, modifier = Modifier.size(17.dp))
+    }
+}
+
+/**
+ * Re-read the players from MA. Spins while the fetch is in flight and ignores
+ * taps until it lands, the same shape as the Library tab's refresh button.
+ */
+@Composable
+private fun RefreshButton(refreshing: Boolean, onClick: () -> Unit) {
+    val accent = LocalAccent.current
+    val spin = rememberInfiniteTransition(label = "refresh")
+    val angle by spin.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(tween(900, easing = LinearEasing)),
+        label = "refreshAngle",
+    )
+    Box(
+        Modifier.size(34.dp).clip(CircleShape).background(Glass).border(1.dp, Hairline, CircleShape)
+            .clickable(enabled = !refreshing, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            Icons.Default.Refresh,
+            contentDescription = "Refresh speakers",
+            tint = if (refreshing) accent else TextSecondary,
+            modifier = Modifier.size(17.dp).graphicsLayer { rotationZ = if (refreshing) angle else 0f },
+        )
     }
 }

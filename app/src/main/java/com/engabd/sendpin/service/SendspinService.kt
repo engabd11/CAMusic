@@ -111,9 +111,15 @@ class SendspinService : Service() {
     /**
      * What the shade is currently reflecting.
      *
-     * This phone's own Sendspin stream wins — when it is receiving audio it *is* the
-     * thing making the sound. Otherwise the selected Music Assistant player, which is
-     * what the user is listening to and what the transport buttons should address.
+     * Two different things are decided here, separately. **Transport routing** (and
+     * `isPlaying`) follows this phone's own Sendspin stream whenever it's the one
+     * making the sound — [local] stays true for as long as this phone is the selected
+     * MA player, so play/pause/next/prev keep addressing [Playback] exactly as before.
+     * **Metadata** (title/artist/album/artwork) is a separate choice: it always prefers
+     * [MaNowPlaying]'s richer, REST-polled data when it describes the same player,
+     * because the Sendspin protocol's own `server/state.metadata` is optional and
+     * partial by spec — a progress-only tick, or the stream ending on pause, leaves
+     * [Playback]'s fields blank far more often than MA's own player state does.
      */
     private data class Shade(
         val title: String,
@@ -131,30 +137,33 @@ class SendspinService : Service() {
     /** The precedence rule, in one place so the notification and the session agree. */
     private fun currentShade(): Shade {
         val remote = ma.now.value
-        // `isPlaying` is the Sendspin stream flowing, which is the only thing that
-        // makes this phone the source. A stale title from a finished stream must not
-        // outrank a speaker that is actually playing.
-        if (pb.isPlaying.value || remote == null || remote.isSelf) {
+        // Prefer MA's own data whenever it's about the player this shade would
+        // otherwise show: either a genuinely different, remote speaker, or this same
+        // phone (isSelf) where MA's polled metadata is simply more complete than the
+        // Sendspin protocol's own — see the class doc above.
+        if (remote != null && (remote.isSelf || !pb.isPlaying.value)) {
             return Shade(
-                title = pb.trackTitle.value,
-                artist = pb.artist.value,
-                album = pb.album.value,
-                artworkUrl = pb.artworkUrl.value,
-                durationMs = pb.durationMs.value,
-                isPlaying = pb.isPlaying.value,
-                local = true,
-                playerName = null,
+                title = remote.title,
+                artist = remote.artist,
+                album = remote.album,
+                artworkUrl = remote.artworkUrl,
+                durationMs = remote.durationMs,
+                // Local playback state is still the faster, more accurate signal for
+                // this phone's own stream than MA's ~5s poll.
+                isPlaying = if (remote.isSelf) pb.isPlaying.value else remote.isPlaying,
+                local = remote.isSelf,
+                playerName = if (remote.isSelf) null else remote.playerName,
             )
         }
         return Shade(
-            title = remote.title,
-            artist = remote.artist,
-            album = remote.album,
-            artworkUrl = remote.artworkUrl,
-            durationMs = remote.durationMs,
-            isPlaying = remote.isPlaying,
-            local = false,
-            playerName = remote.playerName,
+            title = pb.trackTitle.value,
+            artist = pb.artist.value,
+            album = pb.album.value,
+            artworkUrl = pb.artworkUrl.value,
+            durationMs = pb.durationMs.value,
+            isPlaying = pb.isPlaying.value,
+            local = true,
+            playerName = null,
         )
     }
 
