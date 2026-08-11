@@ -448,8 +448,8 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
      * playing something itself or reflecting a player MA owns.
      */
     val state: StateFlow<State> = combine(
-        maState, localSnap, deviceVolume.level, backendPref,
-    ) { ma, l, devVol, backend ->
+        maState, localSnap, deviceVolume.level, backendPref, _radioMode,
+    ) { ma, l, devVol, backend, radio ->
         // Either the local player has a session, or the library is Navidrome and this
         // phone is the only player there is. The second case is the one that was
         // missing: with nothing playing yet it fell through to the MA view.
@@ -504,6 +504,11 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             powered = true,
             canPower = false,
             isLocalSession = true,
+            // The local path's own answer to "don't stop the music": there is no server
+            // to ask, so the app tops the queue up itself (see LibraryViewModel's
+            // local radio). The switch for it lives in the player options card, which
+            // is why the flag has to reach this side of the state too.
+            radioMode = radio,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, State())
 
@@ -904,14 +909,27 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
 
     // --- radio mode ---------------------------------------------------------
 
+    /**
+     * One setting, two machines behind it.
+     *
+     * On Music Assistant it is `radio_mode` on `play_media`, a parameter of the *next*
+     * thing you play rather than of the queue already running — the toast says so,
+     * because a switch that quietly does nothing to what you are hearing is worse than
+     * no switch. On the local path there is no server to ask: the app watches its own
+     * queue and appends more like this before the last track ends, which it can do to
+     * the queue that is already going.
+     */
     fun toggleRadioMode() {
-        if (isLocal) { _toast.tryEmit("Radio mode needs Music Assistant"); return }
+        val local = isLocal
         val next = !_radioMode.value
         viewModelScope.launch {
             settings.setRadioMode(next)
             _toast.tryEmit(
-                if (next) "Radio mode on - applies to the next thing you play"
-                else "Radio mode off"
+                when {
+                    !next -> if (local) "The music will stop at the end of the queue" else "Radio mode off"
+                    local -> "Keeping the music going - more like this when the queue runs out"
+                    else -> "Radio mode on - applies to the next thing you play"
+                }
             )
         }
     }

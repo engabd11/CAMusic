@@ -36,8 +36,8 @@ private val SpeedPresets = listOf(0.75f, 1f, 1.25f, 1.5f, 2f)
 
 /**
  * The player's own settings, as opposed to the track's: power, how fast it plays,
- * and whether MA keeps the queue topped up. Small enough to sit in a card at the
- * bottom of Now Playing rather than take a screen.
+ * and whether it keeps the queue topped up once it runs dry. Small enough to sit in a
+ * card at the bottom of Now Playing rather than take a screen.
  */
 @Composable
 fun BoxScope.PlayerOptionsSheet(onClose: () -> Unit, viewModel: NowPlayingViewModel) {
@@ -112,6 +112,20 @@ fun BoxScope.PlayerOptionsSheet(onClose: () -> Unit, viewModel: NowPlayingViewMo
                         subtitle = "Keep playing similar tracks when the queue runs out",
                         checked = st.dontStopTheMusic,
                         onChange = { viewModel.toggleDontStopTheMusic() },
+                    )
+                } else {
+                    // The same promise on the Navidrome path, kept by different means:
+                    // no server to hand the queue to, so the app picks the next few
+                    // tracks out of the library itself and appends them before the last
+                    // one ends. It was a switch buried in Settings › Audio, two screens
+                    // from the queue it governs; it belongs next to the player, where
+                    // MA's version of it already lives.
+                    OptionRow(
+                        icon = Icons.Default.Radio,
+                        title = "Keep the music going",
+                        subtitle = "Carry on with similar tracks when the queue runs out",
+                        checked = st.radioMode,
+                        onChange = { viewModel.toggleRadioMode() },
                     )
                 }
 
