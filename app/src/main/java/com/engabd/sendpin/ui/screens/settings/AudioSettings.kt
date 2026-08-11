@@ -44,7 +44,7 @@ internal fun AudioSection(
         OutputCard(settings, accent, scope)
         StreamingCard(settings, accent, scope)
         LoudnessCard(settings, accent, scope)
-        ContinuousPlayCard(settings, accent, scope)
+        ContinuousPlayCard(settings, scope)
         DiagnosticsCard(viewModel, settings)
     }
 }
@@ -200,27 +200,16 @@ private fun LoudnessCard(settings: AppSettings, accent: Color, scope: CoroutineS
     }
 }
 
-// ── Continuous play ───────────────────────────────────────────────────────
+// ── Between tracks ────────────────────────────────────────────────────────
 
 @Composable
-private fun ContinuousPlayCard(settings: AppSettings, accent: Color, scope: CoroutineScope) {
-    val radioOn by settings.radioMode.collectAsStateWithLifecycle(initialValue = false)
+private fun ContinuousPlayCard(settings: AppSettings, scope: CoroutineScope) {
     val fade by settings.navFadeSeconds.collectAsStateWithLifecycle(initialValue = 0)
 
     SettingsCard(
-        title = "When the queue runs out",
-        lead = "What happens at the end of an album, and what happens between one track and " +
-            "the next.",
+        title = "Between tracks",
+        lead = "What happens in the gap between one track and the next.",
     ) {
-        ToggleRow(
-            "Keep the music going",
-            "Carry on with something similar. Music Assistant does this on the server; on a " +
-                "library this phone plays, the app builds the next few tracks itself and adds " +
-                "them before the last one ends, so nothing gaps.",
-            radioOn, accent,
-        ) { on -> scope.launch { settings.setRadioMode(on) } }
-
-        CardDivider()
         FieldLabel("Smooth transitions")
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             HSlider(
@@ -241,6 +230,11 @@ private fun ContinuousPlayCard(settings: AppSettings, accent: Color, scope: Coro
                 "gapless, which is what an album wants — so this is suppressed automatically " +
                 "while the queue is a single record, however it is set. It is not a crossfade: " +
                 "the two tracks don't overlap, because one player has one output.",
+        )
+        Note(
+            "What happens when the queue runs out altogether is now a player setting rather " +
+                "than an app one — the options chip under the artwork on Now Playing, where " +
+                "it sits next to the queue it governs.",
         )
     }
 }
