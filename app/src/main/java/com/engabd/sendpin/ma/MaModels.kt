@@ -645,7 +645,7 @@ object MaParse {
             }
             ?.maxByOrNull { it.sampleRate.toLong() * 100 + it.bitDepth }
 
-    fun players(result: JsonElement?): List<MaPlayer> {
+    fun players(result: JsonElement?, serverUrl: String? = null): List<MaPlayer> {
         val arr = result as? JsonArray ?: return emptyList()
         return arr.mapNotNull { el ->
             val o = el as? JsonObject ?: return@mapNotNull null
@@ -667,26 +667,40 @@ object MaParse {
                 canGroupWith = strList(o["can_group_with"]),
                 supportedFeatures = strList(o["supported_features"]),
                 icon = o["icon"]?.jsonPrimitive?.contentOrNull,
-                nowPlaying = nowPlaying(o["current_media"], o["elapsed_time"]),
+                nowPlaying = nowPlaying(o["current_media"], o["elapsed_time"], serverUrl),
             )
         }
     }
 
-    private fun nowPlaying(el: JsonElement?, elapsed: JsonElement?): MaNowPlaying? {
+    private fun nowPlaying(el: JsonElement?, elapsed: JsonElement?, serverUrl: String?): MaNowPlaying? {
         val m = el as? JsonObject ?: return null
         val title = m["title"]?.jsonPrimitive?.contentOrNull ?: return null
         fun ms(e: JsonElement?): Long? = (e as? JsonPrimitive)?.let {
             it.doubleOrNull?.let { d -> (d * 1000).toLong() } ?: it.longOrNull
         }
+        val rawImage = m["image_url"]?.jsonPrimitive?.contentOrNull
+            ?: ((m["image"] as? JsonObject)?.get("path")?.jsonPrimitive?.contentOrNull)
         return MaNowPlaying(
             title = title,
             artist = m["artist"]?.jsonPrimitive?.contentOrNull.orEmpty(),
             album = m["album"]?.jsonPrimitive?.contentOrNull.orEmpty(),
-            imageUrl = m["image_url"]?.jsonPrimitive?.contentOrNull
-                ?: ((m["image"] as? JsonObject)?.get("path")?.jsonPrimitive?.contentOrNull),
+            imageUrl = resolveImageUrl(rawImage, serverUrl),
             durationMs = ms(m["duration"]),
             elapsedMs = ms(m["elapsed_time"] ?: elapsed),
         )
+    }
+
+    /**
+     * A player's `current_media` carries its artwork as a bare path, not the full
+     * `MediaItemImage` shape [imageFrom] resolves elsewhere — so a relative path just
+     * needs joining onto the server's own base, the same way [imageFrom] falls back to
+     * `/imageproxy` for anything that isn't already a public URL.
+     */
+    private fun resolveImageUrl(raw: String?, serverUrl: String?): String? {
+        if (raw.isNullOrBlank()) return null
+        if (raw.startsWith("http", ignoreCase = true)) return raw
+        val base = serverUrl?.trimEnd('/')?.takeIf { it.isNotBlank() } ?: return null
+        return base + (if (raw.startsWith("/")) raw else "/$raw")
     }
 
     fun queues(result: JsonElement?, serverUrl: String? = null): List<MaQueue> {

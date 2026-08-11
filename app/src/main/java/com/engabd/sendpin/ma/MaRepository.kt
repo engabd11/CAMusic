@@ -297,7 +297,7 @@ class MaRepository(
 
     // --- players + playback ----------------------------------------------
 
-    suspend fun players() = MaParse.players(api.sendCommand("players/all"))
+    suspend fun players() = MaParse.players(api.sendCommand("players/all"), serverUrl)
 
     /** All player queues — carries the stream details behind the quality badge. */
     suspend fun queues() = MaParse.queues(api.sendCommand("player_queues/all"), serverUrl)
@@ -330,7 +330,7 @@ class MaRepository(
                 put("player_id", playerId); put("raise_unavailable", false)
             })
         }.getOrNull() ?: return null
-        return MaParse.players(JsonArray(listOf(res))).firstOrNull()
+        return MaParse.players(JsonArray(listOf(res)), serverUrl).firstOrNull()
     }
 
     /**

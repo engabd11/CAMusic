@@ -165,24 +165,24 @@ private fun ServerCard(
     onOpen: () -> Unit,
     onActivate: () -> Unit,
 ) {
-    GlassCard(radius = 16.dp) {
+    GlassCard(radius = 18.dp) {
         Column(
-            Modifier.fillMaxWidth().clickable(onClick = onOpen).padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            Modifier.fillMaxWidth().clickable(onClick = onOpen).padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 Box(
-                    Modifier.size(34.dp).clip(RoundedCornerShape(10.dp))
+                    Modifier.size(44.dp).clip(RoundedCornerShape(12.dp))
                         .background(if (active) accent.a(0.16f) else Glass),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
                         kindIcon(config.kind), null,
                         tint = if (active) accent else TextMuted,
-                        modifier = Modifier.size(18.dp),
+                        modifier = Modifier.size(22.dp),
                     )
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
@@ -192,7 +192,7 @@ private fun ServerCard(
                         maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
                     Text(
-                        config.host, color = TextFaint, fontFamily = MonoFont, fontSize = 11.sp,
+                        config.host, color = TextFaint, fontFamily = MonoFont, fontSize = 12.sp,
                         maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
                 }
@@ -215,7 +215,7 @@ private fun ServerCard(
                 }
             }
             if (!active) {
-                OledButton("Browse this library", accent = accent, outline = true, onClick = onActivate)
+                OledButton("Browse this library", accent = accent, onClick = onActivate)
             }
         }
     }
