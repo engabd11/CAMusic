@@ -325,6 +325,11 @@ class Playback(private val app: Context) {
 
     private fun startSendspin(url: String, token: String?, name: String) {
         val c = SendspinClient(); client = c
+        // Propagate the current idle state — if nothing is playing when the client
+        // connects, start in idle mode rather than running fast timer loops until
+        // the next isPlaying transition. The connection service drives this from
+        // its own watchPlayback observer, but the client needs to know *now*.
+        if (!_isPlaying.value) c.setIdleMode(true)
         val eng = SendspinAudioEngine(c.clock); engine = eng
 
         scope.launch { c.state.collect { _connected.value = it == SendspinClient.State.CONNECTED } }
@@ -718,6 +723,24 @@ class Playback(private val app: Context) {
     }
 
     fun disablePlayer() = disconnect()
+
+    /**
+     * Bridge to the protocol client's idle mode — called by
+     * [SendspinConnectionService] when it transitions between idle and active.
+     *
+     * Idle mode relaxes the time-sync and state-reporting cadence in
+     * [SendspinClient] to reduce background CPU and network traffic when no audio
+     * is flowing. Active mode restores the fast cadence so the clock converges
+     * quickly for the next stream — including TTS announcements, which arrive
+     * unannounced and need the clock ready *now*.
+     *
+     * The [resyncClock] call inside [SendspinClient.setIdleMode] is what makes the
+     * idle → active transition fast: it kicks the time-sync loop to take a sample
+     * immediately rather than waiting up to 30s for the next tick.
+     */
+    fun setClientIdleMode(idle: Boolean) {
+        client?.setIdleMode(idle)
+    }
 
     /**
      * Tear the player down. [reason] rides along in `client/goodbye`: pass

@@ -118,7 +118,9 @@ class MaNowPlaying(app: Context) {
     init {
         scope.launch { settings.targetPlayer.collect { _target.value = it } }
         scope.launch { settings.backend.collect { _backend.value = it } }
-        scope.launch { api.state.collect { if (it == MaApiClient.State.CONNECTED) refresh() } }
+        scope.launch {
+            api.state.collect { if (it == MaApiClient.State.CONNECTED) refresh() }
+        }
         // Same shape as the Now Playing screen's: sampled events for promptness, a 5s
         // poll as the floor. `queue_time_updated` alone arrives about once a second
         // per active queue, so sampling is what keeps this bounded.
@@ -136,7 +138,18 @@ class MaNowPlaying(app: Context) {
                 // configured — and waking the radio for it would be worse than
                 // pointless.
                 if (_backend.value != "subsonic" && api.state.value == MaApiClient.State.CONNECTED) {
-                    refresh()
+                    // Skip the poll when the app is backgrounded and no remote
+                    // player is actively playing. The poll drives WebSocket traffic
+                    // and JSON parsing on the main dispatcher every 5 seconds —
+                    // fine while the user is looking at the app, but pure background
+                    // cost when nobody is. A remote player that *is* playing still
+                    // needs the poll so the notification's seek bar stays live; a
+                    // backgrounded app with nothing playing does not.
+                    val remoteActive = now.value?.isPlaying == true
+                    val backgrounded = !(AppLifecycleObserver.get()?.foreground?.value ?: true)
+                    if (!backgrounded || remoteActive) {
+                        refresh()
+                    }
                 }
             }
         }
