@@ -113,6 +113,17 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     /** The active server's stored config, so a connect knows what it is connecting to. */
     private var activeConfig: ServerConfig? = null
+        set(value) {
+            field = value
+            _activeServerConfig.value = value
+        }
+
+    /**
+     * Exposed so the connect form can label itself for the actual provider (Jellyfin,
+     * Navidrome, etc.) rather than presenting every non-MA backend as Navidrome.
+     */
+    private val _activeServerConfig = MutableStateFlow<ServerConfig?>(null)
+    val activeServerConfig: StateFlow<ServerConfig?> = _activeServerConfig
 
     /**
      * What to call the active library in a message.
@@ -490,6 +501,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 _navUrl.value = it.url
                 _navUser.value = it.username
                 _navPass.value = it.password
+                // Build a source from the stored config immediately so play actions
+                // that arrive before the probe finishes still get a valid stream URL.
+                // The connect below will authenticate/probe it and replace it if needed.
+                ensureSourceFor(it)
             }
             // Backend first, then booted: the settings collector below only acts
             // once booted, so this ordering keeps boot from racing it into two
@@ -614,6 +629,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             _navUrl.value = config.url
             _navUser.value = config.username
             _navPass.value = config.password
+            // Build a source now so the library can render and play while the probe
+            // runs. `connect()` will authenticate/probe and swap in a fresh source
+            // if the credentials or token need refreshing.
+            ensureSourceFor(config)
         } else {
             _maUrl.value = config.url
             _maUser.value = config.username
@@ -631,6 +650,30 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             // which is right when the address hasn't changed and wrong here: two MA
             // servers would swap labels without the connection ever moving.
             if (want == Backend.MA) connect()
+        }
+    }
+
+    /**
+     * Build or refresh [source] from [config] without probing the network.
+     *
+     * Call this whenever [activeConfig] lands so that play actions and stream URL
+     * generation can succeed even while the probe is still in flight. The source
+     * is recreated if the kind or address changed; otherwise only the stream
+     * format is refreshed.
+     */
+    private fun ensureSourceFor(config: ServerConfig) {
+        val existing = source
+        val sameKindAndAddress = existing != null &&
+            existing.kind == config.kind &&
+            existing.serverUrl.startsWith(config.url.trim().trimEnd('/'))
+        if (sameKindAndAddress) {
+            existing.streamFormat = config.option(ServerConfig.OPT_STREAM_FORMAT) ?: "raw"
+            return
+        }
+        val next = MusicSources.create(config)
+        if (next != null) {
+            next.streamFormat = config.option(ServerConfig.OPT_STREAM_FORMAT) ?: "raw"
+            source = next
         }
     }
 
@@ -831,13 +874,19 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         // session against Navidrome's address.
         val stored = settings.activeServer.first()?.takeIf { it.kind.playsLocally }
             ?: activeConfig?.takeIf { it.kind.playsLocally }
-        return stored?.copy(url = url, username = _navUser.value, password = _navPass.value)
-            ?: ServerConfig(
-                kind = ServerKind.NAVIDROME,
-                url = url,
-                username = _navUser.value,
-                password = _navPass.value,
-            )
+        return stored?.copy(
+            url = url,
+            // Blank form fields are not an edit — they mean the form was never seeded
+            // or was cleared. Overwriting the stored credentials with blanks broke
+            // Jellyfin connects when the active server was switched in Settings.
+            username = _navUser.value.takeIf { it.isNotBlank() } ?: stored.username,
+            password = _navPass.value.takeIf { it.isNotBlank() } ?: stored.password,
+        ) ?: ServerConfig(
+            kind = ServerKind.NAVIDROME,
+            url = url,
+            username = _navUser.value,
+            password = _navPass.value,
+        )
     }
 
     /** Write [activeConfig] back into the stored list, in place. */
@@ -1062,10 +1111,12 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         // carries no genre and no album id, so without this the radio would have
         // nothing but a title to seed from.
         rememberSeeds(listOf(item))
+        val resolvedStream = streamUrl
+            ?: item.takeIf { it.provider == source?.providerId }?.let { source?.streamUrl(it.itemId) }
+            ?: streamUrlFor(item)
         return downloadManager.toLocalTrack(
             item = item,
-            streamUrl = streamUrl
-                ?: item.takeIf { it.provider == source?.providerId }?.let { source?.streamUrl(it.itemId) },
+            streamUrl = resolvedStream,
             // A DOWNLOAD item carries its file path as its uri; everything else has
             // to be looked up in the index by id.
             localPathFallback = item.uri?.takeIf { item.provider == DOWNLOAD },
@@ -1081,6 +1132,21 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             if (scrobbleId == null) track
             else track.copy(scrobbleId = scrobbleId, scrobbleProvider = SubsonicClient.PROVIDER)
         }
+    }
+
+    /**
+     * Build a stream URL from the active config when [source] is missing or doesn't
+     * match the item's provider. This is the fallback that keeps Jellyfin songs
+     * playable while the library is still probing, and when the source holder was
+     * cleared by a backend switch.
+     */
+    private fun streamUrlFor(item: MaItem): String? {
+        if (!MusicSources.isLocalProvider(item.provider)) return null
+        val config = activeConfig?.takeIf { it.kind.playsLocally } ?: return null
+        val src = MusicSources.create(config)?.apply {
+            streamFormat = config.option(ServerConfig.OPT_STREAM_FORMAT) ?: "raw"
+        } ?: return null
+        return src.takeIf { it.providerId == item.provider }?.streamUrl(item.itemId)
     }
 
     /**

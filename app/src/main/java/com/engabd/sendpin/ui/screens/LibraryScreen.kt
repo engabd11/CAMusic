@@ -69,6 +69,8 @@ import com.engabd.sendpin.subsonic.SavedQueue
 import com.engabd.sendpin.subsonic.SubsonicClient
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
+import com.engabd.sendpin.library.ServerConfig
+import com.engabd.sendpin.library.ServerKind
 
 /**
  * The library in the same OLED language as Now Playing: a single album-derived
@@ -100,6 +102,7 @@ fun LibraryScreen(
     val showCreatePlaylist by viewModel.showCreatePlaylist.collectAsStateWithLifecycle()
     val addingToPlaylist by viewModel.addingToPlaylist.collectAsStateWithLifecycle()
     val playlistChoices by viewModel.playlistChoices.collectAsStateWithLifecycle()
+    val activeServerConfig by viewModel.activeServerConfig.collectAsStateWithLifecycle()
     val palette = LocalPalette.current
     val snackbar = remember { SnackbarHostState() }
     // Long-press target. Hoisted to the screen so the sheet is a sibling of the
@@ -137,7 +140,7 @@ fun LibraryScreen(
                     viewModel, gridCols, onAlbumClick, onArtistClick, onPlaylistClick,
                     onLongPress = { actionsFor = it },
                 )
-                booted && !connecting && (!hasServer || connError != null) -> ConnectForm(viewModel, backend)
+                booted && !connecting && (!hasServer || connError != null) -> ConnectForm(viewModel, backend, activeServerConfig)
                 else -> ConnectingState()
             }
         }
@@ -1312,10 +1315,11 @@ private fun SearchErrorState(message: String, onRetry: () -> Unit) {
 // --- connect --------------------------------------------------------------
 
 @Composable
-private fun ConnectForm(viewModel: LibraryViewModel, backend: Backend) {
+private fun ConnectForm(viewModel: LibraryViewModel, backend: Backend, activeServerConfig: ServerConfig?) {
     val connecting by viewModel.connecting.collectAsStateWithLifecycle()
     val connError by viewModel.connError.collectAsStateWithLifecycle()
     val accent = LocalAccent.current
+    val activeConfig = activeServerConfig
 
     Column(
         Modifier
@@ -1338,12 +1342,21 @@ private fun ConnectForm(viewModel: LibraryViewModel, backend: Backend) {
             val url by viewModel.navUrl.collectAsStateWithLifecycle()
             val user by viewModel.navUser.collectAsStateWithLifecycle()
             val pass by viewModel.navPass.collectAsStateWithLifecycle()
-            SectionLabel("Navidrome / OpenSubsonic")
+            val kind = activeConfig?.kind
+            val title = kind?.label ?: "Direct server"
+            val hint = kind?.urlHint ?: "http://192.168.0.10:4533"
+            SectionLabel(title)
             Text(
-                "Direct mode plays on this phone and can download for offline - it works even when Music Assistant is down.",
+                "Direct mode plays on this phone and can download for offline — it works even when Music Assistant is down.",
                 color = TextMuted, style = MaterialTheme.typography.bodyMedium,
             )
-            GlassField("Server URL", url, viewModel::setNavUrl, "http://192.168.0.10:4533")
+            if (kind == ServerKind.JELLYFIN) {
+                Text(
+                    "Use the username and password you log into Jellyfin with.",
+                    color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            GlassField("Server URL", url, viewModel::setNavUrl, hint)
             GlassField("Username", user, viewModel::setNavUser)
             GlassField("Password", pass, viewModel::setNavPass, secret = true)
         }
