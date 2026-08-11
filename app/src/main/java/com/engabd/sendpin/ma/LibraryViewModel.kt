@@ -946,7 +946,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * appends, `next` plays it after the current track.
      *
      * On the standalone backend this fills the local queue rather than firing a
-     * single URL at a bare MediaPlayer: tapping a track plays the *list it is in*
+     * single URL at a bare ExoPlayer: tapping a track plays the *list it is in*
      * from that point, and tapping an album or playlist plays the whole thing.
      * Anything already downloaded is played from disk, so a queue survives the
      * server going away mid-album.
@@ -2124,13 +2124,18 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private val _previewing = MutableStateFlow<String?>(null)
     val previewing: StateFlow<String?> = _previewing
 
-    private var previewPlayer: android.media.MediaPlayer? = null
+    private var previewPlayer: androidx.media3.exoplayer.ExoPlayer? = null
 
     /**
      * Audition a track without touching the queue: MA hands back a short preview
      * URL, which plays locally on the phone. Tapping the same track again stops it,
      * as does starting another one.
+     *
+     * Uses ExoPlayer (media3) rather than the deprecated `android.media.MediaPlayer`.
+     * ExoPlayer handles audio focus natively via `setAudioAttributes(..., true)` and
+     * integrates with the system MediaSession if one is active.
      */
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
     fun togglePreview(item: MaItem) {
         if (_previewing.value == item.itemId) { stopPreview(); return }
         stopPreview()
@@ -2146,19 +2151,22 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             // The user may have stopped it while the URL was in flight.
             if (_previewing.value != item.itemId) return@launch
             try {
-                previewPlayer = android.media.MediaPlayer().apply {
-                    setAudioAttributes(
-                        android.media.AudioAttributes.Builder()
-                            .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
-                            .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC)
-                            .build()
-                    )
-                    setDataSource(url)
-                    setOnCompletionListener { stopPreview() }
-                    setOnErrorListener { _, _, _ -> stopPreview(); true }
-                    setOnPreparedListener { start() }
-                    prepareAsync()
-                }
+                val attrs = androidx.media3.common.AudioAttributes.Builder()
+                    .setUsage(androidx.media3.common.C.USAGE_MEDIA)
+                    .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MUSIC)
+                    .build()
+                previewPlayer = androidx.media3.exoplayer.ExoPlayer.Builder(getApplication())
+                    .setAudioAttributes(attrs, /* handleAudioFocus = */ true)
+                    .build().apply {
+                        setMediaItem(androidx.media3.common.MediaItem.fromUri(url))
+                        prepare()
+                        playWhenReady = true
+                        addListener(object : androidx.media3.common.Player.Listener {
+                            override fun onPlaybackStateChanged(state: Int) {
+                                if (state == androidx.media3.common.Player.STATE_ENDED) stopPreview()
+                            }
+                        })
+                    }
             } catch (_: Exception) {
                 _previewing.value = null
                 _toast.tryEmit("Couldn't play the preview")

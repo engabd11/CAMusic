@@ -80,9 +80,6 @@
             android:name=".service.LocalPlaybackService"
             android:foregroundServiceType="mediaPlayback"
             android:exported="false">
-            <intent-filter>
-                <action android:name="android.intent.action.MEDIA_BUTTON" />
-            </intent-filter>
         </service>
 
         <!-- Routes headset / Bluetooth / steering-wheel media buttons into the
