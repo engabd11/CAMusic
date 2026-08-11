@@ -151,6 +151,7 @@ fun AlbumDetailScreen(
                             album = album,
                             albumName = album?.name ?: name,
                             artUrl = albumArt,
+                            sharedArtKey = "art-$itemId-$provider",
                             trackCount = tracks.size,
                             totalDuration = totalDuration,
                             onPlayAll = viewModel::playAll,
@@ -284,6 +285,7 @@ private fun AlbumHero(
     album: MaItem?,
     albumName: String,
     artUrl: String?,
+    sharedArtKey: String,
     trackCount: Int,
     totalDuration: Int,
     onPlayAll: () -> Unit,
@@ -319,6 +321,7 @@ private fun AlbumHero(
                     // flashing empty while the album request lands.
                     modifier = Modifier
                         .fillMaxSize()
+                        .sharedArt(sharedArtKey)
                         .shadow(24.dp, RoundedCornerShape(16.dp))
                         .clip(RoundedCornerShape(16.dp)),
                 )
