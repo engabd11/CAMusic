@@ -19,6 +19,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
 /**
@@ -82,6 +83,18 @@ class SendspinConnectionService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private var observeJob: kotlinx.coroutines.Job? = null
+    private var playbackWatchJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * Whether the connection is in **idle mode** — audio is not flowing, so the
+     * aggressive low-latency WiFi lock is released and the protocol timers are
+     * relaxed (see [SendspinClient.setIdleMode]). The wake lock stays held either
+     * way, because Doze would delay incoming WebSocket frames and that is the one
+     * thing TTS reachability cannot survive.
+     *
+     * Toggled by [enterIdleMode]/[enterActiveMode] from [Playback]'s isPlaying flow.
+     */
+    @Volatile private var idleMode = false
 
     /** Set when the user taps Stop, so [onDestroy] doesn't send a second goodbye. */
     private var stoppedByUser = false
@@ -90,6 +103,56 @@ class SendspinConnectionService : Service() {
         super.onCreate()
         createNotificationChannel()
         acquireLocks()
+        watchPlayback()
+    }
+
+    /**
+     * Drive idle/active transitions from the play state. Audio flowing → active:
+     * hold the low-latency WiFi lock so the stream is not starved. Audio stopped
+     * past the engine's own linger → idle: release it so the radio drops to
+     * power-save, and tell the client to relax its timer loops.
+     *
+     * The wake lock is *not* released in idle — without it Doze delays incoming
+     * WebSocket frames, which is exactly the TTS reachability this service exists
+     * to provide. The WiFi lock is the expensive one (it keeps the radio in
+     * high-power mode); the wake lock is the cheap one (it lets the CPU idle
+     * at a low clock without sleeping).
+     */
+    private fun watchPlayback() {
+        if (playbackWatchJob != null) return
+        playbackWatchJob = scope.launch {
+            pb.isPlaying.distinctUntilChanged().collect { playing ->
+                if (playing) enterActiveMode() else enterIdleMode()
+            }
+        }
+    }
+
+    /**
+     * Downgrade to idle: release the low-latency WiFi lock and tell the protocol
+     * client to relax its timer loops. The wake lock stays held.
+     *
+     * Called when playback stops (after the engine's own linger, so a between-tracks
+     * gap does not flap the WiFi radio). Idempotent — already-idle is a no-op.
+     */
+    private fun enterIdleMode() {
+        if (idleMode) return
+        idleMode = true
+        releaseWifiLock()
+        SendpinApp.instance.playback.setClientIdleMode(true)
+    }
+
+    /**
+     * Upgrade to active: re-acquire the low-latency WiFi lock and tell the protocol
+     * client to resume fast timer loops. Called on stream/start — including TTS
+     * announcements, which need the radio awake *now*, not after a power-save wakeup.
+     *
+     * Idempotent — already-active is a no-op.
+     */
+    private fun enterActiveMode() {
+        if (!idleMode) return
+        idleMode = false
+        acquireWifiLock()
+        SendpinApp.instance.playback.setClientIdleMode(false)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -101,16 +164,29 @@ class SendspinConnectionService : Service() {
         }
         startForegroundNow()
         observeConnection()
+        // Start in idle mode if nothing is playing — the service is being started
+        // for reachability (TTS), not because audio is flowing, so there is no
+        // reason to hold the low-latency WiFi lock or run the fast timer loops.
+        // watchPlayback() will upgrade to active when a stream starts.
+        if (!pb.isPlaying.value) enterIdleMode()
         return START_STICKY
     }
 
     @SuppressLint("WakelockTimeout")
     private fun acquireLocks() {
+        acquireWakeLock()
+        acquireWifiLock()
+    }
+
+    private fun acquireWakeLock() {
         if (wakeLock == null) {
             wakeLock = (getSystemService(POWER_SERVICE) as PowerManager)
                 .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "sendspin:receiver")
                 .apply { setReferenceCounted(false); acquire() }
         }
+    }
+
+    private fun acquireWifiLock() {
         if (wifiLock == null) {
             wifiLock = (applicationContext.getSystemService(WIFI_SERVICE) as WifiManager)
                 .createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "sendspin:receiver")
@@ -119,9 +195,21 @@ class SendspinConnectionService : Service() {
     }
 
     private fun releaseLocks() {
+        releaseWakeLock()
+        releaseWifiLock()
+    }
+
+    private fun releaseWakeLock() {
         runCatching { wakeLock?.takeIf { it.isHeld }?.release() }
-        runCatching { wifiLock?.takeIf { it.isHeld }?.release() }
         wakeLock = null
+    }
+
+    /**
+     * Release the WiFi lock alone — used when entering idle mode. The radio drops
+     * to power-save, which is the single biggest background battery saving.
+     */
+    private fun releaseWifiLock() {
+        runCatching { wifiLock?.takeIf { it.isHeld }?.release() }
         wifiLock = null
     }
 
@@ -242,6 +330,7 @@ class SendspinConnectionService : Service() {
         }
         releaseLocks()
         observeJob?.cancel()
+        playbackWatchJob?.cancel()
         scope.cancel()
         super.onDestroy()
     }

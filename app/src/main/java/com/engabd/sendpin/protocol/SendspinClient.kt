@@ -61,6 +61,17 @@ class SendspinClient(
     private var builtUrl = ""
     private var attempt = 0
 
+    /**
+     * Whether this client is in **idle mode** — no audio is flowing, so the timer
+     * loops relax to [IDLE_TIME_SYNC_MS] / [IDLE_STATE_REPORT_MS] to reduce
+     * background CPU and network traffic. The clock filter and sync gate still
+     * run; they just sample less often. A `stream/start` flips this back to fast
+     * cadence via [setIdleMode].
+     *
+     * Set by [Playback] from the connection service's idle/active transition.
+     */
+    @Volatile private var idleMode = false
+
     /** When a socket was last opened, for [reconnectNow]'s rate limit. */
     @Volatile private var lastDialAtMs = 0L
 
@@ -507,6 +518,26 @@ class SendspinClient(
         dbg("sent client/hello (queued=$queued)")
     }
 
+    /**
+     * Tell the client whether audio is flowing, so its timer loops can adapt.
+     *
+     * Idle mode (no audio) relaxes the time-sync and state-reporting cadence to
+     * reduce background CPU and network traffic — the clock filter doesn't need
+     * a sample every two seconds when nothing is being scheduled against it.
+     * Active mode (audio flowing, including TTS) drops back to the fast cadence
+     * so the clock converges quickly for the stream that just started.
+     *
+     * Called by [Playback] from the connection service's idle/active transition.
+     * The time-sync and state-reporting loops read [idleMode] on every iteration,
+     * so the change takes effect on the next tick — no restart needed.
+     */
+    fun setIdleMode(idle: Boolean) {
+        idleMode = idle
+        // A stream starting (idle → active) is exactly when a fresh clock sample
+        // is most valuable — the head of the stream is scheduled against it.
+        if (!idle) resyncClock()
+    }
+
     private fun startTimeSync() {
         timeJob?.cancel()
         timeJob = scope.launch {
@@ -522,8 +553,17 @@ class SendspinClient(
                 // come back, which is dead air at the start of whatever the user
                 // just tapped. The two conditions together mean "not fit to play
                 // against", which is exactly when samples are worth paying for.
+                //
+                // Idle mode (no audio flowing) relaxes the settled cadence further
+                // — the clock doesn't need maintenance when nothing schedules
+                // against it, and the 30s cadence still keeps the filter warm
+                // enough to converge quickly when a stream starts.
                 val settled = clock.filter.sampleCount >= 50 && clock.isReadyForPlaybackStart()
-                val cadence = if (settled) SLOW_TIME_SYNC_MS else FAST_TIME_SYNC_MS
+                val cadence = when {
+                    !settled -> FAST_TIME_SYNC_MS
+                    idleMode -> IDLE_TIME_SYNC_MS
+                    else -> SLOW_TIME_SYNC_MS
+                }
                 // A resync request cuts the wait short — see [resyncClock].
                 withTimeoutOrNull(cadence) { timeKick.receive() }
             }
@@ -569,7 +609,11 @@ class SendspinClient(
                 sendClientState(
                     state = if (d.report == SyncGate.Report.SYNCHRONIZED) "synchronized" else "error"
                 )
-                delay(if (ready) 5_000L else 300L)
+                delay(when {
+                    !ready -> 300L
+                    idleMode -> IDLE_STATE_REPORT_MS
+                    else -> 5_000L
+                })
             }
         }
     }
@@ -602,5 +646,15 @@ class SendspinClient(
 
         /** …and once it is: enough to hold a converged filter, and no more. */
         const val SLOW_TIME_SYNC_MS = 2_000L
+
+        /**
+         * …and when idle (no audio flowing): the clock filter doesn't need frequent
+         * samples when nothing schedules against it. 30s keeps it warm enough to
+         * converge within one or two fast samples when a stream starts.
+         */
+        const val IDLE_TIME_SYNC_MS = 30_000L
+
+        /** State reporting cadence when idle — the server doesn't need updates when nothing is playing. */
+        const val IDLE_STATE_REPORT_MS = 30_000L
     }
 }
