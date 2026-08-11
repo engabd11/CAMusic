@@ -236,4 +236,45 @@ class SyncoEngineTest {
             }
         }
     }
+
+    @Test
+    fun `idle show renders every channel inside unit range`() {
+        val engine = SyncoEngine(channels()).apply { setScheme(ColorScheme.SUNSET) }
+        val frames = (0..300).map { engine.renderIdleShow(it * 0.05f, intensity = 1f) }
+        for (out in frames) {
+            assertEquals(5, out.size)
+            for ((r, g, b) in out.values) {
+                assertTrue(r in 0f..1f && g in 0f..1f && b in 0f..1f)
+            }
+        }
+    }
+
+    @Test
+    fun `tunables scale params and default to one`() {
+        val engine = SyncoEngine(channels()).apply { mode = SyncMode.HIGH }
+        val base = engine.modeParams()
+        engine.setTunables(mapOf("reactivity" to 2f, "glow" to 0.5f))
+        val tuned = engine.modeParams()
+        assertTrue(tuned.spectralPop > base.spectralPop)
+        assertTrue(tuned.melbankGain < base.melbankGain)
+        assertEquals(base.spectralPop * 2f, tuned.spectralPop, 1e-6f)
+        assertEquals(base.melbankGain * 0.5f, tuned.melbankGain, 1e-6f)
+    }
+
+    @Test
+    fun `tunables reset to base when cleared`() {
+        val engine = SyncoEngine(channels()).apply { mode = SyncMode.MEDIUM }
+        val base = engine.modeParams()
+        engine.setTunables(mapOf("reactivity" to 2f, "colour_speed" to 0f))
+        engine.setTunables(emptyMap())
+        assertEquals(base, engine.modeParams())
+    }
+}
+
+/** Reflection helper for tests — exposes the currently active params. */
+private fun SyncoEngine.modeParams(): ModeParams {
+    val field = SyncoEngine::class.java.getDeclaredField("params")
+    field.isAccessible = true
+    @Suppress("UNCHECKED_CAST")
+    return field.get(this) as ModeParams
 }

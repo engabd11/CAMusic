@@ -23,6 +23,7 @@ import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.data.Crypto
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlin.math.abs
 import kotlin.math.max
@@ -132,6 +133,12 @@ private const val MAX_STEP_S = 0.1f
 /** How long without an analysis frame before the room is treated as silent. */
 private const val FRAME_STALE_NANOS = 250_000_000L
 
+/** How long the player must be paused/stopped before the idle ambient show fades in. */
+private const val IDLE_FADE_IN_DELAY_S = 5f
+
+/** How long the idle ambient movement takes to fully fade in. */
+private const val IDLE_FADE_IN_DURATION_S = 4f
+
 /** What the engine renders when nothing is feeding it. */
 private val SILENCE = AnalysisFrame()
 
@@ -187,6 +194,12 @@ class DirectLightSync(
      * individual track that has not been scanned yet.
      */
     private val scans: TrackScanRepository? = null,
+    /**
+     * Whether this phone's player is currently playing audio. Used to decide
+     * when the room has been idle long enough to switch from the music-reactive
+     * show to the gentle ambient idle glow.
+     */
+    private val isPlaying: Flow<Boolean> = flowOf(false),
     private val settings: AppSettings = AppSettings(context),
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -223,6 +236,13 @@ class DirectLightSync(
     @Volatile private var latestFrame: AnalysisFrame? = null
     @Volatile private var latestFrameAt = 0L
 
+    /** Playback state from this phone's player. */
+    @Volatile private var playerPlaying = false
+    /** When the player last stopped being truly playing, in engine time seconds. */
+    @Volatile private var idleStartS = -1f
+    /** How long the room has been idle for ambient fade calculations. */
+    @Volatile private var idleT = 0f
+
     /**
      * Rhythm and structure models, advanced once per analysis hop in
      * [onAnalysisFrame]. Both are stateful and single-threaded — only the
@@ -241,7 +261,7 @@ class DirectLightSync(
     // analysis thread once a hop. The analysis thread is the only place the
     // scan is *applied*, because that is where the track position and the two
     // trackers already are.
-
+    //
     /** The scan for the track playing now, once one is available. */
     @Volatile private var activeScan: TrackScan? = null
 
@@ -293,6 +313,9 @@ class DirectLightSync(
     /** Error state, surfaced to the UI. */
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
+
+    /** Current tunables applied to the engine. */
+    @Volatile private var activeTunables: Map<String, Float> = emptyMap()
 
     private var keepaliveJob: Job? = null
     private var renderJob: Job? = null
@@ -363,6 +386,7 @@ class DirectLightSync(
                 it.effect = SyncEffect.fromWire(settings.lightSyncEffect.first())
                 it.setScheme(ColorScheme.fromWire(settings.lightSyncColor.first()))
                 it.brightness = settings.lightSyncBrightness.first() / 100f
+                it.setTunables(activeTunables)
                 // Apply cached album colours if the collector already extracted
                 // them before the engine existed. Without this the first track's
                 // colours are silently lost — the collector fired from init, the
@@ -622,16 +646,23 @@ class DirectLightSync(
             val client = dtls ?: continue
 
             // A tap that has gone quiet means paused, seeking, or a gap between
-            // tracks. Feeding the last real frame forever would hold the room lit
-            // on whatever was playing when the music stopped; an empty frame lets
-            // the engine's own silence gate take it down.
+            // tracks. A player that is not playing at all means the same thing.
+            // In either case we switch to the slow ambient idle show so the room
+            // stays visible without brightening it.
             val fresh = (now - latestFrameAt) < FRAME_STALE_NANOS
             val frame = if (fresh) latestFrame ?: SILENCE else SILENCE
-
-            if (autoIntensity) applyAutoIntensity(eng, frame, dt)
+            val isIdle = !playerPlaying || !fresh
 
             val colours = try {
-                eng.render(frame, dt, latestGrid, latestStructure)
+                if (isIdle) {
+                    updateIdle(dt)
+                    eng.renderIdleShow(idleT, idleIntensity())
+                } else {
+                    idleStartS = -1f
+                    idleT = 0f
+                    if (autoIntensity) applyAutoIntensity(eng, frame, dt)
+                    eng.render(frame, dt, latestGrid, latestStructure)
+                }
             } catch (e: Exception) {
                 logThrottled("Render failed: ${e.message}")
                 continue
@@ -793,6 +824,25 @@ class DirectLightSync(
             eng.mode = picked
             selectLimiter(picked)
         }
+    }
+
+    /**
+     * Update idle-time bookkeeping for the ambient show.
+     *
+     * The first moment of idle is recorded so we can wait [IDLE_FADE_IN_DELAY_S]
+     * before the wandering movement starts, and [idleT] accumulates elapsed
+     * seconds for the renderIdleShow phase parameter.
+     */
+    private fun updateIdle(dt: Float) {
+        if (idleStartS < 0f) idleStartS = 0f
+        idleStartS += dt
+        idleT += dt
+    }
+
+    /** Movement intensity for the idle show, 0 until the delay then fading to 1. */
+    private fun idleIntensity(): Float {
+        if (idleStartS < 0f) return 0f
+        return ((idleStartS - IDLE_FADE_IN_DELAY_S) / IDLE_FADE_IN_DURATION_S).coerceIn(0f, 1f)
     }
 
     /**
@@ -1128,6 +1178,15 @@ class DirectLightSync(
         }
         scope.launch {
             settings.lightSyncBrightness.collect { pct -> engine?.brightness = pct.coerceIn(0, 100) / 100f }
+        }
+        scope.launch {
+            settings.lightSyncTunables.collect { tunables ->
+                activeTunables = tunables
+                engine?.setTunables(tunables)
+            }
+        }
+        scope.launch {
+            isPlaying.collect { playing -> playerPlaying = playing }
         }
     }
 

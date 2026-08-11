@@ -102,6 +102,7 @@ class LightSyncRepository(private val ha: HaClient) {
             "reactivity" to "Reactivity", "glow" to "Glow", "movement" to "Movement",
             "contrast" to "Contrast", "colour_speed" to "Colour speed", "loudness" to "Loudness",
         )
+        val TUNABLE_KEYS = TUNABLE_DEFS.map { it.first }
         // The intensity rungs Auto may pick from (const.INTENSITY_LADDER).
         val AUTO_RUNGS = listOf("subtle", "medium", "high", "intense", "extreme")
 

@@ -496,16 +496,72 @@ class SyncoEngine(
      */
     private val configurationType: String = "room",
 ) {
+    companion object {
+        /** Advanced live tunables: each is a multiplier on the active mode's params. */
+        val TUNABLE_KEYS = listOf(
+            "reactivity",    // flash punch
+            "glow",          // continuous room brightness
+            "movement",      // spatial motion
+            "contrast",      // small-vs-big peak spread
+            "colour_speed",  // colour drift speed
+            "loudness",      // per-band absolute-loudness follow
+        )
+    }
+
     var palette: Palette = getPalette(FALLBACK_SCHEME)
     var mode: SyncMode = SyncMode.HIGH
-        set(value) { field = value; params = MODE_PARAMS[value]!!; updateRoles() }
+        set(value) {
+            field = value
+            baseParams = MODE_PARAMS[value]!!
+            params = withTunables(baseParams)
+            updateRoles()
+        }
     var effect: SyncEffect = SyncEffect.MUSIC
     var brightness: Float = 1.0f
         set(value) { field = value.coerceIn(0f, 1f) }
     var time: Float = 0.0f
     var colourPhase: Float = 0.0f
 
+    /** The active mode's params after tunables are applied. */
     private var params: ModeParams = MODE_PARAMS[mode]!!
+    /** The mode's coded params before tunables. */
+    private var baseParams: ModeParams = params
+    /** Current tunable factors (1.0 = unchanged). */
+    private val tunables = mutableMapOf<String, Float>()
+
+    /**
+     * Apply advanced live tunables. Each key scales the params the active mode
+     * actually uses; a key missing from [values] is treated as 1.0.
+     */
+    fun setTunables(values: Map<String, Float>?) {
+        tunables.clear()
+        values?.let { tunables.putAll(it) }
+        params = withTunables(baseParams)
+    }
+
+    private fun withTunables(base: ModeParams): ModeParams {
+        if (tunables.isEmpty()) return base
+        fun fac(name: String) = tunables[name]?.coerceAtLeast(0f) ?: 1f
+        val r = fac("reactivity")
+        val g = fac("glow")
+        val m = fac("movement")
+        val c = fac("contrast")
+        val cs = fac("colour_speed")
+        val loud = fac("loudness")
+        return base.copy(
+            spectralPop = base.spectralPop * r,
+            melFluxGain = base.melFluxGain * r,
+            beatGain = base.beatGain * r,
+            melbankGain = base.melbankGain * g,
+            rotateRate = base.rotateRate * m,
+            rotateSwing = base.rotateSwing * m,
+            waveSpeed = base.waveSpeed * m,
+            flashGamma = max(0.2f, base.flashGamma * c),
+            colourSpeed = base.colourSpeed * cs,
+            colourFlow = base.colourFlow * cs,
+            bandLoudStrength = min(1f, base.bandLoudStrength * loud),
+        )
+    }
 
     // Channel layout (sorted left→right by x position)
     private val rankIds: List<Int> = channels.sortedBy { it.position.x }.map { it.channelId }
@@ -1534,6 +1590,40 @@ class SyncoEngine(
             val m = max(r, max(g, b))
             val nc = if (m > 1e-6f) Triple(r / m, g / m, b / m) else Triple(0f, 0f, 0f)
             val d = dim * (0.5f + 0.5f * m)
+            val (nr, ng, nb) = nc
+            out[cid] = Triple(nr * d, ng * d, nb * d)
+        }
+        return out
+    }
+
+    /**
+     * Slow ambient "show" for a genuinely idle/paused room.
+     *
+     * Colours drift across the room and through the palette while two slow,
+     * out-of-phase spatial waves make the light seem to wander. [t] is elapsed
+     * seconds; [intensity] (0..1) fades the movement in, so at 0 this matches
+     * [renderIdle] and at 1 the full wandering show is active.
+     */
+    fun renderIdleShow(t: Float, intensity: Float = 1f): Map<Int, Rgb> {
+        predrop = 0f
+        predropCommit = false
+        predropStreak = 0
+        predropReleased = 0f
+        val inten = intensity.coerceIn(0f, 1f)
+        val base = 0.22f
+        val amp = 0.30f * inten
+        val breath = 0.88f + 0.12f * sin(2f * PI.toFloat() * 0.045f * t)
+        val out = HashMap<Int, Rgb>()
+        for (cid in rankIds) {
+            val info = cmap[cid] ?: continue
+            val c = palette.sample(info.xrank * 0.6f + t * 0.045f)
+            val (r, g, b) = c
+            val m = max(r, max(g, b))
+            val nc = if (m > 1e-6f) Triple(r / m, g / m, b / m) else Triple(0f, 0f, 0f)
+            val w1 = 0.5f + 0.5f * sin(2f * PI.toFloat() * (info.pos.x * 0.9f - t * 0.10f))
+            val w2 = 0.5f + 0.5f * sin(2f * PI.toFloat() * (info.pos.z * 0.7f + t * 0.06f) + 1.7f)
+            val wave = 0.6f * w1 + 0.4f * w2
+            val d = brightness * (base + amp * wave) * breath * (0.5f + 0.5f * m)
             val (nr, ng, nb) = nc
             out[cid] = Triple(nr * d, ng * d, nb * d)
         }

@@ -83,6 +83,7 @@ class SendpinApp : Application(), ImageLoaderFactory {
             localPlayer.audioLead,
             localPlayer.current,
             trackScans,
+            isPlaying = localPlayer.playing,
         )
     }
 
