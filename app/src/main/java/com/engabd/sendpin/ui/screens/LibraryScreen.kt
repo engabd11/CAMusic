@@ -134,7 +134,7 @@ fun LibraryScreen(
             // visit to this tab flash what looks like the onboarding screen.
             when {
                 ready -> Browse(
-                    viewModel, onAlbumClick, onArtistClick, onPlaylistClick,
+                    viewModel, gridCols, onAlbumClick, onArtistClick, onPlaylistClick,
                     onLongPress = { actionsFor = it },
                 )
                 booted && !connecting && (!hasServer || connError != null) -> ConnectForm(viewModel, backend)
@@ -417,6 +417,7 @@ private val MaActionTypes = setOf("track", "album", "artist", "playlist")
 @Composable
 private fun Browse(
     viewModel: LibraryViewModel,
+    gridCols: Int,
     onAlbumClick: (MaItem) -> Unit,
     onArtistClick: (MaItem) -> Unit,
     onPlaylistClick: (MaItem) -> Unit,
