@@ -83,8 +83,14 @@ class LightSyncTileService : TileService() {
      * Two overloads because the API changed under us: from API 34 the system wants a
      * `PendingIntent` so it can attribute the launch, and the `Intent` form it
      * replaced is deprecated there but is the only one that exists below it.
+     *
+     * Suppressed twice because the two toolchains flag it separately: `DEPRECATION`
+     * is the Kotlin compiler's, `StartActivityAndCollapseDeprecated` is lint's, and
+     * lint does not read the `SDK_INT >= 34` guard that already keeps the deprecated
+     * call off the versions that would throw for it. `minSdk` is 31, so the branch
+     * below is the only thing API 31–33 can call — it stays until `minSdk` reaches 34.
      */
-    @Suppress("DEPRECATION")
+    @Suppress("DEPRECATION", "StartActivityAndCollapseDeprecated")
     private fun openApp() {
         if (android.os.Build.VERSION.SDK_INT >= 34) {
             startActivityAndCollapse(openAppIntent(applicationContext, OpenAppRequest.TILE))
