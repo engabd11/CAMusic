@@ -12,6 +12,9 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.floatOrNull
+import kotlinx.serialization.json.jsonPrimitive
 
 private val Context.dataStore by preferencesDataStore(name = "sendpin_settings")
 
@@ -103,6 +106,15 @@ class AppSettings(private val context: Context) {
         private val LIGHT_SYNC_EFFECT = stringPreferencesKey("light_sync_effect") // music|movies|fireworks
         private val LIGHT_SYNC_COLOR = stringPreferencesKey("light_sync_color") // colour scheme wire key
         private val LIGHT_SYNC_BRIGHTNESS = stringPreferencesKey("light_sync_brightness") // 5..100
+
+        /**
+         * Advanced live tunables for the direct bridge path. Each key is a multiplier
+         * on the active mode's relevant params, exactly as on the Home Assistant path.
+         * Stored as a JSON object: {"reactivity":1.0,"glow":1.1,...}.
+         */
+        private val LIGHT_SYNC_TUNABLES = stringPreferencesKey("light_sync_tunables")
+        /** Whether the direct Light Sync screen shows the advanced tunables. */
+        private val LIGHT_SYNC_ADVANCED = booleanPreferencesKey("light_sync_advanced")
 
         /**
          * Whether tracks are analysed ahead of the show.
@@ -695,6 +707,26 @@ class AppSettings(private val context: Context) {
     /** Master brightness ceiling (5..100). */
     val lightSyncBrightness: Flow<Int> = context.dataStore.data.map { it[LIGHT_SYNC_BRIGHTNESS]?.toIntOrNull() ?: 100 }
 
+    /** Whether advanced tunables are shown on the direct Light Sync screen. */
+    val lightSyncAdvanced: Flow<Boolean> = context.dataStore.data.map { it[LIGHT_SYNC_ADVANCED] ?: false }
+
+    /**
+     * Direct-mode advanced tunables. Keys are the syncoV2 tunable names;
+     * missing keys default to 1.0 (no change). Values are coerced to 0..2.
+     */
+    val lightSyncTunables: Flow<Map<String, Float>> = context.dataStore.data.map { prefs ->
+        val raw = prefs[LIGHT_SYNC_TUNABLES]
+        if (raw.isNullOrBlank()) return@map emptyMap()
+        try {
+            val obj = serverJson.decodeFromString(JsonObject.serializer(), raw)
+            obj.mapNotNull { (k, v) ->
+                val f = v.jsonPrimitive.floatOrNull ?: v.jsonPrimitive.content.toFloatOrNull()
+                if (f != null && com.engabd.sendpin.hue.SyncoEngine.TUNABLE_KEYS.contains(k)) k to f.coerceIn(0f, 2f)
+                else null
+            }.toMap()
+        } catch (_: Exception) { emptyMap() }
+    }
+
     /** Analyse tracks ahead of the show. See the key's docs for the default. */
     val lightSyncPrescan: Flow<Boolean> = context.dataStore.data.map { it[LIGHT_SYNC_PRESCAN] ?: true }
 
@@ -763,6 +795,19 @@ class AppSettings(private val context: Context) {
 
     suspend fun setLightSyncBrightness(pct: Int) {
         context.dataStore.edit { it[LIGHT_SYNC_BRIGHTNESS] = pct.toString() }
+    }
+
+    suspend fun setLightSyncAdvanced(on: Boolean) {
+        context.dataStore.edit { it[LIGHT_SYNC_ADVANCED] = on }
+    }
+
+    suspend fun setLightSyncTunables(tunables: Map<String, Float>) {
+        val obj = kotlinx.serialization.json.buildJsonObject {
+            for ((k, v) in tunables) {
+                if (com.engabd.sendpin.hue.SyncoEngine.TUNABLE_KEYS.contains(k)) put(k, kotlinx.serialization.json.JsonPrimitive(v.coerceIn(0f, 2f)))
+            }
+        }
+        context.dataStore.edit { it[LIGHT_SYNC_TUNABLES] = serverJson.encodeToString(JsonObject.serializer(), obj) }
     }
 
     suspend fun setLightSyncPrescan(on: Boolean) {

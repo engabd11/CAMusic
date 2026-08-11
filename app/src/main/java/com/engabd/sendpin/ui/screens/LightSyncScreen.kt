@@ -306,6 +306,8 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
     val autoLevels by settings.lightSyncAutoLevels.collectAsState(initial = listOf("subtle", "medium", "high"))
     val colour by settings.lightSyncColor.collectAsState(initial = "album_art_v2")
     val brightnessPct by settings.lightSyncBrightness.collectAsState(initial = 100)
+    val advanced by settings.lightSyncAdvanced.collectAsState(initial = false)
+    val tunables by settings.lightSyncTunables.collectAsState(initial = emptyMap())
     val bridgeIp by settings.hueBridgeIp.collectAsState(initial = "")
     val configId by settings.hueEntertainmentConfigId.collectAsState(initial = "")
 
@@ -507,16 +509,36 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                     scope.launch { settings.setLightSyncBrightness((5 + it * 95).roundToInt()) }
                 }, "$brightnessPct%")
 
+                // Advanced live tunables — same six factors as the Home Assistant path.
+                Spacer(Modifier.height(22.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        SectionLabel("Advanced")
+                        Spacer(Modifier.height(2.dp))
+                        Text("Fine-tune the reaction", color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
+                    }
+                    AccentSwitch(advanced) { on -> scope.launch { settings.setLightSyncAdvanced(on) } }
+                }
+                if (advanced) {
+                    Spacer(Modifier.height(12.dp))
+                    LightSyncRepository.TUNABLE_DEFS.forEach { (key, label) ->
+                        val factor = tunables[key] ?: 1f
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 5.dp), horizontalArrangement = Arrangement.spacedBy(11.dp)) {
+                            Text(label, color = TextSecondary, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, modifier = Modifier.width(96.dp))
+                            HSlider((factor / 2f).coerceIn(0f, 1f), {
+                                val next = (tunables + (key to (it * 2f)))
+                                scope.launch { settings.setLightSyncTunables(next) }
+                            }, modifier = Modifier.weight(1f))
+                            Text("${(factor * 100).roundToInt()}%", color = TextMuted, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 11.sp, modifier = Modifier.widthIn(min = 40.dp))
+                        }
+                    }
+                }
+
                 Spacer(Modifier.height(22.dp))
                 Text(
                     "Direct mode syncs this phone's own playback, and needs no timing " +
                         "offset — it measures how far the audio tap runs ahead of the " +
                         "speaker and compensates exactly.\n\n" +
-                        // Track analysis used to sit above this, between the colour
-                        // picker and the brightness slider. It is a background job with
-                        // a storage cost rather than a light-show control, so it now
-                        // lives with the bridge pairing it belongs beside — and this
-                        // says where it went, for anyone who knew where it was.
                         "Reading tracks ahead of the show has moved to Settings → Light Sync → " +
                         "Bridge & analysis.",
                     color = TextFaint, style = MaterialTheme.typography.bodySmall,
