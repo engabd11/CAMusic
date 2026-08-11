@@ -16,8 +16,15 @@ data class StructureState(
     val buildProgress: Float = 0f,
     /** True on the single frame a drop lands. */
     val dropNow: Boolean = false,
-    /** A drop is expected very soon. */
+    /**
+     * A drop is expected very soon (scheduled or heuristic).
+     */
     val dropImminent: Boolean = false,
+    /**
+     * True when the heuristic build detector thinks a drop is coming. This is
+     * less reliable than a scheduled ETA and is gated by confirmation/timeout.
+     */
+    val dropImminentHeuristic: Boolean = false,
     /**
      * Seconds until a *scheduled* drop, known from an offline analysis of the
      * track. Negative means unknown — the live heuristic only sets the boolean.
@@ -131,6 +138,7 @@ class StructureTracker(private val framePeriod: Float) {
             buildProgress = build,
             dropNow = dropNow,
             dropImminent = dropImminent,
+            dropImminentHeuristic = build > 0.60f && dropRefractory <= 0f,
             breakdown = breakdown,
         )
     }
