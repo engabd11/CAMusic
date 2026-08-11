@@ -68,6 +68,11 @@ class AppSettings(private val context: Context) {
         private val LYRICS_OFFSET_MS = stringPreferencesKey("lyrics_offset_ms") // +ve = lyrics run late
         private val KEEP_ALIVE_ANNOUNCEMENTS = booleanPreferencesKey("keep_alive_announcements") // persist connection for TTS
 
+        // Self-hosted crash reporting
+        private val CRASH_GITHUB_REPO = stringPreferencesKey("crash_github_repo") // owner/repo, e.g. engabd11/CAMusic
+        private val CRASH_GITHUB_TOKEN = stringPreferencesKey("crash_github_token") // encrypted PAT for auto-submit
+        private val CRASH_AUTO_UPLOAD = booleanPreferencesKey("crash_auto_upload") // false = manual share only
+
         // Direct Hue Bridge Light Sync
         private val HUE_BRIDGE_IP = stringPreferencesKey("hue_bridge_ip")
         private val HUE_APP_KEY = stringPreferencesKey("hue_app_key")         // encrypted
@@ -766,6 +771,29 @@ class AppSettings(private val context: Context) {
 
     suspend fun setLightSyncPrescanWifiOnly(on: Boolean) {
         context.dataStore.edit { it[LIGHT_SYNC_PRESCAN_WIFI] = on }
+    }
+
+    // ── Crash reporting ────────────────────────────────────────────────────
+
+    /** GitHub repo in owner/repo form, e.g. "engabd11/CAMusic". */
+    val crashGitHubRepo: Flow<String> = context.dataStore.data.map { it[CRASH_GITHUB_REPO] ?: "engabd11/CAMusic" }
+
+    /** Encrypted personal access token for automatic GitHub issue creation. */
+    val crashGitHubToken: Flow<String> = context.dataStore.data.map { Crypto.decrypt(it[CRASH_GITHUB_TOKEN] ?: "") }
+
+    /** Whether to attempt an automatic GitHub issue on crash. */
+    val crashAutoUpload: Flow<Boolean> = context.dataStore.data.map { it[CRASH_AUTO_UPLOAD] ?: false }
+
+    suspend fun setCrashGitHubRepo(repo: String) {
+        context.dataStore.edit { it[CRASH_GITHUB_REPO] = repo.trim() }
+    }
+
+    suspend fun setCrashGitHubToken(token: String) {
+        context.dataStore.edit { it[CRASH_GITHUB_TOKEN] = Crypto.encrypt(token.trim()) }
+    }
+
+    suspend fun setCrashAutoUpload(auto: Boolean) {
+        context.dataStore.edit { it[CRASH_AUTO_UPLOAD] = auto }
     }
 
 }

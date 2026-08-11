@@ -425,7 +425,11 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             // item's own provider is always "library" — it says where MA *filed* the
             // track, not where it streamed it from.
             streamProvider = MaParse.streamProviderLabel(queue?.streamProvider),
-            groupSize = 1 + (p?.groupChilds?.size ?: 0),
+            groupSize = run {
+                // The selected player may be a follower; groupChilds only lives on the leader.
+                val leader = _players.value.firstOrNull { it.playerId == (p?.syncedTo ?: p?.playerId) }
+                1 + (leader?.groupChilds?.size ?: 0)
+            },
             shuffle = queue?.shuffleEnabled == true,
             repeatMode = queue?.repeatMode ?: "off",
             queueSize = queue?.itemCount ?: 0,

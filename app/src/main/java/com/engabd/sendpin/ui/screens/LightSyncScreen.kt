@@ -320,6 +320,16 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
         configError = null
         try {
             configs = direct.bridgeClient.getEntertainmentConfigs(bridgeIp, key)
+            // If an area is already streaming, default to it so opening the tab shows
+            // the live room rather than the first area in the list. Only override when
+            // the stored choice is blank or not currently active — never override a
+            // user's deliberate selection of an inactive area.
+            val storedActive = configs.find { it.id == configId }
+            if (storedActive == null || !storedActive.isStreaming) {
+                configs.firstOrNull { it.isStreaming }?.let {
+                    settings.setHueConfigId(it.id)
+                }
+            }
         } catch (e: Exception) {
             configError = e.message ?: "Could not reach the bridge"
         }

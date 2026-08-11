@@ -22,14 +22,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.engabd.sendpin.crash.CrashReporter
+import com.engabd.sendpin.crash.CrashReport
 import com.engabd.sendpin.BuildConfig
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.ui.design.HSlider
 import com.engabd.sendpin.ui.design.ToggleChip
 import com.engabd.sendpin.ui.theme.*
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.first
 
 /** How the app looks, and how the player behaves. */
 @Composable
@@ -131,10 +133,27 @@ internal fun AppearanceSection(settings: AppSettings, accent: Color, scope: Coro
     }
 }
 
-/** Version, licence, and where the code is. */
+/** Version, licence, where the code is, and how crashes are reported. */
 @Composable
 internal fun AboutSection(accent: Color) {
     val context = LocalContext.current
+    val settings = remember(context) { AppSettings(context) }
+    val scope = rememberCoroutineScope()
+
+    var repo by remember { mutableStateOf("engabd11/CAMusic") }
+    var token by remember { mutableStateOf("") }
+    var autoUpload by remember { mutableStateOf(false) }
+    var showToken by remember { mutableStateOf(false) }
+    var lastReport by remember { mutableStateOf<CrashReport?>(null) }
+    var uploadResult by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(Unit) {
+        repo = settings.crashGitHubRepo.first()
+        token = settings.crashGitHubToken.first()
+        autoUpload = settings.crashAutoUpload.first()
+        lastReport = CrashReporter.lastUnreported()
+    }
+
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         SettingsCard(
             title = "CAMusic",
@@ -151,7 +170,7 @@ internal fun AboutSection(accent: Color) {
                     .border(1.dp, Hairline, RoundedCornerShape(100))
                     .clickable {
                         context.startActivity(
-                            Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/engabd11/sendspin-nowdroid"))
+                            Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/engabd11/CAMusic"))
                         )
                     }
                     .padding(horizontal = 16.dp, vertical = 10.dp),
@@ -163,6 +182,94 @@ internal fun AboutSection(accent: Color) {
                     "Source on GitHub", color = TextSecondary, fontFamily = AppFont,
                     fontWeight = FontWeight.Bold, fontSize = 13.sp,
                 )
+            }
+        }
+
+        SettingsCard(
+            title = "Crash reporting",
+            lead = "Crashes are stored on this device only. Share them to GitHub manually, or " +
+                "enable automatic upload with a personal access token.",
+        ) {
+            OledField(
+                value = repo,
+                onChange = { repo = it },
+                label = "GitHub repository",
+                placeholder = "owner/repo",
+                accent = accent,
+            )
+            SecretField(
+                value = token,
+                onChange = { token = it },
+                label = "GitHub token (optional)",
+                accent = accent,
+                visible = showToken,
+                onVisibilityChange = { showToken = it },
+            )
+            Note("With a token, the app can open an issue automatically. Without one, you still get a one-tap share link.")
+            Spacer(Modifier.height(4.dp))
+            ToggleRow(
+                title = "Upload crashes automatically",
+                subtitle = "Needs a token above",
+                checked = autoUpload,
+                accent = accent,
+                enabled = token.isNotBlank(),
+            ) { autoUpload = it }
+            Spacer(Modifier.height(8.dp))
+            OledButton(
+                text = "Save crash-report settings",
+                accent = accent,
+                outline = true,
+            ) {
+                scope.launch {
+                    settings.setCrashGitHubRepo(repo)
+                    if (token.isNotBlank()) settings.setCrashGitHubToken(token)
+                    settings.setCrashAutoUpload(autoUpload)
+                }
+            }
+            if (lastReport != null) {
+                CardDivider()
+                val report: CrashReport = lastReport ?: return@SettingsCard
+                Text(
+                    "Last crash: ${report.exceptionClass}",
+                    color = TextSecondary,
+                    fontFamily = AppFont,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Note(report.time)
+                Spacer(Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OledButton(
+                        text = "Share to GitHub",
+                        accent = accent,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        val url = CrashReporter.githubIssueUrl(repo, report)
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                        CrashReporter.markLastReported()
+                        lastReport = null
+                    }
+                    if (token.isNotBlank()) {
+                        OledButton(
+                            text = "Upload now",
+                            accent = accent,
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            scope.launch {
+                                uploadResult = CrashReporter.postToGitHub(repo, token, report)
+                                    .fold(
+                                        onSuccess = { "Issue #$it created" },
+                                        onFailure = { "Upload failed: ${it.message}" },
+                                    )
+                                CrashReporter.markLastReported()
+                                lastReport = null
+                            }
+                        }
+                    }
+                }
+                uploadResult?.let {
+                    Spacer(Modifier.height(6.dp))
+                    Note(it, warn = it.startsWith("Upload failed"))
+                }
             }
         }
     }
