@@ -19,7 +19,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
 /**
@@ -121,7 +120,9 @@ class SendspinConnectionService : Service() {
     private fun watchPlayback() {
         if (playbackWatchJob != null) return
         playbackWatchJob = scope.launch {
-            pb.isPlaying.distinctUntilChanged().collect { playing ->
+            // StateFlow already emits only distinct values, so no
+            // distinctUntilChanged() is needed — it would be a no-op.
+            pb.isPlaying.collect { playing ->
                 if (playing) enterActiveMode() else enterIdleMode()
             }
         }

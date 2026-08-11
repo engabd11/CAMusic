@@ -146,7 +146,7 @@ class MaNowPlaying(app: Context) {
                     // needs the poll so the notification's seek bar stays live; a
                     // backgrounded app with nothing playing does not.
                     val remoteActive = now.value?.isPlaying == true
-                    val backgrounded = !AppLifecycleObserver.get()?.foreground?.value ?: false
+                    val backgrounded = !(AppLifecycleObserver.get()?.foreground?.value ?: true)
                     if (!backgrounded || remoteActive) {
                         refresh()
                     }
