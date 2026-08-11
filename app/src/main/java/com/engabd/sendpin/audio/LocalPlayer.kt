@@ -117,6 +117,14 @@ class LocalPlayer(private val context: Context) {
 
     private val player: ExoPlayer by lazy { buildPlayer() }
 
+    /**
+     * The underlying ExoPlayer, exposed for [LocalPlaybackService] to wrap in a
+     * media3 [androidx.media3.session.MediaSession]. The session reads play state,
+     * position, metadata and artwork from the player directly, which is how media3
+     * replaces the old manual `PlaybackStateCompat` / `MediaMetadataCompat` dance.
+     */
+    internal val exoPlayer: ExoPlayer get() = player
+
     private var ticker: Job? = null
 
     /** The output the user pinned in Settings (a USB DAC, typically). */
