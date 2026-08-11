@@ -11,13 +11,12 @@ import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.os.Build
 import android.os.IBinder
-import android.support.v4.media.MediaMetadataCompat
-import android.support.v4.media.session.MediaSessionCompat
-import android.support.v4.media.session.PlaybackStateCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.graphics.drawable.toBitmap
-import androidx.media.app.NotificationCompat.MediaStyle
-import androidx.media.session.MediaButtonReceiver
+import androidx.media3.session.MediaSession
+import androidx.media3.session.MediaStyleNotificationHelper
+import androidx.annotation.OptIn
+import androidx.media3.common.util.UnstableApi
 import coil.imageLoader
 import coil.request.ImageRequest
 import coil.request.SuccessResult
@@ -38,7 +37,13 @@ import kotlinx.coroutines.launch
  * Without this, starting a Navidrome track gave the phone no lock-screen controls,
  * no headset buttons and nothing in the shade — and Android was free to kill the
  * process mid-song, which is fatal for "put an album on and pocket the phone".
+ *
+ * Uses media3 [MediaSession] wrapping the [com.engabd.sendpin.audio.LocalPlayer]'s
+ * ExoPlayer, replacing the deprecated `MediaSessionCompat` / `PlaybackStateCompat` /
+ * `MediaMetadataCompat` stack. The session reads playback state, position and
+ * metadata from the player directly — no manual state pushing needed.
  */
+@OptIn(UnstableApi::class)
 class LocalPlaybackService : Service() {
 
     companion object {
@@ -67,24 +72,18 @@ class LocalPlaybackService : Service() {
     private var observing = false
     private val player get() = SendpinApp.instance.localPlayer
 
-    private var mediaSession: MediaSessionCompat? = null
+    private var mediaSession: MediaSession? = null
     private var artwork: Bitmap? = null
     private var loadedArtUrl: String? = null
 
     override fun onCreate() {
         super.onCreate()
         createChannel()
-        mediaSession = MediaSessionCompat(this, "SendspinLocal").apply {
-            setCallback(object : MediaSessionCompat.Callback() {
-                override fun onPlay() = player.resume()
-                override fun onPause() = player.pause()
-                override fun onSkipToNext() = player.next()
-                override fun onSkipToPrevious() = player.previous()
-                override fun onStop() = player.stop()
-                override fun onSeekTo(pos: Long) = player.seekTo(pos)
-            })
-            isActive = true
-        }
+        // Wrap the LocalPlayer's ExoPlayer in a media3 MediaSession. The session
+        // reads play state, position and metadata from the player directly, so the
+        // lock screen, Bluetooth head units and Android Auto all stay in sync
+        // without us pushing state manually.
+        mediaSession = MediaSession.Builder(this, player.exoPlayer).build()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -93,7 +92,11 @@ class LocalPlaybackService : Service() {
             ACTION_NEXT -> player.next()
             ACTION_PREV -> player.previous()
             ACTION_STOP -> { player.stop(); stopSelf(); return START_NOT_STICKY }
-            else -> MediaButtonReceiver.handleIntent(mediaSession, intent)
+            // Media button intents (headset, Bluetooth) are routed by the system
+            // to the media3 MediaSession, which dispatches them through the
+            // Player directly. The old MediaButtonReceiver.handleIntent() was for
+            // MediaSessionCompat; with media3 the session handles its own button
+            // events, so nothing to do here for ACTION_MEDIA_BUTTON.
         }
         startForegroundNow()
         observe()
@@ -103,10 +106,11 @@ class LocalPlaybackService : Service() {
     private fun observe() {
         if (observing) return
         observing = true
-        // Metadata and the notification body follow the track.
+        // The session reads metadata and play state from the ExoPlayer directly, so
+        // all that's left for us is the notification body and the artwork bitmap —
+        // the session can't supply a bitmap to the notification for us.
         scope.launch {
             player.current.collect { track ->
-                updateMetadata()
                 updateNotification()
                 if (track?.artUrl != loadedArtUrl) {
                     loadedArtUrl = track?.artUrl
@@ -114,63 +118,16 @@ class LocalPlaybackService : Service() {
                 }
             }
         }
-        // The session's playback state carries the position, which is how the lock
-        // screen and Bluetooth head units draw a moving progress bar — so it follows
-        // the 500ms tick. The *notification* only changes when play/pause does;
-        // rebuilding and re-posting it twice a second was pure waste and risks the
-        // system throttling the updates that matter.
         scope.launch {
-            player.positionMs.collect { updatePlaybackState(player.playing.value, it) }
+            player.playing.collect { updateNotification() }
         }
-        scope.launch {
-            player.playing.collect {
-                updatePlaybackState(it, player.positionMs.value)
-                updateNotification()
-            }
-        }
-        scope.launch { player.durationMs.collect { updateMetadata() } }
-    }
-
-    private fun updatePlaybackState(isPlaying: Boolean, posMs: Long) {
-        val state = if (isPlaying) PlaybackStateCompat.STATE_PLAYING else PlaybackStateCompat.STATE_PAUSED
-        mediaSession?.setPlaybackState(
-            PlaybackStateCompat.Builder()
-                .setActions(
-                    PlaybackStateCompat.ACTION_PLAY or
-                        PlaybackStateCompat.ACTION_PAUSE or
-                        PlaybackStateCompat.ACTION_PLAY_PAUSE or
-                        PlaybackStateCompat.ACTION_SKIP_TO_NEXT or
-                        PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS or
-                        PlaybackStateCompat.ACTION_STOP or
-                        PlaybackStateCompat.ACTION_SEEK_TO
-                )
-                .setState(state, posMs, if (isPlaying) 1f else 0f)
-                .build()
-        )
-    }
-
-    private fun updateMetadata() {
-        val t = player.current.value
-        val md = MediaMetadataCompat.Builder()
-            .putString(MediaMetadataCompat.METADATA_KEY_TITLE, t?.title.orEmpty().ifBlank { "CAMusic" })
-            .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, t?.artist.orEmpty())
-            .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, t?.album.orEmpty())
-            // -1 for unknown, never 0 — see the same line in SendspinService: 0 is a
-            // zero-length track to the platform, which pins the notification and lock
-            // screen scrubber at the end for the whole song.
-            .putLong(
-                MediaMetadataCompat.METADATA_KEY_DURATION,
-                player.durationMs.value.takeIf { it > 0 } ?: -1L,
-            )
-        artwork?.let { md.putBitmap(MediaMetadataCompat.METADATA_KEY_ART, it) }
-        mediaSession?.setMetadata(md.build())
     }
 
     private fun fetchArtwork(url: String?) {
         artworkJob?.cancel()
         if (url == null) {
             artwork = null
-            updateMetadata(); updateNotification()
+            updateNotification()
             return
         }
         artworkJob = scope.launch {
@@ -181,7 +138,7 @@ class LocalPlaybackService : Service() {
                 )
                 if (result is SuccessResult) {
                     artwork = result.drawable.toBitmap()
-                    updateMetadata(); updateNotification()
+                    updateNotification()
                 }
             } catch (_: Exception) {
             }
@@ -236,7 +193,10 @@ class LocalPlaybackService : Service() {
 
         artwork?.let { builder.setLargeIcon(it) }
         mediaSession?.let {
-            builder.setStyle(MediaStyle().setMediaSession(it.sessionToken).setShowActionsInCompactView(0, 1, 2))
+            builder.setStyle(
+                MediaStyleNotificationHelper.MediaStyle(it)
+                    .setShowActionsInCompactView(0, 1, 2)
+            )
         }
         return builder.build()
     }
@@ -256,7 +216,6 @@ class LocalPlaybackService : Service() {
 
     override fun onDestroy() {
         artworkJob?.cancel()
-        mediaSession?.isActive = false
         mediaSession?.release()
         mediaSession = null
         scope.cancel()
