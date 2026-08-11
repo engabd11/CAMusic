@@ -5,6 +5,7 @@ import kotlin.math.abs
 import kotlin.math.cbrt
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
 
 /**
  * Album-art colour extraction for Light Sync, ported from syncoV2
@@ -192,34 +193,22 @@ private fun tintedWhite(mean: FloatArray, value: Float): Rgb {
     return Triple(tint[0] * v, tint[1] * v, tint[2] * v)
 }
 
-/** Faithful fallback for a cover with almost no usable colour (v2 path). */
-private fun lowColourFallback(px: IntArray): AlbumColours? {
-    if (px.isEmpty()) return null
-    var sr = 0f; var sg = 0f; var sb = 0f
-    for (p in px) {
-        sr += ((p shr 16) and 0xFF) / 255f
-        sg += ((p shr 8) and 0xFF) / 255f
-        sb += (p and 0xFF) / 255f
-    }
-    val n = px.size.toFloat()
-    val mean = floatArrayOf(sr / n, sg / n, sb / n)
-    val v = rgbToHsv(mean[0], mean[1], mean[2])[2]
-    return AlbumColours(listOf(tintedWhite(mean, max(0.55f, v))), listOf(1f))
-}
-
-// ── v1 extraction (accent/base separation, no weights) ──────────────────
-
 /**
- * Faithful fallback for a cover with almost no colour (v1 path).
+ * Faithful fallback for a cover with almost no usable colour.
  *
  * Returns the cover's single dominant *actual* hue (from whatever colourful
  * pixels exist), or a neutral warm white for genuinely black-and-white art.
  * Deliberately does NOT invent extra hues — a near-monochrome cover should
  * drive a near-monochrome show, not a fabricated rainbow.
+ *
+ * One function for both extractions, because syncoV2 has one
+ * `_low_colour_fallback` and calls it from `_kmeans_palette` and
+ * `_kmeans_palette_v2` alike.
  */
-private fun lowColourFallbackV1(px: IntArray): AlbumColours? {
+private fun lowColourFallback(px: IntArray): AlbumColours? {
     if (px.isEmpty()) return null
-    // Find colourful pixels (saturation >= 0.12)
+    // Mean of the colourful pixels only, so a splash of colour on an otherwise
+    // grey cover still decides the hue.
     var cr = 0f; var cg = 0f; var cb = 0f; var cn = 0
     for (p in px) {
         val r = ((p shr 16) and 0xFF) / 255f
@@ -233,26 +222,18 @@ private fun lowColourFallbackV1(px: IntArray): AlbumColours? {
     if (cn >= 4) {
         val mean = floatArrayOf(cr / cn, cg / cn, cb / cn)
         val hsv = rgbToHsv(mean[0], mean[1], mean[2])
-        val s = max(hsv[1], SAT_FLOOR)
-        val v = max(0.3f, hsv[2])
-        val rgb = hsvToRgbTriple(hsv[0], s, v)
+        val rgb = hsvToRgbTriple(hsv[0], max(hsv[1], SAT_FLOOR), max(0.3f, hsv[2]))
         return AlbumColours(listOf(rgb), listOf(1f))
     }
-    // Genuinely black-and-white: neutral warm white
-    var sr = 0f; var sg = 0f; var sb = 0f
-    for (p in px) {
-        sr += ((p shr 16) and 0xFF) / 255f
-        sg += ((p shr 8) and 0xFF) / 255f
-        sb += (p and 0xFF) / 255f
-    }
-    val n = px.size.toFloat()
-    val mean = floatArrayOf(sr / n, sg / n, sb / n)
-    val v = rgbToHsv(mean[0], mean[1], mean[2])[2]
-    val rgb = Triple(NEUTRAL_WHITE[0] * max(VALUE_FLOOR, v),
-                     NEUTRAL_WHITE[1] * max(VALUE_FLOOR, v),
-                     NEUTRAL_WHITE[2] * max(VALUE_FLOOR, v))
-    return AlbumColours(listOf(rgb), listOf(1f))
+    // Genuinely black-and-white: the neutral candle white, at full value.
+    // Not scaled by the cover's own value — syncoV2 returns the constant.
+    return AlbumColours(
+        listOf(Triple(NEUTRAL_WHITE[0], NEUTRAL_WHITE[1], NEUTRAL_WHITE[2])),
+        listOf(1f),
+    )
 }
+
+// ── v1 extraction (accent/base separation, no weights) ──────────────────
 
 /**
  * v1 extraction: up to [k] theme-faithful lighting colours from RGB pixels.
@@ -274,7 +255,7 @@ internal fun extractAlbumColoursV1(px: IntArray, k: Int = 5): AlbumColours? {
         val luma = 0.299f * r + 0.587f * g + 0.114f * b
         if (luma in 0.04f..0.98f) body.add(floatArrayOf(r, g, b))
     }
-    if (body.size < 6) return lowColourFallbackV1(px)
+    if (body.size < 6) return lowColourFallback(px)
 
     val lab = body.map { rgbToLab(it[0], it[1], it[2]) }
     val nClusters = min(14, min(body.size, max(2 * k, 8)))
@@ -329,7 +310,7 @@ internal fun extractAlbumColoursV1(px: IntArray, k: Int = 5): AlbumColours? {
     }
 
     var out = baseOut + accentOut
-    if (out.isEmpty()) return lowColourFallbackV1(px)
+    if (out.isEmpty()) return lowColourFallback(px)
 
     // Order by hue so the cyclic gradient drifts smoothly between related hues
     // (tinted whites sort by their tint).
@@ -393,7 +374,10 @@ private fun hueDistance(a: Float, b: Float): Float {
 }
 
 private fun rgbToLab(r: Float, g: Float, b: Float): FloatArray {
-    fun lin(c: Float) = if (c > 0.04045f) ((c + 0.055f) / 1.055f).let { it * it * it } else c / 12.92f
+    // 2.4, not 3: this is the sRGB transfer function, and cubing it instead
+    // undershot every linear value by up to 57%, which moved every LAB point
+    // and therefore every cluster boundary away from syncoV2's.
+    fun lin(c: Float) = if (c > 0.04045f) ((c + 0.055f) / 1.055f).pow(2.4f) else c / 12.92f
     val lr = lin(r); val lg = lin(g); val lb = lin(b)
     val x = (lr * 0.4124f + lg * 0.3576f + lb * 0.1805f) / 0.95047f
     val y = lr * 0.2126f + lg * 0.7152f + lb * 0.0722f

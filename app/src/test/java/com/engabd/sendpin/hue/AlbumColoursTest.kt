@@ -4,6 +4,7 @@ import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
@@ -255,5 +256,130 @@ class AlbumColoursTest {
                 "colour outside unit range: $c",
             )
         }
+    }
+
+    // ── syncoV2 parity ───────────────────────────────────────────────────
+
+    /**
+     * The expected values below are not hand-written: they are what syncoV2's
+     * own `_kmeans_palette` and `_kmeans_palette_v2` return for these exact
+     * covers. They exist because "close enough" is not the requirement here —
+     * the two implementations drive the same lights from the same artwork and
+     * are supposed to be indistinguishable.
+     *
+     * A qualitative assertion would not have caught what these do. The port
+     * cubed the sRGB transfer function instead of raising it to 2.4, which
+     * undershot every linear value by up to 57%, moved every CIELAB point, and
+     * changed which clusters formed — yet still produced plausibly "vivid"
+     * colours that a saturation check waves through.
+     *
+     * Tolerance is 1e-4: the reference runs in float64, this runs in float32.
+     */
+    private fun assertPalette(expected: List<Rgb>, actual: List<Rgb>, label: String) {
+        assertEquals(expected.size, actual.size, "$label: wrong number of colours ($actual)")
+        for (i in expected.indices) {
+            val e = expected[i]
+            val a = actual[i]
+            assertTrue(
+                abs(e.first - a.first) < 1e-4f &&
+                    abs(e.second - a.second) < 1e-4f &&
+                    abs(e.third - a.third) < 1e-4f,
+                "$label: colour $i is $a, syncoV2 gives $e",
+            )
+        }
+    }
+
+    private val redBlue get() = cover(0.5f to argb(255, 20, 20), 0.5f to argb(20, 20, 255))
+    private val purpleSilverGold get() = cover(
+        0.4f to argb(90, 25, 128),
+        0.35f to argb(184, 186, 199),
+        0.25f to argb(115, 89, 31),
+    )
+    private val vividSplash get() = cover(0.9f to argb(70, 80, 110), 0.1f to argb(255, 0, 200))
+
+    @Test
+    fun `v1 matches syncoV2 on a two-colour cover`() {
+        assertPalette(
+            listOf(
+                Triple(1.0f, 0.078431f, 0.078431f),
+                Triple(0.078431f, 0.078431f, 1.0f),
+            ),
+            extractAlbumColoursV1(redBlue)!!.colors,
+            "v1/redBlue",
+        )
+    }
+
+    @Test
+    fun `v1 matches syncoV2 on a base-plus-accent cover`() {
+        assertPalette(
+            listOf(
+                Triple(0.450980f, 0.349020f, 0.121569f),
+                Triple(0.608706f, 0.671137f, 0.780392f),
+                Triple(0.352941f, 0.098039f, 0.501961f),
+            ),
+            extractAlbumColoursV1(purpleSilverGold)!!.colors,
+            "v1/purpleSilverGold",
+        )
+    }
+
+    @Test
+    fun `v1 matches syncoV2 on a vivid splash cover`() {
+        assertPalette(
+            listOf(
+                Triple(0.274510f, 0.313725f, 0.431373f),
+                Triple(1.0f, 0.0f, 0.784314f),
+            ),
+            extractAlbumColoursV1(vividSplash)!!.colors,
+            "v1/vividSplash",
+        )
+    }
+
+    @Test
+    fun `v2 matches syncoV2 colours and weights`() {
+        assertPalette(
+            listOf(
+                Triple(0.450980f, 0.349020f, 0.121569f),
+                Triple(0.608706f, 0.671137f, 0.780392f),
+                Triple(0.352941f, 0.098039f, 0.501961f),
+            ),
+            extractAlbumColours(purpleSilverGold)!!.colors,
+            "v2/purpleSilverGold",
+        )
+        // syncoV2 normalises; this returns raw population shares that sum to 1,
+        // and Palette normalises again on the way in. Same numbers either way.
+        val w = extractAlbumColours(purpleSilverGold)!!.weights
+        val expected = listOf(0.250244f, 0.349854f, 0.399902f)
+        for (i in expected.indices) {
+            assertTrue(
+                abs(expected[i] - w[i]) < 1e-4f,
+                "v2/purpleSilverGold: weight $i is ${w[i]}, syncoV2 gives ${expected[i]}",
+            )
+        }
+    }
+
+    @Test
+    fun `v2 weights track the cover split as syncoV2 does`() {
+        val out = extractAlbumColours(vividSplash)!!
+        assertPalette(
+            listOf(
+                Triple(0.274510f, 0.313725f, 0.431373f),
+                Triple(1.0f, 0.0f, 0.784314f),
+            ),
+            out.colors,
+            "v2/vividSplash",
+        )
+        assertTrue(abs(out.weights[0] - 0.899902f) < 1e-4f, "expected 0.8999, got ${out.weights[0]}")
+        assertTrue(abs(out.weights[1] - 0.100098f) < 1e-4f, "expected 0.1001, got ${out.weights[1]}")
+    }
+
+    @Test
+    fun `colourless art falls back to syncoV2's neutral, both versions`() {
+        // Below the luma floor everywhere, so both extractions take the shared
+        // low-colour fallback. syncoV2 returns the NEUTRAL constant at full
+        // value — not scaled by the cover's own darkness.
+        val black = cover(1f to argb(0, 0, 0))
+        val neutral = listOf(Triple(1.0f, 0.86f, 0.70f))
+        assertPalette(neutral, extractAlbumColoursV1(black)!!.colors, "v1/black")
+        assertPalette(neutral, extractAlbumColours(black)!!.colors, "v2/black")
     }
 }
