@@ -60,6 +60,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
+import com.engabd.sendpin.ui.design.sharedArt
 import com.engabd.sendpin.download.DownloadJob
 import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ma.LibraryViewModel.Backend
@@ -880,7 +881,9 @@ private fun CoverTile(
             if (art != null) {
                 AsyncImage(
                     model = art, contentDescription = item.name, contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .sharedArt("art-${item.itemId}-${item.provider}"),
                 )
             } else {
                 Icon(Icons.Default.Album, null, tint = TextFaint, modifier = Modifier.size(24.dp))
