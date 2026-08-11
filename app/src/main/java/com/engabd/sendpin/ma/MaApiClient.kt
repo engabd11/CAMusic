@@ -77,6 +77,9 @@ class MaApiClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
     private var attempt = 0
     private var reconnectJob: kotlinx.coroutines.Job? = null
 
+    /** When a socket was last opened, for [reconnectNow]'s rate limit. */
+    @Volatile private var lastDialAtMs = 0L
+
     fun connect(url: String, token: String? = null, username: String? = null, password: String? = null) {
         serverUrl = url
         this.token = token
@@ -84,6 +87,12 @@ class MaApiClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
         _state.value = State.CONNECTING
         userClosed = false; attempt = 0; reconnectJob?.cancel()
         wsUrl = url.trimEnd('/').replace("http://", "ws://").replace("https://", "wss://") + "/ws"
+        dial()
+    }
+
+    /** Open a socket to [wsUrl], recording when — see [reconnectNow]'s rate limit. */
+    private fun dial() {
+        lastDialAtMs = android.os.SystemClock.elapsedRealtime()
         ws = http.newWebSocket(Request.Builder().url(wsUrl).build(), listener)
     }
 
@@ -119,9 +128,38 @@ class MaApiClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
             kotlinx.coroutines.delay(delayMs)
             if (!userClosed) {
                 _state.value = State.CONNECTING
-                ws = http.newWebSocket(Request.Builder().url(wsUrl).build(), listener)
+                dial()
             }
         }
+    }
+
+    /**
+     * Reconnect **now**, abandoning whatever the backoff had planned.
+     *
+     * The backoff is right for a server that is down: doubling up to fifteen
+     * seconds is what stops a phone hammering a LAN address nobody is answering.
+     * It is wrong for the case that actually happens, which is a socket dropped
+     * while the app sat in the background — the phone dozes, the WebSocket dies
+     * unnoticed, the backoff walks itself up to its ceiling against a network that
+     * is asleep, and then the user opens the app and taps a song. That tap used to
+     * wait out the remainder of a fifteen-second timer before anything was even
+     * sent, which is the "sometimes it takes five seconds" half of playing from the
+     * library.
+     *
+     * A user action is new information — someone is holding the phone and the
+     * radio is up — so the schedule is torn up and a socket opened immediately.
+     * Rate-limited only against itself, so a screen that fires several commands at
+     * once opens one socket rather than one each, and a no-op when a connection is
+     * already up or already on its way.
+     */
+    fun reconnectNow() {
+        if (userClosed || wsUrl.isBlank()) return
+        if (_state.value == State.CONNECTED || _state.value == State.CONNECTING) return
+        if (android.os.SystemClock.elapsedRealtime() - lastDialAtMs < RECONNECT_MIN_GAP_MS) return
+        reconnectJob?.cancel()
+        attempt = 0
+        _state.value = State.CONNECTING
+        dial()
     }
 
     private val listener = object : WebSocketListener() {
@@ -218,6 +256,8 @@ class MaApiClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
         var attempt = 0
         while (true) {
             if (!isAuth(command) && _state.value != State.CONNECTED) {
+                // Don't sit out the backoff — this command is a person waiting.
+                reconnectNow()
                 // Wait longer between retries: a reconnect in progress is the most
                 // likely reason the state isn't CONNECTED yet.
                 val wait = if (attempt == 0) 5_000L else 15_000L
@@ -263,4 +303,13 @@ class MaApiClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
     }
 
     private fun isAuth(c: String) = c == "auth" || c == "auth/login"
+
+    private companion object {
+        /**
+         * Nothing reopens a socket faster than this. Long enough that a screen
+         * firing off five reads at once dials once, short enough to be invisible to
+         * whoever is waiting on the first of them.
+         */
+        const val RECONNECT_MIN_GAP_MS = 750L
+    }
 }

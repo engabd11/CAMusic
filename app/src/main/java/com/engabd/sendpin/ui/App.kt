@@ -9,8 +9,6 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
-import androidx.compose.animation.ExperimentalSharedTransitionApi
-import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
@@ -55,8 +53,6 @@ import com.engabd.sendpin.ui.design.LocalBottomChrome
 import androidx.navigation.NavBackStackEntry
 import com.engabd.sendpin.ui.design.LocalMiniBarInset
 import com.engabd.sendpin.ui.design.Motion
-import com.engabd.sendpin.ui.design.LocalNavAnimatedScope
-import com.engabd.sendpin.ui.design.LocalSharedTransitionScope
 import com.engabd.sendpin.ui.design.MiniBarHeight
 import com.engabd.sendpin.ui.design.LocalPalette
 import com.engabd.sendpin.ui.design.NavTab
@@ -163,7 +159,7 @@ private fun SystemBars() {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalSharedTransitionApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun App() {
     // Appearance is read before the theme rather than inside it, because it *is* the
@@ -395,7 +391,6 @@ fun App() {
                 val tabs = if (isOverlay) OverlayTabs else TabTabs
                 val startDest = if (isOverlay) "library" else "now_playing"
 
-                SharedTransitionLayout {
                 NavHost(
                     navController = navController,
                     startDestination = startDest,
@@ -422,17 +417,12 @@ fun App() {
                             val a = item.image?.let { android.net.Uri.encode(it) } ?: ""
                             navController.navigate("$route/${android.net.Uri.encode(item.itemId)}/${android.net.Uri.encode(item.provider)}?name=$n&art=$a")
                         }
-                        CompositionLocalProvider(
-                            LocalSharedTransitionScope provides this@SharedTransitionLayout,
-                            LocalNavAnimatedScope provides this@composable,
-                        ) {
-                            LibraryScreen(
-                                viewModel = libraryVm,
-                                onAlbumClick = { navToDetail("album", it) },
-                                onArtistClick = { navToDetail("artist", it) },
-                                onPlaylistClick = { navToDetail("playlist", it) },
-                            )
-                        }
+                        LibraryScreen(
+                            viewModel = libraryVm,
+                            onAlbumClick = { navToDetail("album", it) },
+                            onArtistClick = { navToDetail("artist", it) },
+                            onPlaylistClick = { navToDetail("playlist", it) },
+                        )
                     }
                     composable(
                         route = "album/{itemId}/{provider}?name={name}&art={art}",
@@ -442,11 +432,18 @@ fun App() {
                             navArgument("name") { type = NavType.StringType; defaultValue = "" },
                             navArgument("art") { type = NavType.StringType; defaultValue = "" },
                         ),
-                        // No slide: the cover itself flies from the grid tile into the
-                        // hero (see LocalSharedTransitionScope), and sliding the screen
-                        // at the same time would drag the artwork along a second path.
-                        enterTransition = { fadeIn(Motion.effects()) },
-                        exitTransition = { fadeOut(Motion.effects()) },
+                        // Pushed, like every other detail screen. An album used to
+                        // cross-fade instead, to leave room for a shared-element flight
+                        // of the cover from the grid tile into the hero — but that
+                        // flight only ever had both of its ends on screen when the
+                        // album was opened from a root shelf. Reached the way albums
+                        // actually are — the Albums list, an artist's discography, the
+                        // related shelf on another album — there was no near end, so
+                        // the fade played alone and the screen simply appeared, while
+                        // the artist screen beside it slid. Same push, same spring, so
+                        // going into an album now reads as going *somewhere*.
+                        enterTransition = pushIn, exitTransition = pushOut,
+                        popEnterTransition = popIn, popExitTransition = popOut,
                     ) { backStackEntry ->
                         val aItemId = backStackEntry.arguments?.getString("itemId") ?: ""
                         val aProvider = backStackEntry.arguments?.getString("provider") ?: ""
@@ -454,10 +451,6 @@ fun App() {
                         val aArt = backStackEntry.arguments?.getString("art")?.takeIf { it.isNotBlank() }
                         val aStranded = strandedOnOtherBackend(aProvider)
                         LaunchedEffect(aStranded) { if (aStranded) navController.popBackStack() }
-                        CompositionLocalProvider(
-                            LocalSharedTransitionScope provides this@SharedTransitionLayout,
-                            LocalNavAnimatedScope provides this@composable,
-                        ) {
                         AlbumDetailScreen(
                             itemId = aItemId,
                             provider = aProvider,
@@ -484,7 +477,6 @@ fun App() {
                                 )
                             },
                         )
-                        }
                     }
                     composable(
                         route = "artist/{itemId}/{provider}?name={name}&art={art}&byName={byName}",
@@ -574,7 +566,6 @@ fun App() {
                             onOpenDownloads = { navController.navigate("downloads") },
                         )
                     }
-                }
                 }
 
                 // In overlay mode, the mini player bar sits above the nav bar.

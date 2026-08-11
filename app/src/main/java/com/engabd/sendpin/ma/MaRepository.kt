@@ -9,7 +9,19 @@ import kotlinx.serialization.json.*
  * [activeQueueId] (or [playOn], which does it for you) rather than assuming the two
  * ids are the same — for a synced player they are not.
  */
-class MaRepository(val api: MaApiClient) {
+class MaRepository(
+    val api: MaApiClient,
+    /**
+     * Called on the way into anything that starts playback, before the command is
+     * sent — see [playMedia].
+     *
+     * A parameter with a default rather than a hard reference so the class stays
+     * constructible without the Application singleton, and so a test can watch it.
+     */
+    private val onPlaybackRequested: () -> Unit = {
+        runCatching { com.engabd.sendpin.SendpinApp.instance.playback.wakePlayerSocket() }
+    },
+) {
 
     private val serverUrl: String? get() = api.serverUrl
 
@@ -344,7 +356,13 @@ class MaRepository(val api: MaApiClient) {
         uris: List<String>,
         option: String = "replace",
         radioMode: Boolean = false,
-    ) = playMedia(activeQueueId(playerId), uris, option, radioMode)
+    ) {
+        // Ahead of the queue lookup, not just inside [playMedia]: that lookup is
+        // itself a round trip, so a socket left to its backoff would be waited on
+        // before the wake ever happened.
+        onPlaybackRequested()
+        playMedia(activeQueueId(playerId), uris, option, radioMode)
+    }
 
     /**
      * `player_queues/play_media`, argument-for-argument as the official Music
@@ -363,6 +381,14 @@ class MaRepository(val api: MaApiClient) {
         option: String = "replace",
         radioMode: Boolean = false,
     ) {
+        // Every "play this" in the app funnels through here, which makes it the one
+        // place worth telling this phone's player socket that music is wanted. Both
+        // sockets die together when the phone dozes, and both come back on a backoff
+        // that widens to fifteen seconds — so the command can land perfectly while
+        // Music Assistant still has no player to stream to, and the song starts
+        // whenever the retry timer happens to fire. Non-blocking, and a no-op while
+        // the socket is up, which is the usual case.
+        onPlaybackRequested()
         api.sendCommand("player_queues/play_media", buildJsonObject {
             put("media", JsonArray(uris.map { JsonPrimitive(it) }))
             put("option", option)

@@ -525,7 +525,20 @@ class Playback(private val app: Context) {
             if (a == null) 0L else ProgressProjection.project(a, clockNowUs(), _isPlaying.value)
     }
 
-    private fun clockNowUs(): Long = client?.clock?.nowUs() ?: (System.nanoTime() / 1000)
+    // The same clock base the sync filter runs on, so the fallback and the real
+    // thing measure the same seconds — see MonotonicClock.
+    private fun clockNowUs(): Long =
+        client?.clock?.nowUs() ?: com.engabd.sendpin.protocol.MonotonicClock.nowUs()
+
+    /**
+     * Bring the player socket back now if it is down — see
+     * [SendspinClient.reconnectNow]. Called when the user asks for playback, so a
+     * socket that dropped while the phone was asleep is not still counting down a
+     * retry when Music Assistant tries to stream to it.
+     */
+    fun wakePlayerSocket() {
+        client?.reconnectNow()
+    }
 
     /**
      * What the last attempt to write this player's Music Assistant config did.
