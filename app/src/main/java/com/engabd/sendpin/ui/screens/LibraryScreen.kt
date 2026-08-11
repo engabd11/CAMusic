@@ -60,6 +60,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
+import com.engabd.sendpin.ui.design.sharedArt
 import com.engabd.sendpin.download.DownloadJob
 import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ma.LibraryViewModel.Backend
@@ -508,10 +509,10 @@ private fun Browse(
         }
 
         if (s != null) {
-            searchSection("Artists", s.artists, viewModel, rows, onAlbumClick, onArtistClick, onPlaylistClick, onLongPress)
-            searchSection("Albums", s.albums, viewModel, rows, onAlbumClick, onArtistClick, onPlaylistClick, onLongPress)
-            searchSection("Tracks", s.tracks, viewModel, rows, onAlbumClick, onArtistClick, onPlaylistClick, onLongPress)
-            searchSection("Playlists", s.playlists, viewModel, rows, onAlbumClick, onArtistClick, onPlaylistClick, onLongPress)
+            searchSection("Artists", s.artists, viewModel, rows, onAlbumClick, onArtistClick, onPlaylistClick, onLongPress, gridCols)
+            searchSection("Albums", s.albums, viewModel, rows, onAlbumClick, onArtistClick, onPlaylistClick, onLongPress, gridCols)
+            searchSection("Tracks", s.tracks, viewModel, rows, onAlbumClick, onArtistClick, onPlaylistClick, onLongPress, gridCols)
+            searchSection("Playlists", s.playlists, viewModel, rows, onAlbumClick, onArtistClick, onPlaylistClick, onLongPress, gridCols)
             if (s.artists.isEmpty() && s.albums.isEmpty() && s.tracks.isEmpty() && s.playlists.isEmpty()) {
                 item(span = { full(gridCols) }) { SearchEmptyState() }
             }
@@ -519,7 +520,7 @@ private fun Browse(
         }
 
         if (isDownloads) {
-            downloadsSection(node.items, jobs, viewModel, rows)
+            downloadsSection(node.items, jobs, viewModel, rows, gridCols)
             return@LazyVerticalGrid
         }
 
@@ -543,15 +544,15 @@ private fun Browse(
             }
             // Favourites lead: what you chose to keep is a better front page than
             // whatever the scanner saw last. The rest keep their old order behind them.
-            shelf("Favourite albums", shelves.favoriteAlbums, openItem, onLongPress)
-            shelf("Favourite artists", shelves.favoriteArtists, openItem, onLongPress)
-            shelf("Continue listening", shelves.inProgress, openItem, onLongPress)
-            shelf("Recently added", shelves.recentlyAdded, openItem, onLongPress)
-            shelf("For you", shelves.recommendations, openItem, onLongPress)
-            shelf("Recently played", shelves.recent, openItem, onLongPress)
+            shelf("Favourite albums", shelves.favoriteAlbums, openItem, onLongPress, gridCols)
+            shelf("Favourite artists", shelves.favoriteArtists, openItem, onLongPress, gridCols)
+            shelf("Continue listening", shelves.inProgress, openItem, onLongPress, gridCols)
+            shelf("Recently added", shelves.recentlyAdded, openItem, onLongPress, gridCols)
+            shelf("For you", shelves.recommendations, openItem, onLongPress, gridCols)
+            shelf("Recently played", shelves.recent, openItem, onLongPress, gridCols)
             // Navidrome only — MA has no equivalent of getAlbumList2(frequent), so
             // the list is empty on that backend and the shelf hides itself.
-            shelf("Played most", shelves.frequent, openItem, onLongPress)
+            shelf("Played most", shelves.frequent, openItem, onLongPress, gridCols)
             return@LazyVerticalGrid
         }
 
@@ -655,6 +656,7 @@ private fun androidx.compose.foundation.lazy.grid.LazyGridScope.shelf(
     list: List<MaItem>,
     onOpen: (MaItem) -> Unit,
     onLongPress: (MaItem) -> Unit,
+    gridCols: Int,
 ) {
     if (list.isEmpty()) return
     item(key = "hdr_$title", span = { full(gridCols) }, contentType = { "header" }) { Shelf(title) }
@@ -680,6 +682,7 @@ private fun androidx.compose.foundation.lazy.grid.LazyGridScope.searchSection(
     onArtistClick: (MaItem) -> Unit,
     onPlaylistClick: (MaItem) -> Unit,
     onLongPress: (MaItem) -> Unit,
+    gridCols: Int,
 ) {
     if (list.isEmpty()) return
     item(key = "shdr_$title", span = { full(gridCols) }, contentType = { "header" }) { Shelf(title) }
@@ -702,6 +705,7 @@ private fun androidx.compose.foundation.lazy.grid.LazyGridScope.searchSection(
 private fun androidx.compose.foundation.lazy.grid.LazyGridScope.downloadsSection(
     items: List<MaItem>, jobs: List<DownloadJob>, viewModel: LibraryViewModel,
     rows: RowState,
+    gridCols: Int,
 ) {
     if (jobs.isNotEmpty()) {
         item(key = "hdr_inprogress", span = { full(gridCols) }, contentType = { "header" }) { Shelf("In progress") }
@@ -881,7 +885,9 @@ private fun CoverTile(
             if (art != null) {
                 AsyncImage(
                     model = art, contentDescription = item.name, contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .sharedArt("art-${item.itemId}-${item.provider}"),
                 )
             } else {
                 Icon(Icons.Default.Album, null, tint = TextFaint, modifier = Modifier.size(24.dp))

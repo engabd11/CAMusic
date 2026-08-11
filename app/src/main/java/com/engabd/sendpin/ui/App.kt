@@ -57,6 +57,9 @@ import com.engabd.sendpin.ui.design.MiniBarHeight
 import com.engabd.sendpin.ui.design.LocalPalette
 import androidx.compose.material3.windowsizeclass.WindowSizeClass
 import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
+import androidx.compose.animation.SharedTransitionLayout
+import com.engabd.sendpin.ui.design.LocalSharedTransitionScope
+import com.engabd.sendpin.ui.design.LocalNavAnimatedScope
 import com.engabd.sendpin.ui.design.NavTab
 import com.engabd.sendpin.ui.design.SendspinNavBar
 import com.engabd.sendpin.ui.design.rememberAlbumPalette
@@ -403,7 +406,11 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                 val tabs = if (isOverlay) OverlayTabs else TabTabs
                 val startDest = if (isOverlay) "library" else "now_playing"
 
-                NavHost(
+                SharedTransitionLayout {
+                    CompositionLocalProvider(
+                        LocalSharedTransitionScope provides this,
+                    ) {
+                        NavHost(
                     navController = navController,
                     startDestination = startDest,
                     modifier = Modifier.fillMaxSize(),
@@ -424,18 +431,20 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                         }
                     }
                     composable("library") {
-                        val navToDetail: (String, MaItem) -> Unit = { route, item ->
-                            val n = android.net.Uri.encode(item.name)
-                            val a = item.image?.let { android.net.Uri.encode(it) } ?: ""
-                            navController.navigate("$route/${android.net.Uri.encode(item.itemId)}/${android.net.Uri.encode(item.provider)}?name=$n&art=$a")
+                        CompositionLocalProvider(LocalNavAnimatedScope provides this) {
+                            val navToDetail: (String, MaItem) -> Unit = { route, item ->
+                                val n = android.net.Uri.encode(item.name)
+                                val a = item.image?.let { android.net.Uri.encode(it) } ?: ""
+                                navController.navigate("$route/${android.net.Uri.encode(item.itemId)}/${android.net.Uri.encode(item.provider)}?name=$n&art=$a")
+                            }
+                            LibraryScreen(
+                                viewModel = libraryVm,
+                                gridCols = gridCols,
+                                onAlbumClick = { navToDetail("album", it) },
+                                onArtistClick = { navToDetail("artist", it) },
+                                onPlaylistClick = { navToDetail("playlist", it) },
+                            )
                         }
-                        LibraryScreen(
-                            viewModel = libraryVm,
-                            gridCols = gridCols,
-                            onAlbumClick = { navToDetail("album", it) },
-                            onArtistClick = { navToDetail("artist", it) },
-                            onPlaylistClick = { navToDetail("playlist", it) },
-                        )
                     }
                     composable(
                         route = "album/{itemId}/{provider}?name={name}&art={art}",
@@ -458,38 +467,40 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                         enterTransition = pushIn, exitTransition = pushOut,
                         popEnterTransition = popIn, popExitTransition = popOut,
                     ) { backStackEntry ->
-                        val aItemId = backStackEntry.arguments?.getString("itemId") ?: ""
-                        val aProvider = backStackEntry.arguments?.getString("provider") ?: ""
-                        val aName = backStackEntry.arguments?.getString("name") ?: ""
-                        val aArt = backStackEntry.arguments?.getString("art")?.takeIf { it.isNotBlank() }
-                        val aStranded = strandedOnOtherBackend(aProvider)
-                        LaunchedEffect(aStranded) { if (aStranded) navController.popBackStack() }
-                        AlbumDetailScreen(
-                            itemId = aItemId,
-                            provider = aProvider,
-                            name = aName,
-                            artUrl = aArt,
-                            onBack = { navController.popBackStack() },
-                            // An album knows its artist's *name* and nothing else —
-                            // MaItem carries no artist id — so the route travels with
-                            // `byName`, and the artist screen looks the id up. The id
-                            // slot is a placeholder: a name in a path segment breaks on
-                            // the likes of "AC/DC".
-                            onArtistClick = { artistName, artistProvider ->
-                                val n = android.net.Uri.encode(artistName)
-                                navController.navigate("artist/-/${android.net.Uri.encode(artistProvider)}?name=$n&byName=true")
-                            },
-                            // The related shelf goes album → album. `launchSingleTop`
-                            // is deliberate: hopping sideways through five related
-                            // records should not leave five copies on the back stack.
-                            onAlbumClick = { other ->
-                                val n = android.net.Uri.encode(other.name)
-                                val art = android.net.Uri.encode(other.image.orEmpty())
-                                navController.navigate(
-                                    "album/${android.net.Uri.encode(other.itemId)}/${android.net.Uri.encode(other.provider)}?name=$n&art=$art"
-                                )
-                            },
-                        )
+                        CompositionLocalProvider(LocalNavAnimatedScope provides this) {
+                            val aItemId = backStackEntry.arguments?.getString("itemId") ?: ""
+                            val aProvider = backStackEntry.arguments?.getString("provider") ?: ""
+                            val aName = backStackEntry.arguments?.getString("name") ?: ""
+                            val aArt = backStackEntry.arguments?.getString("art")?.takeIf { it.isNotBlank() }
+                            val aStranded = strandedOnOtherBackend(aProvider)
+                            LaunchedEffect(aStranded) { if (aStranded) navController.popBackStack() }
+                            AlbumDetailScreen(
+                                itemId = aItemId,
+                                provider = aProvider,
+                                name = aName,
+                                artUrl = aArt,
+                                onBack = { navController.popBackStack() },
+                                // An album knows its artist's *name* and nothing else —
+                                // MaItem carries no artist id — so the route travels with
+                                // `byName`, and the artist screen looks the id up. The id
+                                // slot is a placeholder: a name in a path segment breaks on
+                                // the likes of "AC/DC".
+                                onArtistClick = { artistName, artistProvider ->
+                                    val n = android.net.Uri.encode(artistName)
+                                    navController.navigate("artist/-/${android.net.Uri.encode(artistProvider)}?name=$n&byName=true")
+                                },
+                                // The related shelf goes album → album. `launchSingleTop`
+                                // is deliberate: hopping sideways through five related
+                                // records should not leave five copies on the back stack.
+                                onAlbumClick = { other ->
+                                    val n = android.net.Uri.encode(other.name)
+                                    val art = android.net.Uri.encode(other.image.orEmpty())
+                                    navController.navigate(
+                                        "album/${android.net.Uri.encode(other.itemId)}/${android.net.Uri.encode(other.provider)}?name=$n&art=$art"
+                                    )
+                                },
+                            )
+                        }
                     }
                     composable(
                         route = "artist/{itemId}/{provider}?name={name}&art={art}&byName={byName}",
@@ -579,7 +590,9 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                             onOpenDownloads = { navController.navigate("downloads") },
                         )
                     }
-                }
+                    } // NavHost
+                    } // CompositionLocalProvider
+                } // SharedTransitionLayout
 
                 // In overlay mode, the mini player bar sits above the nav bar.
                 // Tapping it expands the full-screen cover.
