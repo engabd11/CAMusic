@@ -95,6 +95,7 @@ enum class ServerKind(
     LOCAL(
         "This device",
         "Music already on the phone, or on an SD card.",
+        supported = true,
         auth = AuthStyle.NONE,
     );
 

@@ -111,6 +111,7 @@ class ServerConfigTest {
                 ServerKind.NAVIDROME,
                 ServerKind.SUBSONIC,
                 ServerKind.JELLYFIN,
+                ServerKind.LOCAL,
             ),
             ServerKind.available,
         )

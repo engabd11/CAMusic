@@ -670,7 +670,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             existing.streamFormat = config.option(ServerConfig.OPT_STREAM_FORMAT) ?: "raw"
             return
         }
-        val next = MusicSources.create(config)
+        val next = MusicSources.create(getApplication(), config)
         if (next != null) {
             next.streamFormat = config.option(ServerConfig.OPT_STREAM_FORMAT) ?: "raw"
             source = next
@@ -799,7 +799,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 if (config.kind == ServerKind.NAVIDROME || config.kind == ServerKind.SUBSONIC) {
                     settings.setNavidrome(url, _navUser.value, _navPass.value)
                 }
-                val next = MusicSources.create(config)
+                val next = MusicSources.create(getApplication(), config)
                 if (next == null) {
                     // A kind with no adapter yet — the settings picker greys those
                     // out, so this is only reachable by editing the stored list.
@@ -1005,7 +1005,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 when {
                     item.provider == DOWNLOAD -> playLocal(downloadContext(item), option)
-                    MusicSources.isLocalProvider(item.provider) -> playLocal(localContext(item), option)
+                    MusicSources.isLocalProvider(item.provider) -> playLocal(
+                        localContext(item),
+                        option,
+                    )
                     else -> {
                         val direct = if (option == "replace") navidromeDirect(item) else null
                         if (direct != null) {
@@ -1066,12 +1069,11 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private data class PlayContext(val tracks: List<LocalTrack>, val startIndex: Int, val label: String)
 
     /**
-     * What playing a Subsonic item means.
+     * What playing a locally-played item means.
      *
      * A track is played *in the list it was tapped in* — the album, the playlist,
-     * the search results — because a track on its own is a queue of one, and that
-     * is the thing that made this backend feel broken. A container resolves to all
-     * of its tracks.
+     * the search results — because a track on its own is a queue of one. A container
+     * resolves to all of its tracks.
      */
     private suspend fun localContext(item: MaItem): PlayContext {
         val sc = source
@@ -1143,7 +1145,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private fun streamUrlFor(item: MaItem): String? {
         if (!MusicSources.isLocalProvider(item.provider)) return null
         val config = activeConfig?.takeIf { it.kind.playsLocally } ?: return null
-        val src = MusicSources.create(config)?.apply {
+        val src = MusicSources.create(getApplication(), config)?.apply {
             streamFormat = config.option(ServerConfig.OPT_STREAM_FORMAT) ?: "raw"
         } ?: return null
         return src.takeIf { it.providerId == item.provider }?.streamUrl(item.itemId)
