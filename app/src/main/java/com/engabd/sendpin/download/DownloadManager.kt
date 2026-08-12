@@ -5,12 +5,19 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import com.engabd.sendpin.audio.LocalTrack
 import com.engabd.sendpin.library.MusicSources
+import com.engabd.sendpin.local.db.LocalMediaDatabase
+import com.engabd.sendpin.local.toEntity
+import com.engabd.sendpin.local.toModel
 import com.engabd.sendpin.ma.MaAudioFormat
 import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.subsonic.SubsonicClient
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
@@ -108,14 +115,58 @@ class DownloadManager(
     private val serializer = ListSerializer(DownloadedTrack.serializer())
     private val dir = File(context.filesDir, "downloads").apply { mkdirs() }
     private val coverDir = File(dir, "covers").apply { mkdirs() }
+    /** Legacy JSON index, imported into Room on first access then removed. */
     private val indexFile = File(dir, "index.json")
 
-    private val _downloads = MutableStateFlow(loadIndex())
+    private val dao = com.engabd.sendpin.local.db.LocalMediaDatabase.get(context).downloadDao()
+
+    private val _downloads = MutableStateFlow(emptyList<DownloadedTrack>())
     val downloads: StateFlow<List<DownloadedTrack>> = _downloads
 
-    private val _jobs = MutableStateFlow<List<DownloadJob>>(emptyList())
+    private val _jobs = MutableStateFlow(emptyList<DownloadJob>())
     /** Downloads currently running or failed, so the library can show progress. */
     val jobs: StateFlow<List<DownloadJob>> = _jobs
+
+    /** One-shot migration + flow collection. */
+    private val initJob: kotlinx.coroutines.Job
+
+    init {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        initJob = scope.launch {
+            migrateLegacyIndex()
+            dao.observeAll().collect { entities ->
+                _downloads.value = entities.map { it.toModel() }
+            }
+        }
+    }
+
+    /**
+     * Suspending entry point for tests: import the legacy JSON index once, then
+     * collect the Room flow until the first emission.
+     */
+    suspend fun awaitInitialization() {
+        initJob.join()
+    }
+
+    /**
+     * Import the old JSON index into Room once, then delete the file.
+     *
+     * Existing installs have a JSON index; new installs have no file and simply
+     * start with an empty Room table. The migration is idempotent because inserts
+     * use REPLACE.
+     */
+    private suspend fun migrateLegacyIndex() {
+        if (!indexFile.exists()) return
+        val legacy = try {
+            json.decodeFromString(serializer, indexFile.readText())
+        } catch (_: Exception) {
+            emptyList()
+        }
+        if (legacy.isNotEmpty()) {
+            dao.insertAll(legacy.map { it.toEntity() })
+        }
+        runCatching { indexFile.delete() }
+    }
 
     /** Whether the device is currently on Wi-Fi. */
     private fun isOnWifi(context: Context): Boolean {
@@ -260,7 +311,7 @@ class DownloadManager(
                 }
             }
             val cover = cacheCover(item, coverUrl ?: item.image)
-            val list = _downloads.value + DownloadedTrack(
+            val entity = DownloadedTrack(
                 id = item.itemId, title = item.name, artist = item.subtitle,
                 filePath = file.absolutePath, image = item.image,
                 album = item.album, coverPath = cover?.absolutePath,
@@ -268,9 +319,8 @@ class DownloadManager(
                 trackNumber = item.trackNumber, albumId = item.parentId,
                 format = item.audioFormat,
                 sourceProvider = item.provider,
-            )
-            _downloads.value = list
-            saveIndex(list)
+            ).toEntity()
+            dao.insert(entity)
             clearJob(item.itemId)
             enforceStorageCap(storageCapMb)
             true
@@ -357,29 +407,16 @@ class DownloadManager(
     fun delete(id: String) {
         val entry = _downloads.value.firstOrNull { it.id == id } ?: return
         runCatching { File(entry.filePath).delete() }
-        val list = _downloads.value.filterNot { it.id == id }
         // The cover is shared across an album — only bin it once the last track goes.
         entry.coverPath?.let { path ->
-            if (list.none { it.coverPath == path }) runCatching { File(path).delete() }
+            if (_downloads.value.none { it.id != id && it.coverPath == path }) runCatching { File(path).delete() }
         }
-        _downloads.value = list
-        saveIndex(list)
+        runBlocking { dao.delete(id) }
     }
 
     fun deleteAll() {
         _downloads.value.forEach { runCatching { File(it.filePath).delete() } }
         runCatching { coverDir.listFiles()?.forEach { it.delete() } }
-        _downloads.value = emptyList()
-        saveIndex(emptyList())
-    }
-
-    private fun loadIndex(): List<DownloadedTrack> = try {
-        if (indexFile.exists()) json.decodeFromString(serializer, indexFile.readText()) else emptyList()
-    } catch (_: Exception) {
-        emptyList()
-    }
-
-    private fun saveIndex(list: List<DownloadedTrack>) {
-        runCatching { indexFile.writeText(json.encodeToString(serializer, list)) }
+        runBlocking { dao.deleteAll() }
     }
 }

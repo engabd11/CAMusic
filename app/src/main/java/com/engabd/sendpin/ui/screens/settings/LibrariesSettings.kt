@@ -28,6 +28,7 @@ import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.library.AuthStyle
 import com.engabd.sendpin.library.ServerConfig
 import com.engabd.sendpin.library.ServerKind
+import com.engabd.sendpin.local.LocalMediaSource
 import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ui.design.GlassCard
 import com.engabd.sendpin.ui.design.a
@@ -37,6 +38,13 @@ import com.engabd.sendpin.ui.theme.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import org.json.JSONArray
+import android.content.ContentResolver
+import android.content.Intent
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.platform.LocalContext
 
 /**
  * Where the music comes from.
@@ -80,8 +88,11 @@ internal fun LibrariesSection(
             val pending = remember(detail) {
                 existing ?: ServerConfig(kind = pendingKind(detail) ?: ServerKind.NAVIDROME)
             }
+            // Local-only mutable holder, so `config` stays the prop-backed source of truth.
+            var config by remember(pending) { mutableStateOf(pending) }
+
             ServerDetail(
-                config = existing ?: pending,
+                configIn = config,
                 isNew = existing == null,
                 isActive = existing != null && existing.id == activeId,
                 libraryVm = libraryVm,
@@ -89,7 +100,10 @@ internal fun LibrariesSection(
                 accent = accent,
                 scope = scope,
                 onDone = { onDetail(null) },
-                onSaved = { onDetail(it) },
+                onSaved = {
+                    config = existing ?: config
+                    onDetail(it)
+                },
             )
         }
     }
@@ -272,7 +286,7 @@ private fun ProviderPicker(accent: Color, onPick: (ServerKind) -> Unit) {
  */
 @Composable
 private fun ServerDetail(
-    config: ServerConfig,
+    configIn: ServerConfig,
     isNew: Boolean,
     isActive: Boolean,
     libraryVm: LibraryViewModel,
@@ -283,6 +297,7 @@ private fun ServerDetail(
     /** Re-point the route at the stored server once a new one has been saved. */
     onSaved: (String) -> Unit,
 ) {
+    var config by remember(configIn.id) { mutableStateOf(configIn) }
     var label by remember(config.id) { mutableStateOf(config.label) }
     var url by remember(config.id) { mutableStateOf(config.url) }
     var user by remember(config.id) { mutableStateOf(config.username) }
@@ -314,13 +329,15 @@ private fun ServerDetail(
             username = user,
             password = pass,
             token = if (credentialsChanged && config.kind.auth != AuthStyle.TOKEN) "" else token,
-            options = config.options + (ServerConfig.OPT_STREAM_FORMAT to format),
+            options = config.options
+                .minus(LocalMediaSource.OPT_FOLDER_URIS)
+                .plus(ServerConfig.OPT_STREAM_FORMAT to format),
         )
     }
 
     /** Write it into the list, replacing the entry with the same id or appending. */
-    suspend fun save(makeActive: Boolean) {
-        val next = edited()
+    suspend fun save(makeActive: Boolean, customOptions: Map<String, String>? = null) {
+        val next = edited().copy(options = customOptions ?: edited().options)
         val list = settings.servers.first()
         settings.saveServers(
             if (list.any { it.id == next.id }) list.map { if (it.id == next.id) next else it }
@@ -359,52 +376,55 @@ private fun ServerDetail(
                 else -> Unit
             }
 
-            OledButton(
-                when {
-                    connecting && isActive -> "Connecting…"
-                    isNew -> "Save & connect"
-                    else -> "Save & reconnect"
-                },
-                enabled = url.isNotBlank() && !(connecting && isActive),
-                accent = accent,
-            ) {
-                scope.launch {
-                    save(makeActive = true)
-                    // Leave the "adding a server" route behind for the saved server's
-                    // own. Staying on `__new__:KIND` meant the page you had just set
-                    // the server up on could never find it again — no status line, no
-                    // Remove, and a second save would have added it twice.
+            if (config.kind == ServerKind.LOCAL) {
+                LocalFolderCard(config, accent, scope, settings) { next ->
+                    config = next
+                    scope.launch {
+                        save(makeActive = true, customOptions = next.options)
+                    }
                     if (isNew) onSaved(config.id)
-                    // The view model owns the connect lifecycle, and `switchTo` is
-                    // what tells it *which kind* of server this is. Writing the
-                    // Navidrome fields unconditionally — which this did — pointed a
-                    // Music Assistant save at Navidrome's credential slots and
-                    // clobbered the login every download depends on.
-                    libraryVm.switchTo(edited())
+                    libraryVm.switchTo(next)
                     libraryVm.connect()
                 }
-            }
-
-            // The status only speaks for the *active* server. A card for a library
-            // nothing is connected to would otherwise borrow another one's answer.
-            when {
-                isActive -> {
-                    val (text, health) = when {
-                        connecting -> "Connecting…" to Health.WORKING
-                        offline -> "Offline — playing downloads" to Health.WARN
-                        ready -> "Connected" to Health.GOOD
-                        connError != null -> connError!! to Health.BAD
-                        url.isBlank() -> "Not set up" to Health.IDLE
-                        else -> "Not connected" to Health.IDLE
+            } else {
+                OledButton(
+                    when {
+                        connecting && isActive -> "Connecting…"
+                        isNew -> "Save & connect"
+                        else -> "Save & reconnect"
+                    },
+                    enabled = url.isNotBlank() && !(connecting && isActive),
+                    accent = accent,
+                ) {
+                    scope.launch {
+                        save(makeActive = true)
+                        if (isNew) onSaved(config.id)
+                        libraryVm.switchTo(edited())
+                        libraryVm.connect()
                     }
-                    StatusLine(text, health, accent)
                 }
-                !isNew -> StatusLine("Not the active library", Health.IDLE, accent)
+
+                // The status only speaks for the *active* server. A card for a library
+                // nothing is connected to would otherwise borrow another one's answer.
+                when {
+                    isActive -> {
+                        val (text, health) = when {
+                            connecting -> "Connecting…" to Health.WORKING
+                            offline -> "Offline — playing downloads" to Health.WARN
+                            ready -> "Connected" to Health.GOOD
+                            connError != null -> connError!! to Health.BAD
+                            url.isBlank() -> "Not set up" to Health.IDLE
+                            else -> "Not connected" to Health.IDLE
+                        }
+                        StatusLine(text, health, accent)
+                    }
+                    !isNew -> StatusLine("Not the active library", Health.IDLE, accent)
+                }
             }
         }
 
         // Per-server playback options, for the kinds that stream to this phone.
-        if (config.kind.playsLocally && config.kind.auth != AuthStyle.NONE) {
+        if (config.kind.playsLocally && config.kind != ServerKind.LOCAL) {
             SettingsCard(
                 title = "Stream quality",
                 lead = "What this server is asked to send. Downloads always take the original " +
@@ -476,6 +496,66 @@ private const val NEW_PREFIX = "__new__:"
 
 private fun pendingKind(detail: String): ServerKind? =
     if (detail.startsWith(NEW_PREFIX)) ServerKind.from(detail.removePrefix(NEW_PREFIX)) else null
+
+private fun folderUriKey(configId: String) = "localFolders:$configId"
+
+private fun parseFolderUris(json: String?): List<Uri> {
+    if (json.isNullOrBlank()) return emptyList()
+    val out = mutableListOf<Uri>()
+    val arr = JSONArray(json)
+    for (i in 0 until arr.length()) out += Uri.parse(arr.getString(i))
+    return out
+}
+
+private fun encodeFolderUris(uris: List<Uri>): String = JSONArray(uris.map { it.toString() }).toString()
+
+/**
+ * Folder picker for local media.
+ *
+ * The chosen folder uri is persisted as a JSON array in the [ServerConfig] options
+ * under [LocalMediaSource.OPT_FOLDER_URIS]. A persisted permission is taken so the
+ * MediaStore query can read files under the tree after the picker closes.
+ */
+@Composable
+private fun LocalFolderCard(
+    config: ServerConfig,
+    accent: Color,
+    scope: CoroutineScope,
+    settings: AppSettings,
+    onChange: (ServerConfig) -> Unit,
+) {
+    val context = LocalContext.current
+    val uris = remember(config.id) { parseFolderUris(config.option(LocalMediaSource.OPT_FOLDER_URIS)) }
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { treeUri: Uri? ->
+        treeUri ?: return@rememberLauncherForActivityResult
+        runCatching {
+            context.contentResolver.takePersistableUriPermission(treeUri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        val next = config.withOption(LocalMediaSource.OPT_FOLDER_URIS, encodeFolderUris(listOf(treeUri)))
+        onChange(next)
+    }
+
+    SettingsCard(
+        title = "Music folder",
+        lead = if (uris.isEmpty()) "Pick the folder that holds your music." else "Using ${uris.size} folder${if (uris.size == 1) "" else "s"}.",
+    ) {
+        if (uris.isNotEmpty()) {
+            uris.forEach { uri ->
+                Text(
+                    uri.lastPathSegment ?: uri.toString(),
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(vertical = 4.dp),
+                )
+            }
+        }
+        OledButton(
+            if (uris.isEmpty()) "Choose folder" else "Change folder",
+            accent = accent,
+            outline = uris.isNotEmpty(),
+        ) { launcher.launch(null) }
+        Note("Only audio files you choose are indexed. The scan happens when you activate this library.")
+    }
+}
 
 private fun kindIcon(kind: ServerKind): ImageVector = when (kind) {
     ServerKind.MUSIC_ASSISTANT -> Icons.Default.Cloud

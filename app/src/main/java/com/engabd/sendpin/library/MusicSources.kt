@@ -28,6 +28,7 @@ object MusicSources {
     private val SOURCE_PROVIDERS: Set<String> = setOf(
         com.engabd.sendpin.subsonic.SubsonicClient.PROVIDER,
         com.engabd.sendpin.jellyfin.JellyfinClient.PROVIDER,
+        "local",
     )
 
     /**
@@ -50,7 +51,7 @@ object MusicSources {
      * call that can fail and whose result has to be written back to the config. See
      * [prepare].
      */
-    fun create(config: ServerConfig): MusicSource? = when (config.kind) {
+    fun create(context: android.content.Context, config: ServerConfig): MusicSource? = when (config.kind) {
         ServerKind.NAVIDROME, ServerKind.SUBSONIC -> SubsonicSource(
             client = SubsonicClient(config.url, config.username, config.password).apply {
                 streamFormat = config.option(ServerConfig.OPT_STREAM_FORMAT) ?: "raw"
@@ -67,6 +68,14 @@ object MusicSources {
             ).apply {
                 streamFormat = config.option(ServerConfig.OPT_STREAM_FORMAT) ?: "raw"
             },
+        )
+
+        ServerKind.LOCAL -> com.engabd.sendpin.local.LocalMediaSource(
+            context = context,
+            folderUris = config.option(com.engabd.sendpin.local.LocalMediaSource.OPT_FOLDER_URIS)
+                ?.split("|")
+                ?.mapNotNull { runCatching { android.net.Uri.parse(it) }.getOrNull() }
+                ?: emptyList(),
         )
 
         // Music Assistant is not a MusicSource — it owns a server-side queue and
