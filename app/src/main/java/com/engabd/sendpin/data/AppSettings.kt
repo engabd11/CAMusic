@@ -131,6 +131,9 @@ class AppSettings(private val context: Context) {
 
         /** Only fetch remote tracks for analysis on an unmetered network. */
         private val LIGHT_SYNC_PRESCAN_WIFI = booleanPreferencesKey("light_sync_prescan_wifi_only")
+        // Whether the onboarding wizard has been completed or skipped. When false, the
+        // app shows the wizard instead of the main UI on launch.
+        private val ONBOARDING_COMPLETED = booleanPreferencesKey("onboarding_completed")
         // There is deliberately no light_sync_timing key. The Home Assistant path
         // exposes an offset because syncoV2 can only estimate where the speakers
         // are; the direct path measures the tap's lead over the AudioTrack exactly
@@ -377,6 +380,7 @@ class AppSettings(private val context: Context) {
     val playerName: Flow<String> = context.dataStore.data.map { it[PLAYER_NAME] ?: "" }
     val targetPlayer: Flow<String> = context.dataStore.data.map { it[TARGET_PLAYER] ?: "" }
     val nowPlayingLayout: Flow<String> = context.dataStore.data.map { it[NOW_PLAYING_LAYOUT] ?: "tab" }
+    val onboardingCompleted: Flow<Boolean> = context.dataStore.data.map { it[ONBOARDING_COMPLETED] ?: false }
     val theme: Flow<String> = context.dataStore.data.map { it[THEME] ?: "oled" }
     val accentSource: Flow<String> = context.dataStore.data.map { it[ACCENT_SOURCE] ?: "album" }
     /** Stored as an ARGB hex string; empty means "use the built-in amber". */
@@ -577,6 +581,10 @@ class AppSettings(private val context: Context) {
 
     suspend fun setNowPlayingLayout(layout: String) {
         context.dataStore.edit { it[NOW_PLAYING_LAYOUT] = layout }
+    }
+
+    suspend fun setOnboardingCompleted(completed: Boolean) {
+        context.dataStore.edit { it[ONBOARDING_COMPLETED] = completed }
     }
 
     /** Takes effect on the next connect — the format list is sent in the hello. */
