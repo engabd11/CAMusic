@@ -64,9 +64,10 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         /** The original source format from the library (before any transcoding). */
         val sourceQuality: StreamQuality? = null,
         /**
-         * Which **backend owns playback**: "MA", "Navidrome" or "Offline". Never
-         * blank — that is knowable even before a queue exists, which is why the badge
-         * asks this question and not a harder one.
+         * Which **backend owns playback**: "MA", the server's display name
+         * (Navidrome, Jellyfin, etc.), or "Offline". Never blank — that is
+         * knowable even before a queue exists, which is why the badge asks
+         * this question and not a harder one.
          *
          * Deliberately not the upstream music provider. Reporting that here read
          * "Subsonic" whenever Music Assistant streamed a track out of a Subsonic
@@ -190,6 +191,15 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         val speed: Float = 1f,
     )
 
+    /** Holds the five flows that feed the local-playback state so the 6-way combine stays type-safe. */
+    private data class LocalInfo(
+        val ma: State,
+        val l: LocalSnap,
+        val devVol: Float,
+        val backend: String,
+        val radio: Boolean,
+    )
+
     private val localSnap: StateFlow<LocalSnap> = combine(
         local.active, local.current, local.playing, local.durationMs,
         combine(local.queue, local.index, local.shuffle, local.repeatMode, local.speed) { q, i, s, r, sp ->
@@ -213,6 +223,11 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
      */
     private val backendPref: StateFlow<String> =
         settings.backend.stateIn(viewModelScope, SharingStarted.Eagerly, "ma")
+
+    /** The display name of the active library server (Navidrome, Jellyfin, etc.). */
+    private val activeServerName: StateFlow<String> =
+        settings.activeServer.map { it?.displayName ?: "Library" }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, "Library")
 
     private val onSubsonic get() = backendPref.value == "subsonic"
 
@@ -452,8 +467,12 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
      * playing something itself or reflecting a player MA owns.
      */
     val state: StateFlow<State> = combine(
-        maState, localSnap, deviceVolume.level, backendPref, _radioMode,
-    ) { ma, l, devVol, backend, radio ->
+        combine(maState, localSnap, deviceVolume.level, backendPref, _radioMode) { ma, l, devVol, backend, radio ->
+            LocalInfo(ma, l, devVol, backend, radio)
+        },
+        activeServerName,
+    ) { info, serverName ->
+        val (ma, l, devVol, backend, radio) = info
         // Either the local player has a session, or the library is Navidrome and this
         // phone is the only player there is. The second case is the one that was
         // missing: with nothing playing yet it fell through to the MA view.
@@ -495,9 +514,10 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             },
             // Source stays the library file, so a transcode shows as one.
             sourceQuality = t?.sourceQuality,
-            // This phone is playing on its own, which only ever means the Navidrome
-            // library (or a downloaded copy of it).
-            source = if (t?.offline == true) "Offline" else "Navidrome",
+            // The name of the library server this phone is playing from — Navidrome,
+            // Jellyfin, "This device", etc. — rather than a hard-coded "Navidrome"
+            // that was wrong the moment a second provider arrived.
+            source = if (t?.offline == true) "Offline" else serverName,
             groupSize = 1,
             shuffle = l.shuffle,
             repeatMode = l.repeat,
