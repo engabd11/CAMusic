@@ -11,7 +11,7 @@ drop Music Assistant entirely and play straight from your own server - Navidrome
 Subsonic-compatible server, or Jellyfin - including with no network at all, once tracks
 are downloaded.
 
-Current release: **v0.8.0**. See [Releases](https://github.com/engabd11/CAMusic/releases)
+Current release: **v0.8.x**. See [Releases](https://github.com/engabd11/CAMusic/releases)
 and [docs/release-notes/](docs/release-notes/).
 
 ---
@@ -22,18 +22,18 @@ The app has two independent playback paths, and the badge in the top right of No
 Playing always says which one you are on. They share a UI and almost nothing else, which
 is why most features here had to be answered twice.
 
-| | **Music Assistant** | **Your own library** |
-|---|---|---|
-| Servers | Music Assistant | Navidrome, Subsonic / OpenSubsonic, Jellyfin |
-| Where audio is decoded | This phone, from MA's stream | This phone, from the file |
-| Plays to | Any MA speaker, or this phone | This phone only |
-| Grouping | Yes | No - an MA feature |
-| Server-side DSP / EQ | Yes | No |
-| Continuous play (radio) | Yes, server-side | Generated on device, where the server can suggest |
-| Gapless | MA's own per-player setting, driven from the app | Yes |
-| Light Sync | Home Assistant path | Direct to the bridge |
-| Works with MA down | No | Yes |
-| Works with no network | No | Yes, for downloads |
+|| | **Music Assistant** | **Your own library** |
+|---|---|---|---|
+|| Servers | Music Assistant | Navidrome, Subsonic / OpenSubsonic, Jellyfin, or local files on this device |
+|| Where audio is decoded | This phone, from MA's stream | This phone, from the file |
+|| Plays to | Any MA speaker, or this phone | This phone only |
+|| Grouping | Yes | No - an MA feature |
+|| Server-side DSP / EQ | Yes | No |
+|| Continuous play (radio) | Yes, server-side | Generated on device, where the server can suggest |
+|| Gapless | MA's own per-player setting, driven from the app | Yes |
+|| Light Sync | Home Assistant path | Direct to the bridge |
+|| Works with MA down | No | Yes |
+|| Works with no network | No | Yes, for downloads and local files |
 
 ## As a Music Assistant player
 
@@ -248,12 +248,13 @@ this phone is not playing through - and what stops it seeing the local player.
 ## Setup
 
 1. Install the APK from [Releases](https://github.com/engabd11/CAMusic/releases).
-2. Pick a discovered MA server or enter its URL. Credentials are encrypted at rest with
-   the Android Keystore.
-3. The phone appears in Music Assistant under the name in **Settings → CAMusic player**.
-4. For a library of your own, add the server under **Settings → Libraries** and tap
-   *Browse this library*. For Light Sync, choose a transport under **Settings → Light
-   Sync** - pair a bridge, or add a Home Assistant URL and long-lived token.
+2. The first-run **Onboarding Wizard** asks where your music lives: Music Assistant,
+   Navidrome, Jellyfin, or local files on the device. Credentials are encrypted at rest
+   with the Android Keystore.
+3. Optional steps in the same wizard: set up Light Sync (Home Assistant and/or direct Hue
+   Bridge) and register this phone as a Music Assistant player.
+4. Everything can be changed later under **Settings → Libraries**, **Settings → Light Sync**
+   and **Settings → CAMusic player**.
 
 ## Audio
 
@@ -287,17 +288,13 @@ Written down because the alternative is discovering them by ear:
   it per player - disabled, standard or smart, the same three-way choice it offers for
   crossfade - to the stream *before* it reaches the phone. There is no client-side gapless
   to implement, and an earlier attempt to fake one by holding the read-ahead buffer
-  through `stream/end` broke the pause button instead: MA sends a byte-identical
-  `stream/end` for a track boundary and a pause, and 4 MB of held buffer meant pause kept
-  playing for half a minute. **Settings → CAMusic player** now drives MA's own setting, so
-  changing it no longer means opening Music Assistant.
+  through `stream/end` broke the pause button instead. **Settings → CAMusic player** now
+  drives MA's own setting, so changing it no longer means opening Music Assistant.
 - **Gapless does work on the standalone path**, where ExoPlayer owns the whole queue.
 - ReplayGain is applied on the standalone path only. MA does its own normalisation
   server-side, and applying it twice would be worse than not applying it.
-- **Whether the MA DSP actually reaches the audio is still open.** The app no longer
-  hides the server's answer, and MA's per-track DSP state is shown - but the remaining
-  question needs a device against a real MA server to settle.
-- **Direct Light Sync cannot see MA playback.** See the scope note above.
+- **Direct Light Sync cannot see MA playback.** It taps this phone's local player chain,
+  so it follows the Navidrome, Jellyfin, downloads and local-files paths only.
 - **Releases are signed with the local debug key.** There is no release keystore. Updates
   work because that key has been stable since v0.1.0; a CI-signed build would have a
   different signer and Android would refuse to install it over an existing copy.
@@ -321,19 +318,18 @@ order it is expected to happen. **Strike-through items are already shipped.**
   and the analysis tap. The shipped smooth transitions are the cheap half.
 ### Feature completion
 
+- ~~**More libraries.**~~ The `MusicSource` interface and the server list are in, so each
+  remaining provider is an adapter rather than a change to the app. `MediaStore` (music on
+  this device) is already shipped; Emby, Plex, Audiobookshelf, Kodi and the other filesystem
+  sources remain planned.
 - **Warm reconnect.** `client/goodbye` with `reason: "restart"` on backgrounding, so MA
   holds the player slot for ~30 seconds and a quick app switch doesn't drop the phone out
   of the speaker list. Attempted once and reverted because it fired mid-song; it must fire
   only while idle.
-- **More libraries.** The `MusicSource` interface and the server list are in, so each
-  remaining provider is an adapter rather than a change to the app. The full list, split
-  by how much work each actually is, is under
-  [Planned](#planned) - and `MediaStore` (the phone's own music) is the one to build
-  first, because Android has already done the crawling and tagging the other seven need.
-- **Redesigned onboarding.** A first-launch wizard: choose the music server (MA,
+- ~~**Redesigned onboarding.** A first-launch wizard: choose the music server (MA,
   Navidrome, Jellyfin, local files), optional Light Sync setup (HA and/or direct bridge),
-  and optional speakers setup. Replaces the current "land on the Library tab and figure it
-  out" first run.
+  and optional speakers setup. Replaces the "land on the Library tab and figure it out"
+  first run.~~ *Done in v0.8.x.*
 
 ### Light Sync
 
@@ -351,11 +347,12 @@ order it is expected to happen. **Strike-through items are already shipped.**
 
 - ~~**Room** for the download index, which is a JSON file rewritten in full on every change.~~
   *Done in v0.8.x.*
+- ~~**A Downloads screen** with sort, search, retry and a storage breakdown.~~ *Done in v0.8.x.*
 - **Instrumented tests.** The 463 unit tests cover protocol, clock, DSP, parsing, the
   server list and the Light Sync engine; nothing covers the audio path, the service
   lifecycle or the UI.
 - **Crash reporting** - ACRA or similar, self-hosted.
-- **The files over 700 lines**, and the 87 `runCatching` sites that swallow a failure
+- **The files over 700 lines**, and the `runCatching` sites that swallow a failure
   without recording it.
 
 ## Architecture
