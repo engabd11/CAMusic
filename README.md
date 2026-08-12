@@ -42,14 +42,14 @@ engine, with no feature locked behind a paywall:
 
 ---
 
-<!-- Screenshots — uncomment and replace paths when ready
 <p align="center">
-  <img src="docs/screenshots/now-playing.png" width="220" />
-  <img src="docs/screenshots/library.png" width="220" />
-  <img src="docs/screenshots/light-sync.png" width="220" />
-  <img src="docs/screenshots/speakers.png" width="220" />
+  <img src="docs/screenshots/now-playing.jpg" width="180" />
+  <img src="docs/screenshots/library.jpg" width="180" />
+  <img src="docs/screenshots/speakers.jpg" width="180" />
+  <img src="docs/screenshots/light-sync.jpg" width="180" />
+  <img src="docs/screenshots/codec-detail.jpg" width="180" />
+  <img src="docs/screenshots/settings.jpg" width="180" />
 </p>
--->
 
 ## What it does
 
