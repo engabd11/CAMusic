@@ -99,12 +99,13 @@ the `MusicSource` interface, not a change to the app around it.
 
 ### Supported today
 
-| Provider | Sign-in | Notes |
-|---|---|---|
-| **Navidrome** | Username + password | The reference implementation. Its OpenSubsonic extensions give synced lyrics, ReplayGain tags and an exact per-track format, so the quality badge reads `FLAC • 96/24 • 3 Mb/s` rather than just the codec. |
-| **Subsonic / OpenSubsonic** | Username + password | Gonic, Airsonic, Astiga, Ampache's Subsonic API - anything speaking the protocol. Same client as Navidrome; what differs is how much of it the server implements. |
-| **Jellyfin** | Username + password | Browses the music library and streams the original file. Its `MediaStreams` carry codec, rate, depth, bitrate and channels per track, so it gets the full quality badge too. |
-| **Music Assistant** | Optional credentials | Not a `MusicSource` - it owns a server-side queue and plays to speakers this app never decodes for. It is the app's other half, not another library. |
+|| Provider | Sign-in | Notes |
+|---|---|---|---|
+|| **Navidrome** | Username + password | The reference implementation. Its OpenSubsonic extensions give synced lyrics, ReplayGain tags and an exact per-track format, so the quality badge reads `FLAC • 96/24 • 3 Mb/s` rather than just the codec. |
+|| **Subsonic / OpenSubsonic** | Username + password | Gonic, Airsonic, Astiga, Ampache's Subsonic API - anything speaking the protocol. Same client as Navidrome; what differs is how much of it the server implements. |
+|| **Jellyfin** | Username + password | Browses the music library and streams the original file. Its `MediaStreams` carry codec, rate, depth, bitrate and channels per track, so it gets the full quality badge too. |
+|| **This device** | Runtime permission | Uses `MediaStore.Audio` to index music already on the phone or SD card. The user picks a folder in Settings → Libraries; if no folder is chosen, all device audio is shown. |
+|| **Music Assistant** | Optional credentials | Not a `MusicSource` - it owns a server-side queue and plays to speakers this app never decodes for. It is the app's other half, not another library. |
 
 **Capabilities are probed, not assumed.** A plain Subsonic server is never offered a
 lyrics pane it can only fill with a shrug: the app asks `getOpenSubsonicExtensions` and
@@ -137,20 +138,19 @@ folders rather than APIs: nothing answers "list the artists", so each needs a cr
 **tag reader** (the app has none today) and a local index. The argument is for one
 `IndexedFileSource` that the transports plug into rather than eight separate adapters.
 
-| Provider | Transport | Sign-in |
-|---|---|---|
-| **This device** | `MediaStore.Audio` | A runtime permission |
-| **SMB (v2/v3)** | jcifs-ng | Username / password / domain |
-| **WebDAV** | OkHttp `PROPFIND` | Basic or bearer |
-| **Google Drive** | Drive REST v3 | OAuth |
-| **OneDrive** | Microsoft Graph | OAuth |
-| **Dropbox** | Dropbox HTTP API | OAuth |
-| **Box** | Box API | OAuth |
-| **pCloud** | pCloud API | OAuth |
+|| Provider | Transport | Sign-in |
+|---|---|---|---|
+|| **SMB (v2/v3)** | jcifs-ng | Username / password / domain |
+|| **WebDAV** | OkHttp `PROPFIND` | Basic or bearer |
+|| **Google Drive** | Drive REST v3 | OAuth |
+|| **OneDrive** | Microsoft Graph | OAuth |
+|| **Dropbox** | Dropbox HTTP API | OAuth |
+|| **Box** | Box API | OAuth |
+|| **pCloud** | pCloud API | OAuth |
 
-`MediaStore` is the cheapest of the eight by a distance - Android has already crawled and
-tagged the phone's own music, so it needs no crawler, no tag reader and no index. It is
-the right one to build first, and it proves the shared shape before any OAuth is written.
+`MediaStore` is now the first of these, shipped. The rest still need a crawler, a tag
+reader and a local index; `MediaStore` proves the shared shape before any OAuth is
+written.
 
 ### On any of them
 
@@ -179,6 +179,7 @@ the right one to build first, and it proves the shared shape before any OAuth is
   player. A **Downloads screen** searches and sorts them, retries what failed, shows the
   format each file actually is, and breaks the space down by album so the thing worth
   deleting is findable. The storage cap never evicts the track you are listening to.
+- **The download index is Room**, migrated from the legacy JSON file on first boot.
 - With the server unreachable the library drops to **Offline** and runs on what is on
   the phone.
 - Stars and plays are written back **to the library the track came from** - a Jellyfin
@@ -308,7 +309,7 @@ Written down because the alternative is discovering them by ear:
 
 Sequenced with reasoning and file lists in
 [docs/v0.8-plan.md §8](docs/v0.8-plan.md). This is the short version, in roughly the
-order it is expected to happen.
+order it is expected to happen. **Strike-through items are already shipped.**
 
 ### Audiophile core
 
@@ -329,6 +330,10 @@ order it is expected to happen.
   by how much work each actually is, is under
   [Planned](#planned) - and `MediaStore` (the phone's own music) is the one to build
   first, because Android has already done the crawling and tagging the other seven need.
+- **Redesigned onboarding.** A first-launch wizard: choose the music server (MA,
+  Navidrome, Jellyfin, local files), optional Light Sync setup (HA and/or direct bridge),
+  and optional speakers setup. Replaces the current "land on the Library tab and figure it
+  out" first run.
 
 ### Light Sync
 
@@ -344,7 +349,8 @@ order it is expected to happen.
 
 ### Housekeeping
 
-- **Room** for the download index, which is a JSON file rewritten in full on every change.
+- ~~**Room** for the download index, which is a JSON file rewritten in full on every change.~~
+  *Done in v0.8.x.*
 - **Instrumented tests.** The 463 unit tests cover protocol, clock, DSP, parsing, the
   server list and the Light Sync engine; nothing covers the audio path, the service
   lifecycle or the UI.

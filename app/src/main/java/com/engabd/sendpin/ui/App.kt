@@ -76,6 +76,7 @@ import com.engabd.sendpin.ui.screens.MiniPlayerBar
 import com.engabd.sendpin.ui.screens.NowPlayingOverlay
 import com.engabd.sendpin.ui.screens.NowPlayingScreen
 import com.engabd.sendpin.ui.screens.OnboardingScreen
+import com.engabd.sendpin.ui.screens.OnboardingWizard
 import com.engabd.sendpin.ui.screens.PlaylistDetailScreen
 import com.engabd.sendpin.ui.screens.SettingsScreen
 import com.engabd.sendpin.ui.screens.SettingsSection
@@ -196,6 +197,7 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
         val connected by playerVm.connected.collectAsStateWithLifecycle()
         val hasSavedServer by playerVm.hasSavedServer.collectAsStateWithLifecycle()
         val bootChecked by playerVm.bootChecked.collectAsStateWithLifecycle()
+        val onboardingCompleted by themeSettings.onboardingCompleted.collectAsState(initial = false)
         var skipped by rememberSaveable { mutableStateOf(false) }
 
         if (!bootChecked) {
@@ -211,6 +213,17 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                         modifier = Modifier.size(44.dp),
                     )
                 }
+            }
+            return@SendspinTheme
+        }
+
+        if (!onboardingCompleted && !hasSavedServer && !connected && !skipped) {
+            CompositionLocalProvider(LocalAccent provides accent, LocalPalette provides bootPalette) {
+                OnboardingWizard(
+                    playerVm = playerVm,
+                    libraryVm = viewModel(),
+                    onDone = { skipped = true },
+                )
             }
             return@SendspinTheme
         }
