@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="app-icon-minimalist-line.jpg" alt="CAMusic" width="120" />
+  <img src="app-icon.jpg" alt="CAMusic" width="120" />
 </p>
 
 <h1 align="center">CAMusic</h1>
