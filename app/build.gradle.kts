@@ -17,8 +17,8 @@ android {
         applicationId = "com.engabd.sendpin"
         minSdk = 31
         targetSdk = 36
-        versionCode = 37
-        versionName = "0.8.6"
+        versionCode = 38
+        versionName = "0.8.7"
     }
 
     buildTypes {
