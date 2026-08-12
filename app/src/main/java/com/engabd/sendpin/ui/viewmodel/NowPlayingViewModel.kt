@@ -191,6 +191,15 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         val speed: Float = 1f,
     )
 
+    /** Holds the five flows that feed the local-playback state so the 6-way combine stays type-safe. */
+    private data class LocalInfo(
+        val ma: State,
+        val l: LocalSnap,
+        val devVol: Float,
+        val backend: String,
+        val radio: Boolean,
+    )
+
     private val localSnap: StateFlow<LocalSnap> = combine(
         local.active, local.current, local.playing, local.durationMs,
         combine(local.queue, local.index, local.shuffle, local.repeatMode, local.speed) { q, i, s, r, sp ->
@@ -458,8 +467,12 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
      * playing something itself or reflecting a player MA owns.
      */
     val state: StateFlow<State> = combine(
-        maState, localSnap, deviceVolume.level, backendPref, _radioMode, activeServerName,
-    ) { ma, l, devVol, backend, radio, serverName ->
+        combine(maState, localSnap, deviceVolume.level, backendPref, _radioMode) { ma, l, devVol, backend, radio ->
+            LocalInfo(ma, l, devVol, backend, radio)
+        },
+        activeServerName,
+    ) { info, serverName ->
+        val (ma, l, devVol, backend, radio) = info
         // Either the local player has a session, or the library is Navidrome and this
         // phone is the only player there is. The second case is the one that was
         // missing: with nothing playing yet it fell through to the MA view.
