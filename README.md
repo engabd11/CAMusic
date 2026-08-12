@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="app-icon.jpg" alt="CAMusic" width="120" />
+  <img src="docs/app-icon.png" alt="CAMusic" width="120" />
 </p>
 
 <h1 align="center">CAMusic</h1>
@@ -34,7 +34,7 @@ engine, with no feature locked behind a paywall:
 | Play your own music library | ✅ | ✅ | ❌ |
 | Multiple library servers | ✅ | ✅ (some) | ❌ |
 | Group speakers | ✅ | ❌ | ❌ |
-| Light sync | ✅ | ❌ | ✅ (paid) |
+| Philips Hue Entertainment sync | ✅ | ❌ | ✅ (paid) |
 | Offline playback | ✅ | ✅ (some) | ❌ |
 | Parametric EQ per speaker | ✅ | ❌ | ❌ |
 | 24-bit / hi-res output | ✅ | ❌ | ❌ |
@@ -108,17 +108,19 @@ in a three-byte frame is noise, not degradation.
 
 Per-player sync offset is applied to frame scheduling locally and also written back to MA's config.
 
-### 💡 Light Sync — two paths, no cloud
+### 💡 Philips Hue Entertainment Sync — two paths, no cloud
 
-CAMusic drives room lights in time with the music. Two transports, picked in **Settings → Light Sync**
+CAMusic drives Philips Hue lights in time with the music using the Hue Entertainment API
+(DTLS 1.2, 60 Hz). Two transports, picked in **Settings → Light Sync**
 — it follows the library backend automatically unless you pin it by hand. A **Quick Settings tile**
 toggles the direct path from the notification shade.
 
 #### Direct to the Hue Bridge
 
-No Home Assistant, no integration, nothing between the music and the room. Discover a bridge over
-mDNS (with cloud discovery and manual IP as fallbacks), press its link button to pair, choose an
-entertainment area, and the Lights tab becomes a direct control surface.
+No Home Assistant, no integration, nothing between the music and the room. CAMusic connects
+directly to a Philips Hue Bridge — discover a bridge over mDNS (with cloud discovery and manual
+IP as fallbacks), press its link button to pair, choose an entertainment area, and the Lights
+tab becomes a direct control surface.
 
 Underneath: the decoded PCM is tapped out of the player's own render chain, run through an FFT with
 SuperFlux onset detection and a mel filterbank, and turned into per-light colour by a Kotlin port of
@@ -144,11 +146,11 @@ What the port carries:
 > *local playback* — Navidrome, Jellyfin, downloads, and local files. Music on a remote MA speaker
 > uses the Home Assistant path.
 
-#### Through Home Assistant
+#### Through Home Assistant (Philips Hue via syncoV2)
 
 The original path. Drives the
 [syncoV2](https://github.com/engabd11/syncoV2) `hue_music_sync` integration over the HA WebSocket
-API: per-zone enable, intensity ladder, effect, brightness ceiling, timing offset, live tunables,
+API, which controls Philips Hue lights through the Entertainment API: per-zone enable, intensity ladder, effect, brightness ceiling, timing offset, live tunables,
 and all 19 colour schemes previewed with their real gradient colours. It follows an HA
 `media_player` entity, which is what lets it reach speakers this phone is not playing through.
 
@@ -194,8 +196,8 @@ and play counts write back to the library the track came from when you're back o
 - **Music Assistant** 2.9+ (optional — for the MA player, speaker control, and HA Light Sync path)
 - A self-hosted music library — **Navidrome**, any Subsonic/OpenSubsonic server, or **Jellyfin**
   (optional — the app works with local files alone)
-- **Philips Hue Bridge** with an entertainment area (optional — for direct Light Sync)
-- **Home Assistant** + syncoV2 (optional — for Light Sync through HA)
+- **Philips Hue Bridge** with an entertainment area (optional — for Hue Entertainment light sync)
+- **Home Assistant** + syncoV2 (optional — for Hue light sync through HA)
 
 Everything is optional except Android 12+. Start with one server or just local files and add more
 as you go.
@@ -205,7 +207,7 @@ as you go.
 1. Install the APK from [Releases](https://github.com/engabd11/CAMusic/releases).
 2. The **onboarding wizard** asks where your music lives: Music Assistant, Navidrome, Jellyfin,
    or local files on the device. Credentials are encrypted at rest with the Android Keystore.
-3. Optional steps in the same wizard: set up Light Sync (Home Assistant and/or direct Hue Bridge)
+3. Optional steps in the same wizard: set up Philips Hue light sync (direct to bridge and/or through Home Assistant)
    and register this phone as a Music Assistant player.
 4. Everything can be changed later under **Settings → Libraries**, **Settings → Light Sync**, and
    **Settings → CAMusic player**.
@@ -233,10 +235,11 @@ Jetpack Compose UI  ·  Material 3  ·  OLED design system (true black, album ac
         +-- Jellyfin -----------  JellyfinClient · JellyfinSource
         |
         +-- Hue Bridge ---------  HueBridgeClient · HueDtlsClient · SyncoEngine
-        |   (direct Light Sync)   AudioAnalysisTap · TrackScanner · AlbumColours
+        |   (Philips Hue Entertainment      AudioAnalysisTap · TrackScanner · AlbumColours
+        |    direct to bridge)
         |
         +-- Home Assistant -----  HaClient · LightSyncRepository
-            (Light Sync via syncoV2)
+            (Philips Hue via syncoV2)
 
   SendspinConnectionService (foreground) keeps the process and socket alive
   SendspinService / LocalPlaybackService own the media notifications
@@ -264,7 +267,7 @@ WebSocket binary frame                   HTTP (format=raw) or local file
   PCM         -> passthrough-+-> AudioTrack      radio, smooth transitions,
         |                                        24-bit float output)
   scheduled against the                              |
-  Kalman-filtered server clock                  AudioAnalysisTap -> Light Sync
+  Kalman-filtered server clock                  AudioAnalysisTap -> Philips Hue
 ```
 
 Formats are advertised, not requested: MA may only send something the client listed, so the list
@@ -297,8 +300,8 @@ current feature.
 - [x] Smooth transitions on the standalone path (1–12 s, auto-suppressed for albums)
 - [x] 24-bit output on both paths (bit-perfect mode)
 - [x] ReplayGain on the standalone path (track / album, boost capped at +3 dB)
-- [x] Direct Hue Bridge Light Sync (no HA needed — DTLS 1.2, 60 Hz)
-- [x] Home Assistant Light Sync via syncoV2
+- [x] Direct Philips Hue Bridge light sync (no HA needed — DTLS 1.2, 60 Hz)
+- [x] Home Assistant light sync via syncoV2 (Philips Hue Entertainment API)
 - [x] Auto intensity, tempo tracking, stereo pan, vocal shimmer, Fireworks effect
 - [x] Track pre-scanning (the show knows the song's shape from the first bar)
 - [x] Album-art colour extraction (occupancy-weighted, not UI-accent guessing)
@@ -319,7 +322,7 @@ current feature.
 - [ ] **Warm reconnect** — `client/goodbye` with `reason: "restart"` on backgrounding, so MA holds
       the player slot for ~30 seconds and a quick app switch doesn't drop the phone from the
       speaker list.
-- [ ] **Direct Light Sync from MA playback** — a second tap on `SendspinAudioEngine` so direct
+- [ ] **Direct Philips Hue light sync from MA playback** — a second tap on `SendspinAudioEngine` so direct
       mode can replace the HA path outright rather than sit beside it.
 - [ ] **Android Auto** — media3-session is already a dependency and the `MediaSession` exists;
       the work is a manifest declaration and a browse tree.
@@ -342,7 +345,7 @@ current feature.
 - [ ] **Release keystore and CI signing** — current releases use the local debug key (stable since
       v0.1.0, so updates work). A proper release key and CI-signed builds are the goal.
 - [ ] **Instrumented tests** — 463 unit tests cover protocol, clock, DSP, parsing, the server list,
-      and the Light Sync engine; nothing covers the audio path, the service lifecycle, or the UI.
+      and the Philips Hue Entertainment sync engine; nothing covers the audio path, the service lifecycle, or the UI.
 - [ ] **Crash reporting** — self-hosted ACRA or similar.
 
 ---
@@ -358,7 +361,7 @@ Written down because the alternative is discovering them by ear:
   Music Assistant. Gapless *does* work on the standalone path, where ExoPlayer owns the whole queue.
 - **ReplayGain is applied on the standalone path only.** MA does its own normalisation server-side,
   and applying it twice would be worse than not applying it.
-- **Direct Light Sync cannot see MA playback.** It taps this phone's local player chain, so it
+- **Direct Philips Hue light sync cannot see MA playback.** It taps this phone's local player chain, so it
   follows the Navidrome, Jellyfin, downloads, and local-files paths. MA streaming uses the
   Home Assistant path.
 - **Cleartext is allowed to LAN addresses only.** A server reached over plain HTTP on a public
@@ -419,9 +422,9 @@ for builds. The project uses Kotlin + Jetpack Compose + media3 + ExoPlayer.
 
 ## Credits
 
-The Sendspin client and audio engine are modelled on MA and Navidrome APIs. The Light Sync effects
-engine is a port of [syncoV2](https://github.com/engabd11/syncoV2). Fully compatible with the
-Philips Hue official API and specs.
+The Sendspin client and audio engine are modelled on MA and Navidrome APIs. The Philips Hue
+Entertainment sync effects engine is a port of [syncoV2](https://github.com/engabd11/syncoV2).
+Fully compatible with the Philips Hue Entertainment API and specs.
 
 Built by **Cyborg Automation AU** — [cyborgautomation.com.au](https://cyborgautomation.com.au)
 
