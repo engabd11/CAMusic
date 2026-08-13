@@ -4,11 +4,11 @@
 
 <h1 align="center">CAMusic</h1>
 
-<p align="center"><strong>One app. Your music. Your lights. Your speakers.</strong></p>
+<p align="center"><strong>One app. Your music. Your Phillips hue lights. Your music assistant speakers.</strong></p>
 
 <p align="center">
-  Play your library, sync your lights, group your speakers, and control it all from one place —<br>
-  no subscriptions, no cloud dependency, no second app for the features the first one left out.
+  Play your library, sync your hue lights, group your music assistant speakers, and control it all from one place <br>
+  all local and in one place.
 </p>
 
 <p align="center">
@@ -23,8 +23,8 @@
 ## Why CAMusic?
 
 Most music apps make you choose. Want to play your own collection? That's one app. Stream to
-speakers around the house? Another one. Sync your lights to the music? A third — probably with a
-subscription. Group speakers? Yet another, if it's even available.
+speakers around the house? Another one. Sync your lights to the music? A third, probably with a
+subscription. Group speakers? Yet another, if it's even available. This app evolved from the idea behind syncoV2, but having music playing in one place and lights sync in another is definitely annoying at times. If you prefer a dashboard card on Home Assistant have the option to do so, with syncoV2 only.
 
 **CAMusic puts it all in one app** — a music player, a multi-speaker controller, and a light-sync
 engine, with no feature locked behind a paywall:
@@ -53,7 +53,7 @@ engine, with no feature locked behind a paywall:
 
 ## What it does
 
-### 🎵 Your music, your servers
+### Your music, your servers
 
 Add as many libraries as you like — Navidrome, Jellyfin, any Subsonic-compatible server, or files
 already on your phone — and switch between them freely. Each server is a card with its own
@@ -70,7 +70,7 @@ credentials, status and stream quality; one tap sets it active.
 Capabilities are probed, not assumed. A plain Subsonic server is never offered a lyrics pane it
 can't fill; the app asks what the server supports and lights up only what it declared.
 
-### 🔊 Music Assistant — play anywhere
+### Music Assistant — play anywhere
 
 When a Music Assistant server is in the picture, CAMusic becomes more than a player:
 
@@ -91,11 +91,11 @@ When a Music Assistant server is in the picture, CAMusic becomes more than a pla
 - **Speaker grouping** around a leader, with per-player and group volume.
 - **Home Assistant TTS announcements** arrive like any other MA player.
 
-### 📱 As a Sendspin player
+### As a Sendspin player on Music Assistant
 
 CAMusic registers with Music Assistant over the Sendspin WebSocket protocol and stays available in
 the background through a foreground service, so playback and announcements start without opening
-the app.
+the app. It stays in the background even when the app is closed for instant and reliable TTS, unless the battery saving setting in the app is enabled.
 
 The clock-sync engine uses an NTP-style four-point exchange feeding a two-dimensional Kalman filter
 that tracks offset *and* drift — grouped playback stays in step. The player reports `state: "error"`
@@ -108,11 +108,11 @@ in a three-byte frame is noise, not degradation.
 
 Per-player sync offset is applied to frame scheduling locally and also written back to MA's config.
 
-### 💡 Philips Hue Entertainment Sync — two paths, no cloud
+### Philips Hue Entertainment Sync - Direct or through home asssitant
 
 CAMusic drives Philips Hue lights in time with the music using the Hue Entertainment API
 (DTLS 1.2, 60 Hz). Two transports, picked in **Settings → Light Sync**
-— it follows the library backend automatically unless you pin it by hand. A **Quick Settings tile**
+it follows the library backend automatically unless you pin it by hand. A **Quick Settings tile**
 toggles the direct path from the notification shade.
 
 #### Direct to the Hue Bridge
@@ -154,7 +154,7 @@ API, which controls Philips Hue lights through the Entertainment API: per-zone e
 and all 19 colour schemes previewed with their real gradient colours. It follows an HA
 `media_player` entity, which is what lets it reach speakers this phone is not playing through.
 
-### ⬇️ Offline — download and go
+### Offline Playback and Library — download and go
 
 Download a track, album or playlist for offline use — audio and cover art — with a storage cap and
 a Wi-Fi-only option. A dedicated **Downloads screen** searches, sorts, retries failures, shows the
@@ -164,7 +164,7 @@ findable. The storage cap never evicts the track you're listening to.
 With the server unreachable the library drops to **Offline** and runs on what's on the phone. Stars
 and play counts write back to the library the track came from when you're back online.
 
-### 🎚️ Audiophile-grade playback
+### Audiophile-grade playback
 
 | Feature | Music Assistant path | Standalone path |
 |---|:---:|:---:|
@@ -177,7 +177,7 @@ and play counts write back to the library the track came from when you're back o
 | Smooth transitions | — | ✅ (1–12 s, auto-suppressed for albums) |
 | EQ | ✅ (server DSP) | Planned |
 
-### 🎶 Playback details
+### Playback details
 
 - **Lyrics** — LRC-timed where the provider has them. The sung line sits centred, scrolls smoothly,
   scales into place, with a 200 ms lead and a trim in Settings for a server whose timings are off.
@@ -314,7 +314,7 @@ current feature.
 - [x] Onboarding wizard (first-launch: pick server, optional Light Sync, optional MA player)
 - [x] Adaptive grid layout for tablets and foldables
 
-### 🔜 Next up
+### Next up
 
 - [ ] **True overlapping crossfade** on the standalone path — a second ExoPlayer ping-ponged with
       volume ramps, moving queue ownership and touching ReplayGain, the notification, and the
@@ -328,7 +328,7 @@ current feature.
       the work is a manifest declaration and a browse tree.
 - [ ] **Glance home-screen widget** — now-playing at a glance.
 
-### 🎯 Planned
+### Planned
 
 - [ ] **More library providers** — each is an adapter against the `MusicSource` interface, not a
       change to the app:
@@ -354,22 +354,13 @@ current feature.
 
 Written down because the alternative is discovering them by ear:
 
-- **Gapless on the MA path is Music Assistant's to decide.** MA applies it per player — disabled,
-  standard, or smart — to the stream *before* it reaches the phone. There is no client-side
-  gapless to implement on this path, and an earlier attempt to fake one broke the pause button.
-  **Settings → CAMusic player** drives MA's own setting so changing it doesn't mean opening
-  Music Assistant. Gapless *does* work on the standalone path, where ExoPlayer owns the whole queue.
-- **ReplayGain is applied on the standalone path only.** MA does its own normalisation server-side,
-  and applying it twice would be worse than not applying it.
 - **Direct Philips Hue light sync cannot see MA playback.** It taps this phone's local player chain, so it
   follows the Navidrome, Jellyfin, downloads, and local-files paths. MA streaming uses the
   Home Assistant path.
 - **Cleartext is allowed to LAN addresses only.** A server reached over plain HTTP on a public
   hostname is refused rather than sent credentials in the clear — use HTTPS for anything off
   the local network.
-- **Releases are signed with the local debug key.** It has been stable since v0.1.0 so updates
-  work, but a CI-signed build would use a different signer and Android would refuse to install it
-  over an existing copy. See Building below.
+- **Jellyfin is still experimental and you may have issues in playback until version 0.9.0
 
 ---
 
@@ -393,8 +384,7 @@ composition tracing, skips R8, and runs `debuggable`, which suppresses most of A
 ./gradlew :app:compileReleaseKotlin -PcomposeMetrics   # skippability reports
 ```
 
-Releases are cut **locally**, not from CI: a CI runner generates a fresh debug keystore every run,
-and Android refuses to update an app whose signer changed. See the header of
+Releases are cut locally. See the header of
 `.github/workflows/release.yml`.
 
 ## Documentation
