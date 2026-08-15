@@ -159,7 +159,6 @@ dependencies {
     // — it has no dependency telling it where profiles come from.
     baselineProfile(project(":baselineprofile"))
     implementation("androidx.datastore:datastore-preferences:1.2.1")
-    implementation("androidx.media:media:1.7.0")
     // The Navidrome/offline player. MediaPlayer could not do gapless reliably
     // (setNextMediaPlayer is OEM-dependent), reported nothing about the format it
     // was decoding, and had no stage to apply ReplayGain in.
