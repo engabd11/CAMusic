@@ -49,7 +49,15 @@ class MainActivity : ComponentActivity() {
         else SystemBarStyle.dark(Color.TRANSPARENT)
         enableEdgeToEdge(statusBarStyle = barStyle, navigationBarStyle = barStyle)
         // The foreground playback service needs a visible notification on Android 13+.
+        //
+        // Only for an install that is already past onboarding. Asking cold, before the
+        // first frame, put a system dialog in front of a user who had not yet seen what
+        // the app *is* — and a denial there was never noticed, never explained and never
+        // asked again, while all three foreground services quietly needed it. The wizard
+        // asks with a reason, at the point the reason makes sense; this covers the
+        // upgrade case, where onboarding has already been completed.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            settings.hasCompletedOnboarding &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
             notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)

@@ -13,6 +13,7 @@ import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.PlayerIdentity
 import com.engabd.sendpin.download.DownloadJob
 import com.engabd.sendpin.download.DownloadedTrack
+import com.engabd.sendpin.library.JellyfinSource
 import com.engabd.sendpin.library.MusicSource
 import com.engabd.sendpin.library.MusicSources
 import com.engabd.sendpin.library.ServerConfig
@@ -24,6 +25,7 @@ import com.engabd.sendpin.subsonic.SavedQueue
 import com.engabd.sendpin.subsonic.SubsonicClient
 import com.engabd.sendpin.subsonic.SubsonicError
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -598,6 +600,8 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 runCatching { sink.scrobble(songId, completed = false) }
                 submissionJob?.cancel()
                 submissionJob = viewModelScope.launch { submitWhenPlayed(sink, songId, startedAtMs) }
+                progressJob?.cancel()
+                progressJob = viewModelScope.launch { reportProgressWhile(sink, songId) }
             }
         }
         viewModelScope.launch { localPlayer.errors.collect { _toast.tryEmit(it) } }
@@ -609,6 +613,19 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 if (_node.value.title == DOWNLOADS_TITLE) _node.value = Node(DOWNLOADS_TITLE, downloadItems(list))
             }
         }
+    }
+
+    /**
+     * The music libraries on the connected Jellyfin server, for the settings picker.
+     *
+     * Empty for every other backend, and empty when nothing is connected — the picker
+     * only appears when there is a genuine choice to make, so "no answer" and "one
+     * library" are both handled by simply not rendering it.
+     */
+    suspend fun jellyfinLibraries(): List<MaItem> = try {
+        (source as? JellyfinSource)?.jellyfin?.musicLibraries().orEmpty()
+    } catch (_: Exception) {
+        emptyList()
     }
 
     /**
@@ -970,6 +987,12 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             // Back returns to the same matches instead of an empty search box.
             item.browsable -> { _searchOpen.value = false; pushNode(item.name) { childrenOf(item) } }
             item.playable || item.provider == DOWNLOAD -> play(item)
+            // Anything the library rendered but neither list claims. This used to be
+            // an absent `else`, so an unrecognised media type was a tap that did
+            // nothing, logged nothing and looked exactly like a frozen screen. Saying
+            // so is worth more than the silence, and it is how the next unsupported
+            // type will get noticed instead of shipping.
+            else -> _toast.tryEmit("Can't open ${item.mediaType.ifBlank { "that" }} items yet")
         }
     }
 
@@ -1908,6 +1931,8 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                     "albums" -> { o, l -> maRepo.albums(o, l) }
                     "tracks" -> { o, l -> maRepo.tracks(o, l) }
                     "playlists" -> { o, l -> maRepo.playlists(o, l) }
+                    "radios" -> { o, l -> maRepo.radios(o, l) }
+                    "podcasts" -> { o, l -> maRepo.podcasts(o, l) }
                     else -> return@pushNode emptyList()
                 }
                 maRepo.allLibraryItems(page, onPage = onPartial)
@@ -2053,6 +2078,32 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     /** The pending "this track was actually played" report; cancelled by the next track. */
     private var submissionJob: kotlinx.coroutines.Job? = null
+    private var progressJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * Keep the server's session alive for as long as [id] is the playing track.
+     *
+     * A no-op for every provider except Jellyfin, whose session — and therefore its
+     * "Now Playing" panel and its resume positions — times out after about a minute
+     * of silence from the client. [PROGRESS_REPORT_MS] is well inside that, and far
+     * enough apart that it costs one request per ten seconds of listening.
+     *
+     * Cancelled and restarted by the caller on every track change, so the loop only
+     * has to notice the track moving on underneath it, not race with its successor.
+     */
+    private suspend fun reportProgressWhile(sink: MusicSource, id: String) {
+        while (true) {
+            delay(PROGRESS_REPORT_MS)
+            if (localPlayer.current.value?.scrobbleId != id) return
+            runCatching {
+                sink.reportProgress(
+                    id = id,
+                    positionMs = localPlayer.positionMs.value,
+                    paused = !localPlayer.playing.value,
+                )
+            }
+        }
+    }
 
     /**
      * Wait until [id] has been listened to, then report the completed play.
@@ -2256,6 +2307,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             _backend.value == Backend.MA -> {
                 add(category("artists", "Artists")); add(category("albums", "Albums"))
                 add(category("tracks", "Tracks")); add(category("playlists", "Playlists"))
+                add(category("radios", "Radio stations")); add(category("podcasts", "Podcasts"))
             }
             else -> {
                 add(category("artists", "Artists")); add(category("albums", "Albums"))
@@ -2307,6 +2359,15 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
         /** Four minutes in: a play, however long the track. The usual convention. */
         const val SCROBBLE_MAX_MS = 4 * 60 * 1000L
+
+        /**
+         * How often to tell a session-based server the track is still playing.
+         *
+         * Jellyfin times a session out at roughly a minute, so this has plenty of
+         * margin while staying cheap — one request per ten seconds of listening, and
+         * none at all for providers that don't implement `reportProgress`.
+         */
+        const val PROGRESS_REPORT_MS = 10_000L
 
         /** `getAlbumList2`'s documented maximum `size`. */
         const val SUBSONIC_PAGE = 500

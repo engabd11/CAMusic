@@ -32,6 +32,40 @@ import kotlinx.coroutines.launch
  * All of it is meaningless without a Music Assistant server, and the page says so up
  * front rather than presenting controls that write to nothing.
  */
+/**
+ * The signpost left where the player settings used to be.
+ *
+ * They now live on the Music Assistant server's own page, because that is what they
+ * configure: this phone as a player registered with *that* server. Kept as a row rather
+ * than removed outright so the entry does not simply vanish for anyone who knew it.
+ */
+@Composable
+internal fun PlayerSectionMoved(
+    accent: Color,
+    hasMaServer: Boolean,
+    onGoToLibraries: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        SettingsCard(
+            title = "Now with the server",
+            lead = if (hasMaServer) {
+                "The player's name, stream format, gapless and announcement settings are on the " +
+                    "Music Assistant server's page — so the server, its library and the player " +
+                    "this phone registers with it are set up in one place."
+            } else {
+                "This configures the player CAMusic registers with Music Assistant, and the " +
+                    "settings live on that server's own page. Add a Music Assistant server first."
+            },
+        ) {
+            OledButton(
+                if (hasMaServer) "Open Libraries" else "Add a server",
+                accent = accent,
+                onClick = onGoToLibraries,
+            )
+        }
+    }
+}
+
 @Composable
 internal fun PlayerSection(
     viewModel: PlayerViewModel,

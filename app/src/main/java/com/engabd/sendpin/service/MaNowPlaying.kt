@@ -62,6 +62,9 @@ class MaNowPlaying(app: Context) {
         val isPlaying: Boolean,
         /** This phone is the selected player, so the Sendspin path owns the shade. */
         val isSelf: Boolean,
+        /** The selected player's volume, 0..100, for the media session to publish. */
+        val volumeLevel: Int,
+        val muted: Boolean,
     )
 
     private val settings = AppSettings(app)
@@ -107,6 +110,11 @@ class MaNowPlaying(app: Context) {
                 durationMs = np.durationMs ?: 0L,
                 isPlaying = p.isPlaying,
                 isSelf = id == myPlayerId,
+                volumeLevel = p.volumeLevel,
+                // MA does not surface a separate mute flag on the player; volume 0 is
+                // what the session needs to render a muted icon, and unmuting is a
+                // volume change either way.
+                muted = p.volumeLevel <= 0,
             )
         }.distinctUntilChanged().stateIn(scope, SharingStarted.Eagerly, null)
 
@@ -115,20 +123,51 @@ class MaNowPlaying(app: Context) {
     /** The projected playhead for the selected player, in milliseconds. */
     val positionMs: StateFlow<Long> = _positionMs
 
+    /**
+     * The last `players/all` and `player_queues/all` this process read.
+     *
+     * Published so nothing else has to ask for them again. This class already polls
+     * both every 5 s *and* refreshes on sampled player/queue events, and the Now
+     * Playing and Speakers view models each ran an identical loop of their own — so
+     * with the player open, one Music Assistant server was answering three copies of
+     * the same two commands every five seconds, plus three copies of every
+     * event-driven refresh. There was no shared cache; each went straight to the
+     * socket.
+     *
+     * This is process-scoped and outlives any screen, so a view model collecting it
+     * gets the current answer immediately and every later one for free.
+     */
+    val players: StateFlow<List<MaPlayer>> = _players
+    val queues: StateFlow<List<MaQueue>> = _queues
+
+    /**
+     * Ask for a read now — for a screen that has just become visible, or an action
+     * whose result the user is waiting to see.
+     *
+     * Safe to call from anywhere and as often as you like: [refresh] coalesces, so a
+     * burst of callers costs one round trip and a repeat pass, not one each.
+     */
+    fun refreshNow() = refresh()
+
     init {
         scope.launch { settings.targetPlayer.collect { _target.value = it } }
         scope.launch { settings.backend.collect { _backend.value = it } }
         scope.launch {
             api.state.collect { if (it == MaApiClient.State.CONNECTED) refresh() }
         }
-        // Same shape as the Now Playing screen's: sampled events for promptness, a 5s
-        // poll as the floor. `queue_time_updated` alone arrives about once a second
-        // per active queue, so sampling is what keeps this bounded.
+        // Sampled events for promptness, a 5 s poll as the floor. `queue_time_updated`
+        // alone arrives about once a second per active queue, so sampling is what keeps
+        // this bounded.
+        //
+        // 300 ms rather than the 500 ms this used to run at: the Now Playing screen had
+        // its own 300 ms collector until it started reading from here, and this is now
+        // the only one, so it inherits the tighter of the two rather than making the
+        // screen a step slower than it was.
         scope.launch {
             api.events
                 .mapNotNull { MaParse.event(it) }
                 .filter { it.isPlayerOrQueue }
-                .sample(500)
+                .sample(300)
                 .collect { refresh() }
         }
         scope.launch {

@@ -13,6 +13,11 @@ import com.engabd.sendpin.library.MusicSource
 import com.engabd.sendpin.library.MusicSources
 import com.engabd.sendpin.subsonic.SubsonicClient
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel.Load
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -287,6 +292,14 @@ class ArtistDetailViewModel(
      */
     private val _catalogue = MutableStateFlow<List<MaItem>>(emptyList())
 
+    /**
+     * How many album reads to have in flight at once when building [catalogue].
+     *
+     * Enough to hide the latency of a LAN round-trip; few enough that a self-hosted
+     * Navidrome on a Raspberry Pi is not asked to serve forty queries simultaneously.
+     */
+    private val CATALOGUE_CONCURRENCY = 6
+
     private suspend fun catalogue(): List<MaItem> {
         _catalogue.value.takeIf { it.isNotEmpty() }?.let { return it }
         val all = try {
@@ -294,7 +307,19 @@ class ArtistDetailViewModel(
             when {
                 // The albums are already loaded, so walk those rather than asking
                 // for the artist's albums a second time.
-                isLocal && sc != null -> _albums.value.flatMap { sc.albumDetail(it.itemId).second }
+                //
+                // In parallel, bounded. This was a sequential `flatMap`, so a
+                // forty-album artist meant forty serial round-trips before anything
+                // could be played — several seconds on a LAN, and much worse over a
+                // VPN. The cap keeps a large discography from opening forty sockets
+                // at once, which a small self-hosted server handles badly.
+                isLocal && sc != null -> coroutineScope {
+                    val gate = Semaphore(CATALOGUE_CONCURRENCY)
+                    _albums.value
+                        .map { album -> async { gate.withPermit { sc.albumDetail(album.itemId).second } } }
+                        .awaitAll()
+                        .flatten()
+                }
                 isLocal -> emptyList()
                 else -> maRepo.artistTracks(ref)
             }

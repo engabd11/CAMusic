@@ -504,10 +504,27 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                 Spacer(Modifier.height(22.dp))
                 SectionLabel("Brightness ceiling")
                 Spacer(Modifier.height(10.dp))
-                val bSlider = ((brightnessPct - 5) / 95f).coerceIn(0f, 1f)
-                LabeledSlider(Icons.Default.BrightnessHigh, bSlider, {
-                    scope.launch { settings.setLightSyncBrightness((5 + it * 95).roundToInt()) }
-                }, "$brightnessPct%")
+                // Live value while dragging, stored value otherwise. Same reasoning as
+                // the tunables below: a DataStore write per pointer move recomposed the
+                // screen on every frame, which is what made these sliders judder.
+                var brightnessDrag by remember { mutableStateOf<Int?>(null) }
+                val shownBrightness = brightnessDrag ?: brightnessPct
+                val bSlider = ((shownBrightness - 5) / 95f).coerceIn(0f, 1f)
+                LabeledSlider(
+                    icon = Icons.Default.BrightnessHigh,
+                    value = bSlider,
+                    onChange = {
+                        val pct = (5 + it * 95).roundToInt()
+                        brightnessDrag = pct
+                        direct.previewBrightness(pct)
+                    },
+                    onCommit = {
+                        val pct = (5 + it * 95).roundToInt()
+                        brightnessDrag = null
+                        scope.launch { settings.setLightSyncBrightness(pct) }
+                    },
+                    trailing = "$shownBrightness%",
+                )
 
                 // Advanced live tunables — same six factors as the Home Assistant path.
                 Spacer(Modifier.height(22.dp))
@@ -521,17 +538,74 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                 }
                 if (advanced) {
                     Spacer(Modifier.height(12.dp))
+                    // What the finger is currently doing, overlaid on what is stored.
+                    // Held here rather than written through on every frame: each write
+                    // re-serialised the whole map, re-emitted the settings Flow, and
+                    // came back round through DirectLightSync.observeSettings to set
+                    // the identical values again — sixty times a second, per slider.
+                    // The lights still track the finger, via previewTunables.
+                    var draft by remember { mutableStateOf<Map<String, Float>>(emptyMap()) }
+                    val shown = tunables + draft
+
                     LightSyncRepository.TUNABLE_DEFS.forEach { (key, label) ->
-                        val factor = tunables[key] ?: 1f
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 5.dp), horizontalArrangement = Arrangement.spacedBy(11.dp)) {
+                        val factor = shown[key] ?: 1f
+                        val isDefault = kotlin.math.abs(factor - 1f) < 0.005f
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(vertical = 5.dp),
+                            horizontalArrangement = Arrangement.spacedBy(11.dp),
+                        ) {
                             Text(label, color = TextSecondary, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, modifier = Modifier.width(96.dp))
-                            HSlider((factor / 2f).coerceIn(0f, 1f), {
-                                val next = (tunables + (key to (it * 2f)))
+                            HSlider(
+                                value = (factor / 2f).coerceIn(0f, 1f),
+                                onChange = {
+                                    val next = draft + (key to (it * 2f))
+                                    draft = next
+                                    direct.previewTunables(tunables + next)
+                                },
+                                onCommit = {
+                                    val committed = tunables + (key to (it * 2f))
+                                    draft = draft - key
+                                    scope.launch { settings.setLightSyncTunables(committed) }
+                                },
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                "${(factor * 100).roundToInt()}%",
+                                color = TextMuted, fontFamily = MonoFont, fontWeight = FontWeight.Bold,
+                                fontSize = 11.sp, modifier = Modifier.widthIn(min = 40.dp),
+                            )
+                            // 100% is the neutral multiplier — `withTunables` treats a
+                            // missing key as 1f — so resetting is removing the entry,
+                            // not storing a value. Greyed out when already there, so the
+                            // row also reads as "this one has been changed".
+                            ResetStep(enabled = !isDefault, description = "Reset $label") {
+                                draft = draft - key
+                                val next = tunables - key
+                                direct.previewTunables(next)
                                 scope.launch { settings.setLightSyncTunables(next) }
-                            }, modifier = Modifier.weight(1f))
-                            Text("${(factor * 100).roundToInt()}%", color = TextMuted, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 11.sp, modifier = Modifier.widthIn(min = 40.dp))
+                            }
                         }
                     }
+
+                    Spacer(Modifier.height(8.dp))
+                    val anyChanged = LightSyncRepository.TUNABLE_DEFS.any { (k, _) ->
+                        kotlin.math.abs((shown[k] ?: 1f) - 1f) >= 0.005f
+                    }
+                    Text(
+                        "Reset all",
+                        color = if (anyChanged) accent else TextFaint,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 12.sp,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable(enabled = anyChanged) {
+                                draft = emptyMap()
+                                direct.previewTunables(emptyMap())
+                                scope.launch { settings.setLightSyncTunables(emptyMap()) }
+                            }
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                    )
                 }
 
                 Spacer(Modifier.height(22.dp))
@@ -873,12 +947,41 @@ private fun PlayerCard(
     }
 }
 
+/**
+ * [onCommit] is the release. Where it is given, [onChange] is the live value under the
+ * finger and should stay cheap — anything that writes to storage belongs on the commit,
+ * or the slider stutters against its own recompositions.
+ */
 @Composable
-private fun LabeledSlider(icon: ImageVector, value: Float, onChange: (Float) -> Unit, label: String) {
+private fun LabeledSlider(
+    icon: ImageVector,
+    value: Float,
+    onChange: (Float) -> Unit,
+    trailing: String,
+    onCommit: ((Float) -> Unit)? = null,
+) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(11.dp)) {
         Icon(icon, null, tint = TextMuted, modifier = Modifier.size(16.dp))
-        HSlider(value, onChange, modifier = Modifier.weight(1f))
-        Text(label, color = TextSecondary, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 11.sp, modifier = Modifier.widthIn(min = 44.dp))
+        HSlider(value, onChange, modifier = Modifier.weight(1f), onCommit = onCommit)
+        Text(trailing, color = TextSecondary, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 11.sp, modifier = Modifier.widthIn(min = 44.dp))
+    }
+}
+
+/** The small ⟲ beside a tunable, returning it to its default. Same shape as [OffsetStep]. */
+@Composable
+private fun ResetStep(enabled: Boolean, description: String, onClick: () -> Unit) {
+    val accent = LocalAccent.current
+    Box(
+        Modifier.size(28.dp).clip(RoundedCornerShape(8.dp))
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            Icons.Default.Refresh,
+            contentDescription = description,
+            tint = if (enabled) accent else TextFaint,
+            modifier = Modifier.size(15.dp),
+        )
     }
 }
 

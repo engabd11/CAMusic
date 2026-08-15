@@ -10,14 +10,12 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
-import com.engabd.sendpin.data.LanOnlyCleartext
-import okhttp3.OkHttpClient
+import com.engabd.sendpin.data.Http
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -44,11 +42,10 @@ class SendspinClient(
     /** Clock shared with the audio scheduler. */
     val clock = ClockSync()
 
-    private val httpClient = OkHttpClient.Builder()
-        .addInterceptor(LanOnlyCleartext)
-        .readTimeout(0, TimeUnit.MILLISECONDS)   // stream: no read timeout
-        .pingInterval(5, TimeUnit.SECONDS)       // keepalive
-        .build()
+    // No read timeout (a quiet stream is not a broken one) and a 5s keepalive, tighter
+    // than the control socket's: this one carries audio, so a dead peer has to be
+    // noticed within a track rather than within a minute.
+    private val httpClient = Http.socket(pingSeconds = 5)
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 

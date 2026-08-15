@@ -15,6 +15,7 @@ import androidx.annotation.OptIn
 import androidx.core.app.NotificationCompat
 import androidx.core.graphics.drawable.toBitmap
 import androidx.media3.common.C
+import androidx.media3.common.DeviceInfo
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
@@ -39,6 +40,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 import java.io.ByteArrayOutputStream
 
 /**
@@ -153,6 +155,9 @@ class SendspinService : Service() {
         val local: Boolean,
         /** The remote player's name; null when [local]. */
         val playerName: String?,
+        /** The shown player's volume as 0..100, for the session's device volume. */
+        val volume: Int,
+        val muted: Boolean,
     )
 
     /** The precedence rule, in one place so the notification and the session agree. */
@@ -174,6 +179,11 @@ class SendspinService : Service() {
                 isPlaying = if (remote.isSelf) pb.isPlaying.value else remote.isPlaying,
                 local = remote.isSelf,
                 playerName = if (remote.isSelf) null else remote.playerName,
+                // When this phone is the player, the volume the listener hears is the
+                // phone's own media volume; when a speaker is, it is MA's figure for
+                // that speaker. Same rule as the transport routing above.
+                volume = if (remote.isSelf) deviceVolumePercent() else remote.volumeLevel,
+                muted = if (remote.isSelf) deviceVolumePercent() <= 0 else remote.muted,
             )
         }
         return Shade(
@@ -185,8 +195,13 @@ class SendspinService : Service() {
             isPlaying = pb.isPlaying.value,
             local = true,
             playerName = null,
+            volume = deviceVolumePercent(),
+            muted = deviceVolumePercent() <= 0,
         )
     }
+
+    private fun deviceVolumePercent(): Int =
+        (SendpinApp.instance.deviceVolume.read() * 100).toInt().coerceIn(0, 100)
 
     /** Route a transport action to whichever player the shade is showing. */
     private fun route(localAction: () -> Unit, remoteAction: () -> Unit) {
@@ -298,6 +313,14 @@ class SendspinService : Service() {
                 Player.COMMAND_GET_CURRENT_MEDIA_ITEM,
                 Player.COMMAND_GET_TIMELINE,
                 Player.COMMAND_GET_METADATA,
+                // Volume, so the hardware rocker reaches whatever is actually making
+                // the sound. Without these the session published no device volume at
+                // all, and the rocker fell through to this phone's STREAM_MUSIC even
+                // while a speaker in another room was playing — the on-screen slider
+                // moved the speaker and the buttons moved something inaudible.
+                Player.COMMAND_GET_DEVICE_VOLUME,
+                Player.COMMAND_SET_DEVICE_VOLUME_WITH_FLAGS,
+                Player.COMMAND_ADJUST_DEVICE_VOLUME_WITH_FLAGS,
             )
             .build()
 
@@ -328,7 +351,64 @@ class SendspinService : Service() {
                 )
                 .setCurrentMediaItemIndex(1)
                 .setContentPositionMs(latestPositionMs)
+                // REMOTE when a speaker is playing, so the OS shows a "casting" volume
+                // slider rather than pretending this is the phone's own output; LOCAL
+                // when this phone *is* the Sendspin player, where it genuinely is.
+                // Both are published on a 0..100 scale so the two cases share one unit
+                // and MA's own 0..100 needs no conversion.
+                .setDeviceInfo(
+                    DeviceInfo.Builder(
+                        if (shade.local) DeviceInfo.PLAYBACK_TYPE_LOCAL else DeviceInfo.PLAYBACK_TYPE_REMOTE,
+                    )
+                        .setMinVolume(0)
+                        .setMaxVolume(100)
+                        .build(),
+                )
+                .setDeviceVolume(shade.volume.coerceIn(0, 100))
+                .setIsDeviceMuted(shade.muted)
                 .build()
+        }
+
+        override fun handleSetDeviceVolume(deviceVolume: Int, flags: Int): ListenableFuture<*> {
+            setVolumePercent(deviceVolume)
+            return Futures.immediateVoidFuture()
+        }
+
+        override fun handleIncreaseDeviceVolume(flags: Int): ListenableFuture<*> {
+            setVolumePercent(currentShade().volume + volumeStepPercent())
+            return Futures.immediateVoidFuture()
+        }
+
+        override fun handleDecreaseDeviceVolume(flags: Int): ListenableFuture<*> {
+            setVolumePercent(currentShade().volume - volumeStepPercent())
+            return Futures.immediateVoidFuture()
+        }
+
+        override fun handleSetDeviceMuted(muted: Boolean, flags: Int): ListenableFuture<*> {
+            // Mute is volume 0 on both paths. The pre-mute level is not restored here:
+            // MA has no mute-state of its own to restore from, and inventing one in the
+            // shade would drift from whatever the Speakers screen shows.
+            if (muted) setVolumePercent(0)
+            return Futures.immediateVoidFuture()
+        }
+
+        /**
+         * One rocker press, as a percentage of the 0..100 scale the session publishes.
+         *
+         * Taken from the phone's own volume scale so a local press moves exactly one
+         * hardware step and lands on a real level rather than between two. A remote
+         * speaker has no such scale, so it gets the same feel by construction.
+         */
+        private fun volumeStepPercent(): Int =
+            (SendpinApp.instance.deviceVolume.stepFraction() * 100).roundToInt().coerceAtLeast(1)
+
+        private fun setVolumePercent(percent: Int) {
+            val v = percent.coerceIn(0, 100)
+            route(
+                { SendpinApp.instance.deviceVolume.set(v / 100f) },
+                { ma.setVolume(v / 100f) },
+            )
+            invalidateState()
         }
 
         private fun mediaItemData(shade: Shade, uid: String) = MediaItemData.Builder(uid)
@@ -394,6 +474,11 @@ class SendspinService : Service() {
                 pb.trackTitle, pb.artist, pb.album, pb.isPlaying,
                 pb.artworkUrl, pb.durationMs, pb.connected, pb.connectionStatus,
                 ma.now,
+                // The phone's own media volume. In the flow because `currentShade()`
+                // reads it, so a rocker press — which arrives through a ContentObserver,
+                // not through any of the above — has to recompute the shade or the
+                // session keeps publishing the level from before the press.
+                SendpinApp.instance.deviceVolume.level,
             )
         ) { currentShade() }.distinctUntilChanged()
 
@@ -407,6 +492,13 @@ class SendspinService : Service() {
                 if (s.local) localPos else remotePos
             }.collect { pos ->
                 shadePlayer?.let { it.latestPositionMs = pos; it.refresh() }
+            }
+        }
+        // Volume is its own collector: it changes without the metadata changing, and
+        // the session has to be re-published or the OS volume UI shows a stale level.
+        scope.launch {
+            shade.map { it.volume to it.muted }.distinctUntilChanged().collect {
+                shadePlayer?.refresh()
             }
         }
         scope.launch {

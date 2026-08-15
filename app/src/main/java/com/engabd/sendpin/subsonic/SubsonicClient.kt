@@ -8,13 +8,12 @@ import com.engabd.sendpin.ma.MaSearchResults
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.*
-import com.engabd.sendpin.data.LanOnlyCleartext
+import com.engabd.sendpin.data.Http
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.IOException
 import java.net.URLEncoder
 import java.security.MessageDigest
-import java.util.concurrent.TimeUnit
 
 /**
  * A Subsonic call the server refused, or that never reached it.
@@ -133,13 +132,7 @@ class SubsonicClient(
          * reusing each other's sockets. OkHttp is designed to be shared — the whole
          * point of the pool is that it outlives any one caller.
          */
-        private val shared: OkHttpClient by lazy {
-            OkHttpClient.Builder()
-        .addInterceptor(LanOnlyCleartext)
-                .connectTimeout(10, TimeUnit.SECONDS)
-                .readTimeout(20, TimeUnit.SECONDS)
-                .build()
-        }
+        private val shared: OkHttpClient get() = Http.base
 
         private const val CLIENT = "sendpin"
         private const val API_VERSION = "1.16.1"

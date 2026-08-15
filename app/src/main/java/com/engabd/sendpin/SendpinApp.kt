@@ -12,6 +12,7 @@ import com.engabd.sendpin.download.DownloadManager
 import com.engabd.sendpin.ma.MaApiClient
 import com.engabd.sendpin.service.AppLifecycleObserver
 import com.engabd.sendpin.data.AppSettings
+import com.engabd.sendpin.data.Http
 import com.engabd.sendpin.service.LocalPlaybackService
 import com.engabd.sendpin.service.MaNowPlaying
 import com.engabd.sendpin.service.Playback
@@ -33,8 +34,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl
 import okhttp3.Interceptor
-import com.engabd.sendpin.data.LanOnlyCleartext
-import okhttp3.OkHttpClient
 import okhttp3.Response
 import java.io.IOException
 import java.net.URLDecoder
@@ -169,6 +168,9 @@ class SendpinApp : Application(), ImageLoaderFactory {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        // Before any client is built: [Http.base] is lazy, and a cache installed after
+        // the first request would be attached to a client nobody is using any more.
+        Http.initCache(cacheDir)
         // Catch and store crashes locally before anything else starts. The previous
         // handler is chained so the app still terminates as the platform expects.
         CrashReporter.install(this)
@@ -425,11 +427,16 @@ class SendpinApp : Application(), ImageLoaderFactory {
                     .build()
             } else res
         }
-        val http = OkHttpClient.Builder()
-        .addInterceptor(LanOnlyCleartext)
+        // Derived from the shared client so covers share its connection pool with the
+        // API calls to the same host — they are almost always the same server, and two
+        // pools meant two TLS handshakes and two sets of idle sockets to it.
+        val http = Http.base.newBuilder()
             .addInterceptor(authInterceptor)
             .addInterceptor(proxyInterceptor)
             .addNetworkInterceptor(cacheInterceptor)
+            // Coil keeps its own disk cache for the decoded bytes; the shared HTTP
+            // cache would store a second copy of every cover.
+            .cache(null)
             .build()
         return ImageLoader.Builder(this)
             .bitmapConfig(Bitmap.Config.ARGB_8888)

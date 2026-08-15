@@ -169,6 +169,10 @@ private fun typeLabel(mediaType: String): String? = when (mediaType) {
     "artist" -> "Artist"
     "playlist" -> "Playlist"
     "radio" -> "Radio"
+    "podcast" -> "Podcast"
+    "podcast_episode" -> "Episode"
+    "audiobook" -> "Audiobook"
+    "chapter" -> "Chapter"
     "track" -> null          // a row in a track list is obviously a track
     else -> null
 }

@@ -168,6 +168,34 @@ data class ServerConfig(
         /** Navidrome / Subsonic: what `format=` the stream URL asks for. */
         const val OPT_STREAM_FORMAT = "streamFormat"
 
+        // ── Music Assistant player settings ───────────────────────────────
+        //
+        // These describe *this phone as a player registered with one MA server*, not
+        // the phone in general, and they used to be app-global keys. With one MA
+        // server that reads the same either way; with two, both would share a player
+        // name, a codec and a target — and the second server would silently overwrite
+        // the first's answers. They live here so the server, its library and its
+        // player are configured in one place and stored in one place.
+
+        /** What this phone is called on that server. */
+        const val OPT_PLAYER_NAME = "playerName"
+
+        /** Which codec the Sendspin `client/hello` advertises to it. */
+        const val OPT_SENDSPIN_CODEC = "sendspinCodec"
+
+        /** Whether to ask that server for hi-res, and for FLAC. */
+        const val OPT_PREFER_HI_RES = "preferHiRes"
+        const val OPT_PREFER_FLAC = "preferFlac"
+
+        /** Hold the Sendspin socket open so announcements arrive without a delay. */
+        const val OPT_KEEP_ALIVE = "keepAliveAnnouncements"
+
+        /** The player on that server this phone is currently controlling. */
+        const val OPT_TARGET_PLAYER = "targetPlayer"
+
+        /** This phone's latency trim against that server's clock, in milliseconds. */
+        const val OPT_STATIC_DELAY_MS = "staticDelayMs"
+
         /** Jellyfin: the authenticated user's id, needed on most of its endpoints. */
         const val OPT_USER_ID = "userId"
 

@@ -22,7 +22,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
-import com.engabd.sendpin.data.LanOnlyCleartext
+import com.engabd.sendpin.data.Http
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
@@ -107,9 +107,10 @@ data class DownloadJob(
  */
 class DownloadManager(
     private val context: Context,
-    private val http: OkHttpClient = OkHttpClient.Builder()
-        .addInterceptor(LanOnlyCleartext)
-        .build(),
+    // Was built with no timeouts at all, so a server that accepted the connection and
+    // then stopped sending held the job open for ever. [Http.transfer] keeps the read
+    // timeout and drops only the overall call deadline, which a large file needs.
+    private val http: OkHttpClient = Http.transfer(),
 ) {
     private val json = Json { ignoreUnknownKeys = true; prettyPrint = false }
     private val serializer = ListSerializer(DownloadedTrack.serializer())

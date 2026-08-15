@@ -17,15 +17,13 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.*
-import com.engabd.sendpin.data.LanOnlyCleartext
-import okhttp3.OkHttpClient
+import com.engabd.sendpin.data.Http
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.TimeUnit
 
 /**
  * @param isTransport the request never reached a verdict — it timed out, or the
@@ -49,11 +47,7 @@ class MaApiClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
 
     enum class State { DISCONNECTED, CONNECTING, CONNECTED, ERROR }
 
-    private val http = OkHttpClient.Builder()
-        .addInterceptor(LanOnlyCleartext)
-        .readTimeout(0, TimeUnit.MILLISECONDS)
-        .pingInterval(30, TimeUnit.SECONDS)
-        .build()
+    private val http = Http.socket(pingSeconds = 30)
     private var ws: WebSocket? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 

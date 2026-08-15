@@ -1,6 +1,6 @@
 package com.engabd.sendpin.jellyfin
 
-import com.engabd.sendpin.data.LanOnlyCleartext
+import com.engabd.sendpin.data.Http
 import com.engabd.sendpin.ma.MaAudioFormat
 import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ma.MaLyrics
@@ -13,7 +13,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.net.URLEncoder
-import java.util.concurrent.TimeUnit
+import java.util.UUID
 
 class JellyfinException(message: String, val httpCode: Int? = null) : Exception(message) {
     /** A rejected login is worth re-prompting for; an unreachable host is not. */
@@ -66,20 +66,35 @@ class JellyfinClient(
         private const val DEVICE = "Android"
         private const val VERSION = "1.0"
 
-        /** Matches the Subsonic client's single shared pool, for the same reasons. */
-        private val shared: OkHttpClient by lazy {
-            OkHttpClient.Builder()
-                .addInterceptor(LanOnlyCleartext)
-                .connectTimeout(10, TimeUnit.SECONDS)
-                .readTimeout(20, TimeUnit.SECONDS)
-                .build()
-        }
+        /** The app-wide client: one pool, one cache, one User-Agent. See [Http]. */
+        private val shared: OkHttpClient get() = Http.base
 
         /** One cover size for every use, sampled down by Coil. As Subsonic does. */
         private const val COVER_PX = 1000
 
         /** The types worth listing from a music library. */
         private const val MUSIC_TYPES = "MusicArtist,MusicAlbum,Audio"
+
+        /** Fields every browse needs, whatever the item type. */
+        private const val BASE_FIELDS =
+            "Genres,DateCreated,ChildCount,ProductionYear,AlbumId,ParentId,AlbumArtists,ArtistItems"
+
+        /**
+         * Containers this phone can decode, for `/universal` to negotiate against.
+         *
+         * `/universal` asks *the client* what it can play and picks direct play when
+         * the stored file already qualifies; it is not a request for one specific
+         * container. Everything here is in ExoPlayer's mandatory set, so any of them
+         * coming back is playable without a transcode.
+         */
+        private const val CLIENT_CONTAINERS = "flac,mp3,aac,m4a,ogg,opus,wav"
+
+        /** The codec to transcode *to* for a given container. */
+        private fun codecFor(container: String): String = when (container) {
+            "m4a" -> "aac"
+            "ogg" -> "opus"
+            else -> container
+        }
     }
 
     val serverUrl: String get() = base()
@@ -129,8 +144,23 @@ class JellyfinClient(
     }
 
     /**
-     * A playable URL. `static=true` asks for the stored file byte-for-byte; anything
-     * else asks the server to remux or transcode into [format]'s container.
+     * A playable URL: the stored file byte-for-byte, or a negotiated stream.
+     *
+     * The two cases are *different endpoints*, which is the thing that is easy to get
+     * wrong. `static=true` is a parameter of `/Audio/{id}/stream`; on
+     * `/Audio/{id}/universal` it is not a parameter at all, so ASP.NET drops it
+     * silently and the request arrives carrying **no container profile**. Jellyfin
+     * then has no direct-play profile to match against and either transcodes material
+     * that needed no transcoding or answers 4xx outright — and because every track in
+     * a queue is built from the same template, one bad URL becomes a whole album
+     * skipping past in a couple of seconds.
+     *
+     * So: "original" goes to `/stream`, and any transcode quality goes to
+     * `/universal` with a real profile. `/universal` negotiates against what the
+     * *client* can decode, so [CLIENT_CONTAINERS] is a list rather than the single
+     * requested container — with `maxStreamingBitrate` set, a source already under
+     * the cap direct-plays instead of being transcoded for no reason, and one over it
+     * is transcoded regardless of being in the list.
      *
      * The token goes on the query string here rather than in a header, because this
      * URL is handed to ExoPlayer, which opens it without our interceptors.
@@ -138,31 +168,49 @@ class JellyfinClient(
     fun streamUrl(id: String, format: String = streamFormat): String {
         val container = format.substringBefore('-').ifBlank { "raw" }
         val bitrate = format.substringAfter('-', "").toIntOrNull()
-        val params = buildMap {
+        // The user id is required for permission checks even when api_key is present.
+        // Without it, Jellyfin may return 401 on the stream endpoint or redirect to
+        // a transcoding URL that loses the token on the redirect.
+        val common = buildMap {
             put("api_key", token)
             put("deviceId", deviceId)
-            // The user id is required for permission checks even when api_key is present.
-            // Without it, Jellyfin may return 401 on the stream endpoint or redirect to
-            // a transcoding URL that loses the token on the redirect.
             if (userId.isNotBlank()) put("userId", userId)
-            if (container == "raw") {
-                put("static", "true")
-            } else {
-                put("container", container)
-                // Jellyfin wants bits per second where the token carries kbps.
-                bitrate?.let { put("audioBitRate", (it * 1000).toString()) }
-            }
         }
-        return url("/Audio/$id/universal", params)
+        if (container == "raw") {
+            return url("/Audio/$id/stream", common + mapOf("static" to "true"))
+        }
+        return url(
+            "/Audio/$id/universal",
+            common + buildMap {
+                put("container", CLIENT_CONTAINERS)
+                put("audioCodec", codecFor(container))
+                put("transcodingContainer", container)
+                put("transcodingProtocol", "http")
+                // Jellyfin wants bits per second where the token carries kbps.
+                bitrate?.let { put("maxStreamingBitrate", (it * 1000).toString()) }
+            },
+        )
     }
 
     /** `/Download` is defined to return the original file, so it takes no format hint. */
     fun downloadUrl(id: String): String =
         url("/Items/$id/Download", mapOf("api_key" to token))
 
+    /**
+     * Cover art. Carries the token because Coil opens this URL directly, without the
+     * `Authorization` header the rest of the client sends — on a server that has
+     * anonymous image access disabled, an unauthenticated image URL is a 401 and
+     * every cover in the library comes back blank.
+     */
     fun coverUrl(id: String?, size: Int = COVER_PX): String? =
         id?.takeIf { it.isNotBlank() }?.let {
-            url("/Items/$it/Images/Primary", mapOf("maxWidth" to size.toString()))
+            url(
+                "/Items/$it/Images/Primary",
+                buildMap {
+                    put("maxWidth", size.toString())
+                    if (token.isNotBlank()) put("api_key", token)
+                },
+            )
         }
 
     // ── Transport ─────────────────────────────────────────────────────────
@@ -305,7 +353,15 @@ class JellyfinClient(
             put("StartIndex", offset.toString())
             // `AlbumArtists` is requested explicitly: without it an album comes back
             // with no artist id at all, and "more by this artist" has nothing to ask.
-            put("Fields", "MediaSources,Genres,DateCreated,ChildCount,ProductionYear,AlbumId,ParentId,AlbumArtists,ArtistItems")
+            //
+            // `MediaSources` is asked for only when tracks are in scope. It is what
+            // carries the audio format the quality badge reads, but resolving it costs
+            // the server real work per item — and an artist or album list has no
+            // format to show, so requesting it there is work neither side ever uses.
+            put(
+                "Fields",
+                if (types.contains("Audio")) BASE_FIELDS + ",MediaSources" else BASE_FIELDS,
+            )
             put("ImageTypeLimit", "1")
             // Blank is not a parent. Sending `ParentId=` asks Jellyfin to look under a
             // folder with no id, which is not the same request as omitting it.
@@ -461,17 +517,59 @@ class JellyfinClient(
     suspend fun deleteItem(id: String) { delete("/Items/$id") }
 
     /**
+     * The id tying a start, its progress reports and its stop into one session.
+     *
+     * Jellyfin will accept reports without it, but then each one is an orphan: the
+     * dashboard cannot match them to a stream, and resume positions do not stick.
+     * Minted at every start and held until the matching stop.
+     */
+    @Volatile
+    private var playSessionId: String = ""
+
+    /**
      * Playback reporting, which is how Jellyfin's play counts and "continue
      * listening" stay honest — its equivalent of a Subsonic scrobble.
+     *
+     * [positionMs] is a position *within the track*. Jellyfin counts in 100-nanosecond
+     * ticks, so a wall-clock epoch forwarded here lands about fifty-six years into a
+     * three-minute song — see `JellyfinSource.scrobble`, which is where that mistake
+     * is easy to make.
      */
     suspend fun reportPlayback(id: String, completed: Boolean, positionMs: Long = 0) {
-        val ticks = positionMs * 10_000  // Jellyfin counts in 100-nanosecond ticks
-        val body = buildJsonObject {
-            put("ItemId", id)
-            put("PositionTicks", ticks)
+        if (!completed) playSessionId = UUID.randomUUID().toString()
+        val body = sessionBody(id, positionMs, paused = false)
+        if (completed) {
+            post("/Sessions/Playing/Stopped", body)
+            playSessionId = ""
+        } else {
+            post("/Sessions/Playing", body)
         }
-        if (completed) post("/Sessions/Playing/Stopped", body) else post("/Sessions/Playing", body)
     }
+
+    /**
+     * A keep-alive for the session opened by [reportPlayback].
+     *
+     * Without it the server times the session out after about a minute and "Now
+     * Playing" goes stale while audio is still running.
+     */
+    suspend fun reportProgress(id: String, positionMs: Long, paused: Boolean) {
+        if (playSessionId.isBlank()) return  // nothing started this session; nothing to keep alive
+        post("/Sessions/Playing/Progress", sessionBody(id, positionMs, paused))
+    }
+
+    private fun sessionBody(id: String, positionMs: Long, paused: Boolean): JsonObject =
+        buildJsonObject {
+            put("ItemId", id)
+            put("MediaSourceId", id)
+            put("PositionTicks", positionMs * 10_000)
+            put("IsPaused", paused)
+            put("IsMuted", false)
+            put("CanSeek", true)
+            // Advisory, and only as accurate as the stream request was: "original"
+            // goes out as a static file, everything else asks the server to transcode.
+            put("PlayMethod", if (streamFormat == "raw") "DirectPlay" else "Transcode")
+            if (playSessionId.isNotBlank()) put("PlaySessionId", playSessionId)
+        }
 
     suspend fun lyrics(songId: String): MaLyrics? = try {
         val res = get("/Audio/$songId/Lyrics")

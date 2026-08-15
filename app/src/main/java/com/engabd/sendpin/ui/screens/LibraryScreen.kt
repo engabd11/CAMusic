@@ -3,10 +3,13 @@ package com.engabd.sendpin.ui.screens
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -26,6 +29,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.*
@@ -413,11 +417,13 @@ private fun full(cols: Int = DEFAULT_COLS) = GridItemSpan(cols)
 internal fun itemKey(section: String, index: Int, item: MaItem) =
     "$section:$index:${item.provider}|${item.itemId}"
 
-private val ArtfulTypes = setOf("album", "playlist")
+private val ArtfulTypes = setOf("album", "playlist", "podcast", "audiobook")
 private val DownloadableTypes = setOf("track", "album", "playlist")
-private val LongPressableTypes = setOf("track", "album", "artist", "playlist", "radio")
+private val LongPressableTypes =
+    setOf("track", "album", "artist", "playlist", "radio", "podcast", "podcast_episode", "audiobook")
 private val SubsonicActionTypes = setOf("track", "album", "artist")
-private val MaActionTypes = setOf("track", "album", "artist", "playlist")
+private val MaActionTypes =
+    setOf("track", "album", "artist", "playlist", "podcast", "podcast_episode", "audiobook")
 
 @Composable
 private fun Browse(
@@ -538,7 +544,11 @@ private fun Browse(
                 contentType = { _, _ -> "category" },
                 span = { _, _ -> GridItemSpan(3) },
             ) { _, cat ->
-                CategoryCard(cat) { viewModel.open(cat) }
+                // Categories come and go with the backend — switching to Music
+                // Assistant adds Radio and Podcasts, switching away removes them —
+                // and without this they popped in and out. Same modifier the shelves
+                // below already use.
+                CategoryCard(cat, Modifier.animateItem()) { viewModel.open(cat) }
             }
             val openItem: (MaItem) -> Unit = { item ->
                 when (item.mediaType) {
@@ -824,15 +834,31 @@ private fun CreatePlaylistDialog(onDismiss: () -> Unit, onCreate: (String) -> Un
     )
 }
 
+/**
+ * A root-level browse category — Artists, Albums, Radio stations, Podcasts.
+ *
+ * The press-scale is the same gesture feedback the cover tiles give, on the same
+ * `spatialFast` token: these sit in the same grid as the artwork, and a card that
+ * stayed inert while its neighbours responded read as the one that had not loaded.
+ * Scale only — never alpha, which belongs on an `effects` spec (see [Motion]).
+ */
 @Composable
-private fun CategoryCard(item: MaItem, onClick: () -> Unit) {
+private fun CategoryCard(item: MaItem, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val accent = LocalAccent.current
+    val interactions = remember { MutableInteractionSource() }
+    val pressed by interactions.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) 0.97f else 1f,
+        animationSpec = Motion.spatialFast(),
+        label = "categoryPress",
+    )
     Row(
-        Modifier
+        modifier
+            .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(RoundedCornerShape(15.dp))
             .background(inkOn(0.035f))
             .border(1.dp, HairlineSoft, RoundedCornerShape(15.dp))
-            .clickable(onClick = onClick)
+            .clickable(interactionSource = interactions, indication = null, onClick = onClick)
             .padding(14.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -855,6 +881,8 @@ private fun categoryIcon(id: String): ImageVector = when (id) {
     "albums" -> Icons.Default.Album
     "tracks" -> Icons.Default.MusicNote
     "playlists" -> Icons.AutoMirrored.Filled.PlaylistPlay
+    "radios" -> Icons.Default.Radio
+    "podcasts" -> Icons.Default.Podcasts
     "downloads" -> Icons.Default.Download
     "newest" -> Icons.Default.Schedule
     else -> Icons.AutoMirrored.Filled.QueueMusic
@@ -1079,6 +1107,8 @@ private fun mediaIcon(mediaType: String): ImageVector = when (mediaType) {
     "album" -> Icons.Default.Album
     "playlist" -> Icons.AutoMirrored.Filled.PlaylistPlay
     "radio" -> Icons.Default.Radio
+    "podcast", "podcast_episode" -> Icons.Default.Podcasts
+    "audiobook", "chapter" -> Icons.AutoMirrored.Filled.MenuBook
     else -> Icons.Default.MusicNote
 }
 

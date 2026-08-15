@@ -423,6 +423,38 @@ private fun ServerDetail(
             }
         }
 
+        // Which of the server's libraries holds the music. Jellyfin only: a Jellyfin
+        // server usually has films and television alongside, and browsing the lot as
+        // one flat list is not a music library. Setup picks the first music library
+        // automatically, which is right for the common single-library server — this is
+        // the choice for everyone else, who until now had no way to see or change it.
+        if (config.kind == ServerKind.JELLYFIN && isActive && !isNew) {
+            JellyfinLibraryCard(
+                selectedId = config.option(ServerConfig.OPT_LIBRARY_ID).orEmpty(),
+                libraryVm = libraryVm,
+                accent = accent,
+            ) { libraryId ->
+                val next = edited().withOption(ServerConfig.OPT_LIBRARY_ID, libraryId)
+                config = next
+                scope.launch {
+                    save(makeActive = true, customOptions = next.options)
+                    libraryVm.switchTo(next)
+                    libraryVm.connect()
+                }
+            }
+        }
+
+        // The player this phone registers with *this* server.
+        //
+        // It used to live in its own top-level "CAMusic player" section, a screen away
+        // from the server it belongs to and from the library it plays — so setting up
+        // Music Assistant meant filling in an address here, then going elsewhere to say
+        // what the player was called and what it should ask for. Server, library and
+        // player are one setup, so they are now one page.
+        if (config.kind == ServerKind.MUSIC_ASSISTANT && !isNew) {
+            MaPlayerCards(settings = settings, accent = accent, scope = scope)
+        }
+
         // Per-server playback options, for the kinds that stream to this phone.
         if (config.kind.playsLocally && config.kind != ServerKind.LOCAL) {
             SettingsCard(
@@ -516,6 +548,85 @@ private fun encodeFolderUris(uris: List<Uri>): String = JSONArray(uris.map { it.
  * under [LocalMediaSource.OPT_FOLDER_URIS]. A persisted permission is taken so the
  * MediaStore query can read files under the tree after the picker closes.
  */
+/**
+ * This phone as a player on *this* Music Assistant server.
+ *
+ * Name, codec, what to ask the server for, its own gapless/crossfade config and the
+ * announcement keep-alive — all of it describes one phone registered with one server,
+ * and all of it is stored in that server's `options` (see `ServerConfig.OPT_PLAYER_NAME`
+ * and its neighbours). Rendered here so the server, the library and the player are set
+ * up together; the old top-level "CAMusic player" section now points at this page.
+ */
+@Composable
+private fun MaPlayerCards(settings: AppSettings, accent: Color, scope: CoroutineScope) {
+    PlayerSection(
+        viewModel = androidx.lifecycle.viewmodel.compose.viewModel(),
+        settings = settings,
+        accent = accent,
+        scope = scope,
+        // Reaching this composable at all means there is one.
+        hasMaServer = true,
+    )
+    StreamingCard(settings, accent, scope)
+}
+
+/**
+ * Which Jellyfin library the music lives in.
+ *
+ * Loaded once, when the card first composes, because it needs a live connection and
+ * the answer does not change while the user is looking at it. A server with one music
+ * library renders nothing at all — the automatic pick during setup is already correct
+ * there, and a picker with a single option is just a control that cannot do anything.
+ */
+@Composable
+private fun JellyfinLibraryCard(
+    selectedId: String,
+    libraryVm: LibraryViewModel,
+    accent: Color,
+    onPick: (String) -> Unit,
+) {
+    var libraries by remember { mutableStateOf<List<com.engabd.sendpin.ma.MaItem>?>(null) }
+    LaunchedEffect(Unit) { libraries = libraryVm.jellyfinLibraries() }
+
+    val list = libraries ?: return
+    if (list.size < 2) return
+
+    SettingsCard(
+        title = "Music library",
+        lead = "Which of this server's libraries to browse. The rest of the server — films, " +
+            "television — is left alone.",
+    ) {
+        list.forEach { lib ->
+            val selected = lib.itemId == selectedId
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable(enabled = !selected) { onPick(lib.itemId) }
+                    .padding(horizontal = 12.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Icon(
+                    if (selected) Icons.Default.RadioButtonChecked else Icons.Default.RadioButtonUnchecked,
+                    contentDescription = null,
+                    tint = if (selected) accent else TextMuted,
+                    modifier = Modifier.size(18.dp),
+                )
+                Text(
+                    lib.name,
+                    color = if (selected) TextPrimary else TextMuted,
+                    fontFamily = AppFont,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        Note("Changing this reconnects and reloads the library.")
+    }
+}
+
 @Composable
 private fun LocalFolderCard(
     config: ServerConfig,

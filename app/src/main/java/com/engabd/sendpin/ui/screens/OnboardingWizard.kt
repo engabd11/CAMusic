@@ -52,10 +52,16 @@ import com.engabd.sendpin.ui.theme.accentTextFieldColors
 import com.engabd.sendpin.ui.viewmodel.PlayerViewModel
 import kotlinx.coroutines.launch
 import org.json.JSONArray
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
+import com.engabd.sendpin.ui.design.Motion
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -87,14 +93,34 @@ fun OnboardingWizard(
     var step by remember { mutableStateOf(0) }
     var chosenKind by remember { mutableStateOf<ServerKind?>(null) }
     var serverConfig by remember { mutableStateOf<ServerConfig?>(null) }
-    var lightSyncDone by remember { mutableStateOf(false) }
-    var speakersDone by remember { mutableStateOf(false) }
+
+    // Registering this phone as a Music Assistant speaker only means anything on the
+    // Music Assistant backend. It used to be shown to everyone, so someone who picked
+    // Navidrome or "this device" was handed a full MA registration form with no
+    // explanation that it did not apply to them.
+    val needsSpeakers = chosenKind == ServerKind.MUSIC_ASSISTANT
+    val total = if (needsSpeakers) 5 else 4
 
     fun finish(skipped: Boolean = false) {
         scope.launch {
             settings.setOnboardingCompleted(true)
+            // Recorded, so a skipped setup can be told from a completed one. Both used
+            // to write the same thing, which meant the app could never tell whether a
+            // missing server was a deliberate choice or an interrupted wizard.
+            settings.setOnboardingSkipped(skipped)
             onDone()
         }
+    }
+
+    /** The step after [from], skipping the ones this setup doesn't need. */
+    fun next(from: Int): Int = when {
+        from == 2 && !needsSpeakers -> 4   // straight from Light Sync to Permissions
+        else -> from + 1
+    }
+
+    fun previous(from: Int): Int = when {
+        from == 4 && !needsSpeakers -> 2
+        else -> from - 1
     }
 
     Box(Modifier.fillMaxSize().background(Ink)) {
@@ -104,16 +130,27 @@ fun OnboardingWizard(
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 26.dp).padding(top = 48.dp, bottom = 36.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            WizardHeader(step = step, total = 4, accent = accent, onBack = { if (step > 0) step-- })
+            WizardHeader(
+                step = if (needsSpeakers || step < 4) step else 3,
+                total = total,
+                accent = accent,
+                onBack = { if (step > 0) step = previous(step) },
+            )
             Spacer(Modifier.height(24.dp))
 
             AnimatedContent(
                 targetState = step,
+                // On the app's motion tokens rather than bare defaults: position moves
+                // on a spatial spring, alpha on an effects spring. The wizard was the
+                // one screen still using `slideInHorizontally()` / `fadeIn()` raw, so it
+                // felt subtly unlike everything the user sees next.
                 transitionSpec = {
                     if (targetState > initialState) {
-                        slideInHorizontally { it } + fadeIn() togetherWith slideOutHorizontally { -it / 2 } + fadeOut()
+                        slideInHorizontally(Motion.spatial()) { it } + fadeIn(Motion.effects()) togetherWith
+                            slideOutHorizontally(Motion.spatial()) { -it / 2 } + fadeOut(Motion.effects())
                     } else {
-                        slideInHorizontally { -it } + fadeIn() togetherWith slideOutHorizontally { it / 2 } + fadeOut()
+                        slideInHorizontally(Motion.spatial()) { -it } + fadeIn(Motion.effects()) togetherWith
+                            slideOutHorizontally(Motion.spatial()) { it / 2 } + fadeOut(Motion.effects())
                     }
                 },
                 label = "wizard",
@@ -142,20 +179,19 @@ fun OnboardingWizard(
                     2 -> LightSyncStep(
                         accent = accent,
                         settings = settings,
-                        onNext = { done ->
-                            lightSyncDone = done
-                            step = 3
-                        },
+                        onNext = { step = next(2) },
                         onBack = { step = 1 },
                     )
                     3 -> SpeakersStep(
                         playerVm = playerVm,
                         accent = accent,
-                        onNext = { done ->
-                            speakersDone = done
-                            finish()
-                        },
+                        onNext = { step = 4 },
                         onBack = { step = 2 },
+                    )
+                    4 -> PermissionsStep(
+                        accent = accent,
+                        onDone = { finish() },
+                        onBack = { step = previous(4) },
                     )
                     else -> finish()
                 }
@@ -420,7 +456,7 @@ private fun ConfigStep(
 private fun LightSyncStep(
     accent: Color,
     settings: AppSettings,
-    onNext: (Boolean) -> Unit,
+    onNext: () -> Unit,
     onBack: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
@@ -453,7 +489,18 @@ private fun LightSyncStep(
         ToggleRow("Direct Hue Bridge", "Talk to the bridge itself, no Home Assistant needed.", setupDirect, accent) { setupDirect = it }
         if (setupDirect) {
             Spacer(Modifier.height(10.dp))
-            Text("Pairing happens in Settings → Light Sync → Direct after setup.", color = TextMuted, fontSize = 12.sp)
+            // Pairing needs the physical button on the bridge pressed within 30 seconds,
+            // and then an entertainment area chosen — neither of which belongs in a
+            // first-run flow the user may be running on the bus. Saying what is still
+            // missing, rather than "pairing happens later", is what stops this reading
+            // as finished when it is not: nothing lights up until both are done.
+            Text(
+                "Two things still to do: press the button on the bridge to pair, then pick an " +
+                    "entertainment area. Both are in Settings → Light Sync → Direct, and the " +
+                    "lights stay off until they're done.",
+                color = TextMuted, fontSize = 12.sp, textAlign = TextAlign.Center,
+                modifier = Modifier.widthIn(max = 300.dp),
+            )
         }
 
         Spacer(Modifier.height(24.dp))
@@ -467,7 +514,132 @@ private fun LightSyncStep(
                 } else if (setupHa) {
                     settings.setLightSyncMode("ha")
                 }
-                onNext(setupHa || setupDirect)
+                onNext()
+            }
+        }
+    }
+}
+
+/**
+ * The two platform permissions the app cannot work around, asked with a reason.
+ *
+ * Neither was ever requested in context. `POST_NOTIFICATIONS` was fired cold in
+ * `MainActivity.onCreate` — before the wizard had even drawn — with a callback that
+ * ignored the answer, so a denial was never noticed, never explained and never asked
+ * again, while all three foreground services needed it. Battery optimisation was never
+ * mentioned at all, which is why `SendspinConnectionService` exists (to survive Doze)
+ * and yet gets killed on Xiaomi, Samsung and Oppo with nothing telling the user why.
+ *
+ * Both are optional and skippable. The battery one deliberately opens the *list* screen
+ * rather than the direct per-app request dialog: the direct intent needs a permission
+ * whose use is restricted on Play, and this needs no declaration at all.
+ */
+@Composable
+private fun PermissionsStep(
+    accent: Color,
+    onDone: () -> Unit,
+    onBack: () -> Unit,
+) {
+    val context = LocalContext.current
+    val needsNotifications = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+
+    var notificationsGranted by remember {
+        mutableStateOf(
+            !needsNotifications || ContextCompat.checkSelfPermission(
+                context, Manifest.permission.POST_NOTIFICATIONS,
+            ) == PackageManager.PERMISSION_GRANTED,
+        )
+    }
+    var batteryVisited by remember { mutableStateOf(false) }
+
+    val notifLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted -> notificationsGranted = granted }
+
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text("Two permissions", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Both are optional, and both are the difference between playback that keeps going " +
+                "and playback that stops when you put the phone down.",
+            color = TextMuted, fontSize = 13.sp, textAlign = TextAlign.Center,
+            modifier = Modifier.widthIn(max = 320.dp),
+        )
+        Spacer(Modifier.height(22.dp))
+
+        PermissionRow(
+            icon = Icons.Default.Notifications,
+            title = "Notifications",
+            body = "The playback controls on your lock screen are a notification. Without this " +
+                "there is nowhere to show them, and Android may stop playback in the background.",
+            done = notificationsGranted,
+            accent = accent,
+            actionLabel = "Allow",
+            enabled = needsNotifications && !notificationsGranted,
+        ) { notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) }
+
+        Spacer(Modifier.height(14.dp))
+
+        PermissionRow(
+            icon = Icons.Default.BatteryAlert,
+            title = "Unrestricted battery",
+            body = "Android's battery saver closes the connection to Music Assistant while the " +
+                "screen is off — on some phones within minutes. Find CAMusic in the list and " +
+                "set it to Unrestricted.",
+            done = batteryVisited,
+            accent = accent,
+            actionLabel = "Open settings",
+            enabled = true,
+        ) {
+            batteryVisited = true
+            runCatching {
+                context.startActivity(
+                    Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            }
+        }
+
+        Spacer(Modifier.height(24.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            OledButton("Back", accent = accent, outline = true, modifier = Modifier.weight(1f)) { onBack() }
+            OledButton("Finish", accent = accent, modifier = Modifier.weight(1f)) { onDone() }
+        }
+    }
+}
+
+@Composable
+private fun PermissionRow(
+    icon: ImageVector,
+    title: String,
+    body: String,
+    done: Boolean,
+    accent: Color,
+    actionLabel: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(Glass)
+            .border(1.dp, Hairline, RoundedCornerShape(14.dp))
+            .padding(14.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Icon(
+            if (done) Icons.Default.CheckCircle else icon,
+            contentDescription = null,
+            tint = if (done) accent else TextMuted,
+            modifier = Modifier.size(20.dp),
+        )
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+            Text(title, color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            Text(body, color = TextMuted, fontSize = 12.sp)
+            if (enabled) {
+                Spacer(Modifier.height(6.dp))
+                OledButton(actionLabel, accent = accent, outline = true, onClick = onClick)
             }
         }
     }
@@ -477,7 +649,7 @@ private fun LightSyncStep(
 private fun SpeakersStep(
     playerVm: PlayerViewModel,
     accent: Color,
-    onNext: (Boolean) -> Unit,
+    onNext: () -> Unit,
     onBack: () -> Unit,
 ) {
     val discovered by playerVm.discoveredServers.collectAsStateWithLifecycle()
@@ -524,7 +696,7 @@ private fun SpeakersStep(
 
         Spacer(Modifier.height(20.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            OledButton("Skip", accent = accent, outline = true, modifier = Modifier.weight(1f)) { onNext(false) }
+            OledButton("Skip", accent = accent, outline = true, modifier = Modifier.weight(1f)) { onNext() }
             OledButton(
                 "Register",
                 accent = accent,
@@ -533,7 +705,7 @@ private fun SpeakersStep(
             ) {
                 val url = if (manual.isNotBlank()) manual else discovered.firstOrNull()?.webSocketUrl ?: ""
                 playerVm.connectToServer(url, user, pass, name)
-                onNext(true)
+                onNext()
             }
         }
     }

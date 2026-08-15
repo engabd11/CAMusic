@@ -49,6 +49,16 @@ class MaRepository(
         private const val LIBRARY_TIMEOUT_MS = 60_000L
 
         /**
+         * Player-config keys that mean "shift this speaker's audio in time", best
+         * first.
+         *
+         * `sendspin_sync_delay` is exact and Sendspin-only. `sync_adjust` is Music
+         * Assistant's own generic equivalent and is what a Sonos or Chromecast member
+         * carries. Matched by *suffix*, because a provider may namespace the key.
+         */
+        private val SYNC_KEYS = listOf("sendspin_sync_delay", "sync_adjust")
+
+        /**
          * The same list with repeats of one media item removed, first copy kept.
          *
          * Identity is provider + media type + id, all three. A library item's own
@@ -72,6 +82,25 @@ class MaRepository(
 
     suspend fun playlists(offset: Int = 0, limit: Int = PAGE_SIZE) =
         libraryPage("music/playlists/library_items", offset, limit)
+
+    /**
+     * Internet radio stations in the library.
+     *
+     * Radio was already *playable* — `MaItem.PLAYABLE` has carried it from the start,
+     * and a station reached through search or a recommendation shelf plays fine — but
+     * there was no way to browse the stations Music Assistant has, because nothing
+     * ever sent this command.
+     */
+    suspend fun radios(offset: Int = 0, limit: Int = PAGE_SIZE) =
+        libraryPage("music/radios/library_items", offset, limit)
+
+    /** Podcasts in the library. Each one opens into its episodes. */
+    suspend fun podcasts(offset: Int = 0, limit: Int = PAGE_SIZE) =
+        libraryPage("music/podcasts/library_items", offset, limit)
+
+    /** Audiobooks in the library. Each one opens into its chapters. */
+    suspend fun audiobooks(offset: Int = 0, limit: Int = PAGE_SIZE) =
+        libraryPage("music/audiobooks/library_items", offset, limit)
 
     private suspend fun libraryPage(command: String, offset: Int, limit: Int) =
         MaParse.items(
@@ -192,6 +221,28 @@ class MaRepository(
     suspend fun playlistTracks(item: MaItem) =
         MaParse.items(api.sendCommand("music/playlists/playlist_tracks", itemRef(item)), serverUrl)
 
+    /**
+     * The episodes of a podcast, in the order Music Assistant returns them.
+     *
+     * Server-side this is an `AsyncGenerator[PodcastEpisode]`, which arrives over the
+     * WebSocket in chunks — [MaApiClient] already accumulates those, so it reads here
+     * like any other list command. Arguments are `item_id` +
+     * `provider_instance_id_or_domain`, which is exactly what [itemRef] builds.
+     */
+    suspend fun podcastEpisodes(item: MaItem) =
+        MaParse.items(api.sendCommand("music/podcasts/podcast_episodes", itemRef(item)), serverUrl)
+
+    /**
+     * The chapters of an audiobook.
+     *
+     * The command name follows the pattern the podcast and album equivalents use, but
+     * unlike those it has not been checked against a live server. An unknown command
+     * comes back null, which parses to an empty list — so the worst case is an audiobook
+     * that opens empty, not a crash.
+     */
+    suspend fun audiobookChapters(item: MaItem) =
+        MaParse.items(api.sendCommand("music/audiobooks/audiobook_chapters", itemRef(item)), serverUrl)
+
     // --- versions ----------------------------------------------------------
 
     /**
@@ -292,6 +343,8 @@ class MaRepository(
         "artist" -> artistAlbums(item)
         "album" -> albumTracks(item)
         "playlist" -> playlistTracks(item)
+        "podcast" -> podcastEpisodes(item)
+        "audiobook" -> audiobookChapters(item)
         else -> emptyList()
     }
 
@@ -641,16 +694,26 @@ class MaRepository(
     // --- per-player Sendspin sync-delay (player config) -------------------
 
     /**
-     * The per-player Sendspin sync-delay lives in the player config. The key
-     * varies (plain `sendspin_sync_delay` or a protocol-wrapped
-     * `<sub>||protocol||sendspin_sync_delay`), so match by suffix and carry the
-     * exact key back for the save.
+     * The per-player sync delay, from the player config.
+     *
+     * The key varies (plain `sendspin_sync_delay` or a protocol-wrapped
+     * `<sub>||protocol||sendspin_sync_delay`), so match by suffix and carry the exact
+     * key back for the save.
+     *
+     * `sendspin_sync_delay` only exists on Sendspin-protocol players. A Sonos,
+     * Chromecast, AirPlay, Snapcast or Squeezelite member has no such entry, and this
+     * used to return null for all of them — which the speakers screen rendered as a
+     * dash between two buttons that then did nothing. Music Assistant exposes a
+     * generic [SYNC_KEYS] equivalent on most of those, so they are tried in turn
+     * before giving up.
      */
     suspend fun getSyncDelay(playerId: String): SyncDelay? {
         val res = api.sendCommand("config/players/get", buildJsonObject { put("player_id", playerId) })
             ?.jsonObject ?: return null
         val values = res["values"]?.jsonObject ?: return null
-        val key = values.keys.firstOrNull { it.endsWith("sendspin_sync_delay") } ?: return null
+        val key = SYNC_KEYS.firstNotNullOfOrNull { suffix ->
+            values.keys.firstOrNull { it.endsWith(suffix) }
+        } ?: return null
         val ms = values[key].configInt() ?: 0
         return SyncDelay(key, ms)
     }

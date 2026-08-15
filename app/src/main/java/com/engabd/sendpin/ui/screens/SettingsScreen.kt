@@ -70,7 +70,7 @@ enum class SettingsSection(
     ),
     PLAYER(
         "CAMusic player",
-        "The name this phone shows in Music Assistant, and how it takes the stream",
+        "Moved — now set up with the Music Assistant server itself",
         Icons.Default.Smartphone,
     ),
     AUDIO(
@@ -197,12 +197,14 @@ fun SettingsScreen(
                                 onDetail = onDetail,
                             )
 
-                            SettingsSection.PLAYER -> PlayerSection(
-                                viewModel = viewModel,
-                                settings = settings,
+                            // A signpost, not a page. These settings describe this phone
+                            // as a player on one Music Assistant server, so they live
+                            // with that server — but anyone who knew where they used to
+                            // be would otherwise find the entry simply gone.
+                            SettingsSection.PLAYER -> PlayerSectionMoved(
                                 accent = accent,
-                                scope = scope,
                                 hasMaServer = hasMaServer,
+                                onGoToLibraries = { onSection(SettingsSection.LIBRARIES); onDetail(null) },
                             )
 
                             SettingsSection.AUDIO -> AudioSection(viewModel, settings, accent, scope)

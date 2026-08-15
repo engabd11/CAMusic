@@ -11,10 +11,14 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.SeekParameters
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import com.engabd.sendpin.BuildConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -319,8 +323,25 @@ class LocalPlayer(private val context: Context) {
             )
             .build()
 
+        // The media path had no DataSource.Factory at all, so it ran on
+        // DefaultHttpDataSource's defaults: no User-Agent worth logging, and — the one
+        // that breaks playback — cross-protocol redirects refused. Jellyfin's
+        // `/Audio/{id}/universal` answers a direct-playable item with a 302 to the
+        // static file, and a reverse-proxied server routinely redirects http↔https on
+        // the way. Refusing that is an immediate load error, which the error handler
+        // turns into a skip, which becomes a whole album flicking past.
+        val httpFactory = DefaultHttpDataSource.Factory()
+            .setUserAgent(USER_AGENT)
+            .setAllowCrossProtocolRedirects(true)
+            .setConnectTimeoutMs(15_000)
+            .setReadTimeoutMs(30_000)
+        val mediaSourceFactory = DefaultMediaSourceFactory(
+            DefaultDataSource.Factory(context, httpFactory),
+        )
+
         return ExoPlayer.Builder(context, renderers)
             .setLoadControl(loadControl)
+            .setMediaSourceFactory(mediaSourceFactory)
             // handleAudioFocus = true replaces the entire hand-rolled focus listener:
             // ducking, transient loss, and resume-on-regain are all ExoPlayer's.
             .setAudioAttributes(attrs, /* handleAudioFocus = */ true)
@@ -330,6 +351,12 @@ class LocalPlayer(private val context: Context) {
             // Past this into a track, Previous restarts it instead of going back one
             // — the convention every player follows.
             .setMaxSeekToPreviousPositionMs(RESTART_THRESHOLD_MS)
+            // Off by default since media3 1.1, which left the session publishing no
+            // device volume at all. The local player decodes straight to this phone's
+            // output, so its volume genuinely *is* STREAM_MUSIC — and the Now Playing
+            // slider already drives that through DeviceVolume. Enabling it is what
+            // makes the session agree with the slider instead of ignoring the subject.
+            .setDeviceVolumeControlEnabled(true)
             .build()
             .also { p ->
                 // A scrub lands where the finger asked, not at the nearest sync
@@ -645,6 +672,14 @@ class LocalPlayer(private val context: Context) {
     private companion object {
         /** Past this into a track, Previous restarts it instead of going back one. */
         const val RESTART_THRESHOLD_MS = 4_000L
+
+        /**
+         * What the media path calls itself to a server.
+         *
+         * ExoPlayer opens stream URLs without the app's OkHttp interceptors, so this
+         * is the only place a Navidrome or Jellyfin log gets to see who was asking.
+         */
+        val USER_AGENT: String = "CAMusic/${BuildConfig.VERSION_NAME} (Android)"
 
         /**
          * How often the published playhead is refreshed.

@@ -131,6 +131,14 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     private val settings = AppSettings(app)
     private val myPlayerId = PlayerIdentity.getPlayerId(app)
     private val api = (app as SendpinApp).maApi
+
+    /**
+     * The process-scoped poller that owns `players/all` and `player_queues/all`.
+     *
+     * Read from rather than duplicated: it already polls on a 5 s floor and refreshes
+     * on sampled player/queue events, and it outlives this screen.
+     */
+    private val maNowPlaying = (app as SendpinApp).maNowPlaying
     private val repo = MaRepository(api)
     /**
      * The standalone queue player (Navidrome-direct / offline). While it has a
@@ -729,41 +737,25 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         .shareIn(viewModelScope, SharingStarted.Eagerly)
 
 
-    /** Only one refresh in flight; requests arriving during one collapse into a re-run. */
-    private val refreshing = java.util.concurrent.atomic.AtomicBoolean(false)
-    private val refreshQueued = java.util.concurrent.atomic.AtomicBoolean(false)
-
     /**
-     * Re-read players and queues.
+     * Ask for a fresh read of players and queues.
      *
-     * Serialised on purpose. Four call sites drive this (connect, the 5s poll, the
-     * event stream, and every transport command), and overlapping responses used to
-     * land out of order — a slow earlier read overwriting a newer one pinned the UI
-     * to the previous track until something forced another poll.
+     * Delegates rather than fetching: [maNowPlaying] owns the only copy of these two
+     * commands in the process, and the results arrive back through the collectors in
+     * the init block below. This used to issue its own `players/all` +
+     * `player_queues/all` pair, which — with the Speakers screen doing the same — meant
+     * three identical requests every five seconds against one server, none of them
+     * sharing a cache.
      *
-     * An empty result is also not accepted while the socket is down: [MaApiClient]
-     * completes pending requests with `null` on a drop, which parses to an empty
-     * list, and adopting that blanks the screen mid-track.
+     * The serialisation this function used to do itself moved with the fetch:
+     * `MaNowPlaying.refresh` coalesces overlapping requests into one round trip plus a
+     * repeat pass, so a slow earlier read can still not overwrite a newer one, and an
+     * empty result is still refused while the socket is down (a dropped request
+     * completes as `null`, which parses to an empty list, and adopting that would blank
+     * the screen mid-track).
      */
     private fun refresh() {
-        // Requests that arrive mid-flight are not dropped — they set a flag and the
-        // running pass loops once more, so a poll landing during a transport command's
-        // refresh can't leave the UI a round behind.
-        if (!refreshing.compareAndSet(false, true)) { refreshQueued.set(true); return }
-        viewModelScope.launch {
-            try {
-                do {
-                    refreshQueued.set(false)
-                    val players = runCatching { repo.players() }.getOrNull()
-                    val queues = runCatching { repo.queues() }.getOrNull()
-                    val connected = api.state.value == MaApiClient.State.CONNECTED
-                    if (players != null && (players.isNotEmpty() || connected)) _players.value = players
-                    if (queues != null && (queues.isNotEmpty() || connected)) _queues.value = queues
-                } while (refreshQueued.get())
-            } finally {
-                refreshing.set(false)
-            }
-        }
+        maNowPlaying.refreshNow()
     }
 
     // --- transport (act on the selected player) ---------------------------
@@ -900,6 +892,12 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         // turned-down phone.
         if (isLocal) { deviceVolume.set(level01.coerceIn(0f, 1f)); return }
         val lvl = (level01 * 100).toInt().coerceIn(0, 100)
+        // When *this phone* is the Music Assistant player, its player volume is the
+        // phone's media volume — see `Playback.applyUserVolume`. Setting it here as
+        // well as sending the RPC means the rocker's level and the slider agree the
+        // instant the finger lifts, rather than after the server echoes the change
+        // back down the socket.
+        if (targetId() == myPlayerId) deviceVolume.set(level01.coerceIn(0f, 1f))
         _players.update { list -> list.map { if (it.playerId == targetId()) it.copy(volumeLevel = lvl) else it } }
         volJob?.cancel()
         volJob = viewModelScope.launch { delay(180); try { repo.setVolume(targetId(), lvl) } catch (_: Exception) {} }
@@ -1516,25 +1514,30 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                 _similar.value = Load.Idle
             }
         }
-        viewModelScope.launch { api.state.collect { if (it == MaApiClient.State.CONNECTED) refresh() } }
-        // Poll for metadata (track info, volume, queue state). Position is driven
-        // by the server-anchored ticker, so this can be relaxed — 5s is enough for
-        // metadata + as a fallback anchor for the position engine.
+        // Player and queue state come from the process-scoped MaNowPlaying, which
+        // already polls both every 5 s *and* refreshes on sampled player/queue events.
+        // This screen used to run its own 5-second loop and its own `sample(300)`
+        // collector, and the Speakers screen a third pair — so a single MA server was
+        // answering three copies of `players/all` and `player_queues/all` on the same
+        // schedule, with no shared cache between them.
+        //
+        // No slower than the poll it replaces: MaNowPlaying samples player/queue events
+        // at 300 ms, the same cadence this screen's own collector used.
         viewModelScope.launch {
-            while (true) {
-                delay(5_000)
-                if (api.state.value == MaApiClient.State.CONNECTED) refresh()
+            maNowPlaying.players.collect { players ->
+                val connected = api.state.value == MaApiClient.State.CONNECTED
+                if (players.isNotEmpty() || connected) _players.value = players
             }
         }
-        // Refresh promptly on MA player/queue events, at a bounded rate.
-        //
-        // Deliberately `sample`, not `debounce`: MA emits `queue_time_updated` about
-        // once a second per active queue and bursts during skips, and debounce only
-        // emits after a gap of silence — a busy server starved it completely, leaving
-        // the 5s poll as the only refresh. Sample fires on a cadence regardless.
         viewModelScope.launch {
-            maEvents.filter { it.isPlayerOrQueue }.sample(300).collect { refresh() }
+            maNowPlaying.queues.collect { queues ->
+                val connected = api.state.value == MaApiClient.State.CONNECTED
+                if (queues.isNotEmpty() || connected) _queues.value = queues
+            }
         }
+        // Opening the screen is the moment the state has to be right, rather than up
+        // to five seconds later.
+        maNowPlaying.refreshNow()
         // The queue's *contents* changed.
         //
         // A separate collector on purpose: `sample` drops events, and a

@@ -161,8 +161,20 @@ data class MaItem(
     val playable get() = uri != null && mediaType in PLAYABLE
 
     companion object {
-        private val BROWSABLE = setOf("artist", "album", "playlist", "genre")
-        private val PLAYABLE = setOf("track", "album", "playlist", "radio")
+        /**
+         * Types that open into a list of children.
+         *
+         * A podcast is a container of episodes and an audiobook a container of
+         * chapters, so both belong here for the same reason an album does. Leaving
+         * them out is what made the "Continue listening" shelf — which Music
+         * Assistant fills from `music/in_progress_items`, i.e. *entirely* with
+         * podcasts and audiobooks — a shelf where every tap did nothing at all.
+         */
+        private val BROWSABLE = setOf("artist", "album", "playlist", "genre", "podcast", "audiobook")
+
+        /** Types that can be handed to a player directly. */
+        private val PLAYABLE =
+            setOf("track", "album", "playlist", "radio", "podcast_episode", "chapter")
     }
 }
 

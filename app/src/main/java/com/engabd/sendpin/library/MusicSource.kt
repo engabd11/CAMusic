@@ -157,6 +157,18 @@ interface MusicSource {
      */
     suspend fun scrobble(id: String, completed: Boolean, startedAtMs: Long? = null) = Unit
 
+    /**
+     * Periodic "still playing, and here is where" — [positionMs] *is* a position
+     * within the track, unlike [scrobble]'s `startedAtMs`.
+     *
+     * Only servers that keep a live session need this. Jellyfin does: its dashboard
+     * session and its resume positions both go stale within about a minute without it,
+     * so a report every few seconds is the difference between "Now Playing" working
+     * and not. Subsonic has no equivalent — its `scrobble` is the whole protocol — so
+     * the default is a no-op and costs those providers nothing.
+     */
+    suspend fun reportProgress(id: String, positionMs: Long, paused: Boolean) = Unit
+
     suspend fun createPlaylist(name: String, songIds: List<String> = emptyList()): String? = null
     suspend fun addToPlaylist(playlistId: String, songIds: List<String>) = Unit
     suspend fun deletePlaylist(id: String) = Unit

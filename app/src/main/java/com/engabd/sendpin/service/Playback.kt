@@ -45,6 +45,13 @@ class Playback(private val app: Context) {
     private val discovery = MaDiscovery(app)
 
     /**
+     * The phone's own media volume — what "player volume" means while this phone *is*
+     * the Music Assistant player. Built here rather than taken from `SendpinApp` so
+     * `Playback` keeps working in isolation; both point at the same `STREAM_MUSIC`.
+     */
+    private val deviceVolume = com.engabd.sendpin.audio.DeviceVolume(app)
+
+    /**
      * This player's Sendspin `client_id`. Not a `val`: [reregister] mints a new one,
      * which is the only way to shake off a name Music Assistant has already committed
      * to for an existing player.
@@ -102,7 +109,6 @@ class Playback(private val app: Context) {
     private var client: SendspinClient? = null
     private var engine: SendspinPlaybackEngine? = null
     private var discoveryStop: Job? = null
-    private var volumeJob: Job? = null
 
     /**
      * The tap/lead pair actually installed in the current MA engine's render
@@ -141,9 +147,12 @@ class Playback(private val app: Context) {
      */
     private val focusListener = AudioManager.OnAudioFocusChangeListener { change ->
         when (change) {
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> engine?.setVolume(volume.value * 0.3f)
+            // Absolute, not scaled by [volume]: the user's level now lives in the
+            // phone's own media volume, and the engine scalar is the focus duck alone.
+            // Multiplying the two here would duck to 30% of 30% on a second interruption.
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> engine?.setVolume(0.3f)
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> engine?.setVolume(0f)
-            AudioManager.AUDIOFOCUS_GAIN -> engine?.setVolume(volume.value)
+            AudioManager.AUDIOFOCUS_GAIN -> engine?.setVolume(1f)
             AudioManager.AUDIOFOCUS_LOSS -> {
                 // Another app took over media for good — stop and release.
                 engine?.release()
@@ -235,6 +244,24 @@ class Playback(private val app: Context) {
             val user = settings.maUsername.first()
             if (base.isNotBlank() && user.isNotBlank()) connectToServer(sendspinUrlFrom(base))
             _bootChecked.value = true
+        }
+        // Tell Music Assistant what this phone's volume actually is, and keep telling it.
+        //
+        // Load-bearing now that the player volume *is* the phone's media volume. Without
+        // it, `client/state` reported a hard-coded 100 on connect, MA believed it, and
+        // the first `volume` command it sent would have driven the phone's own volume to
+        // MA's stored figure — turning the phone up to full on connect. Reporting the
+        // real level first means MA adopts the phone's, not the other way round.
+        //
+        // It also makes the hardware rocker reach MA, so the Speakers screen and any
+        // other controller show the level the listener just set. No feedback loop: an
+        // echoed `volume` command sets the same value, and a StateFlow does not re-emit
+        // for an equal one.
+        scope.launch {
+            deviceVolume.level.collect { level ->
+                _volume.value = level
+                client?.sendClientState(volume = (level * 100).toInt().coerceIn(0, 100))
+            }
         }
         // Wire the app lifecycle observer for warm reconnect and toggleable
         // background connection. The observer is registered on SendpinApp; here
@@ -387,8 +414,20 @@ class Playback(private val app: Context) {
         scope.launch {
             c.serverCommands.collect { cmd ->
                 when (cmd.command) {
-                    "volume" -> cmd.volume?.let { v -> _volume.value = v / 100f; eng.setVolume(v / 100f) }
-                    "mute" -> cmd.mute?.let { m -> eng.setVolume(if (m) 0f else _volume.value) }
+                    // The player volume *is* this phone's media volume. Music Assistant
+                    // keeps a level for every player it knows, and for a speaker in
+                    // another room that level is the only volume there is — but when
+                    // the player is this phone, the thing the listener wants moved is
+                    // the phone. Applying it as an engine gain instead left the rocker
+                    // and MA's slider as two independent attenuators in series.
+                    //
+                    // The engine's own scalar stays reserved for audio focus (see
+                    // [focusListener]): ducking must not move the user's system volume,
+                    // or every notification would permanently turn the phone down.
+                    "volume" -> cmd.volume?.let { v -> applyUserVolume(v / 100f) }
+                    "mute" -> cmd.mute?.let { m ->
+                        if (m) deviceVolume.set(0f) else deviceVolume.set(_volume.value)
+                    }
                     // Latched by the client, which owns the value; persisted here so
                     // it survives a reconnect.
                     "set_static_delay" -> cmd.staticDelayMs?.let { ms ->
@@ -663,11 +702,26 @@ class Playback(private val app: Context) {
     /** [positionSec] — seconds from the start of the current item, per `players/cmd/seek`. */
     fun onMediaSeek(positionSec: Int) = transport { it.seek(playerId, positionSec) }
 
-    fun onVolumeChange(vol: Float) {
-        _volume.value = vol
-        engine?.setVolume(vol)
-        volumeJob?.cancel()
-        volumeJob = scope.launch { delay(180); client?.sendClientState(volume = (vol * 100).toInt()) }
+    /**
+     * The user moved the volume.
+     *
+     * No explicit report to the server: [applyUserVolume] moves the phone's media
+     * volume, and the collector in `init` reports every change of that to Music
+     * Assistant. Sending here as well would be a second copy of the same number.
+     */
+    fun onVolumeChange(vol: Float) = applyUserVolume(vol)
+
+    /**
+     * Move the listener's volume: this phone's media volume, not the engine gain.
+     *
+     * Both directions land here — the server telling us a new player level, and the
+     * user moving the slider — so there is one definition of what "the volume" means
+     * while this phone is the Sendspin player.
+     */
+    private fun applyUserVolume(vol: Float) {
+        val v = vol.coerceIn(0f, 1f)
+        _volume.value = v
+        deviceVolume.set(v)
     }
 
     /**

@@ -3,7 +3,7 @@ package com.engabd.sendpin.ui.screens
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -109,14 +109,18 @@ fun NowPlayingOverlay(
     val collapseOffset = screenHeightPx * 0.82f   // how far down before it's "minimized"
     // How far up the cover has to travel before the queue is what you meant.
     val queueRevealPx = screenHeightPx * 0.06f
-    var dragPx by remember { mutableFloatStateOf(0f) }
+    // Starts where the mini bar is, not where the full player ends up. The expand used
+    // to be a bare `if (overlayExpanded)` in App.kt around a composable whose offset was
+    // already 0 — so the full player simply existed, fully placed, on its first frame.
+    // Collapse animated and expand did not, which is the asymmetry that read as a snap.
+    var dragPx by remember { mutableFloatStateOf(collapseOffset) }
     /**
      * How far this gesture has travelled upward. Tracked separately from [dragPx]
      * because an upward swipe must not move the cover at all — it only decides whether
      * the queue should come up on release.
      */
     var upTravel by remember { mutableFloatStateOf(0f) }
-    val settle = remember { Animatable(0f) }
+    val settle = remember { Animatable(collapseOffset) }
     var settling by remember { mutableStateOf(false) }
     val offsetPx = if (settling) settle.value else dragPx
 
@@ -124,16 +128,22 @@ fun NowPlayingOverlay(
     // when a sheet opens — tearing it down mid-gesture loses the release event.
     val gestureBlocked by rememberUpdatedState(!expanded || sheets.sheetOpen)
 
-    LaunchedEffect(expanded) {
-        if (expanded) { dragPx = 0f; settling = false }
-    }
-
-    suspend fun settleTo(target: Float, durationMs: Int) {
+    suspend fun settleTo(target: Float, spec: FiniteAnimationSpec<Float> = Motion.spatial()) {
         settle.snapTo(dragPx)
         settling = true
-        settle.animateTo(target, tween(durationMs))
+        settle.animateTo(target, spec)
         dragPx = target
         settling = false
+    }
+
+    // Rise into place, the mirror of the collapse settle below and on the same spring.
+    // `Motion.spatial()` rather than a tween because every other spatial move in the app
+    // is a spring; a 250 ms tween here felt mechanical against them.
+    LaunchedEffect(expanded) {
+        if (expanded) {
+            upTravel = 0f
+            settleTo(0f)
+        }
     }
 
     CompositionLocalProvider(LocalAccent provides accent, LocalPalette provides palette) {
@@ -157,7 +167,7 @@ fun NowPlayingOverlay(
                                     // with a jump. Lower threshold (0.25) makes it easier
                                     // to minimize.
                                     dragPx > collapseOffset * 0.25f -> {
-                                        settleTo(collapseOffset, 250)
+                                        settleTo(collapseOffset)
                                         onCollapse()
                                     }
                                     upTravel < -queueRevealPx -> {
@@ -171,11 +181,11 @@ fun NowPlayingOverlay(
                                         upTravel = 0f
                                         settling = false
                                     }
-                                    else -> settleTo(0f, 250)
+                                    else -> settleTo(0f)
                                 }
                             }
                         },
-                        onDragCancel = { dragScope.launch { settleTo(0f, 200) } },
+                        onDragCancel = { dragScope.launch { settleTo(0f) } },
                         onVerticalDrag = { change, dragAmount ->
                             if (gestureBlocked) return@detectVerticalDragGestures
                             change.consume()
@@ -346,8 +356,13 @@ fun MiniPlayerBar(
     val st by viewModel.state.collectAsStateWithLifecycle()
 
     val accent = LocalAccent.current
+    // Enough upward travel to mean it, in pixels. The full player can be dragged down
+    // to minimise, and the gesture had no inverse: the bar was tap-only, so the one
+    // interaction the user had just learned did not work in reverse.
+    val expandThresholdPx = with(LocalDensity.current) { 24.dp.toPx() }
 
     run {
+        var upTravel by remember { mutableFloatStateOf(0f) }
         Row(
             Modifier
                 .fillMaxWidth()
@@ -355,6 +370,16 @@ fun MiniPlayerBar(
                 .background(Ink2)
                 .border(1.dp, HairlineSoft, RoundedCornerShape(14.dp))
                 .clickable(onClick = onExpand)
+                .pointerInput(Unit) {
+                    detectVerticalDragGestures(
+                        onDragStart = { upTravel = 0f },
+                        onDragEnd = { if (upTravel < -expandThresholdPx) onExpand() },
+                        onDragCancel = { upTravel = 0f },
+                    ) { change, dragAmount ->
+                        change.consume()
+                        upTravel = (upTravel + dragAmount).coerceAtMost(0f)
+                    }
+                }
                 .fillMaxHeight()
                 .padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,

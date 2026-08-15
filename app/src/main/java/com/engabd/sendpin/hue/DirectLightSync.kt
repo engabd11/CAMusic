@@ -1239,6 +1239,27 @@ class DirectLightSync(
         }
     }
 
+    /**
+     * Push tunables straight at the running engine, without persisting them.
+     *
+     * For a slider that is still under the user's finger. Persisting on every pointer
+     * move meant a DataStore write, a JSON serialisation and a re-emission of
+     * `lightSyncTunables` per frame — which recomposed the whole screen *and* came
+     * back round through [observeSettings] to set the same values again. The lights
+     * still need to react live, so the live value goes here and only the released
+     * value goes to storage; [observeSettings] then re-applies an identical map,
+     * which is a no-op.
+     */
+    fun previewTunables(values: Map<String, Float>) {
+        activeTunables = values
+        engine?.setTunables(values)
+    }
+
+    /** As [previewTunables], for the brightness ceiling. [pct] is 0..100. */
+    fun previewBrightness(pct: Int) {
+        engine?.brightness = pct.coerceIn(0, 100) / 100f
+    }
+
     /** Album-art colours, pushed by the player when the track changes. */
     fun setAlbumColors(colors: List<Rgb>) {
         engine?.setAlbumColors(colors)

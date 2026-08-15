@@ -60,9 +60,22 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
     private val api = (app as SendpinApp).maApi
     private val repo = MaRepository(api)
 
+    /** The process-scoped poller this screen reads its player list from. */
+    private val maNowPlaying = (app as SendpinApp).maNowPlaying
+
     /** What MA last told us. Never written to optimistically — see [Intent]. */
     private val _players = MutableStateFlow<List<MaPlayer>>(emptyList())
     private val _syncDelays = MutableStateFlow<Map<String, SyncDelay>>(emptyMap())
+
+    /**
+     * Players already asked for a sync delay this membership, answer or not.
+     *
+     * Separate from [_syncDelays] because "asked and got nothing" and "never asked"
+     * need to be told apart — keying the skip on the answer meant a player with no
+     * sync-delay key was re-queried on every poll for the life of the session.
+     * Pruned when a player leaves the group, so a rejoin asks again.
+     */
+    private val askedSyncDelay = mutableSetOf<String>()
     private val _target = MutableStateFlow("")       // selected play-to player ("" = this phone)
     private val _error = MutableStateFlow<String?>(null); val error: StateFlow<String?> = _error
     private val _refreshing = MutableStateFlow(false); val refreshing: StateFlow<Boolean> = _refreshing
@@ -138,27 +151,26 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         viewModelScope.launch { settings.targetPlayer.collect { _target.value = it } }
-        // Refresh on connect, then poll while the screen is alive.
+        // The player list comes from the process-scoped MaNowPlaying, which already
+        // polls `players/all` every 5 s and refreshes on sampled player/queue events.
+        // This screen used to run its own identical loop — and so did Now Playing — so
+        // one server answered three copies of the same command on the same schedule.
+        // Collecting its result costs nothing and is never staler than the shared poll.
         viewModelScope.launch {
-            api.state.collect { if (it == MaApiClient.State.CONNECTED) refresh() }
-        }
-        viewModelScope.launch {
-            while (true) {
-                delay(5_000)
-                if (api.state.value == MaApiClient.State.CONNECTED) refresh()
+            maNowPlaying.players.collect { players ->
+                _players.value = players
+                retireSettledIntents(players)
+                fetchMissingSyncDelays(players)
+                _error.value = null
             }
         }
-        // MA pushes player events the moment grouping or volume actually changes —
-        // far sooner than the poll, so a confirmed tap settles in ~100ms.
+        // Ask for a read now rather than waiting up to 5 s for the shared poll: opening
+        // this screen is exactly the moment the list needs to be right.
+        maNowPlaying.refreshNow()
+        // The Sendspin player socket pushes `group/update` on a *different* connection
+        // to MA's API, so it can beat the shared refresh. Still worth listening for.
         viewModelScope.launch {
-            api.events.collect {
-                if ("player" in it["event"]?.toString().orEmpty()) refresh()
-            }
-        }
-        // The Sendspin player socket pushes `group/update` on the same events, and
-        // is a different connection to MA's API — whichever arrives first wins.
-        viewModelScope.launch {
-            (app as SendpinApp).playback.groupUpdates.collect { refresh() }
+            (app as SendpinApp).playback.groupUpdates.collect { maNowPlaying.refreshNow() }
         }
     }
 
@@ -190,21 +202,35 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
             val players = repo.players()
             _players.value = players
             retireSettledIntents(players)
-            // Fetch sync-delays for currently-joined non-self players (best effort).
-            val leader = leaderIdOf(players, _target.value)
-            val members = joinedIds(players, emptyMap(), leader)
-            val delays = _syncDelays.value.toMutableMap()
-            for (p in players) {
-                if (p.playerId == myPlayerId || p.playerId !in members) continue
-                if (!delays.containsKey(p.playerId)) {
-                    repo.getSyncDelay(p.playerId)?.let { delays[p.playerId] = it }
-                }
-            }
-            _syncDelays.value = delays
+            fetchMissingSyncDelays(players)
             _error.value = null
         } catch (e: Exception) {
             _error.value = e.message
         }
+    }
+
+    /** Sync delays for currently-joined players, best effort, asked once each. */
+    private suspend fun fetchMissingSyncDelays(players: List<MaPlayer>) {
+        val leader = leaderIdOf(players, _target.value)
+        val members = joinedIds(players, emptyMap(), leader)
+        val delays = _syncDelays.value.toMutableMap()
+        for (p in players) {
+            // This phone is included: it is a Sendspin player, so Music Assistant holds
+            // a sync delay for it like any other member, and skipping it was why its own
+            // row reported a hard-coded zero.
+            if (p.playerId !in members) continue
+            // [askedSyncDelay] is checked, not `delays` — see its docs. Keying the skip
+            // on the *result* meant a player with no sync-delay key was re-queried on
+            // every 5-second poll for ever.
+            if (p.playerId in askedSyncDelay) continue
+            askedSyncDelay += p.playerId
+            runCatching { repo.getSyncDelay(p.playerId) }.getOrNull()?.let { delays[p.playerId] = it }
+        }
+        // A player that has left the group gets a clean slate, so rejoining asks the
+        // server again rather than trusting a cached "no".
+        askedSyncDelay.retainAll(members)
+        delays.keys.retainAll(members)
+        _syncDelays.value = delays
     }
 
     fun join(playerId: String) {
@@ -307,10 +333,26 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
     fun changeOffset(playerId: String, deltaMs: Int) {
         val cur = _syncDelays.value[playerId]
         act {
-            val sd = cur ?: repo.getSyncDelay(playerId) ?: return@act
+            // Bailing silently here is what made the −/+ buttons look broken: a player
+            // Music Assistant exposes no sync-delay key for accepted the taps and did
+            // nothing, with no message. The screen now hides the row in that case, so
+            // this is the belt-and-braces path — but it says so rather than shrugging.
+            val sd = cur ?: repo.getSyncDelay(playerId)
+            if (sd == null) {
+                val name = _players.value.firstOrNull { it.playerId == playerId }?.name ?: "That speaker"
+                _error.value = "$name doesn't expose a sync offset through Music Assistant"
+                return@act
+            }
             val next = (sd.ms + deltaMs).coerceIn(-2000, 2000)
-            repo.setSyncDelay(playerId, sd.key, next)
+            // Optimistic, so the number moves under the finger rather than on the next
+            // poll — and rolled back if the save is refused.
             _syncDelays.update { it + (playerId to sd.copy(ms = next)) }
+            try {
+                repo.setSyncDelay(playerId, sd.key, next)
+            } catch (e: Exception) {
+                _syncDelays.update { it + (playerId to sd) }
+                _error.value = e.message ?: "Couldn't change the sync offset"
+            }
         }
     }
 
@@ -374,7 +416,11 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
             isTarget = playerId == leader,
             volume = (volumeLevel / 100f).coerceIn(0f, 1f),
             offsetMs = delay?.ms ?: 0,
-            offsetKnown = self || delay != null,
+            // Purely "did the server give us one". This used to be `self || …`, which
+            // forced the phone's own row to claim a known offset of 0 while never
+            // fetching one — so the one speaker whose delay is definitely adjustable
+            // showed a value that was not its own.
+            offsetKnown = delay != null,
             canLead = canSetMembers,
         )
     }

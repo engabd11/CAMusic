@@ -5,7 +5,7 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.util.Log
 import com.engabd.sendpin.data.AppSettings
-import com.engabd.sendpin.data.LanOnlyCleartext
+import com.engabd.sendpin.data.Http
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -25,7 +25,6 @@ import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
-import java.util.concurrent.TimeUnit
 
 /**
  * Decides what gets scanned, when, and what happens to the results.
@@ -97,13 +96,7 @@ class TrackScanRepository(
     private fun givenUpOn(key: String): Boolean =
         synchronized(failures) { (failures[key] ?: 0) >= MAX_ATTEMPTS }
 
-    private val http: OkHttpClient by lazy {
-        OkHttpClient.Builder()
-            .addInterceptor(LanOnlyCleartext)
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(60, TimeUnit.SECONDS)
-            .build()
-    }
+    private val http: OkHttpClient by lazy { Http.transfer() }
 
     init {
         scope.launch { worker() }

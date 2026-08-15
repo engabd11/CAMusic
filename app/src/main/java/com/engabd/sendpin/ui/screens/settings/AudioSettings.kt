@@ -42,7 +42,10 @@ internal fun AudioSection(
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         OutputCard(settings, accent, scope)
-        StreamingCard(settings, accent, scope)
+        // "What to ask Music Assistant for" has moved to the Music Assistant server's
+        // own page, with the rest of that server's player settings — it is a per-server
+        // preference, not a device one, and it sat here only because the storage key
+        // used to be app-global.
         LoudnessCard(settings, accent, scope)
         ContinuousPlayCard(settings, scope)
         DiagnosticsCard(viewModel, settings)
@@ -126,8 +129,15 @@ private fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSco
 
 // ── Streaming quality ─────────────────────────────────────────────────────
 
+/**
+ * What this phone advertises to Music Assistant.
+ *
+ * `internal` because the Music Assistant server's own page renders it too — these are
+ * per-server preferences (`ServerConfig.OPT_PREFER_*`), so they belong with that
+ * server, and the card's own title has always said so.
+ */
 @Composable
-private fun StreamingCard(settings: AppSettings, accent: Color, scope: CoroutineScope) {
+internal fun StreamingCard(settings: AppSettings, accent: Color, scope: CoroutineScope) {
     var preferHiRes by remember { mutableStateOf(true) }
     var preferFlac by remember { mutableStateOf(true) }
     var preferOriginal by remember { mutableStateOf(false) }

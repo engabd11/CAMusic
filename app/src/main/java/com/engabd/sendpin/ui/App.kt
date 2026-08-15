@@ -200,6 +200,16 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
         val onboardingCompleted by themeSettings.onboardingCompleted.collectAsState(initial = false)
         var skipped by rememberSaveable { mutableStateOf(false) }
 
+        // Keep the synchronous mirror in step. `MainActivity` reads it before the first
+        // frame to decide whether asking for notification permission would land in front
+        // of someone who has not seen the app yet, and an install that finished
+        // onboarding before the mirror existed has the DataStore flag and not the mirror.
+        LaunchedEffect(onboardingCompleted) {
+            if (onboardingCompleted && !themeSettings.hasCompletedOnboarding) {
+                themeSettings.setOnboardingCompleted(true)
+            }
+        }
+
         if (!bootChecked) {
             Box(Modifier.fillMaxSize().background(Ink), contentAlignment = Alignment.Center) {
                 Box(

@@ -64,7 +64,13 @@ class DeviceVolume(context: Context) {
     /** Re-read now — for the moments a screen becomes visible again. */
     fun refresh() { _level.value = read() }
 
-    private fun read(): Float {
+    /** One step of the phone's own volume scale, as a fraction. */
+    fun stepFraction(): Float {
+        val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        return if (max <= 0) 0f else 1f / max
+    }
+
+    fun read(): Float {
         val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
         if (max <= 0) return 0f
         return audio.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / max

@@ -136,6 +136,7 @@ class AppSettings(private val context: Context) {
         // Whether the onboarding wizard has been completed or skipped. When false, the
         // app shows the wizard instead of the main UI on launch.
         private val ONBOARDING_COMPLETED = booleanPreferencesKey("onboarding_completed")
+        private val ONBOARDING_SKIPPED = booleanPreferencesKey("onboarding_skipped")
         // There is deliberately no light_sync_timing key. The Home Assistant path
         // exposes an offset because syncoV2 can only estimate where the speakers
         // are; the direct path measures the tap's lead over the AudioTrack exactly
@@ -253,6 +254,48 @@ class AppSettings(private val context: Context) {
     /** The active server itself, or null when nothing is set up. */
     val activeServer: Flow<ServerConfig?> =
         combine(servers, activeServerId) { list, id -> list.firstOrNull { it.id == id } }
+
+    // ── Music Assistant player settings, stored on the MA server ──────────
+    //
+    // Player name, codec, format preferences, keep-alive, target player and the static
+    // delay all describe *this phone as a player registered with one MA server*. They
+    // were app-global keys, which reads the same with one server and silently wrong
+    // with two. They now live in that server's `options`.
+    //
+    // Reads fall back to the old global key, and writes update both. That is the whole
+    // migration: an install that has never touched the setting keeps answering from the
+    // global key, and the first write moves it across. No one-shot upgrade pass, so
+    // there is no version to get wrong and nothing to re-run if it half-fails.
+
+    /** The configured Music Assistant server, or null when there isn't one. */
+    val maServer: Flow<ServerConfig?> =
+        servers.map { list -> list.firstOrNull { it.kind == ServerKind.MUSIC_ASSISTANT } }
+
+    private fun maOption(
+        prefs: androidx.datastore.preferences.core.Preferences,
+        key: String,
+    ): String? = storedServers(prefs)
+        .firstOrNull { it.kind == ServerKind.MUSIC_ASSISTANT }
+        ?.option(key)
+
+    /**
+     * Write [key] onto the MA server's options.
+     *
+     * A no-op when no MA server is configured — the global key written alongside is
+     * then the only copy, and it becomes the seed for the server's options as soon as
+     * one is added.
+     */
+    private fun putMaOption(
+        prefs: androidx.datastore.preferences.core.MutablePreferences,
+        key: String,
+        value: String,
+    ) {
+        val list = storedServers(prefs)
+        if (list.none { it.kind == ServerKind.MUSIC_ASSISTANT }) return
+        prefs[SERVERS] = encodeServers(
+            list.map { if (it.kind == ServerKind.MUSIC_ASSISTANT) it.withOption(key, value) else it },
+        )
+    }
 
     /**
      * Replace the whole list. Callers add, edit and remove by transforming the list
@@ -379,16 +422,24 @@ class AppSettings(private val context: Context) {
     val navPassword: Flow<String> = context.dataStore.data.map { Crypto.decrypt(it[NAV_PASSWORD] ?: "") }
     val haUrl: Flow<String> = context.dataStore.data.map { it[HA_URL] ?: "" }
     val haToken: Flow<String> = context.dataStore.data.map { Crypto.decrypt(it[HA_TOKEN] ?: "") }
-    val playerName: Flow<String> = context.dataStore.data.map { it[PLAYER_NAME] ?: "" }
-    val targetPlayer: Flow<String> = context.dataStore.data.map { it[TARGET_PLAYER] ?: "" }
+    val playerName: Flow<String> = context.dataStore.data.map {
+        maOption(it, ServerConfig.OPT_PLAYER_NAME) ?: it[PLAYER_NAME] ?: ""
+    }
+    val targetPlayer: Flow<String> = context.dataStore.data.map {
+        maOption(it, ServerConfig.OPT_TARGET_PLAYER) ?: it[TARGET_PLAYER] ?: ""
+    }
     val nowPlayingLayout: Flow<String> = context.dataStore.data.map { it[NOW_PLAYING_LAYOUT] ?: "tab" }
     val onboardingCompleted: Flow<Boolean> = context.dataStore.data.map { it[ONBOARDING_COMPLETED] ?: false }
     val theme: Flow<String> = context.dataStore.data.map { it[THEME] ?: "oled" }
     val accentSource: Flow<String> = context.dataStore.data.map { it[ACCENT_SOURCE] ?: "album" }
     /** Stored as an ARGB hex string; empty means "use the built-in amber". */
     val fixedAccent: Flow<String> = context.dataStore.data.map { it[FIXED_ACCENT] ?: "" }
-    val preferHiRes: Flow<Boolean> = context.dataStore.data.map { it[PREFER_HI_RES] ?: true }
-    val preferFlac: Flow<Boolean> = context.dataStore.data.map { it[PREFER_FLAC] ?: true }
+    val preferHiRes: Flow<Boolean> = context.dataStore.data.map {
+        maOption(it, ServerConfig.OPT_PREFER_HI_RES)?.toBooleanStrictOrNull() ?: it[PREFER_HI_RES] ?: true
+    }
+    val preferFlac: Flow<Boolean> = context.dataStore.data.map {
+        maOption(it, ServerConfig.OPT_PREFER_FLAC)?.toBooleanStrictOrNull() ?: it[PREFER_FLAC] ?: true
+    }
     val preferOriginal: Flow<Boolean> = context.dataStore.data.map { it[PREFER_ORIGINAL] ?: false }
 
     /**
@@ -405,7 +456,9 @@ class AppSettings(private val context: Context) {
      */
     val registeredPlayerName: Flow<String> = context.dataStore.data.map { it[REGISTERED_NAME] ?: "" }
 
-    val sendspinCodec: Flow<String> = context.dataStore.data.map { it[SENDSPIN_CODEC] ?: "auto" }
+    val sendspinCodec: Flow<String> = context.dataStore.data.map {
+        maOption(it, ServerConfig.OPT_SENDSPIN_CODEC) ?: it[SENDSPIN_CODEC] ?: "auto"
+    }
 
     /**
      * What Navidrome should send for a direct stream. "raw" is the stored file
@@ -465,10 +518,15 @@ class AppSettings(private val context: Context) {
      * Stored as a string because DataStore has no int key helper in use here and the
      * other numeric settings already do this.
      */
-    val staticDelayMs: Flow<Int> = context.dataStore.data.map { it[STATIC_DELAY_MS]?.toIntOrNull() ?: 0 }
+    val staticDelayMs: Flow<Int> = context.dataStore.data.map {
+        maOption(it, ServerConfig.OPT_STATIC_DELAY_MS)?.toIntOrNull()
+            ?: it[STATIC_DELAY_MS]?.toIntOrNull() ?: 0
+    }
 
     suspend fun setStaticDelayMs(ms: Int) = context.dataStore.edit {
-        it[STATIC_DELAY_MS] = ms.coerceIn(-MAX_TRIM_MS, MAX_TRIM_MS).toString()
+        val v = ms.coerceIn(-MAX_TRIM_MS, MAX_TRIM_MS).toString()
+        it[STATIC_DELAY_MS] = v
+        putMaOption(it, ServerConfig.OPT_STATIC_DELAY_MS, v)
     }
 
     /**
@@ -513,10 +571,16 @@ class AppSettings(private val context: Context) {
      * who don't use TTS can disable this to save battery; the connection will only
      * run during active playback and stop when idle.
      */
-    val keepAliveForAnnouncements: Flow<Boolean> = context.dataStore.data.map { it[KEEP_ALIVE_ANNOUNCEMENTS] ?: true }
+    val keepAliveForAnnouncements: Flow<Boolean> = context.dataStore.data.map {
+        maOption(it, ServerConfig.OPT_KEEP_ALIVE)?.toBooleanStrictOrNull()
+            ?: it[KEEP_ALIVE_ANNOUNCEMENTS] ?: true
+    }
 
     suspend fun setKeepAliveForAnnouncements(value: Boolean) {
-        context.dataStore.edit { it[KEEP_ALIVE_ANNOUNCEMENTS] = value }
+        context.dataStore.edit {
+            it[KEEP_ALIVE_ANNOUNCEMENTS] = value
+            putMaOption(it, ServerConfig.OPT_KEEP_ALIVE, value.toString())
+        }
     }
 
     /**
@@ -567,11 +631,14 @@ class AppSettings(private val context: Context) {
     }
 
     suspend fun setPlayerName(name: String) {
-        context.dataStore.edit { it[PLAYER_NAME] = name }
+        context.dataStore.edit { it[PLAYER_NAME] = name; putMaOption(it, ServerConfig.OPT_PLAYER_NAME, name) }
     }
 
     suspend fun setTargetPlayer(playerId: String) {
-        context.dataStore.edit { it[TARGET_PLAYER] = playerId }
+        context.dataStore.edit {
+            it[TARGET_PLAYER] = playerId
+            putMaOption(it, ServerConfig.OPT_TARGET_PLAYER, playerId)
+        }
     }
 
     /**
@@ -608,16 +675,45 @@ class AppSettings(private val context: Context) {
     }
 
     suspend fun setOnboardingCompleted(completed: Boolean) {
+        bootPrefs.edit().putBoolean("onboarded", completed).apply()
         context.dataStore.edit { it[ONBOARDING_COMPLETED] = completed }
     }
 
+    /**
+     * Whether the user skipped setup rather than finishing it.
+     *
+     * The wizard's `finish(skipped)` took this and ignored it, so both paths wrote the
+     * same thing and nothing downstream could tell a deliberate "no server, thanks"
+     * from an interrupted setup.
+     */
+    val onboardingSkipped: Flow<Boolean> = context.dataStore.data.map { it[ONBOARDING_SKIPPED] ?: false }
+
+    suspend fun setOnboardingSkipped(skipped: Boolean) {
+        context.dataStore.edit { it[ONBOARDING_SKIPPED] = skipped }
+    }
+
+    /**
+     * Synchronous mirror of [onboardingCompleted], for `MainActivity.onCreate`.
+     *
+     * Same reason the theme has one: the decision is needed before the first frame, and
+     * DataStore is asynchronous by design. What it decides here is whether to put a
+     * permission dialog in front of someone who has not yet seen the app.
+     */
+    val hasCompletedOnboarding: Boolean get() = bootPrefs.getBoolean("onboarded", false)
+
     /** Takes effect on the next connect — the format list is sent in the hello. */
     suspend fun setPreferHiRes(value: Boolean) {
-        context.dataStore.edit { it[PREFER_HI_RES] = value }
+        context.dataStore.edit {
+            it[PREFER_HI_RES] = value
+            putMaOption(it, ServerConfig.OPT_PREFER_HI_RES, value.toString())
+        }
     }
 
     suspend fun setPreferFlac(value: Boolean) {
-        context.dataStore.edit { it[PREFER_FLAC] = value }
+        context.dataStore.edit {
+            it[PREFER_FLAC] = value
+            putMaOption(it, ServerConfig.OPT_PREFER_FLAC, value.toString())
+        }
     }
 
     suspend fun setPreferOriginal(value: Boolean) {
@@ -630,7 +726,10 @@ class AppSettings(private val context: Context) {
 
     /** Takes effect on the next connect — the format list is sent in the hello. */
     suspend fun setSendspinCodec(value: String) {
-        context.dataStore.edit { it[SENDSPIN_CODEC] = value }
+        context.dataStore.edit {
+            it[SENDSPIN_CODEC] = value
+            putMaOption(it, ServerConfig.OPT_SENDSPIN_CODEC, value)
+        }
     }
 
     /** Applies to the next track: the format is a query parameter on the stream URL. */

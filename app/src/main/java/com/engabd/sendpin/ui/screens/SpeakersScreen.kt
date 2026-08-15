@@ -230,13 +230,26 @@ private fun JoinedCard(p: SpeakerUi, onSelect: () -> Unit, onUnjoin: () -> Unit,
             // Sync offset only for members. The leader is the reference clock of the
             // group; nudging it would move the whole group, so per-speaker latency trim
             // is exposed only for joined followers.
+            //
+            // And only where the server actually has somewhere to put it. Music
+            // Assistant exposes a sync-delay config on Sendspin players and a generic
+            // `sync_adjust` on most others, but some — Chromecast groups especially —
+            // have neither. Those used to get a dash between two buttons that silently
+            // did nothing; saying so is better than offering a control that cannot work.
             if (!p.isTarget) {
                 Spacer(Modifier.height(10.dp))
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Sync offset", color = TextFaint, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, modifier = Modifier.weight(1f))
-                    StepBtn("−") { onOffset(-5) }
-                    Text(if (p.offsetKnown) "${p.offsetMs} ms" else "-", color = TextSecondary, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 11.sp, modifier = Modifier.widthIn(min = 54.dp))
-                    StepBtn("+") { onOffset(5) }
+                if (p.offsetKnown) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Sync offset", color = TextFaint, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                        StepBtn("−") { onOffset(-5) }
+                        Text("${p.offsetMs} ms", color = TextSecondary, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 11.sp, modifier = Modifier.widthIn(min = 54.dp))
+                        StepBtn("+") { onOffset(5) }
+                    }
+                } else {
+                    Text(
+                        "No sync offset for this speaker — Music Assistant doesn't expose one.",
+                        color = TextFaint, fontWeight = FontWeight.SemiBold, fontSize = 11.sp,
+                    )
                 }
             }
         }
