@@ -136,13 +136,17 @@ abstract class SendspinDataSource(
     override fun open(dataSpec: DataSpec): Long {
         transferInitializing(dataSpec)
         pendingOutput = when (format.codec.lowercase()) {
-            "flac" -> SendspinContainerHeader.flacStreamHeader(format.codecHeader)
-                ?: throw IOException("Sendspin FLAC stream: missing or malformed codec_header")
+            "flac" -> SendspinContainerHeader.flacStreamHeader(format.codecHeader) ?: run {
+                val decodedSize = SendspinContainerHeader.decodeBase64(format.codecHeader)?.size
+                throw IOException(
+                    "Sendspin FLAC stream: missing or malformed codec_header " +
+                        "(raw='${format.codecHeader}' decodedSize=$decodedSize, want 34)",
+                )
+            }
             "opus" -> {
                 val muxer = OggOpusPacketizer(serialNumber = streamId)
                 opusMuxer = muxer
-                val headPacket = format.codecHeader
-                    ?.let { runCatching { java.util.Base64.getMimeDecoder().decode(it) }.getOrNull() }
+                val headPacket = SendspinContainerHeader.decodeBase64(format.codecHeader)
                     ?: opusHeadPacket(format.channels, format.sampleRate)
                 muxer.headerPages(headPacket)
             }
@@ -174,6 +178,15 @@ abstract class SendspinDataSource(
     override fun getUri(): Uri? = if (opened) streamUri else null
 
     override fun close() {
+        // Guard against a close() with no matching open(): BaseDataSource's own
+        // transferEnded() has no such guard, and calling it unmatched leaves its
+        // internal DataSpec null - the next transferEnded() (a double-close, or
+        // ExoPlayer probing/releasing a DataSource instance it never opened,
+        // which our Factory can hand back since it always returns the same
+        // captured instance) then NPEs inside DefaultBandwidthMeter reading that
+        // null DataSpec, surfacing as a silent, unhandled ExoPlaybackException -
+        // playback just stops with no audio and no obvious error.
+        if (!opened) return
         opened = false
         pendingOutput = null
         queue.clear()

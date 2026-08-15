@@ -36,6 +36,21 @@ class SendspinContainerHeaderTest {
     }
 
     @Test
+    fun `flac header decodes unpadded base64`() {
+        // 34 bytes -> 2 trailing '=' from the standard (padded) encoder. Nothing
+        // guarantees the server pads its base64, and java.util.Base64's decoders
+        // reject unpadded input unless asked not to - unlike android.util.Base64.DEFAULT,
+        // which this replaced (see SendspinContainerHeader.decodeBase64).
+        val streamInfo = ByteArray(34) { (it + 1).toByte() }
+        val padded = Base64.getEncoder().encodeToString(streamInfo)
+        val unpadded = padded.trimEnd('=')
+        assertEquals(2, padded.length - unpadded.length, "test setup: expected 2 bytes of padding for a 34-byte input")
+
+        val header = SendspinContainerHeader.flacStreamHeader(unpadded)!!
+        assertEquals(streamInfo.toList(), header.copyOfRange(8, 42).toList())
+    }
+
+    @Test
     fun `wav header encodes format fields little-endian at the documented offsets`() {
         val header = SendspinContainerHeader.wavStreamHeader(sampleRate = 48_000, channels = 2, bitDepth = 24)
         val buf = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN)

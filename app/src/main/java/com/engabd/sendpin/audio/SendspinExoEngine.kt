@@ -4,9 +4,12 @@ import android.content.Context
 import android.media.AudioDeviceInfo
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
@@ -113,6 +116,23 @@ class SendspinExoEngine(
 
     private fun effectiveVolume() = if (syncMuted) 0f else userVolume
 
+    /**
+     * A `Player.Listener` is what makes a source/renderer error visible at all -
+     * without one, a fatal [PlaybackException] leaves the player silently in
+     * [Player.STATE_IDLE] forever: no sound, no exception surfaced anywhere
+     * Playback.kt would see it. [onPlayerError] logs it and retries once via
+     * [ExoPlayer.prepare] (the same recovery ExoPlayer's own docs recommend for
+     * a transient source error), which is enough as long as whatever caused the
+     * error doesn't recur - see [SendspinDataSource.close] for the one already
+     * found and fixed this way.
+     */
+    private val playerListener = object : Player.Listener {
+        override fun onPlayerError(error: PlaybackException) {
+            Log.e("SendspinExoEngine", "player error: ${error.errorCodeName}", error)
+            player.prepare()
+        }
+    }
+
     private fun buildPlayer(): ExoPlayer {
         val attrs = AudioAttributes.Builder()
             .setUsage(C.USAGE_MEDIA)
@@ -152,6 +172,7 @@ class SendspinExoEngine(
             .build()
             .also { p ->
                 p.volume = effectiveVolume()
+                p.addListener(playerListener)
                 preferredOutputDevice?.let { d -> runCatching { p.setPreferredAudioDevice(d) } }
             }
     }

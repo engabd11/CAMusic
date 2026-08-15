@@ -37,15 +37,7 @@ object SendspinContainerHeader {
      *   wrong sample rate/channel count, which is worse than failing loudly.
      */
     fun flacStreamHeader(codecHeaderB64: String?): ByteArray? {
-        // The MIME decoder, not the plain one: it tolerates embedded line breaks,
-        // matching android.util.Base64.DEFAULT's leniency on the encoders elsewhere
-        // in this codebase (see SendspinAudioEngine.createFlacDecoder) without
-        // depending on the Android framework - this class stays plain-JVM
-        // testable because of it.
-        val streamInfo = codecHeaderB64
-            ?.let { runCatching { Base64.getMimeDecoder().decode(it) }.getOrNull() }
-            ?.takeIf { it.size == FLAC_STREAMINFO_SIZE }
-            ?: return null
+        val streamInfo = decodeBase64(codecHeaderB64)?.takeIf { it.size == FLAC_STREAMINFO_SIZE } ?: return null
         return ByteBuffer.allocate(4 + 4 + FLAC_STREAMINFO_SIZE).apply {
             put(MAGIC_FLAC)
             // Metadata block header: 1 bit last-block=1, 7 bits type=0 (STREAMINFO),
@@ -53,6 +45,24 @@ object SendspinContainerHeader {
             put(0x80.toByte()); put(0x00); put(0x00); put(FLAC_STREAMINFO_SIZE.toByte())
             put(streamInfo)
         }.array()
+    }
+
+    /**
+     * The MIME decoder, not the plain one: it tolerates embedded line breaks,
+     * matching android.util.Base64.DEFAULT's leniency on the encoders elsewhere in
+     * this codebase (see [SendspinAudioEngine.createFlacDecoder]) without depending
+     * on the Android framework - this class stays plain-JVM testable because of it.
+     *
+     * Also pads to a multiple of 4 first: unlike `android.util.Base64.DEFAULT`,
+     * `java.util.Base64`'s decoders reject unpadded input, and nothing guarantees
+     * Music Assistant / sendspin-js sends padded base64. Tried unpadded too, in
+     * case a string that's already a multiple of 4 gets spuriously over-padded.
+     */
+    fun decodeBase64(b64: String?): ByteArray? {
+        if (b64.isNullOrEmpty()) return null
+        val padded = b64 + "=".repeat((4 - b64.length % 4) % 4)
+        return runCatching { Base64.getMimeDecoder().decode(padded) }.getOrNull()
+            ?: runCatching { Base64.getMimeDecoder().decode(b64) }.getOrNull()
     }
 
     /**
