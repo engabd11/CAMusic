@@ -866,7 +866,7 @@ private fun QualityRow(label: String, value: String, accent: Color, lit: Boolean
     }
 }
 
-/** A small badge at the corner indicating the source (MA or Navidrome). */
+/** A small badge at the corner indicating the source (MA, Navidrome, Jellyfin, etc.). */
 @Composable
 fun SourceBadge(source: String, modifier: Modifier = Modifier) {
     val accent = LocalAccent.current

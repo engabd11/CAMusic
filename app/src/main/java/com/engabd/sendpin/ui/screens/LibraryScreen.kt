@@ -120,6 +120,7 @@ fun LibraryScreen(
                 title = if (depth > 0 && !searchOpen) node.title else "Library",
                 showBack = depth > 0 || searchOpen,
                 backend = backend,
+                activeServerConfig = activeServerConfig,
                 query = query,
                 onQuery = viewModel::setQuery,
                 onBack = { viewModel.back() },
@@ -206,6 +207,7 @@ private fun Header(
     title: String,
     showBack: Boolean,
     backend: Backend,
+    activeServerConfig: ServerConfig?,
     query: String,
     onQuery: (String) -> Unit,
     onBack: () -> Unit,
@@ -239,7 +241,7 @@ private fun Header(
                 // Which backend is on is a *setting* now, not a control that lives
                 // here — two places to change it meant the greyed-out Speakers and
                 // Lights tabs could disagree with what the library was browsing.
-                BackendTag(if (backend == Backend.SUBSONIC) "Navidrome" else "Music Assistant")
+                BackendTag(activeServerConfig?.displayName ?: if (backend == Backend.SUBSONIC) "Library" else "Music Assistant")
             }
             onRefresh?.let {
                 Spacer(Modifier.width(10.dp))
