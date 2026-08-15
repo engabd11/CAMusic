@@ -19,6 +19,23 @@ android {
         targetSdk = 36
         versionCode = 38
         versionName = "0.8.7"
+
+        // The Oboe native output engine (src/main/cpp) - see SendspinNativeOutput.kt.
+        // Oboe itself comes from the com.google.oboe:oboe prefab package (below),
+        // not NDK-bundled sources - NDK stopped shipping those at
+        // sources/third_party/oboe as of at least r27.
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+        }
+        externalNativeBuild {
+            cmake {
+                cppFlags += "-std=c++17"
+                // Required by the oboe prefab package - its own libc++_shared.so
+                // must match the app's, or the linker sees duplicate/conflicting
+                // C++ runtime symbols at load time.
+                arguments += "-DANDROID_STL=c++_shared"
+            }
+        }
     }
 
     buildTypes {
@@ -56,15 +73,22 @@ android {
 
     // buildConfig: the About screen reads the version from BuildConfig rather than
     // carrying a hand-typed copy that goes stale between releases.
-    buildFeatures { compose = true; buildConfig = true }
+    // prefab: how CMake finds the oboe:: target from the com.google.oboe:oboe
+    // Maven dependency below - see CMakeLists.txt's find_package(oboe).
+    buildFeatures { compose = true; buildConfig = true; prefab = true }
 
-    // The native AAudio-I24 / libFLAC pipeline (src/main/cpp) is kept for the
-    // future bit-perfect phase that bypasses the Android mixer, but is NOT built:
-    // nothing in Kotlin loads it, so switching the NDK on would add a toolchain
-    // download to every CI run and an unused .so to every APK. Hi-res today goes
-    // through MediaCodec + AudioTrack — see SendspinAudioEngine.bitPerfect.
-    // Re-enable the externalNativeBuild { cmake { … } } block here when the
-    // native output path actually has a caller.
+    // The Oboe native output engine (src/main/cpp/sendspin_output_*) - GC-immune
+    // real-time PCM output for the experimental SendspinExoEngine path (see
+    // docs/exoplayer-upgrade-plan.md). Adds an NDK/CMake toolchain download to a
+    // clean build and a .so per ABI to the APK - the cost the previous, unwired
+    // prototype here was deliberately avoiding - but this one has a caller
+    // ([OboeRenderer]).
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
 }
 
 // Compose stability/skippability reports, off by default because writing them costs
@@ -85,6 +109,12 @@ composeCompiler {
 }
 
 dependencies {
+    // The Oboe native output engine (src/main/cpp/sendspin_output_*) links
+    // against this via CMake's find_package(oboe) - see CMakeLists.txt. Ships
+    // as a prefab package (buildFeatures.prefab above), not source, since NDK
+    // stopped bundling Oboe's sources.
+    implementation("com.google.oboe:oboe:1.10.0")
+
     // Carries Material3 1.4 — the Expressive release. The motion scheme, the wavy
     // progress indicators and the shape morphing the UI now leans on are all in it.
     val composeBom = platform("androidx.compose:compose-bom:2026.06.01")
@@ -129,7 +159,6 @@ dependencies {
     // — it has no dependency telling it where profiles come from.
     baselineProfile(project(":baselineprofile"))
     implementation("androidx.datastore:datastore-preferences:1.2.1")
-    implementation("androidx.media:media:1.7.0")
     // The Navidrome/offline player. MediaPlayer could not do gapless reliably
     // (setNextMediaPlayer is OEM-dependent), reported nothing about the format it
     // was decoding, and had no stage to apply ReplayGain in.

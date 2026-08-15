@@ -76,9 +76,6 @@
             android:name=".service.SendspinService"
             android:foregroundServiceType="mediaPlayback"
             android:exported="false">
-            <intent-filter>
-                <action android:name="android.intent.action.MEDIA_BUTTON" />
-            </intent-filter>
         </service>
 
         <!-- The standalone (Navidrome / offline) player's own media notification.
@@ -90,15 +87,9 @@
             android:exported="false">
         </service>
 
-        <!-- Routes headset / Bluetooth / steering-wheel media buttons into the
-             MediaSession above. MediaButtonReceiver.handleIntent() is a no-op
-             without this declaration. -->
-        <receiver
-            android:name="androidx.media.session.MediaButtonReceiver"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.MEDIA_BUTTON" />
-            </intent-filter>
-        </receiver>
+        <!-- Headset / Bluetooth / steering-wheel media buttons now route through
+             each service's media3 MediaSession directly (see ShadePlayer /
+             LocalPlaybackService) - no MediaButtonReceiver or MEDIA_BUTTON
+             intent-filter needed for either. -->
     </application>
 </manifest>

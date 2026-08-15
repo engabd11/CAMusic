@@ -38,14 +38,14 @@ import kotlin.math.max
  * poured straight into the track, so a track starts part-way in and can never stay in
  * step with another speaker.
  */
-class SendspinAudioEngine(private val clock: ClockSync) {
+class SendspinAudioEngine(private val clock: ClockSync) : SendspinPlaybackEngine {
 
     /**
      * The server-side `sendspin_static_delay` this player is configured with, in ms.
      * Subtracted from every frame's scheduled time, per the spec. Zero until the
      * server tells us otherwise.
      */
-    @Volatile var staticDelayMs: Int = 0
+    @Volatile override var staticDelayMs: Int = 0
 
     /**
      * When true, hi-res sources keep their resolution instead of being
@@ -64,7 +64,7 @@ class SendspinAudioEngine(private val clock: ClockSync) {
      * reports*, never from the depth the server claimed — writing 2-byte samples
      * into a 3-byte-per-sample track is not quiet degradation, it is noise.
      */
-    @Volatile var bitPerfect: Boolean = false
+    @Volatile override var bitPerfect: Boolean = false
 
     /**
      * The preferred output device for audio routing (USB DAC support).
@@ -78,8 +78,6 @@ class SendspinAudioEngine(private val clock: ClockSync) {
 
     companion object {
         const val TAG = "SendspinAudio"
-        const val HEADER_SIZE = 9
-        const val TYPE_PLAYER_AUDIO = 4
         const val OPUS_MAX_INPUT = 64 * 1024
         const val FLAC_MAX_INPUT = 256 * 1024
         const val DEQUEUE_TIMEOUT_US = 10_000L
@@ -302,7 +300,7 @@ class SendspinAudioEngine(private val clock: ClockSync) {
      * Mute/unmute for clock-convergence reasons. Decoding and writing continue —
      * the spec's rule is "mute output and continue buffering", not "stop".
      */
-    fun setSyncMuted(muted: Boolean) {
+    override fun setSyncMuted(muted: Boolean) {
         if (syncMuted == muted) return
         syncMuted = muted
         track?.setVolume(effectiveVolume())
@@ -327,7 +325,7 @@ class SendspinAudioEngine(private val clock: ClockSync) {
     private fun bytesPerFrame(): Int = bytesPerSample(trackEncoding) * trackChannels.coerceAtLeast(1)
 
     @Synchronized
-    fun start(format: StreamStartPlayerInfo) {
+    override fun start(format: StreamStartPlayerInfo) {
         // Hi-res is only worth asking for when the source actually has the bits:
         // a 16-bit file widened on the way out is padding, not resolution.
         val wantHiRes = bitPerfect && format.bitDepth >= 24
@@ -434,7 +432,7 @@ class SendspinAudioEngine(private val clock: ClockSync) {
      * sound. Teardown happens in the decode loop once [END_LINGER_MS] has passed, or
      * never, if the next `stream/start` arrives first.
      */
-    fun endOfStream() {
+    override fun endOfStream() {
         if (!running) return
         endPending = true
         endPendingAtMs = android.os.SystemClock.elapsedRealtime()
@@ -446,10 +444,10 @@ class SendspinAudioEngine(private val clock: ClockSync) {
         armHead()
     }
 
-    fun submit(frame: ByteArray) {
+    override fun submit(frame: ByteArray) {
         if (!running) return
-        if (frame.size <= HEADER_SIZE || (frame[0].toInt() and 0xFF) != TYPE_PLAYER_AUDIO) return
-        val f = Frame(parseTimestampUs(frame), frame.copyOfRange(HEADER_SIZE, frame.size))
+        val (serverTsUs, payload) = SendspinAudioFrame.parse(frame) ?: return
+        val f = Frame(serverTsUs, payload)
         if (queue.offer(f)) return
         // Full. Which end to sacrifice depends on what the queue is holding: normally
         // the oldest frame is the most stale and goes, but while a gate is armed the
@@ -467,7 +465,7 @@ class SendspinAudioEngine(private val clock: ClockSync) {
      * already queued is now wrong. That is the opposite of [endOfStream], where the
      * queued audio is the tail the listener is still owed.
      */
-    fun flush() {
+    override fun flush() {
         queue.clear()
         // A seek restarts from a known point, so the next frame is a head-of-stream
         // again and gets scheduled like one.
@@ -484,7 +482,7 @@ class SendspinAudioEngine(private val clock: ClockSync) {
      * Tear the engine down for good — disconnect, or permanent audio-focus loss.
      * Drains rather than discards, so a stop at the end of a track still plays out.
      */
-    fun release() = releaseInternal(drain = true)
+    override fun release() = releaseInternal(drain = true)
 
     /**
      * @param drain let the track play out what it holds before releasing it.
@@ -574,7 +572,7 @@ class SendspinAudioEngine(private val clock: ClockSync) {
         }
     }
 
-    fun setVolume(v: Float) {
+    override fun setVolume(v: Float) {
         volume = v.coerceIn(0f, 1f)
         track?.setVolume(effectiveVolume())
     }
@@ -584,7 +582,7 @@ class SendspinAudioEngine(private val clock: ClockSync) {
      * headset, etc.). Takes effect on the next [start] call — the AudioTrack is
      * rebuilt per stream. Call with null to revert to the system default route.
      */
-    fun setPreferredDevice(device: AudioDeviceInfo?) {
+    override fun setPreferredDevice(device: AudioDeviceInfo?) {
         preferredOutputDevice = device
     }
 
@@ -912,9 +910,4 @@ class SendspinAudioEngine(private val clock: ClockSync) {
             put(0)
         }.array()
 
-    private fun parseTimestampUs(data: ByteArray): Long {
-        var ts = 0L
-        for (i in 1..8) ts = (ts shl 8) or (data[i].toLong() and 0xffL)
-        return ts
-    }
 }

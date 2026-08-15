@@ -22,10 +22,13 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl
@@ -70,20 +73,56 @@ class SendpinApp : Application(), ImageLoaderFactory {
     val downloads: DownloadManager by lazy { DownloadManager(this) }
 
     /**
+     * Whichever backend is actually producing sound right now, for
+     * [directLightSync] — MA (via `SendspinExoEngine`, the experimental
+     * ExoPlayer path) when it has a tap installed *and* is playing, else
+     * [localPlayer] always. That "else" is what keeps local playback's Light
+     * Sync behaviour identical to before MA support existed: with the
+     * ExoPlayer toggle off, or with nothing playing on MA, this is exactly
+     * localPlayer's tap/lead/track — the same fixed values [directLightSync]
+     * used to take as constructor arguments.
+     *
+     * `Eagerly`, not `Lazily`: [directLightSync] reads `.value` synchronously
+     * in a few places (see its own docs), so this has to have emitted before
+     * anything can call [directLightSync.start][com.engabd.sendpin.hue.DirectLightSync.start].
+     */
+    val activeLightSyncSource: StateFlow<com.engabd.sendpin.hue.ActiveLightSyncSource> by lazy {
+        combine(
+            localPlayer.current, playback.isPlaying, playback.artworkUrl, playback.maAudioSource,
+        ) { localTrack, maPlaying, maArtUrl, maSource ->
+            if (maPlaying && maSource != null) {
+                com.engabd.sendpin.hue.ActiveLightSyncSource(
+                    tap = maSource.first, lead = maSource.second, artUrl = maArtUrl, scanTrack = null,
+                )
+            } else {
+                com.engabd.sendpin.hue.ActiveLightSyncSource(
+                    tap = localPlayer.audioAnalysisTap, lead = localPlayer.audioLead,
+                    artUrl = localTrack?.artUrl, scanTrack = localTrack,
+                )
+            }
+        }.stateIn(
+            appScope, SharingStarted.Eagerly,
+            com.engabd.sendpin.hue.ActiveLightSyncSource(
+                tap = localPlayer.audioAnalysisTap, lead = localPlayer.audioLead,
+                artUrl = localPlayer.current.value?.artUrl, scanTrack = localPlayer.current.value,
+            ),
+        )
+    }
+
+    /**
      * Direct Hue Bridge Light Sync. Process-scoped so it survives Activity
-     * destruction and shares the audio tap with [localPlayer]. Only active
-     * when the user has configured a bridge and selected "direct" mode in
-     * Settings. When "ha" mode is selected (or no bridge is configured),
-     * this stays idle and the existing HA-based path handles Light Sync.
+     * destruction and switches between [localPlayer] and MA's audio tap via
+     * [activeLightSyncSource]. Only active when the user has configured a
+     * bridge and selected "direct" mode in Settings. When "ha" mode is
+     * selected (or no bridge is configured), this stays idle and the existing
+     * HA-based path handles Light Sync.
      */
     val directLightSync: com.engabd.sendpin.hue.DirectLightSync by lazy {
         com.engabd.sendpin.hue.DirectLightSync(
             this,
-            localPlayer.audioAnalysisTap,
-            localPlayer.audioLead,
-            localPlayer.current,
+            activeLightSyncSource,
             trackScans,
-            isPlaying = localPlayer.playing,
+            isPlaying = combine(localPlayer.playing, playback.isPlaying) { l, m -> l || m },
         )
     }
 

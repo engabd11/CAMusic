@@ -205,4 +205,34 @@ class ClockKalmanFilterTest {
         assertFalse(f.isSynced())
         assertTrue(f.sampleCount == 0)
     }
+
+    /**
+     * The bug this exists to fix: a caller gating on RTT during cold start (like
+     * [com.engabd.sendpin.protocol.SendspinClient]'s `server/time` handler) never
+     * feeds a sample into the filter while a server keeps replying slowly, so
+     * [ClockKalmanFilter.sampleCount] never moves — and a caller keyed on it for
+     * cadence stays at the fast 300ms rate forever. The backoff ramps purely off
+     * [ClockKalmanFilter.markStartupRejected] calls, independent of [sampleCount].
+     */
+    @Test
+    fun `startup backoff ramps with consecutive rejections and clears on a real sample`() {
+        val f = ClockKalmanFilter()
+        assertEquals(0L, f.startupBackoffMs(), "no rejections yet")
+
+        repeat(2) { f.markStartupRejected() }
+        assertEquals(0L, f.startupBackoffMs(), "still within the ordinary fast cadence")
+
+        repeat(3) { f.markStartupRejected() } // 5 total
+        assertEquals(600L, f.startupBackoffMs())
+
+        repeat(6) { f.markStartupRejected() } // 11 total
+        assertEquals(1_200L, f.startupBackoffMs())
+
+        f.markStartupRejected() // 12 total
+        assertEquals(3_000L, f.startupBackoffMs())
+
+        // A sample that actually lands clears the streak, whatever it was.
+        feed(f, 0L, offsetUs = 100_000L, rttUs = 4_000, procUs = 1_000)
+        assertEquals(0L, f.startupBackoffMs(), "an accepted sample resets the streak")
+    }
 }

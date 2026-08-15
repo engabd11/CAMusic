@@ -5,9 +5,13 @@ import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.os.Build
+import com.engabd.sendpin.audio.AudioAnalysisTap
+import com.engabd.sendpin.audio.AudioLead
 import com.engabd.sendpin.audio.AudioOutputs
 import com.engabd.sendpin.audio.FormatNegotiator
 import com.engabd.sendpin.audio.SendspinAudioEngine
+import com.engabd.sendpin.audio.SendspinExoEngine
+import com.engabd.sendpin.audio.SendspinPlaybackEngine
 import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.MaDiscovery
@@ -96,9 +100,21 @@ class Playback(private val app: Context) {
     private val _bootChecked = MutableStateFlow(false); val bootChecked: StateFlow<Boolean> = _bootChecked
 
     private var client: SendspinClient? = null
-    private var engine: SendspinAudioEngine? = null
+    private var engine: SendspinPlaybackEngine? = null
     private var discoveryStop: Job? = null
     private var volumeJob: Job? = null
+
+    /**
+     * The tap/lead pair actually installed in the current MA engine's render
+     * chain, when MA is playing through [SendspinExoEngine] (the experimental
+     * ExoPlayer path) — null otherwise, including whenever the default
+     * [SendspinAudioEngine] (no tap at all) is in use. A live [StateFlow]
+     * rather than a one-time read because it changes on every reconnect: a new
+     * `SendspinExoEngine` means a new [AudioAnalysisTap] instance, and
+     * [com.engabd.sendpin.hue.DirectLightSync] needs to notice and re-hook it.
+     */
+    private val _maAudioSource = MutableStateFlow<Pair<AudioAnalysisTap, AudioLead>?>(null)
+    val maAudioSource: StateFlow<Pair<AudioAnalysisTap, AudioLead>?> = _maAudioSource
 
     /**
      * Deferred "playback really has stopped" work. Armed on `stream/end` and
@@ -131,6 +147,7 @@ class Playback(private val app: Context) {
             AudioManager.AUDIOFOCUS_LOSS -> {
                 // Another app took over media for good — stop and release.
                 engine?.release()
+                _maAudioSource.value = null
                 _isPlaying.value = false
                 abandonAudioFocus()
             }
@@ -323,14 +340,26 @@ class Playback(private val app: Context) {
         } catch (_: Exception) { null } finally { api.disconnect() }
     }
 
-    private fun startSendspin(url: String, token: String?, name: String) {
+    private suspend fun startSendspin(url: String, token: String?, name: String) {
         val c = SendspinClient(); client = c
         // Propagate the current idle state — if nothing is playing when the client
         // connects, start in idle mode rather than running fast timer loops until
         // the next isPlaying transition. The connection service drives this from
         // its own watchPlayback observer, but the client needs to know *now*.
         if (!_isPlaying.value) c.setIdleMode(true)
-        val eng = SendspinAudioEngine(c.clock); engine = eng
+        // Experimental opt-in (see AppSettings.useExoPlayerForSendspin) — read once,
+        // at connect time: switching mid-connection would orphan whatever the old
+        // engine was doing mid-stream. SendspinAudioEngine stays the default.
+        val eng: SendspinPlaybackEngine = if (settings.useExoPlayerForSendspin.first()) {
+            SendspinExoEngine(app, c.clock).also {
+                it.useOboe = settings.useOboeOutput.first()
+                _maAudioSource.value = it.audioAnalysisTap to it.audioLead
+            }
+        } else {
+            _maAudioSource.value = null
+            SendspinAudioEngine(c.clock)
+        }
+        engine = eng
 
         scope.launch { c.state.collect { _connected.value = it == SendspinClient.State.CONNECTED } }
         scope.launch { c.statusText.collect { _connectionStatus.value = it } }
@@ -415,7 +444,17 @@ class Playback(private val app: Context) {
         // `group/update` is a push on the player socket, so it lands the moment
         // grouping changes. Forwarded to whoever is showing group state — the
         // Speakers screen re-reads on it instead of waiting out its 5 s poll.
-        scope.launch { c.groupUpdates.collect { _groupUpdates.tryEmit(it) } }
+        //
+        // Also the only signal SendspinExoEngine has for solo vs grouped mode
+        // (SendspinSyncDataSource vs SendspinDirectDataSource) — SendspinAudioEngine
+        // doesn't need it, it always schedules the same way. A groupId means this
+        // player has been placed on the shared timeline; null means solo.
+        scope.launch {
+            c.groupUpdates.collect {
+                _groupUpdates.tryEmit(it)
+                (eng as? SendspinExoEngine)?.grouped = it.groupId != null
+            }
+        }
 
         // Audio output preferences. Read before the first stream/start, because
         // both are consumed when the AudioTrack is built (once per stream).
@@ -751,6 +790,7 @@ class Playback(private val app: Context) {
         abandonAudioFocus()
         unregisterNoisyReceiver()
         engine?.release(); engine = null
+        _maAudioSource.value = null
         client?.close(reason); client = null
         idleJob?.cancel(); idleJob = null
         positionTicker?.cancel(); positionTicker = null

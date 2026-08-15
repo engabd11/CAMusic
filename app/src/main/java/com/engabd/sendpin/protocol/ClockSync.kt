@@ -25,6 +25,12 @@ class ClockSync {
     fun currentOffsetUs(): Long = filter.currentOffsetUs()
     fun nowUs(): Long = filter.nowMonotonicUs()
 
+    /** A `server/time` reply was dropped before reaching [onServerTime] (RTT gate). */
+    fun markStartupRejected() = filter.markStartupRejected()
+
+    /** Extra delay [markStartupRejected] wants before the next `client/time` request. */
+    fun startupBackoffMs(): Long = filter.startupBackoffMs()
+
     /** How far the offset estimate might be out, for diagnostics. */
     fun errorUs(): Long = filter.errorUs()
     fun sampleCount(): Int = filter.sampleCount

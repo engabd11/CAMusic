@@ -7,19 +7,27 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.graphics.Bitmap
 import android.os.Build
 import android.os.IBinder
-import android.support.v4.media.MediaMetadataCompat
-import android.support.v4.media.session.MediaSessionCompat
-import android.support.v4.media.session.PlaybackStateCompat
+import android.os.Looper
+import androidx.annotation.OptIn
 import androidx.core.app.NotificationCompat
 import androidx.core.graphics.drawable.toBitmap
-import androidx.media.app.NotificationCompat.MediaStyle
-import androidx.media.session.MediaButtonReceiver
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
+import androidx.media3.common.Player
+import androidx.media3.common.SimpleBasePlayer
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.session.MediaSession
+import androidx.media3.session.MediaStyleNotificationHelper
 import coil.imageLoader
 import coil.request.ImageRequest
 import coil.request.SuccessResult
 import com.engabd.sendpin.SendpinApp
+import com.google.common.util.concurrent.Futures
+import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -31,10 +39,11 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import java.io.ByteArrayOutputStream
 
 /**
  * The **media** notification service — shows album art, transport controls, and a
- * seek bar via a [MediaSessionCompat], but only while music is playing.
+ * seek bar via a media3 [MediaSession], but only while music is playing.
  *
  * This service does NOT own the WebSocket connection or hold wake/wifi locks — that
  * is the job of [SendspinConnectionService], which stays alive permanently. This
@@ -44,7 +53,19 @@ import kotlinx.coroutines.launch
  *
  * Swiping this notification away (or stopping it) does NOT kill the connection —
  * only the [SendspinConnectionService] notification's Stop action does that.
+ *
+ * The session is backed by [ShadePlayer], a [SimpleBasePlayer] facade rather than
+ * a real decoder-backed player — unlike [LocalPlaybackService] (which wraps
+ * [com.engabd.sendpin.audio.LocalPlayer]'s actual ExoPlayer 1:1), this notification
+ * can be showing *either* this phone's own Sendspin stream *or* a remote MA
+ * speaker (see [Shade]/[currentShade]), and transport here was never a matter of
+ * driving a local player directly: [Playback.onPlayPause] et al. are themselves
+ * RPCs to the MA server regardless of which engine renders this phone's own
+ * audio. [ShadePlayer] just gives the OS (lock screen, Bluetooth, Android Auto)
+ * a real [Player] to dispatch those same RPCs through, on top of the exact
+ * button/PendingIntent notification this service already built.
  */
+@OptIn(UnstableApi::class)
 class SendspinService : Service() {
     companion object {
         const val CHANNEL_ID = "sendspin_playback"
@@ -172,8 +193,11 @@ class SendspinService : Service() {
         if (currentShade().local) localAction() else remoteAction()
     }
 
-    private var mediaSession: MediaSessionCompat? = null
-    private var cachedArtwork: android.graphics.Bitmap? = null
+    private var mediaSession: MediaSession? = null
+    private var shadePlayer: ShadePlayer? = null
+    private var cachedArtwork: Bitmap? = null
+    /** PNG-encoded [cachedArtwork], for [ShadePlayer.getState] - encoded once per fetch, not once per poll. */
+    private var cachedArtworkBytes: ByteArray? = null
     private var loadedArtworkUrl: String? = null
     @Volatile private var mediaActive = false
 
@@ -202,7 +226,11 @@ class SendspinService : Service() {
                 startForegroundNow()
                 observe()
             }
-            else -> MediaButtonReceiver.handleIntent(mediaSession, intent)
+            // Media button intents (headset, Bluetooth) are routed by the system to
+            // the media3 MediaSession, which dispatches them through ShadePlayer
+            // directly - nothing to do here for ACTION_MEDIA_BUTTON. (Matches
+            // LocalPlaybackService's identical migration off MediaButtonReceiver.)
+            else -> {}
         }
         return START_STICKY
     }
@@ -238,25 +266,122 @@ class SendspinService : Service() {
     }
 
     /**
-     * Transport goes to whatever the shade is showing.
+     * A [SimpleBasePlayer] facade over [currentShade] — no decoder, no real
+     * playlist, just enough of the [Player] contract for the OS (lock screen,
+     * Bluetooth, Android Auto) to show and drive whatever this notification is
+     * already showing. Transport goes to whatever the shade is showing, same
+     * rule as this service's own PendingIntent-based notification buttons:
+     * these used to go unconditionally to `Playback.playerId` — this phone —
+     * so a headset button pressed while a speaker was playing paused the
+     * phone, which was not the thing making any sound.
      *
-     * These used to go unconditionally to `Playback.playerId` — this phone — so a
-     * headset button pressed while a speaker was playing paused the phone, which was
-     * not the thing making any sound.
+     * [availablePrev]/[availableNext] pad the real, single "current" item with
+     * placeholder neighbours purely so [Player.hasNextMediaItem]/
+     * [Player.hasPreviousMediaItem] read true: `BasePlayer.seekToNext()` /
+     * `seekToPrevious()` silently no-op (never even calling [handleSeek]) for
+     * a single-item playlist, since real ExoPlayer-style "next" is playlist
+     * navigation - ours is an RPC to Music Assistant instead, and MA (not this
+     * class) decides what "next" actually means. The placeholders are never
+     * shown; [getState] always reports index 1 (the real item) as current.
      */
-    private fun setupMediaSession() {
-        mediaSession = MediaSessionCompat(this, "Sendspin").apply {
-            setCallback(object : MediaSessionCompat.Callback() {
-                override fun onPlay() = route({ pb.onPlayPause() }, { ma.playPause() })
-                override fun onPause() = route({ pb.onPlayPause() }, { ma.playPause() })
-                override fun onSkipToNext() = route({ pb.onMediaNext() }, { ma.next() })
-                override fun onSkipToPrevious() = route({ pb.onMediaPrevious() }, { ma.previous() })
-                override fun onStop() { stopForegroundAndSelf() }
-                override fun onSeekTo(pos: Long) =
-                    route({ pb.onMediaSeek((pos / 1000).toInt()) }, { ma.seekTo(pos) })
-            })
-            isActive = true
+    private inner class ShadePlayer(looper: Looper) : SimpleBasePlayer(looper) {
+
+        // Not a companion object: Kotlin doesn't allow one inside an inner class.
+        // One instance per ShadePlayer (one per service lifetime) costs nothing.
+        private val availableCommands = Player.Commands.Builder()
+            .addAll(
+                Player.COMMAND_PLAY_PAUSE,
+                Player.COMMAND_STOP,
+                Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
+                Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM,
+                Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM,
+                Player.COMMAND_GET_CURRENT_MEDIA_ITEM,
+                Player.COMMAND_GET_TIMELINE,
+                Player.COMMAND_GET_METADATA,
+            )
+            .build()
+
+        /** Kept current by [observe]'s position collector; [getState] reads it synchronously. */
+        @Volatile var latestPositionMs: Long = 0L
+
+        /** [invalidateState] is protected; this is what the outer service calls instead. */
+        fun refresh() = invalidateState()
+
+        override fun getState(): State {
+            val shade = currentShade()
+            val current = mediaItemData(shade, uid = "current")
+            return State.Builder()
+                .setAvailableCommands(availableCommands)
+                .setPlaybackState(if (shade.title.isBlank() && !pb.connected.value) STATE_IDLE else STATE_READY)
+                .setPlayWhenReady(shade.isPlaying, Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST)
+                // Unconditionally large: BasePlayer.seekToPrevious() only takes the
+                // "go to the previous item" branch when the current position is at
+                // or under this - otherwise it restarts the current item instead.
+                // MA owns that restart-vs-previous decision server-side (matching
+                // the old MediaSessionCompat.Callback.onSkipToPrevious(), which
+                // always routed straight to pb.onMediaPrevious()/ma.previous() with
+                // no client-side threshold), so this must never trigger the restart
+                // branch on its own.
+                .setMaxSeekToPreviousPositionMs(Long.MAX_VALUE)
+                .setPlaylist(
+                    listOf(mediaItemData(shade, uid = "placeholder-prev"), current, mediaItemData(shade, uid = "placeholder-next")),
+                )
+                .setCurrentMediaItemIndex(1)
+                .setContentPositionMs(latestPositionMs)
+                .build()
         }
+
+        private fun mediaItemData(shade: Shade, uid: String) = MediaItemData.Builder(uid)
+            .setMediaItem(
+                MediaItem.Builder()
+                    .setMediaId(uid)
+                    .setMediaMetadata(
+                        MediaMetadata.Builder()
+                            .setTitle(shade.title.ifBlank { "CAMusic" })
+                            .setArtist(shade.artist)
+                            .setAlbumTitle(shade.album)
+                            .apply {
+                                cachedArtworkBytes?.let { setArtworkData(it, MediaMetadata.PICTURE_TYPE_FRONT_COVER) }
+                            }
+                            .build()
+                    )
+                    .build()
+            )
+            .setDurationUs(shade.durationMs.takeIf { it > 0 }?.let { it * 1000L } ?: C.TIME_UNSET)
+            .setIsSeekable(true)
+            .build()
+
+        override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
+            // A toggle either way, matching the old onPlay()/onPause() - both of
+            // which routed to the exact same call regardless of which fired.
+            route({ pb.onPlayPause() }, { ma.playPause() })
+            return Futures.immediateVoidFuture()
+        }
+
+        override fun handleSeek(mediaItemIndex: Int, positionMs: Long, seekCommand: Int): ListenableFuture<*> {
+            when (seekCommand) {
+                Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM -> route({ pb.onMediaNext() }, { ma.next() })
+                Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM -> route({ pb.onMediaPrevious() }, { ma.previous() })
+                else -> route({ pb.onMediaSeek((positionMs / 1000).toInt()) }, { ma.seekTo(positionMs) })
+            }
+            // The real state change comes back asynchronously (server/state, or
+            // Playback's own flows) and observe()'s collectors already invalidate
+            // on that - this just snaps the transport UI (index 1, not 0 or 2)
+            // back immediately instead of leaving it on the placeholder a moment.
+            invalidateState()
+            return Futures.immediateVoidFuture()
+        }
+
+        override fun handleStop(): ListenableFuture<*> {
+            stopForegroundAndSelf()
+            return Futures.immediateVoidFuture()
+        }
+    }
+
+    private fun setupMediaSession() {
+        val player = ShadePlayer(Looper.getMainLooper())
+        shadePlayer = player
+        mediaSession = MediaSession.Builder(this, player).build()
     }
 
     private fun observe() {
@@ -279,14 +404,16 @@ class SendspinService : Service() {
             // Position comes from whichever side owns the shade: the Sendspin stream's
             // own playhead, or the projected position of the selected MA player.
             combine(shade, pb.positionMs, ma.positionMs) { s, localPos, remotePos ->
-                Triple(s.isPlaying, if (s.local) localPos else remotePos, s)
-            }.collect { (isPlaying, pos, _) -> updatePlaybackState(isPlaying, pos) }
+                if (s.local) localPos else remotePos
+            }.collect { pos ->
+                shadePlayer?.let { it.latestPositionMs = pos; it.refresh() }
+            }
         }
         scope.launch {
             shade.map {
                 MetadataBundle(it.title, it.artist, it.album, it.artworkUrl, it.durationMs)
             }.distinctUntilChanged().collect { meta ->
-                updateMetadata(meta)
+                shadePlayer?.refresh()
                 if (meta.artworkUrl != loadedArtworkUrl) {
                     loadedArtworkUrl = meta.artworkUrl
                     fetchArtwork(meta.artworkUrl)
@@ -314,56 +441,12 @@ class SendspinService : Service() {
         val durationMs: Long,
     )
 
-    private fun updatePlaybackState(isPlaying: Boolean, posMs: Long = pb.playbackPositionMs) {
-        val state = if (isPlaying) PlaybackStateCompat.STATE_PLAYING else PlaybackStateCompat.STATE_PAUSED
-        val speed = if (isPlaying) 1.0f else 0.0f
-        val builder = PlaybackStateCompat.Builder()
-            .setActions(
-                PlaybackStateCompat.ACTION_PLAY or
-                PlaybackStateCompat.ACTION_PAUSE or
-                PlaybackStateCompat.ACTION_PLAY_PAUSE or
-                PlaybackStateCompat.ACTION_SKIP_TO_NEXT or
-                PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS or
-                PlaybackStateCompat.ACTION_STOP or
-                PlaybackStateCompat.ACTION_SEEK_TO
-            )
-            .setState(state, posMs, speed)
-        mediaSession?.setPlaybackState(builder.build())
-    }
-
-    private fun updateMetadata(meta: MetadataBundle) {
-        val md = MediaMetadataCompat.Builder()
-            .putString(MediaMetadataCompat.METADATA_KEY_TITLE, meta.title.ifBlank { "CAMusic" })
-            .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, meta.artist)
-            .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, meta.album)
-            // -1, not 0, when the duration is not known — and it often is not, because
-            // durationMs falls back to 0 whenever the server did not send one.
-            //
-            // 0 does not mean "unknown" to the platform, it means a track zero
-            // milliseconds long, so every position sits at or past the end: the seek
-            // bar in the notification and on the lock screen was pinned hard right for
-            // the whole song. -1 is the documented value for an unknown duration, and
-            // the system draws an indeterminate scrubber for it instead of a wrong one.
-            .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, meta.durationMs.takeIf { it > 0 } ?: -1L)
-        cachedArtwork?.let {
-            // Some Android versions/launchers look for ART, others for ALBUM_ART.
-            // Set both so the lock screen, the shade and Bluetooth head units all
-            // resolve the cover rather than showing a grey placeholder.
-            md.putBitmap(MediaMetadataCompat.METADATA_KEY_ART, it)
-            md.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, it)
-        }
-        mediaSession?.setMetadata(md.build())
-    }
-
-    private fun currentMetadata() = currentShade().let {
-        MetadataBundle(it.title, it.artist, it.album, it.artworkUrl, it.durationMs)
-    }
-
     private fun fetchArtwork(url: String?) {
         artworkJob?.cancel()
         if (url == null) {
             cachedArtwork = null
-            updateMetadata(currentMetadata())
+            cachedArtworkBytes = null
+            shadePlayer?.refresh()
             return
         }
         artworkJob = scope.launch {
@@ -375,11 +458,18 @@ class SendspinService : Service() {
                     .build()
                 val result = imageLoader.execute(req)
                 if (result is SuccessResult) {
-                    cachedArtwork = result.drawable.toBitmap()
+                    val bmp = result.drawable.toBitmap()
+                    cachedArtwork = bmp
+                    // Encoded once here, not on every ShadePlayer.getState() poll -
+                    // see cachedArtworkBytes.
+                    cachedArtworkBytes = ByteArrayOutputStream().use { out ->
+                        bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
+                        out.toByteArray()
+                    }
                     // Refresh both the media session metadata and the notification so
                     // the cover appears the moment it is decoded, not only on the next
                     // play/pause state change.
-                    updateMetadata(currentMetadata())
+                    shadePlayer?.refresh()
                     updateNotification()
                 }
             } catch (_: Exception) { }
@@ -448,8 +538,7 @@ class SendspinService : Service() {
 
         mediaSession?.let { session ->
             builder.setStyle(
-                MediaStyle()
-                    .setMediaSession(session.sessionToken)
+                MediaStyleNotificationHelper.MediaStyle(session)
                     .setShowActionsInCompactView(0, 1, 2)
             )
         }
@@ -475,9 +564,9 @@ class SendspinService : Service() {
     override fun onDestroy() {
         observeJob?.cancel()
         artworkJob?.cancel()
-        mediaSession?.isActive = false
         mediaSession?.release()
         mediaSession = null
+        shadePlayer = null
         scope.cancel()
         super.onDestroy()
     }
