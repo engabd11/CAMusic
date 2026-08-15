@@ -396,7 +396,9 @@ class DirectLightSync(
             channels = config.channels
 
             // 2. Start the stream on the bridge (PUT action:start).
-            bridgeClient.startStream(host, appKey, config.id)
+            // Passing our own application id lets the bridge tell "someone else has
+            // this area" from "we already do" — a reconnect must still reclaim it.
+            bridgeClient.startStream(host, appKey, config.id, appId)
 
             // 3. Open the DTLS channel.
             val psk = clientKey.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
@@ -461,6 +463,13 @@ class DirectLightSync(
             keepaliveJob = scope.launch { keepaliveLoop() }
 
             Log.i(TAG, "Direct Light Sync started: ${config.name} (${channels.size} channels)")
+        } catch (e: HueStreamBusyException) {
+            // Not a fault: someone else is using these lights. Reported at info,
+            // because an error-level stack trace for "the Hue app is running" is
+            // noise — and the message is the actionable part, not the trace.
+            _error.value = e.message
+            Log.i(TAG, "Entertainment area is in use by another app")
+            cleanup()
         } catch (e: Exception) {
             _error.value = e.message ?: "Failed to start Light Sync"
             Log.e(TAG, "start failed", e)
@@ -925,13 +934,20 @@ class DirectLightSync(
                 val configId = settings.hueEntertainmentConfigId.first()
                 if (host.isBlank() || appKey.isBlank() || clientKey.isBlank() || configId.isBlank()) return false
 
-                bridgeClient.startStream(host, appKey, configId)
+                bridgeClient.startStream(host, appKey, configId, appId)
                 val psk = clientKey.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
                 val identity = (appId.ifBlank { appKey }).toByteArray(Charsets.US_ASCII)
                 val client = DtlsPskClient(host, 2100, identity, psk)
                 client.connect()
                 dtls = client
-                encoder = HueStreamEncoder(configId)
+                // With the same per-channel gamuts `start()` built it with. Rebuilding
+                // bare — as this did — silently dropped them, so any Wi-Fi drop left a
+                // mixed-bulb room clamped to Gamut C for the rest of the session: every
+                // saturated colour subtly wrong, and nothing to indicate why.
+                encoder = HueStreamEncoder(
+                    configId,
+                    gamuts = channels.mapNotNull { ch -> ch.gamut?.let { ch.channelId to it } }.toMap(),
+                )
                 sendFailures = 0
                 lastSent = null
                 delayQueue.clear()

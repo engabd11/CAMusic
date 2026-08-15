@@ -1,5 +1,6 @@
 package com.engabd.sendpin.hue
 
+import kotlin.math.abs
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -141,5 +142,131 @@ class SpatialWavesTest {
         assertEquals("high", heightBand(1f))
         assertEquals("high", heightBand(0.95f))
         assertTrue(heightBand(0.5f) == "low_mid" || heightBand(0.5f) == "mid")
+    }
+
+    // ── Continuous height ────────────────────────────────────────────────
+
+    @Test
+    fun `the blended height ends agree with the stepped ones`() {
+        assertEquals(0, heightBandLower(0f))
+        assertEquals(0f, heightBandFrac(0f), 1e-5f)          // pure sub_bass
+        assertEquals(HEIGHT_BANDS.size - 1, heightBandLower(1f))
+        assertEquals(0f, heightBandFrac(1f), 1e-5f)          // pure high
+    }
+
+    /**
+     * The point of the blend. `heightBand` is a five-way step, so two lamps a hand's
+     * width apart either side of a boundary followed completely different parts of
+     * the spectrum — visible as a room of unrelated lamps rather than a field.
+     */
+    @Test
+    fun `height response is continuous across a band boundary`() {
+        // 0.4 is a band edge for five bands over 0..1.
+        fun weight(nz: Float): Float {
+            val lower = heightBandLower(nz)
+            val frac = heightBandFrac(nz)
+            // A scalar standing in for "which band this lamp follows": band index
+            // plus how far it has moved towards the next.
+            return lower + frac
+        }
+        var prev = weight(0f)
+        for (i in 1..200) {
+            val nz = i / 200f
+            val w = weight(nz)
+            assertTrue(
+                abs(w - prev) < 0.15f,
+                "height response jumped at nz=$nz: $prev → $w",
+            )
+            prev = w
+        }
+    }
+
+    // ── Colour axis ──────────────────────────────────────────────────────
+
+    /**
+     * A flat room must render exactly as it did before the tilt existed.
+     *
+     * `normalizePositions` collapses an axis with no spread to 0.5, so the y and z
+     * terms become a constant that min-max normalisation then removes entirely —
+     * leaving the projection an affine function of x, which for evenly spaced lamps
+     * is `xrank`. This is what makes the change safe for the common case.
+     */
+    @Test
+    fun `a flat room's colour axis reduces to left-to-right`() {
+        val chans = (0 until 5).map {
+            EntertainmentChannel(it, ChannelPosition(x = -1f + 0.5f * it, y = 0f, z = 0f))
+        }
+        val pos = normalizePositions(chans)
+        val proj = chans.map { colourAxisProjection(pos[it.channelId]!!) }
+        val lo = proj.min()
+        val span = proj.max() - lo
+        proj.forEachIndexed { i, p ->
+            val normalised = (p - lo) / span
+            assertEquals(i / 4f, normalised, 1e-5f, "lamp $i should sit at its rank")
+        }
+    }
+
+    @Test
+    fun `height and depth move the colour axis`() {
+        val low = colourAxisProjection(Vec3(0.5f, 0.5f, 0f))
+        val high = colourAxisProjection(Vec3(0.5f, 0.5f, 1f))
+        assertTrue(high > low, "two lamps at the same x should differ in colour by height")
+    }
+
+    // ── Coupling kernel ──────────────────────────────────────────────────
+
+    /**
+     * Row-stochastic is the property everything else rests on: it makes the
+     * coupling a weighted average, so it can redistribute the room's energy but
+     * never add to or remove from it.
+     */
+    @Test
+    fun `coupling rows sum to one`() {
+        val k = couplingKernel(
+            listOf(
+                Vec3(0f, 0f, 0f), Vec3(0.3f, 0.1f, 0f),
+                Vec3(0.7f, 0.2f, 0.5f), Vec3(1f, 0f, 1f),
+            ),
+        )
+        for ((i, row) in k.withIndex()) {
+            assertEquals(1f, row.sum(), 1e-4f, "row $i should sum to 1")
+            assertTrue(row.all { it >= 0f }, "row $i should be non-negative")
+        }
+    }
+
+    /** A lamp must hear itself more than anything else. */
+    @Test
+    fun `a lamp is its own strongest neighbour`() {
+        val k = couplingKernel(listOf(Vec3(0f, 0f, 0f), Vec3(0.5f, 0f, 0f), Vec3(1f, 0f, 0f)))
+        for (i in k.indices) {
+            assertTrue(
+                k[i].withIndex().maxByOrNull { it.value }?.index == i,
+                "lamp $i should weight itself highest",
+            )
+        }
+    }
+
+    @Test
+    fun `a single lamp couples only to itself`() {
+        val k = couplingKernel(listOf(Vec3(0.5f, 0.5f, 0.5f)))
+        assertEquals(1, k.size)
+        assertEquals(1f, k[0][0], 1e-5f)
+    }
+
+    /** Coincident lamps genuinely *are* one blob, so uniform is the right answer. */
+    @Test
+    fun `coincident lamps couple uniformly`() {
+        val p = Vec3(0.5f, 0.5f, 0.5f)
+        val k = couplingKernel(listOf(p, p, p))
+        for (row in k) for (w in row) assertEquals(1f / 3f, w, 1e-5f)
+    }
+
+    /** Nearer lamps must bind harder than distant ones. */
+    @Test
+    fun `coupling falls off with distance`() {
+        val k = couplingKernel(
+            listOf(Vec3(0f, 0f, 0f), Vec3(0.2f, 0f, 0f), Vec3(1f, 0f, 0f)),
+        )
+        assertTrue(k[0][1] > k[0][2], "the nearer neighbour should weigh more")
     }
 }

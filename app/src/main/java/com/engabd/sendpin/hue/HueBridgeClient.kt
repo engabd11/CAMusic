@@ -87,6 +87,16 @@ class LinkButtonNotPressed : Exception("Press the link button on your Hue Bridge
 
 class HueBridgeException(message: String) : Exception(message)
 
+/**
+ * Another application already holds this entertainment area's stream.
+ *
+ * Its own type rather than a plain [HueBridgeException] because it is the one
+ * failure here that is not a fault: nothing is broken, someone else is simply
+ * using the lights. Callers surface it to the user and stop, rather than
+ * retrying — retrying would just take the area on the second attempt.
+ */
+class HueStreamBusyException(message: String) : Exception(message)
+
 class HueBridgeClient(
     private val context: Context,
     /**
@@ -412,9 +422,45 @@ class HueBridgeClient(
     /**
      * Start streaming on an entertainment area. Must be called before opening
      * the DTLS connection.
+     *
+     * The Entertainment API allows exactly one streaming session per area, and
+     * names the holder in `active_streamer`. This used to issue `action:start`
+     * regardless, which does not fail — it *takes* the area, so starting sync here
+     * would silently kill whatever the Hue app, an HDMI Sync Box or another phone
+     * was already running on those lamps. Refusing, and saying who has it, is both
+     * what the spec asks for and the only answer a user can act on.
+     *
+     * [appId] is this app's own `hue-application-id`, which is what the bridge puts
+     * in `active_streamer` — so an area *we* already hold is not a conflict, and a
+     * reconnect after a dropped Wi-Fi link reclaims it as before.
      */
-    suspend fun startStream(host: String, appKey: String, configId: String) = withContext(Dispatchers.IO) {
+    suspend fun startStream(
+        host: String,
+        appKey: String,
+        configId: String,
+        appId: String = "",
+    ) = withContext(Dispatchers.IO) {
+        val holder = activeStreamerOf(host, appKey, configId)
+        if (holder != null && appId.isNotBlank() && holder != appId) {
+            throw HueStreamBusyException(
+                "Another app is already syncing these lights. Stop it there first.",
+            )
+        }
         putJson("https://$host/clip/v2/resource/entertainment_configuration/$configId", appKey, """{"action":"start"}""")
+    }
+
+    /**
+     * Who holds this area's streaming session, or null if nobody does.
+     *
+     * Best effort: a bridge that cannot be asked is not a reason to refuse to
+     * start, since the start itself will fail soon enough if something is wrong.
+     */
+    private suspend fun activeStreamerOf(host: String, appKey: String, configId: String): String? = try {
+        val body = getJson("https://$host/clip/v2/resource/entertainment_configuration/$configId", appKey)
+        val configs = body["data"]?.let { json.decodeFromJsonElement<List<EntertainmentConfig>>(it) }
+        configs?.firstOrNull()?.takeIf { it.isStreaming }?.activeStreamer?.rid
+    } catch (_: Exception) {
+        null
     }
 
     /**

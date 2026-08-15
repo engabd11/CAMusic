@@ -262,6 +262,11 @@ private fun HaLightSyncScreen(onBack: () -> Unit, viewModel: LightSyncViewModel 
                 }
                 if (a.advanced) {
                     Spacer(Modifier.height(12.dp))
+                    // The Home Assistant path's list, deliberately *not* the direct
+                    // path's. `LightSyncViewModel` posts this map verbatim to
+                    // syncoV2's `hue_music_sync.set_options` service, and that
+                    // integration has no `cohesion` option to receive — so the two
+                    // lists must stay separate.
                     LightSyncRepository.TUNABLE_DEFS.forEach { (key, label) ->
                         val factor = a.tunables[key] ?: 1f
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 5.dp), horizontalArrangement = Arrangement.spacedBy(11.dp)) {
@@ -547,7 +552,11 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                     var draft by remember { mutableStateOf<Map<String, Float>>(emptyMap()) }
                     val shown = tunables + draft
 
-                    LightSyncRepository.TUNABLE_DEFS.forEach { (key, label) ->
+                    // The direct path's own list, which carries `cohesion`. The HA
+                    // screen keeps `LightSyncRepository.TUNABLE_DEFS`, because that map
+                    // is posted verbatim to syncoV2's `set_options` service and the
+                    // integration has no such option to receive.
+                    com.engabd.sendpin.hue.SyncoEngine.TUNABLE_DEFS.forEach { (key, label) ->
                         val factor = shown[key] ?: 1f
                         val isDefault = kotlin.math.abs(factor - 1f) < 0.005f
                         Row(
@@ -589,7 +598,7 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                     }
 
                     Spacer(Modifier.height(8.dp))
-                    val anyChanged = LightSyncRepository.TUNABLE_DEFS.any { (k, _) ->
+                    val anyChanged = com.engabd.sendpin.hue.SyncoEngine.TUNABLE_DEFS.any { (k, _) ->
                         kotlin.math.abs((shown[k] ?: 1f) - 1f) >= 0.005f
                     }
                     Text(

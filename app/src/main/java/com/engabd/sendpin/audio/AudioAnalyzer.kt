@@ -85,6 +85,22 @@ private const val SALIENCE_MIN_REF = 0.04f
 private const val AGC_DECAY = 0.9998f
 private const val MEL_AGC_DECAY = 0.9998f
 
+/**
+ * How long the live band-loudness reference settles for before it is published.
+ *
+ * ~8 seconds at the ~50 fps analysis rate. Long enough to have heard more than an
+ * intro, short enough to be useful well inside the first chorus.
+ */
+private const val MEL_REF_WARMUP_FRAMES = 400
+
+/**
+ * Floor on a bin's live reference, as a fraction of the loudest bin's.
+ *
+ * Matches the offline scan's own relative floor. Without it a band containing
+ * only room tone gets normalised up to look like real content.
+ */
+private const val MEL_REF_FLOOR_FRAC = 0.02f
+
 // Long-horizon flux floor
 private const val LONG_FLUX_DECAY = 0.9995f
 
@@ -139,10 +155,26 @@ data class AnalysisFrame(
      * [melbank] is per-bin normalised, which is what makes a hi-hat tick and a
      * kick read the same height; multiplying by this recovers how loud each band
      * actually is, so a quiet instrument lights its lamp dimmer than a loud one.
-     * No live estimate can produce it — a per-bin AGC divides out the very thing
-     * it measures — so it can only come from seeing the whole track at once.
+     *
+     * From an offline scan, which sees the whole track at once and can take a
+     * percentile. [melbankRefLive] is the running approximation for everything
+     * else.
      */
     val melbankRef: FloatArray = FloatArray(0),
+    /**
+     * As [melbankRef], but measured live.
+     *
+     * It was long assumed this could not exist, on the reasoning that a per-bin
+     * AGC divides out exactly the thing being measured. True of the *published*
+     * [melbank] — and false of what it is computed from: the raw per-bin
+     * magnitude means are still in hand one line before the AGC is applied, and a
+     * slow envelope over those is a perfectly good absolute reference.
+     *
+     * Empty until the envelope has had a few seconds to settle, since a
+     * half-formed estimate is worse than none. The scan's version stays
+     * authoritative where a scan exists.
+     */
+    val melbankRefLive: FloatArray = FloatArray(0),
     /**
      * Live tempo estimate in BPM, derived from recent detected beat intervals.
      * Mirrors syncoV2's `AnalysisFrame.tempo_bpm`; 0 means not enough onsets yet.
@@ -381,6 +413,19 @@ class AudioAnalyzer(
     private val melAgc = Array(nMel) { Agc(MEL_AGC_DECAY) }
     private val melFilter = ExpFilter(FloatArray(nMel), alphaRise = 0.85f, alphaDecay = 0.20f)
 
+    /**
+     * Slow envelope over the **pre-AGC** per-bin means, the live stand-in for a
+     * track scan's absolute reference.
+     *
+     * Rises over roughly ten seconds and falls over a hundred, at the ~50 fps
+     * analysis rate. Deliberately lopsided: it should reach a new song's balance
+     * within a verse, and not be dragged down by a quiet bridge.
+     */
+    private val melRef = ExpFilter(FloatArray(nMel), alphaRise = 0.002f, alphaDecay = 0.0002f)
+
+    /** Frames analysed since the last reset, for [MEL_REF_WARMUP_FRAMES]. */
+    private var framesSeen = 0
+
     // Onset state
     private var prevLog: FloatArray? = null
     private var prevLin: FloatArray? = null
@@ -525,6 +570,9 @@ class AudioAnalyzer(
 
         // Melbank
         val melMeans = bandMeans(mag, melStarts, melCounts)
+        // The absolute reference is taken *here*, from the raw means, before the
+        // per-bin AGC below flattens them. That ordering is the whole trick.
+        val melRefLive = updateMelRef(melMeans)
         val melNormed = FloatArray(nMel) { i -> melAgc[i].normalise(melMeans[i]) }
         val melbank = melFilter.update(melNormed)
 
@@ -563,6 +611,7 @@ class AudioAnalyzer(
             bands = bands,
             energy = energy,
             melbank = melbank,
+            melbankRefLive = melRefLive,
             beat = onsets.beat,
             beatStrength = onsets.strength,
             flux = fluxAgc.normalise(onsets.flux),
@@ -725,11 +774,39 @@ class AudioAnalyzer(
         return if (median > 1e-9f) 60f / median else 0f
     }
 
+    /**
+     * Track the pre-AGC per-bin means and publish them as a 0..1 reference.
+     *
+     * Normalised by the loudest bin, so the result is "how loud is this band
+     * relative to the loudest one" — the same quantity a track scan's percentile
+     * produces, and the same shape the engine's weights expect. Bins below
+     * [MEL_REF_FLOOR_FRAC] of the peak are clamped to it, so a band carrying only
+     * noise cannot have that noise normalised up into a meaningful-looking level.
+     *
+     * Returns an empty array until the envelope has settled: a reference taken
+     * from the first second of a track is a reference to its intro, and applying
+     * it would mis-weight the rest of the song.
+     */
+    private fun updateMelRef(melMeans: FloatArray): FloatArray {
+        val smoothed = melRef.update(melMeans)
+        framesSeen++
+        if (framesSeen < MEL_REF_WARMUP_FRAMES) return FloatArray(0)
+        var peak = 0f
+        for (v in smoothed) if (v > peak) peak = v
+        if (peak <= 1e-9f) return FloatArray(0)
+        return FloatArray(smoothed.size) { i ->
+            (smoothed[i] / peak).coerceIn(MEL_REF_FLOOR_FRAC, 1f)
+        }
+    }
+
     fun reset() {
         for (a in agc.values) a.reset()
         energyAgc.reset()
         for (a in melAgc) a.reset()
         melFilter.reset(FloatArray(nMel))
+        // A new track's balance must not be seeded from the last one's.
+        melRef.reset(FloatArray(nMel))
+        framesSeen = 0
         prevLog = null; prevLin = null
         midEprev = 0f; midRiseN = 0; midAttackOk = false; midAttackFlux = 0f
         java.util.Arrays.fill(bufL, 0f); java.util.Arrays.fill(bufR, 0f)

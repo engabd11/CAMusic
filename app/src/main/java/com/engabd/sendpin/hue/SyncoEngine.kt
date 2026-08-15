@@ -3,6 +3,7 @@ package com.engabd.sendpin.hue
 import com.engabd.sendpin.audio.AnalysisFrame
 import com.engabd.sendpin.audio.BeatGrid
 import com.engabd.sendpin.audio.StructureState
+import kotlin.math.abs
 import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
@@ -137,6 +138,58 @@ data class ModeParams(
     val flashGamma: Float = 1.0f,
     val flashLoudFloor: Float = 1.0f,
     val bandLoudStrength: Float = 0f,
+    /**
+     * How much of a lamp's *hottest* melbank bin lifts its glow, against the mean
+     * of its whole window.
+     *
+     * A lamp averages roughly seven of the sixteen bins (see `melbankWindow`), so
+     * a pure mean divides a vocal sitting in two of them by seven — which is a
+     * large part of why mid content read as too dim to be there. Extreme already
+     * did this, as `EXT_GLOW_PEAKINESS`; this is the same idea on the main path,
+     * exposed through the `contrast` tunable, which had nothing else to do here.
+     */
+    val melPeakiness: Float = 0f,
+
+    // ── Sustain bloom ─────────────────────────────────────────────────────
+    //
+    // The layer that fires where every other one is silent. `eventGates` zeroes
+    // its width gate for narrowband onsets, and `melTransient` is measured against
+    // a baseline a held note settles into — both deliberate, both correct for
+    // percussion, and between them they mean a long vocal over a steady chord
+    // produces no flash, no pop and no wave. All that was left was one narrowband
+    // melbank term per lamp, which is why a sustained mid read as one lamp barely
+    // moving instead of the room glowing.
+
+    /** Brightness a fully-committed sustain adds. Zero disables the layer. */
+    val tonalGain: Float = 0f,
+    /** `onsetWidth` at or above which nothing counts as tonal. */
+    val tonalWidthMax: Float = 0.22f,
+    /** Soft knee below [tonalWidthMax], mirroring `eventGates`' own shape. */
+    val tonalWidthSoft: Float = 0.10f,
+    /** Rise time constant in seconds — it blooms rather than pulses. */
+    val tonalAttackS: Float = 0.55f,
+    /** Fall time constant in seconds. Longer than the rise, so it lingers. */
+    val tonalReleaseS: Float = 1.30f,
+    /** How hard live transients suppress the bloom. Higher = more percussive. */
+    val tonalDamp: Float = 1.0f,
+
+    /**
+     * How far colour follows the tilted room axis instead of left-to-right rank.
+     *
+     * 0 is the original x-only field, and is the revert. Hue could only ever sweep
+     * one way across a room, so two lamps at the same x and different heights were
+     * always the same colour however far apart they actually were.
+     */
+    val colourTilt: Float = 0f,
+
+    /**
+     * How much of each lamp's continuous drive comes from its neighbours.
+     *
+     * 0 is fully independent lamps — the original behaviour, and the revert. See
+     * `diffuseDrives` for why this couples the *drive* and never the output.
+     */
+    val spatialCoupling: Float = 0f,
+
     val roomPunch: Float = 0f,
     val fluxGate: Float = 0f,
     val predropDepth: Float = 0f,
@@ -164,6 +217,13 @@ val MODE_PARAMS = mapOf(
         colourBeatStep = 0.008f,
         colourSpread = 1.0f,
         salienceGamma = 1.6f, widthMin = 0.20f,
+        // Subtle sits at base = floor = 0.80 and is already near the clamp through
+        // music, so there is little headroom for a peak to use. A light touch of
+        // band loudness still shapes *which* lamps sit where in that narrow band.
+        melPeakiness = 0.20f, bandLoudStrength = 0.15f,
+        // Colour is Subtle's whole identity (colourSpread = 1.0), so it gets the
+        // most tilt: the room reads as one slow gradient through all three axes.
+        colourTilt = 0.50f,
     ),
     SyncMode.MEDIUM to ModeParams(
         base = 0.12f, floor = 0.05f, bassGain = 0.14f, beatGain = 0.9f, beatThreshold = 1.4f,
@@ -175,6 +235,9 @@ val MODE_PARAMS = mapOf(
         energyGain = 0.15f, salienceGamma = 1.3f, widthMin = 0.15f, kickBassFloor = 0.30f,
         predropDepth = 0.30f, phraseBars = 4, phraseColourShift = 0.03f,
         panGain = 0.5f, warmCalm = 0f,
+        melPeakiness = 0.35f, bandLoudStrength = 0.35f,
+        tonalGain = 0.22f, tonalAttackS = 0.65f, tonalReleaseS = 1.5f, colourTilt = 0.45f,
+        spatialCoupling = 0.45f,
         waveGain = 0.75f, waveSpeed = 2.2f, waveWidth = 0.30f, heightFreq = 0.30f,
         depthWash = 0.08f, anticipationMs = 80f, dropBoost = 0.50f, buildDesat = 0.50f,
     ),
@@ -190,6 +253,12 @@ val MODE_PARAMS = mapOf(
         energyGain = 0.15f, salienceGamma = 1.0f, widthMin = 0.12f, kickBassFloor = 0.35f,
         predropDepth = 0.45f, phraseBars = 4, phraseColourShift = 0.05f,
         panGain = 0.6f,
+        melPeakiness = 0.40f, bandLoudStrength = 0.45f,
+        // The darkest resting level of the reactive rungs (base = 0.06), so it has
+        // the most headroom for a bloom and the most obvious gap without one.
+        // Moderate: High's role split is deliberate separation, so binding the room
+        // too tightly would undo the thing the rung is for.
+        tonalGain = 0.26f, colourTilt = 0.35f, spatialCoupling = 0.35f,
         waveGain = 0.55f, waveSpeed = 2.2f, waveWidth = 0.32f, anticipationMs = 80f,
         dropBoost = 0.60f, buildDesat = 0.45f,
     ),
@@ -204,6 +273,11 @@ val MODE_PARAMS = mapOf(
         energyGain = 0.16f, salienceGamma = 0.8f, widthMin = 0.08f, nobeatFlash = 0.30f,
         fluxGate = 0.5f, predropDepth = 0.60f, phraseBars = 4, phraseColourShift = 0.06f,
         panGain = 0.5f,
+        melPeakiness = 0.40f, bandLoudStrength = 0.40f,
+        // Percussive-forward rung: damp harder so the bloom cannot soften a drop.
+        // colourSpread is only 0.22 here — near unison already — so a large tilt
+        // would have little to spread and mostly just shift the whole room.
+        tonalGain = 0.20f, tonalDamp = 1.4f, colourTilt = 0.25f, spatialCoupling = 0.40f,
         waveGain = 0.55f, waveSpeed = 2.4f, waveWidth = 0.30f, anticipationMs = 90f,
         dropBoost = 0.80f, buildDesat = 0.50f,
     ),
@@ -217,7 +291,7 @@ val MODE_PARAMS = mapOf(
         roomPunch = 1.5f, energyGain = 0.06f, flashDecay = 0.70f,
         briAttack = 0.5f, briDecay = 0.4f,
         colourSpeed = 0.05f, colourFlow = 0.05f, colourSpread = 0.4f, colourLerp = 0.4f,
-        colourSat = 0.97f, panGain = 0.6f,
+        colourSat = 0.97f, panGain = 0.6f, colourTilt = 0.30f,
     ),
 )
 
@@ -451,6 +525,57 @@ private const val EXT_ROOM_GAMMA = 2.0f
  */
 private const val BAND_LOUD_COMPRESS = 0.5f
 
+/**
+ * Bounds on a *mean-normalised* loudness weight (the main render path's form).
+ *
+ * Normalising makes the weights redistribute rather than attenuate, but a track
+ * whose reference is nearly silent in one band would otherwise hand that band a
+ * huge multiplier off a tiny denominator. These keep the spread musical: a quiet
+ * band can be pulled down to a quarter and a loud one lifted to two and a half,
+ * and no further.
+ */
+private const val LOUD_WEIGHT_MIN = 0.25f
+private const val LOUD_WEIGHT_MAX = 2.5f
+
+// ── Sustain bloom ─────────────────────────────────────────────────────────
+
+/**
+ * How much of the spatial coupling the *transient* layer takes, against the glow.
+ *
+ * Half. Fully diffusing the attack pop would blunt the per-instrument detail it
+ * exists to provide — a kick would pop the whole room rather than the low lamps.
+ */
+private const val POP_COUPLE_RATIO = 0.5f
+
+/** ~200 ms smoothing on chroma total variation, so a single frame can't unlatch it. */
+private const val CHROMA_FLUX_SMOOTH = 0.10f
+
+/**
+ * Chroma movement that counts as "no longer a held pitch".
+ *
+ * Total variation between successive sum-normalised 12-bin vectors, so 0 is a
+ * perfectly steady chord and 1 is a complete redistribution. A sustained note
+ * sits well under this; a busy melodic line crosses it, which is the intent —
+ * the bloom is for held material.
+ */
+private const val CHROMA_FLUX_REF = 0.22f
+
+/** Asymmetric envelope on room-wide transient activity: fast up, slow down. */
+private const val TONAL_DAMP_RISE = 0.5f
+private const val TONAL_DAMP_FALL = 0.05f
+
+/** Transient level at which the bloom is fully suppressed at `tonalDamp = 1`. */
+private const val TONAL_DAMP_REF = 0.35f
+
+/**
+ * How much a locked beat grid suppresses the bloom.
+ *
+ * Mild on purpose. A vocal over a steady groove is most popular music, and
+ * damping hard on rhythm would switch this layer off for exactly the material the
+ * user asked for it on.
+ */
+private const val TONAL_RHYTHM_DAMP = 0.35f
+
 /** Asymmetric per-bin baseline the melbank transient is measured against. */
 private const val MEL_SLOW_RISE = 0.25f
 private const val MEL_SLOW_FALL = 0.06f
@@ -497,7 +622,14 @@ class SyncoEngine(
     private val configurationType: String = "room",
 ) {
     companion object {
-        /** Advanced live tunables: each is a multiplier on the active mode's params. */
+        /**
+         * Advanced live tunables: each is a multiplier on the active mode's params.
+         *
+         * `cohesion` is **direct-path only**. The Home Assistant path posts its own
+         * tunable map straight to syncoV2's `hue_music_sync.set_options` service, and
+         * that integration has no such option — so the two lists are deliberately
+         * separate and must stay that way. See `LightSyncRepository.TUNABLE_DEFS`.
+         */
         val TUNABLE_KEYS = listOf(
             "reactivity",    // flash punch
             "glow",          // continuous room brightness
@@ -505,6 +637,18 @@ class SyncoEngine(
             "contrast",      // small-vs-big peak spread
             "colour_speed",  // colour drift speed
             "loudness",      // per-band absolute-loudness follow
+            "cohesion",      // how much neighbouring lamps share a drive
+        )
+
+        /** The direct path's tunables, with labels, for its own settings screen. */
+        val TUNABLE_DEFS = listOf(
+            "reactivity" to "Reactivity",
+            "glow" to "Glow",
+            "movement" to "Movement",
+            "contrast" to "Contrast",
+            "colour_speed" to "Colour speed",
+            "loudness" to "Loudness",
+            "cohesion" to "Cohesion",
         )
     }
 
@@ -553,13 +697,27 @@ class SyncoEngine(
             melFluxGain = base.melFluxGain * r,
             beatGain = base.beatGain * r,
             melbankGain = base.melbankGain * g,
+            // `glow` is documented as "continuous room brightness", which is exactly
+            // what the sustain bloom is. Turning it up used to be the only way to
+            // make a long vocal show at all — a global lift standing in for a
+            // missing layer — and now it lifts the layer that was missing.
+            tonalGain = base.tonalGain * g,
             rotateRate = base.rotateRate * m,
             rotateSwing = base.rotateSwing * m,
             waveSpeed = base.waveSpeed * m,
             flashGamma = max(0.2f, base.flashGamma * c),
+            // `contrast` is "small-vs-big peak spread", which is exactly what this
+            // does within a lamp's slice of the spectrum. Until now it only reached
+            // `flashGamma`, which `renderExtreme` alone reads — so on four of the
+            // five rungs the slider did nothing at all.
+            melPeakiness = min(1f, base.melPeakiness * c),
             colourSpeed = base.colourSpeed * cs,
             colourFlow = base.colourFlow * cs,
             bandLoudStrength = min(1f, base.bandLoudStrength * loud),
+            // Its own key rather than folded into `movement`: that one scales *rates*
+            // (rotation, wave speed), and cohesion is not a rate — turning movement
+            // down would then fragment the room, which the label does not promise.
+            spatialCoupling = min(1f, base.spatialCoupling * fac("cohesion")),
         )
     }
 
@@ -582,6 +740,13 @@ class SyncoEngine(
         /** Half-open melbank window this lamp averages. */
         val melLo: Int,
         val melHi: Int,
+        /**
+         * Position along a tilted room axis, 0..1 — the colour field's own
+         * coordinate. Uses all three axes rather than only x, so hue drifts through
+         * the room's depth and height as well as its width. Falls back to [xrank]
+         * when the lamps have no spread to project onto.
+         */
+        val spatialPos: Float,
     )
 
     /** Normalised lamp positions, and the phrase-cycle wave origins over them. */
@@ -589,6 +754,67 @@ class SyncoEngine(
     private val origins: List<Vec3> = phraseOrigins(positions, configurationType)
 
     private val cmap: Map<Int, ChannelInfo> = buildChannelMap(channels)
+
+    /**
+     * How much each lamp hears of each other lamp. Built once — the geometry does
+     * not change while a session is running, and only the *amount* mixed in is
+     * tunable. Rows sum to 1; see [couplingKernel].
+     */
+    private val coupling: Array<FloatArray> =
+        couplingKernel(rankIds.map { cmap[it]?.pos ?: Vec3(0.5f, 0.5f, 0.5f) })
+
+    // The two continuous per-lamp drives, before and after spatial coupling.
+    // Preallocated and reused every frame, like melSlow/melTransient/melFlux below:
+    // this runs sixty times a second and must not allocate.
+    private val melLevelBuf = FloatArray(nChannels)
+    private val popBuf = FloatArray(nChannels)
+    private val melLevelSm = FloatArray(nChannels)
+    private val popSm = FloatArray(nChannels)
+
+    /**
+     * Blend each lamp's continuous drive with its neighbours'.
+     *
+     * **Pre-smoothing, on the drive — never post-smoothing, on the output.** The
+     * distinction is the whole design:
+     *
+     *  - Smoothing the *output* would smear `lightFlash` across lamps, which is
+     *    what the bass/mid/vocal role split exists to keep apart, and would widen
+     *    the travelling wavefront until the near-versus-far peak that makes a kick
+     *    read as sweeping the room flattened out. It would also sit between
+     *    `briAttack/briDecay` and the per-channel slew, coupling the smoothers to
+     *    each other rather than the signal.
+     *  - Smoothing the *drive* touches only the two terms that made each lamp an
+     *    independent visualiser, and leaves every transient layer — flash, wave,
+     *    swell, roles, shimmer — exactly as it was. The punch is untouched.
+     *
+     * **A spatial kernel has no temporal memory.** It is zero-phase and cannot
+     * delay anything by construction, which is why it is safe to add to a render
+     * whose timing is already right.
+     *
+     * The pop is coupled at half strength: fully diffusing the transient layer
+     * would blunt the per-instrument detail it exists to provide.
+     */
+    private fun diffuseDrives(p: ModeParams) {
+        val k = p.spatialCoupling
+        if (k <= 0f || nChannels <= 1) {
+            melLevelBuf.copyInto(melLevelSm)
+            popBuf.copyInto(popSm)
+            return
+        }
+        val kPop = k * POP_COUPLE_RATIO
+        for (i in 0 until nChannels) {
+            val row = coupling[i]
+            var mixMel = 0f
+            var mixPop = 0f
+            for (j in 0 until nChannels) {
+                val w = row[j]
+                mixMel += w * melLevelBuf[j]
+                mixPop += w * popBuf[j]
+            }
+            melLevelSm[i] = (1f - k) * melLevelBuf[i] + k * mixMel
+            popSm[i] = (1f - kPop) * popBuf[i] + kPop * mixPop
+        }
+    }
 
     /**
      * Live wavefronts. Bounded at [MAX_WAVES]: each one costs a distance lookup
@@ -675,10 +901,24 @@ class SyncoEngine(
     private fun buildChannelMap(channels: List<EntertainmentChannel>): Map<Int, ChannelInfo> {
         val sorted = channels.sortedBy { it.position.x }
         val n = sorted.size
+
+        // The colour axis, min-max normalised across the area so the palette always
+        // spans the room whatever shape it is. A collapsed projection — every lamp
+        // at the same point on the axis — falls back to rank, which is what a
+        // single-lamp or perfectly-stacked area needs.
+        val projections = sorted.map { ch ->
+            colourAxisProjection(positions[ch.channelId] ?: Vec3(0.5f, 0.5f, 0.5f))
+        }
+        val projLo = projections.minOrNull() ?: 0f
+        val projHi = projections.maxOrNull() ?: 0f
+        val projSpan = projHi - projLo
+
         return sorted.mapIndexed { i, ch ->
             val xrank = if (n <= 1) 0.5f else i.toFloat() / (n - 1)
             val pos = positions[ch.channelId] ?: Vec3(xrank, 0.5f, 0.5f)
             val (melLo, melHi) = melbankWindow(xrank, MELBANK_BINS)
+            val spatialPos =
+                if (projSpan < 1e-6f) xrank else (projections[i] - projLo) / projSpan
             ch.channelId to ChannelInfo(
                 xrank = xrank,
                 side = 2f * xrank - 1f,
@@ -692,6 +932,7 @@ class SyncoEngine(
                 distToOrigin = FloatArray(origins.size) { k -> distance(pos, origins[k]) },
                 melLo = melLo,
                 melHi = melHi,
+                spatialPos = spatialPos,
             )
         }.toMap()
     }
@@ -1070,6 +1311,9 @@ class SyncoEngine(
         updateRhythmConf(frame, beatgrid)
         val rhythmGate = p.nobeatFlash + (1f - p.nobeatFlash) * rhythmConf
 
+        // The sustain bloom, computed once for the room.
+        updateTonalEnv(frame, dt, env, musicGate)
+
         // Loudness scale
         val loudScale = min(min(1f, max(visBass, energyEnv) / LOUD_REF), ampScale)
 
@@ -1199,27 +1443,76 @@ class SyncoEngine(
             }
         }
 
-        // Render each channel
-        val out = HashMap<Int, Rgb>()
-        for (cid in rankIds) {
-            val info = cmap[cid] ?: continue
-            val role = roles[cid] ?: ROLE_BASS
+        // Per-bin absolute-loudness weights, mean-normalised so they redistribute
+        // rather than attenuate — see [melLoudWeights]. Computed once for the frame:
+        // this used to be reached only by `renderExtreme`, which is why the
+        // `loudness` tunable did nothing on any other rung.
+        val melWeight = melLoudWeights(frame, p, normalise = true)
 
-            // Continuous melbank layer. The window overlaps its neighbours, so
-            // the room reads as a smooth spectral field rather than as hard-edged
-            // frequency bands.
-            val mel = frame.melbank
-            val melLevel = if (mel.isNotEmpty() && mel.size >= MELBANK_BINS) {
+        // ── Pre-pass: the two per-lamp continuous drives ─────────────────
+        //
+        // Hoisted out of the render loop so they can be spatially coupled before
+        // anything reads them. These two — the melbank glow and the attack pop —
+        // are precisely the terms that made each lamp an independent visualiser:
+        // both are computed from that lamp's own narrow slice of the spectrum and
+        // from nothing else.
+        val mel = frame.melbank
+        val haveMel = mel.isNotEmpty() && mel.size >= MELBANK_BINS
+        for ((rank, cid) in rankIds.withIndex()) {
+            val info = cmap[cid]
+            if (info == null) { melLevelBuf[rank] = 0f; popBuf[rank] = 0f; continue }
+
+            melLevelBuf[rank] = if (haveMel) {
                 val pan = frame.pan
                 val usePan = p.panGain > 0f && pan.size >= info.melHi
                 var sum = 0f
+                var peak = 0f
                 for (i in info.melLo until info.melHi) {
-                    var v = mel[i]
+                    var v = mel[i] * (melWeight?.get(i) ?: 1f)
                     if (usePan) v *= (1f + p.panGain * pan[i] * info.side).coerceIn(0f, 2f)
                     sum += v
+                    if (v > peak) peak = v
                 }
-                sum / (info.melHi - info.melLo)
+                // Mean *and* peak. A held vocal occupies two or three of this
+                // lamp's ~seven bins, so a pure mean delivered it at roughly a
+                // third of its real height — audible as a mid that is present in
+                // the music and absent from the room.
+                val mean = sum / (info.melHi - info.melLo)
+                (1f - p.melPeakiness) * mean + p.melPeakiness * peak
             } else 0f
+
+            popBuf[rank] = if (p.spectralPop > 0f && mel.isNotEmpty()) {
+                // Pan-weighted when the source is stereo: a hit panned left pops
+                // the left of the room harder than the right. The weight is
+                // clamped to 0..2 and divided by the bin count rather than by the
+                // weight sum, so a centred mix comes out exactly as the unweighted
+                // mean and nothing changes for mono material.
+                val pan = frame.pan
+                val usePan = p.panGain > 0f && pan.size >= info.melHi
+                var sum = 0f
+                var peak = 0f
+                for (i in info.melLo until min(info.melHi, MELBANK_BINS)) {
+                    var v = melTransient[i] * (melWeight?.get(i) ?: 1f)
+                    if (usePan) v *= (1f + p.panGain * pan[i] * info.side).coerceIn(0f, 2f)
+                    sum += v
+                    if (v > peak) peak = v
+                }
+                // Same mean-and-peak blend as the glow above, for the same reason:
+                // a single-bin transient averaged over seven bins arrives at a
+                // seventh of its size.
+                val mean = sum / (info.melHi - info.melLo)
+                (1f - p.melPeakiness) * mean + p.melPeakiness * peak
+            } else 0f
+        }
+
+        diffuseDrives(p)
+
+        // Render each channel
+        val out = HashMap<Int, Rgb>()
+        for ((rank, cid) in rankIds.withIndex()) {
+            val info = cmap[cid] ?: continue
+            val role = roles[cid] ?: ROLE_BASS
+            val melLevel = melLevelSm[rank]
 
             // Target brightness. The melbank floor is the ambient lift that
             // rides *under* the spectral layer, so it belongs inside the music
@@ -1242,22 +1535,8 @@ class SyncoEngine(
             // beat flash and a smooth melbank glow. It is measured against a
             // slow per-bin baseline, so a held note settles and stops popping
             // while a repeated hit keeps firing.
-            if (p.spectralPop > 0f && mel.isNotEmpty()) {
-                // Pan-weighted when the source is stereo: a hit panned left pops
-                // the left of the room harder than the right. The weight is
-                // clamped to 0..2 and divided by the bin count rather than by the
-                // weight sum, so a centred mix comes out exactly as the unweighted
-                // mean and nothing changes for mono material.
-                val pan = frame.pan
-                val usePan = p.panGain > 0f && pan.size >= info.melHi
-                var pop = 0f
-                for (i in info.melLo until min(info.melHi, MELBANK_BINS)) {
-                    var v = melTransient[i]
-                    if (usePan) v *= (1f + p.panGain * pan[i] * info.side).coerceIn(0f, 2f)
-                    pop += v
-                }
-                pop /= (info.melHi - info.melLo)
-                target += p.spectralPop * pop * musicGate
+            if (p.spectralPop > 0f) {
+                target += p.spectralPop * popSm[rank] * musicGate
             }
 
             // Role-based brightness
@@ -1286,14 +1565,33 @@ class SyncoEngine(
 
             // Height: bass sits on the floor and treble at the ceiling, the way
             // a room's energy naturally stacks.
+            // Blended across the two bands the lamp sits between, not snapped to the
+            // nearer one. `heightBand` is a five-way step, so two lamps a hand's
+            // width apart either side of a boundary followed entirely different
+            // parts of the spectrum — one of the reasons a room read as separate
+            // instruments rather than one field.
             if (p.heightFreq > 0f) {
-                val band = heightBand(info.pos.z)
-                target += p.heightFreq * (env[band] ?: 0f) * musicGate
+                val lower = heightBandLower(info.pos.z)
+                val frac = heightBandFrac(info.pos.z)
+                val lo = env[HEIGHT_BANDS[lower]] ?: 0f
+                val hi = env[HEIGHT_BANDS[min(lower + 1, HEIGHT_BANDS.size - 1)]] ?: 0f
+                target += p.heightFreq * (lo + (hi - lo) * frac) * musicGate
             }
             // Depth: lamps further back carry a broader wash and less detail.
             if (p.depthWash > 0f) {
                 target += p.depthWash * energyEnv * (1f - info.pos.y)
             }
+
+            // Sustain bloom: one room-wide value, so a long vocal lifts every lamp
+            // together into a single glow rather than nudging whichever one happens
+            // to own that part of the spectrum.
+            //
+            // A `target` addend, deliberately not part of `flash` below. That puts
+            // it through briAttack/briDecay and the brightness slew, so its
+            // per-frame change stays roughly two orders under FLASH_DELTA — well
+            // inside what the 12.5 Hz effect ceiling permits as a smooth gradation,
+            // and invisible to both the WCAG limiter and the rate limiter.
+            if (p.tonalGain > 0f) target += p.tonalGain * tonalEnv
 
             // Pre-drop compresses the headroom toward the floor, so the drop has
             // somewhere to go.
@@ -1310,8 +1608,12 @@ class SyncoEngine(
             val alpha = if (target >= prevB) p.briAttack else p.briDecay
             var newB = prevB + (target - prevB) * alpha
 
-            // Colour
-            val cpos = info.xrank * p.colourSpread + colourPhase
+            // Colour, on a tilted room axis rather than left-to-right alone.
+            // `colourTilt = 0` is byte-identical to the x-only behaviour, and a room
+            // with no depth or height spread is identical either way — see
+            // [colourAxisProjection].
+            val cbase = info.xrank + (info.spatialPos - info.xrank) * p.colourTilt
+            val cpos = cbase * p.colourSpread + colourPhase
             val tgtColor = palette.sample(cpos)
             val (tr, tg, tb) = tgtColor
             val tm = max(tr, max(tg, tb))
@@ -1408,10 +1710,169 @@ class SyncoEngine(
      *
      * Ported from syncoV2 `effects/engine.py::_render_extreme`. The
      * absolute-loudness melbank reference comes from a track scan when the track
-     * has one — a per-bin AGC divides out the very thing it measures, so there
-     * is no live estimate of it to be had — and degrades to uniform weighting
-     * when it does not, which is what syncoV2 does too.
+     * has one and from the analyzer's own live estimate otherwise — see
+     * [melLoudWeights]. (This used to say no live estimate was possible, on the
+     * reasoning that a per-bin AGC divides out what it measures. That holds for
+     * the published melbank and not for the raw means it is computed from.)
      */
+    // ── Sustain bloom ─────────────────────────────────────────────────────
+
+    private var tonalEnv = 0f
+    private val chromaPrev = FloatArray(12)
+    private var chromaFlux = 0f
+    private var roomTransient = 0f
+
+    /**
+     * A slow, room-wide glow that rises on sustained, pitched, mid-heavy material.
+     *
+     * Deliberately the mirror image of [eventGates]: that returns zero for a
+     * narrowband onset, and this is near one there. Between them the two cover the
+     * whole of `onsetWidth` rather than leaving the tonal half of it dark.
+     *
+     * Four things have to agree before it commits, because "narrowband" alone is
+     * not enough — a cymbal wash and a held note are both narrowband by inverse
+     * participation ratio, and only one of them should bloom:
+     *
+     *  - **tonality**: `onsetWidth` low, on the same soft knee `eventGates` uses.
+     *  - **mid presence**: the 250–2500 Hz bands, where voices and strings live.
+     *  - **chroma stability**: a held *pitch*, not a wash. This is what separates
+     *    a vocal from room tone.
+     *  - **transient quiet**: mutually damped against the layers that already
+     *    handle percussion, so a beat and a bloom cannot both claim the same
+     *    moment. Only mildly damped against the beat grid, though — a vocal over a
+     *    steady groove is most music, and must still glow.
+     *
+     * Scaled by `salience`, which is AGC-immune, so a quiet passage blooms less
+     * rather than being normalised up to a chorus.
+     */
+    private fun updateTonalEnv(
+        frame: AnalysisFrame,
+        dt: Float,
+        env: Map<String, Float>,
+        musicGate: Float,
+    ) {
+        val p = params
+        if (p.tonalGain <= 0f) { tonalEnv = 0f; return }
+
+        val tonality =
+            ((p.tonalWidthMax - frame.onsetWidth) / max(1e-3f, p.tonalWidthSoft)).coerceIn(0f, 1f)
+
+        val midPresence = max(env["low_mid"] ?: 0f, env["mid"] ?: 0f)
+
+        // Total variation between successive chroma vectors, each normalised to
+        // sum 1 so loudness cannot masquerade as harmonic movement.
+        val chroma = frame.chroma
+        val chromaStable = if (chroma.size == chromaPrev.size) {
+            var total = 0f
+            for (v in chroma) total += v
+            if (total > 1e-9f) {
+                var diff = 0f
+                for (i in chroma.indices) {
+                    val n = chroma[i] / total
+                    diff += abs(n - chromaPrev[i])
+                    chromaPrev[i] = n
+                }
+                chromaFlux += (0.5f * diff - chromaFlux) * CHROMA_FLUX_SMOOTH
+            }
+            1f - (chromaFlux / CHROMA_FLUX_REF).coerceIn(0f, 1f)
+        } else {
+            1f  // no chroma this frame: neutral rather than blocking
+        }
+
+        var transientNow = 0f
+        if (melTransient.isNotEmpty()) {
+            var sum = 0f
+            for (i in melTransient.indices) sum += melTransient[i] + melFlux[i]
+            transientNow = sum / melTransient.size
+        }
+        // Fast up, slow down: a hit should suppress the bloom immediately and let
+        // it back only once the hits have actually stopped.
+        val tAlpha = if (transientNow > roomTransient) TONAL_DAMP_RISE else TONAL_DAMP_FALL
+        roomTransient += (transientNow - roomTransient) * tAlpha
+        val transientQuiet =
+            1f - (p.tonalDamp * roomTransient / TONAL_DAMP_REF).coerceIn(0f, 1f)
+
+        val drive = tonality * midPresence * chromaStable * transientQuiet *
+            (1f - TONAL_RHYTHM_DAMP * rhythmConf) * frame.salience * musicGate
+
+        // dt-correct, so a stalled or jittery frame interval cannot make the bloom
+        // jump. dt = 0 gives alpha = 0, which is a no-op rather than a NaN.
+        val tau = if (drive > tonalEnv) p.tonalAttackS else p.tonalReleaseS
+        val alpha = if (tau > 1e-4f) 1f - exp(-dt / tau) else 1f
+        tonalEnv += (drive - tonalEnv) * alpha
+    }
+
+    // ── Per-bin absolute-loudness weights ─────────────────────────────────
+
+    /** Cache key: the reference array's identity, the strength, and the mode. */
+    private var loudWeightRef: FloatArray? = null
+    private var loudWeightStrength = -1f
+    private var loudWeightNormalised = false
+    private var loudWeightCache: FloatArray? = null
+
+    /**
+     * Per-bin weights that put absolute band loudness back into the melbank.
+     *
+     * The melbank is per-bin AGC'd, so a hi-hat tick and a kick arrive the same
+     * height and every lamp reads equally bright. These weights restore the
+     * difference, perceptually compressed and strength-blended so a quiet
+     * instrument dims rather than disappearing.
+     *
+     * The reference comes from an offline track scan where there is one, and from
+     * the analyzer's own long-horizon pre-AGC average where there is not.
+     *
+     * [normalise] decides what shape the result has, and the two are not
+     * interchangeable. The raw form is `(1-s) + s*ref^0.5` with `ref` in 0..1, so
+     * it is always **≤ 1** — a pure attenuator. `renderExtreme`'s gains are tuned
+     * against that and must keep it. The main path must not: `melbankRef` peaks in
+     * the bass on most material, so an attenuator would dim the mids specifically,
+     * which is the opposite of what it is being added for. Mean-normalising makes
+     * it redistribute instead, leaving the room's overall level alone.
+     *
+     * Cached on the reference's identity — `DirectLightSync` attaches the same
+     * array for a whole track — which also takes 16 `pow` calls per frame out of
+     * Extreme's render.
+     */
+    private fun melLoudWeights(
+        frame: AnalysisFrame,
+        p: ModeParams,
+        normalise: Boolean,
+    ): FloatArray? {
+        if (p.bandLoudStrength <= 0f) return null
+        val mel = frame.melbank
+        if (mel.isEmpty()) return null
+        // The scan's reference is authoritative; the live estimate is the fallback.
+        val ref = frame.melbankRef.takeIf { it.size == mel.size }
+            ?: frame.melbankRefLive.takeIf { it.size == mel.size }
+            ?: return null
+
+        if (ref === loudWeightRef &&
+            p.bandLoudStrength == loudWeightStrength &&
+            normalise == loudWeightNormalised
+        ) {
+            return loudWeightCache
+        }
+
+        val w = FloatArray(ref.size) { i ->
+            (1f - p.bandLoudStrength) +
+                p.bandLoudStrength * ref[i].coerceIn(0f, 1f).pow(BAND_LOUD_COMPRESS)
+        }
+        if (normalise) {
+            var sum = 0f
+            for (v in w) sum += v
+            val mean = sum / w.size
+            if (mean > 1e-6f) {
+                for (i in w.indices) w[i] = (w[i] / mean).coerceIn(LOUD_WEIGHT_MIN, LOUD_WEIGHT_MAX)
+            }
+        }
+
+        loudWeightRef = ref
+        loudWeightStrength = p.bandLoudStrength
+        loudWeightNormalised = normalise
+        loudWeightCache = w
+        return w
+    }
+
     private fun renderExtreme(frame: AnalysisFrame, dt: Float): Map<Int, Rgb> {
         val p = params
         val musicGate = if (SILENCE_GATE > 0f) min(1f, loud / SILENCE_GATE) else 1f
@@ -1424,21 +1885,7 @@ class SyncoEngine(
         val n = rankIds.size
         val haveBands = mel.isNotEmpty() && extBands.isNotEmpty()
 
-        // Per-bin absolute-loudness weight, from a track scan. The melbank is
-        // per-bin normalised, so a hi-hat tick and a kick arrive the same height
-        // and every lamp reads equally bright; this puts the difference back, so
-        // a loud band lights its lamp harder than a quiet one. Perceptually
-        // compressed and strength-blended so quiet instruments stay visible
-        // rather than disappearing. No scan (or no melbank) means uniform
-        // weighting, which is exactly the behaviour that came before.
-        val ref = frame.melbankRef
-        val melWeight: FloatArray? =
-            if (p.bandLoudStrength > 0f && haveBands && ref.size == mel.size) {
-                FloatArray(ref.size) { i ->
-                    (1f - p.bandLoudStrength) +
-                        p.bandLoudStrength * ref[i].coerceIn(0f, 1f).pow(BAND_LOUD_COMPRESS)
-                }
-            } else null
+        val melWeight = if (haveBands) melLoudWeights(frame, p, normalise = false) else null
 
         // Grid-free rotation: time-driven, faster through busy passages, frozen
         // in silence by the music gate, so it can add no phantom beats.
@@ -1546,7 +1993,8 @@ class SyncoEngine(
             // Colour stays keyed to the lamp's fixed position plus the drift
             // phase: only the instrument activity rotates, so the room keeps a
             // coherent colour field.
-            val tgt = palette.sample(info.xrank * p.colourSpread + colourPhase)
+            val cbase = info.xrank + (info.spatialPos - info.xrank) * p.colourTilt
+            val tgt = palette.sample(cbase * p.colourSpread + colourPhase)
             val m = max(tgt.first, max(tgt.second, tgt.third))
             val nt = if (m > 1e-6f) Triple(tgt.first / m, tgt.second / m, tgt.third / m)
             else Triple(0f, 0f, 0f)
