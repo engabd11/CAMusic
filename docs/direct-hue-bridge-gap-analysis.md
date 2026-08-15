@@ -1,5 +1,25 @@
 # Direct Light Sync Gap Analysis: syncoV2 vs CAMusic
 
+> **Status: largely closed. Read this as history.**
+>
+> Nine of the ten gaps below have shipped: the tempo PLL and beat grid
+> (`audio/TempoTracker.kt`), song structure (`audio/StructureTracker.kt`), the
+> auto intensity picker (`hue/AutoIntensityPicker.kt`), scheduled beat
+> wavefronts, pre-analysed track maps (`audio/TrackScan.kt`), the advanced
+> tunables, Fireworks, and album-art v2 weights. Movies was deliberately dropped
+> — the reasoning is at the top of `SyncoEngine.kt`.
+>
+> Two claims here are now simply wrong. **"No tests"** is stale: there are ~5,400
+> lines of JVM tests across `app/src/test/.../hue/` and `.../audio/`. And the
+> file-by-file porting guide names paths that were never used — the real files
+> are `SpatialWaves.kt`, `AutoIntensityPicker.kt`, `StructureTracker.kt` and
+> `TrackAnalysis.kt`.
+>
+> What the analysis did *not* find, and what turned out to matter most in use, is
+> covered in the light-sync work of v0.8.8: the room rendered as N independent
+> lamps rather than one field, and held notes lit almost nothing because every
+> event layer is gated off for tonal material. See `SyncoEngineFieldTest`.
+
 ## Executive Summary
 
 syncoV2 (Home Assistant integration) is a **production-complete** music visualization system with ~7000 lines of Python code across analysis, effects, and coordination. CAMusic's direct mode is a **minimal viable implementation** (~2000 lines Kotlin) that proves the concept but lacks the sophisticated musical intelligence that makes syncoV2's output feel like a choreographed show rather than a reactive visualization.

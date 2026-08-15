@@ -1,6 +1,18 @@
 # Plan: Sendspin Player Overhaul — ExoPlayer + Oboe Native Output
 
-## Status: Proposed
+## Status: Shipped (v0.8.8, PR #52)
+
+Everything below is implemented — `SendspinExoEngine`, `OboeAudioSink`,
+`SendspinNativeOutput` and the `src/main/cpp` output engine, with
+`externalNativeBuild` enabled and Oboe 1.10.0 as a real dependency. The
+`SendspinService` notification moved to media3-session alongside it.
+
+The headline consequence landed too: because the `AudioAnalysisTap` sits in
+ExoPlayer's render chain, direct Hue Bridge light sync now works for Music
+Assistant playback as well as local. See `SendpinApp.activeLightSyncSource`.
+
+Read the rest as the record of *why* it was built this way, not as work
+outstanding.
 
 ## Why now
 

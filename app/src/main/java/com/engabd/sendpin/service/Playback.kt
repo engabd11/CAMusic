@@ -695,6 +695,25 @@ class Playback(private val app: Context) {
 
     fun onPlayPause() = transport { if (_isPlaying.value) it.pause(playerId) else it.play(playerId) }
 
+    /**
+     * Stop this phone's Sendspin stream because the local player has taken over.
+     *
+     * The two players were only ever kept apart by convention: switching library
+     * backend calls `localPlayer.stop()`, and the manifest asserts "the two track
+     * different state and are never both playing" — but nothing enforced the other
+     * direction. Starting a Navidrome track while a Music Assistant queue was
+     * playing *to this phone* left both decoding into the same output, which is
+     * two songs at once and two notifications to match.
+     *
+     * A pause, not a disconnect: the socket stays up so announcements still arrive
+     * and the player stays visible in Music Assistant, which is what
+     * `SendspinConnectionService` exists for. Only the audio stops.
+     */
+    fun pauseForLocalPlayback() {
+        if (!_isPlaying.value) return
+        transport { it.pause(playerId) }
+    }
+
     fun onMediaNext() = transport { it.next(playerId) }
 
     fun onMediaPrevious() = transport { it.previous(playerId) }

@@ -46,9 +46,14 @@ clock, and the reconnect/ordering behaviour, then wiring the audio engine.
 
 ## How we work
 
-- No Kotlin/Gradle/NDK build in the agent environment — code is written + pushed; you build/run in
-  Android Studio (NDK 26+). The plan is to grow a JVM-testable protocol core so message
-  (de)serialization, clock math, format negotiation, and Noise vectors get **JVM unit tests**
-  (`./gradlew :app:testDebugUnitTest`, later `:core:test`) — the main verifiable surface off-device.
-- The protocol layer is being re-aligned incrementally so the tree isn't left half-rewritten; the
-  Noise handshake + binary framing land once the live capture confirms the wire format.
+- The JVM test suite is the main verifiable surface off-device — protocol
+  (de)serialization, clock math, format negotiation, the light-sync DSP and room
+  geometry (`./gradlew :app:testDebugUnitTest`, ~526 tests). Everything that
+  needs real hardware — audio output, the Hue bridge, the phone's own volume —
+  is still unverified there, and that gap is the one thing standing between this
+  and calling it production-ready.
+- **The wire format is plain WebSocket + JSON**, not Noise. Music Assistant's
+  Sendspin server speaks `{type, payload}` text frames with binary audio, which
+  is what `SendspinClient` implements. (The published Sendspin spec has since
+  grown a Noise-encrypted handshake and a pairing flow; MA does not require it
+  yet, so this is a forward-compatibility item rather than outstanding work.)

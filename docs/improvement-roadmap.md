@@ -392,8 +392,38 @@ The second audit found these, none of which §§1–16 mention:
 
 ### Still open
 
-- **AGP / compileSdk.** media3 is pinned to 1.8.0 because 1.9+ needs compileSdk 36
-  and AGP 8.7.3 tops out at 35.
-- **The native AAudio path** (`app/src/main/cpp/`) remains written, unbuilt and
-  uncalled. True bit-perfect exclusive-mode output is its own piece of work.
-- **Device verification** of everything in the audio path.
+*Revised 2026-08-16. Most of what this section listed has since shipped; the
+entries below are what is genuinely outstanding.*
+
+Resolved since it was written:
+
+- **AGP / compileSdk** — the app is on AGP 8.13.2, compileSdk/targetSdk 36 and
+  media3 1.10.1. The pin is gone.
+- **The native path** — `app/src/main/cpp/` is built (`externalNativeBuild` is
+  enabled) and called, via Oboe 1.10.0 and `OboeRenderer`. Not AAudio directly,
+  which is what Oboe is for.
+- **§10 stream format switching** — `sendRequestFormat()` is wired through
+  `Playback.requestFormat` to the Stream format card.
+- **§11 multi-disc grouping** — `AlbumDetailScreen` groups by `discNumber` and
+  renders per-disc headers.
+- **§15 `group/update`** — forwarded to `Playback.groupUpdates`, and it is what
+  tells `SendspinExoEngine` whether it is grouped or solo.
+- **§6 queue transfer UI** — "Move music here" on the Speakers screen.
+- **§16 warm reconnect** — `SendspinConnectionService` sends `client/goodbye`
+  with `"restart"` on a non-user destroy.
+
+Genuinely still open:
+
+- **Device verification** of everything in the audio path. Nothing in this
+  document, or in the light-sync work that followed it, has been run on
+  hardware — CI covers unit tests, lint and a debug build, and that is all.
+- **Android Auto.** Both media services are plain `Service`s owning a
+  `MediaSession`; a browse tree needs `MediaLibraryService`.
+- **A home-screen widget** (Glance).
+- **Crash reporting has no backend.** `crash/CrashReporter` stores locally and
+  can open a GitHub issue if the user supplies a token; there is no service
+  behind it.
+- **No instrumented tests.** Audio, service lifecycle and UI are uncovered.
+- **The oversized files.** `LibraryViewModel.kt`, `SyncoEngine.kt`,
+  `NowPlayingViewModel.kt` and `LibraryScreen.kt` are each well past the point
+  where they should have been split.

@@ -1,10 +1,21 @@
 # Direct Hue Bridge Light Sync — Implementation Plan
 
+> **Status: shipped, and the scope below has since widened.** This document
+> records the original build. Two things in it are no longer true:
+>
+> - **Music Assistant playback is no longer excluded.** Routing Sendspin audio
+>   through ExoPlayer (see `exoplayer-upgrade-plan.md`) put the analysis tap in
+>   MA's render chain too, so the direct path drives both players. The transport
+>   is chosen by `SendpinApp.activeLightSyncSource`.
+> - **The tap does not deactivate itself when sync is off.** It stays in the
+>   processor chain and gates analysis instead, because sink membership is decided
+>   once per configuration — see `AudioAnalysisTap`.
+
 ## Scope
 
 Direct connection from CAMusic to the Hue Bridge, bypassing Home Assistant.
-Only for the local player (Navidrome/ExoPlayer). The MA path keeps using
-HA → syncoV2 exactly as it does today (unchanged).
+Originally for the local player only (Navidrome/ExoPlayer), with the MA path
+staying on HA → syncoV2 — see the status note above for what changed.
 
 ## Architecture
 

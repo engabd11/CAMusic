@@ -222,6 +222,21 @@ class SendpinApp : Application(), ImageLoaderFactory {
                 }
             }
         }
+        // One player at a time, enforced rather than assumed.
+        //
+        // Switching library backend already stops the local player, so that
+        // direction was covered. The reverse was not: starting a Navidrome track
+        // while a Music Assistant queue was playing *to this phone* left both
+        // decoding into the same output — two songs at once, and two media
+        // notifications arguing over the lock screen. The manifest asserts the two
+        // "are never both playing"; this is what makes that true.
+        //
+        // Keyed on the local player becoming active rather than on every state
+        // change, so a pause on the local side does not resume the remote one.
+        // (`playing` is a StateFlow, which already conflates equal values.)
+        appScope.launch {
+            localPlayer.playing.collect { playing -> if (playing) playback.pauseForLocalPlayback() }
+        }
         // Light Sync transport follows the library, because the library is what
         // decides where the audio actually comes out. Navidrome always plays
         // through this phone's own player, which the direct bridge path taps;

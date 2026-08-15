@@ -74,8 +74,9 @@ can't fill; the app asks what the server supports and lights up only what it dec
 
 When a Music Assistant server is in the picture, CAMusic becomes more than a player:
 
-- **Browse the full library** — recently played, recently added, continue listening, for you, and
-  favourites shelves, plus search-as-you-type with debounced results.
+- **Browse the full library** — artists, albums, tracks, playlists, radio stations and podcasts,
+  plus recently played, recently added, continue listening, for you and favourites shelves, and
+  search-as-you-type with debounced results.
 - **Play to any MA speaker** — the phone, a grouped set, or any other player on the network.
   Now Playing reflects and controls whichever speaker you select.
 - **Queue management** — view, jump, reorder, remove, clear, save as playlist, or transfer the
@@ -101,12 +102,19 @@ The clock-sync engine uses an NTP-style four-point exchange feeding a two-dimens
 that tracks offset *and* drift — grouped playback stays in step. The player reports `state: "error"`
 and mutes until the filter converges, rather than joining a group with an offset still seconds wide.
 
-FLAC, Opus and PCM are decoded through `MediaCodec` and played through `AudioTrack`. 24-bit is
-opt-in: with bit-perfect on, the FLAC decoder is asked for float output and the track is built from
-what the decoder actually reports, not from the depth the server claimed — because two-byte samples
-in a three-byte frame is noise, not degradation.
+FLAC, Opus and PCM are decoded through **ExoPlayer**, with a custom `DataSource` that holds each
+frame until the Kalman-filtered server clock says it is due, and output through **Oboe** so a
+garbage-collection pause cannot become an audible one. 24-bit is opt-in: with bit-perfect on, the
+decoder is asked for float output and the track is built from what it actually reports, not from
+the depth the server claimed — because two-byte samples in a three-byte frame is noise, not
+degradation.
+
+Routing the stream through ExoPlayer is also what put MA playback inside the light-sync analysis
+tap, so the direct Hue path drives both players rather than only local files.
 
 Per-player sync offset is applied to frame scheduling locally and also written back to MA's config.
+The player's volume **is** the phone's media volume: the on-screen slider, the hardware rocker and
+Music Assistant's own level are one number, not three.
 
 ### Philips Hue Entertainment Sync - Direct or through home asssitant
 
@@ -142,9 +150,26 @@ What the port carries:
   colour occupies, not by what would look good as a UI accent
 - Pre-scanned tracks — the show knows the song's shape from the first bar
 
-> **Scope:** the tap sits in the ExoPlayer chain, so direct mode drives the show from this phone's
-> *local playback* — Navidrome, Jellyfin, downloads, and local files. Music on a remote MA speaker
-> uses the Home Assistant path.
+The room is rendered as a **field**, not as a set of independent lamps. Each lamp's continuous
+drive is blended with its neighbours' through a Gaussian kernel over the entertainment area's real
+3-D positions, so a glow spreads across bulbs instead of stopping at one. The kernel is
+row-stochastic — it redistributes the room's energy and can neither brighten nor dim it — and being
+purely spatial it has no temporal memory, so it cannot shift the timing. Colour drifts along a
+tilted axis using height and depth as well as left-to-right, and the height-to-frequency mapping is
+blended rather than snapped to one of five bands.
+
+A **sustain layer** carries what the beat-driven layers cannot. Onset detection deliberately gates
+out narrowband material, and the per-bin attack measure is taken against a baseline a held note
+settles into — both correct for percussion, and between them they left a long vocal lighting almost
+nothing. A separate envelope reads sustained, pitched, mid-heavy material (inverted onset width,
+chroma stability, mid presence), damped against live transients so a beat and a bloom never claim
+the same moment, and blooms the room slowly rather than pulsing it.
+
+> **Scope:** the tap sits in the ExoPlayer render chain, and since v0.8.8 Music Assistant playback
+> flows through ExoPlayer too — so direct mode drives the show for **both** this phone's local
+> playback (Navidrome, Jellyfin, downloads, local files) and MA playback to this phone. Music
+> playing on a *remote* MA speaker still needs the Home Assistant path, since this phone never
+> decodes that audio.
 
 #### Through Home Assistant (Philips Hue via syncoV2)
 
@@ -207,10 +232,14 @@ as you go.
 1. Install the APK from [Releases](https://github.com/engabd11/CAMusic/releases).
 2. The **onboarding wizard** asks where your music lives: Music Assistant, Navidrome, Jellyfin,
    or local files on the device. Credentials are encrypted at rest with the Android Keystore.
-3. Optional steps in the same wizard: set up Philips Hue light sync (direct to bridge and/or through Home Assistant)
-   and register this phone as a Music Assistant player.
-4. Everything can be changed later under **Settings → Libraries**, **Settings → Light Sync**, and
-   **Settings → CAMusic player**.
+3. Optional steps in the same wizard: set up Philips Hue light sync (direct to bridge and/or through
+   Home Assistant), register this phone as a Music Assistant player, and grant the two permissions
+   that decide whether playback survives the screen going off — notifications, and unrestricted
+   battery.
+4. Everything can be changed later under **Settings → Libraries** and **Settings → Light Sync**.
+   The Music Assistant player's own settings — name, stream format, gapless, what to ask the server
+   for — live on that server's card, so the server, its library and the player are configured in
+   one place.
 
 ---
 
@@ -260,23 +289,34 @@ weights are dwell time in a room. Sharing one extraction between them was a bug,
 ```
 Music Assistant path                     Navidrome / offline path
 --------------------                     ------------------------
-WebSocket binary frame                   HTTP (format=raw) or local file
+WebSocket binary frame                   HTTP (static/original) or local file
   [type=4][server_ts_us][payload]                    |
-        |                                       ExoPlayer
-  FLAC / Opus -> MediaCodec -+                  (gapless, exact seek, ReplayGain,
-  PCM         -> passthrough-+-> AudioTrack      radio, smooth transitions,
-        |                                        24-bit float output)
-  scheduled against the                              |
-  Kalman-filtered server clock                  AudioAnalysisTap -> Philips Hue
+        |                                            |
+  SendspinDataSource                                 |
+  (blocks until the frame is due,                    |
+   per the Kalman-filtered clock)                    |
+        |                                            |
+     ExoPlayer  -------------------------------  ExoPlayer
+        |                                        (gapless, exact seek, ReplayGain,
+   OboeAudioSink                                  radio, smooth transitions,
+   (GC-immune output)                             24-bit float output)
+        |                                            |
+        +--------- AudioAnalysisTap ------------------+
+                          |
+                   Philips Hue Entertainment
 ```
+
+Both paths run through ExoPlayer, which is what lets one analysis tap serve both. Before that the
+MA path was a hand-built `MediaCodec` → `AudioTrack` pipeline the tap could not see, and direct
+light sync was local-playback-only as a result.
 
 Formats are advertised, not requested: MA may only send something the client listed, so the list
 *is* the setting. 48 and 44.1 kHz are always offered; 88.2/96 kHz with hi-res on; 176.4/192 kHz
 only with bit-perfect on **and** only after probing that the device will open a track at that rate.
 
-A native AAudio `I24` exclusive-mode pipeline lives in `app/src/main/cpp/`. It is not compiled and
-nothing calls it — true bit-perfect output that bypasses the Android mixer is a future phase, not a
-current feature.
+The native output engine in `app/src/main/cpp/` is compiled and called — it is what `OboeAudioSink`
+drives. True bit-perfect *exclusive-mode* output that bypasses the Android mixer entirely is still a
+future phase; what ships today is a low-latency, GC-immune path through Oboe.
 
 ---
 
@@ -311,22 +351,32 @@ current feature.
 - [x] Quality badge and detail card (`FLAC • 96/24 • 3 Mb/s`)
 - [x] Version picker — every copy of a track across every provider
 - [x] Cross-device resume
-- [x] Onboarding wizard (first-launch: pick server, optional Light Sync, optional MA player)
+- [x] Onboarding wizard (first-launch: pick server, optional Light Sync, optional MA player,
+      permissions with a reason)
 - [x] Adaptive grid layout for tablets and foldables
+- [x] Direct Philips Hue light sync from Music Assistant playback (v0.8.8 — MA audio now flows
+      through ExoPlayer, so the analysis tap sees it)
+- [x] Sendspin player on ExoPlayer + Oboe (v0.8.8)
+- [x] Light sync as a spatial field — neighbouring lamps share a drive, colour drifts in three
+      dimensions, height blends between bands (v0.8.8)
+- [x] Sustain layer — held vocals bloom the room instead of lighting nothing (v0.8.8)
+- [x] Hardware volume keys follow whichever player is actually making the sound (v0.8.8)
+- [x] Radio stations and podcasts in the Music Assistant library (v0.8.8)
+- [x] Warm reconnect — `client/goodbye` with `reason: "restart"`, so a quick app switch doesn't
+      drop the phone from the speaker list
 
 ### Next up
 
 - [ ] **True overlapping crossfade** on the standalone path — a second ExoPlayer ping-ponged with
       volume ramps, moving queue ownership and touching ReplayGain, the notification, and the
       analysis tap. The shipped smooth transitions are the first half; this is the second.
-- [ ] **Warm reconnect** — `client/goodbye` with `reason: "restart"` on backgrounding, so MA holds
-      the player slot for ~30 seconds and a quick app switch doesn't drop the phone from the
-      speaker list.
-- [ ] **Direct Philips Hue light sync from MA playback** — a second tap on `SendspinAudioEngine` so direct
-      mode can replace the HA path outright rather than sit beside it.
-- [ ] **Android Auto** — media3-session is already a dependency and the `MediaSession` exists;
-      the work is a manifest declaration and a browse tree.
+- [ ] **Android Auto** — media3-session is already a dependency and the `MediaSession` exists.
+      Both media services are plain `Service`s though, so the work is a `MediaLibraryService` and a
+      browse tree, not just a manifest line.
 - [ ] **Glance home-screen widget** — now-playing at a glance.
+- [ ] **On-device verification.** Everything is covered by unit tests, lint and a debug build, and
+      none of it has been run on hardware — the audio path and the Hue bridge especially. This is
+      the honest gap between "works" and "production".
 
 ### Planned
 
@@ -342,11 +392,16 @@ current feature.
 - [ ] **Bit-perfect exclusive-mode output** — the native AAudio I24 path is written and
       deliberately not compiled. `flac_decode()` is still a skeleton and the ring buffer is
       byte-level rather than frame-level. The largest single audio item on the roadmap.
-- [ ] **Release keystore and CI signing** — current releases use the local debug key (stable since
-      v0.1.0, so updates work). A proper release key and CI-signed builds are the goal.
-- [ ] **Instrumented tests** — 463 unit tests cover protocol, clock, DSP, parsing, the server list,
-      and the Philips Hue Entertainment sync engine; nothing covers the audio path, the service lifecycle, or the UI.
-- [ ] **Crash reporting** — self-hosted ACRA or similar.
+- [ ] **Instrumented tests** — 526 unit tests cover protocol, clock, DSP, parsing, the server list,
+      and the Philips Hue Entertainment sync engine; nothing covers the audio path, the service
+      lifecycle, or the UI.
+- [ ] **Crash reporting** — self-hosted ACRA or similar. Crashes are stored locally today, and can
+      be filed as a GitHub issue if you supply a token.
+
+> **On signing:** releases are signed with the local debug key, deliberately. It has been stable
+> since v0.1.0, so updates install over each other cleanly. Because that key lives on one machine
+> and a CI runner generates a fresh one per run, releases are cut locally — see the header of
+> `.github/workflows/release.yml`.
 
 ---
 
@@ -354,13 +409,20 @@ current feature.
 
 Written down because the alternative is discovering them by ear:
 
-- **Direct Philips Hue light sync cannot see MA playback.** It taps this phone's local player chain, so it
-  follows the Navidrome, Jellyfin, downloads, and local-files paths. MA streaming uses the
+- **Nothing here has been verified on a device yet.** Unit tests, lint and a debug build all pass;
+  the audio path, the Hue bridge and the volume routing have not been exercised on real hardware.
+- **Direct Philips Hue light sync cannot follow a remote speaker.** It taps this phone's own render
+  chain, which now covers both local playback *and* Music Assistant playing to this phone. Music
+  playing on a different speaker never reaches this phone's decoder, so that case still needs the
   Home Assistant path.
 - **Cleartext is allowed to LAN addresses only.** A server reached over plain HTTP on a public
   hostname is refused rather than sent credentials in the clear — use HTTPS for anything off
   the local network.
-- **Jellyfin is still experimental and you may have issues in playback until version 0.9.0
+- **Audiobook chapters are unverified.** Podcasts and radio browse against confirmed Music
+  Assistant commands; the audiobook chapter listing follows the same naming pattern but has not
+  been checked against a live server, so an audiobook may open empty.
+- **One streaming app per Hue entertainment area.** If the Hue app or an HDMI Sync Box already
+  holds the area, CAMusic refuses rather than taking it — the Entertainment API allows only one.
 
 ---
 
@@ -370,7 +432,7 @@ JDK 17 and the Android SDK (compileSdk 36). No NDK needed.
 
 ```bash
 ./gradlew assembleRelease        # app/build/outputs/apk/release/app-release.apk
-./gradlew :app:testDebugUnitTest # 463 unit tests across 54 classes
+./gradlew :app:testDebugUnitTest # 526 unit tests
 ./gradlew :app:lintDebug
 ```
 
