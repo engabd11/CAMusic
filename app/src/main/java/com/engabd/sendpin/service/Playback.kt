@@ -8,6 +8,8 @@ import android.os.Build
 import com.engabd.sendpin.audio.AudioOutputs
 import com.engabd.sendpin.audio.FormatNegotiator
 import com.engabd.sendpin.audio.SendspinAudioEngine
+import com.engabd.sendpin.audio.SendspinExoEngine
+import com.engabd.sendpin.audio.SendspinPlaybackEngine
 import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.MaDiscovery
@@ -96,7 +98,7 @@ class Playback(private val app: Context) {
     private val _bootChecked = MutableStateFlow(false); val bootChecked: StateFlow<Boolean> = _bootChecked
 
     private var client: SendspinClient? = null
-    private var engine: SendspinAudioEngine? = null
+    private var engine: SendspinPlaybackEngine? = null
     private var discoveryStop: Job? = null
     private var volumeJob: Job? = null
 
@@ -323,14 +325,22 @@ class Playback(private val app: Context) {
         } catch (_: Exception) { null } finally { api.disconnect() }
     }
 
-    private fun startSendspin(url: String, token: String?, name: String) {
+    private suspend fun startSendspin(url: String, token: String?, name: String) {
         val c = SendspinClient(); client = c
         // Propagate the current idle state — if nothing is playing when the client
         // connects, start in idle mode rather than running fast timer loops until
         // the next isPlaying transition. The connection service drives this from
         // its own watchPlayback observer, but the client needs to know *now*.
         if (!_isPlaying.value) c.setIdleMode(true)
-        val eng = SendspinAudioEngine(c.clock); engine = eng
+        // Experimental opt-in (see AppSettings.useExoPlayerForSendspin) — read once,
+        // at connect time: switching mid-connection would orphan whatever the old
+        // engine was doing mid-stream. SendspinAudioEngine stays the default.
+        val eng: SendspinPlaybackEngine = if (settings.useExoPlayerForSendspin.first()) {
+            SendspinExoEngine(app, c.clock).also { it.useOboe = settings.useOboeOutput.first() }
+        } else {
+            SendspinAudioEngine(c.clock)
+        }
+        engine = eng
 
         scope.launch { c.state.collect { _connected.value = it == SendspinClient.State.CONNECTED } }
         scope.launch { c.statusText.collect { _connectionStatus.value = it } }
@@ -415,7 +425,17 @@ class Playback(private val app: Context) {
         // `group/update` is a push on the player socket, so it lands the moment
         // grouping changes. Forwarded to whoever is showing group state — the
         // Speakers screen re-reads on it instead of waiting out its 5 s poll.
-        scope.launch { c.groupUpdates.collect { _groupUpdates.tryEmit(it) } }
+        //
+        // Also the only signal SendspinExoEngine has for solo vs grouped mode
+        // (SendspinSyncDataSource vs SendspinDirectDataSource) — SendspinAudioEngine
+        // doesn't need it, it always schedules the same way. A groupId means this
+        // player has been placed on the shared timeline; null means solo.
+        scope.launch {
+            c.groupUpdates.collect {
+                _groupUpdates.tryEmit(it)
+                (eng as? SendspinExoEngine)?.grouped = it.groupId != null
+            }
+        }
 
         // Audio output preferences. Read before the first stream/start, because
         // both are consumed when the AudioTrack is built (once per stream).

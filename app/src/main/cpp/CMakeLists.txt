@@ -1,33 +1,24 @@
 cmake_minimum_required(VERSION 3.22.1)
-project("sendpin_audio")
+project("sendspin_output")
 
 find_library(log-lib log)
 
-# Oboe: use NDK sources (reliable across all NDK versions)
-# In NDK r21+, Oboe is at sources/third_party/oboe
-if(EXISTS "${ANDROID_NDK}/sources/third_party/oboe/CMakeLists.txt")
-    add_subdirectory("${ANDROID_NDK}/sources/third_party/oboe" "${CMAKE_CURRENT_BINARY_DIR}/oboe")
-    set(OBOE_LIB oboe)
-else()
-    # Fallback: try prebuilt
-    find_library(OBOE_LIB oboe REQUIRED)
-endif()
+# Oboe via the com.google.oboe:oboe prefab Maven package (see build.gradle.kts) -
+# NDK-bundled sources at sources/third_party/oboe were removed from newer NDKs.
+find_package(oboe REQUIRED CONFIG)
 
-add_library(sendpin_audio SHARED
-    audio_engine.cpp
-    flac_decoder.cpp
+add_library(sendspin_output SHARED
+    sendspin_output_engine.cpp
+    sendspin_output_jni.cpp
 )
 
-target_include_directories(sendpin_audio PRIVATE ${CMAKE_SOURCE_DIR})
+target_include_directories(sendspin_output PRIVATE ${CMAKE_SOURCE_DIR})
 
-target_link_libraries(sendpin_audio
+# Oboe's public headers require C++17.
+target_compile_features(sendspin_output PRIVATE cxx_std_17)
+
+target_link_libraries(sendspin_output
     ${log-lib}
-    ${OBOE_LIB}
+    oboe::oboe
     android
 )
-
-# Uncomment when libFLAC is cross-compiled:
-# if(EXISTS ${FLAC_LIB})
-#     target_link_libraries(sendpin_audio ${FLAC_LIB})
-#     target_compile_definitions(sendpin_audio PRIVATE FLAC_ENABLED=1)
-# endif()

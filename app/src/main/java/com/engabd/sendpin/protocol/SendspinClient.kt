@@ -461,7 +461,21 @@ class SendspinClient(
             }
             is SendspinIncoming.ServerTime -> {
                 val p = msg.payload
-                clock.onServerTime(p.clientTransmitted, p.serverReceived, p.serverTransmitted, msg.clientReceivedUs)
+                val rttUs = (msg.clientReceivedUs - p.clientTransmitted) - (p.serverTransmitted - p.serverReceived)
+                // Reject an absurdly slow round-trip, but only during cold-start
+                // convergence: past a few good samples the filter's own variance
+                // handles ordinary jitter, and this gate exists only to stop a
+                // wildly slow reply from seeding (or re-seeding) the offset before
+                // anything trustworthy has landed. Telling the filter about the
+                // reject (rather than silently dropping it) lets the client/time
+                // cadence back off — without it, a server that is consistently slow
+                // to answer gets hammered at the fast 300ms rate forever, since
+                // sampleCount never advances past the reject.
+                if (rttUs > STARTUP_RTT_REJECT_US && clock.filter.sampleCount < STARTUP_REJECT_SAMPLE_CEILING) {
+                    clock.markStartupRejected()
+                } else {
+                    clock.onServerTime(p.clientTransmitted, p.serverReceived, p.serverTransmitted, msg.clientReceivedUs)
+                }
             }
             is SendspinIncoming.ServerState -> {
                 val m = msg.payload.metadata ?: return
@@ -559,7 +573,11 @@ class SendspinClient(
                 // against it, and the 30s cadence still keeps the filter warm
                 // enough to converge quickly when a stream starts.
                 val settled = clock.filter.sampleCount >= 50 && clock.isReadyForPlaybackStart()
+                // A run of RTT-gated rejects (see the ServerTime handler above) backs
+                // this off past the ordinary fast cadence — see [ClockSync.startupBackoffMs].
+                val backoff = clock.startupBackoffMs()
                 val cadence = when {
+                    !settled && backoff > 0L -> backoff
                     !settled -> FAST_TIME_SYNC_MS
                     idleMode -> IDLE_TIME_SYNC_MS
                     else -> SLOW_TIME_SYNC_MS
@@ -643,6 +661,16 @@ class SendspinClient(
 
         /** `client/time` cadence while the clock is not fit to schedule against. */
         const val FAST_TIME_SYNC_MS = 300L
+
+        /**
+         * RTT above this during cold start is rejected rather than fed into the
+         * filter — a round-trip this slow would seed (or re-seed) the offset from a
+         * measurement whose own error bar is too wide to be worth much.
+         */
+        const val STARTUP_RTT_REJECT_US = 150_000L
+
+        /** [STARTUP_RTT_REJECT_US] only gates cold start — past this sample count the filter's own variance handles jitter. */
+        const val STARTUP_REJECT_SAMPLE_CEILING = 5
 
         /** …and once it is: enough to hold a converged filter, and no more. */
         const val SLOW_TIME_SYNC_MS = 2_000L

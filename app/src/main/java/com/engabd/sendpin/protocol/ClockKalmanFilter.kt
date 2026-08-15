@@ -52,6 +52,11 @@ class ClockKalmanFilter(
          */
         const val STEP_RESIDUAL_FACTOR = 8.0
         const val STEP_MIN_RESIDUAL_US = 50_000.0
+
+        /** [startupBackoffMs] tiers, keyed by consecutive rejection count. */
+        const val STARTUP_BACKOFF_TIER_1_MS = 600L
+        const val STARTUP_BACKOFF_TIER_2_MS = 1_200L
+        const val STARTUP_BACKOFF_TIER_3_MS = 3_000L
     }
 
     private var offset = 0.0
@@ -73,6 +78,13 @@ class ClockKalmanFilter(
      * confirming sample can be required to point the same way.
      */
     private var suspectResidual = 0.0
+
+    /**
+     * Consecutive `server/time` replies the caller rejected before feeding them in
+     * (e.g. an RTT gate during cold start) — see [markStartupRejected]. Reset the
+     * moment a sample actually reaches [processTimeResponse].
+     */
+    private var consecutiveStartupRejections = 0
 
     private val offsetProcessVariance = OFFSET_PROCESS_STD_DEV * OFFSET_PROCESS_STD_DEV
     private val forgetVarianceFactor = FORGET_FACTOR * FORGET_FACTOR
@@ -104,6 +116,33 @@ class ClockKalmanFilter(
         count >= READY_MIN_SAMPLES && errorUs() <= READY_MAX_ERROR_US && !isStepSuspected()
 
     /**
+     * The caller dropped a `server/time` reply without feeding it into the filter —
+     * an RTT gate during cold start rejecting a slow round-trip, say — rather than
+     * this class rejecting anything itself. Without this, a server slow enough to
+     * keep tripping that gate never sees the cadence back off: [sampleCount] never
+     * advances, so a caller keyed on it (like ours) stays at the fast cadence and
+     * re-sends every 300ms indefinitely. [startupBackoffMs] ramps in response;
+     * [processTimeResponse] clears the streak the moment a sample is actually
+     * accepted, so a transient spike doesn't leave the cadence backed off longer
+     * than the spike itself.
+     */
+    fun markStartupRejected() {
+        consecutiveStartupRejections++
+    }
+
+    /**
+     * Extra delay [markStartupRejected] wants before the next `client/time` request,
+     * on top of whatever cadence the caller would otherwise use. Zero once the
+     * rejection streak is still short enough that the ordinary fast cadence is fine.
+     */
+    fun startupBackoffMs(): Long = when {
+        consecutiveStartupRejections < 3 -> 0L
+        consecutiveStartupRejections < 6 -> STARTUP_BACKOFF_TIER_1_MS
+        consecutiveStartupRejections < 12 -> STARTUP_BACKOFF_TIER_2_MS
+        else -> STARTUP_BACKOFF_TIER_3_MS
+    }
+
+    /**
      * Feed one `server/time` round-trip. All args in microseconds:
      *  - [clientTransmittedUs] T1 — client send, local clock
      *  - [serverReceivedUs]    T2 — server receive, server clock
@@ -124,6 +163,9 @@ class ClockKalmanFilter(
         val measurementVariance = maxError * maxError
 
         if (clientReceivedUs == lastUpdateUs) return
+        // Any sample that reaches here was actually fed in, so whatever streak of
+        // caller-side rejections preceded it is over.
+        consecutiveStartupRejections = 0
         val dt = (clientReceivedUs - lastUpdateUs).toDouble()
         lastUpdateUs = clientReceivedUs
 
@@ -271,5 +313,6 @@ class ClockKalmanFilter(
         useDrift = false
         lastRttUs = 0L
         suspectResidual = 0.0
+        consecutiveStartupRejections = 0
     }
 }

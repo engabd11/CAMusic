@@ -1,0 +1,221 @@
+package com.engabd.sendpin.audio
+
+import android.content.Context
+import android.media.AudioDeviceInfo
+import android.os.Handler
+import android.os.Looper
+import androidx.annotation.OptIn
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.ExoPlayer
+import com.engabd.sendpin.protocol.ClockSync
+import com.engabd.sendpin.protocol.StreamStartPlayerInfo
+
+/**
+ * Experimental ExoPlayer-based replacement for [SendspinAudioEngine] - see
+ * `docs/exoplayer-upgrade-plan.md`. Opt-in via [com.engabd.sendpin.data.AppSettings.useExoPlayerForSendspin];
+ * [SendspinAudioEngine] remains the default.
+ *
+ * What this gets MA playback that the old engine can't: [AudioAnalysisTap] sits
+ * in this player's render chain exactly like it does for [LocalPlayer], via the
+ * same [TapRenderersFactory] - direct Hue Bridge Light Sync becomes possible for
+ * MA the same way it already works for local playback. **Not yet wired up**:
+ * [com.engabd.sendpin.hue.DirectLightSync] is currently built once, at process
+ * scope, hard-pointed at `localPlayer.audioAnalysisTap` (see `SendpinApp.kt`) -
+ * teaching it to switch taps between backends is separate follow-up work, not
+ * something this class can do alone. [audioAnalysisTap] is exposed here so that
+ * work has something to wire to.
+ *
+ * Also gets ExoPlayer's gapless. GC-immune output is a second, separate opt-in
+ * on top of this one: [useOboe] (default off) swaps [TapRenderersFactory] for
+ * [OboeRenderersFactory], routing decoded PCM through [SendspinNativeOutput]
+ * (the ported Massdroid Oboe engine) instead of the platform `AudioTrack`. Off,
+ * this trades the old engine's tuned `AudioTrack` pacing for one still on the
+ * JVM thread, in exchange for a real ExoPlayer pipeline; on, it adds native
+ * timeline drift correction, a dynamic-range compressor and dither - but only
+ * 16-bit PCM is supported ([OboeAudioSink.configure] throws otherwise), so
+ * combining [useOboe] with [bitPerfect] is a real gap, not yet handled.
+ *
+ * One instance per Sendspin connection (see [com.engabd.sendpin.service.Playback.startSendspin]).
+ * Unlike [SendspinAudioEngine] - which ran its own decode thread and could be
+ * driven from anywhere - ExoPlayer may only be built and touched on the thread
+ * that built it, and [com.engabd.sendpin.service.Playback] drives its engine
+ * from a `Dispatchers.Default` scope, `AudioManager` focus callbacks, and the
+ * Sendspin client's ingest coroutine - none of which is reliably the main
+ * thread. Every method here is safe to call from any of them: field-only state
+ * ([submit], the volume/mute setters' bookkeeping) applies immediately, and the
+ * actual [ExoPlayer] calls are posted to the main thread via [runOnMain]. That
+ * makes those calls asynchronous with respect to the caller - deliberately, since
+ * synchronously blocking an arbitrary caller thread on a main-thread post risks a
+ * deadlock if that thread is ever waited on *from* the main thread.
+ */
+@OptIn(UnstableApi::class)
+class SendspinExoEngine(
+    private val context: Context,
+    private val clock: ClockSync,
+) : SendspinPlaybackEngine {
+
+    val audioLead = AudioLead()
+    val audioAnalysisTap = AudioAnalysisTap(audioLead)
+
+    /**
+     * Read once, when the player is (re)built - see [LocalPlayer.buildPlayer]'s
+     * identical note. A change takes effect on the next stream, not the current one.
+     */
+    @Volatile override var bitPerfect: Boolean = false
+
+    /**
+     * Experimental, on top of [SendspinExoEngine] itself being experimental: GC-immune
+     * native output via Oboe instead of the platform `AudioTrack`. Read once, when
+     * the player is (re)built - same timing as [bitPerfect]. See the class doc for
+     * why the two don't currently combine.
+     */
+    @Volatile var useOboe: Boolean = false
+
+    private val player: ExoPlayer by lazy { buildPlayer() }
+
+    // Only constructed when useOboe is actually on (see buildPlayer) - the native
+    // library is loaded lazily too (SendspinNativeOutput.ensureLibrary), so a
+    // build with useOboe off never touches the .so at all.
+    private var nativeOutput: SendspinNativeOutput? = null
+
+    /**
+     * Whether this player is in a Sendspin group - selects [SendspinSyncDataSource]
+     * (server-clock scheduled) vs [SendspinDirectDataSource] (instant start). Set
+     * by the caller from `group/update`'s `group_id` before the next [start].
+     */
+    @Volatile var grouped: Boolean = false
+
+    @Volatile override var staticDelayMs: Int = 0
+        set(value) {
+            field = value
+            (currentDataSource as? SendspinSyncDataSource)?.staticDelayMs = value
+        }
+
+    private var preferredOutputDevice: AudioDeviceInfo? = null
+    private var currentDataSource: SendspinDataSource? = null
+    private var userVolume = 1f
+    private var syncMuted = false
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    /**
+     * Run [action] on the main thread - immediately if already there, posted
+     * otherwise. Every touch of [player] goes through this: it's what lets every
+     * public method here be called from whatever thread the caller happens to be
+     * on (see the class doc).
+     */
+    private fun runOnMain(action: () -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) action() else mainHandler.post(action)
+    }
+
+    private fun effectiveVolume() = if (syncMuted) 0f else userVolume
+
+    private fun buildPlayer(): ExoPlayer {
+        val attrs = AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+            .build()
+        val renderers = if (useOboe) {
+            val output = SendspinNativeOutput().also { nativeOutput = it }
+            val sink = OboeAudioSink(
+                nativeOutput = output,
+                tap = audioAnalysisTap,
+                driftCorrection = { currentDataSource is SendspinSyncDataSource },
+                currentDataSource = { currentDataSource },
+            )
+            OboeRenderersFactory(context, sink)
+        } else {
+            TapRenderersFactory(context, audioAnalysisTap, audioLead)
+                .setEnableAudioFloatOutput(bitPerfect) as TapRenderersFactory
+        }
+        // Shallow on purpose: SendspinSyncDataSource.read() is itself the pacing
+        // mechanism (it blocks until each frame is due), so a deep ExoPlayer
+        // buffer on top of that would only add latency, not safety margin - see
+        // the plan's risk #2.
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                /* minBufferMs = */ 1_000,
+                /* maxBufferMs = */ 5_000,
+                /* bufferForPlaybackMs = */ 200,
+                /* bufferForPlaybackAfterRebufferMs = */ 500,
+            )
+            .build()
+        return ExoPlayer.Builder(context, renderers)
+            .setLoadControl(loadControl)
+            // Playback.kt already owns focus arbitration for the Sendspin path
+            // (see its focusListener) - ExoPlayer handling it too would be two
+            // owners fighting over the same AudioManager request.
+            .setAudioAttributes(attrs, /* handleAudioFocus = */ false)
+            .build()
+            .also { p ->
+                p.volume = effectiveVolume()
+                preferredOutputDevice?.let { d -> runCatching { p.setPreferredAudioDevice(d) } }
+            }
+    }
+
+    override fun start(format: StreamStartPlayerInfo) {
+        val dataSource: SendspinDataSource = if (grouped) {
+            SendspinSyncDataSource(format, clock).also { it.staticDelayMs = staticDelayMs }
+        } else {
+            SendspinDirectDataSource(format)
+        }
+        // Synchronous and immediate: a submit() for this stream can arrive on the
+        // ingest thread before the runOnMain below has even run, and it needs
+        // somewhere to queue to. ExoPlayer doesn't start pulling from it until
+        // the main-thread block completes moments later, so the ordering is safe
+        // either way.
+        currentDataSource = dataSource
+        runOnMain {
+            player.setMediaSource(SendspinMediaSource.create(dataSource, format))
+            player.prepare()
+            player.play()
+        }
+    }
+
+    override fun submit(frame: ByteArray) {
+        val (serverTsUs, payload) = SendspinAudioFrame.parse(frame) ?: return
+        currentDataSource?.submit(serverTsUs, payload)
+    }
+
+    /** `stream/end` - see [SendspinAudioEngine.endOfStream] for why this isn't a stop. */
+    override fun endOfStream() {
+        currentDataSource?.signalEndOfStream()
+    }
+
+    /** `stream/clear` - a seek or track jump: the current source is now wrong. */
+    override fun flush() {
+        currentDataSource?.signalEndOfStream()
+        currentDataSource = null
+        runOnMain { player.stop() }
+    }
+
+    override fun setVolume(v: Float) {
+        userVolume = v.coerceIn(0f, 1f)
+        runOnMain { player.volume = effectiveVolume() }
+    }
+
+    /** Mute/unmute for clock-convergence reasons - see [SendspinAudioEngine.setSyncMuted]. */
+    override fun setSyncMuted(muted: Boolean) {
+        if (syncMuted == muted) return
+        syncMuted = muted
+        runOnMain { player.volume = effectiveVolume() }
+    }
+
+    override fun setPreferredDevice(device: AudioDeviceInfo?) {
+        preferredOutputDevice = device
+        runOnMain { runCatching { player.setPreferredAudioDevice(device) } }
+    }
+
+    override fun release() {
+        currentDataSource?.signalEndOfStream()
+        currentDataSource = null
+        runOnMain {
+            player.release()
+            nativeOutput?.release()
+            nativeOutput = null
+        }
+    }
+}
