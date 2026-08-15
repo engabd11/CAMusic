@@ -163,45 +163,84 @@ private const val PREDROP_WINDOW_S = 2f
 /** How much louder the next section must be to read as a drop rather than a change. */
 private const val DROP_LEVEL_STEP = 0.15f
 
+/**
+ * Whichever backend is actually producing sound right now, and what
+ * [DirectLightSync] needs from it.
+ *
+ * Exactly one backend plays at a time (local or MA — see
+ * `com.engabd.sendpin.service.Playback`'s `setBackend`-style exclusivity), and
+ * [SendpinApp] is what decides which one this describes moment to moment.
+ *
+ * @param tap The tap actually installed in that backend's render chain — it
+ *   must be *the same instance* the backend handed to its `TapRenderersFactory`
+ *   (or, for MA via [com.engabd.sendpin.audio.SendspinExoEngine], its Oboe
+ *   sink), not a second one. Activating a tap the audio never flows through
+ *   yields a connected bridge and lights that never move. A fresh instance
+ *   every time the MA engine reconnects — see [DirectLightSync]'s rewiring.
+ * @param lead How far the tap runs ahead of the speaker for *this* backend.
+ * @param artUrl The cover art of whatever this backend is currently playing.
+ * @param scanTrack The local library identity of what's playing, for offline
+ *   scan lookup — null for MA, which has no stable per-track id in its
+ *   protocol to key a scan by. Null is exactly the existing "not scanned yet"
+ *   path [DirectLightSync] already degrades to gracefully.
+ */
+data class ActiveLightSyncSource(
+    val tap: AudioAnalysisTap,
+    val lead: AudioLead,
+    val artUrl: String?,
+    val scanTrack: LocalTrack?,
+)
+
 class DirectLightSync(
     private val context: Context,
     /**
-     * The tap that is actually installed in ExoPlayer's render chain — it must be
-     * *the same instance* [com.engabd.sendpin.audio.LocalPlayer] handed to its
-     * `TapRenderersFactory`, not a second one. Activating a tap the audio never
-     * flows through yields a connected bridge and lights that never move.
+     * Whichever backend is currently playing, and what this needs from it. A
+     * [StateFlow] specifically (not a plain [Flow]): its `.value` must be
+     * synchronously available the moment [start] runs, with no "hasn't emitted
+     * yet" race - see [SendpinApp.activeLightSyncSource]'s construction.
      */
-    private val audioTap: AudioAnalysisTap,
-    /**
-     * How far the tap runs ahead of the speaker, measured by the sink wrapper
-     * [com.engabd.sendpin.audio.AudioLeadProbe]. Drives [delayQueue] so a light
-     * change lands when the audio is heard rather than when it was decoded.
-     */
-    private val audioLead: AudioLead,
-    /**
-     * Whatever is playing on this phone.
-     *
-     * Two things are taken from it. Its cover art drives the album-art colour
-     * schemes — `album_art_v2` is the persisted default, so without it a fresh
-     * install silently renders the static fallback and the setting reads as a
-     * lie. Its identity is what a track scan is looked up and requested by.
-     */
-    private val nowPlaying: Flow<LocalTrack?>,
+    private val activeSource: StateFlow<ActiveLightSyncSource>,
     /**
      * Offline track analyses. Optional: with no scans the direct path behaves
      * exactly as it did before they existed — causal grid, live-estimated
      * character, no section knowledge — which is also what happens for any
-     * individual track that has not been scanned yet.
+     * individual track that has not been scanned yet (and always, for MA -
+     * see [ActiveLightSyncSource.scanTrack]).
      */
     private val scans: TrackScanRepository? = null,
     /**
-     * Whether this phone's player is currently playing audio. Used to decide
-     * when the room has been idle long enough to switch from the music-reactive
-     * show to the gentle ambient idle glow.
+     * Whether whichever backend is currently active is playing audio. Used to
+     * decide when the room has been idle long enough to switch from the
+     * music-reactive show to the gentle ambient idle glow.
      */
     private val isPlaying: Flow<Boolean> = flowOf(false),
     private val settings: AppSettings = AppSettings(context),
 ) {
+    /**
+     * The tap [onFrame]/[onAnalysisReset] are currently hooked to, or null when
+     * no session is running. Tracked separately from `activeSource.value.tap`
+     * because the two can legitimately disagree for an instant — the source can
+     * change (a backend switch, or MA reconnecting to a fresh engine) before
+     * [rewireTap] has run - and because [onAnalysisFrame] (line ~522) needs
+     * "the tap that is actually calling back right now", not "whatever the
+     * source flow says right now".
+     */
+    @Volatile private var wiredTap: AudioAnalysisTap? = null
+
+    /**
+     * Point [onFrame]/[onAnalysisReset] at [source]'s tap, unhooking whichever
+     * tap they previously pointed to. A no-op if it's already the right one -
+     * every emission of [activeSource] runs through here, not just changes.
+     */
+    private fun rewireTap(source: ActiveLightSyncSource) {
+        val old = wiredTap
+        if (old === source.tap) return
+        old?.let { it.setActive(false); it.onFrame = null; it.onAnalysisReset = null }
+        source.tap.onFrame = ::onAnalysisFrame
+        source.tap.onAnalysisReset = ::onAnalysisReset
+        source.tap.setActive(true)
+        wiredTap = source.tap
+    }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     /**
@@ -367,7 +406,7 @@ class DirectLightSync(
             dtls = client
 
             // 4. Create the stream encoder + effects engine.
-            delayQueue.resetDelay(audioLead.leadMs)
+            delayQueue.resetDelay(activeSource.value.lead.leadMs)
             lastSent = null
             sendFailures = 0
             revoked = false
@@ -410,9 +449,7 @@ class DirectLightSync(
             val framePeriod = ANALYSIS_HOP.toFloat() / ANALYSIS_SAMPLE_RATE
             tempo = TempoTracker(framePeriod)
             structure = StructureTracker(framePeriod)
-            audioTap.onFrame = ::onAnalysisFrame
-            audioTap.onAnalysisReset = ::onAnalysisReset
-            audioTap.setActive(true)
+            rewireTap(activeSource.value)
             acquireLocks()
 
             running.set(true)
@@ -450,9 +487,8 @@ class DirectLightSync(
     }
 
     private suspend fun cleanup() {
-        audioTap.setActive(false)
-        audioTap.onFrame = null
-        audioTap.onAnalysisReset = null
+        wiredTap?.let { it.setActive(false); it.onFrame = null; it.onAnalysisReset = null }
+        wiredTap = null
         tempo = null
         structure = null
         latestGrid = null
@@ -519,7 +555,11 @@ class DirectLightSync(
         var published = frame
 
         val scan = activeScan
-        val pos = audioTap.analysisPositionS
+        // The tap that is actually calling back right now, not activeSource.value.tap:
+        // the two can disagree for an instant across a backend switch or MA
+        // reconnect, and this callback only ever fires from whichever tap is
+        // actually wired (see rewireTap).
+        val pos = wiredTap?.analysisPositionS ?: Float.NaN
         if (!pos.isNaN()) {
             // Decided once per track, and only inside the window. Before it, a
             // missing scan means "not arrived yet", not "there isn't one".
@@ -671,7 +711,7 @@ class DirectLightSync(
             // Hold the rendered frame until the audio it describes is actually
             // audible. See FrameDelayQueue: the tap runs ahead of the speaker, so
             // without this the lights lead the music rather than trail it.
-            delayQueue.updateDelay(audioLead.leadMs, dt)
+            delayQueue.updateDelay(activeSource.value.lead.leadMs, dt)
             delayQueue.offer(colours, now)
             val held = delayQueue.poll(now) ?: continue
 
@@ -1153,15 +1193,24 @@ class DirectLightSync(
         // album-art scheme is selected, so switching to one mid-track picks up
         // the cover already on screen instead of waiting for the next song.
         scope.launch {
-            nowPlaying.map { it?.artUrl }.distinctUntilChanged().collect { url ->
+            activeSource.map { it.artUrl }.distinctUntilChanged().collect { url ->
                 lastArtUrl = url
                 applyAlbumArt(url)
             }
         }
         // The track itself, for the scan.
         scope.launch {
-            nowPlaying.distinctUntilChanged { a, b -> scanKeyOf(a) == scanKeyOf(b) }
+            activeSource.map { it.scanTrack }.distinctUntilChanged { a, b -> scanKeyOf(a) == scanKeyOf(b) }
                 .collect { track -> onTrackChanged(track) }
+        }
+        // Re-point the tap hookup whenever the active backend changes - a local
+        // <-> MA switch, or MA reconnecting to a fresh SendspinExoEngine (a new
+        // AudioAnalysisTap instance every time). A no-op while nothing is
+        // running: start() does its own initial rewireTap() call, and a source
+        // change that arrives before that is exactly what wiredTap == null /
+        // running == false already handles safely.
+        scope.launch {
+            activeSource.collect { source -> if (running.get()) rewireTap(source) }
         }
         // A scan that lands while its own track is still inside the adoption
         // window is adopted right away, which is what makes the very first play

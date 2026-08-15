@@ -5,6 +5,8 @@ import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.os.Build
+import com.engabd.sendpin.audio.AudioAnalysisTap
+import com.engabd.sendpin.audio.AudioLead
 import com.engabd.sendpin.audio.AudioOutputs
 import com.engabd.sendpin.audio.FormatNegotiator
 import com.engabd.sendpin.audio.SendspinAudioEngine
@@ -103,6 +105,18 @@ class Playback(private val app: Context) {
     private var volumeJob: Job? = null
 
     /**
+     * The tap/lead pair actually installed in the current MA engine's render
+     * chain, when MA is playing through [SendspinExoEngine] (the experimental
+     * ExoPlayer path) — null otherwise, including whenever the default
+     * [SendspinAudioEngine] (no tap at all) is in use. A live [StateFlow]
+     * rather than a one-time read because it changes on every reconnect: a new
+     * `SendspinExoEngine` means a new [AudioAnalysisTap] instance, and
+     * [com.engabd.sendpin.hue.DirectLightSync] needs to notice and re-hook it.
+     */
+    private val _maAudioSource = MutableStateFlow<Pair<AudioAnalysisTap, AudioLead>?>(null)
+    val maAudioSource: StateFlow<Pair<AudioAnalysisTap, AudioLead>?> = _maAudioSource
+
+    /**
      * Deferred "playback really has stopped" work. Armed on `stream/end` and
      * cancelled by the next `stream/start`, so a track change doesn't flicker the
      * notification or the play/pause state. Matches the engine's own linger.
@@ -133,6 +147,7 @@ class Playback(private val app: Context) {
             AudioManager.AUDIOFOCUS_LOSS -> {
                 // Another app took over media for good — stop and release.
                 engine?.release()
+                _maAudioSource.value = null
                 _isPlaying.value = false
                 abandonAudioFocus()
             }
@@ -336,8 +351,12 @@ class Playback(private val app: Context) {
         // at connect time: switching mid-connection would orphan whatever the old
         // engine was doing mid-stream. SendspinAudioEngine stays the default.
         val eng: SendspinPlaybackEngine = if (settings.useExoPlayerForSendspin.first()) {
-            SendspinExoEngine(app, c.clock).also { it.useOboe = settings.useOboeOutput.first() }
+            SendspinExoEngine(app, c.clock).also {
+                it.useOboe = settings.useOboeOutput.first()
+                _maAudioSource.value = it.audioAnalysisTap to it.audioLead
+            }
         } else {
+            _maAudioSource.value = null
             SendspinAudioEngine(c.clock)
         }
         engine = eng
@@ -771,6 +790,7 @@ class Playback(private val app: Context) {
         abandonAudioFocus()
         unregisterNoisyReceiver()
         engine?.release(); engine = null
+        _maAudioSource.value = null
         client?.close(reason); client = null
         idleJob?.cancel(); idleJob = null
         positionTicker?.cancel(); positionTicker = null
