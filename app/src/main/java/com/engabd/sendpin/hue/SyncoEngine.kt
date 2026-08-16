@@ -2,6 +2,8 @@ package com.engabd.sendpin.hue
 
 import com.engabd.sendpin.audio.AnalysisFrame
 import com.engabd.sendpin.audio.BeatGrid
+import com.engabd.sendpin.audio.GestureKind
+import com.engabd.sendpin.audio.GestureState
 import com.engabd.sendpin.audio.StructureState
 import kotlin.math.abs
 import kotlin.math.exp
@@ -70,6 +72,22 @@ private const val WAVE_DECAY_TAU = 0.45f
 
 /** Per-frame decay of the drop swell. */
 private const val SWELL_DECAY = 0.85f
+
+/**
+ * Ceiling on what a room gesture may add, as a fraction of full scale.
+ *
+ * A wash, not a flash. Philips are blunt about the failure mode this guards
+ * against: "sudden changes in brightness of lamps in our peripheral vision (to
+ * our side) or lamps near to us, can be unpleasant" — and a gesture that crosses
+ * the room is peripheral motion by definition.
+ */
+private const val GESTURE_MAX = 0.35f
+
+/** Shortest a lamp may be lit by a passing front before it reads as a chase. */
+private const val MIN_DWELL_S = 0.15f
+
+/** Centroid climb at which a traversal is also rising, not only crossing. */
+private const val RISE_FOR_VERTICAL = 0.25f
 
 /**
  * Colour-jump scaling per phrase, so four-phrase cycles don't feel metronomic.
@@ -328,6 +346,12 @@ class SyncoEngine(
             rotateRate = base.rotateRate * m,
             rotateSwing = base.rotateSwing * m,
             waveSpeed = base.waveSpeed * m,
+            // A room gesture is the most literal reading of `movement` there is —
+            // the blurb promises "sweeps and chases across the room" and until now
+            // nothing in the engine did that. An amount rather than a rate, which
+            // is why it multiplies the gain and not the duration: the duration is
+            // measured from the sound and must not be a preference.
+            gestureGain = base.gestureGain * m,
             flashGamma = max(0.2f, base.flashGamma * c),
             // `contrast` is "small-vs-big peak spread", which is exactly what this
             // does within a lamp's slice of the spectrum. Until now it only reached
@@ -370,11 +394,39 @@ class SyncoEngine(
          * when the lamps have no spread to project onto.
          */
         val spatialPos: Float,
+        /**
+         * Position along the room's principal axis, 0..1, oriented so that
+         * increasing is room-right. The coordinate a linear gesture travels
+         * along; [xrank] when there is no axis to speak of.
+         */
+        val axisPos: Float,
+        /**
+         * Where this lamp sits around the room, in turns counter-clockwise from
+         * room-right. Meaningless unless [topology] is [RoomTopology.RING].
+         */
+        val azimuth: Float,
     )
 
     /** Normalised lamp positions, and the phrase-cycle wave origins over them. */
     private val positions: Map<Int, Vec3> = normalizePositions(channels)
     private val origins: List<Vec3> = phraseOrigins(positions, configurationType)
+
+    /**
+     * What shape the lamps are actually in, and the geometry that follows from
+     * it. Classified once: lamps do not move while a stream is running, which is
+     * the same argument [coupling] below already makes.
+     */
+    private val topology: RoomTopology = classifyTopology(channels)
+    private val ring: Ring? =
+        if (topology == RoomTopology.RING) fitRing(positions.values.toList()) else null
+
+    /**
+     * Whether the room has enough vertical spread to render a rising gesture on.
+     * Usually false — the Hue app places lamps on a floor plan — in which case a
+     * swell lifts the whole room together instead of sweeping upward through
+     * lamps that are all at the same height.
+     */
+    private val roomHasHeight: Boolean = hasHeight(channels)
 
     private val cmap: Map<Int, ChannelInfo> = buildChannelMap(channels)
 
@@ -536,6 +588,21 @@ class SyncoEngine(
         val projHi = projections.maxOrNull() ?: 0f
         val projSpan = projHi - projLo
 
+        // The gesture axis, from the room's *shape* rather than from the per-axis
+        // normalisation above: five lamps in a line with a few centimetres of
+        // wobble have that wobble stretched to the full width of the unit cube by
+        // a per-axis fit, and stop reading as a line at all. See [roomShape].
+        val shape = roomShape(channels)
+        val shapePts = sorted.map { shape[it.channelId] ?: Vec3(0f, 0f, 0f) }
+        val (rawDir, _) = principalAxis(shapePts)
+        // Point it room-right, so a left-to-right sweep travels left to right
+        // whichever way the eigenvector happened to come out. A vertical line has
+        // no left-right component to orient by and keeps its own direction.
+        val dir = if (rawDir.x < 0f) Vec3(-rawDir.x, -rawDir.y, -rawDir.z) else rawDir
+        val axisRaw = shapePts.map { axisPosition(it, dir, Vec3(0f, 0f, 0f)) }
+        val axisLo = axisRaw.minOrNull() ?: 0f
+        val axisSpan = (axisRaw.maxOrNull() ?: 0f) - axisLo
+
         return sorted.mapIndexed { i, ch ->
             val xrank = if (n <= 1) 0.5f else i.toFloat() / (n - 1)
             val pos = positions[ch.channelId] ?: Vec3(xrank, 0.5f, 0.5f)
@@ -556,6 +623,8 @@ class SyncoEngine(
                 melLo = melLo,
                 melHi = melHi,
                 spatialPos = spatialPos,
+                axisPos = if (axisSpan < 1e-6f) xrank else (axisRaw[i] - axisLo) / axisSpan,
+                azimuth = ring?.let { azimuthOf(pos, it) } ?: xrank,
             )
         }.toMap()
     }
@@ -588,6 +657,153 @@ class SyncoEngine(
         var sum = 0f
         for (w in waves) sum += w.amplitudeAt(info.distToOrigin[w.originIdx])
         return sum
+    }
+
+    // ── Room gestures ─────────────────────────────────────────────────────
+
+    /**
+     * Whether the room is allowed to move with the music at all.
+     *
+     * Off by default and behind a user setting, because there is no way to judge
+     * this from a unit test: the tests can prove the detector fires on a
+     * synthetic sweep and not on a synthetic wobble, which is necessary and
+     * nowhere near sufficient.
+     */
+    var spatialGestures: Boolean = false
+
+    /**
+     * The room's geometry in one line, for the session log.
+     *
+     * Whether the classifier got this particular room right is the first thing to
+     * check on a device and the hardest to infer by watching lights: a ring
+     * misread as a field looks like a gesture that simply did not work.
+     */
+    val roomSummary: String
+        get() = buildString {
+            append("$topology, $nChannels lamps")
+            ring?.let { append(", ring r=${"%.2f".format(it.radius)} residual=${"%.2f".format(it.residual)}") }
+            append(if (roomHasHeight) ", has height" else ", flat")
+        }
+
+    /** The id of the last gesture launched, so one can never fire twice. */
+    private var lastGestureId = 0L
+
+    /** At most one of these is non-null: a front along a coordinate, or a source. */
+    private var front: TravellingFront? = null
+    private var source: MovingSource? = null
+
+    /** Which coordinate [front] is travelling along, while one is live. */
+    private var frontAxis = GestureAxis.NONE
+
+    private enum class GestureAxis { NONE, LINEAR, RING, HEIGHT, UNIFORM }
+
+    /**
+     * Turn a detected gesture into something this particular room can show.
+     *
+     * The same musical event renders four ways, and one of those ways is to
+     * refuse. A [RoomTopology.CLUSTER] gets no traversal at all — two lamps on a
+     * shelf cannot express "across the room", and flickering between them reads
+     * as a fault. Philips make the same call for their own `AreaEffect`: better
+     * to show nothing than to show it in the wrong place.
+     */
+    private fun launchGesture(g: GestureState, p: ModeParams) {
+        front = null
+        source = null
+        frontAxis = GestureAxis.NONE
+
+        // Strength drives brightness, duration comes from the sound. A slow pad
+        // and a fast riser must not look the same, which is the whole reason the
+        // detector measures a duration rather than assuming one.
+        val strength = (g.strength * p.gestureGain).coerceIn(0f, GESTURE_MAX)
+        if (strength <= 1e-4f || g.durationS <= 0f) return
+
+        val rising = g.kind == GestureKind.SWELL || g.rise > RISE_FOR_VERTICAL
+
+        // A swell in a room with real height rises through it. Most rooms have
+        // none, and there the swell lifts everything together rather than picking
+        // an arbitrary order among lamps at the same height.
+        if (g.kind == GestureKind.SWELL) {
+            if (roomHasHeight && rising) {
+                front = TravellingFront(0f, 1f, g.durationS, strength, p.gestureWidth)
+                frontAxis = GestureAxis.HEIGHT
+            } else {
+                front = TravellingFront(0f, 0f, g.durationS, strength, 1e6f)
+                frontAxis = GestureAxis.UNIFORM
+            }
+            return
+        }
+
+        when (topology) {
+            RoomTopology.CLUSTER -> return
+            RoomTopology.LINEAR -> {
+                front = TravellingFront(
+                    from = (g.fromPan + 1f) / 2f,
+                    to = (g.toPan + 1f) / 2f,
+                    durationS = g.durationS,
+                    strength = strength,
+                    width = widthFor(p.gestureWidth, g.durationS),
+                )
+                frontAxis = GestureAxis.LINEAR
+            }
+            RoomTopology.RING -> {
+                front = TravellingFront(
+                    from = azimuthForPan(g.fromPan),
+                    to = azimuthForPan(g.toPan),
+                    durationS = g.durationS,
+                    strength = strength,
+                    width = widthFor(p.gestureArcWidth, g.durationS),
+                    circular = true,
+                )
+                frontAxis = GestureAxis.RING
+            }
+            RoomTopology.FIELD -> {
+                val my = positions.values.map { it.y }.average().toFloat()
+                val mz = positions.values.map { it.z }.average().toFloat()
+                source = MovingSource(
+                    from = Vec3((g.fromPan + 1f) / 2f, my, mz),
+                    to = Vec3((g.toPan + 1f) / 2f, my, mz),
+                    durationS = g.durationS,
+                    strength = strength,
+                    radius = p.gestureRadius,
+                )
+            }
+        }
+    }
+
+    /**
+     * Widen a front rather than let it sharpen when the gesture is fast.
+     *
+     * If a lamp's dwell would fall under [MIN_DWELL_S] the room reads as a chase
+     * rather than as a sweep — and the bridge relays at 25 Hz over Zigbee, so
+     * nothing that quick survives the trip anyway. Philips' own swirl effect puts
+     * a comfortable per-lamp dwell at about half a second.
+     */
+    private fun widthFor(base: Float, durationS: Float): Float {
+        if (nChannels <= 1) return base
+        val dwell = durationS * base
+        if (dwell >= MIN_DWELL_S) return base
+        return min(1f, base * MIN_DWELL_S / max(dwell, 1e-4f))
+    }
+
+    private fun advanceGestures(dt: Float) {
+        front?.let { if (it.done) { front = null; frontAxis = GestureAxis.NONE } else it.advance(dt) }
+        source?.let { if (it.done) source = null else it.advance(dt) }
+    }
+
+    /** What the live gesture, if any, adds at one lamp. */
+    private fun gestureAmplitude(info: ChannelInfo): Float {
+        source?.let { return it.amplitudeAt(info.pos) }
+        val f = front ?: return 0f
+        return when (frontAxis) {
+            GestureAxis.LINEAR -> f.amplitudeAt(info.axisPos)
+            GestureAxis.RING -> f.amplitudeAt(info.azimuth)
+            GestureAxis.HEIGHT -> f.amplitudeAt(info.pos.z)
+            // A width of a million makes the Gaussian flat, so every lamp gets the
+            // same value: the whole room blooming together, which is what a swell
+            // in a room with no height to travel through has to be.
+            GestureAxis.UNIFORM -> f.amplitudeAt(0f)
+            GestureAxis.NONE -> 0f
+        }
     }
 
     // ── Accessors for the alternate renderers ─────────────────────────────
@@ -873,6 +1089,7 @@ class SyncoEngine(
         dt: Float,
         beatgrid: BeatGrid? = null,
         structure: StructureState? = null,
+        gesture: GestureState? = null,
     ): Map<Int, Rgb> {
         time += dt
         updateEnv(frame)
@@ -995,6 +1212,24 @@ class SyncoEngine(
             }
         } else if (rolling) {
             colourPhase += p.colourBeatStep * 0.7f * (dt / beatgrid.periodS) * sectionMul
+        }
+
+        // ── Room gestures ────────────────────────────────────────────────
+        // Launched on an *id change* rather than on a threshold, so a detection
+        // that persists across frames cannot re-fire — the problem `waveArmed`
+        // exists to solve for wavefronts, solved in the detector instead. Once
+        // launched a gesture runs to completion on its own clock, so the visible
+        // sweep is smooth however the detector's score jitters underneath it.
+        if (spatialGestures && p.gestureGain > 0f) {
+            if (gesture != null && gesture.kind != GestureKind.NONE && gesture.id != lastGestureId) {
+                lastGestureId = gesture.id
+                launchGesture(gesture, p)
+            }
+            advanceGestures(dt)
+        } else if (front != null || source != null) {
+            front = null
+            source = null
+            frontAxis = GestureAxis.NONE
         }
 
         // ── Wavefronts ───────────────────────────────────────────────────
@@ -1222,9 +1457,19 @@ class SyncoEngine(
             target = target.coerceIn(0f, 1f)
 
             // Flash overlay: the per-light beat flash, the wavefront sweeping
-            // past, and any drop swell still ringing.
+            // past, any drop swell still ringing, and a room gesture travelling
+            // through.
+            //
+            // The gesture belongs here rather than in `target`, and for the
+            // opposite reason to the sustain bloom above. The bloom is room-wide
+            // and wants briAttack/briDecay under it; a *travelling* front must not
+            // have them, because briDecay would smear it as it moves off each lamp
+            // and flatten the near-versus-far difference that is the only reason
+            // it reads as motion at all. It is still slew-limited on the rise, and
+            // it is smooth by construction anyway.
             val wave = if (p.waveGain > 0f) p.waveGain * waveAmplitude(info) * musicGate else 0f
-            val flash = (lightFlash[cid] ?: 0f) + wave + swell
+            val gest = if (front != null || source != null) gestureAmplitude(info) * musicGate else 0f
+            val flash = (lightFlash[cid] ?: 0f) + wave + swell + gest
 
             // Smooth brightness
             val (prevColor, prevB) = state[cid] ?: (Triple(0f, 0f, 0f) to 0f)

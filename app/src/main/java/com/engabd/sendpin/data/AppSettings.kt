@@ -142,6 +142,18 @@ class AppSettings(private val context: Context) {
 
         /** Only fetch remote tracks for analysis on an unmetered network. */
         private val LIGHT_SYNC_PRESCAN_WIFI = booleanPreferencesKey("light_sync_prescan_wifi_only")
+
+        /**
+         * Let the room move with sounds that move: a swell or a panning source
+         * travels across the lamps instead of only brightening them.
+         *
+         * **Off by default**, and deliberately so. Not all music has a stereo
+         * sweep or a linear swell in it, and a gesture that fires on a track with
+         * neither is worse than one that never fires — it makes every track look
+         * like the ones it is supposed to distinguish. Until this has been judged
+         * on real tracks in a real room, the honest default is off.
+         */
+        private val LIGHT_SYNC_SPATIAL = booleanPreferencesKey("light_sync_spatial")
         // Whether the onboarding wizard has been completed or skipped. When false, the
         // app shows the wizard instead of the main UI on launch.
         private val ONBOARDING_COMPLETED = booleanPreferencesKey("onboarding_completed")
@@ -882,6 +894,10 @@ class AppSettings(private val context: Context) {
     val lightSyncPrescanWifiOnly: Flow<Boolean> =
         context.dataStore.data.map { it[LIGHT_SYNC_PRESCAN_WIFI] ?: true }
 
+    /** Room gestures. Off unless asked for — see the key's docs. */
+    val lightSyncSpatial: Flow<Boolean> =
+        context.dataStore.data.map { it[LIGHT_SYNC_SPATIAL] ?: false }
+
     suspend fun setHueBridge(
         ip: String,
         appKey: String,
@@ -1017,6 +1033,10 @@ class AppSettings(private val context: Context) {
 
     suspend fun setLightSyncPrescanWifiOnly(on: Boolean) {
         context.dataStore.edit { it[LIGHT_SYNC_PRESCAN_WIFI] = on }
+    }
+
+    suspend fun setLightSyncSpatial(on: Boolean) {
+        context.dataStore.edit { it[LIGHT_SYNC_SPATIAL] = on }
     }
 
     // ── Crash reporting ────────────────────────────────────────────────────

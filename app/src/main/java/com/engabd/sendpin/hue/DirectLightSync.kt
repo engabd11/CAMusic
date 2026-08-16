@@ -1,5 +1,6 @@
 package com.engabd.sendpin.hue
 
+import android.animation.ValueAnimator
 import android.content.Context
 import android.util.Log
 import com.engabd.sendpin.audio.ANALYSIS_HOP
@@ -8,6 +9,9 @@ import com.engabd.sendpin.audio.AnalysisFrame
 import com.engabd.sendpin.audio.AudioAnalysisTap
 import com.engabd.sendpin.audio.AudioLead
 import com.engabd.sendpin.audio.BeatGrid
+import com.engabd.sendpin.audio.GestureKind
+import com.engabd.sendpin.audio.GestureState
+import com.engabd.sendpin.audio.GestureTracker
 import com.engabd.sendpin.audio.LocalTrack
 import com.engabd.sendpin.audio.SongPhase
 import com.engabd.sendpin.audio.StructureState
@@ -290,9 +294,30 @@ class DirectLightSync(
      */
     private var tempo: TempoTracker? = null
     private var structure: StructureTracker? = null
+    private var gestures: GestureTracker? = null
 
     @Volatile private var latestGrid: BeatGrid? = null
     @Volatile private var latestStructure: StructureState? = null
+    @Volatile private var latestGesture: GestureState? = null
+
+    /** Last gesture id logged, so each one is reported exactly once. */
+    private var loggedGestureId = 0L
+
+    /**
+     * Whether the user has asked for room gestures, and whether the system will
+     * allow them.
+     *
+     * Two flags rather than one because they mean different things: the setting
+     * is a preference, and reduced motion is an accessibility instruction. A
+     * gesture crossing the room is exactly the large peripheral movement that
+     * setting exists to suppress.
+     *
+     * `ValueAnimator.areAnimatorsEnabled()` is read directly rather than through
+     * `LocalReducedMotion`, which is a Compose CompositionLocal and unreachable
+     * from here — but it is the same source of truth that composable reads.
+     */
+    private var spatialEnabled = false
+    private var reducedMotion = false
 
     // ── Track scan state ───────────────────────────────────────────────────
     //
@@ -423,6 +448,10 @@ class DirectLightSync(
                 gamuts = channels.mapNotNull { ch -> ch.gamut?.let { ch.channelId to it } }.toMap(),
             )
             engine = SyncoEngine(channels, config.configurationType).also {
+                // The first thing to check when a room gesture looks wrong: a ring
+                // misread as a field renders as a gesture that simply did nothing,
+                // and no amount of watching the lights distinguishes the two.
+                Log.i(TAG, "Entertainment area geometry: ${it.roomSummary}")
                 it.mode = SyncMode.fromWire(settings.lightSyncIntensity.first())
                 it.effect = SyncEffect.fromWire(settings.lightSyncEffect.first())
                 it.setScheme(ColorScheme.fromWire(settings.lightSyncColor.first()))
@@ -446,11 +475,17 @@ class DirectLightSync(
             latestFrameAt = 0L
             latestGrid = null
             latestStructure = null
+            latestGesture = null
             // The analyzer's frame period, not the render period: these step once
             // per hop, off the analyzer's own clock.
             val framePeriod = ANALYSIS_HOP.toFloat() / ANALYSIS_SAMPLE_RATE
             tempo = TempoTracker(framePeriod)
             structure = StructureTracker(framePeriod)
+            gestures = GestureTracker(framePeriod)
+            // Re-read per session: the user can turn animations off in system
+            // settings between one song and the next.
+            reducedMotion = !ValueAnimator.areAnimatorsEnabled()
+            applySpatialGestures()
             rewireTap(activeSource.value)
             acquireLocks()
 
@@ -590,8 +625,26 @@ class DirectLightSync(
             }
         }
 
+        // Fed the structure this frame produced, not the previous one: a swell is
+        // a build, and the tracker has just finished saying whether this is one.
+        val gest = gestures?.update(frame, arc)
+        if (gest != null && gest.kind != GestureKind.NONE && gest.id != loggedGestureId) {
+            loggedGestureId = gest.id
+            // Logged whether or not anything is rendered, which is what makes the
+            // detector judgeable against real tracks before trusting it with the
+            // room. The budget being *hit* is the interesting signal.
+            logThrottled(
+                "Gesture ${gest.kind} strength=${"%.2f".format(gest.strength)} " +
+                    "dur=${"%.1f".format(gest.durationS)}s " +
+                    "pan=${"%.2f".format(gest.fromPan)}->${"%.2f".format(gest.toPan)} " +
+                    "rise=${"%.2f".format(gest.rise)} stereo=${"%.2f".format(gest.stereo)}" +
+                    if (gestures?.budgetHit == true) " (budget hit this track)" else ""
+            )
+        }
+
         latestGrid = grid
         latestStructure = arc
+        latestGesture = gest
         latestFrame = published
         latestFrameAt = System.nanoTime()
     }
@@ -647,8 +700,10 @@ class DirectLightSync(
     private fun onAnalysisReset() {
         tempo?.reset()
         structure?.reset()
+        gestures?.reset()
         latestGrid = null
         latestStructure = null
+        latestGesture = null
         // The scan itself survives a seek — it describes the whole track, and
         // seeking does not make it less true. Only the per-query state goes.
         mapPrevPos = null
@@ -710,7 +765,7 @@ class DirectLightSync(
                     idleStartS = -1f
                     idleT = 0f
                     if (autoIntensity) applyAutoIntensity(eng, frame, dt)
-                    eng.render(frame, dt, latestGrid, latestStructure)
+                    eng.render(frame, dt, latestGrid, latestStructure, latestGesture)
                 }
             } catch (e: Exception) {
                 logThrottled("Render failed: ${e.message}")
@@ -1251,8 +1306,22 @@ class DirectLightSync(
             }
         }
         scope.launch {
+            settings.lightSyncSpatial.collect { on ->
+                spatialEnabled = on
+                applySpatialGestures()
+            }
+        }
+        scope.launch {
             isPlaying.collect { playing -> playerPlaying = playing }
         }
+    }
+
+    /**
+     * The user's preference and the system's accessibility setting, resolved
+     * onto the engine. Either one saying no is a no.
+     */
+    private fun applySpatialGestures() {
+        engine?.spatialGestures = spatialEnabled && !reducedMotion
     }
 
     /**

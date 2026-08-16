@@ -608,6 +608,48 @@ Then, with a phone on the same network as the bridge:
 6. Repeat on a second area shape if one is available — a linear room and a corner room
    read completely differently and only one of them is likely to be set up first.
 
+## What building it changed
+
+Four things the tests found that this document had wrong. They are recorded here
+rather than quietly fixed, because each one is a way the feature could have shipped
+looking broken instead of absent.
+
+### The detector needed two conditions this plan did not have
+
+**Monotonicity alone calls a wobble a sweep.** Half a period of *any* oscillation is
+perfectly monotone, so a 1.2 s vibrato scored as a full traversal four times a bar.
+The missing idea is that a traversal is a **one-way trip**: it does not come back.
+`GestureTracker.crossings` counts how many times a bin crosses the midpoint of the
+candidate sweep across the whole four-second history — once for a real traversal,
+repeatedly for anything oscillating.
+
+**A loud one-sided source *stopping* looked like every other bin moving.** Subtracting
+the broadband pan centroid is what removes a mix that leans, but it has a mirror-image
+failure: when a loud hard-panned source cuts out, the centroid jumps, and every other
+bin's position *relative to it* swings the other way without any of them having moved.
+The fix is to require the **absolute** excursion to be large as well as the relative
+one — the relative test says "it went somewhere the mix did not", and only the
+absolute test says "the sound actually went somewhere".
+
+Both are now in `scoreTraversal`, and both have a test that fails without them.
+
+### The Kåsa circle fit was wrong, and only a test could tell
+
+The linear system solves for `(2a, 2b, c)`, so only the centre terms are halved.
+Halving the constant as well shrank every fitted radius by a room-dependent factor —
+a perfect circle fitted with a residual of 0.18 against a threshold of 0.25. It would
+have *mostly worked*, classifying obvious rings correctly and quietly failing on
+rectangular rooms, which is the worst way for a geometry bug to behave.
+
+### "The gesture spends none of the flash budget" was an over-claim
+
+It spends one. A sweep genuinely brightens the room and then lets it go, and
+`FieldSafety` counts that as one half-transition — correctly, since it is one. What
+matters is the *rate*, and that is what the test now asserts: every individual step
+stays under a quarter of `FLASH_DELTA`, so the room reads as a gradation rather than
+as something switching. One flash of a three-flash budget, spread over a second and a
+half, is a real and acceptable cost rather than a bug.
+
 ## Still assumed
 
 - **How common a real traversal is.** Step 2's log answers it. If the answer is "rare
