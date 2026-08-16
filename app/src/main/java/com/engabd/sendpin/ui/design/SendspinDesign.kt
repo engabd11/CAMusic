@@ -188,6 +188,15 @@ fun AlbumArt(
     radius: Dp = 0.dp,
     glowAlpha: Float = 0.45f,
     placeholder: ImageVector? = null,
+    /**
+     * Shared-element key for the cover, or null for no flight.
+     *
+     * Applied to the cover itself rather than to the [modifier] the caller
+     * passes, because that one lands on the outer Box — which is the whole
+     * letterboxed slot including the blurred wash bleeding past its edges. The
+     * thing that flies between two screens is the artwork, not the wash.
+     */
+    sharedArtKey: String? = null,
 ) {
     val art = rememberArtRequest(url)
     // The cover sits right on the background — no rounded corner, no border, no
@@ -213,6 +222,11 @@ fun AlbumArt(
                 modifier = Modifier
                     .fillMaxWidth()
                     .fillMaxHeight()
+                    // Before the shadow, so the flight animates the artwork's own
+                    // bounds. After it, the shared element would carry a 20dp
+                    // shadow-casting render node through the transition and the
+                    // interpolated bounds would include its spread.
+                    .let { if (sharedArtKey != null) it.sharedArt(sharedArtKey) else it }
                     .shadow(20.dp, RoundedCornerShape(radius)),
             )
         } else if (placeholder != null) {

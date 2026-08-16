@@ -72,7 +72,23 @@ private val FALLBACK_COLOUR = com.engabd.sendpin.hue.ColorScheme.SUNSET.wire
  * and it keeps showing the old one, which reads as the switch having failed.
  */
 @Composable
-fun LightSyncScreen(onBack: () -> Unit = {}) {
+fun LightSyncScreen(
+    onBack: () -> Unit = {},
+    /**
+     * The *shared* Light Sync view model, hoisted to the Activity in `App.kt`.
+     *
+     * Passed in rather than resolved with `viewModel()` here, and that is the whole
+     * fix for the tab flashing on every visit. Inside a NavHost destination the
+     * default owner is the back-stack entry, and the tab bar navigates with
+     * `popUpTo(saveState = true)` — which keeps the entry's saved state and clears
+     * its ViewModelStore. So leaving the tab ran `onCleared`, dropping the Home
+     * Assistant socket, and coming back built a new model that reconnected and
+     * re-discovered from nothing: an empty list, a moment of "couldn't reach Home
+     * Assistant" while the socket came up, and then the areas appearing. Owned by
+     * the Activity, the connection and the areas simply outlive the visit.
+     */
+    viewModel: LightSyncViewModel = viewModel(),
+) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val settings = remember(context) {
         com.engabd.sendpin.data.AppSettings(context.applicationContext)
@@ -81,12 +97,20 @@ fun LightSyncScreen(onBack: () -> Unit = {}) {
     when (lsMode) {
         null -> Box(Modifier.fillMaxSize().background(Ink))
         "direct" -> DirectLightSyncScreen(onBack)
-        else -> HaLightSyncScreen(onBack)
+        else -> HaLightSyncScreen(onBack, viewModel)
     }
 }
 
 @Composable
-private fun HaLightSyncScreen(onBack: () -> Unit, viewModel: LightSyncViewModel = viewModel()) {
+private fun HaLightSyncScreen(onBack: () -> Unit, viewModel: LightSyncViewModel) {
+    // The 5 s Home Assistant poll runs only while this screen is on screen. The
+    // model now outlives the visit, which is the point — but a poll that outlived it
+    // too would be a WebSocket round trip every five seconds for a tab nobody is
+    // looking at.
+    DisposableEffect(viewModel) {
+        viewModel.setScreenVisible(true)
+        onDispose { viewModel.setScreenVisible(false) }
+    }
     val accent = LocalAccent.current
     val connected by viewModel.connected.collectAsStateWithLifecycle()
     val areas by viewModel.areas.collectAsStateWithLifecycle()
@@ -273,6 +297,18 @@ private fun HaLightSyncScreen(onBack: () -> Unit, viewModel: LightSyncViewModel 
                             Text(label, color = TextSecondary, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, modifier = Modifier.width(96.dp))
                             HSlider((factor / 2f).coerceIn(0f, 1f), { viewModel.setTunable(key, (it * 2f)) }, modifier = Modifier.weight(1f))
                             Text("${(factor * 100).roundToInt()}%", color = TextMuted, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 11.sp, modifier = Modifier.widthIn(min = 40.dp))
+                        }
+                        // The same explanations the direct path shows. They describe the
+                        // effect rather than the transport, and the six keys here are a
+                        // subset of the seven there, so one map serves both.
+                        com.engabd.sendpin.hue.SyncoEngine.TUNABLE_BLURBS[key]?.let { blurb ->
+                            Text(
+                                blurb,
+                                color = TextFaint,
+                                fontSize = 11.sp,
+                                lineHeight = 15.sp,
+                                modifier = Modifier.padding(start = 107.dp, bottom = 10.dp),
+                            )
                         }
                     }
                 }
@@ -600,6 +636,18 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                                 scope.launch { settings.setLightSyncTunables(next) }
                             }
                         }
+                        // What this one actually does, and what each direction costs.
+                        // Seven unlabelled percentage sliders is a panel you can only
+                        // learn by moving one and watching the room.
+                        com.engabd.sendpin.hue.SyncoEngine.TUNABLE_BLURBS[key]?.let { blurb ->
+                            Text(
+                                blurb,
+                                color = TextFaint,
+                                fontSize = 11.sp,
+                                lineHeight = 15.sp,
+                                modifier = Modifier.padding(start = 107.dp, bottom = 10.dp),
+                            )
+                        }
                     }
 
                     Spacer(Modifier.height(8.dp))
@@ -624,11 +672,13 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
 
                 Spacer(Modifier.height(22.dp))
                 Text(
+                    // No "…has moved to…" line here any more. The app has never been
+                    // published, so nobody reading this has a previous version to be
+                    // redirected from — it only ever told a first-time user that
+                    // something they have not seen is somewhere they were not looking.
                     "Direct mode syncs this phone's own playback, and needs no timing " +
                         "offset — it measures how far the audio tap runs ahead of the " +
-                        "speaker and compensates exactly.\n\n" +
-                        "Reading tracks ahead of the show has moved to Settings → Light Sync → " +
-                        "Bridge & analysis.",
+                        "speaker and compensates exactly.",
                     color = TextFaint, style = MaterialTheme.typography.bodySmall,
                 )
             }

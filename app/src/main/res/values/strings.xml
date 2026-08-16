@@ -13,4 +13,15 @@
     <string name="light_sync_tile_on">Following the music</string>
     <string name="light_sync_tile_off">Lights are steady</string>
     <string name="light_sync_tile_ha">Set in Home Assistant</string>
+
+    <!-- Driving mode's tile. Same rules: the label is also the manifest label, which
+         is what the system shows in the tile picker. -->
+    <string name="driving_tile_label">Driving</string>
+    <string name="driving_tile_on">Controls over the map</string>
+    <string name="driving_tile_off">Tap when you set off</string>
+    <string name="driving_tile_disabled">Set up in Settings first</string>
+
+    <!-- The home-screen widget, as the launcher's own picker describes it. -->
+    <string name="widget_label">CAMusic</string>
+    <string name="widget_description">The current track, with play, next and previous.</string>
 </resources>

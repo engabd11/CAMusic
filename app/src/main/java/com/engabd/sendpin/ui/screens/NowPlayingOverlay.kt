@@ -81,6 +81,7 @@ fun NowPlayingOverlay(
     val connected by viewModel.connected.collectAsStateWithLifecycle()
     val favorite by viewModel.favorite.collectAsStateWithLifecycle()
     val currentItem by viewModel.currentItem.collectAsStateWithLifecycle()
+    val favouritable by viewModel.favouritableItem.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
     // Shared with the tab layout so the two cannot drift — see PlayerSheetState.
@@ -214,6 +215,14 @@ fun NowPlayingOverlay(
                                     // drops this composable mid-slide and the gesture ends
                                     // with a jump. Lower threshold (0.25) makes it easier
                                     // to minimize.
+                                    //
+                                    // The parent is now an `AnimatedVisibility` rather than
+                                    // a bare `if`, which raised the question of whether it
+                                    // holds the child through the exit and makes this gate
+                                    // redundant. It does not: it is configured
+                                    // `ExitTransition.None` — deliberately, because this
+                                    // overlay owns its own exit motion — and an exit of no
+                                    // duration holds nothing. The gate stays.
                                     dragPx > collapseOffset * 0.25f -> {
                                         // Motion.dismissOffsetPx(), not the default: this
                                         // is the one settle with something waiting on it.
@@ -319,6 +328,12 @@ fun NowPlayingOverlay(
                             .alpha(if (st.idle) 0.55f else 1f),
                         glowAlpha = if (st.idle) 0.18f else 0.45f,
                         placeholder = Icons.AutoMirrored.Filled.QueueMusic,
+                        // The far end of the flight from the mini bar. Only while the
+                        // cover is actually showing art: with the lyrics pane up this
+                        // branch is not composed at all, so the key is simply absent
+                        // and the bar's thumbnail cross-fades as it did before rather
+                        // than flying to a slot that isn't there.
+                        sharedArtKey = NowPlayingArtKey,
                     )
                 }
 
@@ -338,8 +353,12 @@ fun NowPlayingOverlay(
                         if (favorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                         if (favorite) "Remove from favourites" else "Add to favourites",
                         active = favorite,
-                        tint = if (currentItem == null) TextFaint else null,
-                        onClick = if (currentItem == null) null else ({ viewModel.toggleFavorite() }),
+                        // Gated on `favouritableItem`, not `currentItem`: the
+                        // latter is null for the whole of a local-library session,
+                        // which greyed this out on Navidrome and Jellyfin even though
+                        // both implement starring. See NowPlayingViewModel.
+                        tint = if (favouritable == null) TextFaint else null,
+                        onClick = if (favouritable == null) null else ({ viewModel.toggleFavorite() }),
                     )
                     // Sleep timer
                     SleepTimerChip(viewModel)
@@ -456,7 +475,11 @@ fun MiniPlayerBar(
                         model = st.artworkUrl,
                         contentDescription = null,
                         contentScale = androidx.compose.ui.layout.ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize(),
+                        // The near end of the flight into the expanded cover. A no-op
+                        // in the tab layout, where this bar is never composed, and a
+                        // no-op in any preview — `sharedArt` returns the receiver
+                        // unchanged when either scope is missing.
+                        modifier = Modifier.fillMaxSize().sharedArt(NowPlayingArtKey),
                     )
                 } else {
                     Icon(Icons.AutoMirrored.Filled.QueueMusic, null, tint = TextMuted, modifier = Modifier.size(18.dp))

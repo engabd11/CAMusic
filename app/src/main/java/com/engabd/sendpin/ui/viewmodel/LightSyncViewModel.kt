@@ -64,7 +64,7 @@ class LightSyncViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             ha.state.collect { st ->
                 when (st) {
-                    HaClient.State.CONNECTED -> { _needsConfig.value = false; refresh() }
+                    HaClient.State.CONNECTED -> { _needsConfig.value = false; _error.value = null; refresh() }
                     HaClient.State.ERROR -> _error.value = "Couldn't reach Home Assistant (check URL + token)"
                     else -> {}
                 }
@@ -72,12 +72,35 @@ class LightSyncViewModel(app: Application) : AndroidViewModel(app) {
         }
         // Keep the screen live while it's open: which player is playing, and any
         // change made from the HA card or another phone.
+        //
+        // Gated on the screen actually being on screen. This model is owned by the
+        // Activity now rather than by the Lights tab's back-stack entry — so that
+        // leaving the tab no longer drops the socket and re-discovers on return —
+        // and without this gate that would trade a visible flash for an invisible
+        // round trip every five seconds, for a tab nobody is looking at.
         viewModelScope.launch {
             while (true) {
                 kotlinx.coroutines.delay(5_000)
-                if (ha.state.value == HaClient.State.CONNECTED) refresh()
+                if (screenVisible && ha.state.value == HaClient.State.CONNECTED) refresh()
             }
         }
+    }
+
+    /**
+     * Whether the Light Sync screen is composed.
+     *
+     * Set from the screen's own `DisposableEffect`. Only the *poll* reads it: the
+     * connection is deliberately left up, because reopening it is exactly the cost
+     * this model was hoisted out of the back stack to stop paying.
+     */
+    @Volatile private var screenVisible = false
+
+    fun setScreenVisible(visible: Boolean) {
+        screenVisible = visible
+        // Coming back to the tab should show what is true now rather than what was
+        // true when it was last left — but from a live socket, so the list is
+        // replaced in one step instead of emptying and refilling.
+        if (visible && ha.state.value == HaClient.State.CONNECTED) refresh()
     }
 
     /** Save + connect from the inline form. */

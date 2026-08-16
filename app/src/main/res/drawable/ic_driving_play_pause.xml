@@ -1,0 +1,19 @@
+<!--
+  One glyph for both states, deliberately.
+
+  A PiP RemoteAction's icon can be swapped only by rebuilding the whole
+  PictureInPictureParams, which needs the activity and is not reliably reachable
+  while it is backgrounded. A play triangle that lied while the music was playing
+  would be worse than a symbol that means "play or pause" and is always true — the
+  same reasoning a car's steering-wheel button uses, which is also one button.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="?android:attr/textColorPrimary">
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M4,5v14l7,-7zM14,5h2.5v14L14,19zM18.5,5L21,5v14h-2.5z" />
+</vector>
