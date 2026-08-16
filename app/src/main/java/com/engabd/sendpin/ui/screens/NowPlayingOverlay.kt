@@ -2,6 +2,7 @@ package com.engabd.sendpin.ui.screens
 
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.foundation.background
@@ -46,6 +47,16 @@ import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
+import kotlin.coroutines.cancellation.CancellationException
+
+/**
+ * How much of the collapse a back gesture previews before it is committed.
+ *
+ * Predictive back is a *hint* at where the gesture leads while the finger can still
+ * change its mind, not the dismissal itself: previewing the whole travel would leave
+ * the commit with nothing left to animate and the cancel a long way to climb back.
+ */
+private const val BACK_PREVIEW_FRACTION = 0.28f
 
 /**
  * The overlay now-playing experience: a full-screen cover that slides up over the
@@ -140,6 +151,37 @@ fun NowPlayingOverlay(
         settle.animateTo(target, spec)
         dragPx = target
         settling = false
+    }
+
+    /**
+     * Back, driven through the same offset the drag uses.
+     *
+     * This used to be a plain `BackHandler` in `App.kt` that set `overlayExpanded =
+     * false`, which drops this composable between two frames: pressing back made the
+     * cover vanish instantly while the swipe-down of the very same dismissal animated.
+     * A `BackHandler` also *opts the surface out* of the system's predictive preview —
+     * the manifest sets `enableOnBackInvokedCallback="true"`, so every screen that does
+     * not intercept back already previews, and the most-used screen in the app was the
+     * one that didn't.
+     *
+     * The preview follows the gesture at [BACK_PREVIEW_FRACTION] of the full travel
+     * rather than all of it: predictive back is meant to *hint* at the destination
+     * while the finger can still change its mind, and a preview that arrives all the
+     * way leaves the commit with nothing to do and the cancel with a long way back.
+     * Committing settles the remainder on the dismissal spring and hands over exactly
+     * as a swipe does; cancelling returns to rest on the arrival spring.
+     */
+    PredictiveBackHandler(enabled = expanded && !sheets.sheetOpen) { progress ->
+        try {
+            progress.collect { event ->
+                settling = false
+                dragPx = collapseOffset * BACK_PREVIEW_FRACTION * event.progress
+            }
+            settleTo(collapseOffset, Motion.dismissOffsetPx())
+            onCollapse()
+        } catch (_: CancellationException) {
+            settleTo(0f)
+        }
     }
 
     // Rise into place, the mirror of the collapse settle below and on the same spring.

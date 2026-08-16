@@ -2,7 +2,12 @@ package com.engabd.sendpin.ui.design
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -27,6 +32,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
@@ -227,6 +233,61 @@ fun SectionLabel(text: String, modifier: Modifier = Modifier) {
         modifier = modifier,
     )
 }
+
+/**
+ * A highlight sweeping across a loading placeholder.
+ *
+ * Overlaid on whatever fill the caller already drew rather than replacing it, so a
+ * skeleton keeps its own tone and this only adds the movement. Drawn as a soft band
+ * on a diagonal, which reads as light passing over a surface; a hard-edged or purely
+ * horizontal sweep reads as a scanning bar instead.
+ *
+ * **Returns the receiver untouched when motion is off**, and that is the whole reason
+ * `LocalReducedMotion` exists rather than a duration multiplier. A shimmer is an
+ * [androidx.compose.animation.core.InfiniteTransition], and Compose *suspends* one of
+ * those at a duration scale of 0 rather than ending it — so a scaled-to-zero shimmer
+ * would freeze as a gradient stopped part-way across the tile, which looks like a
+ * rendering fault rather than a placeholder. Off, the caller's flat fill is exactly
+ * the right answer, so this gets out of the way and lets it show.
+ */
+@Composable
+fun Modifier.shimmer(highlight: Color = Color.White.copy(alpha = 0.055f)): Modifier {
+    if (LocalReducedMotion.current) return this
+    val sweep = rememberInfiniteTransition(label = "shimmer")
+    val progress by sweep.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            tween(SHIMMER_PERIOD_MS, easing = LinearEasing),
+            // Restart, not reverse: light travels one way. Reversing makes the band
+            // walk back across the tile, which reads as a scrubber rather than a wait.
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "shimmerSweep",
+    )
+    return drawWithContent {
+        drawContent()
+        val band = size.width * SHIMMER_BAND_FRACTION
+        // Travels from fully off the leading edge to fully off the trailing one, so
+        // there is a clean gap between passes instead of a band always on screen.
+        val x = -band + progress * (size.width + 2f * band)
+        drawRect(
+            brush = Brush.linearGradient(
+                0f to Color.Transparent,
+                0.5f to highlight,
+                1f to Color.Transparent,
+                start = Offset(x, 0f),
+                end = Offset(x + band, size.height),
+            )
+        )
+    }
+}
+
+/** One full sweep. Slow enough to read as breathing rather than as activity. */
+private const val SHIMMER_PERIOD_MS = 1400
+
+/** Band width as a fraction of the placeholder's own width. */
+private const val SHIMMER_BAND_FRACTION = 0.55f
 
 // --- containers -----------------------------------------------------------
 
