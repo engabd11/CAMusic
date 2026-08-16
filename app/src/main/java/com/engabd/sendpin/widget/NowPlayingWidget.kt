@@ -2,6 +2,8 @@ package com.engabd.sendpin.widget
 
 import android.content.Context
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.unit.dp
 import androidx.glance.GlanceId
 import androidx.glance.GlanceModifier
@@ -50,14 +52,24 @@ import com.engabd.sendpin.ui.theme.TextPrimary
  * a title, which RemoteViews can express only with a lot of XML and cannot share a
  * line of state-reading code with the rest of the app.
  *
- * ## Why it reads state directly rather than being pushed to
+ * ## Why it collects rather than reading a snapshot
  *
- * `provideContent` runs whenever the system asks the widget to compose, and the
- * process is already alive for anything that could change what it shows —
- * [com.engabd.sendpin.service.SendspinConnectionService] keeps it that way. So the
- * widget reads the current answer at compose time and is nudged by [refresh] when
- * that answer changes, rather than maintaining a second copy of the player state in
- * widget storage that could go stale in its own way.
+ * `provideGlance` suspends for as long as the widget has a session, and Glance keeps
+ * the composition alive across it — so collecting the player flows here is not a
+ * convenience, it is what makes the widget *live*: a track change repaints it with
+ * no push from anywhere.
+ *
+ * These flows are all state-shaped rather than tick-shaped — `PlaybackOwner.state` is
+ * `distinctUntilChanged` and the rest change on a track boundary or a play/pause —
+ * so a repaint per emission is a handful per song, not the per-position-tick cost
+ * that would make a live widget expensive. The playhead is deliberately not shown,
+ * and that is most of why this is affordable.
+ *
+ * Reading `StateFlow.value` here instead would be a snapshot Compose cannot observe:
+ * the widget would show whatever was true when the system last happened to ask.
+ * Android lint says so directly (`StateFlowValueCalledInComposition`), and it is
+ * right — the first version of this file did exactly that and was wrong for the
+ * reason lint gives.
  */
 class NowPlayingWidget : GlanceAppWidget() {
 
@@ -68,10 +80,11 @@ class NowPlayingWidget : GlanceAppWidget() {
     @Composable
     private fun WidgetBody() {
         val app = SendpinApp.instance
-        val owner = app.playbackOwner.state.value
+        val owner by app.playbackOwner.state.collectAsState()
         val isLocal = owner.sessionOwner == PlaybackOwner.Who.LOCAL
-        val maNow = app.maNowPlaying.now.value
-        val localTrack = app.localPlayer.current.value
+        val maNow by app.maNowPlaying.now.collectAsState()
+        val localTrack by app.localPlayer.current.collectAsState()
+        val localPlaying by app.localPlayer.playing.collectAsState()
 
         val title = when {
             isLocal -> localTrack?.title.orEmpty()
@@ -81,7 +94,7 @@ class NowPlayingWidget : GlanceAppWidget() {
             isLocal -> localTrack?.artist.orEmpty()
             else -> maNow?.artist.orEmpty()
         }
-        val playing = if (isLocal) app.localPlayer.playing.value else owner.sendspinPlaying ||
+        val playing = if (isLocal) localPlaying else owner.sendspinPlaying ||
             maNow?.isPlaying == true
 
         Column(
@@ -160,10 +173,13 @@ class NowPlayingWidget : GlanceAppWidget() {
         /**
          * Repaint every placed instance.
          *
-         * Called after a transport action rather than on every playback event: a
-         * widget update is a binder round trip through the launcher, and doing one
-         * per position tick would be a cost paid sixty times a minute for a surface
-         * showing a title.
+         * Belt and braces beside the live collection in [WidgetBody]. That covers a
+         * widget whose session is active; an action callback runs in a worker, and
+         * whether a session is active at that moment is the launcher's business
+         * rather than ours. A redundant update costs one binder round trip; a
+         * missing one leaves the bar showing the previous track after the user has
+         * just pressed next on it, which is the single most obvious way for a widget
+         * to look broken.
          */
         suspend fun refresh(context: Context) {
             runCatching {
