@@ -1,5 +1,6 @@
 package com.engabd.sendpin.audio
 
+import android.os.SystemClock
 import android.util.Log
 
 /**
@@ -97,14 +98,56 @@ class SendspinNativeOutput {
     }
 
     /**
-     * Feeds decoded interleaved int16 PCM. [presentationLocalUs] is the intended
-     * CLOCK_MONOTONIC (System.nanoTime()/1000 domain) time of the FIRST frame.
-     * Returns frames accepted.
+     * Feeds decoded interleaved int16 PCM. Returns frames accepted.
+     *
+     * [presentationLocalUs] is the intended **`CLOCK_BOOTTIME`** instant of the first
+     * frame — this app's own domain, as every caller already produces. It used to be
+     * documented as `CLOCK_MONOTONIC`, which is what the native engine wants but not
+     * what anyone was passing; [bootToMonotonicUs] now converts at this boundary rather
+     * than asking each caller to remember, which is how the mismatch survived.
      */
     fun write(pcm: ByteArray, offset: Int, length: Int, presentationLocalUs: Long): Int {
         val p = ptr
         if (p == 0L || length <= 0) return 0
-        return nativeWrite(p, pcm, offset, length, presentationLocalUs)
+        return nativeWrite(p, pcm, offset, length, bootToMonotonicUs(presentationLocalUs))
+    }
+
+    /**
+     * `CLOCK_BOOTTIME` (this app's time domain) → `CLOCK_MONOTONIC` (the native
+     * engine's). **The two are not interchangeable and the gap is unbounded.**
+     *
+     * Everything above this line runs on `CLOCK_BOOTTIME`: [com.engabd.sendpin.protocol.MonotonicClock]
+     * is `SystemClock.elapsedRealtimeNanos`, deliberately, because the Sendspin clock
+     * filter must not see a step when the phone suspends — its own header says so, and
+     * `client/time`, `server/time` and every scheduling decision share that domain.
+     *
+     * Everything below runs on `CLOCK_MONOTONIC`, equally deliberately: the engine
+     * compares against `AAudioStream_getTimestamp(CLOCK_MONOTONIC)`, which is the only
+     * domain the DAC's own timestamps are available in.
+     *
+     * Nothing converted between them. `BOOTTIME` counts suspended time and `MONOTONIC`
+     * does not, so a `BOOTTIME` value handed to the native side reads as an instant
+     * that far in the future — minutes on a phone that has been asleep once, hours on
+     * one that has been up for days. The engine then never considers the audio due,
+     * never renders it, never drains the ring, and every later write is refused. On
+     * device: `first write: 2374 of 2374 accepted` followed immediately by
+     * `refused 50 consecutive buffers (buffered=7206, written=7206)` — buffered equal
+     * to written, meaning not one frame was ever consumed.
+     *
+     * This only bites with drift correction on — i.e. grouped playback, where
+     * [SendspinSyncDataSource] is in use. Solo playback sets it false and the engine
+     * ignores the timestamp entirely as a pure FIFO, which is why the Oboe path could
+     * look merely unproven rather than broken.
+     *
+     * Read fresh on every call rather than cached: the offset between the two clocks
+     * *is* accumulated suspend time, so it changes by exactly the amount of every
+     * screen-off. A cached offset would work until the first suspend and then
+     * reintroduce this bug in a form that only appears after the phone has slept.
+     */
+    private fun bootToMonotonicUs(bootUs: Long): Long {
+        val bootNowUs = SystemClock.elapsedRealtimeNanos() / 1000
+        val monotonicNowUs = System.nanoTime() / 1000
+        return bootUs - (bootNowUs - monotonicNowUs)
     }
 
     /** DAC presentation lag in microseconds (0 until the first valid timestamp). */
