@@ -77,7 +77,6 @@ class MaNowPlaying(private val app: Context) {
     private val myPlayerId: String get() = PlayerIdentity.getPlayerId(app)
     private val api: MaApiClient = SendpinApp.instance.maApi
     private val repo = MaRepository(api)
-    private val localPlayer = SendpinApp.instance.localPlayer
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
@@ -99,10 +98,20 @@ class MaNowPlaying(private val app: Context) {
      * Null while the local (Navidrome/offline) player holds a session: that has its
      * own notification in [LocalPlaybackService], and two media notifications for one
      * phone is worse than none.
+     *
+     * Asked as [PlaybackOwner.State.sessionOwner] rather than `localPlayer.active`,
+     * and the distinction is the whole reason that type exists. This is a *session*
+     * question — `LocalPlaybackService` posts off the local player's session, so a
+     * merely paused local queue still owns the shade and this must still stand down
+     * for it. The neighbouring question, which tap Light Sync should read, is a
+     * *playing* question and gets the other answer. Both used to be spelled out by
+     * hand, in different files, and the pair went out of step twice.
      */
+    private val owner get() = SendpinApp.instance.playbackOwner
+
     val now: StateFlow<Now?> =
-        combine(_players, _queues, _target, localPlayer.active) { players, _, target, localActive ->
-            if (localActive) return@combine null
+        combine(_players, _queues, _target, owner.state) { players, _, target, own ->
+            if (own.sessionOwner == PlaybackOwner.Who.LOCAL) return@combine null
             val id = target.ifBlank { myPlayerId }
             val p = players.firstOrNull { it.playerId == id } ?: return@combine null
             val np = p.nowPlaying?.takeIf { it.title.isNotBlank() } ?: return@combine null

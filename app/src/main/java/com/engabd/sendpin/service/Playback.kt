@@ -181,14 +181,47 @@ class Playback(private val app: Context) {
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> engine?.setVolume(0.3f)
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> engine?.setVolume(0f)
             AudioManager.AUDIOFOCUS_GAIN -> engine?.setVolume(1f)
-            AudioManager.AUDIOFOCUS_LOSS -> {
-                // Another app took over media for good — stop and release.
-                engine?.release()
-                _maAudioSource.value = null
-                _isPlaying.value = false
-                abandonAudioFocus()
-            }
+            AudioManager.AUDIOFOCUS_LOSS -> onPermanentFocusLoss()
         }
+    }
+
+    /**
+     * Focus is gone for good — but by whom?
+     *
+     * The platform does not say, and treating every permanent loss as "another app
+     * took over media" is what left the Music Assistant engine permanently deaf.
+     * `LocalPlayer`'s ExoPlayer is built with `handleAudioFocus = true`, so playing
+     * a Navidrome track requests `AUDIOFOCUS_GAIN` and the platform grants it by
+     * evicting the previous holder — this object, in the same process. This handler
+     * then released the engine, and because `stream/start` kept arriving on a
+     * perfectly healthy socket, nothing looked wrong from the outside: the logs read
+     * `sending message to a Handler on a dead thread`, once per track, for ever.
+     *
+     * Two components in one process should not evict each other through
+     * `AudioManager`, so the local player announces a takeover directly
+     * ([PlaybackOwner.noteLocalTakingOver]) and this asks. An internal handover is
+     * already handled deliberately, from the other side, by
+     * [pauseForLocalPlayback] — which asks the *server* to pause, because the queue
+     * belongs to Music Assistant and silencing this phone locally would leave the
+     * rest of a group playing on. All that is left to do here is go quiet and stop
+     * holding focus we are no longer using.
+     *
+     * A foreign app still gets the full teardown. It is the right response there:
+     * nothing in this process is going to resume, and the engine is holding an
+     * `AudioTrack` and a decoder for a stream nobody can hear.
+     */
+    private fun onPermanentFocusLoss() {
+        val owner = (app.applicationContext as? SendpinApp)?.playbackOwner
+        if (owner?.isInternalHandover() == true) {
+            android.util.Log.i("Playback", "focus lost to this app's own local player - standing down, not releasing")
+            engine?.setVolume(0f)
+            abandonAudioFocus()
+            return
+        }
+        engine?.release()
+        _maAudioSource.value = null
+        _isPlaying.value = false
+        abandonAudioFocus()
     }
 
     private fun requestAudioFocus() {
