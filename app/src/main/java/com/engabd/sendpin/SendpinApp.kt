@@ -91,6 +91,17 @@ class SendpinApp : Application(), ImageLoaderFactory {
     val playbackOwner: PlaybackOwner by lazy { PlaybackOwner(localPlayer, playback) }
 
     /**
+     * Driving mode — the always-reachable transport for a phone in a cradle.
+     *
+     * Process-scoped and built eagerly in [onCreate] rather than on first use: its
+     * whole job is to notice the car connecting, and something that only starts
+     * watching once a screen asks for it would miss the one event it exists for.
+     */
+    val drivingMode: com.engabd.sendpin.service.DrivingMode by lazy {
+        com.engabd.sendpin.service.DrivingMode(this)
+    }
+
+    /**
      * Whichever backend is actually producing sound right now, for
      * [directLightSync] — MA (via [com.engabd.sendpin.audio.SendspinExoEngine])
      * when it has a tap installed *and* is playing, else [localPlayer] always.
@@ -202,6 +213,11 @@ class SendpinApp : Application(), ImageLoaderFactory {
         // Register the process lifecycle observer for warm reconnect and
         // toggleable background connection (TTS battery saver).
         AppLifecycleObserver.register(this)
+        // Touched here so its Bluetooth receiver is registered from process start.
+        // Lazily built, it would only begin watching once something asked — and the
+        // thing it is watching for is the car connecting, which happens before any
+        // screen opens.
+        drivingMode
         // The storage cap evicts oldest-first, and the one file it must never take is
         // the one being listened to. Published here rather than looked up inside the
         // download manager, which has no business holding a reference to the player.

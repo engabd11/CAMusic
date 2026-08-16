@@ -76,6 +76,12 @@ class AppSettings(private val context: Context) {
         private val LYRICS_OFFSET_MS = stringPreferencesKey("lyrics_offset_ms") // +ve = lyrics run late
         private val KEEP_ALIVE_ANNOUNCEMENTS = booleanPreferencesKey("keep_alive_announcements") // persist connection for TTS
 
+        // Driving mode — a slim always-on-top transport for a phone in a cradle.
+        private val DRIVING_ENABLED = booleanPreferencesKey("driving_enabled")
+        private val DRIVING_MECHANISM = stringPreferencesKey("driving_mechanism") // pip | overlay
+        private val DRIVING_CAR_ADDRESS = stringPreferencesKey("driving_car_address") // bonded device MAC
+        private val DRIVING_CAR_NAME = stringPreferencesKey("driving_car_name")       // for the settings row
+
         // Self-hosted crash reporting
         private val CRASH_GITHUB_REPO = stringPreferencesKey("crash_github_repo") // owner/repo, e.g. engabd11/CAMusic
         private val CRASH_GITHUB_TOKEN = stringPreferencesKey("crash_github_token") // encrypted PAT for auto-submit
@@ -159,6 +165,12 @@ class AppSettings(private val context: Context) {
 
         const val MODE_HA = "ha"
         const val MODE_DIRECT = "direct"
+
+        /** Picture-in-Picture: no permission, small fixed window. The default. */
+        const val DRIVING_PIP = "pip"
+
+        /** `SYSTEM_ALERT_WINDOW`: driving-sized targets, free positioning. */
+        const val DRIVING_OVERLAY = "overlay"
         const val BACKEND_SUBSONIC = "subsonic"
         const val BACKEND_MA = "ma"
 
@@ -911,6 +923,59 @@ class AppSettings(private val context: Context) {
     /** Hand control of the transport back to the library selection. */
     suspend fun setLightSyncModeAuto(auto: Boolean) {
         context.dataStore.edit { it[LIGHT_SYNC_MODE_AUTO] = auto }
+    }
+
+    // ── Driving mode ─────────────────────────────────────────────────────────
+    //
+    // A phone in a cradle running Maps, and changing a track meaning: leave the map,
+    // find the app, hit a small target, go back. That is the one genuinely *unsafe*
+    // gap in this app, so the controls are large, few, and reachable without leaving
+    // whatever is on screen.
+
+    /** The feature is switched on at all. Off by default — it asks for permissions. */
+    val drivingEnabled: Flow<Boolean> = context.dataStore.data.map { it[DRIVING_ENABLED] ?: false }
+
+    /**
+     * Which window mechanism the bar uses.
+     *
+     * [DRIVING_PIP] costs no permission at all and is therefore the default: a
+     * feature someone sets up once in a car park should not open with a Settings
+     * trip. It buys a small fixed window, a capped number of actions, and the rule
+     * that the activity must be foreground at the moment it enters — so the flow is
+     * "open the app, then start navigating".
+     *
+     * [DRIVING_OVERLAY] is the one that gives genuinely driving-sized targets and
+     * free positioning, and costs `SYSTEM_ALERT_WINDOW`.
+     */
+    val drivingMechanism: Flow<String> =
+        context.dataStore.data.map { it[DRIVING_MECHANISM] ?: DRIVING_PIP }
+
+    /**
+     * The bonded Bluetooth device the user nominated as their car stereo, or blank.
+     *
+     * The trigger is deliberately *not* "is Google Maps in front". Reading the
+     * foreground app needs either `PACKAGE_USAGE_STATS` or an `AccessibilityService`
+     * — a Settings-screen grant or the most policy-sensitive permission on the
+     * platform — and the requirement is "control music without leaving the map", not
+     * "know that Maps is running". Connecting to the car is the same situation and
+     * costs one runtime permission.
+     */
+    val drivingCarAddress: Flow<String> = context.dataStore.data.map { it[DRIVING_CAR_ADDRESS] ?: "" }
+    val drivingCarName: Flow<String> = context.dataStore.data.map { it[DRIVING_CAR_NAME] ?: "" }
+
+    suspend fun setDrivingEnabled(on: Boolean) {
+        context.dataStore.edit { it[DRIVING_ENABLED] = on }
+    }
+
+    suspend fun setDrivingMechanism(value: String) {
+        context.dataStore.edit { it[DRIVING_MECHANISM] = value }
+    }
+
+    suspend fun setDrivingCar(address: String, name: String) {
+        context.dataStore.edit {
+            it[DRIVING_CAR_ADDRESS] = address
+            it[DRIVING_CAR_NAME] = name
+        }
     }
 
     suspend fun setLightSyncEnabled(on: Boolean) {

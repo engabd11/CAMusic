@@ -83,9 +83,36 @@ class MainActivity : ComponentActivity() {
         ) {
             notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+        com.engabd.sendpin.service.DrivingPip.registerControls(this, pipControls)
         setContent {
             val windowSizeClass = calculateWindowSizeClass(this)
             App(windowSizeClass = windowSizeClass)
         }
+    }
+
+    /** Routes a Picture-in-Picture button to whichever player owns the session. */
+    private val pipControls = com.engabd.sendpin.service.DrivingPip.ControlReceiver()
+
+    /**
+     * The one moment Picture-in-Picture can be entered.
+     *
+     * The platform requires the activity to be foreground at the instant it enters,
+     * so there is no "start it from anywhere" — this callback, fired as the user
+     * leaves for another app, is both the only legal moment and exactly when the bar
+     * becomes useful. It is also why the flow is "open the app, then start
+     * navigating" rather than the other way round, and why the overlay mechanism
+     * exists behind it.
+     *
+     * [DrivingPip.maybeEnter] returns immediately unless driving mode is actually
+     * active, so leaving the app normally does nothing.
+     */
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        com.engabd.sendpin.service.DrivingPip.maybeEnter(this)
+    }
+
+    override fun onDestroy() {
+        runCatching { unregisterReceiver(pipControls) }
+        super.onDestroy()
     }
 }

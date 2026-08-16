@@ -176,6 +176,56 @@ class PlaybackOwner(
         ),
     )
 
+    // ── Transport, routed to whoever owns the output ─────────────────────────
+    //
+    // The same three calls the media notification makes, in one place any *other*
+    // surface can use. `SendspinService.route` already chose between this phone's
+    // Sendspin stream and a remote Music Assistant speaker; it did not know about
+    // the local player, because the shade it serves is never showing one — but
+    // anything outside the shade has all three cases to handle, and re-deriving the
+    // choice per surface is exactly the folklore this class exists to replace.
+    //
+    // The driving bar is the first caller. It is deliberately not given its own
+    // routing: a control that pauses the wrong player while someone is driving is
+    // the worst possible place for this to be got wrong.
+
+    private val maNowPlaying get() = com.engabd.sendpin.SendpinApp.instance.maNowPlaying
+
+    fun playPause() = route(
+        local = { local.toggle() },
+        selfSendspin = { sendspin.onPlayPause() },
+        remote = { maNowPlaying.playPause() },
+    )
+
+    fun next() = route(
+        local = { local.next() },
+        selfSendspin = { sendspin.onMediaNext() },
+        remote = { maNowPlaying.next() },
+    )
+
+    fun previous() = route(
+        local = { local.previous() },
+        selfSendspin = { sendspin.onMediaPrevious() },
+        remote = { maNowPlaying.previous() },
+    )
+
+    /**
+     * Send a transport command to whichever player it belongs to.
+     *
+     * The *session* owner, not the sound owner: a paused player is still the one a
+     * play button should start. That is the whole reason those are two properties
+     * and not one.
+     */
+    private inline fun route(local: () -> Unit, selfSendspin: () -> Unit, remote: () -> Unit) {
+        if (state.value.sessionOwner == Who.LOCAL) { local(); return }
+        // Same precedence the media shade uses: when a remote speaker is the
+        // selected Music Assistant player, transport addresses *it*, not this phone.
+        // Getting this backwards is what made a headset button pause the phone while
+        // a speaker in another room was playing.
+        val now = maNowPlaying.now.value
+        if (now != null && !now.isSelf) remote() else selfSendspin()
+    }
+
     // ── Internal focus arbitration ───────────────────────────────────────────
     //
     // Two components in one process should not evict each other through

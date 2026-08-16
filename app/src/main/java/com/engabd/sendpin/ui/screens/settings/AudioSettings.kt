@@ -48,6 +48,11 @@ internal fun AudioSection(
         OutputCard(settings, accent, scope)
         LoudnessCard(settings, accent, scope)
         ContinuousPlayCard(settings, scope)
+        // Here rather than in a section of its own: it is about how playback is
+        // *controlled* on this device, which is what this section already is, and a
+        // top-level entry for one card is the shape the "CAMusic player" section
+        // was just removed for being.
+        DrivingCard(settings, accent, scope)
         // The Music Assistant connection readout is no longer here. It described one
         // phone's registration with one server, and it now sits on that server's own
         // page beside the settings it reports the effect of — see
