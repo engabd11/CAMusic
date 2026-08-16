@@ -262,7 +262,11 @@ class SendspinExoEngine(
 
     /** `stream/end` - see [SendspinAudioEngine.endOfStream] for why this isn't a stop. */
     override fun endOfStream() {
-        currentDataSource?.signalEndOfStream()
+        // Discard *then* signal: the queue has to be empty when [awaitNextFrame] next
+        // checks, or it goes on serving the backlog it was just told to abandon.
+        // Without the discard, pausing took as long as the server's read-ahead to fall
+        // silent — measured at over 20 s on-device. See [SendspinDataSource.discardQueued].
+        currentDataSource?.apply { discardQueued(); signalEndOfStream() }
     }
 
     /** `stream/clear` - a seek or track jump: the current source is now wrong. */
