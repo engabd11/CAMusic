@@ -158,6 +158,7 @@ What the port carries:
 - The Fireworks effect
 - Per-lamp attack and spectral pop
 - **Stereo pan** — a hit lands on the side of the room it came from
+- **Room gestures** — a sound that *travels* across the stereo field travels across the lamps
 - Vocal shimmer
 - An eye-safety limiter
 - A timing delay queue so the lights land with the audio
@@ -179,6 +180,35 @@ settles into — both correct for percussion, and between them they left a long 
 nothing. A separate envelope reads sustained, pitched, mid-heavy material (inverted onset width,
 chroma stability, mid presence), damped against live transients so a beat and a bloom never claim
 the same moment, and blooms the room slowly rather than pulsing it.
+
+**Room gestures** (off by default, under Lights → Advanced) are the layer for sound that *moves*.
+Stereo pan has always placed a hit on the side of the room it came from; this reads pan over time
+instead of instantaneously, so a pad sweeping across the stereo field sweeps across the lamps, and a
+swell that rises with nothing hitting under it lifts the room as it climbs.
+
+How it is drawn depends on the shape your lamps are actually in, classified once per session from
+the entertainment area's real positions:
+
+| Your room | What a sweep looks like |
+|---|---|
+| Lamps in a **line** | A soft front travelling along it |
+| Lamps **around you** | The same front, going round — and round the *front* of the room, never behind you |
+| Lamps **scattered** | A virtual source moving through the room, brightest at whatever it passes |
+| Two lamps **on a shelf** | Nothing. A swell still blooms them together, but a traversal is refused |
+
+That last row is the important one. Two lamps cannot express "across the room", and flickering
+between them reads as a fault rather than as motion — Philips make the same call for their own
+`AreaEffect`: better to show nothing than to show it in the wrong place.
+
+Most music has neither a real stereo traversal nor a linear swell in it, and the detector is built
+around that rather than in spite of it. It subtracts the broadband pan centroid, so a mix that
+simply leans left cannot trip it; it requires movement to be *monotone* and to not come back, so a
+vibrato is not a sweep; it requires a neighbouring frequency bin to agree, so one bin drifting is
+not a source moving; and it caps itself at four gestures a minute. A track with nothing to find
+looks exactly as it did before, which is the correct answer rather than a missed opportunity.
+Speed comes from the measured length of the sound's own movement, so a slow pad and a fast riser do
+not look alike, and the whole layer is additive and capped at a third of full scale — a wash, not a
+flash.
 
 > **Scope:** the tap sits in the ExoPlayer render chain, and since v0.8.8 Music Assistant playback
 > flows through ExoPlayer too — so direct mode drives the show for **both** this phone's local
@@ -451,6 +481,10 @@ later phase again.
 - [x] "Keep the music going" on Jellyfin, via its own Instant Mix
 - [x] Favourites from the player on Navidrome and Jellyfin
 - [x] Light Sync starts when you switch it on, rather than when something happens to play
+- [x] **Room gestures** — a sound that travels across the stereo field travels across the lamps, and
+      a swell with no beat under it lifts the room as it rises. The room is classified by shape
+      (line / ring / field / cluster) and a cluster is *refused* rather than faked. Off by default,
+      confirmed on a Galaxy S23 (v0.9.1)
 - [x] Player status moved onto its own server's page; the empty top-level player section removed
 - [x] The three largest files split by responsibility (1,457 → 596 and 2,121 → 1,703)
 
@@ -532,6 +566,20 @@ Written down because the alternative is discovering them by ear:
   been checked against a live server, so an audiobook may open empty.
 - **One streaming app per Hue entertainment area.** If the Hue app or an HDMI Sync Box already
   holds the area, CAMusic refuses rather than taking it — the Entertainment API allows only one.
+- **Room gestures do not reach Extreme or Fireworks.** Both are separate renderers that return
+  before the layer the gesture joins. Correct rather than missing — Extreme is a different show, not
+  a louder one — but it means turning the setting on and selecting Extreme looks like the feature is
+  broken.
+- **"Bottom to top" will not render in most rooms.** The Hue app places lamps on a two-dimensional
+  floor plan and its own API example reports `z: 0.0` for every channel, so most entertainment areas
+  have no height for a rising gesture to travel through. A swell in a flat room lifts every lamp
+  together instead, which is the honest answer — sweeping "upward" across lamps that are all at the
+  same height would pick an arbitrary order and read as a flicker.
+- **How often a real traversal occurs is still unmeasured.** The detector is deliberately strict and
+  every detection is logged whether or not the lights move, so playing an album with
+  `adb logcat -s DirectLightSync` is what answers it. If the honest answer turns out to be "rare
+  outside electronic and film music", that is a good outcome for a feature whose hard requirement is
+  not firing when there is nothing to find.
 
 ---
 
@@ -579,8 +627,13 @@ Releases are cut locally. See the header of
 - Oboe investigation ([PR #59](https://github.com/engabd11/CAMusic/pull/59), not yet merged) — why
   the native output path is silent, what has been ruled out, and the one measurement that would
   settle it
-- Spatial swell plan ([PR #60](https://github.com/engabd11/CAMusic/pull/60), not yet merged) —
-  lights that move when the sound does; designed, not built
+- [Spatial swell design](docs/spatial-swell-plan.md) and
+  [implementation](docs/spatial-swell-implementation.md) — lights that move when the sound does.
+  The first is the case for the feature; the second is how it was built, and both are worth reading
+  for what they got **wrong**: the implementation doc opens with five claims of the design doc that
+  reading the code disproved, and closes with four more that only survived until the tests ran —
+  including a circle fit that was quietly shrinking every fitted radius, and two detector
+  conditions that turned out to be missing entirely
 - [v0.8 plan](docs/v0.8-plan.md) — the previous plan, and what shipped against it
 - [Direct Hue plan](docs/direct-hue-plan.md) and
   [gap analysis](docs/direct-hue-bridge-gap-analysis.md) — the direct Light Sync port, and what
