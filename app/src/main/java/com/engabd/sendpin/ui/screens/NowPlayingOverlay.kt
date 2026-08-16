@@ -173,7 +173,18 @@ fun NowPlayingOverlay(
                                     // with a jump. Lower threshold (0.25) makes it easier
                                     // to minimize.
                                     dragPx > collapseOffset * 0.25f -> {
-                                        settleTo(collapseOffset)
+                                        // Motion.dismissOffsetPx(), not the default: this
+                                        // is the one settle with something waiting on it.
+                                        // onCollapse() cannot fire until animateTo returns
+                                        // (see the comment above — releasing earlier lets
+                                        // the parent drop this composable mid-slide), so
+                                        // every millisecond of spring tail is a millisecond
+                                        // the cover sits at the bottom looking arrived with
+                                        // the mini bar not yet in its place. The default
+                                        // spec's tail is ~490ms of exactly that; this one's
+                                        // is ~240ms and has no overshoot to converge out of.
+                                        // See Motion.dismissOffsetPx for the arithmetic.
+                                        settleTo(collapseOffset, Motion.dismissOffsetPx())
                                         onCollapse()
                                     }
                                     upTravel < -queueRevealPx -> {

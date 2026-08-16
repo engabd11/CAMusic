@@ -11,7 +11,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.core.graphics.ColorUtils
 import androidx.core.graphics.drawable.toBitmap
 import coil.imageLoader
 import coil.request.ImageRequest
@@ -24,6 +23,7 @@ import kotlin.math.abs
 import kotlin.math.cbrt
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
 
 /**
  * The colours a cover melts into: a bright [accent] plus ranked companion
@@ -74,6 +74,35 @@ private const val MIN_ACCENT_C = 12f
  * neon one has so much that a fixed threshold calls everything an accent.
  */
 private const val ACCENT_C_FRACTION = 0.42f
+
+/**
+ * OKLab lightness the accent is lifted to.
+ *
+ * Perceptual, so one number covers every hue — that is the whole reason the lift
+ * moved into OKLab. Bright enough to carry text and glows against true black,
+ * short of the point where a colour starts reading as tinted white.
+ */
+private const val ACCENT_L = 0.78f
+
+/** Companions sit just below the accent, so the lead still leads a gradient. */
+private const val COMPANION_L = 0.72f
+
+/**
+ * Chroma floor, as a fraction of what sRGB can hold at that lightness and hue.
+ *
+ * Relative rather than absolute because the gamut is wildly uneven — sRGB reaches
+ * far more chroma in yellow than in blue — so one absolute floor would over-drive
+ * the hues that can reach it and leave the others looking washed. This is the only
+ * push applied to chroma: there is no ceiling below the gamut boundary, so a vivid
+ * cover stays vivid and a muted one stays muted.
+ */
+private const val MIN_ACCENT_C_FRACTION = 0.40f
+
+/** OKLCh chroma below which a *swatch* is treated as grey, matching [ACHROMATIC_C]'s intent in OKLab's scale. */
+private const val ACHROMATIC_OKLCH_C = 0.025f
+
+/** How much chroma a neutral may keep — enough for a warm or cool cast, not a hue. */
+private const val NEUTRAL_MAX_C = 0.02f
 
 private const val VALUE_FLOOR = 0.15f    // keep even the darkest swatch faintly visible
 private const val HUE_MIN_SEP_DEG = 22f  // reject near-duplicate accent hues
@@ -131,25 +160,121 @@ private fun hsvToRgb(h: Float, s: Float, v: Float): FloatArray {
     return floatArrayOf(r + m, g + m, b + m)
 }
 
-/**
- * RGB → HSL, returns [h, s, l] with h in degrees. Distinct from [rgbToHsv]: the
- * final swatches are *lifted* in HSL, where lightness is symmetric about 0.5, so
- * pushing a colour brighter doesn't wash its saturation out the way raising HSV's
- * value does.
- */
-private fun rgbToHsl(r: Float, g: Float, b: Float): FloatArray {
-    val out = FloatArray(3)
-    fun b8(c: Float) = (c * 255f).toInt().coerceIn(0, 255)
-    ColorUtils.RGBToHSL(b8(r), b8(g), b8(b), out)
-    return out
-}
-
-private fun hslColor(h: Float, s: Float, l: Float): Color =
-    Color(ColorUtils.HSLToColor(floatArrayOf(((h % 360f) + 360f) % 360f, s, l)))
+// RGB → HSL and its inverse used to live here, for a lift that worked in HSL. Both
+// went with it: OKLCh does the same job in a space where the numbers mean what they
+// look like. Removing them also removes this file's last `androidx.core.graphics`
+// call, which is what kept the lift off the unit-test suite.
 
 private fun hueDistance(a: Float, b: Float): Float {
     val d = abs(a - b) % 360f
     return min(d, 360f - d)
+}
+
+// ─── OKLab / OKLCh ─────────────────────────────────────────────────────────
+//
+// Björn Ottosson's OKLab, in full, because the *lift* — turning an extracted
+// colour into one the app can actually paint with — is where accuracy was being
+// lost, not the extraction.
+//
+// The lift used to work in HSL, and HSL lightness is not perceptual. Hold it
+// constant and hues do not stay equally bright: at the L = 0.64, S = 0.6 the old
+// code targeted, a green lands at relative luminance 0.55 and a blue at 0.19 —
+// the same number on the dial, nearly three times the light. That is the whole of
+// "green covers look great and the rest look muddy". OKLab is built so that equal
+// L *is* equal perceived lightness across hue, and equal C is equal colourfulness,
+// which is exactly the guarantee the lift needs and the one HSL cannot give.
+//
+// Pure Kotlin, deliberately: it replaces `androidx.core.graphics.ColorUtils`, whose
+// Android dependency is why `AlbumPaletteTest` says the lift "is not covered here".
+// It is covered now.
+
+private fun srgbToLinear(c: Float): Float =
+    if (c > 0.04045f) ((c + 0.055f) / 1.055f).pow(2.4f) else c / 12.92f
+
+private fun linearToSrgb(c: Float): Float =
+    if (c > 0.0031308f) 1.055f * c.pow(1f / 2.4f) - 0.055f else 12.92f * c
+
+/** sRGB (0..1) → OKLab `[L, a, b]`. */
+internal fun rgbToOklab(r: Float, g: Float, b: Float): FloatArray {
+    val lr = srgbToLinear(r); val lg = srgbToLinear(g); val lb = srgbToLinear(b)
+    val l = cbrt(0.4122214708f * lr + 0.5363325363f * lg + 0.0514459929f * lb)
+    val m = cbrt(0.2119034982f * lr + 0.6806995451f * lg + 0.1073969566f * lb)
+    val s = cbrt(0.0883024619f * lr + 0.2817188376f * lg + 0.6299787005f * lb)
+    return floatArrayOf(
+        0.2104542553f * l + 0.7936177850f * m - 0.0040720468f * s,
+        1.9779984951f * l - 2.4285922050f * m + 0.4505937099f * s,
+        0.0259040371f * l + 0.7827717662f * m - 0.8086757660f * s,
+    )
+}
+
+/** OKLab → sRGB (0..1), **unclamped** — out-of-gamut input returns out-of-range channels. */
+internal fun oklabToRgbRaw(lab: FloatArray): FloatArray {
+    val lp = lab[0] + 0.3963377774f * lab[1] + 0.2158037573f * lab[2]
+    val mp = lab[0] - 0.1055613458f * lab[1] - 0.0638541728f * lab[2]
+    val sp = lab[0] - 0.0894841775f * lab[1] - 1.2914855480f * lab[2]
+    val l = lp * lp * lp; val m = mp * mp * mp; val s = sp * sp * sp
+    return floatArrayOf(
+        linearToSrgb(4.0767416621f * l - 3.3077115913f * m + 0.2309699292f * s),
+        linearToSrgb(-1.2684380046f * l + 2.6097574011f * m - 0.3413193965f * s),
+        linearToSrgb(-0.0041960863f * l - 0.7034186147f * m + 1.7076147010f * s),
+    )
+}
+
+/** OKLab `[L, a, b]` → OKLCh `[L, C, h°]`. */
+internal fun oklabToOklch(lab: FloatArray): FloatArray {
+    val c = kotlin.math.sqrt(lab[1] * lab[1] + lab[2] * lab[2])
+    var h = Math.toDegrees(kotlin.math.atan2(lab[2], lab[1]).toDouble()).toFloat()
+    if (h < 0f) h += 360f
+    return floatArrayOf(lab[0], c, h)
+}
+
+private fun oklchToOklab(l: Float, c: Float, hDeg: Float): FloatArray {
+    val rad = Math.toRadians(hDeg.toDouble())
+    return floatArrayOf(l, (c * kotlin.math.cos(rad)).toFloat(), (c * kotlin.math.sin(rad)).toFloat())
+}
+
+/**
+ * OKLCh → the closest sRGB colour **of the same lightness and hue**.
+ *
+ * Chroma is what gives, by bisection, and nothing else does. Clipping the RGB
+ * channels instead — which is what a naive `coerceIn(0f, 1f)` does, and what the
+ * old path did implicitly — moves the channels by different amounts and so shifts
+ * the hue: a saturated blue clips toward violet, a deep red toward orange. The
+ * cover's hue is the one thing extraction is most confident about, so it is the
+ * last thing that should be traded away. Lightness holds for the same reason the
+ * lift exists at all: legibility against the page is a lightness property.
+ *
+ * 20 bisections resolve chroma far finer than an 8-bit channel can express, so the
+ * result is exact as far as anything downstream can tell.
+ */
+internal fun oklchToRgbInGamut(l: Float, c: Float, hDeg: Float): FloatArray {
+    fun inGamut(rgb: FloatArray) = rgb.all { it >= -1e-4f && it <= 1f + 1e-4f }
+    val direct = oklabToRgbRaw(oklchToOklab(l, c, hDeg))
+    if (inGamut(direct)) return direct.map { it.coerceIn(0f, 1f) }.toFloatArray()
+    var lo = 0f
+    var hi = c
+    repeat(20) {
+        val mid = (lo + hi) / 2f
+        if (inGamut(oklabToRgbRaw(oklchToOklab(l, mid, hDeg)))) lo = mid else hi = mid
+    }
+    return oklabToRgbRaw(oklchToOklab(l, lo, hDeg)).map { it.coerceIn(0f, 1f) }.toFloatArray()
+}
+
+/** The most chroma sRGB can hold at this lightness and hue — the gamut boundary. */
+internal fun maxChromaFor(l: Float, hDeg: Float): Float {
+    var lo = 0f
+    var hi = 0.4f   // beyond any sRGB colour in OKLab
+    repeat(20) {
+        val mid = (lo + hi) / 2f
+        val rgb = oklabToRgbRaw(oklchToOklab(l, mid, hDeg))
+        if (rgb.all { it >= -1e-4f && it <= 1f + 1e-4f }) lo = mid else hi = mid
+    }
+    return lo
+}
+
+private fun oklchColor(l: Float, c: Float, hDeg: Float): Color {
+    val rgb = oklchToRgbInGamut(l, c, hDeg)
+    return Color(rgb[0], rgb[1], rgb[2])
 }
 
 // ─── K-means in CIELAB ─────────────────────────────────────────────────────
@@ -449,30 +574,56 @@ internal fun paletteOf(bmp: Bitmap): AlbumPalette? {
  * and stays a soft silver.
  */
 internal fun liftedPalette(extracted: Extraction): AlbumPalette {
-    val leadHsl = rgbToHsl(extracted.lead[0], extracted.lead[1], extracted.lead[2])
-    val accent = if (extracted.achromatic) {
-        hslColor(leadHsl[0], leadHsl[1].coerceAtMost(0.10f), (leadHsl[2] + 0.18f).coerceIn(0.66f, 0.78f))
-    } else {
-        hslColor(
-            leadHsl[0],
-            (leadHsl[1] + 0.24f).coerceIn(0.5f, 0.72f),
-            (leadHsl[2] + 0.12f).coerceIn(0.58f, 0.70f),
-        )
-    }
+    val accent = liftOne(extracted.lead, ACCENT_L, extracted.achromatic)
 
     // Companions keep the cover's hue order (so gradients drift rather than jump)
-    // but are lifted to the same legible band. The lead leads the list: swatch(0)
-    // is what the glows are built from. A companion that is itself near-grey keeps
-    // its low saturation rather than being pushed into a hue of its own.
+    // and are lifted the same way, a little darker so the lead still leads. The lead
+    // leads the list too: swatch(0) is what the glows are built from. A companion
+    // that is itself near-grey keeps its greyness rather than being pushed into a
+    // hue of its own — the same rule the accent follows, applied per swatch instead
+    // of once for the whole cover.
     val companions = extracted.swatches
         .filter { it !== extracted.lead }
         .map { rgb ->
-            val hsl = rgbToHsl(rgb[0], rgb[1], rgb[2])
-            val sat = if (hsl[1] < 0.08f) hsl[1] else (hsl[1] + 0.1f).coerceIn(0.36f, 0.58f)
-            hslColor(hsl[0], sat, (hsl[2] + 0.16f).coerceIn(0.58f, 0.72f))
+            val chroma = oklabToOklch(rgbToOklab(rgb[0], rgb[1], rgb[2]))[1]
+            liftOne(rgb, COMPANION_L, achromatic = chroma < ACHROMATIC_OKLCH_C)
         }
 
     return AlbumPalette(accent = accent, swatches = listOf(accent) + companions)
+}
+
+/**
+ * One extracted colour → one the app can paint with, in OKLCh.
+ *
+ * Three rules, and the second is the one that changed the character of the output:
+ *
+ *  1. **Hue is kept exactly.** It is what the cover most unambiguously *is*, and it
+ *     survives both the lift and the gamut mapping untouched.
+ *  2. **Chroma is the cover's own**, floored so a nearly-grey lead still reads as a
+ *     colour, and capped only by what sRGB can actually hold at this lightness and
+ *     hue. It is deliberately *not* squeezed into a band. The old lift clamped
+ *     saturation into `0.50..0.72`, which is narrow enough that a muted watercolour
+ *     sleeve and a neon one came out at almost identical intensity — every album
+ *     arriving at the same loudness is most of why the palette felt limited. A
+ *     restrained cover should look restrained.
+ *  3. **Lightness is a fixed perceptual target**, which is the point of doing this in
+ *     OKLab at all: [ACCENT_L] means the same apparent brightness whether the hue is
+ *     yellow or indigo, so no hue is quietly favoured the way HSL favoured green.
+ *
+ * A colour with no real hue is lifted in lightness alone and stays a soft neutral —
+ * the second half of the old "everything falls back to gold" problem was forcing
+ * chroma onto a grey, and a floor applied blindly would reintroduce exactly that.
+ */
+private fun liftOne(rgb: FloatArray, targetL: Float, achromatic: Boolean): Color {
+    val lch = oklabToOklch(rgbToOklab(rgb[0], rgb[1], rgb[2]))
+    val hue = lch[2]
+    if (achromatic) return oklchColor(targetL, lch[1].coerceAtMost(NEUTRAL_MAX_C), hue)
+    // The floor is a fraction of what this hue can hold rather than an absolute, so
+    // it means the same thing across the gamut: sRGB reaches far more chroma in
+    // yellow than in blue, and one absolute number would over-drive the one it can
+    // reach and under-drive the one it cannot.
+    val ceiling = maxChromaFor(targetL, hue)
+    return oklchColor(targetL, lch[1].coerceIn(ceiling * MIN_ACCENT_C_FRACTION, ceiling), hue)
 }
 
 /** Load [url] and derive the album's [AlbumPalette]. Falls back to the amber default. */

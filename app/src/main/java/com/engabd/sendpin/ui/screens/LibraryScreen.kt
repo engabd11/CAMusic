@@ -274,13 +274,19 @@ private fun Header(
  */
 @Composable
 private fun RefreshButton(refreshing: Boolean, onClick: () -> Unit) {
+    // Upright and still when motion is off. Compose *suspends* an InfiniteTransition at
+    // a duration scale of 0 rather than ending it, so without this the icon freezes at
+    // whatever angle it had reached — a permanently crooked refresh glyph, which reads
+    // as a broken screen rather than as a disabled animation. See LocalReducedMotion.
+    val reducedMotion = LocalReducedMotion.current
     val spin = rememberInfiniteTransition(label = "refresh")
-    val angle by spin.animateFloat(
+    val spinAngle by spin.animateFloat(
         initialValue = 0f,
         targetValue = 360f,
         animationSpec = infiniteRepeatable(tween(900, easing = LinearEasing)),
         label = "refreshAngle",
     )
+    val angle = if (reducedMotion) 0f else spinAngle
     Icon(
         Icons.Default.Refresh,
         contentDescription = "Refresh library",
