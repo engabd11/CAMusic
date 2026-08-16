@@ -53,9 +53,10 @@
         android:networkSecurityConfig="@xml/network_security_config"
         android:theme="@style/Theme.Sendspin">
 
-        <!-- singleTask so a notification tap resumes the running task instead of
-             building a second instance on top of it. See service/OpenApp.kt. -->
         <!--
+          singleTask so a notification tap resumes the running task instead of
+          building a second instance on top of it. See service/OpenApp.kt.
+
           supportsPictureInPicture is what makes driving mode's default mechanism
           possible at all. configChanges is not optional alongside it: without
           screenSize|smallestScreenSize|screenLayout the activity is *recreated* on
@@ -140,6 +141,22 @@
             android:foregroundServiceType="mediaPlayback"
             android:exported="false">
         </service>
+
+        <!--
+          The home-screen widget. Glance supplies the receiver; this is only the
+          manifest registration and the size metadata it reads.
+        -->
+        <receiver
+            android:name=".widget.NowPlayingWidgetReceiver"
+            android:exported="false"
+            android:label="@string/widget_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/now_playing_widget_info" />
+        </receiver>
 
         <!-- Headset / Bluetooth / steering-wheel media buttons now route through
              each service's media3 MediaSession directly (see ShadePlayer /
