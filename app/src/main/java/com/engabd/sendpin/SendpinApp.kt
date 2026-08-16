@@ -286,9 +286,29 @@ class SendpinApp : Application(), ImageLoaderFactory {
                     }
                 }
         }
-        // Direct Light Sync follows the local player's session. Direct mode streams
-        // this phone's own decoded audio, so there is exactly one thing that can
-        // drive it and exactly one moment worth holding the bridge open for.
+        // Direct Light Sync follows whichever of this phone's players has a live
+        // session. Direct mode streams this phone's own decoded audio, and there are
+        // two sources of that: the local player, and Music Assistant when MA is
+        // playing *to this phone* through the ExoPlayer engine, whose render chain
+        // carries the same analysis tap.
+        //
+        // The MA half was missing here, and it was the whole of "the lights never
+        // react to Music Assistant". Two of the three wirings already accounted for
+        // it — [activeLightSyncSource] switches between the two taps correctly, and
+        // [directLightSync]'s own `isPlaying` counts both — but this gate, the one
+        // that decides whether to open the bridge stream at all, still asked only
+        // about the local player. So with MA playing, `start()` was never called:
+        // the screen sat on "Waiting for this phone to play" with a perfectly good
+        // tap going unused. This comment used to say "there is exactly one thing
+        // that can drive it", which was true when it was written and stopped being
+        // true when MA playback was wired into the tap.
+        //
+        // `maAudioSource != null`, not `isPlaying` alone: the default
+        // SendspinAudioEngine has no tap at all, so opening the bridge for it would
+        // leave the room reacting to the *local* player's silent tap — worse than
+        // honestly reporting that nothing is playing. That is the same condition
+        // [activeLightSyncSource] uses to choose a source, so the two cannot
+        // disagree about what is actually drivable.
         //
         // The session rather than `playing`: a pause would otherwise tear down the
         // DTLS channel and re-run discovery and the handshake on every resume. The
@@ -302,8 +322,12 @@ class SendpinApp : Application(), ImageLoaderFactory {
             // was never running.
             var started = false
             data class DirectSyncState(val active: Boolean, val mode: String, val enabled: Boolean, val configId: String)
+            // MA counts as live only when its engine actually carries a tap — see above.
+            val maLive = combine(playback.isPlaying, playback.maAudioSource) { playing, source ->
+                playing && source != null
+            }
             combine(
-                localPlayer.active,
+                combine(localPlayer.active, maLive) { local, ma -> local || ma },
                 settings.lightSyncMode,
                 settings.lightSyncEnabled,
                 settings.hueEntertainmentConfigId,
