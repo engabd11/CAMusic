@@ -1,0 +1,269 @@
+package com.engabd.sendpin.hue
+
+import kotlin.math.max
+
+/**
+ * What the light show *is*: the modes, the effects, the colour schemes, and the
+ * ~50 numbers behind each intensity rung.
+ *
+ * Split out of `SyncoEngine.kt` — see the note at the top of that file. This half is
+ * pure data with no behaviour at all, and it changes for a completely different
+ * reason from the renderer: a preset is retuned by ear, the renderer is changed by
+ * argument.
+ */
+
+// ── Types ─────────────────────────────────────────────────────────────────
+
+typealias Rgb = Triple<Float, Float, Float>
+
+enum class SyncMode(val wire: String) {
+    SUBTLE("subtle"), MEDIUM("medium"), HIGH("high"), INTENSE("intense"), EXTREME("extreme");
+    companion object { fun fromWire(s: String?) = entries.firstOrNull { it.wire == s } ?: HIGH }
+}
+
+/**
+ * Effects the direct engine renders.
+ *
+ * No Movies. syncoV2 offers it, but the direct path is a music player driving a
+ * Hue bridge — there is no video for a calm, brightness-follows-the-soundtrack
+ * mode to accompany. A stored `"movies"` value from the Home Assistant path
+ * falls back to Music rather than selecting something that does nothing.
+ */
+enum class SyncEffect(val wire: String) {
+    MUSIC("music"), FIREWORKS("fireworks");
+    companion object { fun fromWire(s: String?) = entries.firstOrNull { it.wire == s } ?: MUSIC }
+}
+
+enum class ColorScheme(val wire: String) {
+    /**
+     * Derived from what is playing rather than fixed. These render the static
+     * fallback until something supplies colours — see
+     * [SyncoEngine.setAlbumColors].
+     */
+    ALBUM_ART("album_art"), ALBUM_ART_V2("album_art_v2"), SONG("song"),
+    SUNSET("sunset"), OCEAN("ocean"), FOREST("forest"), LAVENDER("lavender"),
+    EMBER("ember"), AURORA("aurora"), RAINBOW("rainbow"),
+    TROPICAL("tropical"), SAVANNA("savanna"), BLOSSOM("blossom"),
+    HONOLULU("honolulu"), GALAXY("galaxy"),
+    NEON("neon"), PEACOCK("peacock"), CITRUS("citrus"), ROSEGOLD("rosegold");
+
+    /** True for the schemes that take their colours from what is playing. */
+    val isDynamic: Boolean get() = this == ALBUM_ART || this == ALBUM_ART_V2 || this == SONG
+
+    companion object { fun fromWire(s: String?) = entries.firstOrNull { it.wire == s } ?: ALBUM_ART_V2 }
+}
+
+// ── Mode parameters ───────────────────────────────────────────────────────
+
+/**
+ * Parameters for one intensity mode. Mirrors syncoV2's `ModeParams` dataclass.
+ * Each field controls a specific aspect of the render — see the syncoV2
+ * `modes.py` docstring for the full rationale.
+ */
+data class ModeParams(
+    val base: Float = 0.12f,          // steady brightness between beats
+    val floor: Float = 0.05f,         // minimum brightness (darkness between beats)
+    val bassGain: Float = 0.14f,      // continuous brightness from bass envelope
+    val beatGain: Float = 0.9f,       // pop of a bass-role light on a kick
+    val beatThreshold: Float = 1.4f,  // only kicks this strong pop
+    val colourSpeed: Float = 0.05f,   // palette drift per second
+    val shimmer: Float = 0.10f,       // sparkle amount (vocal-role lights)
+    val colourSat: Float = 0.7f,      // <1 softens colours toward white
+    val colourLerp: Float = 0.40f,    // per-frame colour easing
+    val briAttack: Float = 1.0f,      // per-frame brightness rise rate
+    val briDecay: Float = 0.30f,      // per-frame brightness fall rate
+    val flashDecay: Float = 0.80f,    // per-frame fade of the beat flash
+    val briSlew: Float = 1.0f,        // max brightness RISE per frame (anti-strobe)
+    val roleMix: Triple<Float, Float, Float> = Triple(1f, 0f, 0f),  // (bass, mid, vocal) fractions
+    val roleRotateBeats: Int = 0,     // swap role assignments every N beats
+    val dynamicRoles: Boolean = false,
+    val hardSnap: Boolean = false,
+    val highlightQuantile: Float = 0.30f,
+    val weakPulse: Float = 0.25f,
+    val downbeatPulse: Float = 0.40f,
+    /** Accents below this barely register, which is what makes a rung selective. */
+    val accentFloor: Float = 0.0f,
+    val colourJump: Float = 0.045f,   // palette advance per beat
+    val colourBeatStep: Float = 0.0f, // tempo-locked rolling colour step
+    val colourSpread: Float = 0.70f,  // per-lamp hue variation
+    val fullRoomAccent: Float = 2.0f, // accent at/above which ALL roles slam
+    val melbankGain: Float = 0.45f,   // continuous brightness from melbank slice
+    val melbankFloor: Float = 0.06f,  // ambient lift while music plays
+    val colourFlow: Float = 0.05f,    // continuous palette advance
+    val spectralPop: Float = 0.35f,  // transient pop per lamp
+    val energyGain: Float = 0.15f,   // brightness from broadband loudness
+    val salienceGamma: Float = 1.3f,  // flash strictness
+    val salienceFloor: Float = 0.05f,
+    val widthMin: Float = 0.15f,      // mute narrowband onsets (vocals)
+    val widthSoft: Float = 0.10f,
+    val kickBassFloor: Float = 0.40f,
+    val nobeatFlash: Float = 1.0f,
+    val midGain: Float = 0f,
+    val midThreshold: Float = 1.3f,
+    val vocalDim: Float = 0.08f,
+    val warmCalm: Float = 0f,
+    val panGain: Float = 0f,
+    val graphReactive: Boolean = false,
+    val melFluxGain: Float = 0f,
+    val melFluxFloor: Float = 0f,
+    val rotateRate: Float = 0f,
+    val rotateSwing: Float = 0f,
+    val flashGamma: Float = 1.0f,
+    val flashLoudFloor: Float = 1.0f,
+    val bandLoudStrength: Float = 0f,
+    /**
+     * How much of a lamp's *hottest* melbank bin lifts its glow, against the mean
+     * of its whole window.
+     *
+     * A lamp averages roughly seven of the sixteen bins (see `melbankWindow`), so
+     * a pure mean divides a vocal sitting in two of them by seven — which is a
+     * large part of why mid content read as too dim to be there. Extreme already
+     * did this, as `EXT_GLOW_PEAKINESS`; this is the same idea on the main path,
+     * exposed through the `contrast` tunable, which had nothing else to do here.
+     */
+    val melPeakiness: Float = 0f,
+
+    // ── Sustain bloom ─────────────────────────────────────────────────────
+    //
+    // The layer that fires where every other one is silent. `eventGates` zeroes
+    // its width gate for narrowband onsets, and `melTransient` is measured against
+    // a baseline a held note settles into — both deliberate, both correct for
+    // percussion, and between them they mean a long vocal over a steady chord
+    // produces no flash, no pop and no wave. All that was left was one narrowband
+    // melbank term per lamp, which is why a sustained mid read as one lamp barely
+    // moving instead of the room glowing.
+
+    /** Brightness a fully-committed sustain adds. Zero disables the layer. */
+    val tonalGain: Float = 0f,
+    /** `onsetWidth` at or above which nothing counts as tonal. */
+    val tonalWidthMax: Float = 0.22f,
+    /** Soft knee below [tonalWidthMax], mirroring `eventGates`' own shape. */
+    val tonalWidthSoft: Float = 0.10f,
+    /** Rise time constant in seconds — it blooms rather than pulses. */
+    val tonalAttackS: Float = 0.55f,
+    /** Fall time constant in seconds. Longer than the rise, so it lingers. */
+    val tonalReleaseS: Float = 1.30f,
+    /** How hard live transients suppress the bloom. Higher = more percussive. */
+    val tonalDamp: Float = 1.0f,
+
+    /**
+     * How far colour follows the tilted room axis instead of left-to-right rank.
+     *
+     * 0 is the original x-only field, and is the revert. Hue could only ever sweep
+     * one way across a room, so two lamps at the same x and different heights were
+     * always the same colour however far apart they actually were.
+     */
+    val colourTilt: Float = 0f,
+
+    /**
+     * How much of each lamp's continuous drive comes from its neighbours.
+     *
+     * 0 is fully independent lamps — the original behaviour, and the revert. See
+     * `diffuseDrives` for why this couples the *drive* and never the output.
+     */
+    val spatialCoupling: Float = 0f,
+
+    val roomPunch: Float = 0f,
+    val fluxGate: Float = 0f,
+    val predropDepth: Float = 0f,
+    val phraseBars: Int = 0,
+    val phraseColourShift: Float = 0f,
+    val buildDesat: Float = 0f,
+    val dropBoost: Float = 0f,
+    val waveGain: Float = 0f,
+    val waveSpeed: Float = 1.8f,
+    val waveWidth: Float = 0.33f,
+    val heightFreq: Float = 0f,
+    val depthWash: Float = 0f,
+    val anticipationMs: Float = 0f,
+)
+
+// ── Mode presets (from syncoV2 modes.py MODE_PARAMS) ──────────────────────
+
+val MODE_PARAMS = mapOf(
+    SyncMode.SUBTLE to ModeParams(
+        base = 0.80f, floor = 0.80f, bassGain = 0f, beatGain = 0f, beatThreshold = 99f,
+        colourSpeed = 0.04f, shimmer = 0f, colourSat = 1f,
+        colourLerp = 0.10f, briAttack = 0.12f, briDecay = 0.08f,
+        highlightQuantile = 0f,
+        colourJump = 0.020f,
+        colourBeatStep = 0.008f,
+        colourSpread = 1.0f,
+        salienceGamma = 1.6f, widthMin = 0.20f,
+        // Subtle sits at base = floor = 0.80 and is already near the clamp through
+        // music, so there is little headroom for a peak to use. A light touch of
+        // band loudness still shapes *which* lamps sit where in that narrow band.
+        melPeakiness = 0.20f, bandLoudStrength = 0.15f,
+        // Colour is Subtle's whole identity (colourSpread = 1.0), so it gets the
+        // most tilt: the room reads as one slow gradient through all three axes.
+        colourTilt = 0.50f,
+    ),
+    SyncMode.MEDIUM to ModeParams(
+        base = 0.12f, floor = 0.05f, bassGain = 0.14f, beatGain = 0.9f, beatThreshold = 1.4f,
+        colourSpeed = 0.05f, shimmer = 0.10f, colourSat = 0.7f,
+        colourLerp = 0.40f, briAttack = 1f, briDecay = 0.30f,
+        colourJump = 0.045f, colourSpread = 0.70f, highlightQuantile = 0.30f,
+        weakPulse = 0.25f, downbeatPulse = 0.40f,
+        melbankGain = 0.45f, melbankFloor = 0.06f, colourFlow = 0.05f, spectralPop = 0.35f,
+        energyGain = 0.15f, salienceGamma = 1.3f, widthMin = 0.15f, kickBassFloor = 0.30f,
+        predropDepth = 0.30f, phraseBars = 4, phraseColourShift = 0.03f,
+        panGain = 0.5f, warmCalm = 0f,
+        melPeakiness = 0.35f, bandLoudStrength = 0.35f,
+        tonalGain = 0.22f, tonalAttackS = 0.65f, tonalReleaseS = 1.5f, colourTilt = 0.45f,
+        spatialCoupling = 0.45f,
+        waveGain = 0.75f, waveSpeed = 2.2f, waveWidth = 0.30f, heightFreq = 0.30f,
+        depthWash = 0.08f, anticipationMs = 80f, dropBoost = 0.50f, buildDesat = 0.50f,
+    ),
+    SyncMode.HIGH to ModeParams(
+        base = 0.06f, floor = 0.035f, bassGain = 0.30f, beatGain = 1.6f, beatThreshold = 1.1f,
+        colourSpeed = 0.06f, shimmer = 0.50f, colourSat = 0.8f,
+        colourLerp = 0.38f, briAttack = 1f, briDecay = 0.38f, flashDecay = 0.80f, briSlew = 0.30f,
+        colourJump = 0.09f, colourSpread = 0.55f, highlightQuantile = 0.40f,
+        weakPulse = 0.16f, downbeatPulse = 0.45f, fullRoomAccent = 0.94f,
+        roleMix = Triple(0.4f, 0.3f, 0.3f), midGain = 1.0f, midThreshold = 1.25f,
+        vocalDim = 0.05f, roleRotateBeats = 16, dynamicRoles = true, hardSnap = true,
+        melbankGain = 0.44f, melbankFloor = 0.035f, colourFlow = 0.05f, spectralPop = 0.45f,
+        energyGain = 0.15f, salienceGamma = 1.0f, widthMin = 0.12f, kickBassFloor = 0.35f,
+        predropDepth = 0.45f, phraseBars = 4, phraseColourShift = 0.05f,
+        panGain = 0.6f,
+        melPeakiness = 0.40f, bandLoudStrength = 0.45f,
+        // The darkest resting level of the reactive rungs (base = 0.06), so it has
+        // the most headroom for a bloom and the most obvious gap without one.
+        // Moderate: High's role split is deliberate separation, so binding the room
+        // too tightly would undo the thing the rung is for.
+        tonalGain = 0.26f, colourTilt = 0.35f, spatialCoupling = 0.35f,
+        waveGain = 0.55f, waveSpeed = 2.2f, waveWidth = 0.32f, anticipationMs = 80f,
+        dropBoost = 0.60f, buildDesat = 0.45f,
+    ),
+    SyncMode.INTENSE to ModeParams(
+        base = 0.05f, floor = 0.10f, bassGain = 0.16f, beatGain = 1.7f, beatThreshold = 1.0f,
+        colourSpeed = 0.05f, shimmer = 0f, colourSat = 0.97f,
+        colourLerp = 0.55f, briAttack = 1f, briDecay = 0.40f, briSlew = 0.22f, flashDecay = 0.82f,
+        colourJump = 0.16f, colourSpread = 0.22f, highlightQuantile = 0.18f,
+        weakPulse = 0.42f, downbeatPulse = 0.55f, fullRoomAccent = 0f,
+        hardSnap = true,
+        melbankGain = 0.42f, melbankFloor = 0.06f, colourFlow = 0.05f, spectralPop = 0.45f,
+        energyGain = 0.16f, salienceGamma = 0.8f, widthMin = 0.08f, nobeatFlash = 0.30f,
+        fluxGate = 0.5f, predropDepth = 0.60f, phraseBars = 4, phraseColourShift = 0.06f,
+        panGain = 0.5f,
+        melPeakiness = 0.40f, bandLoudStrength = 0.40f,
+        // Percussive-forward rung: damp harder so the bloom cannot soften a drop.
+        // colourSpread is only 0.22 here — near unison already — so a large tilt
+        // would have little to spread and mostly just shift the whole room.
+        tonalGain = 0.20f, tonalDamp = 1.4f, colourTilt = 0.25f, spatialCoupling = 0.40f,
+        waveGain = 0.55f, waveSpeed = 2.4f, waveWidth = 0.30f, anticipationMs = 90f,
+        dropBoost = 0.80f, buildDesat = 0.50f,
+    ),
+    SyncMode.EXTREME to ModeParams(
+        graphReactive = true,
+        base = 0f, floor = 0f, bassGain = 0f, beatGain = 0f, beatThreshold = 99f,
+        melbankGain = 0.60f, melbankFloor = 0.02f, spectralPop = 1.6f,
+        flashGamma = 1.5f, flashLoudFloor = 0.30f,
+        melFluxGain = 1.25f, melFluxFloor = 0.12f,
+        rotateRate = 0.36f, rotateSwing = 0.85f, bandLoudStrength = 0.8f,
+        roomPunch = 1.5f, energyGain = 0.06f, flashDecay = 0.70f,
+        briAttack = 0.5f, briDecay = 0.4f,
+        colourSpeed = 0.05f, colourFlow = 0.05f, colourSpread = 0.4f, colourLerp = 0.4f,
+        colourSat = 0.97f, panGain = 0.6f, colourTilt = 0.30f,
+    ),
+)
