@@ -64,4 +64,21 @@ object Motion {
         stiffness = 380f,
         visibilityThreshold = IntOffset.VisibilityThreshold,
     )
+
+    /**
+     * Spatial motion for a large pixel-scale drag-and-settle offset, e.g. the Now
+     * Playing cover sliding down to the mini bar. Same problem as [screenSlide] but
+     * for a raw `Float` `Animatable` rather than an `IntOffset`: without an explicit
+     * threshold, `spring<Float>()` falls back to [Spring.DefaultDisplacementThreshold]
+     * (0.01f) — tuned for a 0f..1f alpha, not a ~2000px drag. Against a distance that
+     * large the spring keeps correcting sub-pixel error for a very visible extra
+     * stretch after the motion has already looked finished, which is what read as the
+     * settled player "sticking" for a second before it actually finished collapsing.
+     * 1px is close enough that arriving there is indistinguishable from the exact target.
+     */
+    fun spatialOffsetPx(): FiniteAnimationSpec<Float> = spring(
+        dampingRatio = 0.8f,
+        stiffness = 380f,
+        visibilityThreshold = 1f,
+    )
 }

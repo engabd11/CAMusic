@@ -1,7 +1,9 @@
 package com.engabd.sendpin.ui.screens.settings
 
 import android.content.Context
+import android.content.Intent
 import android.media.AudioManager
+import android.provider.Settings
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -17,9 +19,11 @@ import com.engabd.sendpin.audio.DeviceCapabilities
 import com.engabd.sendpin.audio.ReplayGain
 import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.data.AppSettings
+import com.engabd.sendpin.data.rememberIsIgnoringBatteryOptimizations
 import com.engabd.sendpin.ui.design.HSlider
 import com.engabd.sendpin.ui.theme.MonoFont
 import com.engabd.sendpin.ui.theme.TextSecondary
+import com.engabd.sendpin.ui.theme.WarnAmber
 import com.engabd.sendpin.ui.viewmodel.PlayerViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
@@ -49,7 +53,6 @@ internal fun AudioSection(
         LoudnessCard(settings, accent, scope)
         ContinuousPlayCard(settings, scope)
         DiagnosticsCard(viewModel, settings)
-        ExperimentalCard(settings, accent, scope)
     }
 }
 
@@ -259,6 +262,13 @@ private fun DiagnosticsCard(viewModel: PlayerViewModel, settings: AppSettings) {
     var playerName by remember { mutableStateOf("") }
     LaunchedEffect(Unit) { playerName = settings.playerName.first() }
 
+    // Live-checked, not just "onboarding was completed once" — OEM battery managers
+    // (Samsung, Xiaomi, Oppo) can revoke the exemption later without telling the
+    // user, and SendspinConnectionService silently losing Doze survival is exactly
+    // the kind of thing that should surface here rather than stay invisible.
+    val batteryGranted = rememberIsIgnoringBatteryOptimizations()
+    val context = LocalContext.current
+
     SettingsCard(
         title = "Diagnostics",
         lead = "What the Music Assistant connection is actually doing right now. Worth quoting " +
@@ -271,48 +281,32 @@ private fun DiagnosticsCard(viewModel: PlayerViewModel, settings: AppSettings) {
             StatusRow("Player name", playerName.ifBlank { viewModel.deviceName })
             StatusRow("Device", viewModel.deviceName)
         }
+        if (!batteryGranted) {
+            CardDivider()
+            StatusLine(
+                "Battery optimisation is restricting this app — announcements and background " +
+                    "playback may drop while the screen is off.",
+                health = Health.WARN,
+                accent = WarnAmber,
+            )
+            OledButton(
+                "Open battery settings",
+                accent = WarnAmber,
+                outline = true,
+            ) {
+                runCatching {
+                    context.startActivity(
+                        Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                }
+            }
+        }
     }
 }
 
-// ── Experimental ─────────────────────────────────────────────────────────
-
-/**
- * Player-internals switches not ready for general use. See
- * `docs/exoplayer-upgrade-plan.md`: [AppSettings.useExoPlayerForSendspin] routes
- * MA playback through ExoPlayer instead of the default hand-built
- * MediaCodec+AudioTrack engine; [AppSettings.useOboeOutput] (only meaningful
- * with that one already on) further routes decoded audio through a native Oboe
- * engine instead of the platform AudioTrack. Both take effect on the next MA
- * connection, not retroactively on whatever's already playing.
- */
-@Composable
-private fun ExperimentalCard(settings: AppSettings, accent: Color, scope: CoroutineScope) {
-    var useExoPlayer by remember { mutableStateOf(false) }
-    var useOboe by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
-        useExoPlayer = settings.useExoPlayerForSendspin.first()
-        useOboe = settings.useOboeOutput.first()
-    }
-
-    SettingsCard(
-        title = "Experimental",
-        lead = "Not ready for everyday use. Turn these on only if you're specifically testing them.",
-    ) {
-        ToggleRow(
-            "ExoPlayer for MA playback",
-            "Replaces the MA (Sendspin) audio engine with ExoPlayer. Unvalidated: expect " +
-                "playback glitches, and disconnect/reconnect if it misbehaves. Takes effect on " +
-                "the next MA connection.",
-            useExoPlayer, accent,
-        ) { useExoPlayer = it; scope.launch { settings.setUseExoPlayerForSendspin(it) } }
-        CardDivider()
-        ToggleRow(
-            "Native Oboe output for MA",
-            "Only applies with ExoPlayer for MA playback on. Routes decoded audio through a " +
-                "native engine instead of the platform AudioTrack. Far less tested than the " +
-                "ExoPlayer switch above — only 16-bit PCM is supported, and it does not yet " +
-                "combine with Bit-perfect (24-bit) above. Expect rough edges.",
-            useOboe, accent,
-        ) { useOboe = it; scope.launch { settings.setUseOboeOutput(it) } }
-    }
-}
+// The MA/Sendspin experimental engine toggles used to live here under a generic
+// "Experimental" card. Moved to PlayerSettings.kt's MaExperimentalCard, next to the
+// rest of this phone's Music Assistant player settings — they are as MA-specific as
+// gapless/crossfade (MaPlaybackConfigCard) already living there, not device-wide
+// audio preferences.

@@ -24,12 +24,12 @@ import com.engabd.sendpin.protocol.StreamStartPlayerInfo
  * What this gets MA playback that the old engine can't: [AudioAnalysisTap] sits
  * in this player's render chain exactly like it does for [LocalPlayer], via the
  * same [TapRenderersFactory] - direct Hue Bridge Light Sync becomes possible for
- * MA the same way it already works for local playback. **Not yet wired up**:
- * [com.engabd.sendpin.hue.DirectLightSync] is currently built once, at process
- * scope, hard-pointed at `localPlayer.audioAnalysisTap` (see `SendpinApp.kt`) -
- * teaching it to switch taps between backends is separate follow-up work, not
- * something this class can do alone. [audioAnalysisTap] is exposed here so that
- * work has something to wire to.
+ * MA the same way it already works for local playback. This is wired up:
+ * [com.engabd.sendpin.SendpinApp.activeLightSyncSource] reactively switches
+ * [com.engabd.sendpin.hue.DirectLightSync] between `localPlayer`'s tap and
+ * [audioAnalysisTap] based on which backend is actually playing (see
+ * `Playback.maAudioSource`, which this class publishes into) - so lights follow
+ * MA playback once this engine is what's rendering it.
  *
  * Also gets ExoPlayer's gapless. GC-immune output is a second, separate opt-in
  * on top of this one: [useOboe] (default off) swaps [TapRenderersFactory] for
@@ -58,6 +58,14 @@ import com.engabd.sendpin.protocol.StreamStartPlayerInfo
 class SendspinExoEngine(
     private val context: Context,
     private val clock: ClockSync,
+    /**
+     * Called once [onPlayerError] has retried [MAX_CONSECUTIVE_ERRORS] times without
+     * reaching [Player.STATE_READY]. The engine has stopped retrying by the time this
+     * fires - the caller decides what recovery (if any) makes sense, e.g. forcing the
+     * Sendspin client to reconnect so Music Assistant gets a fresh chance to (re)send
+     * `stream/start`.
+     */
+    private val onFatalError: () -> Unit = {},
 ) : SendspinPlaybackEngine {
 
     val audioLead = AudioLead()
@@ -117,19 +125,49 @@ class SendspinExoEngine(
     private fun effectiveVolume() = if (syncMuted) 0f else userVolume
 
     /**
+     * Consecutive [onPlayerError] calls since the last [Player.STATE_READY] or fresh
+     * [start]. What bounds the retry below - see its doc for why an unbounded retry
+     * is not a hypothetical risk.
+     */
+    private var consecutiveErrors = 0
+
+    /**
      * A `Player.Listener` is what makes a source/renderer error visible at all -
      * without one, a fatal [PlaybackException] leaves the player silently in
      * [Player.STATE_IDLE] forever: no sound, no exception surfaced anywhere
-     * Playback.kt would see it. [onPlayerError] logs it and retries once via
-     * [ExoPlayer.prepare] (the same recovery ExoPlayer's own docs recommend for
-     * a transient source error), which is enough as long as whatever caused the
-     * error doesn't recur - see [SendspinDataSource.close] for the one already
-     * found and fixed this way.
+     * Playback.kt would see it.
+     *
+     * [onPlayerError] retries via [ExoPlayer.prepare] (the recovery ExoPlayer's own
+     * docs recommend for a transient source error) with a widening backoff, up to
+     * [MAX_CONSECUTIVE_ERRORS] times, then calls [onFatalError] and stops. This used
+     * to retry immediately and unconditionally - "enough as long as whatever caused
+     * the error doesn't recur" - but on-device it *did* recur, every time: a stuck
+     * [SendspinDataSource] with nothing to feed ExoPlayer produced
+     * `ERROR_CODE_TIMEOUT` ("stuck buffering with no progress"), the immediate
+     * `prepare()` hit the identical stuck source, and the pair produced 311,760
+     * identical log lines over 58 straight minutes - a genuine busy-loop, not a
+     * hypothetical one, burning CPU and battery the whole time with no audio and
+     * nothing user-visible. A bounded, backed-off retry turns that into a handful of
+     * quick attempts and then a clean give-up.
      */
     private val playerListener = object : Player.Listener {
         override fun onPlayerError(error: PlaybackException) {
             Log.e("SendspinExoEngine", "player error: ${error.errorCodeName}", error)
-            player.prepare()
+            consecutiveErrors++
+            if (consecutiveErrors > MAX_CONSECUTIVE_ERRORS) {
+                Log.e(
+                    "SendspinExoEngine",
+                    "giving up after $consecutiveErrors consecutive errors without reaching STATE_READY",
+                )
+                onFatalError()
+                return
+            }
+            val delayMs = RETRY_BACKOFF_MS[(consecutiveErrors - 1).coerceIn(0, RETRY_BACKOFF_MS.lastIndex)]
+            mainHandler.postDelayed({ player.prepare() }, delayMs)
+        }
+
+        override fun onPlaybackStateChanged(state: Int) {
+            if (state == Player.STATE_READY) consecutiveErrors = 0
         }
     }
 
@@ -178,6 +216,9 @@ class SendspinExoEngine(
     }
 
     override fun start(format: StreamStartPlayerInfo) {
+        // A fresh stream/start is a clean slate - errors from whatever track just
+        // ended (or a since-fixed connection) should not count against this one.
+        consecutiveErrors = 0
         val dataSource: SendspinDataSource = if (grouped) {
             SendspinSyncDataSource(format, clock).also { it.staticDelayMs = staticDelayMs }
         } else {
@@ -238,5 +279,13 @@ class SendspinExoEngine(
             nativeOutput?.release()
             nativeOutput = null
         }
+    }
+
+    private companion object {
+        /** Retries before [onFatalError] - see [playerListener]'s doc for why bounded. */
+        const val MAX_CONSECUTIVE_ERRORS = 4
+
+        /** Widening backoff between retries, indexed by (consecutiveErrors - 1). */
+        val RETRY_BACKOFF_MS = longArrayOf(500L, 1_500L, 4_000L, 8_000L)
     }
 }

@@ -83,7 +83,13 @@ class LocalPlaybackService : Service() {
         // reads play state, position and metadata from the player directly, so the
         // lock screen, Bluetooth head units and Android Auto all stay in sync
         // without us pushing state manually.
-        mediaSession = MediaSession.Builder(this, player.exoPlayer).build()
+        //
+        // The id must be distinct from SendspinService's session id — a media3
+        // MediaSession's id is unique *per process*, and both services used to leave
+        // it unset (defaulting to the same empty string), so whichever session was
+        // built second threw IllegalStateException("Session ID must be unique") and
+        // crashed the whole process, on-device, repeatedly.
+        mediaSession = MediaSession.Builder(this, player.exoPlayer).setId("local").build()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {

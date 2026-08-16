@@ -128,7 +128,13 @@ fun NowPlayingOverlay(
     // when a sheet opens — tearing it down mid-gesture loses the release event.
     val gestureBlocked by rememberUpdatedState(!expanded || sheets.sheetOpen)
 
-    suspend fun settleTo(target: Float, spec: FiniteAnimationSpec<Float> = Motion.spatial()) {
+    // Motion.spatialOffsetPx(), not spatial(): this settles a ~2000px drag, and the
+    // generic Float spring's default 0.01px visibility threshold made the coroutine
+    // keep running (correcting sub-pixel error) well after the slide looked finished
+    // — the settled player "stuck" at the bottom for a moment before onCollapse()
+    // actually fired and swapped it for the mini bar. See Motion.spatialOffsetPx's
+    // own doc for the full explanation.
+    suspend fun settleTo(target: Float, spec: FiniteAnimationSpec<Float> = Motion.spatialOffsetPx()) {
         settle.snapTo(dragPx)
         settling = true
         settle.animateTo(target, spec)

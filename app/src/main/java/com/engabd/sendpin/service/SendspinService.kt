@@ -461,7 +461,12 @@ class SendspinService : Service() {
     private fun setupMediaSession() {
         val player = ShadePlayer(Looper.getMainLooper())
         shadePlayer = player
-        mediaSession = MediaSession.Builder(this, player).build()
+        // A media3 MediaSession's id must be unique *per process*, and the default
+        // (unset) id is the same empty string LocalPlaybackService's session also
+        // used to default to — so whichever of the two was constructed second threw
+        // IllegalStateException("Session ID must be unique") and crashed, which is
+        // exactly what a device crash log caught. Both services now claim distinct ids.
+        mediaSession = MediaSession.Builder(this, player).setId("sendspin").build()
     }
 
     private fun observe() {
