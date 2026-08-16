@@ -37,7 +37,6 @@ import com.engabd.sendpin.ha.LightSyncRepository
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.LightSyncViewModel
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -352,32 +351,15 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
     val bridgeIp by settings.hueBridgeIp.collectAsState(initial = "")
     val configId by settings.hueEntertainmentConfigId.collectAsState(initial = "")
 
-    // Entertainment areas come from the bridge itself, once per visit.
-    var configs by remember { mutableStateOf(listOf<com.engabd.sendpin.hue.EntertainmentConfig>()) }
-    var loadingConfigs by remember { mutableStateOf(false) }
-    var configError by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(bridgeIp) {
-        val key = settings.hueAppKey.first()
-        if (bridgeIp.isBlank() || key.isBlank()) return@LaunchedEffect
-        loadingConfigs = true
-        configError = null
-        try {
-            configs = direct.bridgeClient.getEntertainmentConfigs(bridgeIp, key)
-            // If an area is already streaming, default to it so opening the tab shows
-            // the live room rather than the first area in the list. Only override when
-            // the stored choice is blank or not currently active — never override a
-            // user's deliberate selection of an inactive area.
-            val storedActive = configs.find { it.id == configId }
-            if (storedActive == null || !storedActive.isStreaming) {
-                configs.firstOrNull { it.isStreaming }?.let {
-                    settings.setHueConfigId(it.id)
-                }
-            }
-        } catch (e: Exception) {
-            configError = e.message ?: "Could not reach the bridge"
-        }
-        loadingConfigs = false
-    }
+    // Entertainment areas, read from the process-scoped [DirectLightSync] rather than
+    // fetched here. This screen is a NavHost destination, so screen-local state is
+    // dropped every time the tab is left — the list emptied, a spinner appeared and
+    // the bridge was queried again on every single visit, which read as the areas
+    // being rediscovered for no reason. They are loaded at startup and reloaded when
+    // the bridge settings change, which is when they can actually differ.
+    val configs by direct.entertainmentConfigs.collectAsStateWithLifecycle()
+    val loadingConfigs by direct.configsLoading.collectAsStateWithLifecycle()
+    val configError by direct.configsError.collectAsStateWithLifecycle()
 
     Box(Modifier.fillMaxSize().background(Ink)) {
         Bloom(if (live) accent else TextFaint, 440.dp, (-40).dp, (-70).dp, if (live) 0.42f else 0.16f)
@@ -467,10 +449,23 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                             ) { scope.launch { settings.setHueConfigId(cfg.id) } }
                         }
                     }
-                    else -> Text(
-                        configError ?: "No areas found. Create one in the Hue app.",
-                        color = if (configError != null) ErrorRed else TextFaint, fontSize = 13.sp,
-                    )
+                    else -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            configError ?: "No areas found. Create one in the Hue app.",
+                            color = if (configError != null) ErrorRed else TextFaint, fontSize = 13.sp,
+                        )
+                        // The list no longer reloads on every visit, so the one case
+                        // that used to be fixed by leaving the tab and coming back —
+                        // the bridge was briefly unreachable — needs a way to ask.
+                        Text(
+                            "Ask the bridge again",
+                            color = accent, fontWeight = FontWeight.Bold, fontSize = 13.sp,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(100))
+                                .clickable { direct.refreshEntertainmentConfigs() }
+                                .padding(vertical = 4.dp),
+                        )
+                    }
                 }
 
                 Spacer(Modifier.height(22.dp))

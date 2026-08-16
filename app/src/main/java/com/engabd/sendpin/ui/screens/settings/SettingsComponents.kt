@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Visibility
@@ -15,8 +16,14 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -269,6 +276,94 @@ internal fun OledButton(
         contentAlignment = Alignment.Center,
     ) {
         Text(text, color = label, fontFamily = AppFont, fontWeight = FontWeight.ExtraBold, fontSize = 13.sp)
+    }
+}
+
+/**
+ * A picker for a list that is too long, or too unpredictable, to lay out flat.
+ *
+ * The alternative in this file is [com.engabd.sendpin.ui.design.SegmentedToggle], and
+ * it is the right control for three or four fixed options — a stream format, a gain
+ * mode. It is the wrong one the moment the options come from the *phone* rather than
+ * from the app: a segmented row of every paired Bluetooth device is as wide as the
+ * user's history with the device, and the entries past the edge simply cannot be
+ * reached. This gives every option the same width and the same reach, however many
+ * there are.
+ *
+ * [subtitles] runs parallel to [options] when a second line is worth showing — a
+ * device's address under its name, so two speakers called "Car" can be told apart.
+ */
+@Composable
+internal fun DropdownPicker(
+    options: List<String>,
+    selectedIndex: Int,
+    accent: Color,
+    modifier: Modifier = Modifier,
+    placeholder: String = "Choose…",
+    subtitles: List<String>? = null,
+    onSelect: (Int) -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    val selected = options.getOrNull(selectedIndex)
+
+    Box(modifier.fillMaxWidth()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(Ink3)
+                .border(1.dp, if (open) accent.a(0.5f) else Hairline, RoundedCornerShape(12.dp))
+                .clickable { open = true }
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+                Text(
+                    selected ?: placeholder,
+                    color = if (selected != null) TextPrimary else TextMuted,
+                    fontFamily = AppFont,
+                    style = MaterialTheme.typography.titleLarge,
+                    maxLines = 1,
+                )
+                subtitles?.getOrNull(selectedIndex)?.takeIf { it.isNotBlank() }?.let {
+                    Text(it, color = TextFaint, fontFamily = MonoFont, fontSize = 11.sp, maxLines = 1)
+                }
+            }
+            Icon(
+                Icons.Default.ArrowDropDown, if (open) "Close list" else "Open list",
+                tint = TextMuted, modifier = Modifier.size(22.dp),
+            )
+        }
+
+        DropdownMenu(
+            expanded = open,
+            onDismissRequest = { open = false },
+            // Tall enough to show a real list, short enough to leave the page
+            // visible behind it. The menu scrolls past that on its own.
+            modifier = Modifier.heightIn(max = 340.dp).background(Ink3),
+        ) {
+            options.forEachIndexed { i, option ->
+                DropdownMenuItem(
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+                            Text(
+                                option,
+                                color = if (i == selectedIndex) accent else TextPrimary,
+                                fontFamily = AppFont,
+                                style = MaterialTheme.typography.titleLarge,
+                            )
+                            subtitles?.getOrNull(i)?.takeIf { it.isNotBlank() }?.let {
+                                Text(it, color = TextFaint, fontFamily = MonoFont, fontSize = 11.sp)
+                            }
+                        }
+                    },
+                    trailingIcon = if (i == selectedIndex) {
+                        { Icon(Icons.Default.Check, "Selected", tint = accent, modifier = Modifier.size(18.dp)) }
+                    } else null,
+                    onClick = { open = false; onSelect(i) },
+                )
+            }
+        }
     }
 }
 

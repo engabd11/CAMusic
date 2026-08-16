@@ -135,13 +135,6 @@ fun NowPlayingScreen(
             // rather than swapping the whole screen for an empty state.
             MeltBackdrop(st.artworkUrl, intensity = if (st.idle) 0.5f else 1f)
 
-            // Source badge at the top-right corner — MA, Navidrome, Offline, or the
-            // streaming provider the track came from. Never blank: see State.source.
-            SourceBadge(
-                source = st.source,
-                modifier = Modifier.align(Alignment.TopEnd).padding(top = 48.dp, end = 16.dp),
-            )
-
             Column(
                 Modifier
                     .fillMaxSize()
@@ -158,6 +151,9 @@ fun NowPlayingScreen(
                     groupSize = st.groupSize,
                     localSession = st.isLocalSession,
                     onTap = { if (st.isLocalSession) sheets.device = true else sheets.speakers = true },
+                    // MA, Navidrome, Offline, or the streaming provider the track came
+                    // from — on the same line as the speaker pill, not floating over it.
+                    source = st.source,
                 )
 
                 Spacer(Modifier.height(4.dp))
@@ -280,6 +276,14 @@ fun NowPlayingScreen(
  * there is exactly one player and nothing to pick, so the same tap opens the device
  * card instead and the icon becomes an ⓘ. Offering a link there was a promise the
  * screen could not keep.
+ *
+ * [source] — where the playback is coming from — rides in this row rather than being
+ * pinned to the screen's top-right corner. Absolutely positioned it had to guess its
+ * own top inset, and the guess was a fixed 48dp against a pill whose position depends
+ * on the status bar, the optional offline banner and this row's own padding: the two
+ * were never on the same line. Here the layout puts them on one, on any phone and in
+ * either now-playing layout. The weighted sides are what keep the pill centred on the
+ * screen rather than centred in what is left over beside the badge.
  */
 @Composable
 internal fun TopBar(
@@ -288,6 +292,8 @@ internal fun TopBar(
     groupSize: Int,
     localSession: Boolean,
     onTap: () -> Unit,
+    /** The source badge's text, or null to leave the corner empty. */
+    source: String? = null,
 ) {
     val accent = LocalAccent.current
     Row(
@@ -295,6 +301,7 @@ internal fun TopBar(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Center,
     ) {
+        Box(Modifier.weight(1f))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Row(
                 Modifier
@@ -329,6 +336,10 @@ internal fun TopBar(
                     tint = Ink, modifier = Modifier.size(14.dp),
                 )
             }
+        }
+        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
+            // Never blank when there is a session at all — see State.source.
+            if (!source.isNullOrBlank()) SourceBadge(source)
         }
     }
 }
@@ -893,6 +904,11 @@ fun SourceBadge(source: String, modifier: Modifier = Modifier) {
             source,
             color = TextSecondary, fontFamily = AppFont, fontWeight = FontWeight.Bold,
             fontSize = 10.sp,
+            // One line, whatever room is left. The badge shares its row with the
+            // speaker pill, and a long player name on a narrow phone can leave it less
+            // width than "Navidrome" wants — an ellipsis there is a far better answer
+            // than the name wrapping the badge into two lines and pushing the pill.
+            maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis,
         )
     }
 }

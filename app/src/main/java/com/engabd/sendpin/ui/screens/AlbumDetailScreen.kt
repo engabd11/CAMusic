@@ -142,11 +142,14 @@ fun AlbumDetailScreen(
             MeltBackdrop(albumArt, intensity = 0.7f)
 
             Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars)) {
-                // Header
-                AlbumHeader(
-                    albumName = album?.name ?: name,
-                    albumArt = albumArt,
+                // Header. Download sits here rather than in the hero's action row —
+                // see [AlbumHero] for why that row is four chips and no more.
+                DetailHeader(
+                    title = album?.name ?: name,
                     onBack = onBack,
+                    downloaded = albumDownloaded,
+                    downloadLabel = "Download album",
+                    onDownload = if (viewModel.canDownload) viewModel::downloadAll else null,
                 )
 
                 // Body
@@ -169,8 +172,6 @@ fun AlbumDetailScreen(
                             onShuffle = viewModel::shuffleAll,
                             onAddToQueue = viewModel::addToQueue,
                             onArtistClick = onArtistClick,
-                            onDownload = if (viewModel.canDownload) viewModel::downloadAll else null,
-                            downloaded = albumDownloaded,
                             onFavorite = viewModel::toggleAlbumFavorite,
                             onAddToPlaylist = album?.let { a -> { libraryViewModel.openAddToPlaylist(a) } },
                         )
@@ -285,8 +286,28 @@ fun AlbumDetailScreen(
 
 // --- header ---------------------------------------------------------------
 
+/**
+ * The bar every detail screen wears: back, the name of the thing, and — where the
+ * library hands over files — taking it offline.
+ *
+ * Download is in the corner rather than among the hero's chips because it is the one
+ * action that only *some* libraries have. Left in the row it made the chip count
+ * asymmetric on Music Assistant (which streams, so there is no file to keep) and
+ * symmetric on Navidrome and Jellyfin, which moved the play disc off the screen's
+ * centre line depending on which library was selected. Up here the row is the same
+ * four chips everywhere, and the action that varies varies out of the way.
+ *
+ * [onDownload] is null on a library that streams, and the icon is simply absent —
+ * a greyed control that can never do anything is worse than no control.
+ */
 @Composable
-private fun AlbumHeader(albumName: String, albumArt: String?, onBack: () -> Unit) {
+internal fun DetailHeader(
+    title: String,
+    onBack: () -> Unit,
+    downloaded: Boolean = false,
+    downloadLabel: String = "Download",
+    onDownload: (() -> Unit)? = null,
+) {
     Row(
         Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -297,11 +318,20 @@ private fun AlbumHeader(albumName: String, albumArt: String?, onBack: () -> Unit
         )
         Spacer(Modifier.width(12.dp))
         Text(
-            albumName, color = TextPrimary, fontFamily = AppFont,
+            title, color = TextPrimary, fontFamily = AppFont,
             fontWeight = FontWeight.ExtraBold, fontSize = 18.sp,
             maxLines = 1, overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
+        onDownload?.let {
+            Spacer(Modifier.width(12.dp))
+            IconChip(
+                if (downloaded) Icons.Default.DownloadDone else Icons.Default.Download,
+                if (downloaded) "Downloaded" else downloadLabel,
+                active = downloaded,
+                onClick = it,
+            )
+        }
     }
 }
 
@@ -319,8 +349,6 @@ private fun AlbumHero(
     onShuffle: () -> Unit,
     onAddToQueue: () -> Unit,
     onArtistClick: (String, String) -> Unit = { _, _ -> },
-    onDownload: (() -> Unit)? = null,
-    downloaded: Boolean = false,
     onFavorite: () -> Unit = {},
     /** Null until the album has loaded — there is nothing to file before then. */
     onAddToPlaylist: (() -> Unit)? = null,
@@ -415,11 +443,13 @@ private fun AlbumHero(
         // behind the quiet ones.
         //
         // Two weighted halves rather than one evenly-spaced row, so Play is on the
-        // screen's centre line and not merely in the middle of the list. The chip
-        // count is not symmetric — download is Navidrome-only, because Music Assistant
-        // streams rather than handing over the file — and an evenly-spaced row would
-        // therefore push the disc off-centre on one backend and not the other, moving
-        // the most-used control when the library changed.
+        // screen's centre line and not merely in the middle of the list.
+        //
+        // Two chips a side, on every library. Download used to be the fifth, and it is
+        // Navidrome- and Jellyfin-only because Music Assistant streams rather than
+        // handing over the file — so the halves were 2/3 on one backend and 2/2 on the
+        // other, and the disc shifted when the library changed. It now lives in the
+        // header; see [DetailHeader].
         Spacer(Modifier.height(20.dp))
         Row(
             Modifier.fillMaxWidth(),
@@ -461,15 +491,6 @@ private fun AlbumHero(
                     if (album?.favorite == true) "Remove from favourites" else "Add to favourites",
                     onClick = onFavorite,
                 )
-                // Offline. Navidrome only — Music Assistant streams rather than handing
-                // over the file, so there is nothing here to take with you.
-                onDownload?.let {
-                    IconChip(
-                        if (downloaded) Icons.Default.DownloadDone else Icons.Default.Download,
-                        if (downloaded) "Downloaded" else "Download album",
-                        onClick = it,
-                    )
-                }
             }
         }
     }

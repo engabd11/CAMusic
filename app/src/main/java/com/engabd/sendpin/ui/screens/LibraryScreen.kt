@@ -136,7 +136,28 @@ fun LibraryScreen(
     var actionsFor by remember { mutableStateOf<MaItem?>(null) }
 
     LaunchedEffect(Unit) { viewModel.toast.collect { snackbar.showSnackbar(it) } }
-    BackHandler(enabled = depth > 0 || searchOpen) { viewModel.back() }
+
+    /**
+     * Whether the search field currently holds focus — i.e. whether the keyboard is up
+     * because of it.
+     *
+     * Back means two different things while typing, and the screen was only handling
+     * one of them. Putting the keyboard away is a back press that reaches the app
+     * (the IME's dismiss chevron sends one, and under the predictive-back dispatcher
+     * it is not always swallowed on the way), and this screen answered it with
+     * [LibraryViewModel.back], which drops the search — including `_query`, so the
+     * text that had just been typed vanished with the keyboard.
+     *
+     * One handler decides, rather than two racing on registration order: with the
+     * field focused, back only takes the focus away, which is what puts the keyboard
+     * down and leaves the query and its results exactly where they were. Only once
+     * the keyboard is gone does back mean "leave this search" or "go up a level".
+     */
+    var searchFocused by remember { mutableStateOf(false) }
+    val focus = LocalFocusManager.current
+    BackHandler(enabled = searchFocused || depth > 0 || searchOpen) {
+        if (searchFocused) focus.clearFocus() else viewModel.back()
+    }
 
     Box(Modifier.fillMaxSize().background(Ink)) {
         Bloom(palette.swatch(0), 520.dp, (-120).dp, (-260).dp, 0.30f)
@@ -153,6 +174,7 @@ fun LibraryScreen(
                 onSearch = viewModel::doSearch,
                 onSonicSearch = viewModel::sonicSearch,
                 onClearSearch = viewModel::clearSearch,
+                onSearchFocus = { searchFocused = it },
                 refreshing = refreshing,
                 // Only offer it once there is a library to re-read; on the connect
                 // form it would just be a button that does nothing.
@@ -317,6 +339,9 @@ private fun Browse(
     // Downloading a Navidrome album one row at a time was never a real answer, so
     // the whole list is one tap from disk.
     val downloadable = remember(tracks) { tracks.filter { it.provider == "subsonic" } }
+    // A list that holds more than one kind of thing, split into its kinds. Empty for
+    // the ordinary node, which holds one — see [typedGroups].
+    val groups = remember(node.items) { typedGroups(node.items) }
 
     LazyVerticalGrid(
         columns = GridCells.Fixed(gridCols),
@@ -421,6 +446,25 @@ private fun Browse(
 
         if (node.items.isEmpty()) {
             item(span = { full(gridCols) }) { if (inPlaylists) Unit else SearchEmptyState() }
+            return@LazyVerticalGrid
+        }
+
+        // A mixed list — Starred, chiefly — reads as sections rather than as one run
+        // of rows. See [typedGroups].
+        if (groups.isNotEmpty()) {
+            groups.forEach { (title, list) ->
+                typedSection(
+                    title = title,
+                    list = list,
+                    viewModel = viewModel,
+                    rows = rows,
+                    onAlbumClick = onAlbumClick,
+                    onArtistClick = onArtistClick,
+                    onPlaylistClick = onPlaylistClick,
+                    onLongPress = onLongPress,
+                    gridCols = gridCols,
+                )
+            }
             return@LazyVerticalGrid
         }
 
@@ -554,6 +598,121 @@ private fun androidx.compose.foundation.lazy.grid.LazyGridScope.searchSection(
             else -> null
         }
         ItemRow(entry, viewModel, rows.of(entry), click, onLongPress)
+    }
+}
+
+/** Media types that get a section of their own, in the order they are shown. */
+private val TypeSections = listOf(
+    "artist" to "Artists",
+    "album" to "Albums",
+    "playlist" to "Playlists",
+    "podcast" to "Podcasts",
+    "audiobook" to "Audiobooks",
+    "radio" to "Radio stations",
+    "track" to "Tracks",
+)
+
+/**
+ * The sections a mixed list should be shown as, or empty when it isn't one.
+ *
+ * Starred is the node this exists for. It is the only browse node that genuinely
+ * holds several kinds of thing at once — the server answers with the artists, the
+ * albums, the playlists and the tracks the user has starred — and it arrived as one
+ * undifferentiated run of rows, in which an album and a song looked alike and only
+ * the subtitle hinted otherwise. Worse, the "Play all N tracks" bar above it counted
+ * the tracks, which is what it plays, while the list underneath was mostly albums —
+ * so the number read as wrong against what was on screen. Split into sections, every
+ * count is a count of what is under it.
+ *
+ * Empty for the ordinary node — an album's tracks, an artist's albums — which holds
+ * exactly one kind and is better as the flat list it already is. Empty too for a mix
+ * containing a type with no section of its own, because a heading called "Other" says
+ * less than the plain row it would replace.
+ */
+internal fun typedGroups(items: List<MaItem>): List<Pair<String, List<MaItem>>> {
+    if (items.size < 2) return emptyList()
+    val byType = items.groupBy { it.mediaType }
+    if (byType.size < 2) return emptyList()
+    if (byType.keys.any { type -> TypeSections.none { it.first == type } }) return emptyList()
+    return TypeSections.mapNotNull { (type, title) ->
+        byType[type]?.takeIf { it.isNotEmpty() }?.let { title to it }
+    }
+}
+
+/**
+ * One kind of thing, under its own heading.
+ *
+ * Covers where the section is covers — albums and playlists are a wall of art in
+ * their own right — and rows everywhere else, which is the same rule the flat list
+ * uses, applied per section instead of to the mixture. The play-all bar rides with
+ * the tracks, because tracks are the only thing in a mixed list it can act on and
+ * putting it at the top of the whole node is what made its count read as wrong.
+ */
+private fun androidx.compose.foundation.lazy.grid.LazyGridScope.typedSection(
+    title: String,
+    list: List<MaItem>,
+    viewModel: LibraryViewModel,
+    rows: RowState,
+    onAlbumClick: (MaItem) -> Unit,
+    onArtistClick: (MaItem) -> Unit,
+    onPlaylistClick: (MaItem) -> Unit,
+    onLongPress: (MaItem) -> Unit,
+    gridCols: Int,
+) {
+    if (list.isEmpty()) return
+    val section = "g_$title"
+    item(key = "ghdr_$title", span = { full(gridCols) }, contentType = { "header" }) {
+        LibraryShelf("$title (${list.size})")
+    }
+
+    val playable = list.filter { it.playable && it.mediaType == "track" }
+    if (playable.size > 1) {
+        val downloadable = playable.filter { it.provider == "subsonic" }
+        item(key = "gplayall_$title", span = { full(gridCols) }, contentType = { "playall" }) {
+            PlayAllBar(
+                count = playable.size,
+                onPlayAll = { viewModel.playAll(playable) },
+                onDownloadAll = if (downloadable.isEmpty()) null
+                else ({ viewModel.downloadAll(downloadable) }),
+            )
+        }
+    }
+
+    // Every item in a section shares a type, so the type decides — and art is
+    // required, because a wall of empty tiles says less than a list of names.
+    val asCovers = list.first().mediaType in ArtfulTypes &&
+        list.count { it.image != null } >= list.size / 2
+    if (asCovers) {
+        itemsIndexed(
+            list,
+            key = { i, entry -> itemKey(section, i, entry) },
+            contentType = { _, _ -> "cover" },
+            span = { _, _ -> GridItemSpan(2) },
+        ) { _, entry ->
+            CoverTile(entry, onLongPress = { onLongPress(entry) }) {
+                when (entry.mediaType) {
+                    "album" -> onAlbumClick(entry)
+                    "artist" -> onArtistClick(entry)
+                    "playlist" -> onPlaylistClick(entry)
+                    else -> viewModel.open(entry)
+                }
+            }
+        }
+    } else {
+        itemsIndexed(
+            list,
+            key = { i, entry -> itemKey(section, i, entry) },
+            contentType = { _, _ -> "row" },
+            span = { _, _ -> full(gridCols) },
+        ) { _, entry ->
+            val click: (() -> Unit)? = when (entry.mediaType) {
+                "album" -> { { onAlbumClick(entry) } }
+                "artist" -> { { onArtistClick(entry) } }
+                "playlist" -> { { onPlaylistClick(entry) } }
+                else -> null
+            }
+            ItemRow(entry, viewModel, rows.of(entry), click, onLongPress)
+        }
     }
 }
 

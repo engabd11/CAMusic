@@ -273,13 +273,6 @@ fun NowPlayingOverlay(
             // Album wash — always present, dimmed when idle.
             MeltBackdrop(st.artworkUrl, intensity = if (st.idle) 0.5f else 1f)
 
-            // Source badge at the top-right corner — MA, Navidrome, Offline, or the
-            // streaming provider the track came from. Never blank: see State.source.
-            SourceBadge(
-                source = st.source,
-                modifier = Modifier.align(Alignment.TopEnd).padding(top = 48.dp, end = 16.dp),
-            )
-
             Column(
                 Modifier
                     .fillMaxSize()
@@ -307,6 +300,9 @@ fun NowPlayingOverlay(
                     groupSize = st.groupSize,
                     localSession = st.isLocalSession,
                     onTap = { if (st.isLocalSession) sheets.device = true else sheets.speakers = true },
+                    // Where the playback is coming from, on the speaker pill's own
+                    // line — see the note on TopBar.
+                    source = st.source,
                 )
 
                 Spacer(Modifier.height(4.dp))
@@ -328,12 +324,18 @@ fun NowPlayingOverlay(
                             .alpha(if (st.idle) 0.55f else 1f),
                         glowAlpha = if (st.idle) 0.18f else 0.45f,
                         placeholder = Icons.AutoMirrored.Filled.QueueMusic,
-                        // The far end of the flight from the mini bar. Only while the
-                        // cover is actually showing art: with the lyrics pane up this
-                        // branch is not composed at all, so the key is simply absent
-                        // and the bar's thumbnail cross-fades as it did before rather
-                        // than flying to a slot that isn't there.
-                        sharedArtKey = NowPlayingArtKey,
+                        // No shared-element flight between the mini bar and this cover,
+                        // deliberately. A shared element is drawn in the transition
+                        // layout's own overlay, above and outside the composable it
+                        // came from — so while the player slid up or down under the
+                        // finger, the artwork was travelling on a separate spring, in
+                        // separate coordinates, at a separate speed. It read as the
+                        // cover coming *unstuck* from the player carrying it.
+                        //
+                        // Without the key the art is an ordinary child of the sliding
+                        // Box: one surface, one movement, nothing to fall out of step.
+                        // The bar's thumbnail simply cross-fades, which is what a
+                        // control that is being replaced should do.
                     )
                 }
 
@@ -475,11 +477,7 @@ fun MiniPlayerBar(
                         model = st.artworkUrl,
                         contentDescription = null,
                         contentScale = androidx.compose.ui.layout.ContentScale.Crop,
-                        // The near end of the flight into the expanded cover. A no-op
-                        // in the tab layout, where this bar is never composed, and a
-                        // no-op in any preview — `sharedArt` returns the receiver
-                        // unchanged when either scope is missing.
-                        modifier = Modifier.fillMaxSize().sharedArt(NowPlayingArtKey),
+                        modifier = Modifier.fillMaxSize(),
                     )
                 } else {
                     Icon(Icons.AutoMirrored.Filled.QueueMusic, null, tint = TextMuted, modifier = Modifier.size(18.dp))

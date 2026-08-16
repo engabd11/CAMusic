@@ -20,36 +20,23 @@ import androidx.compose.ui.Modifier
  * intermediate call — the library grid tile and the album hero are several
  * levels apart and neither knows about the other.
  *
- * A NavHost destination is not the only source of an [AnimatedVisibilityScope],
- * and Now Playing is the reason: in the overlay layout it is not a destination
- * at all, it is a branch in `App.kt`'s bottom chrome. Anything that can supply
- * an `AnimatedVisibilityScope` will do, and `AnimatedVisibility`'s content
- * lambda receiver *is* one — which is how the mini bar and the expanded cover
- * each get theirs. See `App.kt`.
- *
  * Both default to `null` so that a preview, a sheet, or any other context
  * without shared transition support simply no-ops — the modifier returns `this`
  * unchanged and the image draws normally.
+ *
+ * ## What is deliberately *not* shared
+ *
+ * The now-playing cover. In the overlay layout the mini bar and the expanded
+ * player are two ends of an obvious flight, and it was one — until the player
+ * moved. A shared element is drawn in the transition layout's own overlay,
+ * outside the composable it came from, on its own spring: while the player slid
+ * under the finger the artwork travelled separately, and the cover read as
+ * coming unstuck from the surface carrying it. It is an ordinary child of the
+ * sliding player now, and the bar's thumbnail cross-fades. See
+ * `NowPlayingOverlay`.
  */
 val LocalSharedTransitionScope = compositionLocalOf<SharedTransitionScope?> { null }
 val LocalNavAnimatedScope = compositionLocalOf<AnimatedVisibilityScope?> { null }
-
-/**
- * The shared-element key for the now-playing cover.
- *
- * A **constant**, not `art-<itemId>-<provider>` like the library grid uses, and
- * that is deliberate. In the overlay layout the mini bar is on screen at the
- * same time as the library grid, so an item-keyed mini bar would collide with
- * the grid tile of whatever is currently playing whenever that album happens to
- * be visible — two live shared elements claiming one key, which Compose treats
- * as an error and resolves arbitrarily.
- *
- * The mini bar and the expanded cover always show the same artwork as each
- * other, so they need no item identity to agree on: one key that means "the
- * now-playing cover, wherever it currently lives" is exactly the relationship
- * being animated, and it cannot collide with the per-item keys.
- */
-const val NowPlayingArtKey = "now-playing-art"
 
 /**
  * Apply a shared element transition to an image (album cover, artist art).

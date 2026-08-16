@@ -22,6 +22,7 @@ import coil.request.SuccessResult
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.data.Crypto
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -31,6 +32,7 @@ import kotlin.math.min
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -352,6 +354,77 @@ class DirectLightSync(
     /** Error state, surfaced to the UI. */
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
+
+    // ── Entertainment areas ───────────────────────────────────────────────
+    //
+    // The bridge's list of entertainment areas, held here rather than fetched by
+    // the Light Sync screen.
+    //
+    // The screen used to read them in a `LaunchedEffect` over screen-local state, and
+    // a tab is a NavHost destination whose state does not survive being left — so
+    // every visit to the tab emptied the list, showed a spinner and re-queried the
+    // bridge over the network, which looked like the areas being rediscovered each
+    // time. Nothing about them changes while the app runs unless the bridge itself
+    // is re-paired, so they are read once at startup and again only when the bridge
+    // credentials change. [refreshEntertainmentConfigs] is there for the one case
+    // where a re-read is genuinely what the user asked for.
+
+    private val _entertainmentConfigs = MutableStateFlow<List<EntertainmentConfig>>(emptyList())
+    val entertainmentConfigs: StateFlow<List<EntertainmentConfig>> = _entertainmentConfigs.asStateFlow()
+
+    private val _configsLoading = MutableStateFlow(false)
+    val configsLoading: StateFlow<Boolean> = _configsLoading.asStateFlow()
+
+    private val _configsError = MutableStateFlow<String?>(null)
+    val configsError: StateFlow<String?> = _configsError.asStateFlow()
+
+    /** The one in-flight read, so a forced refresh cannot stack two. */
+    private var configsJob: Job? = null
+
+    /**
+     * Re-read the bridge's entertainment areas.
+     *
+     * Called for you when the bridge address or key changes; call it by hand only
+     * when the user has asked for a re-read (the retry on the Light Sync screen).
+     */
+    fun refreshEntertainmentConfigs() {
+        scope.launch {
+            loadEntertainmentConfigs(
+                host = settings.hueBridgeIp.first(),
+                appKey = settings.hueAppKey.first(),
+            )
+        }
+    }
+
+    private suspend fun loadEntertainmentConfigs(host: String, appKey: String) {
+        configsJob?.cancelAndJoin()
+        if (host.isBlank() || appKey.isBlank()) {
+            _entertainmentConfigs.value = emptyList()
+            _configsError.value = null
+            _configsLoading.value = false
+            return
+        }
+        configsJob = scope.launch {
+            _configsLoading.value = true
+            _configsError.value = null
+            try {
+                val configs = bridgeClient.getEntertainmentConfigs(host, appKey)
+                _entertainmentConfigs.value = configs
+                // If an area is already streaming, default to it so opening the tab
+                // shows the live room rather than the first area in the list. Only
+                // when the stored choice is blank or not itself streaming — never
+                // over a user's deliberate selection of an inactive area.
+                val storedId = settings.hueEntertainmentConfigId.first()
+                val stored = configs.find { it.id == storedId }
+                if (stored == null || !stored.isStreaming) {
+                    configs.firstOrNull { it.isStreaming }?.let { settings.setHueConfigId(it.id) }
+                }
+            } catch (e: Exception) {
+                _configsError.value = e.message ?: "Could not reach the bridge"
+            }
+            _configsLoading.value = false
+        }
+    }
 
     /** Current tunables applied to the engine. */
     @Volatile private var activeTunables: Map<String, Float> = emptyMap()
@@ -1182,6 +1255,13 @@ class DirectLightSync(
         }
         scope.launch {
             settings.hueBridgeId.collect { pairedBridgeId = it }
+        }
+        // The bridge's entertainment areas: once at startup, and again only when the
+        // bridge this app is paired with actually changes. See the fields above.
+        scope.launch {
+            combine(settings.hueBridgeIp, settings.hueAppKey) { ip, key -> ip to key }
+                .distinctUntilChanged()
+                .collect { (ip, key) -> loadEntertainmentConfigs(ip, key) }
         }
         scope.launch {
             settings.lightSyncAutoLevels.collect { wires ->

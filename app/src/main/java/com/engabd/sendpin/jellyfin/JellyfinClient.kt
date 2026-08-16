@@ -509,11 +509,18 @@ class JellyfinClient(
 
     suspend fun favorites(): MaSearchResults {
         val all = items(filters = "IsFavorite", limit = 500)
+        // Playlists are a second request because they are not one of [MUSIC_TYPES] and
+        // do not live under the music library — the same reason [playlists] asks
+        // separately and with `ignoreLibrary`. Best-effort: a server that refuses the
+        // query still has favourite artists, albums and tracks worth showing.
+        val favouritePlaylists = runCatching {
+            items(types = "Playlist", filters = "IsFavorite", ignoreLibrary = true)
+        }.getOrDefault(emptyList())
         return MaSearchResults(
             artists = all.filter { it.mediaType == "artist" },
             albums = all.filter { it.mediaType == "album" },
             tracks = all.filter { it.mediaType == "track" },
-            playlists = emptyList(),
+            playlists = favouritePlaylists,
         )
     }
 

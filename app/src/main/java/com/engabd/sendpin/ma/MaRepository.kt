@@ -137,6 +137,34 @@ class MaRepository(
         return all
     }
 
+    /**
+     * Everything starred, per media type.
+     *
+     * `favorite = true` is a filter on the same `library_items` command every browse
+     * already uses — `music/tracks/library_items` and friends — so the Starred
+     * category costs one call per type and needs nothing new on the server side. The
+     * two shelf loaders below are the same query with a shelf-sized limit.
+     */
+    suspend fun favoriteTracks(limit: Int = 200) =
+        MaParse.items(
+            api.sendCommand(
+                "music/tracks/library_items",
+                libraryArgs(0, limit, favorite = true),
+                timeoutMs = LIBRARY_TIMEOUT_MS,
+            ),
+            serverUrl,
+        )
+
+    suspend fun favoritePlaylists(limit: Int = 100) =
+        MaParse.items(
+            api.sendCommand(
+                "music/playlists/library_items",
+                libraryArgs(0, limit, favorite = true),
+                timeoutMs = LIBRARY_TIMEOUT_MS,
+            ),
+            serverUrl,
+        )
+
     /** Feeds the library's "Favourite albums" shelf. */
     suspend fun favoriteAlbums(limit: Int = 12, orderBy: String? = null) =
         MaParse.items(

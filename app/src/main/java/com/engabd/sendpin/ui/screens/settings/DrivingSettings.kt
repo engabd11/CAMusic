@@ -41,6 +41,8 @@ internal fun DrivingCard(settings: AppSettings, accent: Color, scope: CoroutineS
     val enabled by settings.drivingEnabled.collectAsState(initial = false)
     val mechanism by settings.drivingMechanism.collectAsState(initial = AppSettings.DRIVING_PIP)
     val carName by settings.drivingCarName.collectAsState(initial = "")
+    // The address is what actually identifies the car — see the picker below.
+    val carAddress by settings.drivingCarAddress.collectAsState(initial = "")
 
     // Re-read on every recomposition rather than remembered: both of these are
     // granted in a *different app* — a permission dialog and a Settings screen — so
@@ -93,10 +95,25 @@ internal fun DrivingCard(settings: AppSettings, accent: Color, scope: CoroutineS
                 "Which of your paired devices is the car? Connecting to it turns the controls on; " +
                     "disconnecting turns them off.",
             )
-            SegmentedToggle(
+            // A dropdown, not the segmented row this used to be. A phone that has been
+            // in use for a while is paired with headphones, a watch, a speaker, a
+            // previous car and a friend's stereo — and a segmented row gives each of
+            // them an equal share of one screen width, so with more than about three
+            // the names are unreadable and the ones past the edge cannot be tapped at
+            // all. Every paired device is in this list, whatever the count.
+            //
+            // Matched on the *address* rather than the name: two devices can share a
+            // name, and a car stereo's name is whatever its manufacturer put in
+            // firmware. The name is still stored alongside, because that is what the
+            // overlay says when it appears.
+            DropdownPicker(
                 options = bonded.map { it.second },
-                selectedIndex = bonded.indexOfFirst { it.second == carName }.coerceAtLeast(-1),
-                modifier = Modifier.fillMaxWidth(),
+                subtitles = bonded.map { it.first },
+                selectedIndex = bonded.indexOfFirst { it.first == carAddress }
+                    .takeIf { it >= 0 }
+                    ?: bonded.indexOfFirst { it.second == carName },
+                accent = accent,
+                placeholder = "Pick your car",
             ) { i ->
                 val (address, name) = bonded[i]
                 scope.launch { settings.setDrivingCar(address, name) }
@@ -104,6 +121,7 @@ internal fun DrivingCard(settings: AppSettings, accent: Color, scope: CoroutineS
             if (carName.isBlank()) {
                 Note("Nothing picked yet — the Quick Settings tile still works in the meantime.")
             }
+            Note("${bonded.size} paired ${if (bonded.size == 1) "device" else "devices"}.")
         }
 
         CardDivider()

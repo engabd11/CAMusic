@@ -24,6 +24,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -61,6 +62,8 @@ internal fun Header(
     onSearch: (String) -> Unit,
     onSonicSearch: (String) -> Unit,
     onClearSearch: () -> Unit,
+    /** Whether the search field holds focus — the screen's back handler needs to know. */
+    onSearchFocus: (Boolean) -> Unit = {},
     refreshing: Boolean = false,
     onRefresh: (() -> Unit)? = null,
     searching: Boolean = false,
@@ -96,7 +99,7 @@ internal fun Header(
             }
         }
         Spacer(Modifier.height(12.dp))
-        SearchField(query, onQuery, onSearch, onClearSearch, searching)
+        SearchField(query, onQuery, onSearch, onClearSearch, searching, onSearchFocus)
         // Sonic search: the same box, read as a description of a *sound* rather
         // than a name. Finding music belongs in the library, not behind the
         // player's queue button.
@@ -179,6 +182,7 @@ private fun SearchField(
     onSearch: (String) -> Unit,
     onClear: () -> Unit,
     searching: Boolean = false,
+    onFocus: (Boolean) -> Unit = {},
 ) {
     val focus = LocalFocusManager.current
     Row(
@@ -222,8 +226,16 @@ private fun SearchField(
                 cursorBrush = SolidColor(LocalAccent.current),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(onSearch = { onSearch(query); focus.clearFocus() }),
-                modifier = Modifier.fillMaxWidth(),
+                // Reported upward, not acted on here: the screen's back handler is what
+                // needs it, so that putting the keyboard away stops short of leaving
+                // the search and taking the typed query with it. Also cleared on
+                // dispose — a field that leaves composition while focused would
+                // otherwise leave the screen believing the keyboard is still up.
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onFocusChanged { onFocus(it.isFocused) },
             )
+            DisposableEffect(Unit) { onDispose { onFocus(false) } }
         }
         if (query.isNotEmpty()) {
             Icon(
