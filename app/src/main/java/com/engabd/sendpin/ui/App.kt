@@ -425,14 +425,23 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
             LocalMiniBarInset provides if (isOverlay) MiniBarHeight else 0.dp,
             LocalBottomChrome provides bottomChrome,
         ) {
-            Box(Modifier.fillMaxSize().background(Ink)) {
-                val tabs = if (isOverlay) OverlayTabs else TabTabs
-                val startDest = if (isOverlay) "library" else "now_playing"
+            val tabs = if (isOverlay) OverlayTabs else TabTabs
+            val startDest = if (isOverlay) "library" else "now_playing"
 
-                SharedTransitionLayout {
-                    CompositionLocalProvider(
-                        LocalSharedTransitionScope provides this,
-                    ) {
+            // The shared-transition layout wraps *everything*, not just the NavHost.
+            //
+            // It used to wrap only the NavHost, which was enough while every shared
+            // element lived in a destination — the library tile and the album hero.
+            // The now-playing cover does not: in the overlay layout the mini bar is
+            // bottom chrome and the expanded player is a branch beside the NavHost,
+            // so both ends of that flight sat outside the layout that would have
+            // animated them. Two elements can only be shared inside one
+            // SharedTransitionLayout, so it moved out here.
+            SharedTransitionLayout(Modifier.fillMaxSize()) {
+                CompositionLocalProvider(
+                    LocalSharedTransitionScope provides this,
+                ) {
+                    Box(Modifier.fillMaxSize().background(Ink)) {
                         NavHost(
                     navController = navController,
                     startDestination = startDest,
@@ -614,8 +623,6 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                         )
                     }
                     } // NavHost
-                    } // CompositionLocalProvider
-                } // SharedTransitionLayout
 
                 // In overlay mode, the mini player bar sits above the nav bar.
                 // Tapping it expands the full-screen cover.
@@ -628,12 +635,34 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                         // Mini player bar above the nav bar. Pinned to [MiniBarHeight]
                         // rather than measured, so the space `navBarInset()` reserves
                         // for it can't drift out of step with what it actually takes.
+                        //
+                        // The height lives on this Box rather than inside the
+                        // AnimatedVisibility below, so the row keeps its space while
+                        // the bar itself is away. Letting it collapse would drop the
+                        // nav bar 64dp the instant the cover opened and lift it again
+                        // on the way out — under a full-screen overlay, invisibly,
+                        // right up until the last frame of the collapse.
                         Box(
                             Modifier
                                 .height(MiniBarHeight)
                                 .padding(horizontal = 8.dp, vertical = 4.dp),
                         ) {
-                            MiniPlayerBar(viewModel = nowPlayingVm, onExpand = { overlayExpanded = true })
+                            // Wrapped purely to supply an AnimatedVisibilityScope —
+                            // the near end of the cover's flight. EnterTransition.None
+                            // / ExitTransition.None because the bar has no entrance of
+                            // its own to play: it is either there or the cover is over
+                            // it, and the only thing that should move between those two
+                            // states is the artwork.
+                            androidx.compose.animation.AnimatedVisibility(
+                                visible = !overlayExpanded,
+                                enter = EnterTransition.None,
+                                exit = ExitTransition.None,
+                                modifier = Modifier.fillMaxSize(),
+                            ) {
+                                CompositionLocalProvider(LocalNavAnimatedScope provides this) {
+                                    MiniPlayerBar(viewModel = nowPlayingVm, onExpand = { overlayExpanded = true })
+                                }
+                            }
                         }
                         SendspinNavBar(
                             tabs = tabs,
@@ -647,21 +676,46 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                     }
 
                     // The full-screen cover overlay — slides over everything when expanded.
-                    if (overlayExpanded) {
-                        // Back is handled *inside* the overlay, not here. It used to be
-                        // `BackHandler { overlayExpanded = false }`, which drops the
-                        // composable on the spot: the cover vanished between two frames
-                        // while the swipe-down of the same gesture animated over ~240ms.
-                        // The overlay owns the offset that animation runs on, so it is
-                        // the only place a back gesture can drive the same motion — see
-                        // its PredictiveBackHandler.
-                        NowPlayingOverlay(
-                            viewModel = nowPlayingVm,
-                            libraryViewModel = libraryVm,
-                            onBrowse = { overlayExpanded = false; go("library") },
-                            expanded = overlayExpanded,
-                            onCollapse = { overlayExpanded = false },
-                        )
+                    //
+                    // This was a bare `if (overlayExpanded)`, and that is precisely why
+                    // the cover could not fly: `sharedArt` needs a
+                    // `LocalNavAnimatedScope`, an `AnimatedVisibilityScope` that a
+                    // NavHost `composable {}` block supplies — and Now Playing is not a
+                    // destination in this layout. `AnimatedVisibility`'s content lambda
+                    // receiver *is* one, so wrapping the branch supplies the missing
+                    // half without promoting the overlay to a nav destination and
+                    // taking on the back-stack and mini-bar semantics that would come
+                    // with it.
+                    //
+                    // None/None because the overlay already owns its own enter and exit
+                    // through `dragPx`/`settleTo` — this wrapper is here for the scope,
+                    // not for animation. Note what that does *not* buy: with
+                    // `ExitTransition.None` there is no exit for the child to be held
+                    // through, so the `onCollapse()`-after-settle gate inside
+                    // `NowPlayingOverlay` still earns its keep and stays. See the note
+                    // on its drag-end branch.
+                    androidx.compose.animation.AnimatedVisibility(
+                        visible = overlayExpanded,
+                        enter = EnterTransition.None,
+                        exit = ExitTransition.None,
+                        modifier = Modifier.fillMaxSize(),
+                    ) {
+                        CompositionLocalProvider(LocalNavAnimatedScope provides this) {
+                            // Back is handled *inside* the overlay, not here. It used to be
+                            // `BackHandler { overlayExpanded = false }`, which drops the
+                            // composable on the spot: the cover vanished between two frames
+                            // while the swipe-down of the same gesture animated over ~240ms.
+                            // The overlay owns the offset that animation runs on, so it is
+                            // the only place a back gesture can drive the same motion — see
+                            // its PredictiveBackHandler.
+                            NowPlayingOverlay(
+                                viewModel = nowPlayingVm,
+                                libraryViewModel = libraryVm,
+                                onBrowse = { overlayExpanded = false; go("library") },
+                                expanded = overlayExpanded,
+                                onCollapse = { overlayExpanded = false },
+                            )
+                        }
                     }
                 } else {
                     BottomChrome(bottomChrome) {
@@ -676,7 +730,9 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                         )
                     }
                 }
-            }
+                    } // Box
+                } // CompositionLocalProvider
+            } // SharedTransitionLayout
         }
     }
 }
