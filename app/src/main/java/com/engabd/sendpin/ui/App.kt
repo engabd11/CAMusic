@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavGraph.Companion.findStartDestination
+import androidx.navigation.NavGraphBuilder
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -55,6 +56,7 @@ import com.engabd.sendpin.ui.design.LocalMiniBarInset
 import com.engabd.sendpin.ui.design.Motion
 import com.engabd.sendpin.ui.design.MiniBarHeight
 import com.engabd.sendpin.ui.design.LocalPalette
+import com.engabd.sendpin.ui.design.ProvideBackdrop
 import androidx.compose.material3.windowsizeclass.WindowSizeClass
 import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
 import androidx.compose.animation.SharedTransitionLayout
@@ -118,6 +120,47 @@ private val popIn: AnimatedContentTransitionScope<NavBackStackEntry>.() -> Enter
 }
 private val popOut: AnimatedContentTransitionScope<NavBackStackEntry>.() -> ExitTransition = {
     slideOutHorizontally(Motion.screenSlide()) { it } + fadeOut(Motion.effects())
+}
+
+/**
+ * A NavHost destination that owns its backdrop.
+ *
+ * Identical to [composable] but for the [ProvideBackdrop] around the content, and that
+ * is the whole of it: the blur behind every glass panel is sampled from a
+ * [androidx.compose.ui.graphics.layer.GraphicsLayer] that some screen has recorded its
+ * album wash into, and one layer for the whole app meant *any* screen's panels could
+ * sample *another* screen's wash. Two destinations are alive together for the length of
+ * a tab cross-fade, so leaving an album for Settings painted the album's colours
+ * through the settings cards until the album finished fading out — a screen with no
+ * artwork of its own briefly wearing the artwork of the one before it.
+ *
+ * A layer per destination cannot leak across one: a screen that records nothing has
+ * nothing to sample and falls back to the flat fill, which on a screen with no wash is
+ * the same picture. See `design/Backdrop.kt`.
+ *
+ * The [AnimatedContentScope] receiver is carried through, because destinations use it
+ * to publish [LocalNavAnimatedScope] for shared-element flights.
+ */
+private fun NavGraphBuilder.screen(
+    route: String,
+    arguments: List<androidx.navigation.NamedNavArgument> = emptyList(),
+    enterTransition: (AnimatedContentTransitionScope<NavBackStackEntry>.() -> EnterTransition?)? = null,
+    exitTransition: (AnimatedContentTransitionScope<NavBackStackEntry>.() -> ExitTransition?)? = null,
+    popEnterTransition: (AnimatedContentTransitionScope<NavBackStackEntry>.() -> EnterTransition?)? = enterTransition,
+    popExitTransition: (AnimatedContentTransitionScope<NavBackStackEntry>.() -> ExitTransition?)? = exitTransition,
+    content: @Composable androidx.compose.animation.AnimatedContentScope.(NavBackStackEntry) -> Unit,
+) {
+    composable(
+        route = route,
+        arguments = arguments,
+        enterTransition = enterTransition,
+        exitTransition = exitTransition,
+        popEnterTransition = popEnterTransition,
+        popExitTransition = popExitTransition,
+    ) { entry ->
+        val animated = this
+        ProvideBackdrop { with(animated) { content(entry) } }
+    }
 }
 
 /**
@@ -433,15 +476,12 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
             val tabs = if (isOverlay) OverlayTabs else TabTabs
             val startDest = if (isOverlay) "library" else "now_playing"
 
-            // The shared-transition layout wraps *everything*, not just the NavHost.
-            //
-            // It used to wrap only the NavHost, which was enough while every shared
-            // element lived in a destination — the library tile and the album hero.
-            // The now-playing cover does not: in the overlay layout the mini bar is
-            // bottom chrome and the expanded player is a branch beside the NavHost,
-            // so both ends of that flight sat outside the layout that would have
-            // animated them. Two elements can only be shared inside one
-            // SharedTransitionLayout, so it moved out here.
+            // The shared-transition layout wraps everything below, so any two ends of a
+            // flight are inside one of them — two elements can only be shared within a
+            // single SharedTransitionLayout. What actually flies is the library tile
+            // into the album hero; the now-playing cover deliberately does not, because
+            // it is carried by a player that moves under the finger. See
+            // `design/SharedTransition.kt`.
             SharedTransitionLayout(Modifier.fillMaxSize()) {
                 CompositionLocalProvider(
                     LocalSharedTransitionScope provides this,
@@ -451,15 +491,21 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                     navController = navController,
                     startDestination = startDest,
                     modifier = Modifier.fillMaxSize(),
-                    // Tabs cross-fade: they are siblings, and sliding between them
-                    // would imply an order the tab bar doesn't have. Pushing into a
-                    // detail screen slides, because that *is* a direction — see the
-                    // detail destinations below, which override these.
-                    enterTransition = { fadeIn(Motion.effects()) },
-                    exitTransition = { fadeOut(Motion.effects()) },
+                    // Tabs fade: they are siblings, and sliding between them would
+                    // imply an order the tab bar doesn't have. Pushing into a detail
+                    // screen slides, because that *is* a direction — see the detail
+                    // destinations below, which override these.
+                    //
+                    // A fade *through*, not a cross-fade — the old screen leaves before
+                    // the new one arrives. Overlapping them meant the outgoing screen
+                    // showed through the incoming one, which is why leaving an album
+                    // for Settings put a ghost of the cover's colours behind the
+                    // settings cards for a moment. See [Motion.fadeThroughOut].
+                    enterTransition = { fadeIn(Motion.fadeThroughIn()) },
+                    exitTransition = { fadeOut(Motion.fadeThroughOut()) },
                 ) {
                     if (!isOverlay) {
-                        composable("now_playing") {
+                        screen("now_playing") {
                             NowPlayingScreen(
                                 viewModel = nowPlayingVm,
                                 libraryViewModel = libraryVm,
@@ -467,7 +513,7 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                             )
                         }
                     }
-                    composable("library") {
+                    screen("library") {
                         CompositionLocalProvider(LocalNavAnimatedScope provides this) {
                             val navToDetail: (String, MaItem) -> Unit = { route, item ->
                                 val n = android.net.Uri.encode(item.name)
@@ -483,7 +529,7 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                             )
                         }
                     }
-                    composable(
+                    screen(
                         route = "album/{itemId}/{provider}?name={name}&art={art}",
                         arguments = listOf(
                             navArgument("itemId") { type = NavType.StringType },
@@ -543,7 +589,7 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                             )
                         }
                     }
-                    composable(
+                    screen(
                         route = "artist/{itemId}/{provider}?name={name}&art={art}&byName={byName}",
                         arguments = listOf(
                             navArgument("itemId") { type = NavType.StringType },
@@ -584,7 +630,7 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                             },
                         )
                     }
-                    composable(
+                    screen(
                         route = "playlist/{itemId}/{provider}?name={name}&art={art}",
                         arguments = listOf(
                             navArgument("itemId") { type = NavType.StringType },
@@ -609,14 +655,14 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                             onBack = { navController.popBackStack() },
                         )
                     }
-                    composable("downloads") {
+                    screen("downloads") {
                         DownloadsScreen(
                             viewModel = libraryVm,
                             onBack = { navController.popBackStack() },
                         )
                     }
-                    composable("speakers") { SpeakersScreen(onBack = { navController.popBackStack() }) }
-                    composable("light_sync") {
+                    screen("speakers") { SpeakersScreen(onBack = { navController.popBackStack() }) }
+                    screen("light_sync") {
                         LightSyncScreen(
                             onBack = { navController.popBackStack() },
                             // Activity-scoped, not entry-scoped. The tab bar navigates
@@ -629,7 +675,7 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                             viewModel = lightSyncVm,
                         )
                     }
-                    composable("settings") {
+                    screen("settings") {
                         SettingsScreen(
                             viewModel = playerVm,
                             libraryViewModel = libraryVm,
@@ -668,21 +714,16 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                                 .height(MiniBarHeight)
                                 .padding(horizontal = 8.dp, vertical = 4.dp),
                         ) {
-                            // Wrapped purely to supply an AnimatedVisibilityScope —
-                            // the near end of the cover's flight. EnterTransition.None
-                            // / ExitTransition.None because the bar has no entrance of
-                            // its own to play: it is either there or the cover is over
-                            // it, and the only thing that should move between those two
-                            // states is the artwork.
+                            // EnterTransition.None / ExitTransition.None because the bar
+                            // has no entrance of its own to play: it is either there or
+                            // the cover is over it, and the cover owns that motion.
                             androidx.compose.animation.AnimatedVisibility(
                                 visible = !overlayExpanded,
                                 enter = EnterTransition.None,
                                 exit = ExitTransition.None,
                                 modifier = Modifier.fillMaxSize(),
                             ) {
-                                CompositionLocalProvider(LocalNavAnimatedScope provides this) {
-                                    MiniPlayerBar(viewModel = nowPlayingVm, onExpand = { overlayExpanded = true })
-                                }
+                                MiniPlayerBar(viewModel = nowPlayingVm, onExpand = { overlayExpanded = true })
                             }
                         }
                         SendspinNavBar(
@@ -698,30 +739,23 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
 
                     // The full-screen cover overlay — slides over everything when expanded.
                     //
-                    // This was a bare `if (overlayExpanded)`, and that is precisely why
-                    // the cover could not fly: `sharedArt` needs a
-                    // `LocalNavAnimatedScope`, an `AnimatedVisibilityScope` that a
-                    // NavHost `composable {}` block supplies — and Now Playing is not a
-                    // destination in this layout. `AnimatedVisibility`'s content lambda
-                    // receiver *is* one, so wrapping the branch supplies the missing
-                    // half without promoting the overlay to a nav destination and
-                    // taking on the back-stack and mini-bar semantics that would come
-                    // with it.
-                    //
-                    // None/None because the overlay already owns its own enter and exit
-                    // through `dragPx`/`settleTo` — this wrapper is here for the scope,
-                    // not for animation. Note what that does *not* buy: with
-                    // `ExitTransition.None` there is no exit for the child to be held
-                    // through, so the `onCollapse()`-after-settle gate inside
+                    // None/None because the overlay owns its own enter and exit through
+                    // `dragPx`/`settleTo`: one surface moving under the finger, which
+                    // is the whole point of this layout. Note what that does *not* buy:
+                    // with `ExitTransition.None` there is no exit for the child to be
+                    // held through, so the `onCollapse()`-after-settle gate inside
                     // `NowPlayingOverlay` still earns its keep and stays. See the note
                     // on its drag-end branch.
+                    //
+                    // The cover carries its own backdrop, so it gets its own recording
+                    // layer for the same reason the destinations below do.
                     androidx.compose.animation.AnimatedVisibility(
                         visible = overlayExpanded,
                         enter = EnterTransition.None,
                         exit = ExitTransition.None,
                         modifier = Modifier.fillMaxSize(),
                     ) {
-                        CompositionLocalProvider(LocalNavAnimatedScope provides this) {
+                        ProvideBackdrop {
                             // Back is handled *inside* the overlay, not here. It used to be
                             // `BackHandler { overlayExpanded = false }`, which drops the
                             // composable on the spot: the cover vanished between two frames

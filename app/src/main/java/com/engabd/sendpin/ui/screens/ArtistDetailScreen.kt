@@ -13,7 +13,6 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -180,23 +179,15 @@ fun ArtistDetailScreen(
             MeltBackdrop(artistArt, intensity = 0.5f)
 
             Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars)) {
-                // Header
-                Row(
-                    Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(
-                        Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = TextSecondary,
-                        modifier = Modifier.size(24.dp).clip(CircleShape).clickable(onClick = onBack),
-                    )
-                    Spacer(Modifier.width(12.dp))
-                    Text(
-                        artist?.name ?: name, color = TextPrimary, fontFamily = AppFont,
-                        fontWeight = FontWeight.ExtraBold, fontSize = 18.sp,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
-                    )
-                }
+                // Header. Download lives here rather than in the action row below —
+                // see [ArtistHero] for why the row is four chips and no more.
+                DetailHeader(
+                    title = artist?.name ?: name,
+                    onBack = onBack,
+                    downloaded = downloaded,
+                    downloadLabel = "Download discography",
+                    onDownload = if (viewModel.canDownload) viewModel::downloadAll else null,
+                )
 
                 LazyColumn(
                     modifier = Modifier.weight(1f).fillMaxWidth(),
@@ -208,9 +199,8 @@ fun ArtistDetailScreen(
                             artist = artist, artUrl = artistArt, albumCount = albums.size,
                             onPlayAll = viewModel::playAll,
                             onShuffle = viewModel::shuffleAll,
+                            onPlayNext = viewModel::playNext,
                             onAddToQueue = viewModel::addToQueue,
-                            onDownload = if (viewModel.canDownload) viewModel::downloadAll else null,
-                            downloaded = downloaded,
                             onFavorite = viewModel::toggleFavorite,
                         )
                     }
@@ -324,10 +314,8 @@ private fun ArtistHero(
     albumCount: Int,
     onPlayAll: () -> Unit = {},
     onShuffle: () -> Unit = {},
+    onPlayNext: () -> Unit = {},
     onAddToQueue: () -> Unit = {},
-    /** Null on Music Assistant, which streams rather than handing over the file. */
-    onDownload: (() -> Unit)? = null,
-    downloaded: Boolean = false,
     onFavorite: () -> Unit = {},
 ) {
     val accent = LocalAccent.current
@@ -376,28 +364,47 @@ private fun ArtistHero(
             )
         }
 
+        // Two chips, Play, two chips — the same weighted-halves row the album screen
+        // uses, and for the same reason: Play sits on the screen's centre line rather
+        // than merely in the middle of a list, so it does not move when the row's
+        // contents change. The count is fixed at four on every backend now that
+        // download has moved to the header; it used to be three on Music Assistant
+        // (which streams rather than handing over the file) and four elsewhere, so the
+        // disc was off-centre on one library and centred on the other.
         Spacer(Modifier.height(20.dp))
         Row(
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // Play in the middle, matching the album screen — see the note there.
-            IconChip(Icons.Default.Shuffle, "Shuffle", onClick = onShuffle)
-            IconChip(Icons.AutoMirrored.Filled.QueueMusic, "Add to queue", onClick = onAddToQueue)
+            Row(
+                Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconChip(Icons.Default.Shuffle, "Shuffle", onClick = onShuffle)
+                // Everything by this artist, straight after what is playing. The
+                // long-press sheet has offered this per album since it was written;
+                // the artist's whole catalogue had play, shuffle and queue-at-the-end
+                // and no way to say "next".
+                IconChip(Icons.Default.QueuePlayNext, "Play next", onClick = onPlayNext)
+            }
+
+            Spacer(Modifier.width(12.dp))
             PlayButton(playing = false, size = 56.dp, onClick = onPlayAll)
-            // Both backends can favourite an artist — MA takes the uri on
-            // `favorites/add_item`, Subsonic takes `artistId` on `star`.
-            IconChip(
-                if (artist?.favorite == true) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                if (artist?.favorite == true) "Remove from favourites" else "Add to favourites",
-                onClick = onFavorite,
-            )
-            // Every album this artist has, taken offline in one go.
-            onDownload?.let {
+            Spacer(Modifier.width(12.dp))
+
+            Row(
+                Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.Start),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconChip(Icons.AutoMirrored.Filled.QueueMusic, "Add to queue", onClick = onAddToQueue)
+                // Both backends can favourite an artist — MA takes the uri on
+                // `favorites/add_item`, Subsonic takes `artistId` on `star`.
                 IconChip(
-                    if (downloaded) Icons.Default.DownloadDone else Icons.Default.Download,
-                    if (downloaded) "Downloaded" else "Download discography",
-                    onClick = it,
+                    if (artist?.favorite == true) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                    if (artist?.favorite == true) "Remove from favourites" else "Add to favourites",
+                    onClick = onFavorite,
                 )
             }
         }

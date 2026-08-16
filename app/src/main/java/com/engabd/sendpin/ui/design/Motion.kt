@@ -2,9 +2,12 @@ package com.engabd.sendpin.ui.design
 
 import android.animation.ValueAnimator
 import androidx.compose.animation.core.FiniteAnimationSpec
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.VisibilityThreshold
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.compositionLocalOf
@@ -61,6 +64,40 @@ object Motion {
     /** Alpha and colour, for quick state flips. */
     fun <T> effectsFast(): FiniteAnimationSpec<T> =
         spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = 3800f)
+
+    /**
+     * Swapping one whole screen for a sibling — a tab change.
+     *
+     * A *fade through*, not a cross-fade, and the difference is the bug it fixes. On a
+     * cross-fade both screens are on screen at partial alpha for the whole transition,
+     * so whatever the outgoing one is painted with shows through the incoming one:
+     * leaving an album — a screen washed in that album's colours — for Settings put a
+     * ghost of the cover's palette behind the settings cards for the length of the
+     * fade. Every tab pair does it; the album screens are simply the ones colourful
+     * enough to notice.
+     *
+     * So the outgoing screen leaves *first*, over [FADE_THROUGH_OUT_MS], and the
+     * incoming one begins only once it has gone. The gap between them is the app's own
+     * background, which is what a screen change should reveal. Material calls this a
+     * fade-through and specifies exactly this split.
+     *
+     * Tweens rather than springs, uniquely in this file: the two halves have to be
+     * sequenced, and a delay is only meaningful against a known duration.
+     */
+    fun <T> fadeThroughOut(): FiniteAnimationSpec<T> =
+        tween(durationMillis = FADE_THROUGH_OUT_MS, easing = LinearEasing)
+
+    fun <T> fadeThroughIn(): FiniteAnimationSpec<T> = tween(
+        durationMillis = FADE_THROUGH_IN_MS,
+        delayMillis = FADE_THROUGH_OUT_MS,
+        easing = LinearOutSlowInEasing,
+    )
+
+    /** How long the outgoing screen takes to leave, and the incoming one waits. */
+    private const val FADE_THROUGH_OUT_MS = 90
+
+    /** How long the incoming screen takes to arrive, once it is alone. */
+    private const val FADE_THROUGH_IN_MS = 210
 
     /**
      * Spatial motion for a whole-screen slide.

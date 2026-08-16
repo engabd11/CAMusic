@@ -27,6 +27,8 @@ import com.engabd.sendpin.subsonic.SavedQueue
 import com.engabd.sendpin.subsonic.SubsonicClient
 import com.engabd.sendpin.subsonic.SubsonicError
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -506,15 +508,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             // than only from the legacy Navidrome keys. Those keys are only written
             // for Subsonic-speaking servers, so a Jellyfin-only install came back from
             // a restart with a blank address and never reconnected.
-            activeConfig?.takeIf { it.kind.playsLocally }?.let {
-                _navUrl.value = it.url
-                _navUser.value = it.username
-                _navPass.value = it.password
-                // Build a source from the stored config immediately so play actions
-                // that arrive before the probe finishes still get a valid stream URL.
-                // The connect below will authenticate/probe it and replace it if needed.
-                ensureSourceFor(it)
-            }
+            // A source is built from the stored config at the same time, so play
+            // actions arriving before the probe finishes still get a valid stream URL.
+            // The connect below authenticates/probes it and replaces it if needed.
+            activeConfig?.takeIf { it.kind.playsLocally }?.let { seedLocalFieldsFrom(it) }
             // Backend first, then booted: the settings collector below only acts
             // once booted, so this ordering keeps boot from racing it into two
             // connects for the same backend.
@@ -649,14 +646,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         activeConfig = config
         if (config.kind.playsLocally) {
             // Keep the legacy form fields in step: they are what the connect form
-            // shows and what `connect()` reads back.
-            _navUrl.value = config.url
-            _navUser.value = config.username
-            _navPass.value = config.password
-            // Build a source now so the library can render and play while the probe
-            // runs. `connect()` will authenticate/probe and swap in a fresh source
-            // if the credentials or token need refreshing.
-            ensureSourceFor(config)
+            // shows and what `connect()` reads back. A source is built at the same
+            // time, unprobed, so the library can render and play while the probe runs.
+            seedLocalFieldsFrom(config)
         } else {
             _maUrl.value = config.url
             _maUser.value = config.username
@@ -768,8 +760,42 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             source = null
             // With no server on file the connect form is the right answer, even if
             // there are downloads — the user has not set this backend up yet.
+            //
+            // "On file" means the *stored active server*, not the legacy address
+            // fields. Those mirror the first Subsonic-speaking server in the list and
+            // nothing else, by design — they back downloads and "play at original
+            // quality", which go to Navidrome from either backend — so on a Jellyfin
+            // library they are blank. Reading them alone is what made the first switch
+            // to Jellyfin land on an empty, permanently-connecting library that a
+            // restart fixed: boot seeds these fields from the active server (see
+            // `init`), and nothing else did. The two settings collectors that react to
+            // a library switch can arrive in either order, and the one that gets here
+            // first was reading fields the other had not filled in yet.
             if (_navUrl.value.isNotBlank()) connect()
+            else viewModelScope.launch {
+                val stored = settings.activeServer.first()?.takeIf { it.kind.playsLocally }
+                if (stored != null && _navUrl.value.isBlank() && _backend.value == Backend.SUBSONIC) {
+                    seedLocalFieldsFrom(stored)
+                    connect()
+                }
+            }
         }
+    }
+
+    /**
+     * Point the connect form — and the live [source] — at [config].
+     *
+     * The fields are what [connect] reads back, so they have to be in step with the
+     * active server before a connect is worth attempting. The source is built here
+     * too, unprobed, so a play started before the probe lands still has a valid
+     * stream URL to work with.
+     */
+    private fun seedLocalFieldsFrom(config: ServerConfig) {
+        activeConfig = config
+        _navUrl.value = config.url
+        _navUser.value = config.username
+        _navPass.value = config.password
+        ensureSourceFor(config)
     }
 
     fun setMaUrl(v: String) { _maUrl.value = v }
@@ -1935,6 +1961,38 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         }
         pushNode(title) { onPartial ->
             if (_backend.value == Backend.MA) {
+                // Starred is not a page of one media type, so it is answered ahead of
+                // the paging table below. Music Assistant has had the filter all
+                // along — `favorite = true` on the same `library_items` command every
+                // browse uses — and the category simply did not exist on this backend,
+                // so a starred library was reachable from Navidrome and Jellyfin and
+                // not from MA. Same four types, same order, same sectioned screen.
+                //
+                // Four calls in parallel: they are independent, and run in series the
+                // slowest one would decide how long the screen stayed empty. Each is
+                // allowed to fail on its own — a server that cannot answer for
+                // playlists should still show the starred albums.
+                if (id == "starred") {
+                    return@pushNode coroutineScope {
+                        val artists = async {
+                            // Not album-artists-only: this list is what the user
+                            // starred, and a featured artist they starred deliberately
+                            // is exactly as starred as a headliner.
+                            runCatching { maRepo.favoriteArtists(limit = 200, albumArtistsOnly = false) }
+                                .getOrDefault(emptyList())
+                        }
+                        val albums = async {
+                            runCatching { maRepo.favoriteAlbums(limit = 200) }.getOrDefault(emptyList())
+                        }
+                        val playlists = async {
+                            runCatching { maRepo.favoritePlaylists() }.getOrDefault(emptyList())
+                        }
+                        val tracks = async {
+                            runCatching { maRepo.favoriteTracks() }.getOrDefault(emptyList())
+                        }
+                        artists.await() + albums.await() + playlists.await() + tracks.await()
+                    }
+                }
                 // Paged, and published as the pages land: a large library used to be a
                 // single 5000-item request that simply timed out, showing an error
                 // instead of a library. Now the first 500 are on screen in a moment and
@@ -1962,7 +2020,13 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                     "newest" -> sc.recentlyAdded(200)
                     "playlists" -> sc.playlists()
                     "genres" -> sc.genres()
-                    "starred" -> sc.favorites().let { it.albums + it.artists + it.tracks }
+                    // Ordered by type, and the screen keeps them that way: a starred
+                    // list is the one browse node that genuinely mixes artists,
+                    // albums, playlists and tracks, and it used to arrive as one
+                    // undifferentiated run of rows. Playlists were dropped outright.
+                    "starred" -> sc.favorites().let {
+                        it.artists + it.albums + it.playlists + it.tracks
+                    }
                     "random" -> sc.randomSongs(100)
                     else -> emptyList()
                 }
@@ -2293,6 +2357,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             _backend.value == Backend.MA -> {
                 add(category("artists", "Artists")); add(category("albums", "Albums"))
                 add(category("tracks", "Tracks")); add(category("playlists", "Playlists"))
+                // Starred was a self-hosted-only category, for no reason other than
+                // that nobody had written the MA query — see [openCategory].
+                add(category("starred", "Starred"))
                 add(category("radios", "Radio stations")); add(category("podcasts", "Podcasts"))
             }
             else -> {

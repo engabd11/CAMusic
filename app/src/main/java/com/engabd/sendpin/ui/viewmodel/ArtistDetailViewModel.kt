@@ -371,6 +371,22 @@ class ArtistDetailViewModel(
         _toast.tryEmit("Shuffling ${ref.name}")
     }
 
+    /**
+     * Put everything by this artist straight after what is playing.
+     *
+     * The long-press sheet has offered this per album since it was written; the
+     * artist's own catalogue had play, shuffle and add-to-the-end and no way to say
+     * "next", which is the one that does not make you wait out the rest of a queue.
+     */
+    fun playNext() = onCatalogue("play next") { tracks ->
+        if (isLocal) {
+            localPlayer.playNext(localTracks(tracks))
+        } else {
+            maRepo.playOn(playTarget(), tracks.mapNotNull { it.uri }, "next")
+        }
+        _toast.tryEmit("Playing ${ref.name} next")
+    }
+
     /** Add everything by this artist to the end of the queue. */
     fun addToQueue() = onCatalogue("add to queue") { tracks ->
         if (isLocal) {
