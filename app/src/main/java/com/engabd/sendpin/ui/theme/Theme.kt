@@ -12,6 +12,7 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import com.engabd.sendpin.ui.design.LocalReducedMotion
+import com.engabd.sendpin.ui.design.ProvideBackdrop
 import com.engabd.sendpin.ui.design.rememberReducedMotion
 import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
@@ -213,7 +214,12 @@ fun SendspinTheme(
             colorScheme = scheme,
             typography = AppTypography,
             shapes = AppShapes,
-            content = content,
-        )
+        ) {
+            // One backdrop for the whole app: only one screen draws a wash at a time, so
+            // one recorded layer is all that is ever needed, and providing it here means
+            // no screen has to opt in. A screen with no wash simply never records, and
+            // its glass falls back to the flat fill. See Backdrop.kt.
+            ProvideBackdrop(content)
+        }
     }
 }

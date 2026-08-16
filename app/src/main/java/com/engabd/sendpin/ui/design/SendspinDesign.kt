@@ -121,29 +121,37 @@ fun rememberArtRequest(url: String?, pixels: Int? = null): ImageRequest? {
 @Composable
 fun BoxScope.MeltBackdrop(url: String?, intensity: Float = 1f) {
     val art = rememberArtRequest(url, pixels = 192)
-    if (art != null) {
-        AsyncImage(
-            model = art,
-            contentDescription = null,
-            contentScale = ContentScale.Crop,
-            colorFilter = saturate(1.7f),
-            modifier = Modifier
-                .matchParentSize()
-                .scale(1.3f)
-                .blur(64.dp, BlurredEdgeTreatment.Unbounded)
-                .alpha(0.62f * intensity.coerceIn(0f, 1f)),
-        )
-    }
-    Box(
-        Modifier.matchParentSize().background(
-            Brush.verticalGradient(
-                0f to Ink.a(0.28f),
-                0.46f to Ink.a(0.66f),
-                0.88f to Ink,
-                1f to Ink,
+    // Recorded as the backdrop for every glass surface on this screen — see Backdrop.kt.
+    // Applied here rather than at each of the five call sites so any screen that has a
+    // wash gets real glass by having one, and a screen without one leaves the layer
+    // unrecorded and its panels fall back to a flat fill. The wrapping Box is what gives
+    // the recording a single surface to capture: the art and its scrim are two draws, and
+    // glass wants the composite of both.
+    Box(Modifier.matchParentSize().backdropSource()) {
+        if (art != null) {
+            AsyncImage(
+                model = art,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                colorFilter = saturate(1.7f),
+                modifier = Modifier
+                    .matchParentSize()
+                    .scale(1.3f)
+                    .blur(64.dp, BlurredEdgeTreatment.Unbounded)
+                    .alpha(0.62f * intensity.coerceIn(0f, 1f)),
+            )
+        }
+        Box(
+            Modifier.matchParentSize().background(
+                Brush.verticalGradient(
+                    0f to Ink.a(0.28f),
+                    0.46f to Ink.a(0.66f),
+                    0.88f to Ink,
+                    1f to Ink,
+                )
             )
         )
-    )
+    }
 }
 
 /**
@@ -299,11 +307,12 @@ fun GlassCard(
     content: @Composable BoxScope.() -> Unit,
 ) {
     val outline = MaterialTheme.colorScheme.outline
+    val shape = RoundedCornerShape(radius)
     Box(
-        modifier
-            .clip(RoundedCornerShape(radius))
-            .background(fill)
-            .border(1.dp, outline, RoundedCornerShape(radius)),
+        // Real glass wherever a backdrop has been provided, the flat fill everywhere
+        // else — and on those screens the two are the same thing, since blurring a flat
+        // Ink background returns flat Ink. See Backdrop.kt.
+        modifier.glassSurface(shape, tint = fill, border = outline),
         content = content,
     )
 }
@@ -502,9 +511,16 @@ fun IconChip(
     Box(
         modifier
             .size(34.dp)
-            .clip(shape)
-            .background(if (active) accent.a(0.14f) else Glass)
-            .border(1.dp, if (active) accent.a(0.4f) else Hairline, shape)
+            // The chip row sits directly over the album wash, so this is the surface
+            // backdrop blur does the most for. A tighter radius than the default: at
+            // 34dp square, a wide blur samples so far outside the chip that every chip
+            // in the row ends up showing the same average and the glass reads as flat.
+            .glassSurface(
+                shape,
+                tint = if (active) accent.a(0.14f) else Glass,
+                blurRadius = 16.dp,
+                border = if (active) accent.a(0.4f) else Hairline,
+            )
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
         contentAlignment = Alignment.Center,
     ) {
