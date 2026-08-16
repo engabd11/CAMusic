@@ -1292,10 +1292,13 @@ private fun ConnectingState() {
 @Composable
 private fun SkeletonRow() {
     RowCard {
-        Box(Modifier.size(46.dp).clip(RoundedCornerShape(11.dp)).background(inkOn(0.06f)))
+        // The sweep goes on each block rather than the row, so it tracks each one's
+        // own width — a single sweep across the whole row would cross the 46dp thumb
+        // in a couple of frames and then crawl the rest of the way.
+        Box(Modifier.size(46.dp).clip(RoundedCornerShape(11.dp)).background(inkOn(0.06f)).shimmer())
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Box(Modifier.fillMaxWidth(0.6f).height(12.dp).clip(RoundedCornerShape(4.dp)).background(inkOn(0.07f)))
-            Box(Modifier.fillMaxWidth(0.38f).height(10.dp).clip(RoundedCornerShape(4.dp)).background(inkOn(0.05f)))
+            Box(Modifier.fillMaxWidth(0.6f).height(12.dp).clip(RoundedCornerShape(4.dp)).background(inkOn(0.07f)).shimmer())
+            Box(Modifier.fillMaxWidth(0.38f).height(10.dp).clip(RoundedCornerShape(4.dp)).background(inkOn(0.05f)).shimmer())
         }
     }
 }

@@ -114,6 +114,31 @@ class Playback(private val app: Context) {
     private var discoveryStop: Job? = null
 
     /**
+     * The connect currently in flight, so a second one can cancel it rather than race it.
+     *
+     * [connectToServer] suspends on a token fetch — a real network round-trip — *before*
+     * it ever constructs a [SendspinClient]. Two calls close together therefore both get
+     * past [disconnect] (which finds no client to close, because neither has made one
+     * yet), both complete their fetch, and both then build a client with the **same**
+     * player id. Only the second is stored in [client]; the first is orphaned with an
+     * open socket and no handle to close it by.
+     *
+     * Music Assistant allows one connection per `client_id`, so it evicts whichever
+     * arrived first — and the orphan's own reconnect brings it straight back, evicting
+     * the other. The pair then trade the connection at the reconnect interval
+     * indefinitely, which presents as a player that will not stay enabled.
+     *
+     * Observed on-device: two `sendspin engine =` lines 7 ms apart, then 444 `client/hello`
+     * against 448 `ws CLOSING 1000` — every close server-initiated and clean.
+     *
+     * Two calls close together is the *normal* startup path, not an edge case: `init`
+     * connects when a server is configured, and `AppLifecycleObserver.onForeground`
+     * connects when `_connected` is false — which it still is while the first call is
+     * waiting on its token.
+     */
+    private var connectJob: Job? = null
+
+    /**
      * The tap/lead pair actually installed in the current MA engine's render
      * chain, when MA is playing through [SendspinExoEngine] (the experimental
      * ExoPlayer path) — null otherwise, including whenever the default
@@ -339,10 +364,13 @@ class Playback(private val app: Context) {
     // --- connection -------------------------------------------------------
 
     fun connectToServer(url: String, username: String = "", password: String = "", name: String = "") {
+        // `disconnect` cancels whatever connect was already in flight, so an overlapping
+        // call replaces the previous attempt instead of running beside it — see
+        // [connectJob] for what happened when two of them did.
         disconnect(stopService = false)
         _serverUrl.value = url
         _connectionStatus.value = "Signing in…"
-        scope.launch {
+        connectJob = scope.launch {
             val user = username.ifBlank { settings.maUsername.first() }
             val pass = password.ifBlank { settings.maPassword.first() }
             val playerName = name.ifBlank { settings.playerName.first() }.ifBlank { PlayerIdentity.getDefaultPlayerName() }
@@ -915,6 +943,9 @@ class Playback(private val app: Context) {
      * MA holds the player slot instead of dropping it from the speaker list.
      */
     fun disconnect(stopService: Boolean = true, reason: String = "user_request") {
+        // Kill any connect still in flight *first*, or it lands after this returns and
+        // silently resurrects the connection this call exists to end. See [connectJob].
+        connectJob?.cancel(); connectJob = null
         abandonAudioFocus()
         unregisterNoisyReceiver()
         engine?.release(); engine = null

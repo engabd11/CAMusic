@@ -1,6 +1,7 @@
 package com.engabd.sendpin.audio
 
 import android.media.AudioDeviceInfo
+import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.AuxEffectInfo
@@ -50,11 +51,21 @@ class OboeAudioSink(
 ) : AudioSink {
 
     companion object {
+        private const val TAG = "OboeAudioSink"
+
         // SendspinOutputEngine's ring is RING_SECONDS (4s) deep - see its header.
         // There's no real hardware AudioTrack buffer here to report a size for,
         // so this stands in for it (used by ExoPlayer only for buffering
         // heuristics, not for anything sync-critical).
         private const val RING_BUFFER_US = 4_000_000L
+
+        /**
+         * Consecutive total refusals before saying so — see [noteRefusal].
+         *
+         * Well past what back pressure explains: ExoPlayer re-presents on its own
+         * cadence, so a ring that is merely full clears within a handful of attempts.
+         */
+        private const val REFUSALS_BEFORE_WARNING = 50
     }
 
     private var listener: AudioSink.Listener? = null
@@ -71,6 +82,12 @@ class OboeAudioSink(
 
     private var scratch = ByteArray(0)
     private var tapScratch = ByteArray(0)
+
+    /** Cleared per [configure], so there is one "first write" line per stream. */
+    private var firstWriteLogged = false
+
+    /** Consecutive buffers the ring took nothing from — see [noteRefusal]. */
+    private var consecutiveRefusals = 0
 
     override fun setListener(listener: AudioSink.Listener) {
         this.listener = listener
@@ -108,9 +125,17 @@ class OboeAudioSink(
         framesWrittenTotal = 0L
         endOfStreamRequested = false
         configuredFormat = format
-        if (!nativeOutput.start(sampleRate, channelCount, driftCorrection())) {
+        firstWriteLogged = false
+        consecutiveRefusals = 0
+        val drift = driftCorrection()
+        // Logged before the call, so a native start that never returns is still
+        // attributable — and after it, so a `false` is not left to be inferred from the
+        // ConfigurationException alone.
+        if (!nativeOutput.start(sampleRate, channelCount, drift)) {
+            Log.e(TAG, "native start refused $sampleRate/${channelCount}ch drift=$drift")
             throw AudioSink.ConfigurationException("SendspinNativeOutput.start failed", format)
         }
+        Log.i(TAG, "configured $sampleRate/${channelCount}ch/16-bit drift=$drift")
     }
 
     override fun play() {
@@ -122,13 +147,31 @@ class OboeAudioSink(
         // DefaultAudioSink's trim/gapless handling), so there's nothing to do.
     }
 
+    /**
+     * Hand decoded PCM to the native ring, honouring [AudioSink]'s contract about what
+     * was actually taken.
+     *
+     * **Returning `true` unconditionally, as this used to, is not a shortcut — it is a
+     * lie with two consequences.** `handleBuffer` returns whether the buffer was fully
+     * consumed; `false` tells ExoPlayer to re-present the same one once the sink has
+     * drained. Answering `true` regardless means a ring that cannot take the audio drops
+     * it silently, *and* [framesWrittenTotal] keeps climbing past what was really
+     * accepted — which corrupts [getCurrentPositionUs], since that is written-minus-
+     * buffered. A pinned position is exactly what ExoPlayer's "stuck playing with no
+     * progress" watchdog measures, so one wrong return value produces both the silence
+     * and the timeout that were observed together on-device.
+     *
+     * `write` returns frames accepted, so the honest answer is available and was simply
+     * being discarded. Whether a refusing ring is the *cause* of that session's silence
+     * is still unproven — the diagnostics below are what will settle it — but the
+     * contract violation is a defect either way.
+     */
     override fun handleBuffer(buffer: ByteBuffer, presentationTimeUs: Long, encodedAccessUnitCount: Int): Boolean {
         val remaining = buffer.remaining()
         if (remaining <= 0) return true
         if (scratch.size < remaining) scratch = ByteArray(remaining)
+        val startPosition = buffer.position()
         buffer.get(scratch, 0, remaining)
-
-        feedTap(scratch, remaining)
 
         // The timestamp is best-effort; the audio is not. This used to skip the write
         // entirely when there was no current data source — which is reachable, since
@@ -140,9 +183,65 @@ class OboeAudioSink(
         // back to that rather than dropping samples on the floor.
         val presentationLocalUs = currentDataSource()?.presentationLocalUs(presentationTimeUs)
             ?: (com.engabd.sendpin.protocol.MonotonicClock.nowUs() + presentationTimeUs)
-        nativeOutput.write(scratch, 0, remaining, presentationLocalUs)
-        framesWrittenTotal += remaining / bytesPerFrame
-        return true
+
+        val framesAccepted = nativeOutput.write(scratch, 0, remaining, presentationLocalUs)
+        val bytesAccepted = (framesAccepted * bytesPerFrame).coerceIn(0, remaining)
+
+        // Rewind to exactly what was left over, so the re-presented buffer starts where
+        // the ring stopped taking rather than replaying audio it already holds.
+        if (bytesAccepted < remaining) buffer.position(startPosition + bytesAccepted)
+
+        // Only the accepted bytes reach the tap: the rest is coming back on the next
+        // call, and analysing it twice would double-count it into the light show.
+        if (bytesAccepted > 0) feedTap(scratch, bytesAccepted)
+
+        framesWrittenTotal += framesAccepted
+        logFirstWrite(framesAccepted, remaining)
+        noteRefusal(bytesAccepted, remaining)
+        return bytesAccepted >= remaining
+    }
+
+    /**
+     * One line per stream, the first time PCM is actually accepted by the native ring.
+     *
+     * The equivalent line on [SendspinAudioEngine] is what separates "nothing ever
+     * decoded" from "audio reached the output and was inaudible anyway" — and this path
+     * had no counterpart, so the one device session that hit it had to be diagnosed from
+     * `AAudio` and `dumpsys audio` instead. That detour is the reason this exists.
+     */
+    private fun logFirstWrite(framesAccepted: Int, offered: Int) {
+        if (firstWriteLogged || framesAccepted <= 0) return
+        firstWriteLogged = true
+        Log.i(
+            TAG,
+            "first write: $framesAccepted frames accepted of ${offered / bytesPerFrame} offered " +
+                "@ $sampleRate/${channelCount}ch/16-bit, buffered=${nativeOutput.bufferedFrames()}",
+        )
+    }
+
+    /**
+     * Say so, once, when the ring has stopped accepting anything at all.
+     *
+     * A sink that refuses every buffer is silent by definition, and returning `false`
+     * correctly makes ExoPlayer wait rather than discard — but waiting forever looks
+     * identical to a stall from outside, and its own timeout takes ten seconds to fire.
+     * [REFUSALS_BEFORE_WARNING] consecutive total refusals is far past anything back
+     * pressure explains, so it is worth a line naming the sink rather than leaving the
+     * next reader to infer it from a renderer timeout.
+     */
+    private fun noteRefusal(bytesAccepted: Int, offered: Int) {
+        if (bytesAccepted >= offered) {
+            consecutiveRefusals = 0
+            return
+        }
+        if (bytesAccepted == 0 && ++consecutiveRefusals == REFUSALS_BEFORE_WARNING) {
+            Log.e(
+                TAG,
+                "native ring has refused $consecutiveRefusals consecutive buffers " +
+                    "(buffered=${nativeOutput.bufferedFrames()} frames, written=$framesWrittenTotal) - " +
+                    "nothing is draining it, so this stream will be silent",
+            )
+        }
     }
 
     /**

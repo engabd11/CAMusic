@@ -133,6 +133,30 @@ abstract class SendspinDataSource(
         endSignalled = true
     }
 
+    /**
+     * Drop everything queued but not yet handed to ExoPlayer, so silence is immediate.
+     *
+     * `stream/end` is what Music Assistant sends when the listener *pauses*, with no
+     * `stream/clear` alongside it, and the client advertises a 4 MB `buffer_capacity`
+     * — so the server has streamed as much as ~30 s ahead by then. Marking the stream
+     * ended is not enough on its own: [awaitNextFrame] keeps returning queued frames
+     * until the queue runs dry, so the backlog plays out in full and the music carries
+     * on for another half-minute after the button was pressed.
+     *
+     * [SendspinAudioEngine.endOfStream] has cleared its queue for exactly this reason
+     * since 0.4.2 — its own comment records that 0.4.0 and 0.4.1 shipped the version
+     * that played the buffer out, and what that cost. This path took that method's
+     * conclusion ("this is not a stop") without the mechanism that makes it safe.
+     *
+     * The trade is the same one the default engine already accepted deliberately: a
+     * track boundary loses whatever tail was still buffered. Between cutting a track's
+     * last moment short and ignoring the pause button, the pause button wins — and
+     * telling the two apart is the separate piece of work the plan tracks as gapless.
+     */
+    fun discardQueued() {
+        queue.clear()
+    }
+
     override fun open(dataSpec: DataSpec): Long {
         transferInitializing(dataSpec)
         pendingOutput = when (format.codec.lowercase()) {

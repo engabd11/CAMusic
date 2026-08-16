@@ -2,7 +2,12 @@ package com.engabd.sendpin.ui.design
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -27,6 +32,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
@@ -115,29 +121,37 @@ fun rememberArtRequest(url: String?, pixels: Int? = null): ImageRequest? {
 @Composable
 fun BoxScope.MeltBackdrop(url: String?, intensity: Float = 1f) {
     val art = rememberArtRequest(url, pixels = 192)
-    if (art != null) {
-        AsyncImage(
-            model = art,
-            contentDescription = null,
-            contentScale = ContentScale.Crop,
-            colorFilter = saturate(1.7f),
-            modifier = Modifier
-                .matchParentSize()
-                .scale(1.3f)
-                .blur(64.dp, BlurredEdgeTreatment.Unbounded)
-                .alpha(0.62f * intensity.coerceIn(0f, 1f)),
-        )
-    }
-    Box(
-        Modifier.matchParentSize().background(
-            Brush.verticalGradient(
-                0f to Ink.a(0.28f),
-                0.46f to Ink.a(0.66f),
-                0.88f to Ink,
-                1f to Ink,
+    // Recorded as the backdrop for every glass surface on this screen — see Backdrop.kt.
+    // Applied here rather than at each of the five call sites so any screen that has a
+    // wash gets real glass by having one, and a screen without one leaves the layer
+    // unrecorded and its panels fall back to a flat fill. The wrapping Box is what gives
+    // the recording a single surface to capture: the art and its scrim are two draws, and
+    // glass wants the composite of both.
+    Box(Modifier.matchParentSize().backdropSource()) {
+        if (art != null) {
+            AsyncImage(
+                model = art,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                colorFilter = saturate(1.7f),
+                modifier = Modifier
+                    .matchParentSize()
+                    .scale(1.3f)
+                    .blur(64.dp, BlurredEdgeTreatment.Unbounded)
+                    .alpha(0.62f * intensity.coerceIn(0f, 1f)),
+            )
+        }
+        Box(
+            Modifier.matchParentSize().background(
+                Brush.verticalGradient(
+                    0f to Ink.a(0.28f),
+                    0.46f to Ink.a(0.66f),
+                    0.88f to Ink,
+                    1f to Ink,
+                )
             )
         )
-    )
+    }
 }
 
 /**
@@ -228,6 +242,61 @@ fun SectionLabel(text: String, modifier: Modifier = Modifier) {
     )
 }
 
+/**
+ * A highlight sweeping across a loading placeholder.
+ *
+ * Overlaid on whatever fill the caller already drew rather than replacing it, so a
+ * skeleton keeps its own tone and this only adds the movement. Drawn as a soft band
+ * on a diagonal, which reads as light passing over a surface; a hard-edged or purely
+ * horizontal sweep reads as a scanning bar instead.
+ *
+ * **Returns the receiver untouched when motion is off**, and that is the whole reason
+ * `LocalReducedMotion` exists rather than a duration multiplier. A shimmer is an
+ * [androidx.compose.animation.core.InfiniteTransition], and Compose *suspends* one of
+ * those at a duration scale of 0 rather than ending it — so a scaled-to-zero shimmer
+ * would freeze as a gradient stopped part-way across the tile, which looks like a
+ * rendering fault rather than a placeholder. Off, the caller's flat fill is exactly
+ * the right answer, so this gets out of the way and lets it show.
+ */
+@Composable
+fun Modifier.shimmer(highlight: Color = Color.White.copy(alpha = 0.055f)): Modifier {
+    if (LocalReducedMotion.current) return this
+    val sweep = rememberInfiniteTransition(label = "shimmer")
+    val progress by sweep.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            tween(SHIMMER_PERIOD_MS, easing = LinearEasing),
+            // Restart, not reverse: light travels one way. Reversing makes the band
+            // walk back across the tile, which reads as a scrubber rather than a wait.
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "shimmerSweep",
+    )
+    return drawWithContent {
+        drawContent()
+        val band = size.width * SHIMMER_BAND_FRACTION
+        // Travels from fully off the leading edge to fully off the trailing one, so
+        // there is a clean gap between passes instead of a band always on screen.
+        val x = -band + progress * (size.width + 2f * band)
+        drawRect(
+            brush = Brush.linearGradient(
+                0f to Color.Transparent,
+                0.5f to highlight,
+                1f to Color.Transparent,
+                start = Offset(x, 0f),
+                end = Offset(x + band, size.height),
+            )
+        )
+    }
+}
+
+/** One full sweep. Slow enough to read as breathing rather than as activity. */
+private const val SHIMMER_PERIOD_MS = 1400
+
+/** Band width as a fraction of the placeholder's own width. */
+private const val SHIMMER_BAND_FRACTION = 0.55f
+
 // --- containers -----------------------------------------------------------
 
 @Composable
@@ -238,11 +307,12 @@ fun GlassCard(
     content: @Composable BoxScope.() -> Unit,
 ) {
     val outline = MaterialTheme.colorScheme.outline
+    val shape = RoundedCornerShape(radius)
     Box(
-        modifier
-            .clip(RoundedCornerShape(radius))
-            .background(fill)
-            .border(1.dp, outline, RoundedCornerShape(radius)),
+        // Real glass wherever a backdrop has been provided, the flat fill everywhere
+        // else — and on those screens the two are the same thing, since blurring a flat
+        // Ink background returns flat Ink. See Backdrop.kt.
+        modifier.glassSurface(shape, tint = fill, border = outline),
         content = content,
     )
 }
@@ -441,9 +511,16 @@ fun IconChip(
     Box(
         modifier
             .size(34.dp)
-            .clip(shape)
-            .background(if (active) accent.a(0.14f) else Glass)
-            .border(1.dp, if (active) accent.a(0.4f) else Hairline, shape)
+            // The chip row sits directly over the album wash, so this is the surface
+            // backdrop blur does the most for. A tighter radius than the default: at
+            // 34dp square, a wide blur samples so far outside the chip that every chip
+            // in the row ends up showing the same average and the glass reads as flat.
+            .glassSurface(
+                shape,
+                tint = if (active) accent.a(0.14f) else Glass,
+                blurRadius = 16.dp,
+                border = if (active) accent.a(0.4f) else Hairline,
+            )
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
         contentAlignment = Alignment.Center,
     ) {

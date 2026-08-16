@@ -365,7 +365,9 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                 }
 
                 // Master toggle. Streaming also needs something playing on this
-                // phone — the bridge is only held open for a live local session.
+                // phone — either the local player, or Music Assistant playing to this
+                // phone through the ExoPlayer engine, which is the one that carries
+                // the analysis tap. See SendpinApp's direct-sync gate.
                 GlassCard(radius = 18.dp, fill = if (enabled) accent.a(0.10f) else Glass) {
                     Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                         Box(Modifier.size(42.dp).clip(RoundedCornerShape(13.dp)).background(if (enabled) accent.a(0.18f) else Glass).border(1.dp, if (enabled) accent.a(0.4f) else Hairline, RoundedCornerShape(13.dp)), contentAlignment = Alignment.Center) {
@@ -377,7 +379,10 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                             Text(
                                 when {
                                     live -> "Reacting to the beat"
-                                    enabled -> "Waiting for this phone to play"
+                                    // "on this phone", not "this phone": Music Assistant
+                                    // playing to this phone counts, and the old wording
+                                    // read as though it never could.
+                                    enabled -> "Waiting for music on this phone"
                                     else -> "Lights are steady"
                                 },
                                 color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
