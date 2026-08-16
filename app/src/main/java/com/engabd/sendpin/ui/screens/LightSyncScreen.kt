@@ -347,6 +347,7 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
     val colour by settings.lightSyncColor.collectAsState(initial = "album_art_v2")
     val brightnessPct by settings.lightSyncBrightness.collectAsState(initial = 100)
     val advanced by settings.lightSyncAdvanced.collectAsState(initial = false)
+    val spatial by settings.lightSyncSpatial.collectAsState(initial = false)
     val tunables by settings.lightSyncTunables.collectAsState(initial = emptyMap())
     val bridgeIp by settings.hueBridgeIp.collectAsState(initial = "")
     val configId by settings.hueEntertainmentConfigId.collectAsState(initial = "")
@@ -663,6 +664,30 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                             }
                             .padding(horizontal = 10.dp, vertical = 6.dp),
                     )
+
+                    // Room gestures. Under Advanced rather than beside the colour
+                    // picker because it is the one control here that can do nothing
+                    // at all: a track with no stereo movement and no swell in it
+                    // looks exactly the same either way, and that is the correct
+                    // behaviour rather than a fault.
+                    Spacer(Modifier.height(20.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Room gestures", color = TextSecondary, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                            Spacer(Modifier.height(2.dp))
+                            Text(
+                                "When a sound sweeps across the stereo field, or a swell rises " +
+                                    "with no beat under it, let the light travel across the room " +
+                                    "with it — along a line of lamps, or around a room with lamps " +
+                                    "in the corners. Rooms with only a couple of lamps get a soft " +
+                                    "brightness swell instead. Most songs have neither, and stay " +
+                                    "exactly as they are.",
+                                color = TextFaint, fontSize = 11.sp, lineHeight = 15.sp,
+                                modifier = Modifier.padding(end = 12.dp),
+                            )
+                        }
+                        AccentSwitch(spatial) { on -> scope.launch { settings.setLightSyncSpatial(on) } }
+                    }
                 }
 
                 Spacer(Modifier.height(22.dp))

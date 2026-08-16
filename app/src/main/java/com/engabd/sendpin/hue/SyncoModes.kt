@@ -163,6 +163,29 @@ data class ModeParams(
      */
     val spatialCoupling: Float = 0f,
 
+    // ── Room gestures ─────────────────────────────────────────────────────
+    //
+    // The layer that moves the *room* rather than a lamp: a sound that sweeps
+    // across the stereo field travels across the lamps, and a swell with nothing
+    // hitting under it rises through them. Off unless the user asks for it — see
+    // `SyncoEngine.spatialGestures` — and rare even then, by design.
+
+    /**
+     * Brightness a full-strength room gesture adds. Zero disables the layer.
+     *
+     * Scaled by the `movement` tunable, whose own description already promises
+     * exactly this: "how much the show travels between lamps rather than lighting
+     * them together… up for sweeps and chases across the room". An eighth slider
+     * for one feature would be worse than reusing the one that already says it.
+     */
+    val gestureGain: Float = 0f,
+    /** Front width along a linear axis, in normalised room units. */
+    val gestureWidth: Float = 0.30f,
+    /** Front width around a ring, in turns. 0.18 is about 65°. */
+    val gestureArcWidth: Float = 0.18f,
+    /** Moving-source radius, for a room with no dominant shape. */
+    val gestureRadius: Float = 0.45f,
+
     val roomPunch: Float = 0f,
     val fluxGate: Float = 0f,
     val predropDepth: Float = 0f,
@@ -197,6 +220,10 @@ val MODE_PARAMS = mapOf(
         // Colour is Subtle's whole identity (colourSpread = 1.0), so it gets the
         // most tilt: the room reads as one slow gradient through all three axes.
         colourTilt = 0.50f,
+        // The gentlest gesture of the five. Subtle sits at base = floor = 0.80 and
+        // is already near the clamp, so a wide, faint front is all there is room
+        // for — which happens to suit the rung: a slow drift across a still room.
+        gestureGain = 0.18f, gestureWidth = 0.40f, gestureArcWidth = 0.24f,
     ),
     SyncMode.MEDIUM to ModeParams(
         base = 0.12f, floor = 0.05f, bassGain = 0.14f, beatGain = 0.9f, beatThreshold = 1.4f,
@@ -213,6 +240,7 @@ val MODE_PARAMS = mapOf(
         spatialCoupling = 0.45f,
         waveGain = 0.75f, waveSpeed = 2.2f, waveWidth = 0.30f, heightFreq = 0.30f,
         depthWash = 0.08f, anticipationMs = 80f, dropBoost = 0.50f, buildDesat = 0.50f,
+        gestureGain = 0.30f,
     ),
     SyncMode.HIGH to ModeParams(
         base = 0.06f, floor = 0.035f, bassGain = 0.30f, beatGain = 1.6f, beatThreshold = 1.1f,
@@ -234,6 +262,7 @@ val MODE_PARAMS = mapOf(
         tonalGain = 0.26f, colourTilt = 0.35f, spatialCoupling = 0.35f,
         waveGain = 0.55f, waveSpeed = 2.2f, waveWidth = 0.32f, anticipationMs = 80f,
         dropBoost = 0.60f, buildDesat = 0.45f,
+        gestureGain = 0.30f,
     ),
     SyncMode.INTENSE to ModeParams(
         base = 0.05f, floor = 0.10f, bassGain = 0.16f, beatGain = 1.7f, beatThreshold = 1.0f,
@@ -253,6 +282,9 @@ val MODE_PARAMS = mapOf(
         tonalGain = 0.20f, tonalDamp = 1.4f, colourTilt = 0.25f, spatialCoupling = 0.40f,
         waveGain = 0.55f, waveSpeed = 2.4f, waveWidth = 0.30f, anticipationMs = 90f,
         dropBoost = 0.80f, buildDesat = 0.50f,
+        // Narrower than the other rungs: Intense is percussive-forward, so a
+        // tighter front reads as a sweep rather than as the room breathing.
+        gestureGain = 0.25f, gestureWidth = 0.24f, gestureArcWidth = 0.15f,
     ),
     SyncMode.EXTREME to ModeParams(
         graphReactive = true,
@@ -265,5 +297,8 @@ val MODE_PARAMS = mapOf(
         briAttack = 0.5f, briDecay = 0.4f,
         colourSpeed = 0.05f, colourFlow = 0.05f, colourSpread = 0.4f, colourLerp = 0.4f,
         colourSat = 0.97f, panGain = 0.6f, colourTilt = 0.30f,
+        // No gestureGain, and it would do nothing if there were one: `renderExtreme`
+        // is a separate renderer that returns before the flash overlay the gesture
+        // layer joins. Extreme is a different show, not a louder one.
     ),
 )
