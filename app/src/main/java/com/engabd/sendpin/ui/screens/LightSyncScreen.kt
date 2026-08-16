@@ -72,7 +72,23 @@ private val FALLBACK_COLOUR = com.engabd.sendpin.hue.ColorScheme.SUNSET.wire
  * and it keeps showing the old one, which reads as the switch having failed.
  */
 @Composable
-fun LightSyncScreen(onBack: () -> Unit = {}) {
+fun LightSyncScreen(
+    onBack: () -> Unit = {},
+    /**
+     * The *shared* Light Sync view model, hoisted to the Activity in `App.kt`.
+     *
+     * Passed in rather than resolved with `viewModel()` here, and that is the whole
+     * fix for the tab flashing on every visit. Inside a NavHost destination the
+     * default owner is the back-stack entry, and the tab bar navigates with
+     * `popUpTo(saveState = true)` — which keeps the entry's saved state and clears
+     * its ViewModelStore. So leaving the tab ran `onCleared`, dropping the Home
+     * Assistant socket, and coming back built a new model that reconnected and
+     * re-discovered from nothing: an empty list, a moment of "couldn't reach Home
+     * Assistant" while the socket came up, and then the areas appearing. Owned by
+     * the Activity, the connection and the areas simply outlive the visit.
+     */
+    viewModel: LightSyncViewModel = viewModel(),
+) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val settings = remember(context) {
         com.engabd.sendpin.data.AppSettings(context.applicationContext)
@@ -81,12 +97,20 @@ fun LightSyncScreen(onBack: () -> Unit = {}) {
     when (lsMode) {
         null -> Box(Modifier.fillMaxSize().background(Ink))
         "direct" -> DirectLightSyncScreen(onBack)
-        else -> HaLightSyncScreen(onBack)
+        else -> HaLightSyncScreen(onBack, viewModel)
     }
 }
 
 @Composable
-private fun HaLightSyncScreen(onBack: () -> Unit, viewModel: LightSyncViewModel = viewModel()) {
+private fun HaLightSyncScreen(onBack: () -> Unit, viewModel: LightSyncViewModel) {
+    // The 5 s Home Assistant poll runs only while this screen is on screen. The
+    // model now outlives the visit, which is the point — but a poll that outlived it
+    // too would be a WebSocket round trip every five seconds for a tab nobody is
+    // looking at.
+    DisposableEffect(viewModel) {
+        viewModel.setScreenVisible(true)
+        onDispose { viewModel.setScreenVisible(false) }
+    }
     val accent = LocalAccent.current
     val connected by viewModel.connected.collectAsStateWithLifecycle()
     val areas by viewModel.areas.collectAsStateWithLifecycle()

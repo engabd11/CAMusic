@@ -66,6 +66,7 @@ import com.engabd.sendpin.ui.design.rememberAlbumPalette
 import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.library.MusicSources
+import com.engabd.sendpin.ui.viewmodel.LightSyncViewModel
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
 import com.engabd.sendpin.ui.screens.AlbumDetailScreen
 import com.engabd.sendpin.ui.screens.DownloadsScreen
@@ -251,6 +252,10 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
 
         val nowPlayingVm: NowPlayingViewModel = viewModel()
         val libraryVm: LibraryViewModel = viewModel()
+        // Here rather than inside the destination, for the same reason those two are:
+        // resolved in a `composable {}` block the owner is the back-stack entry, and
+        // the tab bar's `saveState = true` clears that store on every tab change.
+        val lightSyncVm: LightSyncViewModel = viewModel()
 
         // Adaptive grid columns: the library's 6-column base was designed for phones.
         // On tablets and foldables (Medium/Expanded width), scale up so covers aren't
@@ -607,7 +612,19 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                         )
                     }
                     composable("speakers") { SpeakersScreen(onBack = { navController.popBackStack() }) }
-                    composable("light_sync") { LightSyncScreen(onBack = { navController.popBackStack() }) }
+                    composable("light_sync") {
+                        LightSyncScreen(
+                            onBack = { navController.popBackStack() },
+                            // Activity-scoped, not entry-scoped. The tab bar navigates
+                            // with `popUpTo(saveState = true)`, which clears a
+                            // destination's ViewModelStore — so a model resolved inside
+                            // this block was destroyed every time the tab was left, and
+                            // rebuilt on return: a new Home Assistant socket, an empty
+                            // area list, a flash of "couldn't reach Home Assistant", and
+                            // then the areas reappearing. See LightSyncScreen's own note.
+                            viewModel = lightSyncVm,
+                        )
+                    }
                     composable("settings") {
                         SettingsScreen(
                             viewModel = playerVm,

@@ -539,6 +539,10 @@ class Playback(private val app: Context) {
             override fun onStreamStart(format: StreamStartPlayerInfo) {
                 eng.start(format)
                 idleJob?.cancel(); idleJob = null
+                // A new stream is the only thing that can legitimately move the
+                // playhead backwards on the same track — Music Assistant restarts the
+                // queue to seek. Open the window that lets the next reading do it.
+                acceptRewindUntilUs = c.clock.nowUs() + REWIND_GRACE_US
                 scope.launch {
                     requestAudioFocus()
                     _isPlaying.value = true
@@ -670,6 +674,18 @@ class Playback(private val app: Context) {
     @Volatile private var trackSettleUntilUs: Long = 0L
 
     /**
+     * [ClockSync.nowUs] until which a *backwards* progress reading is believed.
+     *
+     * Armed by `stream/start`, because that is what a seek looks like from here.
+     * Music Assistant resolves `players/cmd/seek` into `play_index(seek_position=)`,
+     * which restarts the queue — so every genuine seek, whether this app asked for
+     * it or another controller did, arrives with a fresh stream. Outside that window
+     * a same-track reading that would move the playhead backwards is a re-statement
+     * of something already projected past, not news. See [anchorProgress].
+     */
+    @Volatile private var acceptRewindUntilUs: Long = 0L
+
+    /**
      * Take a `server/state` progress reading, dated by the server's own clock.
      *
      * `metadata.timestamp` is in server time, so [ClockSync.serverTimeToLocal] converts
@@ -712,13 +728,61 @@ class Playback(private val app: Context) {
             ?.takeIf { it > 0L && c.clock.isSynced() }
             ?.let { c.clock.serverTimeToLocal(it) }
             ?.takeIf { kotlin.math.abs(nowUs - it) <= MAX_ANCHOR_AGE_US }
-        progressAnchor = ProgressProjection.Anchor(
+        val candidate = ProgressProjection.Anchor(
             positionMs = position,
             atLocalUs = stampedLocalUs ?: nowUs,
             speedMilli = np.speedMilli,
             durationMs = np.durationMs ?: 0L,
         )
+        if (isStaleRewind(candidate, nowUs)) return
+        progressAnchor = candidate
         republishPosition()
+    }
+
+    /**
+     * Is this reading the server repeating itself rather than telling us something?
+     *
+     * The bar used to saw: seek to 0:53, watch it climb to 0:57, snap back to 0:53,
+     * climb again. The projection was never wrong — the anchor under it was being
+     * rebuilt from a reading that had not moved.
+     *
+     * `metadata.timestamp` is documented as the instant `track_progress` was true at,
+     * and the spec's own formula depends on that. Music Assistant stamps the
+     * *message*. Its queue's elapsed time advances on MA's own cadence, so any
+     * `server/state` sent between two of those updates carries a progress figure that
+     * is seconds old wearing a timestamp that says "now" — and anchoring on it drags
+     * the playhead back to wherever MA last recomputed it. `NowPlayingViewModel` has
+     * guarded against exactly this since it was written, using MA's
+     * `elapsed_time_last_updated`; the Sendspin path had no equivalent because the
+     * protocol offers none.
+     *
+     * So the discriminator is the stream rather than the clock. Music Assistant
+     * resolves `players/cmd/seek` into `play_index(..., seek_position=)`, which
+     * restarts the queue — every genuine seek therefore arrives with a `stream/start`,
+     * whether this app asked for it or another controller did. Inside that window a
+     * rewind is believed. Outside it, on the same track, while playing, a reading that
+     * would move the playhead backwards is discarded and the existing projection
+     * carries on.
+     *
+     * [UNAMBIGUOUS_REWIND_MS] is the escape hatch, and it is deliberately generous. If
+     * some Music Assistant build ever seeks without restarting the stream, a big jump
+     * still lands; only the small ones — which are the stale ones — are held. Rejections
+     * are logged, because a bar that quietly refuses to move backwards is worse to
+     * diagnose than one that says why.
+     */
+    private fun isStaleRewind(candidate: ProgressProjection.Anchor, nowUs: Long): Boolean {
+        if (!_isPlaying.value) return false
+        if (nowUs <= acceptRewindUntilUs) return false
+        val current = progressAnchor ?: return false
+        val currentNow = ProgressProjection.project(current, nowUs, playing = true)
+        val candidateNow = ProgressProjection.project(candidate, nowUs, playing = true)
+        val rewindMs = currentNow - candidateNow
+        if (rewindMs <= 0L || rewindMs >= UNAMBIGUOUS_REWIND_MS) return false
+        android.util.Log.d(
+            "Playback",
+            "ignoring restated progress: ${candidateNow}ms is ${rewindMs}ms behind the projection",
+        )
+        return true
     }
 
     /** Publish the anchor projected to now — see [ProgressProjection]. */
@@ -1023,6 +1087,26 @@ class Playback(private val app: Context) {
 
         /** How long a same-track reading is held after a detected track boundary. */
         const val TRACK_TRANSITION_SETTLE_US = 600_000L
+
+        /**
+         * How long after a `stream/start` a backwards progress reading is believed.
+         *
+         * Long enough for the server to get round to describing the stream it has
+         * just started — the first `server/state` after a seek is not instant — and
+         * short enough that it has closed again well before the reading that
+         * [isStaleRewind] exists to reject.
+         */
+        const val REWIND_GRACE_US = 4_000_000L
+
+        /**
+         * A backwards jump this large is taken as real however it arrived.
+         *
+         * Above Music Assistant's own five-second progress cadence, so a restated
+         * reading cannot reach it, and far below any rewind a person would make on
+         * purpose. The safety valve for a server that ever seeks without restarting
+         * the stream.
+         */
+        const val UNAMBIGUOUS_REWIND_MS = 10_000L
     }
 
     private fun httpBase(url: String): String {
