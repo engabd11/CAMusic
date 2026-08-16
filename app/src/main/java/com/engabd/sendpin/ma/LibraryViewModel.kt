@@ -81,7 +81,12 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     data class Node(val title: String, val items: List<MaItem>)
 
     private val settings = AppSettings(app)
-    val myPlayerId: String = PlayerIdentity.getPlayerId(app)
+    /**
+     * Read live, not captured: a rename mints a new player id mid-session and a
+     * captured one then aims every play command at a player MA no longer has — see
+     * [PlayerIdentity.getPlayerId].
+     */
+    val myPlayerId: String get() = PlayerIdentity.getPlayerId(getApplication<Application>())
 
     // The MA player to play to (blank = this phone). Kept in sync with the Speakers picker.
     private val _targetPlayer = MutableStateFlow("")

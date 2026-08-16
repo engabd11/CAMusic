@@ -168,7 +168,25 @@ class SendspinExoEngine(
 
         override fun onPlaybackStateChanged(state: Int) {
             if (state == Player.STATE_READY) consecutiveErrors = 0
+            // A stream that produces no sound leaves a distinctive trail here and
+            // nowhere else: BUFFERING for ever means the data source is not feeding
+            // ExoPlayer, IDLE means nothing was ever prepared, READY means the
+            // pipeline is running and the silence is downstream of it (gain, route,
+            // or the Oboe sink). Without this the three are indistinguishable.
+            Log.i("SendspinExoEngine", "playback state = ${stateName(state)}")
         }
+
+        override fun onIsPlayingChanged(isPlaying: Boolean) {
+            Log.i("SendspinExoEngine", "isPlaying = $isPlaying (volume=${effectiveVolume()})")
+        }
+    }
+
+    private fun stateName(state: Int) = when (state) {
+        Player.STATE_IDLE -> "IDLE"
+        Player.STATE_BUFFERING -> "BUFFERING"
+        Player.STATE_READY -> "READY"
+        Player.STATE_ENDED -> "ENDED"
+        else -> "state($state)"
     }
 
     private fun buildPlayer(): ExoPlayer {

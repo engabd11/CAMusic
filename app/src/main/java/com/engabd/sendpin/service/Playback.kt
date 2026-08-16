@@ -52,12 +52,15 @@ class Playback(private val app: Context) {
     private val deviceVolume = com.engabd.sendpin.audio.DeviceVolume(app)
 
     /**
-     * This player's Sendspin `client_id`. Not a `val`: [reregister] mints a new one,
-     * which is the only way to shake off a name Music Assistant has already committed
-     * to for an existing player.
+     * This player's Sendspin `client_id`.
+     *
+     * Read live rather than held: [reregister] and [applyPlayerConfig] mint a new one
+     * (the only way to shake off a name Music Assistant has already committed to for
+     * an existing player), and a copy kept here has to be re-assigned by hand at every
+     * such site to stay right. It used to be, and the same id captured in six other
+     * places was not — see [PlayerIdentity.getPlayerId].
      */
-    var playerId: String = PlayerIdentity.getPlayerId(app)
-        private set
+    val playerId: String get() = PlayerIdentity.getPlayerId(app)
     /**
      * The hardware's name ("Samsung SM-S911B"), which is only the *fallback* for the
      * player's name. It used to be exposed as `playerName` and printed in Settings
@@ -398,6 +401,15 @@ class Playback(private val app: Context) {
             SendspinAudioEngine(c.clock)
         }
         engine = eng
+        // Which engine is live is the first thing any "MA plays but there is no
+        // sound" report needs to establish, and it is otherwise invisible: the two
+        // are chosen from a setting, log under different tags, and fail in entirely
+        // different places.
+        android.util.Log.i(
+            "Playback",
+            "sendspin engine = ${eng.javaClass.simpleName}" +
+                (eng as? SendspinExoEngine)?.let { " (oboe=${it.useOboe})" }.orEmpty(),
+        )
 
         scope.launch { c.state.collect { _connected.value = it == SendspinClient.State.CONNECTED } }
         scope.launch { c.statusText.collect { _connectionStatus.value = it } }
@@ -838,8 +850,9 @@ class Playback(private val app: Context) {
         if (codec.isNotBlank()) settings.setSendspinCodec(codec)
         val wanted = settings.playerName.first()
         if (wanted.isNotBlank() && wanted != settings.registeredPlayerName.first()) {
+            // [playerId] follows this on its own now — it reads through PlayerIdentity
+            // rather than holding a copy.
             PlayerIdentity.newIdentity(app)
-            playerId = PlayerIdentity.getPlayerId(app)
         }
         val base = settings.maBaseUrl.first()
         if (base.isNotBlank()) connectToServer(sendspinUrlFrom(base))
@@ -859,7 +872,6 @@ class Playback(private val app: Context) {
         if (name.isNotBlank()) settings.setPlayerName(name)
         disconnect(stopService = false)
         PlayerIdentity.newIdentity(app)
-        playerId = PlayerIdentity.getPlayerId(app)
         _configStatus.value = ""
         val base = settings.maBaseUrl.first()
         if (base.isNotBlank()) connectToServer(sendspinUrlFrom(base))
