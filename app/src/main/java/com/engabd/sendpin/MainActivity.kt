@@ -42,6 +42,27 @@ class MainActivity : ComponentActivity() {
         val page = pageColorFor(settings.bootTheme, systemDark)
         window.setBackgroundDrawable(ColorDrawable(page.toArgb()))
 
+        // Ask for the display's full gamut where there is one.
+        //
+        // Album art is what this app is mostly made of, and on a P3 panel a
+        // wide-gamut window is the difference between a saturated red rendering at
+        // sRGB's boundary and rendering at the panel's. Costs nothing where the
+        // display is sRGB — `isScreenWideColorGamut` is false and the call is skipped
+        // — and nothing in composition either: Compose keeps its own colour space and
+        // this only widens what the surface may present.
+        //
+        // Deliberately *not* paired with wide-gamut palette extraction. `getPixels`
+        // returns sRGB whatever the bitmap's colour space, so the extractor cannot see
+        // wide values at all today — but the fix for that (an F16 decode read back
+        // through `getColor`) would find nothing to read: cover art arrives from Music
+        // Assistant, Navidrome and Jellyfin as JPEG, which is sRGB in practice. The
+        // gamut worth widening is the one the app *paints* into, and that is this line.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            resources.configuration.isScreenWideColorGamut
+        ) {
+            window.colorMode = android.content.pm.ActivityInfo.COLOR_MODE_WIDE_COLOR_GAMUT
+        }
+
         // Transparent bars either way; the app draws under both. Which *icons* the
         // system paints there is set from Compose once the theme is known — see
         // SystemBars in ui/App.kt.

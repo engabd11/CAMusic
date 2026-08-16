@@ -148,12 +148,14 @@ class AlbumPaletteTest {
         Extraction(lead = colours[0], swatches = colours.toList(), achromatic = achromatic)
 
     @Test
-    fun `every hue is lifted to the same perceived lightness`() {
-        // The whole point of doing this in OKLab, and the reason green covers used to
-        // look right while blue ones looked muddy. The old HSL lift held *HSL*
-        // lightness constant, which is not perceptual: at L 0.64 / S 0.6 a green
-        // lands at relative luminance 0.55 and a blue at 0.19 — same dial, nearly
-        // three times the light. Equal OKLab L is equal apparent brightness.
+    fun `the accent stays inside the legible band`() {
+        // The band is the *only* thing the lift is allowed to impose on lightness.
+        // This replaces an assertion that every hue arrives at exactly 0.78, which
+        // was the previous contract and turned out to be the bug: sRGB's red lives
+        // at L 0.63 and its blue at L 0.45, so one target for all of them asked both
+        // to be lighter than they can be — and, because the gamut narrows away from
+        // a hue's own peak, cut their chroma on the way. Red arrived as light red
+        // and violet as faded violet.
         val hues = listOf(
             rgb(200, 30, 30),    // red
             rgb(30, 200, 30),    // green
@@ -162,10 +164,61 @@ class AlbumPaletteTest {
             rgb(150, 30, 200),   // violet
             rgb(30, 190, 200),   // cyan
         )
-        val lightnesses = hues.map { lchOf(liftedPalette(extractionOf(it)).accent)[0] }
-        lightnesses.forEach {
-            assertEquals("accent lightness should not depend on hue", 0.78f, it, 0.02f)
+        hues.forEach { source ->
+            val l = lchOf(liftedPalette(extractionOf(source)).accent)[0]
+            assertTrue("accent lightness $l fell out of the legible band", l in 0.54f..0.89f)
         }
+    }
+
+    @Test
+    fun `a saturated red is not lightened into pink`() {
+        // The reported symptom, as a test: "what's red seems like light red".
+        // sRGB red sits at OKLab L 0.63, so an accent that comes back much lighter
+        // than its source has been pushed there by the lift rather than read off the
+        // cover.
+        val source = rgb(220, 30, 30)
+        val sourceL = lchOf(androidx.compose.ui.graphics.Color(source[0], source[1], source[2]))[0]
+        val accent = lchOf(liftedPalette(extractionOf(source)).accent)
+        assertTrue(
+            "accent lightness ${accent[0]} drifted far above the cover's own $sourceL",
+            accent[0] - sourceL < 0.08f,
+        )
+    }
+
+    @Test
+    fun `keeping the cover's lightness keeps more of its chroma`() {
+        // The two halves compound. A red held at its own lightness can hold roughly
+        // twice the chroma sRGB allows at 0.78, so the fix for "faded" is the same
+        // change as the fix for "too light" rather than a second one on top of it.
+        val hue = lchOf(androidx.compose.ui.graphics.Color(220 / 255f, 30 / 255f, 30 / 255f))[2]
+        assertTrue(
+            "red should hold more chroma at its own lightness than at the old fixed target",
+            maxChromaFor(0.63f, hue) > maxChromaFor(0.78f, hue) * 1.5f,
+        )
+    }
+
+    @Test
+    fun `white does not out-vote a colour it is a minority of`() {
+        // "Whites sometimes overwhelm the colours of the album art, even if the
+        // amount of white in the album is a lot less than other colours."
+        //
+        // The cause was an asymmetry rather than a weighting: accent clusters are
+        // deduplicated by hue, so several shades of one red collapse into a single
+        // swatch, and nothing did the same for neutrals — so several shades of
+        // off-white each kept a slot. A cover that is mostly red could come back as
+        // one red and three whites, and the whites are the brightest things in the
+        // set.
+        val reds = listOf(rgb(200, 40, 40), rgb(170, 30, 30), rgb(230, 70, 60), rgb(140, 25, 25))
+        val whites = listOf(rgb(250, 250, 250), rgb(238, 238, 240), rgb(228, 230, 228))
+        val pixels = (0 until 700).flatMap { reds } + (0 until 200).flatMap { whites }
+        val out = kmeansPalette(pixels)!!
+
+        val neutrals = out.swatches.count { satOf(it) < 0.06f }
+        assertTrue("got $neutrals colourless swatches out of ${out.swatches.size}", neutrals <= 1)
+        assertTrue(
+            "the lead should be the red the cover is mostly made of, not a white",
+            satOf(out.lead) > 0.3f,
+        )
     }
 
     @Test
@@ -205,7 +258,7 @@ class AlbumPaletteTest {
         val accent = liftedPalette(extractionOf(rgb(130, 130, 130), achromatic = true)).accent
         val lch = lchOf(accent)
         assertTrue("a grey cover gained chroma ${lch[1]}", lch[1] <= 0.03f)
-        assertEquals("a grey cover should still be lifted to the accent band", 0.78f, lch[0], 0.02f)
+        assertTrue("a grey cover should still land in the legible band", lch[0] in 0.54f..0.89f)
     }
 
     @Test
