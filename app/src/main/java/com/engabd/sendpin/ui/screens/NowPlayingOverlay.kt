@@ -81,6 +81,7 @@ fun NowPlayingOverlay(
     val connected by viewModel.connected.collectAsStateWithLifecycle()
     val favorite by viewModel.favorite.collectAsStateWithLifecycle()
     val currentItem by viewModel.currentItem.collectAsStateWithLifecycle()
+    val favouritable by viewModel.favouritableItem.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
     // Shared with the tab layout so the two cannot drift — see PlayerSheetState.
@@ -352,8 +353,12 @@ fun NowPlayingOverlay(
                         if (favorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                         if (favorite) "Remove from favourites" else "Add to favourites",
                         active = favorite,
-                        tint = if (currentItem == null) TextFaint else null,
-                        onClick = if (currentItem == null) null else ({ viewModel.toggleFavorite() }),
+                        // Gated on `favouritableItem`, not `currentItem`: the
+                        // latter is null for the whole of a local-library session,
+                        // which greyed this out on Navidrome and Jellyfin even though
+                        // both implement starring. See NowPlayingViewModel.
+                        tint = if (favouritable == null) TextFaint else null,
+                        onClick = if (favouritable == null) null else ({ viewModel.toggleFavorite() }),
                     )
                     // Sleep timer
                     SleepTimerChip(viewModel)

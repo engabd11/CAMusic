@@ -8,6 +8,8 @@ import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.audio.FormatNegotiator
 import com.engabd.sendpin.audio.LocalRadio
 import com.engabd.sendpin.audio.LocalTrack
+import com.engabd.sendpin.audio.JellyfinRadioSource
+import com.engabd.sendpin.audio.RadioSource
 import com.engabd.sendpin.audio.SubsonicRadioSource
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.PlayerIdentity
@@ -1821,18 +1823,24 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         val seed = seedId?.let { id -> lastSeeds[id] }
         val exclude = queue.mapNotNull { it.scrobbleId ?: it.id }.toSet()
 
-        val picked = if (_offline.value) {
+        // Which generator this library can offer. Each self-hosted backend has its
+        // own — Subsonic's `getSimilarSongs`, Jellyfin's `InstantMix` — and a source
+        // with neither falls back to the offline picker over what is on the phone.
+        //
+        // Jellyfin used to take that fallback, and it was the whole of "keep the
+        // music going doesn't work on Jellyfin": the check asked for a
+        // `SubsonicSource` specifically, so a Jellyfin library with nothing
+        // downloaded picked nothing and the queue ended silently, exactly as if the
+        // setting were off.
+        val generator: RadioSource? = when (val s = source) {
+            is SubsonicSource -> SubsonicRadioSource(s.subsonic)
+            is com.engabd.sendpin.library.JellyfinSource -> JellyfinRadioSource(s.jellyfin)
+            else -> null
+        }
+        val picked = if (_offline.value || generator == null) {
             radio.offline(downloads.value.map { downloadItem(it) }, seed, RADIO_BATCH, exclude)
         } else {
-            // The radio generator is Subsonic's `getSimilarSongs`; a source
-            // without SIMILAR has nothing to seed from and falls back to the
-            // offline picker over what is on the phone.
-            val sc = (source as? SubsonicSource)?.subsonic
-            if (sc == null) {
-                radio.offline(downloads.value.map { downloadItem(it) }, seed, RADIO_BATCH, exclude)
-            } else {
-                radio.next(SubsonicRadioSource(sc), seed, RADIO_BATCH, exclude)
-            }
+            radio.next(generator, seed, RADIO_BATCH, exclude)
         }
         if (picked.isEmpty()) return
         rememberSeeds(picked)

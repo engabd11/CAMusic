@@ -298,6 +298,18 @@ private fun HaLightSyncScreen(onBack: () -> Unit, viewModel: LightSyncViewModel)
                             HSlider((factor / 2f).coerceIn(0f, 1f), { viewModel.setTunable(key, (it * 2f)) }, modifier = Modifier.weight(1f))
                             Text("${(factor * 100).roundToInt()}%", color = TextMuted, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 11.sp, modifier = Modifier.widthIn(min = 40.dp))
                         }
+                        // The same explanations the direct path shows. They describe the
+                        // effect rather than the transport, and the six keys here are a
+                        // subset of the seven there, so one map serves both.
+                        com.engabd.sendpin.hue.SyncoEngine.TUNABLE_BLURBS[key]?.let { blurb ->
+                            Text(
+                                blurb,
+                                color = TextFaint,
+                                fontSize = 11.sp,
+                                lineHeight = 15.sp,
+                                modifier = Modifier.padding(start = 107.dp, bottom = 10.dp),
+                            )
+                        }
                     }
                 }
             }
@@ -623,6 +635,18 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                                 direct.previewTunables(next)
                                 scope.launch { settings.setLightSyncTunables(next) }
                             }
+                        }
+                        // What this one actually does, and what each direction costs.
+                        // Seven unlabelled percentage sliders is a panel you can only
+                        // learn by moving one and watching the room.
+                        com.engabd.sendpin.hue.SyncoEngine.TUNABLE_BLURBS[key]?.let { blurb ->
+                            Text(
+                                blurb,
+                                color = TextFaint,
+                                fontSize = 11.sp,
+                                lineHeight = 15.sp,
+                                modifier = Modifier.padding(start = 107.dp, bottom = 10.dp),
+                            )
                         }
                     }
 

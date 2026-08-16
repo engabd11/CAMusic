@@ -516,6 +516,10 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                                 provider = aProvider,
                                 name = aName,
                                 artUrl = aArt,
+                                // Shared, not entry-scoped — it owns the playlist
+                                // list and the backend routing behind "add this
+                                // album to a playlist".
+                                libraryViewModel = libraryVm,
                                 onBack = { navController.popBackStack() },
                                 // An album knows its artist's *name* and nothing else —
                                 // MaItem carries no artist id — so the route travels with

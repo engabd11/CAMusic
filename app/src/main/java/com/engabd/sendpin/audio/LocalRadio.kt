@@ -1,6 +1,7 @@
 package com.engabd.sendpin.audio
 
 import com.engabd.sendpin.ma.MaItem
+import com.engabd.sendpin.jellyfin.JellyfinClient
 import com.engabd.sendpin.subsonic.SubsonicClient
 
 /**
@@ -28,6 +29,40 @@ class SubsonicRadioSource(private val client: SubsonicClient) : RadioSource {
 
     override suspend fun topSongs(artistName: String, count: Int) =
         runCatching { client.getTopSongs(artistName, count) }.getOrDefault(emptyList())
+
+    override suspend fun byGenre(genre: String, count: Int) =
+        runCatching { client.songsByGenre(genre, count) }.getOrDefault(emptyList())
+
+    override suspend fun random(count: Int) =
+        runCatching { client.randomSongs(count) }.getOrDefault(emptyList())
+}
+
+/**
+ * The Jellyfin one.
+ *
+ * "Keep the music going" did nothing at all on this backend: the top-up asked for a
+ * `SubsonicSource` specifically and, not finding one, fell through to the offline
+ * picker over downloaded files — so on a Jellyfin library with nothing downloaded the
+ * queue ended silently, exactly as if the setting were off.
+ *
+ * Jellyfin has no `getSimilarSongs`, so the ladder's top three rungs all land on
+ * `InstantMix` — the same suggestion engine behind the "Instant Mix" button in
+ * Jellyfin's own clients — seeded with the track, then its album, since the endpoint
+ * takes either. That is a better answer than similarity metadata rather than a
+ * weaker one: it works on a server with no last.fm data, which most are.
+ *
+ * Every call is wrapped, like the Subsonic one: a rung that fails is a rung that is
+ * skipped, and the ladder falls through to `random` rather than to silence.
+ */
+class JellyfinRadioSource(private val client: JellyfinClient) : RadioSource {
+    override suspend fun similarToTrack(trackId: String, count: Int) =
+        runCatching { client.instantMix(trackId, count) }.getOrDefault(emptyList())
+
+    override suspend fun similarToAlbum(albumId: String, count: Int) =
+        runCatching { client.instantMix(albumId, count) }.getOrDefault(emptyList())
+
+    override suspend fun topSongs(artistName: String, count: Int) =
+        runCatching { client.topSongsByArtist(artistName, count) }.getOrDefault(emptyList())
 
     override suspend fun byGenre(genre: String, count: Int) =
         runCatching { client.songsByGenre(genre, count) }.getOrDefault(emptyList())
