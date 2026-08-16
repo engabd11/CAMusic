@@ -46,13 +46,14 @@ internal fun AudioSection(
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         OutputCard(settings, accent, scope)
-        // "What to ask Music Assistant for" has moved to the Music Assistant server's
-        // own page, with the rest of that server's player settings — it is a per-server
-        // preference, not a device one, and it sat here only because the storage key
-        // used to be app-global.
         LoudnessCard(settings, accent, scope)
         ContinuousPlayCard(settings, scope)
-        DiagnosticsCard(viewModel, settings)
+        // The Music Assistant connection readout is no longer here. It described one
+        // phone's registration with one server, and it now sits on that server's own
+        // page beside the settings it reports the effect of — see
+        // PlayerSettings.MaPlayerStatusCard. This section is the device-wide half:
+        // where sound goes, how loud, and what happens between tracks, none of which
+        // depends on which server is connected.
     }
 }
 
@@ -246,67 +247,8 @@ private fun ContinuousPlayCard(settings: AppSettings, scope: CoroutineScope) {
                 "the two tracks don't overlap, because one player has one output.",
         )
         Note(
-            "What happens when the queue runs out altogether is now a player setting rather " +
-                "than an app one — the options chip under the artwork on Now Playing, where " +
-                "it sits next to the queue it governs.",
+            "What happens when the queue runs out altogether is a player setting — the " +
+                "options chip under the artwork on Now Playing, next to the queue it governs.",
         )
     }
 }
-
-// ── Diagnostics ───────────────────────────────────────────────────────────
-
-@Composable
-private fun DiagnosticsCard(viewModel: PlayerViewModel, settings: AppSettings) {
-    val connected by viewModel.connected.collectAsStateWithLifecycle()
-    val currentFormat by viewModel.currentFormat.collectAsStateWithLifecycle()
-    var playerName by remember { mutableStateOf("") }
-    LaunchedEffect(Unit) { playerName = settings.playerName.first() }
-
-    // Live-checked, not just "onboarding was completed once" — OEM battery managers
-    // (Samsung, Xiaomi, Oppo) can revoke the exemption later without telling the
-    // user, and SendspinConnectionService silently losing Doze survival is exactly
-    // the kind of thing that should surface here rather than stay invisible.
-    val batteryGranted = rememberIsIgnoringBatteryOptimizations()
-    val context = LocalContext.current
-
-    SettingsCard(
-        title = "Diagnostics",
-        lead = "What the Music Assistant connection is actually doing right now. Worth quoting " +
-            "in a bug report.",
-    ) {
-        StatusPanel {
-            StatusRow("Connection", if (connected) "Connected" else "Disconnected")
-            StatusRow("Format", currentFormat)
-            StatusRow("Player ID", viewModel.playerId.take(12) + "…")
-            StatusRow("Player name", playerName.ifBlank { viewModel.deviceName })
-            StatusRow("Device", viewModel.deviceName)
-        }
-        if (!batteryGranted) {
-            CardDivider()
-            StatusLine(
-                "Battery optimisation is restricting this app — announcements and background " +
-                    "playback may drop while the screen is off.",
-                health = Health.WARN,
-                accent = WarnAmber,
-            )
-            OledButton(
-                "Open battery settings",
-                accent = WarnAmber,
-                outline = true,
-            ) {
-                runCatching {
-                    context.startActivity(
-                        Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
-                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                    )
-                }
-            }
-        }
-    }
-}
-
-// The MA/Sendspin experimental engine toggles used to live here under a generic
-// "Experimental" card. Moved to PlayerSettings.kt's MaExperimentalCard, next to the
-// rest of this phone's Music Assistant player settings — they are as MA-specific as
-// gapless/crossfade (MaPlaybackConfigCard) already living there, not device-wide
-// audio preferences.

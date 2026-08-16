@@ -438,39 +438,43 @@ class Playback(private val app: Context) {
         // the next isPlaying transition. The connection service drives this from
         // its own watchPlayback observer, but the client needs to know *now*.
         if (!_isPlaying.value) c.setIdleMode(true)
-        // Experimental opt-in (see AppSettings.useExoPlayerForSendspin) — read once,
-        // at connect time: switching mid-connection would orphan whatever the old
-        // engine was doing mid-stream. SendspinAudioEngine stays the default.
-        val eng: SendspinPlaybackEngine = if (settings.useExoPlayerForSendspin.first()) {
-            SendspinExoEngine(
-                app,
-                c.clock,
-                // The engine has already retried and given up (see its own bound) —
-                // force a fresh Sendspin socket rather than leaving a dead stream
-                // sitting there. If Music Assistant still wants this player playing,
-                // a reconnect is what gives it another chance to send stream/start;
-                // reconnectNow() is the same "the user asked for music" escalation
-                // MaRepository.playMedia uses, and its own status text already
-                // surfaces through the c.statusText collector below.
-                onFatalError = { c.reconnectNow() },
-            ).also {
-                it.useOboe = settings.useOboeOutput.first()
-                _maAudioSource.value = it.audioAnalysisTap to it.audioLead
-            }
-        } else {
-            _maAudioSource.value = null
-            SendspinAudioEngine(c.clock)
+        // ExoPlayer is the MA engine. Not a default, not an opt-in — the only one.
+        //
+        // It was an experimental switch, off by default, on the reasoning that the
+        // path was unvalidated on hardware and should not silently become everyone's
+        // player on upgrade. Hardware has since answered: the hand-built
+        // MediaCodec + AudioTrack engine produces no audio on the owner's device,
+        // and the ExoPlayer path does. A toggle whose off position is silence is not
+        // a safety measure.
+        //
+        // [SendspinAudioEngine] is deliberately left in the tree rather than deleted
+        // — it still owns END_LINGER_MS, and the two engines fail in different
+        // enough places that having the other one to compare against has been worth
+        // more than once — but nothing selects it any more.
+        //
+        // Oboe stays opt-in and off: that path is still silent, and the
+        // investigation is live in `docs/oboe-investigation.md`.
+        val eng = SendspinExoEngine(
+            app,
+            c.clock,
+            // The engine has already retried and given up (see its own bound) —
+            // force a fresh Sendspin socket rather than leaving a dead stream
+            // sitting there. If Music Assistant still wants this player playing,
+            // a reconnect is what gives it another chance to send stream/start;
+            // reconnectNow() is the same "the user asked for music" escalation
+            // MaRepository.playMedia uses, and its own status text already
+            // surfaces through the c.statusText collector below.
+            onFatalError = { c.reconnectNow() },
+        ).also {
+            // Read once, at connect time: switching mid-connection would orphan
+            // whatever the old output was doing mid-stream.
+            it.useOboe = settings.useOboeOutput.first()
+            _maAudioSource.value = it.audioAnalysisTap to it.audioLead
         }
         engine = eng
-        // Which engine is live is the first thing any "MA plays but there is no
-        // sound" report needs to establish, and it is otherwise invisible: the two
-        // are chosen from a setting, log under different tags, and fail in entirely
-        // different places.
-        android.util.Log.i(
-            "Playback",
-            "sendspin engine = ${eng.javaClass.simpleName}" +
-                (eng as? SendspinExoEngine)?.let { " (oboe=${it.useOboe})" }.orEmpty(),
-        )
+        // Which output is live is the first thing any "MA plays but there is no
+        // sound" report needs to establish, and it is otherwise invisible.
+        android.util.Log.i("Playback", "sendspin engine = SendspinExoEngine (oboe=${eng.useOboe})")
 
         scope.launch { c.state.collect { _connected.value = it == SendspinClient.State.CONNECTED } }
         scope.launch { c.statusText.collect { _connectionStatus.value = it } }

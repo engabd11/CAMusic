@@ -624,11 +624,13 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
 
                 Spacer(Modifier.height(22.dp))
                 Text(
+                    // No "…has moved to…" line here any more. The app has never been
+                    // published, so nobody reading this has a previous version to be
+                    // redirected from — it only ever told a first-time user that
+                    // something they have not seen is somewhere they were not looking.
                     "Direct mode syncs this phone's own playback, and needs no timing " +
                         "offset — it measures how far the audio tap runs ahead of the " +
-                        "speaker and compensates exactly.\n\n" +
-                        "Reading tracks ahead of the show has moved to Settings → Light Sync → " +
-                        "Bridge & analysis.",
+                        "speaker and compensates exactly.",
                     color = TextFaint, style = MaterialTheme.typography.bodySmall,
                 )
             }

@@ -61,8 +61,11 @@ class AppSettings(private val context: Context) {
         private val SENDSPIN_CODEC = stringPreferencesKey("sendspin_codec")     // "auto" | "flac" | "pcm" | "opus"
         private val NAV_STREAM_FORMAT = stringPreferencesKey("nav_stream_format") // Subsonic `format=` ("raw" = original)
         private val BIT_PERFECT = booleanPreferencesKey("bit_perfect_24bit")     // 24-bit AudioTrack path when available
-        private val SENDSPIN_EXOPLAYER = booleanPreferencesKey("sendspin_exoplayer") // experimental: ExoPlayer instead of SendspinAudioEngine for MA
-        private val SENDSPIN_OBOE = booleanPreferencesKey("sendspin_oboe") // experimental: native Oboe output on top of sendspin_exoplayer
+        // "sendspin_exoplayer" was here and is deliberately not replaced. The
+        // ExoPlayer engine is the only MA engine now, so a stored `false` from a
+        // tester's earlier install must not keep silencing them — leaving the key
+        // unread is what makes the upgrade unconditional.
+        private val SENDSPIN_OBOE = booleanPreferencesKey("sendspin_oboe") // experimental: native Oboe output instead of the platform AudioTrack
         private val PREFERRED_AUDIO_DEVICE_ID = stringPreferencesKey("preferred_audio_device_id") // USB DAC routing
         private val DOWNLOAD_STORAGE_CAP_MB = stringPreferencesKey("download_storage_cap_mb") // 0 = unlimited
         private val DOWNLOAD_WIFI_ONLY = booleanPreferencesKey("download_wifi_only") // skip downloads on mobile data
@@ -477,24 +480,21 @@ class AppSettings(private val context: Context) {
     val bitPerfect24Bit: Flow<Boolean> = context.dataStore.data.map { it[BIT_PERFECT] ?: false }
 
     /**
-     * Experimental: route MA (Sendspin) playback through [com.engabd.sendpin.audio.SendspinExoEngine]
-     * (ExoPlayer + [com.engabd.sendpin.audio.SendspinDataSource]) instead of the
-     * default [com.engabd.sendpin.audio.SendspinAudioEngine] (hand-built MediaCodec +
-     * AudioTrack). See `docs/exoplayer-upgrade-plan.md`. Off by default: the
-     * ExoPlayer path is new and unvalidated on real hardware, so this exists to
-     * make it something a tester opts into per device, not something that
-     * silently becomes everyone's player on upgrade.
-     */
-    val useExoPlayerForSendspin: Flow<Boolean> = context.dataStore.data.map { it[SENDSPIN_EXOPLAYER] ?: false }
-
-    /**
-     * Experimental, and only meaningful when [useExoPlayerForSendspin] is also on:
-     * routes decoded MA audio through the native Oboe engine
+     * Experimental: routes decoded MA audio through the native Oboe engine
      * ([com.engabd.sendpin.audio.SendspinNativeOutput]) instead of the platform
      * `AudioTrack`. Only 16-bit PCM is supported - combining this with
-     * [bitPerfect24Bit] is a known gap, not yet handled. Off by default: unlike
-     * the ExoPlayer/DataSource path, this native code has not been compiled or
-     * run at all as of the change that added it.
+     * [bitPerfect24Bit] is a known gap, not yet handled.
+     *
+     * Off by default and staying that way for now: this path is silent on device.
+     * The stream opens and starts cleanly, `buffered == written` on every stall so
+     * not one frame is ever consumed, and ExoPlayer eventually gives up with
+     * `Player stuck playing with no progress`. Three genuine defects have been
+     * fixed along the way and none of them was this one — see
+     * `docs/oboe-investigation.md`.
+     *
+     * The `useExoPlayerForSendspin` companion to this is gone: the ExoPlayer engine
+     * is no longer optional, it is the only MA engine. See
+     * [com.engabd.sendpin.service.Playback.startSendspin].
      */
     val useOboeOutput: Flow<Boolean> = context.dataStore.data.map { it[SENDSPIN_OBOE] ?: false }
 
@@ -744,11 +744,6 @@ class AppSettings(private val context: Context) {
         // Flow. See [bootBitPerfect].
         bootPrefs.edit().putBoolean("bit_perfect", value).apply()
         context.dataStore.edit { it[BIT_PERFECT] = value }
-    }
-
-    /** Takes effect on the next `connectToServer()` — the engine is chosen when the Sendspin client (re)connects. */
-    suspend fun setUseExoPlayerForSendspin(value: Boolean) {
-        context.dataStore.edit { it[SENDSPIN_EXOPLAYER] = value }
     }
 
     /** Takes effect on the next `connectToServer()` — see [useOboeOutput]. */
