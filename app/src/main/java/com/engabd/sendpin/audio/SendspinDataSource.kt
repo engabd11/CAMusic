@@ -140,7 +140,7 @@ abstract class SendspinDataSource(
                 val decodedSize = SendspinContainerHeader.decodeBase64(format.codecHeader)?.size
                 throw IOException(
                     "Sendspin FLAC stream: missing or malformed codec_header " +
-                        "(raw='${format.codecHeader}' decodedSize=$decodedSize, want 34)",
+                        "(raw='${format.codecHeader}' decodedSize=$decodedSize, want 34 or 42)",
                 )
             }
             "opus" -> {

@@ -36,6 +36,39 @@ class SendspinContainerHeaderTest {
     }
 
     @Test
+    fun `flac header also accepts a full magic-prefixed codec header`() {
+        // Confirmed on-device against a real Music Assistant server: codec_header
+        // decoded to 42 bytes - "fLaC" + the metadata-block header + STREAMINFO -
+        // not the bare 34-byte STREAMINFO this code originally assumed exclusively.
+        // Every MA stream failed to open with "missing or malformed codec_header
+        // (decodedSize=42, want 34)" until extractStreamInfo handled this shape too.
+        val streamInfo = ByteArray(34) { (it + 1).toByte() }
+        val full = ByteBuffer.allocate(42).apply {
+            put("fLaC".toByteArray(Charsets.US_ASCII))
+            put(0x80.toByte()); put(0x00); put(0x00); put(34.toByte())
+            put(streamInfo)
+        }.array()
+        val b64 = Base64.getEncoder().encodeToString(full)
+
+        val header = SendspinContainerHeader.flacStreamHeader(b64)!!
+
+        assertEquals(42, header.size)
+        assertEquals("fLaC", String(header, 0, 4, Charsets.US_ASCII))
+        assertEquals(streamInfo.toList(), header.copyOfRange(8, 42).toList())
+    }
+
+    @Test
+    fun `extractStreamInfo rejects a magic-prefixed buffer of the wrong total size`() {
+        // 42 bytes is only trusted as "fLaC" + header + STREAMINFO when the size
+        // matches exactly - a coincidentally magic-prefixed 41 or 43 byte buffer is
+        // not that shape and must not be sliced as if it were.
+        val wrongTotal = ByteArray(41).also {
+            "fLaC".toByteArray(Charsets.US_ASCII).copyInto(it)
+        }
+        assertNull(SendspinContainerHeader.extractStreamInfo(wrongTotal))
+    }
+
+    @Test
     fun `flac header decodes unpadded base64`() {
         // 34 bytes -> 2 trailing '=' from the standard (padded) encoder. Nothing
         // guarantees the server pads its base64, and java.util.Base64's decoders

@@ -876,8 +876,25 @@ class SendspinAudioEngine(private val clock: ClockSync) : SendspinPlaybackEngine
         if (wantHiRes) {
             format.setInteger(MediaFormat.KEY_PCM_ENCODING, AudioFormat.ENCODING_PCM_FLOAT)
         }
+        // The server sends codec_header in either of two shapes - bare 34-byte
+        // STREAMINFO, or a complete 42-byte FLAC header (magic + block header +
+        // STREAMINFO) - see SendspinContainerHeader.extractStreamInfo's doc for why
+        // both are real, confirmed against this exact failure mode on the ExoPlayer
+        // path. csd-0 wants the bare STREAMINFO either way, matching
+        // SendspinContainerHeader.flacStreamHeader's own convention for the same field.
         codecHeader?.let {
-            try { format.setByteBuffer("csd-0", ByteBuffer.wrap(Base64.decode(it, Base64.DEFAULT))) } catch (_: Exception) {}
+            try {
+                val decoded = Base64.decode(it, Base64.DEFAULT)
+                val streamInfo = SendspinContainerHeader.extractStreamInfo(decoded)
+                if (streamInfo != null) {
+                    format.setByteBuffer("csd-0", ByteBuffer.wrap(streamInfo))
+                } else {
+                    Log.w(TAG, "createFlacDecoder: codec_header decoded to ${decoded.size} bytes, " +
+                        "neither bare STREAMINFO (34) nor a full FLAC header (42) - csd-0 left unset")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "createFlacDecoder: couldn't decode codec_header: ${e.message}")
+            }
         }
         return MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_AUDIO_FLAC).apply {
             configure(format, null, null, 0); start()
