@@ -1,0 +1,15 @@
+<!--
+  A PiP RemoteAction icon. Same rules as the Quick Settings tile: the system tints
+  these itself and expects a flat monochrome silhouette, so a shape with its own
+  colours or strokes comes out as a smudge on one theme and inverts on another.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="?android:attr/textColorPrimary">
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M6,6h2v12L6,18zM9.5,12l8.5,6L18,6z" />
+</vector>

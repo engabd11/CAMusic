@@ -9,11 +9,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.ui.platform.LocalContext
 import com.engabd.sendpin.data.AppSettings
+import com.engabd.sendpin.data.rememberIsIgnoringBatteryOptimizations
 import com.engabd.sendpin.ma.MaConfigEntry
 import com.engabd.sendpin.ui.design.HSlider
 import com.engabd.sendpin.ui.theme.MonoFont
 import com.engabd.sendpin.ui.theme.TextSecondary
+import com.engabd.sendpin.ui.theme.WarnAmber
 import com.engabd.sendpin.ui.viewmodel.PlayerViewModel
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
@@ -32,39 +35,11 @@ import kotlinx.coroutines.launch
  * All of it is meaningless without a Music Assistant server, and the page says so up
  * front rather than presenting controls that write to nothing.
  */
-/**
- * The signpost left where the player settings used to be.
- *
- * They now live on the Music Assistant server's own page, because that is what they
- * configure: this phone as a player registered with *that* server. Kept as a row rather
- * than removed outright so the entry does not simply vanish for anyone who knew it.
- */
-@Composable
-internal fun PlayerSectionMoved(
-    accent: Color,
-    hasMaServer: Boolean,
-    onGoToLibraries: () -> Unit,
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        SettingsCard(
-            title = "Now with the server",
-            lead = if (hasMaServer) {
-                "The player's name, stream format, gapless and announcement settings are on the " +
-                    "Music Assistant server's page — so the server, its library and the player " +
-                    "this phone registers with it are set up in one place."
-            } else {
-                "This configures the player CAMusic registers with Music Assistant, and the " +
-                    "settings live on that server's own page. Add a Music Assistant server first."
-            },
-        ) {
-            OledButton(
-                if (hasMaServer) "Open Libraries" else "Add a server",
-                accent = accent,
-                onClick = onGoToLibraries,
-            )
-        }
-    }
-}
+// The top-level "CAMusic player" section is gone, and so is the signpost that stood
+// in it. Once every setting had moved onto the Music Assistant server's own page, all
+// the section could do was tell a first-time user that something they had never seen
+// was somewhere else — and the app has never been published, so there is nobody to
+// redirect.
 
 @Composable
 internal fun PlayerSection(
@@ -184,6 +159,12 @@ internal fun PlayerSection(
         }
 
         MaPlaybackConfigCard(viewModel, accent)
+        // What this player is actually doing right now, beside what it is configured
+        // to do. It used to sit under Playback & audio, a section away from every
+        // setting it reports the effect of — so checking whether a codec change had
+        // taken meant leaving the page that changed it. Every row of it is about one
+        // phone's registration with one Music Assistant server, which is this page.
+        MaPlayerStatusCard(viewModel, settings)
         MaExperimentalCard(settings, accent, scope)
 
         SettingsCard(
@@ -250,49 +231,116 @@ private fun MaPlaybackConfigCard(viewModel: PlayerViewModel, accent: Color) {
 }
 
 /**
- * Player-internals switches not ready for general use. See
- * `docs/exoplayer-upgrade-plan.md`: [AppSettings.useExoPlayerForSendspin] routes
- * MA playback through ExoPlayer instead of the default hand-built
- * MediaCodec+AudioTrack engine; [AppSettings.useOboeOutput] (only meaningful with
- * that one already on) further routes decoded audio through a native Oboe engine
- * instead of the platform AudioTrack. Both take effect on the next MA connection,
- * not retroactively on whatever's already playing.
+ * Player-internals switches not ready for general use.
  *
- * Lives here rather than in the device-wide Audio settings: both switches are
- * entirely about how *this phone talks to Music Assistant specifically* — the
- * Navidrome/local path never touches either — so they belong with the rest of
- * this phone's Music Assistant player settings, the same reasoning that already
- * moved gapless/crossfade ([MaPlaybackConfigCard]) here.
+ * Only one is left. The ExoPlayer engine used to be the other, off by default,
+ * on the reasoning that an unvalidated path should not silently become everyone's
+ * player — but hardware settled that: the engine it replaced makes no sound on the
+ * owner's device. It is now the only MA engine and has no switch. See
+ * [com.engabd.sendpin.service.Playback.startSendspin].
+ *
+ * [AppSettings.useOboeOutput] routes decoded audio through a native Oboe engine
+ * instead of the platform AudioTrack, and takes effect on the next MA connection
+ * rather than retroactively on whatever is playing.
+ *
+ * Lives here rather than in the device-wide Audio settings: it is entirely about
+ * how *this phone talks to Music Assistant specifically* — the Navidrome/local
+ * path never touches it — so it belongs with the rest of this phone's Music
+ * Assistant player settings, the same reasoning that already moved
+ * gapless/crossfade ([MaPlaybackConfigCard]) here.
  */
 @Composable
 private fun MaExperimentalCard(settings: AppSettings, accent: Color, scope: CoroutineScope) {
-    var useExoPlayer by remember { mutableStateOf(false) }
     var useOboe by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
-        useExoPlayer = settings.useExoPlayerForSendspin.first()
         useOboe = settings.useOboeOutput.first()
     }
 
     SettingsCard(
         title = "Experimental",
-        lead = "Not ready for everyday use. Turn these on only if you're specifically testing them.",
+        lead = "Not ready for everyday use. Turn this on only if you're specifically testing it.",
     ) {
         ToggleRow(
-            "ExoPlayer for MA playback",
-            "Replaces the MA (Sendspin) audio engine with ExoPlayer. Unvalidated: expect " +
-                "playback glitches, and disconnect/reconnect if it misbehaves. Takes effect on " +
-                "the next MA connection.",
-            useExoPlayer, accent,
-        ) { useExoPlayer = it; scope.launch { settings.setUseExoPlayerForSendspin(it) } }
-        CardDivider()
-        ToggleRow(
-            "Native Oboe output for MA",
-            "Only applies with ExoPlayer for MA playback on. Routes decoded audio through a " +
-                "native engine instead of the platform AudioTrack. Far less tested than the " +
-                "ExoPlayer switch above — only 16-bit PCM is supported, and it does not yet " +
-                "combine with Bit-perfect (24-bit) above. Expect rough edges.",
+            "Native Oboe output",
+            "Routes decoded audio through a native engine instead of the platform AudioTrack, " +
+                "so playback can't be interrupted by garbage collection.",
             useOboe, accent,
         ) { useOboe = it; scope.launch { settings.setUseOboeOutput(it) } }
+        // Stated plainly rather than hedged. This is not "expect rough edges" — it
+        // is a known, reproducible, currently-unsolved silence, and someone who
+        // switches it on and hears nothing should recognise what they are looking
+        // at instead of assuming their setup is broken.
+        Note(
+            "Still being worked on, and currently produces no sound at all: the audio stream " +
+                "opens and starts, but nothing is ever consumed from it. Three separate bugs " +
+                "have been fixed on the way to this one and none of them was it. Leave this off " +
+                "unless you are helping track it down.",
+        )
+    }
+}
+
+/**
+ * What this player is actually doing right now.
+ *
+ * Every row describes one phone's registration with one Music Assistant server — the
+ * connection state, the format that registration ended up negotiating, the client id
+ * it registered under and the name it registered with. It used to sit under Playback
+ * & audio, a section away from every setting whose effect it reports, so checking
+ * whether a codec change had taken meant leaving the page that made it.
+ *
+ * The battery warning rides along because the thing it threatens is this connection:
+ * `SendspinConnectionService` losing Doze survival is what makes announcements and
+ * background playback drop, and that is a fact about this player rather than about
+ * the phone's audio output.
+ */
+@Composable
+private fun MaPlayerStatusCard(viewModel: PlayerViewModel, settings: AppSettings) {
+    val connected by viewModel.connected.collectAsStateWithLifecycle()
+    val currentFormat by viewModel.currentFormat.collectAsStateWithLifecycle()
+    var playerName by remember { mutableStateOf("") }
+    LaunchedEffect(Unit) { playerName = settings.playerName.first() }
+
+    // Live-checked, not just "onboarding was completed once" — OEM battery managers
+    // (Samsung, Xiaomi, Oppo) can revoke the exemption later without telling the
+    // user, and SendspinConnectionService silently losing Doze survival is exactly
+    // the kind of thing that should surface here rather than stay invisible.
+    val batteryGranted = rememberIsIgnoringBatteryOptimizations()
+    val context = LocalContext.current
+
+    SettingsCard(
+        title = "Player status",
+        lead = "What this phone's connection to Music Assistant is actually doing right now. " +
+            "Worth quoting in a bug report.",
+    ) {
+        StatusPanel {
+            StatusRow("Connection", if (connected) "Connected" else "Disconnected")
+            StatusRow("Format", currentFormat)
+            StatusRow("Player ID", viewModel.playerId.take(12) + "…")
+            StatusRow("Player name", playerName.ifBlank { viewModel.deviceName })
+            StatusRow("Device", viewModel.deviceName)
+        }
+        if (!batteryGranted) {
+            CardDivider()
+            StatusLine(
+                "Battery optimisation is restricting this app — announcements and background " +
+                    "playback may drop while the screen is off.",
+                health = Health.WARN,
+                accent = WarnAmber,
+            )
+            OledButton(
+                "Open battery settings",
+                accent = WarnAmber,
+                outline = true,
+            ) {
+                runCatching {
+                    context.startActivity(
+                        android.content.Intent(
+                            android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS,
+                        ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                }
+            }
+        }
     }
 }
 

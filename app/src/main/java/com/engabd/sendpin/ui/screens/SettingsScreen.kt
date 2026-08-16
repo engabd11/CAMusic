@@ -68,14 +68,17 @@ enum class SettingsSection(
         "Your music servers, and which one the Library tab browses",
         Icons.Default.LibraryMusic,
     ),
-    PLAYER(
-        "CAMusic player",
-        "Moved — now set up with the Music Assistant server itself",
-        Icons.Default.Smartphone,
-    ),
+    // No PLAYER section. This phone as a Music Assistant player is set up on that
+    // server's own page, under Libraries — name, stream format, gapless, status and
+    // announcements together with the server they all describe a registration with.
+    // A top-level entry that only pointed at that page was one more place to look
+    // before finding the settings, not one fewer.
     AUDIO(
         "Playback & audio",
-        "Output device, streaming quality, loudness and what happens between tracks",
+        // Driving is named here because the section index is the only place it can be
+        // found from: it is one card among four, and someone looking for it is looking
+        // for a feature rather than for an audio setting.
+        "Output device, loudness, what happens between tracks, and driving controls",
         Icons.Default.GraphicEq,
     ),
     DOWNLOADS(
@@ -139,9 +142,6 @@ fun SettingsScreen(
     val scope = rememberCoroutineScope()
     val settings = remember(context) { AppSettings(context) }
 
-    val servers by settings.servers.collectAsStateWithLifecycle(initialValue = emptyList())
-    val hasMaServer = servers.any { it.kind == ServerKind.MUSIC_ASSISTANT }
-
     // Home Assistant's credentials are read once and held here rather than inside the
     // Light Sync section, so navigating into the bridge page and back doesn't lose a
     // half-typed token.
@@ -195,16 +195,6 @@ fun SettingsScreen(
                                 scope = scope,
                                 detail = detail,
                                 onDetail = onDetail,
-                            )
-
-                            // A signpost, not a page. These settings describe this phone
-                            // as a player on one Music Assistant server, so they live
-                            // with that server — but anyone who knew where they used to
-                            // be would otherwise find the entry simply gone.
-                            SettingsSection.PLAYER -> PlayerSectionMoved(
-                                accent = accent,
-                                hasMaServer = hasMaServer,
-                                onGoToLibraries = { onSection(SettingsSection.LIBRARIES); onDetail(null) },
                             )
 
                             SettingsSection.AUDIO -> AudioSection(viewModel, settings, accent, scope)

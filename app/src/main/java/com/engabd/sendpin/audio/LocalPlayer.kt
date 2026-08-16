@@ -104,11 +104,19 @@ data class LocalTrack(
  *
  * Audio focus and the headphone-unplug pause are ExoPlayer's now
  * (`setAudioAttributes(handleAudioFocus = true)`, `setHandleAudioBecomingNoisy`),
- * which is why the hand-rolled focus listener is gone. Focus still does *not*
- * police the two backends against each other:
- * [com.engabd.sendpin.audio.SendspinAudioEngine] writes to its `AudioTrack` without
- * registering a focus listener, so keeping MA and this player off each other's toes
- * remains [com.engabd.sendpin.ma.LibraryViewModel]'s job, via an explicit stop.
+ * which is why the hand-rolled focus listener is gone.
+ *
+ * Focus deliberately does **not** police the two backends against each other, and
+ * that is now enforced rather than merely intended. `handleAudioFocus = true` means
+ * starting a track here requests `AUDIOFOCUS_GAIN`, which the platform grants by
+ * evicting the previous holder — and in this app the previous holder is routinely
+ * the Sendspin path, in this same process, which read the eviction as "another app
+ * took over" and released its engine. Keeping the two off each other's toes is
+ * [com.engabd.sendpin.service.PlaybackOwner]'s job now: [startOutput] announces the
+ * takeover, [com.engabd.sendpin.service.Playback] asks before tearing anything
+ * down, and the actual handover stays where it always was —
+ * `Playback.pauseForLocalPlayback`, which asks the *server* to pause rather than
+ * silencing a group member locally.
  *
  * Process-scoped (see `SendpinApp.localPlayer`): Now Playing, the library and the
  * media notification all drive the same instance. Every method here must be called
@@ -119,7 +127,39 @@ class LocalPlayer(private val context: Context) {
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
-    private val player: ExoPlayer by lazy { buildPlayer() }
+    /**
+     * The live player, rebuilt on demand after a [release].
+     *
+     * A `by lazy` here was a one-way door, and the identical shape had already been
+     * fixed once in [com.engabd.sendpin.audio.SendspinExoEngine] — where it was
+     * reachable through ordinary use and left the Music Assistant path deaf for the
+     * rest of the connection. Nothing reaches it here today ([release] has no caller
+     * outside process teardown), which is exactly why it was worth changing now: a
+     * `release()` that cannot be recovered from is a trap laid for whoever adds the
+     * first caller, and it would fail the same way — silently, with the object still
+     * present and every later call posting to a dead playback thread.
+     *
+     * The rule this makes true, rather than merely intended: **release() leaves an
+     * object that can start again.**
+     *
+     * Plain `var` rather than a synchronised holder because this class is
+     * main-thread-only by contract (see the class doc) — the same reason ExoPlayer
+     * itself can be touched here at all.
+     */
+    private var livePlayer: ExoPlayer? = null
+    private val player: ExoPlayer
+        get() = livePlayer ?: buildPlayer().also { livePlayer = it }
+
+    /**
+     * Called just before this player takes the audio output, so the Sendspin path
+     * can tell an in-process handover from a foreign app stealing focus.
+     *
+     * Set by `SendpinApp`. A callback rather than a reach back into the singleton
+     * so this class stays constructible on its own, and so the wiring is visible
+     * where the two players are actually put together. See [PlaybackOwner]'s note
+     * on internal focus arbitration for what goes wrong without it.
+     */
+    var onTakingOutput: (() -> Unit)? = null
 
     /**
      * The underlying ExoPlayer, exposed for [LocalPlaybackService] to wrap in a
@@ -386,6 +426,25 @@ class LocalPlayer(private val context: Context) {
         // across a track boundary, and so what makes the transition gapless.
         player.setMediaItems(tracks.map(::mediaItem), start, C.TIME_UNSET)
         player.prepare()
+        startOutput()
+    }
+
+    /**
+     * Start output, announcing the takeover first.
+     *
+     * Every path that *begins* playback goes through here rather than calling
+     * `player.play()` directly, because `play()` is where ExoPlayer requests
+     * `AUDIOFOCUS_GAIN` — and that request evicts the Sendspin path in this same
+     * process. Announcing before rather than after is load-bearing: the focus loss
+     * is dispatched to the previous holder as part of granting the request, so it
+     * can arrive before `playing` has even flipped, and an arbitration reading that
+     * flow would sometimes see `false` and tear the MA engine down anyway.
+     *
+     * Resuming counts and skipping does not: a skip inside a queue that is already
+     * playing never lost focus, so it has nothing to take back.
+     */
+    private fun startOutput() {
+        onTakingOutput?.invoke()
         player.play()
     }
 
@@ -401,7 +460,7 @@ class LocalPlayer(private val context: Context) {
         if (wasEmpty) {
             _hasSession.value = true
             player.prepare()
-            player.play()
+            startOutput()
         }
     }
 
@@ -471,7 +530,7 @@ class LocalPlayer(private val context: Context) {
     fun playAt(position: Int) {
         if (position !in _queue.value.indices) return
         player.seekTo(position, C.TIME_UNSET)
-        player.play()
+        startOutput()
     }
 
     fun pause() = player.pause()
@@ -481,7 +540,7 @@ class LocalPlayer(private val context: Context) {
         // A playlist that ran to the end, or one an error tore down, needs preparing
         // again before it will make sound.
         if (player.playbackState == Player.STATE_IDLE) player.prepare()
-        player.play()
+        startOutput()
     }
 
     fun toggle() = if (_playing.value) pause() else resume()
@@ -557,10 +616,18 @@ class LocalPlayer(private val context: Context) {
         runCatching { player.setPreferredAudioDevice(device) }
     }
 
-    /** Release the player. Only for process teardown — this object is app-scoped. */
+    /**
+     * Release the player.
+     *
+     * Released *and cleared*, so the next play builds a fresh one rather than
+     * posting to this one's dead thread — see [livePlayer]. Deliberately not
+     * `player.release()`, which would build a player only to destroy it if this
+     * object had never started one.
+     */
     fun release() {
         stopTicker()
-        runCatching { player.release() }
+        runCatching { livePlayer?.release() }
+        livePlayer = null
     }
 
     // --- internals --------------------------------------------------------

@@ -181,14 +181,47 @@ class Playback(private val app: Context) {
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> engine?.setVolume(0.3f)
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> engine?.setVolume(0f)
             AudioManager.AUDIOFOCUS_GAIN -> engine?.setVolume(1f)
-            AudioManager.AUDIOFOCUS_LOSS -> {
-                // Another app took over media for good — stop and release.
-                engine?.release()
-                _maAudioSource.value = null
-                _isPlaying.value = false
-                abandonAudioFocus()
-            }
+            AudioManager.AUDIOFOCUS_LOSS -> onPermanentFocusLoss()
         }
+    }
+
+    /**
+     * Focus is gone for good — but by whom?
+     *
+     * The platform does not say, and treating every permanent loss as "another app
+     * took over media" is what left the Music Assistant engine permanently deaf.
+     * `LocalPlayer`'s ExoPlayer is built with `handleAudioFocus = true`, so playing
+     * a Navidrome track requests `AUDIOFOCUS_GAIN` and the platform grants it by
+     * evicting the previous holder — this object, in the same process. This handler
+     * then released the engine, and because `stream/start` kept arriving on a
+     * perfectly healthy socket, nothing looked wrong from the outside: the logs read
+     * `sending message to a Handler on a dead thread`, once per track, for ever.
+     *
+     * Two components in one process should not evict each other through
+     * `AudioManager`, so the local player announces a takeover directly
+     * ([PlaybackOwner.noteLocalTakingOver]) and this asks. An internal handover is
+     * already handled deliberately, from the other side, by
+     * [pauseForLocalPlayback] — which asks the *server* to pause, because the queue
+     * belongs to Music Assistant and silencing this phone locally would leave the
+     * rest of a group playing on. All that is left to do here is go quiet and stop
+     * holding focus we are no longer using.
+     *
+     * A foreign app still gets the full teardown. It is the right response there:
+     * nothing in this process is going to resume, and the engine is holding an
+     * `AudioTrack` and a decoder for a stream nobody can hear.
+     */
+    private fun onPermanentFocusLoss() {
+        val owner = (app.applicationContext as? SendpinApp)?.playbackOwner
+        if (owner?.isInternalHandover() == true) {
+            android.util.Log.i("Playback", "focus lost to this app's own local player - standing down, not releasing")
+            engine?.setVolume(0f)
+            abandonAudioFocus()
+            return
+        }
+        engine?.release()
+        _maAudioSource.value = null
+        _isPlaying.value = false
+        abandonAudioFocus()
     }
 
     private fun requestAudioFocus() {
@@ -405,39 +438,43 @@ class Playback(private val app: Context) {
         // the next isPlaying transition. The connection service drives this from
         // its own watchPlayback observer, but the client needs to know *now*.
         if (!_isPlaying.value) c.setIdleMode(true)
-        // Experimental opt-in (see AppSettings.useExoPlayerForSendspin) — read once,
-        // at connect time: switching mid-connection would orphan whatever the old
-        // engine was doing mid-stream. SendspinAudioEngine stays the default.
-        val eng: SendspinPlaybackEngine = if (settings.useExoPlayerForSendspin.first()) {
-            SendspinExoEngine(
-                app,
-                c.clock,
-                // The engine has already retried and given up (see its own bound) —
-                // force a fresh Sendspin socket rather than leaving a dead stream
-                // sitting there. If Music Assistant still wants this player playing,
-                // a reconnect is what gives it another chance to send stream/start;
-                // reconnectNow() is the same "the user asked for music" escalation
-                // MaRepository.playMedia uses, and its own status text already
-                // surfaces through the c.statusText collector below.
-                onFatalError = { c.reconnectNow() },
-            ).also {
-                it.useOboe = settings.useOboeOutput.first()
-                _maAudioSource.value = it.audioAnalysisTap to it.audioLead
-            }
-        } else {
-            _maAudioSource.value = null
-            SendspinAudioEngine(c.clock)
+        // ExoPlayer is the MA engine. Not a default, not an opt-in — the only one.
+        //
+        // It was an experimental switch, off by default, on the reasoning that the
+        // path was unvalidated on hardware and should not silently become everyone's
+        // player on upgrade. Hardware has since answered: the hand-built
+        // MediaCodec + AudioTrack engine produces no audio on the owner's device,
+        // and the ExoPlayer path does. A toggle whose off position is silence is not
+        // a safety measure.
+        //
+        // [SendspinAudioEngine] is deliberately left in the tree rather than deleted
+        // — it still owns END_LINGER_MS, and the two engines fail in different
+        // enough places that having the other one to compare against has been worth
+        // more than once — but nothing selects it any more.
+        //
+        // Oboe stays opt-in and off: that path is still silent, and the
+        // investigation is live in `docs/oboe-investigation.md`.
+        val eng = SendspinExoEngine(
+            app,
+            c.clock,
+            // The engine has already retried and given up (see its own bound) —
+            // force a fresh Sendspin socket rather than leaving a dead stream
+            // sitting there. If Music Assistant still wants this player playing,
+            // a reconnect is what gives it another chance to send stream/start;
+            // reconnectNow() is the same "the user asked for music" escalation
+            // MaRepository.playMedia uses, and its own status text already
+            // surfaces through the c.statusText collector below.
+            onFatalError = { c.reconnectNow() },
+        ).also {
+            // Read once, at connect time: switching mid-connection would orphan
+            // whatever the old output was doing mid-stream.
+            it.useOboe = settings.useOboeOutput.first()
+            _maAudioSource.value = it.audioAnalysisTap to it.audioLead
         }
         engine = eng
-        // Which engine is live is the first thing any "MA plays but there is no
-        // sound" report needs to establish, and it is otherwise invisible: the two
-        // are chosen from a setting, log under different tags, and fail in entirely
-        // different places.
-        android.util.Log.i(
-            "Playback",
-            "sendspin engine = ${eng.javaClass.simpleName}" +
-                (eng as? SendspinExoEngine)?.let { " (oboe=${it.useOboe})" }.orEmpty(),
-        )
+        // Which output is live is the first thing any "MA plays but there is no
+        // sound" report needs to establish, and it is otherwise invisible.
+        android.util.Log.i("Playback", "sendspin engine = SendspinExoEngine (oboe=${eng.useOboe})")
 
         scope.launch { c.state.collect { _connected.value = it == SendspinClient.State.CONNECTED } }
         scope.launch { c.statusText.collect { _connectionStatus.value = it } }
@@ -502,6 +539,10 @@ class Playback(private val app: Context) {
             override fun onStreamStart(format: StreamStartPlayerInfo) {
                 eng.start(format)
                 idleJob?.cancel(); idleJob = null
+                // A new stream is the only thing that can legitimately move the
+                // playhead backwards on the same track — Music Assistant restarts the
+                // queue to seek. Open the window that lets the next reading do it.
+                acceptRewindUntilUs = c.clock.nowUs() + REWIND_GRACE_US
                 scope.launch {
                     requestAudioFocus()
                     _isPlaying.value = true
@@ -633,6 +674,18 @@ class Playback(private val app: Context) {
     @Volatile private var trackSettleUntilUs: Long = 0L
 
     /**
+     * [ClockSync.nowUs] until which a *backwards* progress reading is believed.
+     *
+     * Armed by `stream/start`, because that is what a seek looks like from here.
+     * Music Assistant resolves `players/cmd/seek` into `play_index(seek_position=)`,
+     * which restarts the queue — so every genuine seek, whether this app asked for
+     * it or another controller did, arrives with a fresh stream. Outside that window
+     * a same-track reading that would move the playhead backwards is a re-statement
+     * of something already projected past, not news. See [anchorProgress].
+     */
+    @Volatile private var acceptRewindUntilUs: Long = 0L
+
+    /**
      * Take a `server/state` progress reading, dated by the server's own clock.
      *
      * `metadata.timestamp` is in server time, so [ClockSync.serverTimeToLocal] converts
@@ -675,13 +728,61 @@ class Playback(private val app: Context) {
             ?.takeIf { it > 0L && c.clock.isSynced() }
             ?.let { c.clock.serverTimeToLocal(it) }
             ?.takeIf { kotlin.math.abs(nowUs - it) <= MAX_ANCHOR_AGE_US }
-        progressAnchor = ProgressProjection.Anchor(
+        val candidate = ProgressProjection.Anchor(
             positionMs = position,
             atLocalUs = stampedLocalUs ?: nowUs,
             speedMilli = np.speedMilli,
             durationMs = np.durationMs ?: 0L,
         )
+        if (isStaleRewind(candidate, nowUs)) return
+        progressAnchor = candidate
         republishPosition()
+    }
+
+    /**
+     * Is this reading the server repeating itself rather than telling us something?
+     *
+     * The bar used to saw: seek to 0:53, watch it climb to 0:57, snap back to 0:53,
+     * climb again. The projection was never wrong — the anchor under it was being
+     * rebuilt from a reading that had not moved.
+     *
+     * `metadata.timestamp` is documented as the instant `track_progress` was true at,
+     * and the spec's own formula depends on that. Music Assistant stamps the
+     * *message*. Its queue's elapsed time advances on MA's own cadence, so any
+     * `server/state` sent between two of those updates carries a progress figure that
+     * is seconds old wearing a timestamp that says "now" — and anchoring on it drags
+     * the playhead back to wherever MA last recomputed it. `NowPlayingViewModel` has
+     * guarded against exactly this since it was written, using MA's
+     * `elapsed_time_last_updated`; the Sendspin path had no equivalent because the
+     * protocol offers none.
+     *
+     * So the discriminator is the stream rather than the clock. Music Assistant
+     * resolves `players/cmd/seek` into `play_index(..., seek_position=)`, which
+     * restarts the queue — every genuine seek therefore arrives with a `stream/start`,
+     * whether this app asked for it or another controller did. Inside that window a
+     * rewind is believed. Outside it, on the same track, while playing, a reading that
+     * would move the playhead backwards is discarded and the existing projection
+     * carries on.
+     *
+     * [UNAMBIGUOUS_REWIND_MS] is the escape hatch, and it is deliberately generous. If
+     * some Music Assistant build ever seeks without restarting the stream, a big jump
+     * still lands; only the small ones — which are the stale ones — are held. Rejections
+     * are logged, because a bar that quietly refuses to move backwards is worse to
+     * diagnose than one that says why.
+     */
+    private fun isStaleRewind(candidate: ProgressProjection.Anchor, nowUs: Long): Boolean {
+        if (!_isPlaying.value) return false
+        if (nowUs <= acceptRewindUntilUs) return false
+        val current = progressAnchor ?: return false
+        val currentNow = ProgressProjection.project(current, nowUs, playing = true)
+        val candidateNow = ProgressProjection.project(candidate, nowUs, playing = true)
+        val rewindMs = currentNow - candidateNow
+        if (rewindMs <= 0L || rewindMs >= UNAMBIGUOUS_REWIND_MS) return false
+        android.util.Log.d(
+            "Playback",
+            "ignoring restated progress: ${candidateNow}ms is ${rewindMs}ms behind the projection",
+        )
+        return true
     }
 
     /** Publish the anchor projected to now — see [ProgressProjection]. */
@@ -986,6 +1087,26 @@ class Playback(private val app: Context) {
 
         /** How long a same-track reading is held after a detected track boundary. */
         const val TRACK_TRANSITION_SETTLE_US = 600_000L
+
+        /**
+         * How long after a `stream/start` a backwards progress reading is believed.
+         *
+         * Long enough for the server to get round to describing the stream it has
+         * just started — the first `server/state` after a seek is not instant — and
+         * short enough that it has closed again well before the reading that
+         * [isStaleRewind] exists to reject.
+         */
+        const val REWIND_GRACE_US = 4_000_000L
+
+        /**
+         * A backwards jump this large is taken as real however it arrived.
+         *
+         * Above Music Assistant's own five-second progress cadence, so a restated
+         * reading cannot reach it, and far below any rewind a person would make on
+         * purpose. The safety valve for a server that ever seeks without restarting
+         * the stream.
+         */
+        const val UNAMBIGUOUS_REWIND_MS = 10_000L
     }
 
     private fun httpBase(url: String): String {

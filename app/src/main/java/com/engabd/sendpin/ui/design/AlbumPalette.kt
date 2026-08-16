@@ -76,16 +76,47 @@ private const val MIN_ACCENT_C = 12f
 private const val ACCENT_C_FRACTION = 0.42f
 
 /**
- * OKLab lightness the accent is lifted to.
+ * The band the accent's lightness is allowed to land in.
  *
- * Perceptual, so one number covers every hue — that is the whole reason the lift
- * moved into OKLab. Bright enough to carry text and glows against true black,
- * short of the point where a colour starts reading as tinted white.
+ * **The accent keeps the cover's own lightness, clamped into this band.** It used to
+ * be pinned to a single perceptual value — one number for every hue, on the reasoning
+ * that equal OKLab L is equal apparent brightness and so no hue is quietly favoured.
+ * That reasoning is correct and the consequence was still wrong, because sRGB's hues
+ * do not live at the same lightness:
+ *
+ * | Fully saturated sRGB | OKLab L |
+ * |---|---|
+ * | blue  `#0000FF` | 0.45 |
+ * | red   `#FF0000` | 0.63 |
+ * | green `#00FF00` | 0.87 |
+ *
+ * Pinning all three at 0.78 asks red to be much lighter than red can be and blue
+ * much lighter still — so each arrives as a pale tint of itself. Worse, it takes
+ * their chroma with it: the sRGB gamut narrows sharply as lightness moves away from
+ * a hue's own peak, so the ceiling the chroma is capped at collapses at the same
+ * time. Red came out light *and* washed; blue and violet came out worse. Green was
+ * nearly unaffected, which is why greens looked right and everything else looked
+ * faded — the same asymmetry the HSL lift had, arrived at from the opposite
+ * direction.
+ *
+ * So the band is a legibility constraint, not a target. [ACCENT_L_MIN] is where a
+ * colour still carries text and glows against true black; [ACCENT_L_MAX] is where
+ * one starts reading as tinted white. Between them the cover decides, which is what
+ * "an accurate representation of album art colour" has to mean.
  */
-private const val ACCENT_L = 0.78f
+private const val ACCENT_L_MIN = 0.55f
+private const val ACCENT_L_MAX = 0.88f
 
-/** Companions sit just below the accent, so the lead still leads a gradient. */
-private const val COMPANION_L = 0.72f
+/**
+ * How far a companion is held below the accent, so the lead still leads a gradient.
+ *
+ * Applied as a ceiling on an otherwise faithful lightness rather than as a second
+ * fixed target: a companion darker than this is left where the cover put it.
+ */
+private const val COMPANION_L_HEADROOM = 0.06f
+
+/** A companion may not fall below this, or it disappears into the page. */
+private const val COMPANION_L_MIN = 0.38f
 
 /**
  * Chroma floor, as a fraction of what sRGB can hold at that lightness and hue.
@@ -107,6 +138,21 @@ private const val NEUTRAL_MAX_C = 0.02f
 private const val VALUE_FLOOR = 0.15f    // keep even the darkest swatch faintly visible
 private const val HUE_MIN_SEP_DEG = 22f  // reject near-duplicate accent hues
 private const val MAX_ACCENTS = 4        // leave a slot for a populous muted tone
+
+/**
+ * How many genuinely colourless swatches the palette may contain.
+ *
+ * This is why white used to take over a cover it was a minority of. Accent clusters
+ * are deduplicated by hue ([HUE_MIN_SEP_DEG]), so three shades of one red collapse
+ * into a single swatch — and nothing did the same for neutrals, so three shades of
+ * off-white each kept a slot of their own. A sleeve that was 60% red and 25% white
+ * could therefore end up one red and three whites, and since the whites are the
+ * brightest things in the set, the glows and gradients built from them read as a
+ * white cover.
+ *
+ * One is enough to say "there is white here" without letting it outvote the colour.
+ */
+private const val MAX_NEUTRAL_SWATCHES = 1
 
 /** Tinted whites for the genuinely-colourless case (from syncoV2 album_art.py). */
 private val WARM_WHITE = floatArrayOf(1.0f, 0.93f, 0.86f)
@@ -511,10 +557,21 @@ internal fun kmeansPalette(pixels: List<FloatArray>, k: Int = 5): Extraction? {
     // Fill the remaining slots with the most populous non-accent clusters: the muted
     // and dark tones that set the mood. They come *after* the accents rather than
     // before, so a colourful cover spends its slots on its colours.
-    val bases = clusters
-        .filter { it.chroma < accentFloor }
-        .sortedByDescending { it.population }
-        .take((k - accents.size).coerceAtLeast(0))
+    //
+    // Split by whether they have any colour at all, and the colourless ones capped —
+    // see [MAX_NEUTRAL_SWATCHES]. Accents are deduplicated by hue and neutrals were
+    // not, so a cover's three off-whites each took a slot while its three reds
+    // collapsed into one. Taking the tinted ones first means a second shade of a
+    // colour the cover actually has always beats a third shade of its background.
+    val nonAccent = clusters.filter { it.chroma < accentFloor }
+    val remaining = (k - accents.size).coerceAtLeast(0)
+    val tinted = nonAccent.filter { it.chroma >= ACHROMATIC_C }.sortedByDescending { it.population }
+    val neutral = nonAccent.filter { it.chroma < ACHROMATIC_C }.sortedByDescending { it.population }
+    // Deliberately allowed to come up short. A palette of three real colours is a
+    // better description of a cover than the same three padded out with greys, and
+    // `AlbumPalette.swatch` wraps, so nothing downstream needs a fixed count.
+    val bases = (tinted + neutral.take(MAX_NEUTRAL_SWATCHES))
+        .take(remaining)
         .map { c ->
             val rgb = if (c.chroma < ACHROMATIC_C) tintedWhite(c.rgb, c.hsv[2])
             else hsvToRgb(c.hsv[0], c.hsv[1], max(VALUE_FLOOR, c.hsv[2]))
@@ -574,19 +631,26 @@ internal fun paletteOf(bmp: Bitmap): AlbumPalette? {
  * and stays a soft silver.
  */
 internal fun liftedPalette(extracted: Extraction): AlbumPalette {
-    val accent = liftOne(extracted.lead, ACCENT_L, extracted.achromatic)
+    val accent = liftOne(extracted.lead, ACCENT_L_MIN, ACCENT_L_MAX, extracted.achromatic)
+    val accentL = oklabToOklch(rgbToOklab(accent.red, accent.green, accent.blue))[0]
 
     // Companions keep the cover's hue order (so gradients drift rather than jump)
-    // and are lifted the same way, a little darker so the lead still leads. The lead
+    // and are lifted the same way, held below the lead so it still leads. The lead
     // leads the list too: swatch(0) is what the glows are built from. A companion
     // that is itself near-grey keeps its greyness rather than being pushed into a
     // hue of its own — the same rule the accent follows, applied per swatch instead
     // of once for the whole cover.
+    //
+    // The ceiling is derived from the accent that was actually produced rather than
+    // from a constant, because the accent's own lightness is now the cover's. A
+    // fixed companion lightness under a variable accent would put companions *above*
+    // the lead on any cover whose lead is dark.
+    val companionCeiling = (accentL - COMPANION_L_HEADROOM).coerceAtLeast(COMPANION_L_MIN)
     val companions = extracted.swatches
         .filter { it !== extracted.lead }
         .map { rgb ->
             val chroma = oklabToOklch(rgbToOklab(rgb[0], rgb[1], rgb[2]))[1]
-            liftOne(rgb, COMPANION_L, achromatic = chroma < ACHROMATIC_OKLCH_C)
+            liftOne(rgb, COMPANION_L_MIN, companionCeiling, achromatic = chroma < ACHROMATIC_OKLCH_C)
         }
 
     return AlbumPalette(accent = accent, swatches = listOf(accent) + companions)
@@ -595,28 +659,40 @@ internal fun liftedPalette(extracted: Extraction): AlbumPalette {
 /**
  * One extracted colour → one the app can paint with, in OKLCh.
  *
- * Three rules, and the second is the one that changed the character of the output:
+ * Three rules:
  *
  *  1. **Hue is kept exactly.** It is what the cover most unambiguously *is*, and it
  *     survives both the lift and the gamut mapping untouched.
- *  2. **Chroma is the cover's own**, floored so a nearly-grey lead still reads as a
- *     colour, and capped only by what sRGB can actually hold at this lightness and
- *     hue. It is deliberately *not* squeezed into a band. The old lift clamped
- *     saturation into `0.50..0.72`, which is narrow enough that a muted watercolour
- *     sleeve and a neon one came out at almost identical intensity — every album
- *     arriving at the same loudness is most of why the palette felt limited. A
- *     restrained cover should look restrained.
- *  3. **Lightness is a fixed perceptual target**, which is the point of doing this in
- *     OKLab at all: [ACCENT_L] means the same apparent brightness whether the hue is
- *     yellow or indigo, so no hue is quietly favoured the way HSL favoured green.
+ *  2. **Lightness is the cover's own, clamped into `[minL, maxL]`.** It used to be
+ *     pinned to one perceptual value for every hue. That is defensible in the
+ *     abstract — equal OKLab L is equal apparent brightness — and it is why red came
+ *     out as light red and violet as faded violet: sRGB's red lives at L 0.63 and its
+ *     blue at L 0.45, so a target of 0.78 asked both to be lighter than they can be
+ *     and, because the gamut narrows away from a hue's own peak, cut the chroma they
+ *     could hold on the way. The clamp is now only what legibility against true black
+ *     requires; inside it, the cover decides. See [ACCENT_L_MIN].
+ *  3. **Chroma is the cover's own**, floored so a nearly-grey lead still reads as a
+ *     colour, and capped only by what sRGB can actually hold at that lightness and
+ *     hue. Deliberately *not* squeezed into a band: an older lift clamped saturation
+ *     into `0.50..0.72`, so a watercolour sleeve and a neon one arrived at almost
+ *     identical intensity. A restrained cover should look restrained.
+ *
+ * Rules 2 and 3 compound in the right direction now rather than the wrong one. A
+ * saturated red keeps L 0.63, where sRGB holds roughly twice the chroma it holds at
+ * 0.78 — so the same source colour comes out both darker and more colourful, which
+ * together is the whole of "that is the red on the sleeve".
  *
  * A colour with no real hue is lifted in lightness alone and stays a soft neutral —
  * the second half of the old "everything falls back to gold" problem was forcing
  * chroma onto a grey, and a floor applied blindly would reintroduce exactly that.
  */
-private fun liftOne(rgb: FloatArray, targetL: Float, achromatic: Boolean): Color {
+private fun liftOne(rgb: FloatArray, minL: Float, maxL: Float, achromatic: Boolean): Color {
     val lch = oklabToOklch(rgbToOklab(rgb[0], rgb[1], rgb[2]))
     val hue = lch[2]
+    // `coerceAtLeast` on the ceiling because a caller may hand a band that has
+    // collapsed — a very dark accent leaves companions no room — and `coerceIn`
+    // throws rather than clamping when the range is inverted.
+    val targetL = lch[0].coerceIn(minL, maxL.coerceAtLeast(minL))
     if (achromatic) return oklchColor(targetL, lch[1].coerceAtMost(NEUTRAL_MAX_C), hue)
     // The floor is a fraction of what this hue can hold rather than an absolute, so
     // it means the same thing across the gamut: sRGB reaches far more chroma in

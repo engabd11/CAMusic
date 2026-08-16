@@ -8,6 +8,8 @@ import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.audio.FormatNegotiator
 import com.engabd.sendpin.audio.LocalRadio
 import com.engabd.sendpin.audio.LocalTrack
+import com.engabd.sendpin.audio.JellyfinRadioSource
+import com.engabd.sendpin.audio.RadioSource
 import com.engabd.sendpin.audio.SubsonicRadioSource
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.PlayerIdentity
@@ -1821,18 +1823,24 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         val seed = seedId?.let { id -> lastSeeds[id] }
         val exclude = queue.mapNotNull { it.scrobbleId ?: it.id }.toSet()
 
-        val picked = if (_offline.value) {
+        // Which generator this library can offer. Each self-hosted backend has its
+        // own — Subsonic's `getSimilarSongs`, Jellyfin's `InstantMix` — and a source
+        // with neither falls back to the offline picker over what is on the phone.
+        //
+        // Jellyfin used to take that fallback, and it was the whole of "keep the
+        // music going doesn't work on Jellyfin": the check asked for a
+        // `SubsonicSource` specifically, so a Jellyfin library with nothing
+        // downloaded picked nothing and the queue ended silently, exactly as if the
+        // setting were off.
+        val generator: RadioSource? = when (val s = source) {
+            is SubsonicSource -> SubsonicRadioSource(s.subsonic)
+            is com.engabd.sendpin.library.JellyfinSource -> JellyfinRadioSource(s.jellyfin)
+            else -> null
+        }
+        val picked = if (_offline.value || generator == null) {
             radio.offline(downloads.value.map { downloadItem(it) }, seed, RADIO_BATCH, exclude)
         } else {
-            // The radio generator is Subsonic's `getSimilarSongs`; a source
-            // without SIMILAR has nothing to seed from and falls back to the
-            // offline picker over what is on the phone.
-            val sc = (source as? SubsonicSource)?.subsonic
-            if (sc == null) {
-                radio.offline(downloads.value.map { downloadItem(it) }, seed, RADIO_BATCH, exclude)
-            } else {
-                radio.next(SubsonicRadioSource(sc), seed, RADIO_BATCH, exclude)
-            }
+            radio.next(generator, seed, RADIO_BATCH, exclude)
         }
         if (picked.isEmpty()) return
         rememberSeeds(picked)
@@ -2243,66 +2251,39 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     fun isFavorite(item: MaItem): Boolean = item.itemId in _favorites.value
 
     // --- track preview -----------------------------------------------------
+    //
+    // Extracted to [TrackPreviewPlayer]: it is the one part of this class that owns a
+    // *player* rather than browse state, so its lifetime is its own. The two entry
+    // points stay here so no caller changed.
 
     /** The track currently being auditioned, if any. */
-    private val _previewing = MutableStateFlow<String?>(null)
-    val previewing: StateFlow<String?> = _previewing
+    val previewing: StateFlow<String?> get() = preview.previewing
 
-    private var previewPlayer: androidx.media3.exoplayer.ExoPlayer? = null
+    private val preview by lazy {
+        TrackPreviewPlayer(
+            context = getApplication(),
+            repo = maRepo,
+            scope = viewModelScope,
+            onMessage = { _toast.tryEmit(it) },
+        )
+    }
 
     /**
-     * Audition a track without touching the queue: MA hands back a short preview
-     * URL, which plays locally on the phone. Tapping the same track again stops it,
-     * as does starting another one.
+     * Music Assistant is the only backend with previews to hand back.
      *
-     * Uses ExoPlayer (media3) rather than the deprecated `android.media.MediaPlayer`.
-     * ExoPlayer handles audio focus natively via `setAudioAttributes(..., true)` and
-     * integrates with the system MediaSession if one is active.
+     * The backend check is deliberately *third*, not first, which is where the
+     * original had it: a preview started on MA and still running when the library
+     * switches to Navidrome must still be stoppable by tapping it. Checking the
+     * backend up front would return before either branch and strand it playing.
      */
-    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
     fun togglePreview(item: MaItem) {
-        if (_previewing.value == item.itemId) { stopPreview(); return }
+        if (previewing.value == item.itemId) { stopPreview(); return }
         stopPreview()
         if (_backend.value != Backend.MA) return
-        _previewing.value = item.itemId
-        viewModelScope.launch {
-            val url = try { maRepo.trackPreview(item.itemId, item.provider) } catch (_: Exception) { null }
-            if (url.isNullOrBlank()) {
-                _previewing.value = null
-                _toast.tryEmit("No preview available for this track")
-                return@launch
-            }
-            // The user may have stopped it while the URL was in flight.
-            if (_previewing.value != item.itemId) return@launch
-            try {
-                val attrs = androidx.media3.common.AudioAttributes.Builder()
-                    .setUsage(androidx.media3.common.C.USAGE_MEDIA)
-                    .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MUSIC)
-                    .build()
-                previewPlayer = androidx.media3.exoplayer.ExoPlayer.Builder(getApplication())
-                    .setAudioAttributes(attrs, /* handleAudioFocus = */ true)
-                    .build().apply {
-                        setMediaItem(androidx.media3.common.MediaItem.fromUri(url))
-                        prepare()
-                        playWhenReady = true
-                        addListener(object : androidx.media3.common.Player.Listener {
-                            override fun onPlaybackStateChanged(state: Int) {
-                                if (state == androidx.media3.common.Player.STATE_ENDED) stopPreview()
-                            }
-                        })
-                    }
-            } catch (_: Exception) {
-                _previewing.value = null
-                _toast.tryEmit("Couldn't play the preview")
-            }
-        }
+        preview.toggle(item)
     }
 
-    fun stopPreview() {
-        _previewing.value = null
-        previewPlayer?.let { p -> runCatching { p.stop() }; runCatching { p.release() } }
-        previewPlayer = null
-    }
+    fun stopPreview() = preview.stop()
 
     private fun rootItems(): List<MaItem> = buildList {
         when {

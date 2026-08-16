@@ -61,8 +61,11 @@ class AppSettings(private val context: Context) {
         private val SENDSPIN_CODEC = stringPreferencesKey("sendspin_codec")     // "auto" | "flac" | "pcm" | "opus"
         private val NAV_STREAM_FORMAT = stringPreferencesKey("nav_stream_format") // Subsonic `format=` ("raw" = original)
         private val BIT_PERFECT = booleanPreferencesKey("bit_perfect_24bit")     // 24-bit AudioTrack path when available
-        private val SENDSPIN_EXOPLAYER = booleanPreferencesKey("sendspin_exoplayer") // experimental: ExoPlayer instead of SendspinAudioEngine for MA
-        private val SENDSPIN_OBOE = booleanPreferencesKey("sendspin_oboe") // experimental: native Oboe output on top of sendspin_exoplayer
+        // "sendspin_exoplayer" was here and is deliberately not replaced. The
+        // ExoPlayer engine is the only MA engine now, so a stored `false` from a
+        // tester's earlier install must not keep silencing them — leaving the key
+        // unread is what makes the upgrade unconditional.
+        private val SENDSPIN_OBOE = booleanPreferencesKey("sendspin_oboe") // experimental: native Oboe output instead of the platform AudioTrack
         private val PREFERRED_AUDIO_DEVICE_ID = stringPreferencesKey("preferred_audio_device_id") // USB DAC routing
         private val DOWNLOAD_STORAGE_CAP_MB = stringPreferencesKey("download_storage_cap_mb") // 0 = unlimited
         private val DOWNLOAD_WIFI_ONLY = booleanPreferencesKey("download_wifi_only") // skip downloads on mobile data
@@ -72,6 +75,12 @@ class AppSettings(private val context: Context) {
         private val REPLAY_GAIN = stringPreferencesKey("replay_gain_mode")      // off | track | album
         private val LYRICS_OFFSET_MS = stringPreferencesKey("lyrics_offset_ms") // +ve = lyrics run late
         private val KEEP_ALIVE_ANNOUNCEMENTS = booleanPreferencesKey("keep_alive_announcements") // persist connection for TTS
+
+        // Driving mode — a slim always-on-top transport for a phone in a cradle.
+        private val DRIVING_ENABLED = booleanPreferencesKey("driving_enabled")
+        private val DRIVING_MECHANISM = stringPreferencesKey("driving_mechanism") // pip | overlay
+        private val DRIVING_CAR_ADDRESS = stringPreferencesKey("driving_car_address") // bonded device MAC
+        private val DRIVING_CAR_NAME = stringPreferencesKey("driving_car_name")       // for the settings row
 
         // Self-hosted crash reporting
         private val CRASH_GITHUB_REPO = stringPreferencesKey("crash_github_repo") // owner/repo, e.g. engabd11/CAMusic
@@ -156,6 +165,12 @@ class AppSettings(private val context: Context) {
 
         const val MODE_HA = "ha"
         const val MODE_DIRECT = "direct"
+
+        /** Picture-in-Picture: no permission, small fixed window. The default. */
+        const val DRIVING_PIP = "pip"
+
+        /** `SYSTEM_ALERT_WINDOW`: driving-sized targets, free positioning. */
+        const val DRIVING_OVERLAY = "overlay"
         const val BACKEND_SUBSONIC = "subsonic"
         const val BACKEND_MA = "ma"
 
@@ -477,24 +492,21 @@ class AppSettings(private val context: Context) {
     val bitPerfect24Bit: Flow<Boolean> = context.dataStore.data.map { it[BIT_PERFECT] ?: false }
 
     /**
-     * Experimental: route MA (Sendspin) playback through [com.engabd.sendpin.audio.SendspinExoEngine]
-     * (ExoPlayer + [com.engabd.sendpin.audio.SendspinDataSource]) instead of the
-     * default [com.engabd.sendpin.audio.SendspinAudioEngine] (hand-built MediaCodec +
-     * AudioTrack). See `docs/exoplayer-upgrade-plan.md`. Off by default: the
-     * ExoPlayer path is new and unvalidated on real hardware, so this exists to
-     * make it something a tester opts into per device, not something that
-     * silently becomes everyone's player on upgrade.
-     */
-    val useExoPlayerForSendspin: Flow<Boolean> = context.dataStore.data.map { it[SENDSPIN_EXOPLAYER] ?: false }
-
-    /**
-     * Experimental, and only meaningful when [useExoPlayerForSendspin] is also on:
-     * routes decoded MA audio through the native Oboe engine
+     * Experimental: routes decoded MA audio through the native Oboe engine
      * ([com.engabd.sendpin.audio.SendspinNativeOutput]) instead of the platform
      * `AudioTrack`. Only 16-bit PCM is supported - combining this with
-     * [bitPerfect24Bit] is a known gap, not yet handled. Off by default: unlike
-     * the ExoPlayer/DataSource path, this native code has not been compiled or
-     * run at all as of the change that added it.
+     * [bitPerfect24Bit] is a known gap, not yet handled.
+     *
+     * Off by default and staying that way for now: this path is silent on device.
+     * The stream opens and starts cleanly, `buffered == written` on every stall so
+     * not one frame is ever consumed, and ExoPlayer eventually gives up with
+     * `Player stuck playing with no progress`. Three genuine defects have been
+     * fixed along the way and none of them was this one — see
+     * `docs/oboe-investigation.md`.
+     *
+     * The `useExoPlayerForSendspin` companion to this is gone: the ExoPlayer engine
+     * is no longer optional, it is the only MA engine. See
+     * [com.engabd.sendpin.service.Playback.startSendspin].
      */
     val useOboeOutput: Flow<Boolean> = context.dataStore.data.map { it[SENDSPIN_OBOE] ?: false }
 
@@ -746,11 +758,6 @@ class AppSettings(private val context: Context) {
         context.dataStore.edit { it[BIT_PERFECT] = value }
     }
 
-    /** Takes effect on the next `connectToServer()` — the engine is chosen when the Sendspin client (re)connects. */
-    suspend fun setUseExoPlayerForSendspin(value: Boolean) {
-        context.dataStore.edit { it[SENDSPIN_EXOPLAYER] = value }
-    }
-
     /** Takes effect on the next `connectToServer()` — see [useOboeOutput]. */
     suspend fun setUseOboeOutput(value: Boolean) {
         context.dataStore.edit { it[SENDSPIN_OBOE] = value }
@@ -916,6 +923,59 @@ class AppSettings(private val context: Context) {
     /** Hand control of the transport back to the library selection. */
     suspend fun setLightSyncModeAuto(auto: Boolean) {
         context.dataStore.edit { it[LIGHT_SYNC_MODE_AUTO] = auto }
+    }
+
+    // ── Driving mode ─────────────────────────────────────────────────────────
+    //
+    // A phone in a cradle running Maps, and changing a track meaning: leave the map,
+    // find the app, hit a small target, go back. That is the one genuinely *unsafe*
+    // gap in this app, so the controls are large, few, and reachable without leaving
+    // whatever is on screen.
+
+    /** The feature is switched on at all. Off by default — it asks for permissions. */
+    val drivingEnabled: Flow<Boolean> = context.dataStore.data.map { it[DRIVING_ENABLED] ?: false }
+
+    /**
+     * Which window mechanism the bar uses.
+     *
+     * [DRIVING_PIP] costs no permission at all and is therefore the default: a
+     * feature someone sets up once in a car park should not open with a Settings
+     * trip. It buys a small fixed window, a capped number of actions, and the rule
+     * that the activity must be foreground at the moment it enters — so the flow is
+     * "open the app, then start navigating".
+     *
+     * [DRIVING_OVERLAY] is the one that gives genuinely driving-sized targets and
+     * free positioning, and costs `SYSTEM_ALERT_WINDOW`.
+     */
+    val drivingMechanism: Flow<String> =
+        context.dataStore.data.map { it[DRIVING_MECHANISM] ?: DRIVING_PIP }
+
+    /**
+     * The bonded Bluetooth device the user nominated as their car stereo, or blank.
+     *
+     * The trigger is deliberately *not* "is Google Maps in front". Reading the
+     * foreground app needs either `PACKAGE_USAGE_STATS` or an `AccessibilityService`
+     * — a Settings-screen grant or the most policy-sensitive permission on the
+     * platform — and the requirement is "control music without leaving the map", not
+     * "know that Maps is running". Connecting to the car is the same situation and
+     * costs one runtime permission.
+     */
+    val drivingCarAddress: Flow<String> = context.dataStore.data.map { it[DRIVING_CAR_ADDRESS] ?: "" }
+    val drivingCarName: Flow<String> = context.dataStore.data.map { it[DRIVING_CAR_NAME] ?: "" }
+
+    suspend fun setDrivingEnabled(on: Boolean) {
+        context.dataStore.edit { it[DRIVING_ENABLED] = on }
+    }
+
+    suspend fun setDrivingMechanism(value: String) {
+        context.dataStore.edit { it[DRIVING_MECHANISM] = value }
+    }
+
+    suspend fun setDrivingCar(address: String, name: String) {
+        context.dataStore.edit {
+            it[DRIVING_CAR_ADDRESS] = address
+            it[DRIVING_CAR_NAME] = name
+        }
     }
 
     suspend fun setLightSyncEnabled(on: Boolean) {

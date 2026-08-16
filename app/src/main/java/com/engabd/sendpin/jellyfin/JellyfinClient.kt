@@ -395,6 +395,57 @@ class JellyfinClient(
     suspend fun randomSongs(size: Int = 100): List<MaItem> =
         items(types = "Audio", sortBy = "Random", limit = size)
 
+    // ── Radio ─────────────────────────────────────────────────────────────
+    //
+    // "Keep the music going" did nothing at all on this backend. The top-up asked
+    // for a `SubsonicSource` specifically and, not finding one, fell through to the
+    // offline picker over downloaded files — so on a Jellyfin library with nothing
+    // downloaded the queue simply ended, silently, exactly as if the setting were
+    // off. See `LibraryViewModel.topUpRadio`.
+    //
+    // Jellyfin has no `getSimilarSongs`. It has two better things, and they are what
+    // these map onto.
+
+    /**
+     * Jellyfin's own radio: a mix built around [itemId], which may be a track, an
+     * album or an artist.
+     *
+     * `/Items/{id}/InstantMix` is the endpoint behind the "Instant Mix" button in
+     * Jellyfin's own clients, so this is the same suggestion engine the server
+     * already offers — a better answer than similarity metadata, and one that works
+     * on a server with no last.fm data at all.
+     */
+    suspend fun instantMix(itemId: String, count: Int = 50): List<MaItem> {
+        val params = mapOf(
+            "UserId" to userId,
+            "Limit" to count.toString(),
+            "Fields" to "$BASE_FIELDS,MediaSources",
+            "ImageTypeLimit" to "1",
+        )
+        return get("/Items/$itemId/InstantMix", params)["Items"]?.jsonArray.orEmpty()
+            .mapNotNull { (it as? JsonObject)?.let(::item) }
+    }
+
+    /**
+     * The artist's most-played tracks.
+     *
+     * By name rather than by id, because that is what the radio's seed carries: a
+     * `LocalTrack` has a display credit and no artist id. Resolved through a search
+     * for the artist and then a play-count sort under it, which is the same two-step
+     * Jellyfin's own clients make.
+     */
+    suspend fun topSongsByArtist(artistName: String, count: Int = 50): List<MaItem> {
+        val artist = items(types = "MusicArtist", searchTerm = artistName, limit = 1)
+            .firstOrNull() ?: return emptyList()
+        return items(
+            types = "Audio",
+            artistIds = artist.itemId,
+            sortBy = "PlayCount",
+            sortOrder = "Descending",
+            limit = count,
+        )
+    }
+
     suspend fun randomAlbums(limit: Int = 12): List<MaItem> =
         items(types = "MusicAlbum", sortBy = "Random", limit = limit)
 
