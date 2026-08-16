@@ -1,10 +1,21 @@
 package com.engabd.sendpin.ui.design
 
+import android.animation.ValueAnimator
 import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.VisibilityThreshold
 import androidx.compose.animation.core.spring
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.IntOffset
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 
 /**
  * The app's motion tokens.
@@ -81,4 +92,64 @@ object Motion {
         stiffness = 380f,
         visibilityThreshold = 1f,
     )
+}
+
+/**
+ * Whether the user has asked the system to remove animations.
+ *
+ * **This is not a duration multiplier, and deliberately so** — read the next two
+ * paragraphs before adding one, because the obvious version of that is already there
+ * and adding a second would fight it.
+ *
+ * Compose already honours the setting for anything animating in a coroutine context
+ * derived from the composition, which in this app is everything: `WindowRecomposer`
+ * installs a `MotionDurationScale` that reads `Settings.Global.ANIMATOR_DURATION_SCALE`
+ * and watches it through a `ContentObserver`, and `animation-core` consumes it in two
+ * different ways. A finite animation with a scale of 0 "will end in the next frame
+ * callback" (the interface's own words), so every spec in [Motion] already arrives
+ * instantly with no help from us. An [androidx.compose.animation.core.InfiniteTransition]
+ * instead *suspends* — it parks on `snapshotFlow { durationScale }.first { it > 0f }`
+ * and resumes if the setting is turned back on.
+ *
+ * That second behaviour is the whole reason this flag exists. An infinite animation has
+ * no end to jump to, so "off" leaves it **frozen wherever it happened to be**: a refresh
+ * icon stopped at 200°, a shimmer stuck mid-sweep. Frozen mid-gesture reads as a broken
+ * screen, which is worse than the animation it replaced — and no duration multiplier can
+ * fix it, because the problem is that a static frame of an animation is not a design.
+ *
+ * So this answers a design question, not a timing one: *given that motion is off, what
+ * should this surface be instead?* Usually a still, resolved state — an upright icon, a
+ * flat placeholder — chosen by the surface rather than fallen into. Reach for it when a
+ * surface animates forever, or when it should look genuinely different rather than
+ * merely faster (a shared-element flight, a parallax, a blurred backdrop). Ordinary
+ * finite motion needs nothing.
+ *
+ * Provided by `SendspinTheme`; defaults to false so a preview or test that provides no
+ * theme still animates.
+ */
+val LocalReducedMotion = compositionLocalOf { false }
+
+/**
+ * Reads the system "remove animations" setting, re-checked whenever the app comes back
+ * to the foreground.
+ *
+ * [ValueAnimator.areAnimatorsEnabled] is the platform's own published answer for this —
+ * it reports false exactly when `ANIMATOR_DURATION_SCALE` is 0, which is what the
+ * accessibility toggle and Developer Options both write. Re-read on `ON_RESUME` rather
+ * than observed continuously because changing it means leaving for Settings and coming
+ * back, so resume is every moment it can have changed. Same pattern, for the same
+ * reason, as `rememberIsIgnoringBatteryOptimizations`.
+ */
+@Composable
+fun rememberReducedMotion(): Boolean {
+    var reduced by remember { mutableStateOf(!ValueAnimator.areAnimatorsEnabled()) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) reduced = !ValueAnimator.areAnimatorsEnabled()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    return reduced
 }

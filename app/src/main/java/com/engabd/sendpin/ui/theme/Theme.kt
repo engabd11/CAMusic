@@ -11,6 +11,8 @@ import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import com.engabd.sendpin.ui.design.LocalReducedMotion
+import com.engabd.sendpin.ui.design.rememberReducedMotion
 import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
@@ -201,7 +203,12 @@ fun SendspinTheme(
         else -> remember(colors, seedAccent) { schemeFor(colors, seedAccent) }
     }
 
-    CompositionLocalProvider(LocalSendspinColors provides colors) {
+    CompositionLocalProvider(
+        LocalSendspinColors provides colors,
+        // Read here so every surface shares one answer for the frame — see
+        // LocalReducedMotion for why this is a design flag and not a duration scale.
+        LocalReducedMotion provides rememberReducedMotion(),
+    ) {
         MaterialTheme(
             colorScheme = scheme,
             typography = AppTypography,

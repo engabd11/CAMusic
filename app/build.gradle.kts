@@ -149,7 +149,10 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("io.coil-kt:coil-compose:2.7.0")
-    implementation("androidx.palette:palette-ktx:1.0.0")
+    // androidx.palette was removed here: zero imports anywhere in the source tree. It
+    // was superseded by ui/design/AlbumPalette.kt, a from-scratch CIELAB k-means
+    // extractor that does what Palette could not — population-weighted multi-swatch
+    // output, and a perceptual achromatic test rather than an HSV saturation gate.
     // Installs the baseline profile at first run. Without it the generated profile is
     // packaged and then ignored, so this is not optional dressing — it is the half that
     // does the work on device.

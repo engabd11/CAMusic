@@ -371,13 +371,17 @@ private fun CircleIconButton(icon: ImageVector, cd: String, onClick: () -> Unit)
 @Composable
 private fun RefreshButton(refreshing: Boolean, onClick: () -> Unit) {
     val accent = LocalAccent.current
+    // Still and upright when motion is off — same reasoning as the Library tab's
+    // refresh button, which this deliberately mirrors. See LocalReducedMotion.
+    val reducedMotion = LocalReducedMotion.current
     val spin = rememberInfiniteTransition(label = "refresh")
-    val angle by spin.animateFloat(
+    val spinAngle by spin.animateFloat(
         initialValue = 0f,
         targetValue = 360f,
         animationSpec = infiniteRepeatable(tween(900, easing = LinearEasing)),
         label = "refreshAngle",
     )
+    val angle = if (reducedMotion) 0f else spinAngle
     Box(
         Modifier.size(34.dp).clip(CircleShape).background(Glass).border(1.dp, Hairline, CircleShape)
             .clickable(enabled = !refreshing, onClick = onClick),
