@@ -648,7 +648,13 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
 
                     // The full-screen cover overlay — slides over everything when expanded.
                     if (overlayExpanded) {
-                        BackHandler { overlayExpanded = false }
+                        // Back is handled *inside* the overlay, not here. It used to be
+                        // `BackHandler { overlayExpanded = false }`, which drops the
+                        // composable on the spot: the cover vanished between two frames
+                        // while the swipe-down of the same gesture animated over ~240ms.
+                        // The overlay owns the offset that animation runs on, so it is
+                        // the only place a back gesture can drive the same motion — see
+                        // its PredictiveBackHandler.
                         NowPlayingOverlay(
                             viewModel = nowPlayingVm,
                             libraryViewModel = libraryVm,
