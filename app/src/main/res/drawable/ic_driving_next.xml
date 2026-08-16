@@ -1,0 +1,11 @@
+<!-- See ic_driving_prev.xml for why these are flat single-path silhouettes. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="?android:attr/textColorPrimary">
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M6,18l8.5,-6L6,6zM16,6v12h2L18,6z" />
+</vector>

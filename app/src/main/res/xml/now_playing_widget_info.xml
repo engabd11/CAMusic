@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The home-screen widget's metadata.
+
+  `targetCellWidth`/`targetCellHeight` are the API 31+ way of saying how big this
+  wants to be and are what modern launchers actually read; the min*Width/Height
+  values below are the pre-31 fallback and stay for launchers that still use them.
+  minSdk is 31, so in practice the cell counts win — but a launcher is free to
+  consult either, and a widget that lands at the wrong size on first placement is
+  one people remove immediately.
+
+  `resizeMode="horizontal|vertical"` because the layout is a title over a row of
+  controls: it degrades gracefully in both directions, and refusing to resize would
+  strand it at whatever size the launcher chose.
+-->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:minWidth="180dp"
+    android:minHeight="80dp"
+    android:targetCellWidth="3"
+    android:targetCellHeight="2"
+    android:resizeMode="horizontal|vertical"
+    android:widgetCategory="home_screen"
+    android:description="@string/widget_description"
+    android:updatePeriodMillis="0"
+    android:initialLayout="@layout/glance_default_loading_layout" />

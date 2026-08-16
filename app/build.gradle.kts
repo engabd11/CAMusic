@@ -17,8 +17,14 @@ android {
         applicationId = "com.engabd.sendpin"
         minSdk = 31
         targetSdk = 36
-        versionCode = 39
-        versionName = "0.8.8"
+        versionCode = 40
+        versionName = "0.8.9"
+
+        // app/src/androidTest had no runner because it had no tests. The two below
+        // are the ones Phase 0 found by hand, and neither can run on the JVM: both
+        // need a real Context — one for SharedPreferences and Settings.Secure, the
+        // other for a real media3 MediaSession.
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // The Oboe native output engine (src/main/cpp) - see SendspinNativeOutput.kt.
         // Oboe itself comes from the com.google.oboe:oboe prefab package (below),
@@ -162,6 +168,15 @@ dependencies {
     // — it has no dependency telling it where profiles come from.
     baselineProfile(project(":baselineprofile"))
     implementation("androidx.datastore:datastore-preferences:1.2.1")
+
+    // The home-screen widget. Glance is Compose for RemoteViews — the alternative is
+    // hand-built RemoteViews, which cannot express this layout without a lot of XML
+    // and cannot share a line of code with the app's own player.
+    //
+    // glance-material3 is deliberately *not* here: the widget paints from the app's
+    // own Ink/accent tokens like every other surface, and pulling in a second theme
+    // system to restate them would be the only thing it was used for.
+    implementation("androidx.glance:glance-appwidget:1.1.1")
     // The Navidrome/offline player. MediaPlayer could not do gapless reliably
     // (setNextMediaPlayer is OEM-dependent), reported nothing about the format it
     // was decoding, and had no stage to apply ReplayGain in.
@@ -186,4 +201,11 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("androidx.room:room-testing:$roomVersion")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+
+    // Instrumented tests: ./gradlew :app:connectedDebugAndroidTest (needs a device).
+    // Deliberately thin — these exist to pin two specific regressions that cost a
+    // release each, not to become a second test suite. See app/src/androidTest.
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:core-ktx:1.6.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
 }

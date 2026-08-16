@@ -235,11 +235,26 @@ class OboeAudioSink(
             return
         }
         if (bytesAccepted == 0 && ++consecutiveRefusals == REFUSALS_BEFORE_WARNING) {
+            // The native counters, because two fixes have now been aimed at this from
+            // the Kotlin side and neither moved it — so the next question is which half
+            // of the engine's drift sum is wrong, and that is only answerable from here.
+            //
+            // `onAudioReady` inserts `silenceFront` frames *without advancing the read
+            // position* whenever drift is positive, so a persistently large positive
+            // drift drains nothing, for ever, which is exactly this symptom. Drift is
+            // `intendedHead - dac0`: a huge value means one of the two is nonsense, and
+            // `latency=0` alongside it points at `dac0`, since the DAC anchor is what
+            // `refreshTimestampAnchor` fills in and it rejects implausible readings
+            // silently (the AAudio log has already shown `getMmapPosition(): has no
+            // position data available` on this device).
             Log.e(
                 TAG,
                 "native ring has refused $consecutiveRefusals consecutive buffers " +
                     "(buffered=${nativeOutput.bufferedFrames()} frames, written=$framesWrittenTotal) - " +
-                    "nothing is draining it, so this stream will be silent",
+                    "nothing is draining it, so this stream will be silent. " +
+                    "driftEma=${nativeOutput.driftEmaUs()}us latency=${nativeOutput.outputLatencyUs()}us " +
+                    "underrun=${nativeOutput.underrunFrames()} " +
+                    "device=${nativeOutput.deviceId()} disconnected=${nativeOutput.isDisconnected()}",
             )
         }
     }

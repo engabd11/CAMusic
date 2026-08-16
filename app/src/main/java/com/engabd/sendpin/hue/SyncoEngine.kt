@@ -650,6 +650,48 @@ class SyncoEngine(
             "loudness" to "Loudness",
             "cohesion" to "Cohesion",
         )
+
+        /**
+         * What each tunable does, in the terms a listener can check against the room.
+         *
+         * Seven unlabelled percentage sliders is a control panel you can only learn by
+         * moving one and watching, which is a slow way to find out that two of them
+         * sound similar and one of them is the reason the room strobes. Each line says
+         * what the factor multiplies and what turning it *both ways* does, because
+         * "more reactivity" is only half an answer when the useful direction is often
+         * down.
+         *
+         * Deliberately written against the effect rather than the implementation — the
+         * multiplier lands on a different parameter in each case, and naming the
+         * parameter would be true and useless.
+         */
+        val TUNABLE_BLURBS = mapOf(
+            "reactivity" to
+                "How hard a beat hits. Up for sharper, punchier flashes on drums; " +
+                    "down when the room feels twitchy or the flashes arrive as strobing.",
+            "glow" to
+                "The steady light under the show — how bright the room stays between " +
+                    "beats. Up to keep the space usable and lit; down for a darker room " +
+                    "where only the peaks show.",
+            "movement" to
+                "How much the show travels between lamps rather than lighting them " +
+                    "together. Up for sweeps and chases across the room; down to hold " +
+                    "everything still and let brightness do the work.",
+            "contrast" to
+                "The gap between quiet moments and loud ones. Up to make big peaks tower " +
+                    "over small ones; down to even the show out so soft passages still " +
+                    "register.",
+            "colour_speed" to
+                "How quickly the room drifts between the album's colours. Up for colour " +
+                    "that changes on the beat; down to hold one colour and let it settle.",
+            "loudness" to
+                "How much each lamp follows its own frequency band's actual level, rather " +
+                    "than the mix as a whole. Up to separate bass, mids and vocals across " +
+                    "the room; down for a room that reacts as one.",
+            "cohesion" to
+                "How much neighbouring lamps share a drive. Up so the room moves as a " +
+                    "single wash; down so each lamp is more clearly its own instrument.",
+        )
     }
 
     var palette: Palette = getPalette(FALLBACK_SCHEME)

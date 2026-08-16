@@ -16,6 +16,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -36,6 +37,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.ViewModelProvider
 import coil.compose.AsyncImage
+import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
@@ -63,6 +65,15 @@ fun AlbumDetailScreen(
     onArtistClick: (String, String) -> Unit = { _, _ -> },
     /** Open another album — the related shelf's rows. */
     onAlbumClick: (MaItem) -> Unit = {},
+    /**
+     * The *shared* library view model, for the add-to-playlist flow.
+     *
+     * Passed in rather than resolved here for the reason the Settings screen states:
+     * inside a NavHost destination `viewModel()` builds a second instance scoped to
+     * this back-stack entry, and this one owns the playlist list and the backend
+     * routing that files an album into it.
+     */
+    libraryViewModel: LibraryViewModel,
 ) {
     val context = LocalContext.current
     val viewModel: AlbumDetailViewModel = viewModel(
@@ -161,6 +172,7 @@ fun AlbumDetailScreen(
                             onDownload = if (viewModel.canDownload) viewModel::downloadAll else null,
                             downloaded = albumDownloaded,
                             onFavorite = viewModel::toggleAlbumFavorite,
+                            onAddToPlaylist = album?.let { a -> { libraryViewModel.openAddToPlaylist(a) } },
                         )
                     }
 
@@ -252,6 +264,21 @@ fun AlbumDetailScreen(
                     onAddToQueue = { viewModel.enqueueTrack(picked, "add") },
                 )
             }
+
+            // Which playlist to file the album into. Driven from the shared library
+            // model, so it is the same sheet, the same playlist list and the same
+            // backend routing the Library tab uses — the album screen only had to
+            // open it.
+            val addingToPlaylist by libraryViewModel.addingToPlaylist.collectAsStateWithLifecycle()
+            val playlistChoices by libraryViewModel.playlistChoices.collectAsStateWithLifecycle()
+            addingToPlaylist?.let { pending ->
+                PlaylistPickerSheet(
+                    itemName = pending.name,
+                    playlists = playlistChoices,
+                    onClose = libraryViewModel::closeAddToPlaylist,
+                    onPick = libraryViewModel::addToPlaylist,
+                )
+            }
         }
     }
 }
@@ -295,6 +322,8 @@ private fun AlbumHero(
     onDownload: (() -> Unit)? = null,
     downloaded: Boolean = false,
     onFavorite: () -> Unit = {},
+    /** Null until the album has loaded — there is nothing to file before then. */
+    onAddToPlaylist: (() -> Unit)? = null,
 ) {
     val accent = LocalAccent.current
 
@@ -383,34 +412,64 @@ private fun AlbumHero(
         // Action row. Play sits in the middle rather than at the head: it is the one
         // thing on this screen with a coloured disc and a glow under it, so putting it
         // at the end of a row that reads left-to-right buried the loudest control
-        // behind the quiet ones. Third of five on Navidrome, third of four on Music
-        // Assistant — the same place either way, so it does not move when the backend
-        // does.
+        // behind the quiet ones.
+        //
+        // Two weighted halves rather than one evenly-spaced row, so Play is on the
+        // screen's centre line and not merely in the middle of the list. The chip
+        // count is not symmetric — download is Navidrome-only, because Music Assistant
+        // streams rather than handing over the file — and an evenly-spaced row would
+        // therefore push the disc off-centre on one backend and not the other, moving
+        // the most-used control when the library changed.
         Spacer(Modifier.height(20.dp))
         Row(
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconChip(Icons.Default.Shuffle, "Shuffle", onClick = onShuffle)
-            IconChip(Icons.AutoMirrored.Filled.QueueMusic, "Add to queue", onClick = onAddToQueue)
+            Row(
+                Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconChip(Icons.Default.Shuffle, "Shuffle", onClick = onShuffle)
+                // Lines and a plus: the lines are the queue, the plus is what this
+                // does to it. It was the music-note-and-lines glyph, which is the
+                // same picture the *playlist* chip beside it needs and says nothing
+                // about adding.
+                IconChip(Icons.AutoMirrored.Filled.PlaylistAdd, "Add to queue", onClick = onAddToQueue)
+            }
 
+            Spacer(Modifier.width(12.dp))
             PlayButton(playing = false, size = 56.dp, onClick = onPlayAll)
+            Spacer(Modifier.width(12.dp))
 
-            // The album itself, not its tracks. MA's `favorites/add_item` takes any
-            // media item's uri and Subsonic's `star` has an `albumId`.
-            IconChip(
-                if (album?.favorite == true) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                if (album?.favorite == true) "Remove from favourites" else "Add to favourites",
-                onClick = onFavorite,
-            )
-            // Offline. Navidrome only — Music Assistant streams rather than handing
-            // over the file, so there is nothing here to take with you.
-            onDownload?.let {
+            Row(
+                Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.Start),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                // The whole record into a playlist. The plumbing already resolved a
+                // container to its tracks (see `LibraryViewModel.addToPlaylist`), so
+                // this was reachable from a track's long-press menu and from nowhere
+                // on the album's own page. Same glyph the long-press menu uses.
+                onAddToPlaylist?.let {
+                    IconChip(Icons.Default.LibraryAdd, "Add to playlist", onClick = it)
+                }
+                // The album itself, not its tracks. MA's `favorites/add_item` takes any
+                // media item's uri and Subsonic's `star` has an `albumId`.
                 IconChip(
-                    if (downloaded) Icons.Default.DownloadDone else Icons.Default.Download,
-                    if (downloaded) "Downloaded" else "Download album",
-                    onClick = it,
+                    if (album?.favorite == true) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                    if (album?.favorite == true) "Remove from favourites" else "Add to favourites",
+                    onClick = onFavorite,
                 )
+                // Offline. Navidrome only — Music Assistant streams rather than handing
+                // over the file, so there is nothing here to take with you.
+                onDownload?.let {
+                    IconChip(
+                        if (downloaded) Icons.Default.DownloadDone else Icons.Default.Download,
+                        if (downloaded) "Downloaded" else "Download album",
+                        onClick = it,
+                    )
+                }
             }
         }
     }

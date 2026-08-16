@@ -1,5 +1,6 @@
 package com.engabd.sendpin.ui.viewmodel
 
+import com.engabd.sendpin.library.MusicSources
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -683,20 +684,68 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
      */
     val currentItem: StateFlow<MaItem?> = combine(_queues, _players, _target, localSnap) { queues, players, target, l ->
         // Nothing MA-side is playing while the local player holds the session, so
-        // the track-scoped controls (heart, lyrics, similar) have no handle to act
-        // on and correctly show as unavailable.
+        // the MA-scoped controls (lyrics, similar, DSP) have no handle to act on and
+        // correctly show as unavailable. The *heart* is not one of them — see
+        // [localFavouriteItem], which is what it reads instead.
         if (l.active) return@combine null
         val id = resolveTarget(players, target)
         val streamId = players.firstOrNull { it.playerId == id }?.syncedTo ?: id
         queues.firstOrNull { it.queueId == streamId }?.currentItem
     }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
+    /**
+     * What the local player is playing, as something favouritable.
+     *
+     * The heart on Now Playing was greyed out for the whole of a Navidrome or
+     * Jellyfin session, and reported as "Jellyfin has no favourite button for tracks
+     * or albums". It was not a Jellyfin gap — `JellyfinSource` has declared
+     * `Capability.FAVORITES` and implemented `setStarred` since it was written, and
+     * the album screen's hearts have always worked. It was this screen: the chip is
+     * disabled when [currentItem] is null, and [currentItem] is deliberately null for
+     * the entire local session because it is sourced from the *Music Assistant*
+     * queue.
+     *
+     * A `LocalTrack` carries the library id and the provider it came from
+     * ([com.engabd.sendpin.audio.LocalTrack.scrobbleId] and its `scrobbleProvider`),
+     * which is exactly what `setStarred` needs, so the handle was there all along.
+     * Null when the track has no library behind it — a bare stream URL has nothing to
+     * star on any server.
+     */
+    private val localFavouriteItem: StateFlow<MaItem?> =
+        combine(localSnap, local.current) { l, track ->
+            if (!l.active || track == null) return@combine null
+            val id = track.scrobbleId ?: return@combine null
+            val provider = track.scrobbleProvider ?: return@combine null
+            MaItem(
+                itemId = id,
+                provider = provider,
+                name = track.title,
+                // No uri: that is Music Assistant's identifier for an item, and this
+                // one came from a self-hosted library. `setStarred` takes the id and
+                // the provider, which is everything it needs.
+                uri = null,
+                mediaType = "track",
+                subtitle = track.artist,
+                image = track.artUrl,
+                duration = (track.durationMs / 1000L).toInt().takeIf { it > 0 },
+            )
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /** Whichever of the two is actually favouritable right now. */
+    val favouritableItem: StateFlow<MaItem?> =
+        combine(currentItem, localFavouriteItem) { ma, localItem -> ma ?: localItem }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
     /** Un-acknowledged favourite flip: item id → wanted state. */
     private val _favoriteOverride = MutableStateFlow<Pair<String, Boolean>?>(null)
 
-    val favorite: StateFlow<Boolean> = combine(currentItem, _favoriteOverride) { item, override ->
+    val favorite: StateFlow<Boolean> = combine(favouritableItem, _favoriteOverride) { item, override ->
         if (item == null) false
         else if (override != null && override.first == item.itemId) override.second
+        // A local track's `favorite` is not known from the player — a LocalTrack
+        // carries no starred flag — so the optimistic override is the only state
+        // there is until the next library read. That is honest: it shows what this
+        // session did rather than claiming to know what the server holds.
         else item.favorite
     }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
@@ -971,16 +1020,35 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     // --- favourite ---------------------------------------------------------
 
     fun toggleFavorite() {
-        val item = currentItem.value ?: return
+        val item = favouritableItem.value ?: return
         val wanted = !favorite.value
         _favoriteOverride.value = item.itemId to wanted
         viewModelScope.launch {
             try {
-                if (wanted) repo.addFavorite(item) else repo.removeFavorite(item)
+                // Routed by which library the item belongs to, not by which one the
+                // app is nominally browsing: what is playing is what the heart is
+                // about. The self-hosted path goes through `MusicSource.setStarred`,
+                // which Navidrome and Jellyfin both implement — this screen simply
+                // never called it, which is the whole of "Jellyfin has no favourite
+                // button".
+                val sc = SendpinApp.instance.musicSource.value
+                    ?.takeIf { it.providerId == item.provider }
+                when {
+                    MusicSources.isLocalProvider(item.provider) && sc != null ->
+                        sc.setStarred(item, wanted)
+                    MusicSources.isLocalProvider(item.provider) ->
+                        throw IllegalStateException("That library isn't connected")
+                    wanted -> repo.addFavorite(item)
+                    else -> repo.removeFavorite(item)
+                }
                 _toast.tryEmit(if (wanted) "Added to favourites" else "Removed from favourites")
-                // Let MA write it through before we trust `favorite` off the queue again.
-                delay(1_200); refresh(); delay(1_500)
-                _favoriteOverride.value = null
+                // Let MA write it through before we trust `favorite` off the queue
+                // again. The local path has nothing to re-read from — a LocalTrack
+                // carries no starred flag — so its override is simply held.
+                if (!MusicSources.isLocalProvider(item.provider)) {
+                    delay(1_200); refresh(); delay(1_500)
+                    _favoriteOverride.value = null
+                }
             } catch (e: Exception) {
                 _favoriteOverride.value = null
                 _toast.tryEmit(e.message ?: "Couldn't change favourite")

@@ -16,6 +16,7 @@ import com.engabd.sendpin.data.Http
 import com.engabd.sendpin.service.LocalPlaybackService
 import com.engabd.sendpin.service.MaNowPlaying
 import com.engabd.sendpin.service.Playback
+import com.engabd.sendpin.service.PlaybackOwner
 import com.engabd.sendpin.service.SendspinService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -58,7 +59,15 @@ class SendpinApp : Application(), ImageLoaderFactory {
      * instance meant the phone could be playing something no other screen knew
      * about — and that nothing but the Library tab could pause.
      */
-    val localPlayer: LocalPlayer by lazy { LocalPlayer(this) }
+    val localPlayer: LocalPlayer by lazy {
+        LocalPlayer(this).also { player ->
+            // Announce a takeover to the Sendspin side rather than letting the two
+            // fight it out through `AudioManager` — see [PlaybackOwner]. The lambda
+            // body runs on invocation, long after this initialiser, so touching
+            // [playbackOwner] here does not recurse into a half-built localPlayer.
+            player.onTakingOutput = { playbackOwner.noteLocalTakingOver() }
+        }
+    }
 
     /**
      * The phone's media volume. Process-scoped so the observer is registered once
@@ -72,14 +81,40 @@ class SendpinApp : Application(), ImageLoaderFactory {
     val downloads: DownloadManager by lazy { DownloadManager(this) }
 
     /**
+     * The one authority on which player owns this phone's audio output.
+     *
+     * Five places used to infer this, each slightly differently, and four of the
+     * five bugs found in the 2026-08-16 device session were instances of one of
+     * them being right where another was wrong. See [PlaybackOwner] for the list
+     * and for why it publishes *two* owners rather than one.
+     */
+    val playbackOwner: PlaybackOwner by lazy { PlaybackOwner(localPlayer, playback) }
+
+    /**
+     * Driving mode — the always-reachable transport for a phone in a cradle.
+     *
+     * Process-scoped and built eagerly in [onCreate] rather than on first use: its
+     * whole job is to notice the car connecting, and something that only starts
+     * watching once a screen asks for it would miss the one event it exists for.
+     */
+    val drivingMode: com.engabd.sendpin.service.DrivingMode by lazy {
+        com.engabd.sendpin.service.DrivingMode(this)
+    }
+
+    /**
      * Whichever backend is actually producing sound right now, for
-     * [directLightSync] — MA (via `SendspinExoEngine`, the experimental
-     * ExoPlayer path) when it has a tap installed *and* is playing, else
-     * [localPlayer] always. That "else" is what keeps local playback's Light
-     * Sync behaviour identical to before MA support existed: with the
-     * ExoPlayer toggle off, or with nothing playing on MA, this is exactly
+     * [directLightSync] — MA (via [com.engabd.sendpin.audio.SendspinExoEngine])
+     * when it has a tap installed *and* is playing, else [localPlayer] always.
+     * That "else" is what keeps local playback's Light Sync behaviour identical
+     * to before MA support existed: with nothing playing on MA, this is exactly
      * localPlayer's tap/lead/track — the same fixed values [directLightSync]
      * used to take as constructor arguments.
+     *
+     * The choice is [PlaybackOwner]'s `soundOwner`, not a second reading of the
+     * same flows. This site and the direct-sync gate below both used to derive
+     * it, and they derived it *differently* — this one from `isPlaying`, the gate
+     * from a track being loaded — which is precisely how a paused MA player could
+     * be driving one and not the other.
      *
      * `Eagerly`, not `Lazily`: [directLightSync] reads `.value` synchronously
      * in a few places (see its own docs), so this has to have emitted before
@@ -87,11 +122,12 @@ class SendpinApp : Application(), ImageLoaderFactory {
      */
     val activeLightSyncSource: StateFlow<com.engabd.sendpin.hue.ActiveLightSyncSource> by lazy {
         combine(
-            localPlayer.current, playback.isPlaying, playback.artworkUrl, playback.maAudioSource,
-        ) { localTrack, maPlaying, maArtUrl, maSource ->
-            if (maPlaying && maSource != null) {
+            localPlayer.current, playback.artworkUrl, playbackOwner.state,
+        ) { localTrack, maArtUrl, owner ->
+            val maTap = owner.sendspinTap
+            if (owner.soundOwner == PlaybackOwner.Who.SENDSPIN && maTap != null) {
                 com.engabd.sendpin.hue.ActiveLightSyncSource(
-                    tap = maSource.first, lead = maSource.second, artUrl = maArtUrl, scanTrack = null,
+                    tap = maTap.first, lead = maTap.second, artUrl = maArtUrl, scanTrack = null,
                 )
             } else {
                 com.engabd.sendpin.hue.ActiveLightSyncSource(
@@ -177,6 +213,11 @@ class SendpinApp : Application(), ImageLoaderFactory {
         // Register the process lifecycle observer for warm reconnect and
         // toggleable background connection (TTS battery saver).
         AppLifecycleObserver.register(this)
+        // Touched here so its Bluetooth receiver is registered from process start.
+        // Lazily built, it would only begin watching once something asked — and the
+        // thing it is watching for is the car connecting, which happens before any
+        // screen opens.
+        drivingMode
         // The storage cap evicts oldest-first, and the one file it must never take is
         // the one being listened to. Published here rather than looked up inside the
         // download manager, which has no business holding a reference to the player.
@@ -286,34 +327,33 @@ class SendpinApp : Application(), ImageLoaderFactory {
                     }
                 }
         }
-        // Direct Light Sync follows whichever of this phone's players has a live
-        // session. Direct mode streams this phone's own decoded audio, and there are
-        // two sources of that: the local player, and Music Assistant when MA is
-        // playing *to this phone* through the ExoPlayer engine, whose render chain
-        // carries the same analysis tap.
+        // Direct Light Sync runs whenever the user has switched it on. Not "whenever
+        // something is playing" — that was the old rule and it made the feature
+        // feel broken in the one moment it is most looked at: you turn Light Sync
+        // on, and the room does nothing at all until you also start a track.
         //
-        // The MA half was missing here, and it was the whole of "the lights never
-        // react to Music Assistant". Two of the three wirings already accounted for
-        // it — [activeLightSyncSource] switches between the two taps correctly, and
-        // [directLightSync]'s own `isPlaying` counts both — but this gate, the one
-        // that decides whether to open the bridge stream at all, still asked only
-        // about the local player. So with MA playing, `start()` was never called:
-        // the screen sat on "Waiting for this phone to play" with a perfectly good
-        // tap going unused. This comment used to say "there is exactly one thing
-        // that can drive it", which was true when it was written and stopped being
-        // true when MA playback was wired into the tap.
+        // Worse, it made the *start* unreliable rather than merely late. Opening the
+        // bridge means fetching the entertainment configuration, a PUT to claim the
+        // area, and a DTLS handshake with retransmit timeouts — a second or more of
+        // work triggered by the first frame of audio. Navidrome tolerated that
+        // because a local track's first second is quiet anyway; Music Assistant
+        // often did not, and the show simply never picked the song up.
         //
-        // `maAudioSource != null`, not `isPlaying` alone: the default
-        // SendspinAudioEngine has no tap at all, so opening the bridge for it would
-        // leave the room reacting to the *local* player's silent tap — worse than
-        // honestly reporting that nothing is playing. That is the same condition
-        // [activeLightSyncSource] uses to choose a source, so the two cannot
-        // disagree about what is actually drivable.
+        // So the bridge is claimed when the *switch* is, and the render loop's own
+        // idle branch covers the gap: with nothing playing it runs the slow ambient
+        // spatial glow (see `renderLoop`'s `isIdle`), and the moment audio arrives
+        // it crosses to the reactive show with the channel already open and the
+        // handshake already paid for. Something already playing when the switch goes
+        // on gets the reactive show immediately, for the same reason.
         //
-        // The session rather than `playing`: a pause would otherwise tear down the
-        // DTLS channel and re-run discovery and the handshake on every resume. The
-        // keepalive holds the last frame while the music is stopped, which is what
-        // it is for.
+        // What this gate is *not* allowed to key on any more is playback state of
+        // any kind. Both readings were tried and both were wrong in the room: on
+        // `isPlaying` the bridge was torn down about two seconds after a pause
+        // (`END_LINGER_MS`), so the lights snapped back instead of easing into the
+        // idle show, which only begins fading in after five seconds of quiet; on
+        // "has a session" it never opened for a paused-then-resumed MA player at
+        // all. Neither question needed asking. See [PlaybackOwner] for the
+        // active-vs-playing distinction that made both readings look reasonable.
         appScope.launch {
             val settings = com.engabd.sendpin.data.AppSettings(this@SendpinApp)
             // `started` keeps the lazy singleton lazy: a user on the Home Assistant
@@ -321,30 +361,15 @@ class SendpinApp : Application(), ImageLoaderFactory {
             // bridge client and settings collectors just to stop something that
             // was never running.
             var started = false
-            data class DirectSyncState(val active: Boolean, val mode: String, val enabled: Boolean, val configId: String)
-            // MA counts as live only when its engine actually carries a tap — see above.
-            //
-            // Keyed on having a *track loaded*, not on `isPlaying`, which is the MA
-            // equivalent of `localPlayer.active` rather than `localPlayer.playing` — the
-            // same distinction the comment above draws, and getting it wrong here is
-            // visible in the room. On `isPlaying` the bridge was torn down about two
-            // seconds after a pause (`END_LINGER_MS`), so the lights snapped back to
-            // their normal state instead of easing into the ambient idle show, which
-            // only begins fading in after four seconds of quiet. Navidrome kept the show
-            // because a paused local player still has a session; MA lost it because a
-            // paused MA player is simply "not playing".
-            val maLive = combine(playback.trackTitle, playback.maAudioSource) { title, source ->
-                title.isNotBlank() && source != null
-            }
+            data class DirectSyncState(val mode: String, val enabled: Boolean, val configId: String)
             combine(
-                combine(localPlayer.active, maLive) { local, ma -> local || ma },
                 settings.lightSyncMode,
                 settings.lightSyncEnabled,
                 settings.hueEntertainmentConfigId,
-            ) { active, mode, enabled, configId -> DirectSyncState(active, mode, enabled, configId) }
+            ) { mode, enabled, configId -> DirectSyncState(mode, enabled, configId) }
                 .distinctUntilChanged()
                 .collect { state ->
-                    val shouldRun = state.active && state.mode == "direct" && state.enabled
+                    val shouldRun = state.mode == "direct" && state.enabled
                     // configId is part of what `distinctUntilChanged` watches but not of
                     // `shouldRun` — a mid-session area change needs the bridge stream
                     // restarted on the new area's channels, which calling `start()` on
