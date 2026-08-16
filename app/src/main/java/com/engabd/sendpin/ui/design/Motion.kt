@@ -92,6 +92,45 @@ object Motion {
         stiffness = 380f,
         visibilityThreshold = 1f,
     )
+
+    /**
+     * A large surface being **dismissed**, where something else is waiting on the
+     * animation actually finishing — the Now Playing cover sliding down to the mini
+     * bar, whose handover only happens once `animateTo` returns.
+     *
+     * [spatialOffsetPx] is the wrong spec for that, and the reason is arithmetic
+     * rather than taste. Its spring is `ζ = 0.8, k = 380`, so `ω = √380 ≈ 19.5 rad/s`
+     * and the error decays as `e^(-ζωt) = e^(-15.6t)`. Reaching the 1px threshold from
+     * a ~2000px travel needs `ln(2000) / 15.6 ≈ 0.49s` — half a second in which the
+     * cover has visually arrived and the swap to the mini bar has not happened yet.
+     * (The threshold is doing real work: at the generic 0.01px default the same sum
+     * gives 0.78s. That was the previous fix, and it removed about 300ms of a tail
+     * that still had ~490ms left in it — enough to still read as "stuck".)
+     *
+     * Three changes, each addressing one term:
+     *
+     *  - **No overshoot.** A dismissal that bounces back up is wrong on its own terms:
+     *    the surface is leaving, and `ζ = 0.8` walks it back toward the viewer before
+     *    it settles. Critically damped also removes the oscillation the tail is spent
+     *    converging out of.
+     *  - **Stiffer** (`k = 1200`, `ω ≈ 34.6`), because the decay rate is what the
+     *    settling time is made of.
+     *  - **A 4px threshold**, not 1px. Against a travel three orders of magnitude
+     *    larger, 4px is below what anyone can see arriving, and each halving of the
+     *    threshold costs another `ln 2 / ζω` of tail for nothing.
+     *
+     * Together: `(1 + ωt)e^(-ωt) = 4/2000` lands at roughly **240ms**, and it ends when
+     * it looks like it has ended.
+     *
+     * Not a general replacement for [spatialOffsetPx] — the overshoot there is
+     * deliberate on a surface that is *arriving*, where a trace of overshoot is what
+     * reads as responsive.
+     */
+    fun dismissOffsetPx(): FiniteAnimationSpec<Float> = spring(
+        dampingRatio = Spring.DampingRatioNoBouncy,
+        stiffness = 1200f,
+        visibilityThreshold = 4f,
+    )
 }
 
 /**

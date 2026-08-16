@@ -135,4 +135,98 @@ class AlbumPaletteTest {
     fun `an empty cover yields nothing rather than a default`() {
         assertEquals(null, kmeansPalette(emptyList()))
     }
+
+    // ─── the lift ──────────────────────────────────────────────────────────
+    //
+    // Testable at all only since it moved to OKLCh: it used to go through
+    // androidx.core.graphics.ColorUtils, which needs Android.
+
+    private fun lchOf(c: androidx.compose.ui.graphics.Color): FloatArray =
+        oklabToOklch(rgbToOklab(c.red, c.green, c.blue))
+
+    private fun extractionOf(vararg colours: FloatArray, achromatic: Boolean = false) =
+        Extraction(lead = colours[0], swatches = colours.toList(), achromatic = achromatic)
+
+    @Test
+    fun `every hue is lifted to the same perceived lightness`() {
+        // The whole point of doing this in OKLab, and the reason green covers used to
+        // look right while blue ones looked muddy. The old HSL lift held *HSL*
+        // lightness constant, which is not perceptual: at L 0.64 / S 0.6 a green
+        // lands at relative luminance 0.55 and a blue at 0.19 — same dial, nearly
+        // three times the light. Equal OKLab L is equal apparent brightness.
+        val hues = listOf(
+            rgb(200, 30, 30),    // red
+            rgb(30, 200, 30),    // green
+            rgb(30, 30, 200),    // blue
+            rgb(200, 200, 30),   // yellow
+            rgb(150, 30, 200),   // violet
+            rgb(30, 190, 200),   // cyan
+        )
+        val lightnesses = hues.map { lchOf(liftedPalette(extractionOf(it)).accent)[0] }
+        lightnesses.forEach {
+            assertEquals("accent lightness should not depend on hue", 0.78f, it, 0.02f)
+        }
+    }
+
+    @Test
+    fun `the cover's hue survives the lift`() {
+        // Hue is what extraction is most confident about, so it is the one thing the
+        // lift must never trade away — including when gamut mapping has to give
+        // something up, which is why that reduces chroma rather than clipping RGB.
+        listOf(rgb(200, 30, 30), rgb(30, 30, 200), rgb(150, 30, 200), rgb(30, 190, 200))
+            .forEach { source ->
+                val want = oklabToOklch(rgbToOklab(source[0], source[1], source[2]))[2]
+                val got = lchOf(liftedPalette(extractionOf(source)).accent)[2]
+                assertTrue(
+                    "hue moved from $want to $got",
+                    hueDist(want, got) < 2f,
+                )
+            }
+    }
+
+    @Test
+    fun `a muted cover stays muted and a vivid one stays vivid`() {
+        // The old lift clamped saturation into 0.50..0.72, so a watercolour sleeve and
+        // a neon one arrived at nearly the same intensity — most of why the palette
+        // felt limited. Chroma is now the cover's own, floored but never capped below
+        // the gamut boundary.
+        val vivid = lchOf(liftedPalette(extractionOf(rgb(0, 90, 255))).accent)[1]
+        val muted = lchOf(liftedPalette(extractionOf(rgb(96, 120, 150))).accent)[1]
+        assertTrue(
+            "a vivid cover ($vivid) should out-colour a muted one ($muted) by a clear margin",
+            vivid > muted * 1.5f,
+        )
+    }
+
+    @Test
+    fun `a grey cover is lifted without being given a hue`() {
+        // The other half of the old "everything falls back to gold" problem: a chroma
+        // floor applied blindly turns a warm grey into amber.
+        val accent = liftedPalette(extractionOf(rgb(130, 130, 130), achromatic = true)).accent
+        val lch = lchOf(accent)
+        assertTrue("a grey cover gained chroma ${lch[1]}", lch[1] <= 0.03f)
+        assertEquals("a grey cover should still be lifted to the accent band", 0.78f, lch[0], 0.02f)
+    }
+
+    @Test
+    fun `gamut mapping gives up chroma rather than hue`() {
+        // Asking for more chroma than sRGB can hold at this lightness. Clipping the
+        // channels instead — the naive coerceIn(0f, 1f) — moves them by different
+        // amounts and swings the hue: saturated blue drifts toward violet.
+        val hue = 264f
+        val rgb = oklchToRgbInGamut(l = 0.78f, c = 0.35f, hDeg = hue)
+        val got = oklabToOklch(rgbToOklab(rgb[0], rgb[1], rgb[2]))
+        assertTrue("hue drifted to ${got[2]} under gamut mapping", hueDist(hue, got[2]) < 2f)
+        assertEquals("lightness should be held too", 0.78f, got[0], 0.02f)
+        assertTrue("chroma should have been reduced to fit", got[1] < 0.35f)
+    }
+
+    @Test
+    fun `companions sit below the accent so the lead still leads`() {
+        val palette = liftedPalette(extractionOf(rgb(0, 90, 255), rgb(220, 60, 40), rgb(40, 200, 120)))
+        val accentL = lchOf(palette.accent)[0]
+        palette.swatches.drop(1).forEach {
+            assertTrue("a companion outshone the lead", lchOf(it)[0] < accentL)
+        }
+    }
 }
