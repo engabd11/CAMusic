@@ -85,7 +85,30 @@ class SendspinExoEngine(
      */
     @Volatile var useOboe: Boolean = false
 
-    private val player: ExoPlayer by lazy { buildPlayer() }
+    /**
+     * The live player, rebuilt on demand after a [release].
+     *
+     * A `by lazy` here was a one-way door: released once, every later [start] posted to
+     * a dead playback thread and the engine was deaf for the rest of the connection.
+     * That is reachable through entirely ordinary use, and by this app rather than a
+     * foreign one — playing a Navidrome track makes `LocalPlayer`'s ExoPlayer request
+     * `AUDIOFOCUS_GAIN`, which evicts the Sendspin path's own focus request, and
+     * `Playback.focusListener` treats a permanent loss as "stop and release". The
+     * connection stays up and `stream/start` keeps arriving, so nothing looks wrong from
+     * outside; the logs read `Ignoring messages sent after release` and `sending message
+     * to a Handler on a dead thread`, once per track, forever.
+     *
+     * The sink that drives this engine captures the instance directly, so nulling a
+     * field in `Playback` could not have helped — recovery has to live here. Rebuilding
+     * is also the right answer whoever released it and for whatever reason: a released
+     * player is simply not something [start] can use.
+     *
+     * Only ever touched inside [runOnMain], so the rebuild happens on the thread
+     * ExoPlayer requires and needs no further synchronisation.
+     */
+    private var livePlayer: ExoPlayer? = null
+    private val player: ExoPlayer
+        get() = livePlayer ?: buildPlayer().also { livePlayer = it }
 
     // Only constructed when useOboe is actually on (see buildPlayer) - the native
     // library is loaded lazily too (SendspinNativeOutput.ensureLibrary), so a
@@ -297,7 +320,12 @@ class SendspinExoEngine(
         currentDataSource?.signalEndOfStream()
         currentDataSource = null
         runOnMain {
-            player.release()
+            // Released *and cleared*, so the next start() builds a fresh one rather than
+            // posting to this one's dead thread — see [livePlayer]. Deliberately not
+            // `player.release()`, which would build a player only to destroy it if this
+            // engine had never started one.
+            livePlayer?.release()
+            livePlayer = null
             nativeOutput?.release()
             nativeOutput = null
         }

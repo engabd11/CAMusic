@@ -323,8 +323,18 @@ class SendpinApp : Application(), ImageLoaderFactory {
             var started = false
             data class DirectSyncState(val active: Boolean, val mode: String, val enabled: Boolean, val configId: String)
             // MA counts as live only when its engine actually carries a tap — see above.
-            val maLive = combine(playback.isPlaying, playback.maAudioSource) { playing, source ->
-                playing && source != null
+            //
+            // Keyed on having a *track loaded*, not on `isPlaying`, which is the MA
+            // equivalent of `localPlayer.active` rather than `localPlayer.playing` — the
+            // same distinction the comment above draws, and getting it wrong here is
+            // visible in the room. On `isPlaying` the bridge was torn down about two
+            // seconds after a pause (`END_LINGER_MS`), so the lights snapped back to
+            // their normal state instead of easing into the ambient idle show, which
+            // only begins fading in after four seconds of quiet. Navidrome kept the show
+            // because a paused local player still has a session; MA lost it because a
+            // paused MA player is simply "not playing".
+            val maLive = combine(playback.trackTitle, playback.maAudioSource) { title, source ->
+                title.isNotBlank() && source != null
             }
             combine(
                 combine(localPlayer.active, maLive) { local, ma -> local || ma },
