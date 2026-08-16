@@ -75,7 +75,10 @@ enum class SettingsSection(
     // before finding the settings, not one fewer.
     AUDIO(
         "Playback & audio",
-        "Output device, streaming quality, loudness and what happens between tracks",
+        // Driving is named here because the section index is the only place it can be
+        // found from: it is one card among four, and someone looking for it is looking
+        // for a feature rather than for an audio setting.
+        "Output device, loudness, what happens between tracks, and driving controls",
         Icons.Default.GraphicEq,
     ),
     DOWNLOADS(

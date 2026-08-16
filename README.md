@@ -38,6 +38,8 @@ engine, with no feature locked behind a paywall:
 | Offline playback | ✅ | ✅ (some) | ❌ |
 | Parametric EQ per speaker | ✅ | ❌ | ❌ |
 | 24-bit / hi-res output | ✅ | ❌ | ❌ |
+| Driving controls over the map | ✅ | ❌ | ❌ |
+| Home-screen widget | ✅ | ✅ (some) | ❌ |
 | One app, no subscription | ✅ | — | — |
 
 ---
@@ -103,11 +105,24 @@ that tracks offset *and* drift — grouped playback stays in step. The player re
 and mutes until the filter converges, rather than joining a group with an offset still seconds wide.
 
 FLAC, Opus and PCM are decoded through **ExoPlayer**, with a custom `DataSource` that holds each
-frame until the Kalman-filtered server clock says it is due, and output through **Oboe** so a
-garbage-collection pause cannot become an audible one. 24-bit is opt-in: with bit-perfect on, the
-decoder is asked for float output and the track is built from what it actually reports, not from
-the depth the server claimed — because two-byte samples in a three-byte frame is noise, not
-degradation.
+frame until the Kalman-filtered server clock says it is due, and written to the platform
+`AudioTrack`. 24-bit is opt-in: with bit-perfect on, the decoder is asked for float output and the
+track is built from what it actually reports, not from the depth the server claimed — because
+two-byte samples in a three-byte frame is noise, not degradation.
+
+ExoPlayer is **the** engine here, not one of two. It was an experimental toggle until v0.9, on the
+reasoning that an unvalidated path should not silently become everyone's player — and hardware
+settled it the other way: the hand-built `MediaCodec` → `AudioTrack` engine it replaced produces no
+audio at all on the test device, and this one does. A switch whose off position is silence is not a
+safety measure, so it is gone.
+
+> **On Oboe:** there is a native output engine in `app/src/main/cpp/`, reachable from
+> **Settings → Music Assistant server → Experimental**, and it is **off by default and currently
+> produces no sound**. The AAudio stream opens and starts, and then nothing is ever consumed from
+> it. Three genuine defects have been found and fixed on the way to that one without being it. The
+> evidence, the mechanism and the one measurement that would settle it are in
+> [PR #59](https://github.com/engabd11/CAMusic/pull/59). It is opt-in, it blocks nothing, and
+> the README used to claim audio flowed through it — it does not.
 
 Routing the stream through ExoPlayer is also what put MA playback inside the light-sync analysis
 tap, so the direct Hue path drives both players rather than only local files.
@@ -202,6 +217,44 @@ and play counts write back to the library the track came from when you're back o
 | Smooth transitions | — | ✅ (1–12 s, auto-suppressed for albums) |
 | EQ | ✅ (server DSP) | Planned |
 
+### Driving — control the music without leaving the map
+
+A lot of cars have no Android Auto. The phone sits in a cradle running Google Maps, and changing a
+track means leaving the map, finding the app, hitting a small target and going back — while
+driving. This is the one feature in the app that is a *safety* feature rather than a polish or
+correctness one, and it is built to that standard: **three controls, very large, over whatever is
+on screen.**
+
+Two window mechanisms, chosen in **Settings → Playback & audio → Driving**:
+
+| | Floating window (default) | Full-width bar |
+|---|---|---|
+| Permission | **None** | Draw over other apps |
+| Targets | System-sized | 76dp, against the platform's 48dp minimum |
+| Position | System decides | Either edge, draggable |
+| Starts from | The app must be open first | Anywhere |
+
+The default costs no permission at all, which for something you set up once in a car park is worth
+more than the larger buttons. The full-width bar is there when it isn't.
+
+**What turns it on is the car's Bluetooth**, not Google Maps being in front. That framing is the
+expensive one: reading the foreground app needs either `PACKAGE_USAGE_STATS` or an
+`AccessibilityService` — a Settings-screen grant, or the most policy-sensitive permission on the
+platform — and the requirement is *control music without leaving the map*, not *know that Maps is
+running*. Nominate your car from the phone's paired devices and connecting to it is the trigger. A
+**Quick Settings tile** and a Settings switch cover a car with no pairing, an aux cable, or simply
+wanting it on.
+
+It never appears with nothing playing, whatever the trigger says. Three controls, a title that
+truncates rather than scrolls — movement in peripheral vision while driving is the worst possible
+place for a marquee — and nothing that invites reading.
+
+### Home-screen widget
+
+What's playing, with previous, play/pause and next, without unlocking or opening anything. Built
+with Glance, and driven through the same routing as every other surface — so it addresses the
+speaker you're actually listening to, not always the phone.
+
 ### Playback details
 
 - **Lyrics** — LRC-timed where the provider has them. The sung line sits centred, scrolls smoothly,
@@ -223,9 +276,15 @@ and play counts write back to the library the track came from when you're back o
   (optional — the app works with local files alone)
 - **Philips Hue Bridge** with an entertainment area (optional — for Hue Entertainment light sync)
 - **Home Assistant** + syncoV2 (optional — for Hue light sync through HA)
+- A car stereo paired over **Bluetooth** (optional — the trigger for driving mode; a Quick Settings
+  tile covers a car without one)
 
 Everything is optional except Android 12+. Start with one server or just local files and add more
 as you go.
+
+Two permissions are asked for only if you use the feature that needs them: **Bluetooth** (to notice
+your car connecting) and **draw over other apps** (only for driving mode's full-width bar — the
+default floating window needs neither).
 
 ## Setup
 
@@ -237,9 +296,12 @@ as you go.
    that decide whether playback survives the screen going off — notifications, and unrestricted
    battery.
 4. Everything can be changed later under **Settings → Libraries** and **Settings → Light Sync**.
-   The Music Assistant player's own settings — name, stream format, gapless, what to ask the server
-   for — live on that server's card, so the server, its library and the player are configured in
-   one place.
+   The Music Assistant player's own settings — name, stream format, gapless, announcements, and the
+   live status readout — live on that server's card, so the server, its library and the player are
+   configured in one place.
+5. Optional, and worth two minutes if you drive: **Settings → Playback & audio → Driving**. Turn it
+   on, pick your car from the phone's paired devices, and the transport appears over the map
+   whenever you connect to it and something is playing.
 
 ---
 
@@ -253,7 +315,7 @@ Jetpack Compose UI  ·  Material 3  ·  OLED design system (true black, album ac
    state collected lifecycle-aware, so a backgrounded screen stops working
         |
         +-- Sendspin protocol --  SendspinClient · ClockSync · Kalman filter
-        |   (this phone as an MA player)      -> SendspinAudioEngine -> AudioTrack
+        |   (this phone as an MA player)      -> SendspinExoEngine -> AudioTrack
         |
         +-- MA main API --------  MaApiClient (/ws) · MaRepository
         |   (browse, search, transport, queues, grouping, DSP, player config)
@@ -298,8 +360,9 @@ WebSocket binary frame                   HTTP (static/original) or local file
         |                                            |
      ExoPlayer  -------------------------------  ExoPlayer
         |                                        (gapless, exact seek, ReplayGain,
-   OboeAudioSink                                  radio, smooth transitions,
-   (GC-immune output)                             24-bit float output)
+   AudioTrack                                     radio, smooth transitions,
+   (OboeAudioSink is opt-in                       24-bit float output)
+    and currently silent)                             |
         |                                            |
         +--------- AudioAnalysisTap ------------------+
                           |
@@ -314,9 +377,11 @@ Formats are advertised, not requested: MA may only send something the client lis
 *is* the setting. 48 and 44.1 kHz are always offered; 88.2/96 kHz with hi-res on; 176.4/192 kHz
 only with bit-perfect on **and** only after probing that the device will open a track at that rate.
 
-The native output engine in `app/src/main/cpp/` is compiled and called — it is what `OboeAudioSink`
-drives. True bit-perfect *exclusive-mode* output that bypasses the Android mixer entirely is still a
-future phase; what ships today is a low-latency, GC-immune path through Oboe.
+The native output engine in `app/src/main/cpp/` is compiled and callable — it is what
+`OboeAudioSink` drives — but it is **opt-in, off, and does not currently produce sound**; see the
+note above and [PR #59](https://github.com/engabd11/CAMusic/pull/59). What ships today is the
+platform `AudioTrack`. True bit-perfect *exclusive-mode* output that bypasses the Android mixer is a
+later phase again.
 
 ---
 
@@ -356,7 +421,8 @@ future phase; what ships today is a low-latency, GC-immune path through Oboe.
 - [x] Adaptive grid layout for tablets and foldables
 - [x] Direct Philips Hue light sync from Music Assistant playback (v0.8.8 — MA audio now flows
       through ExoPlayer, so the analysis tap sees it)
-- [x] Sendspin player on ExoPlayer + Oboe (v0.8.8)
+- [x] Sendspin player on ExoPlayer (v0.8.8; the Oboe output behind it is opt-in and still silent —
+      see Next up)
 - [x] Light sync as a spatial field — neighbouring lamps share a drive, colour drifts in three
       dimensions, height blends between bands (v0.8.8)
 - [x] Sustain layer — held vocals bloom the room instead of lighting nothing (v0.8.8)
@@ -365,18 +431,48 @@ future phase; what ships today is a low-latency, GC-immune path through Oboe.
 - [x] Warm reconnect — `client/goodbye` with `reason: "restart"`, so a quick app switch doesn't
       drop the phone from the speaker list
 
+**v0.9:**
+
+- [x] **Music Assistant playback confirmed on hardware** — and five bugs found in the same session
+      and fixed: audio focus deafness, a pause that played 20 s on, two connections racing over one
+      `client_id`, direct light sync not noticing MA, and the idle light show lost for MA
+- [x] **Driving mode** — a slim always-reachable transport over the map, with Picture-in-Picture as
+      the permission-free default and a full-width overlay behind it, triggered by the car's
+      Bluetooth
+- [x] **Glance home-screen widget**
+- [x] ExoPlayer promoted from experimental to the only Music Assistant engine
+- [x] The now-playing cover flies between the mini bar and the full player
+- [x] Album colour accuracy — accents keep the cover's own lightness instead of being pinned to one
+      perceptual value, and white can no longer outvote a colour it is a minority of
+- [x] Wide colour gamut on displays that have one
+- [x] One authority on which player owns the audio output, and internal audio-focus arbitration so
+      the app's two players stop evicting each other through `AudioManager`
+- [x] Instrumented tests — the MediaSession id collision and player identity surviving a rename
+- [x] "Keep the music going" on Jellyfin, via its own Instant Mix
+- [x] Favourites from the player on Navidrome and Jellyfin
+- [x] Light Sync starts when you switch it on, rather than when something happens to play
+- [x] Player status moved onto its own server's page; the empty top-level player section removed
+- [x] The three largest files split by responsibility (1,457 → 596 and 2,121 → 1,703)
+
 ### Next up
 
+- [ ] **On-device verification of v0.9.** The playback chain is confirmed; the driving bar, the
+      widget, the shared-element flight, the palette rework and the file split are not. Two can
+      only be judged by eye and one only in a car.
 - [ ] **True overlapping crossfade** on the standalone path — a second ExoPlayer ping-ponged with
       volume ramps, moving queue ownership and touching ReplayGain, the notification, and the
       analysis tap. The shipped smooth transitions are the first half; this is the second.
 - [ ] **Android Auto** — media3-session is already a dependency and the `MediaSession` exists.
       Both media services are plain `Service`s though, so the work is a `MediaLibraryService` and a
-      browse tree, not just a manifest line.
-- [ ] **Glance home-screen widget** — now-playing at a glance.
-- [ ] **On-device verification.** Everything is covered by unit tests, lint and a debug build, and
-      none of it has been run on hardware — the audio path and the Hue bridge especially. This is
-      the honest gap between "works" and "production".
+      browse tree, not just a manifest line. It overlaps driving mode in purpose but not in reach:
+      Auto only helps cars that have it, which is exactly the case driving mode exists to cover.
+- [ ] **The Oboe silence** — [PR #59](https://github.com/engabd11/CAMusic/pull/59). Blocks
+      nothing; the path is opt-in and off.
+- [ ] **Music Assistant gapless** — MA treats gapless as crossfade, so there is no server switch to
+      ask for: joining two streams without a seam is client-side work here.
+- [ ] **Spatial swells** — lights that move across or around the room when the music does. Designed
+      but not built; see [PR #60](https://github.com/engabd11/CAMusic/pull/60), whose first
+      step is a detector that logs and renders nothing.
 
 ### Planned
 
@@ -392,11 +488,13 @@ future phase; what ships today is a low-latency, GC-immune path through Oboe.
 - [ ] **Bit-perfect exclusive-mode output** — the native AAudio I24 path is written and
       deliberately not compiled. `flac_decode()` is still a skeleton and the ring buffer is
       byte-level rather than frame-level. The largest single audio item on the roadmap.
-- [ ] **Instrumented tests** — 526 unit tests cover protocol, clock, DSP, parsing, the server list,
-      and the Philips Hue Entertainment sync engine; nothing covers the audio path, the service
-      lifecycle, or the UI.
-- [ ] **Crash reporting** — self-hosted ACRA or similar. Crashes are stored locally today, and can
-      be filed as a GitHub issue if you supply a token.
+- [ ] **Wider instrumented coverage** — 538 unit tests cover protocol, clock, DSP, parsing, the
+      server list and the Philips Hue Entertainment sync engine, and two instrumented tests now pin
+      the two regressions that each cost a release. Nothing yet covers the audio path end to end,
+      the service lifecycle, or the UI.
+- [ ] **A hosted crash backend** — crashes are stored locally and, with a token configured, filed
+      automatically as a GitHub issue. What is missing is somewhere to send them that isn't a
+      repository, and reporting more than the most recent one per launch.
 
 > **On signing:** releases are signed with the local debug key, deliberately. It has been stable
 > since v0.1.0, so updates install over each other cleanly. Because that key lives on one machine
@@ -409,8 +507,19 @@ future phase; what ships today is a low-latency, GC-immune path through Oboe.
 
 Written down because the alternative is discovering them by ear:
 
-- **Nothing here has been verified on a device yet.** Unit tests, lint and a debug build all pass;
-  the audio path, the Hue bridge and the volume routing have not been exercised on real hardware.
+- **The playback chain is confirmed on hardware; most of what came after it is not.** A release
+  build ran on a Galaxy S23 and Music Assistant playback produced audio — which cleared the whole
+  of the stabilisation work in one run, and turned up five further bugs in the same session, all
+  fixed. What has *not* been on a device is everything shipped since: the driving bar, the widget,
+  the shared-element flight, the palette rework and the file split. Two of those can only be judged
+  by eye and one only in a car. This is the honest gap between "the tests pass" and "it works".
+- **Driving mode's Picture-in-Picture path has not been tried against Google Maps in navigation
+  mode.** Android 12+ lets an app call `setHideOverlayWindows(true)` to suppress non-system
+  overlays over itself. Whether Maps does is assumed *not*. If it does, the full-width overlay
+  becomes the default instead — the code for that is already there; it is a one-line change to
+  which mechanism leads.
+- **The native Oboe output path is silent.** Off by default, opt-in, and clearly labelled as such
+  in Settings. See [PR #59](https://github.com/engabd11/CAMusic/pull/59).
 - **Direct Philips Hue light sync cannot follow a remote speaker.** It taps this phone's own render
   chain, which now covers both local playback *and* Music Assistant playing to this phone. Music
   playing on a different speaker never reaches this phone's decoder, so that case still needs the
@@ -428,12 +537,22 @@ Written down because the alternative is discovering them by ear:
 
 ## Building
 
-JDK 17 and the Android SDK (compileSdk 36). No NDK needed.
+JDK 17 and the Android SDK (compileSdk 36). The **NDK and CMake are required** — the native Oboe
+output engine in `app/src/main/cpp/` is part of the build even though the path it feeds is off by
+default. (The README said "no NDK needed" for several releases after that stopped being true.)
 
 ```bash
 ./gradlew assembleRelease        # app/build/outputs/apk/release/app-release.apk
-./gradlew :app:testDebugUnitTest # 526 unit tests
+./gradlew :app:testDebugUnitTest # 538 unit tests
 ./gradlew :app:lintDebug
+```
+
+CI runs exactly `:app:testDebugUnitTest`, `:app:lintDebug` and `assembleDebug` — run that set
+before pushing rather than a superset. `assembleRelease` looks stricter and is not:
+its `lintVital` only reports issues marked fatal, so it will happily pass a `lintDebug` error.
+
+```bash
+./gradlew :app:connectedDebugAndroidTest   # instrumented tests; needs a device
 ```
 
 Judge anything about how the app *feels* on a release build. A debug build carries Compose
@@ -452,8 +571,17 @@ Releases are cut locally. See the header of
 ## Documentation
 
 - [Release notes](docs/release-notes/) — what changed in each release, and why
-- [v0.8 plan](docs/v0.8-plan.md) — the current plan, a table of what shipped against it, and the
-  remaining roadmap sequenced
+- [v0.9 plan](docs/v0.9-plan.md) and [what's left of it](docs/v0.9-remaining.md) — the current
+  plan, and the working queue that re-verified it against the source. The second is worth reading
+  for the parts that turned out **wrong**: it opens with five load-bearing premises of the plan
+  that did not survive being checked, and later records three of its own that did not survive
+  being built.
+- Oboe investigation ([PR #59](https://github.com/engabd11/CAMusic/pull/59), not yet merged) — why
+  the native output path is silent, what has been ruled out, and the one measurement that would
+  settle it
+- Spatial swell plan ([PR #60](https://github.com/engabd11/CAMusic/pull/60), not yet merged) —
+  lights that move when the sound does; designed, not built
+- [v0.8 plan](docs/v0.8-plan.md) — the previous plan, and what shipped against it
 - [Direct Hue plan](docs/direct-hue-plan.md) and
   [gap analysis](docs/direct-hue-bridge-gap-analysis.md) — the direct Light Sync port, and what
   it was measured against
