@@ -136,7 +136,28 @@ fun LibraryScreen(
     var actionsFor by remember { mutableStateOf<MaItem?>(null) }
 
     LaunchedEffect(Unit) { viewModel.toast.collect { snackbar.showSnackbar(it) } }
-    BackHandler(enabled = depth > 0 || searchOpen) { viewModel.back() }
+
+    /**
+     * Whether the search field currently holds focus — i.e. whether the keyboard is up
+     * because of it.
+     *
+     * Back means two different things while typing, and the screen was only handling
+     * one of them. Putting the keyboard away is a back press that reaches the app
+     * (the IME's dismiss chevron sends one, and under the predictive-back dispatcher
+     * it is not always swallowed on the way), and this screen answered it with
+     * [LibraryViewModel.back], which drops the search — including `_query`, so the
+     * text that had just been typed vanished with the keyboard.
+     *
+     * One handler decides, rather than two racing on registration order: with the
+     * field focused, back only takes the focus away, which is what puts the keyboard
+     * down and leaves the query and its results exactly where they were. Only once
+     * the keyboard is gone does back mean "leave this search" or "go up a level".
+     */
+    var searchFocused by remember { mutableStateOf(false) }
+    val focus = LocalFocusManager.current
+    BackHandler(enabled = searchFocused || depth > 0 || searchOpen) {
+        if (searchFocused) focus.clearFocus() else viewModel.back()
+    }
 
     Box(Modifier.fillMaxSize().background(Ink)) {
         Bloom(palette.swatch(0), 520.dp, (-120).dp, (-260).dp, 0.30f)
@@ -153,6 +174,7 @@ fun LibraryScreen(
                 onSearch = viewModel::doSearch,
                 onSonicSearch = viewModel::sonicSearch,
                 onClearSearch = viewModel::clearSearch,
+                onSearchFocus = { searchFocused = it },
                 refreshing = refreshing,
                 // Only offer it once there is a library to re-read; on the connect
                 // form it would just be a button that does nothing.
