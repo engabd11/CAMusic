@@ -283,6 +283,12 @@ class SendspinAudioEngine(private val clock: ClockSync) : SendspinPlaybackEngine
     /** Frames handed to the track since it was built, for [bufferedUs]. */
     @Volatile private var framesWritten = 0L
 
+    /**
+     * Whether this stream has already logged its first write to the track — see
+     * [logFirstWrite]. Reset by [start], so there is one line per stream.
+     */
+    @Volatile private var firstWriteLogged = false
+
     /** The format the live codec/track were built for, for the reuse decision. */
     private var currentFormat: StreamStartPlayerInfo? = null
     private var currentHiRes = false
@@ -324,66 +330,95 @@ class SendspinAudioEngine(private val clock: ClockSync) : SendspinPlaybackEngine
     /** Bytes per frame for the encoding the live track was built with. */
     private fun bytesPerFrame(): Int = bytesPerSample(trackEncoding) * trackChannels.coerceAtLeast(1)
 
-    @Synchronized
+    /**
+     * Deliberately **not** `@Synchronized` as a whole — see the phase split inside.
+     *
+     * The continuation fast path is taken under the monitor and returns there. A
+     * genuine (re)start cannot be, because it has to stop the decode worker first,
+     * and [releaseInternal]'s join must not run while the caller holds the monitor
+     * the worker itself takes in [ensureTrackFor].
+     */
     override fun start(format: StreamStartPlayerInfo) {
         // Hi-res is only worth asking for when the source actually has the bits:
         // a 16-bit file widened on the way out is padding, not resolution.
         val wantHiRes = bitPerfect && format.bitDepth >= 24
-        val plan = StreamContinuity.plan(currentFormat, format, currentHiRes, wantHiRes)
 
-        // A track boundary: MA ended the last stream moments ago and the track is
-        // still playing its tail. Carry straight on through it.
-        if (endPending && running && plan.reuseTrack) {
-            endPending = false
-            if (plan.reuseCodec) {
-                runCatching { codec?.flush(); codec?.start() }
+        // Phase 1 — a track boundary: MA ended the last stream moments ago and the
+        // track is still playing its tail. Carry straight on through it. Nothing here
+        // touches the worker, so it is decided and applied in one synchronized step,
+        // which is what keeps the common case cheap.
+        synchronized(this) {
+            val plan = StreamContinuity.plan(currentFormat, format, currentHiRes, wantHiRes)
+            if (endPending && running && plan.reuseTrack) {
+                endPending = false
+                if (plan.reuseCodec) {
+                    runCatching { codec?.flush(); codec?.start() }
+                } else {
+                    rebuildCodecKeeping(format, wantHiRes)
+                }
+                currentFormat = format
+                currentHiRes = wantHiRes
+                // [endOfStream] left the track paused and empty, so bring it back and
+                // schedule the next frame like the head it now is. The saving here is the
+                // rebuild — the codec and the AudioTrack survive a track change — not the
+                // buffer, which cannot survive one without breaking pause.
+                runCatching { track?.play() }
+                armHead()
+                Log.d(TAG, "continue ${format.codec} ${format.sampleRate}/${format.bitDepth} (codec reused=${plan.reuseCodec})")
+                return
+            }
+        }
+
+        // Phase 2 — a genuine (re)start. Drain first so a pending end doesn't lose its
+        // tail. Outside the monitor on purpose: [releaseInternal] joins the decode
+        // worker, and the worker takes this same monitor in [ensureTrackFor], so
+        // joining while holding it deadlocks until the join times out — after which
+        // this method would build a *second* worker on top of one that is still alive,
+        // two decoders interleaving into a single track. `releaseInternal` is written
+        // to join outside the monitor for exactly this reason; calling it from a
+        // wholly-synchronized `start` was what defeated that.
+        releaseInternal(drain = endPending)
+
+        synchronized(this) {
+            val channels = format.channels.coerceIn(1, 2)
+            isPcm = format.codec.equals("pcm", ignoreCase = true)
+            codec = when (format.codec.lowercase()) {
+                "opus" -> createOpusDecoder(format.sampleRate, channels, format.codecHeader)
+                "flac" -> createFlacDecoder(format.sampleRate, channels, format.bitDepth, format.codecHeader, wantHiRes)
+                else -> null   // pcm passthrough, or a codec we cannot decode
+            }
+            // The server may only stream a format this client advertised (see
+            // FormatNegotiator.supportedFormats), so this should be unreachable — but
+            // it used to be reached *silently*: no decoder and no passthrough means
+            // every frame is discarded in the decode loop, which is a connection that
+            // looks perfectly healthy and plays nothing at all.
+            if (codec == null && !isPcm) {
+                Log.e(TAG, "no decoder for codec '${format.codec}' - this stream will be silent")
+            }
+            trackSampleRate = format.sampleRate
+            trackChannels = channels
+            framesWritten = 0L
+            firstWriteLogged = false
+            // Passthrough has no decoder to ask, so the server's claim is the only
+            // description of the bytes and the track is built now. Decoded streams
+            // wait for INFO_OUTPUT_FORMAT_CHANGED — see ensureTrackFor.
+            track = if (isPcm) {
+                val enc = if (wantHiRes) AudioFormat.ENCODING_PCM_24BIT_PACKED else AudioFormat.ENCODING_PCM_16BIT
+                trackEncoding = enc
+                createTrack(format.sampleRate, channels, enc).also { it.setVolume(effectiveVolume()); it.play() }
             } else {
-                rebuildCodecKeeping(format, wantHiRes)
+                null
             }
             currentFormat = format
             currentHiRes = wantHiRes
-            // [endOfStream] left the track paused and empty, so bring it back and
-            // schedule the next frame like the head it now is. The saving here is the
-            // rebuild — the codec and the AudioTrack survive a track change — not the
-            // buffer, which cannot survive one without breaking pause.
-            runCatching { track?.play() }
+            endPending = false
             armHead()
-            Log.d(TAG, "continue ${format.codec} ${format.sampleRate}/${format.bitDepth} (codec reused=${plan.reuseCodec})")
-            return
+            running = true
+            // Guard: a continuation leaves the worker alive, and a second one writing to
+            // the same track would interleave two decoders into one stream.
+            if (worker == null) worker = thread(name = "sendspin-audio", isDaemon = true) { runLoop() }
+            Log.i(TAG, "start ${format.codec} ${format.sampleRate}/${format.bitDepth} ch=$channels hires=$wantHiRes")
         }
-
-        // Genuine (re)start. Drain first so a pending end doesn't lose its tail.
-        releaseInternal(drain = endPending)
-
-        val channels = format.channels.coerceIn(1, 2)
-        isPcm = format.codec.equals("pcm", ignoreCase = true)
-        codec = when (format.codec.lowercase()) {
-            "opus" -> createOpusDecoder(format.sampleRate, channels, format.codecHeader)
-            "flac" -> createFlacDecoder(format.sampleRate, channels, format.bitDepth, format.codecHeader, wantHiRes)
-            else -> null   // pcm or unknown -> passthrough / silence
-        }
-        trackSampleRate = format.sampleRate
-        trackChannels = channels
-        framesWritten = 0L
-        // Passthrough has no decoder to ask, so the server's claim is the only
-        // description of the bytes and the track is built now. Decoded streams
-        // wait for INFO_OUTPUT_FORMAT_CHANGED — see ensureTrackFor.
-        track = if (isPcm) {
-            val enc = if (wantHiRes) AudioFormat.ENCODING_PCM_24BIT_PACKED else AudioFormat.ENCODING_PCM_16BIT
-            trackEncoding = enc
-            createTrack(format.sampleRate, channels, enc).also { it.setVolume(effectiveVolume()); it.play() }
-        } else {
-            null
-        }
-        currentFormat = format
-        currentHiRes = wantHiRes
-        endPending = false
-        armHead()
-        running = true
-        // Guard: a continuation leaves the worker alive, and a second one writing to
-        // the same track would interleave two decoders into one stream.
-        if (worker == null) worker = thread(name = "sendspin-audio", isDaemon = true) { runLoop() }
-        Log.d(TAG, "start ${format.codec} ${format.sampleRate}/${format.bitDepth} ch=$channels hires=$wantHiRes")
     }
 
     /**
@@ -513,6 +548,55 @@ class SendspinAudioEngine(private val clock: ClockSync) : SendspinPlaybackEngine
     }
 
     /**
+     * Release the codec and track for a stream that has genuinely finished — called
+     * from the decode loop once `stream/end` has lingered out with nothing following.
+     *
+     * On the worker itself, under the monitor, rather than on a helper thread. The
+     * helper-thread version raced [start]: between the loop deciding to tear down and
+     * the helper actually running (a thread start is not instant), a `stream/start`
+     * for the next track could land, and either outcome was silence with no error
+     * anywhere and nothing to see in the connection state:
+     *
+     *  - it took [start]'s continuation branch — `running` was still true and the
+     *    format matched — which deliberately does *not* restart a worker, because a
+     *    continuation normally leaves one alive. This one had already left its loop,
+     *    so nothing decoded again; or
+     *  - it took the restart branch and built a fresh codec, track and worker, which
+     *    the helper then released out from under it on its way through.
+     *
+     * Being on the worker means there is nothing to join — the only reason the helper
+     * thread existed, since [releaseInternal] cannot join the thread calling it. Being
+     * under the monitor means [start] either got in first, in which case the re-check
+     * below finds the engine alive again and leaves it strictly alone, or it waits and
+     * finds a clean slate.
+     *
+     * @return true when the teardown happened and the loop should exit; false when a
+     *   new stream claimed the engine first, in which case the loop carries on and
+     *   serves it.
+     */
+    @Synchronized
+    private fun tearDownIdleStream(): Boolean {
+        // Re-checked under the lock: [start] may have taken the monitor between the
+        // loop's own unsynchronized test and this call.
+        if (!running || !endPending || queue.isNotEmpty()) return false
+        Log.d(TAG, "stream ended and drained - releasing")
+        running = false
+        // Cleared here so a later [start] builds a fresh worker: this one is about to
+        // leave its loop, and a null handle is how [start] knows that.
+        worker = null
+        drainCodecAndTrack()
+        runCatching { codec?.stop() }
+        runCatching { codec?.release() }
+        codec = null
+        runCatching { track?.pause(); track?.flush(); track?.release() }
+        track = null
+        currentFormat = null
+        endPending = false
+        framesWritten = 0L
+        return true
+    }
+
+    /**
      * Play out what the decoder and the track are still holding.
      *
      * Two stages, and both are needed. The decoder has its own internal pipeline
@@ -625,9 +709,7 @@ class SendspinAudioEngine(private val clock: ClockSync) : SendspinPlaybackEngine
             if (endPending && queue.isEmpty() &&
                 android.os.SystemClock.elapsedRealtime() - endPendingAtMs > END_LINGER_MS
             ) {
-                Log.d(TAG, "stream ended and drained - releasing")
-                thread(name = "sendspin-release", isDaemon = true) { releaseInternal(drain = true) }
-                break
+                if (tearDownIdleStream()) break
             }
 
             var scheduleHead = false
@@ -679,6 +761,7 @@ class SendspinAudioEngine(private val clock: ClockSync) : SendspinPlaybackEngine
                 val t = track
                 if (t != null) {
                     t.write(frame.payload, 0, frame.payload.size)
+                    logFirstWrite(t, frame.payload.size)
                     countFrames(frame.payload.size)
                 }
                 continue
@@ -781,7 +864,29 @@ class SendspinAudioEngine(private val clock: ClockSync) : SendspinPlaybackEngine
     /** Write to the track and keep the frame count [bufferedUs] depends on. */
     private fun writeToTrack(t: AudioTrack, buf: ByteBuffer, size: Int) {
         val written = t.write(buf, size, AudioTrack.WRITE_BLOCKING)
-        if (written > 0) countFrames(written)
+        if (written > 0) { logFirstWrite(t, written); countFrames(written) }
+    }
+
+    /**
+     * One line per stream, the first time decoded audio actually reaches the track.
+     *
+     * This is the single log that separates the two shapes of "MA plays but there is
+     * no sound", which otherwise look identical from outside: nothing ever decoded
+     * (no line — the stream never started, the gate never opened, or the codec was
+     * never built), versus audio reaching the output and being inaudible anyway (a
+     * line, with the gain and route that were applied to it). Cheap enough to keep
+     * on: it is once per track, not once per buffer.
+     */
+    private fun logFirstWrite(t: AudioTrack, bytes: Int) {
+        if (firstWriteLogged) return
+        firstWriteLogged = true
+        Log.i(
+            TAG,
+            "first write: ${bytes}B @ $trackSampleRate/${trackChannels}ch/enc=$trackEncoding " +
+                "vol=${effectiveVolume()} (user=$volume syncMuted=$syncMuted) " +
+                "route=${t.routedDevice?.let { AudioOutputs.describe(it) } ?: "system default"} " +
+                "state=${t.playState}",
+        )
     }
 
     private fun countFrames(bytes: Int) {
@@ -876,8 +981,25 @@ class SendspinAudioEngine(private val clock: ClockSync) : SendspinPlaybackEngine
         if (wantHiRes) {
             format.setInteger(MediaFormat.KEY_PCM_ENCODING, AudioFormat.ENCODING_PCM_FLOAT)
         }
+        // The server sends codec_header in either of two shapes - bare 34-byte
+        // STREAMINFO, or a complete 42-byte FLAC header (magic + block header +
+        // STREAMINFO) - see SendspinContainerHeader.extractStreamInfo's doc for why
+        // both are real, confirmed against this exact failure mode on the ExoPlayer
+        // path. csd-0 wants the bare STREAMINFO either way, matching
+        // SendspinContainerHeader.flacStreamHeader's own convention for the same field.
         codecHeader?.let {
-            try { format.setByteBuffer("csd-0", ByteBuffer.wrap(Base64.decode(it, Base64.DEFAULT))) } catch (_: Exception) {}
+            try {
+                val decoded = Base64.decode(it, Base64.DEFAULT)
+                val streamInfo = SendspinContainerHeader.extractStreamInfo(decoded)
+                if (streamInfo != null) {
+                    format.setByteBuffer("csd-0", ByteBuffer.wrap(streamInfo))
+                } else {
+                    Log.w(TAG, "createFlacDecoder: codec_header decoded to ${decoded.size} bytes, " +
+                        "neither bare STREAMINFO (34) nor a full FLAC header (42) - csd-0 left unset")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "createFlacDecoder: couldn't decode codec_header: ${e.message}")
+            }
         }
         return MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_AUDIO_FLAC).apply {
             configure(format, null, null, 0); start()

@@ -55,7 +55,15 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
     )
 
     private val settings = AppSettings(app)
-    val myPlayerId: String = PlayerIdentity.getPlayerId(app)
+    /**
+     * Live, not captured — see [PlayerIdentity.getPlayerId]. Load-bearing here beyond
+     * display: [selectPlayer] normalises "this phone" to the empty string by comparing
+     * against it, so a stale value writes the *old* concrete id into the persisted
+     * target instead. That survives restarts and points every play command at a player
+     * Music Assistant no longer has — the "stale target-player selection" that reads
+     * as MA playback being broken.
+     */
+    val myPlayerId: String get() = PlayerIdentity.getPlayerId(getApplication<Application>())
 
     private val api = (app as SendpinApp).maApi
     private val repo = MaRepository(api)

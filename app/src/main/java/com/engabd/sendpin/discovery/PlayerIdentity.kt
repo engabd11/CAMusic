@@ -7,12 +7,30 @@ import com.engabd.sendpin.protocol.DeviceInfo
 import java.util.*
 
 object PlayerIdentity {
-    private var cachedId: String? = null
+    /**
+     * Volatile because [newIdentity] clears it from whatever coroutine a rename
+     * happens on, while [getPlayerId] is read from view models, the Sendspin client
+     * and `MaNowPlaying`'s polling loop — all on other threads. Without it a reader
+     * can go on seeing the previous id indefinitely, which is the whole failure this
+     * cache exists one line away from causing.
+     */
+    @Volatile private var cachedId: String? = null
     private var cachedDeviceInfo: DeviceInfo? = null
 
     private const val PREFS = "player_identity"
     private const val KEY_GENERATION = "generation"
 
+    /**
+     * This phone's Music Assistant player id.
+     *
+     * **Read this live; never capture it in a `val`.** [newIdentity] mints a new one
+     * mid-session (a rename is the common trigger — see `Playback.reregister` and
+     * `applyPlayerConfig`), and a holder that captured the old one goes on addressing
+     * a player Music Assistant now considers unavailable: the play command either
+     * fails with MA's own "player is not available", or is queued to a stale player
+     * that isn't this phone. Either way the app looks like it is playing and no sound
+     * comes out. Cheap to call — after the first read it is a field.
+     */
     fun getPlayerId(context: android.content.Context): String {
         cachedId?.let { return it }
 

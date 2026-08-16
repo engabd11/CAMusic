@@ -56,7 +56,8 @@ class ArtistDetailViewModel(
 ) : AndroidViewModel(app) {
 
     private val settings = AppSettings(app)
-    private val myPlayerId: String = PlayerIdentity.getPlayerId(app)
+    /** Live, not captured — see [PlayerIdentity.getPlayerId]. */
+    private val myPlayerId: String get() = PlayerIdentity.getPlayerId(getApplication<Application>())
     private val maApi = (app as SendpinApp).maApi
     private val maRepo = MaRepository(maApi)
     /** Process-scoped, not owned by this screen — see the note in [AlbumDetailViewModel]. */

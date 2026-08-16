@@ -48,7 +48,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Playing screen.
  */
 @OptIn(kotlinx.coroutines.FlowPreview::class)
-class MaNowPlaying(app: Context) {
+class MaNowPlaying(private val app: Context) {
 
     /** Everything the shade needs about the selected player. */
     data class Now(
@@ -68,7 +68,13 @@ class MaNowPlaying(app: Context) {
     )
 
     private val settings = AppSettings(app)
-    private val myPlayerId: String = PlayerIdentity.getPlayerId(app)
+    /**
+     * Live, not captured — see [PlayerIdentity.getPlayerId]. This one mattered most:
+     * `MaNowPlaying` is built once, on `SendpinApp`, and never rebuilt, so a captured
+     * id here stayed stale for the whole process — taking `isSelf` (and with it the
+     * media shade's entire local-vs-remote routing) with it.
+     */
+    private val myPlayerId: String get() = PlayerIdentity.getPlayerId(app)
     private val api: MaApiClient = SendpinApp.instance.maApi
     private val repo = MaRepository(api)
     private val localPlayer = SendpinApp.instance.localPlayer
@@ -151,6 +157,32 @@ class MaNowPlaying(app: Context) {
 
     init {
         scope.launch { settings.targetPlayer.collect { _target.value = it } }
+        // Say so — loudly — when the persisted target names a player this server does
+        // not have.
+        //
+        // The target is stored as a concrete player id (blank meaning "this phone"), so
+        // a selection that has since gone leaves every play command aimed at something
+        // Music Assistant either refuses outright ("player is not available") or queues
+        // to a stale entry that makes no sound. Nothing surfaced that before: the app
+        // went on showing a player playing, because it was asking about the same dead
+        // id it was playing to. Deliberately a log and not an automatic reset — a
+        // legitimate speaker that is merely asleep drops out of `players/all` too, and
+        // silently discarding the user's choice for that would be its own bug. Fixed by
+        // re-picking the player in Speakers, which now writes a live id (see
+        // SpeakersViewModel.myPlayerId).
+        scope.launch {
+            combine(_players, _target) { players, target -> players to target }
+                .distinctUntilChanged()
+                .collect { (players, target) ->
+                    if (target.isBlank() || players.isEmpty()) return@collect
+                    if (players.any { it.playerId == target }) return@collect
+                    android.util.Log.w(
+                        "MaNowPlaying",
+                        "target player '$target' is not on this server " +
+                            "(this phone is '$myPlayerId') - playback will not reach it",
+                    )
+                }
+        }
         scope.launch { settings.backend.collect { _backend.value = it } }
         scope.launch {
             api.state.collect { if (it == MaApiClient.State.CONNECTED) refresh() }

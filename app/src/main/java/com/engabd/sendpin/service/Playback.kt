@@ -52,12 +52,15 @@ class Playback(private val app: Context) {
     private val deviceVolume = com.engabd.sendpin.audio.DeviceVolume(app)
 
     /**
-     * This player's Sendspin `client_id`. Not a `val`: [reregister] mints a new one,
-     * which is the only way to shake off a name Music Assistant has already committed
-     * to for an existing player.
+     * This player's Sendspin `client_id`.
+     *
+     * Read live rather than held: [reregister] and [applyPlayerConfig] mint a new one
+     * (the only way to shake off a name Music Assistant has already committed to for
+     * an existing player), and a copy kept here has to be re-assigned by hand at every
+     * such site to stay right. It used to be, and the same id captured in six other
+     * places was not — see [PlayerIdentity.getPlayerId].
      */
-    var playerId: String = PlayerIdentity.getPlayerId(app)
-        private set
+    val playerId: String get() = PlayerIdentity.getPlayerId(app)
     /**
      * The hardware's name ("Samsung SM-S911B"), which is only the *fallback* for the
      * player's name. It used to be exposed as `playerName` and printed in Settings
@@ -378,7 +381,18 @@ class Playback(private val app: Context) {
         // at connect time: switching mid-connection would orphan whatever the old
         // engine was doing mid-stream. SendspinAudioEngine stays the default.
         val eng: SendspinPlaybackEngine = if (settings.useExoPlayerForSendspin.first()) {
-            SendspinExoEngine(app, c.clock).also {
+            SendspinExoEngine(
+                app,
+                c.clock,
+                // The engine has already retried and given up (see its own bound) —
+                // force a fresh Sendspin socket rather than leaving a dead stream
+                // sitting there. If Music Assistant still wants this player playing,
+                // a reconnect is what gives it another chance to send stream/start;
+                // reconnectNow() is the same "the user asked for music" escalation
+                // MaRepository.playMedia uses, and its own status text already
+                // surfaces through the c.statusText collector below.
+                onFatalError = { c.reconnectNow() },
+            ).also {
                 it.useOboe = settings.useOboeOutput.first()
                 _maAudioSource.value = it.audioAnalysisTap to it.audioLead
             }
@@ -387,6 +401,15 @@ class Playback(private val app: Context) {
             SendspinAudioEngine(c.clock)
         }
         engine = eng
+        // Which engine is live is the first thing any "MA plays but there is no
+        // sound" report needs to establish, and it is otherwise invisible: the two
+        // are chosen from a setting, log under different tags, and fail in entirely
+        // different places.
+        android.util.Log.i(
+            "Playback",
+            "sendspin engine = ${eng.javaClass.simpleName}" +
+                (eng as? SendspinExoEngine)?.let { " (oboe=${it.useOboe})" }.orEmpty(),
+        )
 
         scope.launch { c.state.collect { _connected.value = it == SendspinClient.State.CONNECTED } }
         scope.launch { c.statusText.collect { _connectionStatus.value = it } }
@@ -571,6 +594,17 @@ class Playback(private val app: Context) {
     private var positionTicker: Job? = null
 
     /**
+     * `title|artist` of the track [progressAnchor] currently describes. What
+     * [anchorProgress] uses to notice a track boundary — see its own note on why that
+     * needs handling here specifically, distinct from [MAX_ANCHOR_AGE_US]'s staleness
+     * gate.
+     */
+    @Volatile private var anchoredTrackKey: String? = null
+
+    /** [ClockSync.nowUs] before which a same-track reading is held rather than applied. */
+    @Volatile private var trackSettleUntilUs: Long = 0L
+
+    /**
      * Take a `server/state` progress reading, dated by the server's own clock.
      *
      * `metadata.timestamp` is in server time, so [ClockSync.serverTimeToLocal] converts
@@ -579,15 +613,36 @@ class Playback(private val app: Context) {
      * epoch (or one that arrives before the filter has anything useful to say) would
      * otherwise anchor the bar somewhere absurd. Falling back to "now" is what the app
      * did unconditionally before, so the fallback is no worse than the old behaviour.
+     *
+     * A track boundary gets a second kind of protection on top of that, because it is
+     * not a stale-timestamp problem: a `server/state` describing the *outgoing* track
+     * can arrive a beat after the one announcing the new one (or vice versa), each with
+     * a perfectly plausible, perfectly current timestamp. `NowPlayingViewModel`'s
+     * `PlayerPositionTracker` already freezes the bar around *user-initiated* seeks and
+     * skips (see its `freezeForSeek`/`freezeForTrackChange`) — this covers the gap that
+     * leaves open: a track ending and the next one starting on its own, which nothing
+     * in the UI ever asked for and so nothing there can freeze in advance. The first
+     * reading naming a new `title|artist` is trusted immediately; anything still
+     * naming that same track within [TRACK_TRANSITION_SETTLE_US] afterward is held —
+     * it is far more likely to be the old track's state machine catching up than new
+     * information — which is what turns "goes to a second, then back to 00:00" into a
+     * single clean jump.
      */
     private fun anchorProgress(c: SendspinClient, np: com.engabd.sendpin.protocol.NowPlaying?) {
+        val nowUs = c.clock.nowUs()
+        val trackKey = np?.let { "${it.title}|${it.artist}" }
+        if (trackKey != anchoredTrackKey) {
+            anchoredTrackKey = trackKey
+            trackSettleUntilUs = nowUs + TRACK_TRANSITION_SETTLE_US
+        } else if (nowUs < trackSettleUntilUs) {
+            return
+        }
         val position = np?.progressMs
         if (position == null) {
             progressAnchor = null
             _positionMs.value = 0
             return
         }
-        val nowUs = c.clock.nowUs()
         val stampedLocalUs = np.progressAtServerUs
             ?.takeIf { it > 0L && c.clock.isSynced() }
             ?.let { c.clock.serverTimeToLocal(it) }
@@ -795,8 +850,9 @@ class Playback(private val app: Context) {
         if (codec.isNotBlank()) settings.setSendspinCodec(codec)
         val wanted = settings.playerName.first()
         if (wanted.isNotBlank() && wanted != settings.registeredPlayerName.first()) {
+            // [playerId] follows this on its own now — it reads through PlayerIdentity
+            // rather than holding a copy.
             PlayerIdentity.newIdentity(app)
-            playerId = PlayerIdentity.getPlayerId(app)
         }
         val base = settings.maBaseUrl.first()
         if (base.isNotBlank()) connectToServer(sendspinUrlFrom(base))
@@ -816,7 +872,6 @@ class Playback(private val app: Context) {
         if (name.isNotBlank()) settings.setPlayerName(name)
         disconnect(stopService = false)
         PlayerIdentity.newIdentity(app)
-        playerId = PlayerIdentity.getPlayerId(app)
         _configStatus.value = ""
         val base = settings.maBaseUrl.first()
         if (base.isNotBlank()) connectToServer(sendspinUrlFrom(base))
@@ -897,6 +952,9 @@ class Playback(private val app: Context) {
          * arrival time is the safer anchor.
          */
         const val MAX_ANCHOR_AGE_US = 30_000_000L
+
+        /** How long a same-track reading is held after a detected track boundary. */
+        const val TRACK_TRANSITION_SETTLE_US = 600_000L
     }
 
     private fun httpBase(url: String): String {

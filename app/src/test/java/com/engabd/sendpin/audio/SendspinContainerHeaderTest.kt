@@ -36,6 +36,68 @@ class SendspinContainerHeaderTest {
     }
 
     @Test
+    fun `flac header also accepts a full magic-prefixed codec header`() {
+        // Confirmed on-device against a real Music Assistant server: codec_header
+        // decoded to 42 bytes - "fLaC" + the metadata-block header + STREAMINFO -
+        // not the bare 34-byte STREAMINFO this code originally assumed exclusively.
+        // Every MA stream failed to open with "missing or malformed codec_header
+        // (decodedSize=42, want 34)" until extractStreamInfo handled this shape too.
+        val streamInfo = ByteArray(34) { (it + 1).toByte() }
+        val full = ByteBuffer.allocate(42).apply {
+            put("fLaC".toByteArray(Charsets.US_ASCII))
+            put(0x80.toByte()); put(0x00); put(0x00); put(34.toByte())
+            put(streamInfo)
+        }.array()
+        val b64 = Base64.getEncoder().encodeToString(full)
+
+        val header = SendspinContainerHeader.flacStreamHeader(b64)!!
+
+        assertEquals(42, header.size)
+        assertEquals("fLaC", String(header, 0, 4, Charsets.US_ASCII))
+        assertEquals(streamInfo.toList(), header.copyOfRange(8, 42).toList())
+    }
+
+    @Test
+    fun `the codec_header this Music Assistant server actually sent parses`() {
+        // Verbatim from the device log that surfaced the 42-byte shape, rather than a
+        // synthetic buffer: it is the one input known for certain to occur in the wild,
+        // and a synthetic 42 bytes cannot catch a regression in how the real one is
+        // framed. Decodes to "fLaC" + 80 00 00 22 + a STREAMINFO describing 48 kHz,
+        // 2 channels, 16-bit, unknown length (total_samples = 0, MD5 all zero - both
+        // expected for a live stream).
+        val observed = "ZkxhQ4AAACISABIAAAAAAEpYC7gC8AAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+        val header = SendspinContainerHeader.flacStreamHeader(observed)!!
+
+        assertEquals(42, header.size)
+        assertEquals("fLaC", String(header, 0, 4, Charsets.US_ASCII))
+        // Re-wrapping must reproduce the server's own bytes exactly - this header is
+        // handed straight to ExoPlayer's FlacExtractor to sniff and parse.
+        assertEquals(Base64.getDecoder().decode(observed).toList(), header.toList())
+
+        // The STREAMINFO fields ExoPlayer will read out of it, decoded here so a
+        // regression in the slice shows up as a wrong format rather than a silent one.
+        val info = header.copyOfRange(8, 42)
+        val sampleRate = ((info[10].toInt() and 0xFF) shl 12) or
+            ((info[11].toInt() and 0xFF) shl 4) or
+            ((info[12].toInt() and 0xFF) ushr 4)
+        assertEquals(48_000, sampleRate)
+        assertEquals(2, ((info[12].toInt() ushr 1) and 0x07) + 1)                     // channels
+        assertEquals(16, (((info[12].toInt() and 0x01) shl 4) or ((info[13].toInt() and 0xFF) ushr 4)) + 1) // bits
+    }
+
+    @Test
+    fun `extractStreamInfo rejects a magic-prefixed buffer of the wrong total size`() {
+        // 42 bytes is only trusted as "fLaC" + header + STREAMINFO when the size
+        // matches exactly - a coincidentally magic-prefixed 41 or 43 byte buffer is
+        // not that shape and must not be sliced as if it were.
+        val wrongTotal = ByteArray(41).also {
+            "fLaC".toByteArray(Charsets.US_ASCII).copyInto(it)
+        }
+        assertNull(SendspinContainerHeader.extractStreamInfo(wrongTotal))
+    }
+
+    @Test
     fun `flac header decodes unpadded base64`() {
         // 34 bytes -> 2 trailing '=' from the standard (padded) encoder. Nothing
         // guarantees the server pads its base64, and java.util.Base64's decoders

@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.engabd.sendpin.data.AppSettings
+import com.engabd.sendpin.data.rememberIsIgnoringBatteryOptimizations
 import com.engabd.sendpin.library.ServerConfig
 import com.engabd.sendpin.library.ServerKind
 import com.engabd.sendpin.local.LocalMediaSource
@@ -550,7 +551,10 @@ private fun PermissionsStep(
             ) == PackageManager.PERMISSION_GRANTED,
         )
     }
-    var batteryVisited by remember { mutableStateOf(false) }
+    // The real, live-checked exemption — not just "the settings screen was opened".
+    // Opening the list and never actually flipping the app to Unrestricted used to
+    // read as done here, which is no better than not asking at all.
+    val batteryGranted = rememberIsIgnoringBatteryOptimizations()
 
     val notifLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -586,12 +590,11 @@ private fun PermissionsStep(
             body = "Android's battery saver closes the connection to Music Assistant while the " +
                 "screen is off — on some phones within minutes. Find CAMusic in the list and " +
                 "set it to Unrestricted.",
-            done = batteryVisited,
+            done = batteryGranted,
             accent = accent,
-            actionLabel = "Open settings",
-            enabled = true,
+            actionLabel = if (batteryGranted) "Done" else "Open settings",
+            enabled = !batteryGranted,
         ) {
-            batteryVisited = true
             runCatching {
                 context.startActivity(
                     Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)

@@ -43,7 +43,8 @@ import kotlinx.coroutines.launch
 class DspViewModel(app: Application) : AndroidViewModel(app) {
 
     private val settings = AppSettings(app)
-    private val myPlayerId = PlayerIdentity.getPlayerId(app)
+    /** Live, not captured — see [PlayerIdentity.getPlayerId]. */
+    private val myPlayerId: String get() = PlayerIdentity.getPlayerId(getApplication<Application>())
     private val api = (app as SendpinApp).maApi
     private val repo = MaRepository(api)
 

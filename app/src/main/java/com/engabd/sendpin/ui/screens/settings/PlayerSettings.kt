@@ -184,6 +184,7 @@ internal fun PlayerSection(
         }
 
         MaPlaybackConfigCard(viewModel, accent)
+        MaExperimentalCard(settings, accent, scope)
 
         SettingsCard(
             title = "Announcements",
@@ -245,6 +246,53 @@ private fun MaPlaybackConfigCard(viewModel: PlayerViewModel, accent: Color) {
                 "login is refused every time, and the refusal is shown above rather than " +
                 "swallowed.",
         )
+    }
+}
+
+/**
+ * Player-internals switches not ready for general use. See
+ * `docs/exoplayer-upgrade-plan.md`: [AppSettings.useExoPlayerForSendspin] routes
+ * MA playback through ExoPlayer instead of the default hand-built
+ * MediaCodec+AudioTrack engine; [AppSettings.useOboeOutput] (only meaningful with
+ * that one already on) further routes decoded audio through a native Oboe engine
+ * instead of the platform AudioTrack. Both take effect on the next MA connection,
+ * not retroactively on whatever's already playing.
+ *
+ * Lives here rather than in the device-wide Audio settings: both switches are
+ * entirely about how *this phone talks to Music Assistant specifically* — the
+ * Navidrome/local path never touches either — so they belong with the rest of
+ * this phone's Music Assistant player settings, the same reasoning that already
+ * moved gapless/crossfade ([MaPlaybackConfigCard]) here.
+ */
+@Composable
+private fun MaExperimentalCard(settings: AppSettings, accent: Color, scope: CoroutineScope) {
+    var useExoPlayer by remember { mutableStateOf(false) }
+    var useOboe by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        useExoPlayer = settings.useExoPlayerForSendspin.first()
+        useOboe = settings.useOboeOutput.first()
+    }
+
+    SettingsCard(
+        title = "Experimental",
+        lead = "Not ready for everyday use. Turn these on only if you're specifically testing them.",
+    ) {
+        ToggleRow(
+            "ExoPlayer for MA playback",
+            "Replaces the MA (Sendspin) audio engine with ExoPlayer. Unvalidated: expect " +
+                "playback glitches, and disconnect/reconnect if it misbehaves. Takes effect on " +
+                "the next MA connection.",
+            useExoPlayer, accent,
+        ) { useExoPlayer = it; scope.launch { settings.setUseExoPlayerForSendspin(it) } }
+        CardDivider()
+        ToggleRow(
+            "Native Oboe output for MA",
+            "Only applies with ExoPlayer for MA playback on. Routes decoded audio through a " +
+                "native engine instead of the platform AudioTrack. Far less tested than the " +
+                "ExoPlayer switch above — only 16-bit PCM is supported, and it does not yet " +
+                "combine with Bit-perfect (24-bit) above. Expect rough edges.",
+            useOboe, accent,
+        ) { useOboe = it; scope.launch { settings.setUseOboeOutput(it) } }
     }
 }
 

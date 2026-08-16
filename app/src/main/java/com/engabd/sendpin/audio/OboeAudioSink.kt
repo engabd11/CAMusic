@@ -130,11 +130,17 @@ class OboeAudioSink(
 
         feedTap(scratch, remaining)
 
-        val dataSource = currentDataSource()
-        if (dataSource != null) {
-            val presentationLocalUs = dataSource.presentationLocalUs(presentationTimeUs)
-            nativeOutput.write(scratch, 0, remaining, presentationLocalUs)
-        }
+        // The timestamp is best-effort; the audio is not. This used to skip the write
+        // entirely when there was no current data source — which is reachable, since
+        // `SendspinExoEngine.flush()` clears it on `stream/clear` while decoded buffers
+        // for the outgoing stream can still be in flight — and skipping it means the
+        // buffer is consumed above, reported as handled below, and never heard: silence
+        // with nothing logged and no error. Drift correction has a defined answer for a
+        // missing anchor already (`presentationLocalUs` falls back to "now"), so fall
+        // back to that rather than dropping samples on the floor.
+        val presentationLocalUs = currentDataSource()?.presentationLocalUs(presentationTimeUs)
+            ?: (com.engabd.sendpin.protocol.MonotonicClock.nowUs() + presentationTimeUs)
+        nativeOutput.write(scratch, 0, remaining, presentationLocalUs)
         framesWrittenTotal += remaining / bytesPerFrame
         return true
     }

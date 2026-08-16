@@ -21,6 +21,9 @@ object SendspinContainerHeader {
     /** The one metadata block a FLAC stream is required to have. */
     private const val FLAC_STREAMINFO_SIZE = 34
 
+    /** `"fLaC"` magic (4 bytes) + a metadata-block header (4 bytes), preceding STREAMINFO. */
+    private const val FLAC_HEADER_PREFIX_SIZE = 8
+
     /**
      * `"fLaC"` + a single STREAMINFO metadata block, matching what `FlacExtractor`
      * sniffs for (the 4-byte magic) and needs to parse the stream (STREAMINFO -
@@ -29,15 +32,15 @@ object SendspinContainerHeader {
      * just STREAMINFO followed by frames, which is exactly what MediaCodec's csd-0
      * convention already assumes.
      *
-     * @param codecHeaderB64 the base64 `stream/start.codec_header` - required to be
-     *   exactly [FLAC_STREAMINFO_SIZE] bytes once decoded, the same payload
-     *   MediaCodec's FLAC decoder takes as csd-0. Returns null (a stream-start
-     *   error, not something to paper over) when it's missing or the wrong size:
-     *   a fabricated STREAMINFO would decode to a plausible-looking stream at the
-     *   wrong sample rate/channel count, which is worse than failing loudly.
+     * @param codecHeaderB64 the base64 `stream/start.codec_header`. [extractStreamInfo]
+     *   tolerates two shapes on the wire - see its own doc for why both are real.
+     *   Returns null (a stream-start error, not something to paper over) when
+     *   neither shape matches: a fabricated STREAMINFO would decode to a
+     *   plausible-looking stream at the wrong sample rate/channel count, which is
+     *   worse than failing loudly.
      */
     fun flacStreamHeader(codecHeaderB64: String?): ByteArray? {
-        val streamInfo = decodeBase64(codecHeaderB64)?.takeIf { it.size == FLAC_STREAMINFO_SIZE } ?: return null
+        val streamInfo = decodeBase64(codecHeaderB64)?.let { extractStreamInfo(it) } ?: return null
         return ByteBuffer.allocate(4 + 4 + FLAC_STREAMINFO_SIZE).apply {
             put(MAGIC_FLAC)
             // Metadata block header: 1 bit last-block=1, 7 bits type=0 (STREAMINFO),
@@ -45,6 +48,26 @@ object SendspinContainerHeader {
             put(0x80.toByte()); put(0x00); put(0x00); put(FLAC_STREAMINFO_SIZE.toByte())
             put(streamInfo)
         }.array()
+    }
+
+    /**
+     * Pulls the bare [FLAC_STREAMINFO_SIZE]-byte STREAMINFO payload out of a decoded
+     * `codec_header`, which arrives in either of two shapes depending on the server:
+     * bare STREAMINFO (34 bytes - the spec's csd-0 convention, and what this code
+     * originally assumed exclusively), or a complete FLAC header - `"fLaC"` magic +
+     * metadata-block header + STREAMINFO (42 bytes). The 42-byte shape is not
+     * hypothetical: confirmed on-device against a real Music Assistant server, whose
+     * `codec_header` decoded to exactly 42 bytes starting with the FLAC magic and
+     * made every MA stream fail to open with "missing or malformed codec_header
+     * (decodedSize=42, want 34)" before this handled it. Anything else is genuinely
+     * malformed, not a third shape to guess at.
+     */
+    fun extractStreamInfo(decoded: ByteArray): ByteArray? = when {
+        decoded.size == FLAC_STREAMINFO_SIZE -> decoded
+        decoded.size == FLAC_HEADER_PREFIX_SIZE + FLAC_STREAMINFO_SIZE &&
+            decoded.copyOfRange(0, 4).contentEquals(MAGIC_FLAC) ->
+            decoded.copyOfRange(FLAC_HEADER_PREFIX_SIZE, FLAC_HEADER_PREFIX_SIZE + FLAC_STREAMINFO_SIZE)
+        else -> null
     }
 
     /**
