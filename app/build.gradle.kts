@@ -17,8 +17,8 @@ android {
         applicationId = "com.engabd.sendpin"
         minSdk = 31
         targetSdk = 36
-        versionCode = 39
-        versionName = "0.8.8"
+        versionCode = 40
+        versionName = "0.8.9"
 
         // The Oboe native output engine (src/main/cpp) - see SendspinNativeOutput.kt.
         // Oboe itself comes from the com.google.oboe:oboe prefab package (below),
