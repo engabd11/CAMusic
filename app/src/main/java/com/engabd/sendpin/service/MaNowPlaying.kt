@@ -133,6 +133,14 @@ class MaNowPlaying(private val app: Context) {
             )
         }.distinctUntilChanged().stateIn(scope, SharingStarted.Eagerly, null)
 
+    /** Whether the active queue has shuffle on — the driving bar's shuffle button state. */
+    val shuffleActive: StateFlow<Boolean> =
+        combine(_players, _queues, _target) { players, queues, target ->
+            val id = target.ifBlank { myPlayerId }
+            val p = players.firstOrNull { it.playerId == id }
+            queues.firstOrNull { it.queueId == streamId(p) }?.shuffleEnabled == true
+        }.distinctUntilChanged().stateIn(scope, SharingStarted.Eagerly, false)
+
     private val _positionMs = MutableStateFlow(0L)
 
     /** The projected playhead for the selected player, in milliseconds. */
@@ -455,6 +463,14 @@ class MaNowPlaying(private val app: Context) {
     }
 
     fun stop() = command { repo.stop(targetId()) }
+
+    /** Shuffle is a queue property, not a player one — resolved via [streamId] like the rest. */
+    fun toggleShuffle() = command {
+        val id = targetId()
+        val p = players.value.firstOrNull { it.playerId == id }
+        val queue = queues.value.firstOrNull { it.queueId == streamId(p) } ?: return@command
+        repo.setShuffle(queue.queueId, !queue.shuffleEnabled)
+    }
 
     fun seekTo(positionMs: Long) = command {
         val id = targetId()

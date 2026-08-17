@@ -210,6 +210,17 @@ class PlaybackOwner(
     )
 
     /**
+     * Toggle shuffle. Unlike transport, this isn't a Sendspin-vs-remote question —
+     * shuffle is a property of the Music Assistant *queue*, the same call whichever
+     * player is producing the sound — so both non-local cases route the same way.
+     */
+    fun toggleShuffle() = route(
+        local = { local.setShuffle(!local.shuffle.value) },
+        selfSendspin = { maNowPlaying.toggleShuffle() },
+        remote = { maNowPlaying.toggleShuffle() },
+    )
+
+    /**
      * Send a transport command to whichever player it belongs to.
      *
      * The *session* owner, not the sound owner: a paused player is still the one a

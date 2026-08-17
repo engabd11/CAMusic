@@ -112,6 +112,7 @@ class DrivingOverlayService :
                     onPlayPause = owner::playPause,
                     onNext = owner::next,
                     onPrevious = owner::previous,
+                    onShuffle = owner::toggleShuffle,
                     onDismiss = { driving.setManual(false) },
                 )
             }
