@@ -9,10 +9,14 @@ import com.engabd.sendpin.library.ServerConfig
 import com.engabd.sendpin.library.ServerKind
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.floatOrNull
 import kotlinx.serialization.json.jsonPrimitive
 
@@ -207,6 +211,20 @@ class AppSettings(private val context: Context) {
         private const val LEGACY_NAV_ID = "legacy-navidrome"
 
         private val serverJson = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+
+        /**
+         * Individually-[Crypto]-encrypted legacy keys — decrypted before an export and
+         * re-encrypted (under the *importing* device's own Keystore key) on the way
+         * back in. [SERVERS] carries its own per-field encryption and is handled
+         * separately in [exportSettings]/[importSettings], not through this set.
+         */
+        private val ENCRYPTED_KEY_NAMES = setOf(
+            MA_PASSWORD.name, NAV_PASSWORD.name, HA_TOKEN.name,
+            HUE_APP_KEY.name, HUE_CLIENT_KEY.name, CRASH_GITHUB_TOKEN.name,
+        )
+
+        /** Not a real preference key — [SERVERS]' decrypted export lives under this in the JSON. */
+        private const val SERVERS_EXPORT_KEY = "__servers_v1"
 
         /**
          * Which Light Sync transport a library implies.
@@ -448,6 +466,72 @@ class AppSettings(private val context: Context) {
         serverJson.decodeFromString(ListSerializer(ServerConfig.serializer()), raw)
             .map { it.copy(password = Crypto.decrypt(it.password), token = Crypto.decrypt(it.token)) }
     }.getOrNull()
+
+    // ── Settings export / import ────────────────────────────────────────────
+    //
+    // Every stored key, as portable JSON encrypted with a user passphrase rather
+    // than the on-device Keystore key [Crypto] otherwise uses — that key is
+    // deliberately non-exportable, so writing it straight to a file would produce
+    // a blob unreadable on any other device (or after a reinstall). Individually-
+    // encrypted legacy fields are decrypted first and the *whole* resulting JSON
+    // is what gets encrypted, so nothing here ever touches disk unencrypted.
+
+    /** Every setting, as a password-encrypted portable blob. Null if encryption fails. */
+    suspend fun exportSettings(password: String): String? {
+        val prefs = context.dataStore.data.first()
+        val obj = buildJsonObject {
+            prefs.asMap().forEach { (key, value) ->
+                if (key.name == SERVERS.name) return@forEach   // handled below, decrypted properly
+                when (val v = if (key.name in ENCRYPTED_KEY_NAMES) Crypto.decrypt(value as? String ?: "") else value) {
+                    is String -> put(key.name, v)
+                    is Boolean -> put(key.name, v)
+                    // This app has never stored an Int/Float/Long/Set<String> preference;
+                    // numeric settings are stringPreferencesKey. Nothing to handle here.
+                    else -> Unit
+                }
+            }
+            put(SERVERS_EXPORT_KEY, serverJson.encodeToString(ListSerializer(ServerConfig.serializer()), storedServers(prefs)))
+        }
+        return PortableCrypto.encrypt(obj.toString(), password)
+    }
+
+    /**
+     * Restore settings from an [exportSettings] blob.
+     *
+     * Server credentials and the individually-encrypted legacy keys are
+     * re-encrypted under *this* device's Keystore key on the way back in — the
+     * password-derived encryption the file carries never itself reaches disk.
+     *
+     * @return true on success; false on a wrong password, or a blob that isn't
+     *   one of these exports at all.
+     */
+    suspend fun importSettings(blob: String, password: String): Boolean {
+        val json = PortableCrypto.decrypt(blob, password) ?: return false
+        val obj = try {
+            Json.parseToJsonElement(json) as? JsonObject ?: return false
+        } catch (e: Exception) {
+            return false
+        }
+        context.dataStore.edit { prefs ->
+            obj.forEach { (name, element) ->
+                if (name == SERVERS_EXPORT_KEY) return@forEach
+                val primitive = element as? JsonPrimitive ?: return@forEach
+                val bool = primitive.booleanOrNull
+                if (bool != null) {
+                    prefs[booleanPreferencesKey(name)] = bool
+                } else {
+                    val str = primitive.content
+                    prefs[stringPreferencesKey(name)] = if (name in ENCRYPTED_KEY_NAMES) Crypto.encrypt(str) else str
+                }
+            }
+            (obj[SERVERS_EXPORT_KEY] as? JsonPrimitive)?.let { serversEl ->
+                val list = serverJson.decodeFromString(ListSerializer(ServerConfig.serializer()), serversEl.content)
+                prefs[SERVERS] = encodeServers(list)
+                mirrorLegacyKeys(prefs, list, resolveActiveId(prefs, list))
+            }
+        }
+        return true
+    }
 
     val backend: Flow<String> = context.dataStore.data.map { it[BACKEND] ?: "ma" }
     val maBaseUrl: Flow<String> = context.dataStore.data.map { it[MA_BASE_URL] ?: "" }
