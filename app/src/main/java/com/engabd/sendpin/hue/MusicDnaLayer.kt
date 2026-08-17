@@ -27,6 +27,16 @@ class MusicDnaLayer : LightShowLayer {
     private var fingerprint: Fingerprint? = null
     private var wavePhase = 0f
 
+    override fun reset() {
+        // The fingerprint goes with the scan it was computed from: on a track
+        // change the next `apply` will be handed a different scan anyway, and on
+        // a seek the wave phase should restart rather than carry the old
+        // position's drift into the new one.
+        cachedScan = null
+        fingerprint = null
+        wavePhase = 0f
+    }
+
     override fun apply(base: Map<Int, Rgb>, context: LayerContext): Map<Int, Rgb> {
         val scan = context.scan ?: return base
         if (scan !== cachedScan) {

@@ -31,6 +31,8 @@ class PhoneConductorLayer(context: Context) : LightShowLayer {
     fun start() = motion.start()
     fun stop() = motion.stop()
 
+    override fun reset() = renderer.reset()
+
     override fun apply(base: Map<Int, Rgb>, context: LayerContext): Map<Int, Rgb> =
         renderer.apply(base, context, motion.state)
 }
@@ -60,6 +62,17 @@ internal class ConductorRenderer {
 
     /** Decaying flash level from the most recent flick. */
     private var flashLevel = 0f
+
+    /**
+     * Drop the accumulated gesture state. The fitted [ring] is not part of it —
+     * that describes the room, which a track change does not alter; it is
+     * re-fitted when the positions themselves change identity.
+     */
+    fun reset() {
+        rotationPhase = 0f
+        spinEnvelope = 0f
+        flashLevel = 0f
+    }
 
     fun apply(base: Map<Int, Rgb>, context: LayerContext, state: DeviceMotionState): Map<Int, Rgb> {
         if (context.positions !== cachedPositions) {

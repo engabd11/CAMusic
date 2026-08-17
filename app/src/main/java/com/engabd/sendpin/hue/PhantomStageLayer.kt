@@ -25,6 +25,13 @@ class PhantomStageLayer : LightShowLayer {
     private var channelInstrument: Map<Int, StageInstrument> = emptyMap()
     private val flash = HashMap<StageInstrument, Float>()
 
+    override fun reset() {
+        // Decaying flashes only. The stage layout deliberately survives: it is
+        // fixed for the *session*, not the track — the bassist stays in the same
+        // corner all night, which is the whole point of a phantom stage.
+        flash.clear()
+    }
+
     override fun apply(base: Map<Int, Rgb>, context: LayerContext): Map<Int, Rgb> {
         // A cluster has no meaningful spatial layout to fix positions
         // against — same precedent [RoomTopology.CLUSTER] already carries

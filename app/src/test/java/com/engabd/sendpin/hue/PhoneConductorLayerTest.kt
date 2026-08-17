@@ -117,6 +117,18 @@ class PhoneConductorLayerTest {
     }
 
     @Test
+    fun `reset drops a decaying flash instead of carrying it into the next track`() {
+        val renderer = ConductorRenderer()
+        val ctx = contextOf(onePosition, RoomTopology.FIELD)
+        val active = DeviceMotionState(active = true)
+
+        renderer.apply(base, ctx, DeviceMotionState(active = true, flick = true))
+        renderer.reset()
+
+        assertEquals(base, renderer.apply(base, ctx, active), "a reset flash must not still be lighting the room")
+    }
+
+    @Test
     fun `rotation below the threshold does not accumulate a spin`() {
         val renderer = ConductorRenderer()
         val ctx = contextOf(onePosition, RoomTopology.FIELD)

@@ -20,12 +20,37 @@ import kotlin.math.exp
  * A directional *nudge* on whatever hue the engine (and Music DNA, if also
  * enabled) already chose, never a replacement — see [apply]'s blend toward
  * a warm or cool anchor rather than an outright hue swap.
+ *
+ * Silent on a track with no arc to follow. `STEADY` is not "a calm section" —
+ * [StructureTracker] documents it as "everything else", and it is
+ * [StructureState]'s default, so on ambient, classical, folk or spoken word it
+ * is the *only* phase that ever reports. Treating it as cool there would tint
+ * the whole track blue for its whole length and call it an emotional arc. See
+ * [structureSeen].
  */
 class EmotionalArcLayer : LightShowLayer {
     override val id = "emotional_arc"
 
-    /** Smoothed temperature, -1 (cold) .. +1 (hot). The layer's only state. */
+    /** Smoothed temperature, -1 (cold) .. +1 (hot). */
     private var temperature = 0f
+
+    /**
+     * Whether this track has ever reported a phase other than `STEADY`.
+     *
+     * The four-value [SongPhase] has no "no structure detected" member, so
+     * "has a build, drop or breakdown ever happened" is the only evidence
+     * available that the track has an arc at all. Until one has, `STEADY`
+     * means "nothing has been classified yet", and the layer passes through;
+     * afterwards it means "the calm between the loud parts", and reads cool as
+     * designed. One-way within a track — a long quiet stretch after a drop is
+     * still a quiet stretch *of a track with drops in it*.
+     */
+    private var structureSeen = false
+
+    override fun reset() {
+        temperature = 0f
+        structureSeen = false
+    }
 
     override fun apply(base: Map<Int, Rgb>, context: LayerContext): Map<Int, Rgb> {
         val target = targetTemperature(context)
@@ -48,11 +73,17 @@ class EmotionalArcLayer : LightShowLayer {
 
     private fun targetTemperature(context: LayerContext): Float {
         val structure = context.structure
+        if (structure != null && structure.phase != SongPhase.STEADY) structureSeen = true
+
         val phaseTemp = if (structure == null) {
             0f
         } else {
             when (structure.phase) {
-                SongPhase.STEADY -> STEADY_TEMP
+                // Neutral until this track has shown it has an arc — see
+                // [structureSeen]. The end-of-track fade below still applies,
+                // because that is measured off the playhead and the duration,
+                // not off a classification that may never come.
+                SongPhase.STEADY -> if (structureSeen) STEADY_TEMP else 0f
                 SongPhase.BUILDING -> lerp(STEADY_TEMP, DROP_TEMP, structure.buildProgress)
                 SongPhase.DROP -> DROP_TEMP
                 SongPhase.BREAKDOWN -> BREAKDOWN_TEMP

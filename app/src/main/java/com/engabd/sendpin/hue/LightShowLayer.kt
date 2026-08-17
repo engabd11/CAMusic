@@ -23,6 +23,21 @@ import com.engabd.sendpin.audio.TrackScan
 interface LightShowLayer {
     val id: String
     fun apply(base: Map<Int, Rgb>, context: LayerContext): Map<Int, Rgb>
+
+    /**
+     * Drop everything carried between frames — smoothed levels, decaying
+     * flashes, accumulated phases, per-track caches.
+     *
+     * Called for the same reasons [DirectLightSync.onAnalysisReset] drops the
+     * tempo and structure trackers' history: a seek or a track change makes it
+     * wrong rather than merely stale, and the previous song's build has no
+     * business warming the new one. Also called when a layer is switched on, so
+     * it starts from where the room actually is rather than from wherever it was
+     * when the user last switched it off.
+     *
+     * A no-op by default, so a stateless layer stays a one-method contract.
+     */
+    fun reset() {}
 }
 
 /**
@@ -83,6 +98,9 @@ data class LayerContext(
 class LayerChain(private val layers: List<LightShowLayer>) {
     fun apply(base: Map<Int, Rgb>, context: LayerContext): Map<Int, Rgb> =
         layers.fold(base) { acc, layer -> layer.apply(acc, context) }
+
+    /** [LightShowLayer.reset] every layer in the chain. */
+    fun reset() = layers.forEach { it.reset() }
 
     companion object {
         val EMPTY = LayerChain(emptyList())

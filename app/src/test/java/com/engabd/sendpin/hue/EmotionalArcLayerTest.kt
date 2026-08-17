@@ -34,7 +34,17 @@ class EmotionalArcLayerTest {
 
     private val redBase = mapOf(1 to Triple(1f, 0f, 0f))
 
+    /**
+     * One BUILDING frame, which is the evidence the layer waits for that this
+     * track has an arc at all — without it `STEADY` means "nothing classified
+     * yet" and the layer deliberately stays out of the way.
+     */
+    private fun prime(layer: EmotionalArcLayer) {
+        layer.apply(redBase, contextOf(StructureState(phase = SongPhase.BUILDING)))
+    }
+
     private fun settle(layer: EmotionalArcLayer, phase: SongPhase, frames: Int = 200): Rgb {
+        prime(layer)
         var out = redBase.getValue(1)
         repeat(frames) { out = layer.apply(redBase, contextOf(StructureState(phase = phase))).getValue(1) }
         return out
@@ -53,8 +63,45 @@ class EmotionalArcLayerTest {
     }
 
     @Test
+    fun `a track that only ever reports STEADY is left alone`() {
+        // STEADY is StructureTracker's "everything else" and StructureState's
+        // default, so it is the only phase ambient, classical or spoken-word
+        // content ever reports. Reading it as "a calm section" would tint the
+        // whole track blue for its whole length.
+        val layer = EmotionalArcLayer()
+        var out = redBase
+        repeat(400) { out = layer.apply(redBase, contextOf(StructureState(phase = SongPhase.STEADY))) }
+        assertEquals(redBase, out, "with no build, drop or breakdown ever seen, the layer must pass through")
+    }
+
+    @Test
+    fun `once the track has shown an arc, STEADY does read cool`() {
+        val layer = EmotionalArcLayer()
+        prime(layer)
+        var out = redBase
+        repeat(400) { out = layer.apply(redBase, contextOf(StructureState(phase = SongPhase.STEADY))) }
+        assertNotEquals(redBase, out, "after a build, the calm between the loud parts should read cool")
+    }
+
+    @Test
+    fun `reset forgets both the temperature and the track's arc`() {
+        val layer = EmotionalArcLayer()
+        val hot = settle(layer, SongPhase.DROP)
+        assertNotEquals(redBase.getValue(1), hot, "sanity: the drop should have moved the colour")
+
+        layer.reset()
+        // A new track: STEADY only, and no arc established. Both the smoothed
+        // temperature and the "this track has structure" evidence must be gone,
+        // or the previous song's drop warms this one.
+        var out = redBase
+        repeat(400) { out = layer.apply(redBase, contextOf(StructureState(phase = SongPhase.STEADY))) }
+        assertEquals(redBase, out, "nothing from the previous track may survive a reset")
+    }
+
+    @Test
     fun `a breakdown pulls colour temperature down over several seconds, not one frame`() {
         val layer = EmotionalArcLayer()
+        prime(layer)
         val afterOneFrame = layer.apply(redBase, contextOf(StructureState(phase = SongPhase.BREAKDOWN))).getValue(1)
         var afterMany = afterOneFrame
         repeat(200) {

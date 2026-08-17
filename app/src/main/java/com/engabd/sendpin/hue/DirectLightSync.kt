@@ -360,21 +360,40 @@ class DirectLightSync(
     private val phantomStageLayer = PhantomStageLayer()
     private val phoneConductorLayer = PhoneConductorLayer(context)
 
-    private var musicDnaEnabled = false
-    private var emotionalArcEnabled = false
-    private var phantomStageEnabled = false
-    private var phoneConductorEnabled = false
+    /**
+     * Every layer, in chain order.
+     *
+     * The order is the contract: [PhoneConductorLayer] modulates the combined
+     * output of everything else, so it goes last. [layerChain] is this list
+     * filtered by [enabledLayerIds], which is what keeps enabling one layer from
+     * changing where the others sit relative to each other.
+     */
+    private val allLayers = listOf(musicDnaLayer, emotionalArcLayer, phantomStageLayer, phoneConductorLayer)
+
+    private val layerLock = Any()
+
+    /** [LightShowLayer.id]s of the layers currently switched on. Guarded by [layerLock]. */
+    private val enabledLayerIds = HashSet<String>()
 
     @Volatile private var layerChain: LayerChain = LayerChain.EMPTY
 
-    private fun rebuildLayerChain() {
-        val layers = mutableListOf<LightShowLayer>()
-        if (musicDnaEnabled) layers.add(musicDnaLayer)
-        if (emotionalArcEnabled) layers.add(emotionalArcLayer)
-        if (phantomStageEnabled) layers.add(phantomStageLayer)
-        if (phoneConductorEnabled) layers.add(phoneConductorLayer)
-        layerChain = LayerChain(layers)
+    /**
+     * Switch one layer on or off and rebuild the chain.
+     *
+     * A layer coming *on* is reset first, so it starts from where the room
+     * actually is rather than from wherever it was when the user last switched
+     * it off — an Emotional Arc switched off mid-drop should not resume at that
+     * drop's temperature an hour later. Only the layer that changed is reset:
+     * flipping one toggle must not disturb a layer that was already running.
+     */
+    private fun setLayerEnabled(layer: LightShowLayer, on: Boolean) = synchronized(layerLock) {
+        val changed = if (on) enabledLayerIds.add(layer.id) else enabledLayerIds.remove(layer.id)
+        if (changed && on) layer.reset()
+        layerChain = LayerChain(allLayers.filter { it.id in enabledLayerIds })
     }
+
+    private val phoneConductorEnabled: Boolean
+        get() = synchronized(layerLock) { phoneConductorLayer.id in enabledLayerIds }
 
     // ── Track scan state ───────────────────────────────────────────────────
     //
@@ -608,6 +627,10 @@ class DirectLightSync(
             latestStructure = null
             latestGesture = null
             latestPositionS = -1f
+            // A new session starts from the room as it is, not from whatever the
+            // last one left behind — the layers outlive any one stream, since
+            // they are plain fields on this object rather than per-session state.
+            layerChain.reset()
             // The analyzer's frame period, not the render period: these step once
             // per hop, off the analyzer's own clock.
             val framePeriod = ANALYSIS_HOP.toFloat() / ANALYSIS_SAMPLE_RATE
@@ -855,6 +878,12 @@ class DirectLightSync(
         // seeking does not make it less true. Only the per-query state goes.
         mapPrevPos = null
         mapSection = null
+        // For the same reason the structure tracker resets: a layer's smoothed
+        // temperature, decaying flash or accumulated phase describes the audio
+        // that was playing, and a new track is not that audio. Each layer
+        // decides what of its own state is per-track and what outlives it —
+        // Phantom Stage's room layout, for instance, deliberately survives.
+        layerChain.reset()
     }
 
     // ── Render loop ─────────────────────────────────────────────────────────
@@ -1489,19 +1518,12 @@ class DirectLightSync(
                 applySpatialGestures()
             }
         }
-        scope.launch {
-            settings.musicDnaEnabled.collect { on -> musicDnaEnabled = on; rebuildLayerChain() }
-        }
-        scope.launch {
-            settings.emotionalArcEnabled.collect { on -> emotionalArcEnabled = on; rebuildLayerChain() }
-        }
-        scope.launch {
-            settings.phantomStageEnabled.collect { on -> phantomStageEnabled = on; rebuildLayerChain() }
-        }
+        scope.launch { settings.musicDnaEnabled.collect { setLayerEnabled(musicDnaLayer, it) } }
+        scope.launch { settings.emotionalArcEnabled.collect { setLayerEnabled(emotionalArcLayer, it) } }
+        scope.launch { settings.phantomStageEnabled.collect { setLayerEnabled(phantomStageLayer, it) } }
         scope.launch {
             settings.phoneConductorEnabled.collect { on ->
-                phoneConductorEnabled = on
-                rebuildLayerChain()
+                setLayerEnabled(phoneConductorLayer, on)
                 // Battery consciousness: sensors only run while both this
                 // setting and a stream are live. The stream-start case (the
                 // setting already being on when start() runs) is handled
