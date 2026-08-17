@@ -108,6 +108,15 @@ abstract class SendspinDataSource(
         (presentationAnchorLocalUs ?: com.engabd.sendpin.protocol.MonotonicClock.nowUs()) + mediaTimeUs
 
     /**
+     * The armed anchor, or null if nothing has armed it yet — for diagnostics only.
+     *
+     * Exposed because it is one half of the sum handed to the native ring, and every
+     * measurement taken of the Oboe silence so far has seen only the total. See
+     * [OboeAudioSink.logTimeline].
+     */
+    val presentationAnchorUs: Long? get() = presentationAnchorLocalUs
+
+    /**
      * Block (per subclass policy) until the next frame is due, or return null once
      * the stream has genuinely ended (end-of-stream signalled *and* the queue has
      * drained). Never returns null for "nothing queued yet" - that case is the

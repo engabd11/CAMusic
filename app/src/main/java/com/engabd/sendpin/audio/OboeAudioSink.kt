@@ -48,6 +48,15 @@ class OboeAudioSink(
     private val driftCorrection: () -> Boolean,
     /** The [SendspinDataSource] currently feeding ExoPlayer, for [SendspinDataSource.presentationLocalUs]. */
     private val currentDataSource: () -> SendspinDataSource?,
+    /**
+     * Called once, on the first stream this sink fails to drain at all.
+     *
+     * The sink cannot rebuild the player it lives inside, so it reports and the engine
+     * decides — see [SendspinExoEngine]'s handling, which drops back to the platform
+     * sink for the rest of the session. Nothing depends on it: a caller that passes
+     * nothing gets a loud failure and no fallback, which is still better than silence.
+     */
+    private val onStalled: () -> Unit = {},
 ) : AudioSink {
 
     companion object {
@@ -60,12 +69,12 @@ class OboeAudioSink(
         private const val RING_BUFFER_US = 4_000_000L
 
         /**
-         * Consecutive total refusals before saying so — see [noteRefusal].
-         *
-         * Well past what back pressure explains: ExoPlayer re-presents on its own
-         * cadence, so a ring that is merely full clears within a handful of attempts.
+         * What a stalled sink reports as. ExoPlayer wants an int error code alongside
+         * the format; there is no platform `AudioTrack` behind this sink to have
+         * produced one, and `AudioTrack.ERROR` is the honest general answer: the write
+         * did not happen and the sink cannot say more than that.
          */
-        private const val REFUSALS_BEFORE_WARNING = 50
+        private const val WRITE_ERROR_CODE = -1
     }
 
     private var listener: AudioSink.Listener? = null
@@ -86,8 +95,13 @@ class OboeAudioSink(
     /** Cleared per [configure], so there is one "first write" line per stream. */
     private var firstWriteLogged = false
 
-    /** Consecutive buffers the ring took nothing from — see [noteRefusal]. */
-    private var consecutiveRefusals = 0
+    /**
+     * Back pressure or a fault — see [SinkStallDetector], where that judgement lives.
+     */
+    private val stall = SinkStallDetector()
+
+    /** Cleared per [configure]: one timeline line per stream, not one per buffer. */
+    private var timelineLogged = false
 
     override fun setListener(listener: AudioSink.Listener) {
         this.listener = listener
@@ -126,7 +140,8 @@ class OboeAudioSink(
         endOfStreamRequested = false
         configuredFormat = format
         firstWriteLogged = false
-        consecutiveRefusals = 0
+        timelineLogged = false
+        stall.reset()
         val drift = driftCorrection()
         // Logged before the call, so a native start that never returns is still
         // attributable — and after it, so a `false` is not left to be inferred from the
@@ -181,8 +196,10 @@ class OboeAudioSink(
         // with nothing logged and no error. Drift correction has a defined answer for a
         // missing anchor already (`presentationLocalUs` falls back to "now"), so fall
         // back to that rather than dropping samples on the floor.
-        val presentationLocalUs = currentDataSource()?.presentationLocalUs(presentationTimeUs)
+        val source = currentDataSource()
+        val presentationLocalUs = source?.presentationLocalUs(presentationTimeUs)
             ?: (com.engabd.sendpin.protocol.MonotonicClock.nowUs() + presentationTimeUs)
+        logTimeline(source, presentationTimeUs, presentationLocalUs)
 
         val framesAccepted = nativeOutput.write(scratch, 0, remaining, presentationLocalUs)
         val bytesAccepted = (framesAccepted * bytesPerFrame).coerceIn(0, remaining)
@@ -199,6 +216,33 @@ class OboeAudioSink(
         logFirstWrite(framesAccepted, remaining)
         noteRefusal(bytesAccepted, remaining)
         return bytesAccepted >= remaining
+    }
+
+    /**
+     * The producer's half of the timeline, in one line, once per stream.
+     *
+     * The engine's own diagnostic prints `intendedHead` and `dac0` apart on the native
+     * side; this is the same question one step earlier, before the value crosses JNI. If
+     * the anchor is already implausible here, the fault is in this process and no NDK
+     * rebuild is needed to see it; if it is sane here and `intendedHead` is not, the
+     * fault is in the crossing or in the marker bookkeeping. Between the two lines there
+     * is nowhere left for it to hide, which is what three attempts at this bug were
+     * missing.
+     *
+     * `anchor` is what [SendspinDataSource] armed from the frame it released; `media` is
+     * ExoPlayer's own stream-relative time; `local` is their sum, which is what the ring
+     * gets. `boot` and `mono` are printed because the two differ by suspend time and the
+     * conversion between them at the JNI boundary is one of the things under suspicion.
+     */
+    private fun logTimeline(source: SendspinDataSource?, mediaTimeUs: Long, localUs: Long) {
+        if (timelineLogged) return
+        timelineLogged = true
+        Log.i(
+            TAG,
+            "timeline (producer): anchor=${source?.presentationAnchorUs} media=$mediaTimeUs " +
+                "local=$localUs boot=${com.engabd.sendpin.protocol.MonotonicClock.nowUs()} " +
+                "mono=${System.nanoTime() / 1000} source=${source?.javaClass?.simpleName}",
+        )
     }
 
     /**
@@ -220,42 +264,51 @@ class OboeAudioSink(
     }
 
     /**
-     * Say so, once, when the ring has stopped accepting anything at all.
+     * Say so when the ring stops accepting anything, and give up when it never starts.
      *
      * A sink that refuses every buffer is silent by definition, and returning `false`
-     * correctly makes ExoPlayer wait rather than discard — but waiting forever looks
-     * identical to a stall from outside, and its own timeout takes ten seconds to fire.
-     * [REFUSALS_BEFORE_WARNING] consecutive total refusals is far past anything back
-     * pressure explains, so it is worth a line naming the sink rather than leaving the
-     * next reader to infer it from a renderer timeout.
+     * correctly makes ExoPlayer wait rather than discard — but waiting for ever looks
+     * identical to a stall from outside, which is precisely the failure this path shipped
+     * with: a player reporting itself as playing, emitting nothing, for the whole of a
+     * track. The refusal was already *detected* and merely logged; it is now acted on.
+     *
+     * Two stages, because they answer different questions. The warning carries the native
+     * counters — which of `intendedHead` / `dac0` is wrong is the open question of PR #59,
+     * and this is the log line that has been producing the evidence for it. The failure
+     * is what stops the silence: [AudioSink.WriteException] surfaces through ExoPlayer as
+     * a real playback error rather than an indefinite wait, and [onStalled] lets the
+     * engine fall back to the platform sink for the rest of the session.
      */
     private fun noteRefusal(bytesAccepted: Int, offered: Int) {
-        if (bytesAccepted >= offered) {
-            consecutiveRefusals = 0
-            return
-        }
-        if (bytesAccepted == 0 && ++consecutiveRefusals == REFUSALS_BEFORE_WARNING) {
-            // The native counters, because two fixes have now been aimed at this from
-            // the Kotlin side and neither moved it — so the next question is which half
-            // of the engine's drift sum is wrong, and that is only answerable from here.
-            //
-            // `onAudioReady` inserts `silenceFront` frames *without advancing the read
-            // position* whenever drift is positive, so a persistently large positive
-            // drift drains nothing, for ever, which is exactly this symptom. Drift is
-            // `intendedHead - dac0`: a huge value means one of the two is nonsense, and
-            // `latency=0` alongside it points at `dac0`, since the DAC anchor is what
-            // `refreshTimestampAnchor` fills in and it rejects implausible readings
-            // silently (the AAudio log has already shown `getMmapPosition(): has no
-            // position data available` on this device).
-            Log.e(
+        when (stall.onBuffer(bytesAccepted, offered)) {
+            SinkStallDetector.Verdict.OK -> Unit
+
+            SinkStallDetector.Verdict.WARN -> Log.e(
                 TAG,
-                "native ring has refused $consecutiveRefusals consecutive buffers " +
+                "native ring has refused ${stall.refusals} consecutive buffers " +
                     "(buffered=${nativeOutput.bufferedFrames()} frames, written=$framesWrittenTotal) - " +
                     "nothing is draining it, so this stream will be silent. " +
                     "driftEma=${nativeOutput.driftEmaUs()}us latency=${nativeOutput.outputLatencyUs()}us " +
                     "underrun=${nativeOutput.underrunFrames()} " +
                     "device=${nativeOutput.deviceId()} disconnected=${nativeOutput.isDisconnected()}",
             )
+
+            SinkStallDetector.Verdict.STALLED -> {
+                Log.e(
+                    TAG,
+                    "native ring has taken nothing for ${stall.refusals} buffers - giving up on " +
+                        "this sink rather than playing silence (buffered=${nativeOutput.bufferedFrames()}, " +
+                        "written=$framesWrittenTotal, driftEma=${nativeOutput.driftEmaUs()}us)",
+                )
+                onStalled()
+                throw AudioSink.WriteException(
+                    WRITE_ERROR_CODE,
+                    configuredFormat ?: Format.Builder().build(),
+                    // Recoverable: the audio itself is fine and another sink can play it,
+                    // which is exactly what [onStalled] arranges for the next stream.
+                    /* isRecoverable = */ true,
+                )
+            }
         }
     }
 

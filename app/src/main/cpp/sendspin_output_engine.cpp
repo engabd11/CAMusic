@@ -12,6 +12,7 @@
 
 #define LOG_TAG "SendspinNative"
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
@@ -48,6 +49,32 @@ constexpr double RATE_K = MAX_RATE_DEV / static_cast<double>(SNAP_US);
 // the callback chase a phantom -> audible artifact mid playback even though the
 // buffer is healthy (observed on slower devices).
 constexpr int64_t OUTLIER_US = 15000;
+
+// A |drift| this large is not a drift. The engine's whole correction range tops
+// out at SNAP_US (50 ms); five seconds is a hundred times that, and no clock
+// this code is allowed to see can be that far out while the stream is otherwise
+// healthy. It means one of the two halves of `intendedHead - dac0` is being
+// computed in the wrong domain — which is a bug upstream of here, and one this
+// engine cannot fix from inside the callback.
+//
+// What it CAN do is refuse to act on it. Inserting `silenceFront` frames without
+// advancing the read position is correct for a real 50 ms drift and catastrophic
+// for a spurious eleven-day one: at that size the insert is the entire callback,
+// every callback, nothing is ever consumed, and the stream is silent for ever
+// while reporting itself as playing. Audio that is out of sync beats audio that
+// does not exist, so past this threshold the correction is switched off and the
+// samples go through untouched.
+constexpr int64_t IMPLAUSIBLE_DRIFT_US = 5000000;
+
+// Callbacks at the head of a stream that print the timeline breakdown. Enough to
+// see the anchor resolve (the first getTimestamp poll lands within a few
+// callbacks) without flooding a healthy stream.
+constexpr int64_t DIAG_HEAD_CALLBACKS = 12;
+
+// While the timeline is unusable, print the breakdown every this many callbacks.
+// ~4 ms per callback, so this is about one line every eight seconds: enough to
+// show whether the numbers move, quiet enough to leave the log readable.
+constexpr int64_t DIAG_REPEAT_CALLBACKS = 2048;
 
 // Max the timestamp anchor may move per ~100 ms poll. Lets dac0 follow the slow
 // real ppm clock drift smoothly while clamping a noisy getTimestamp reading to
@@ -153,6 +180,7 @@ bool SendspinOutputEngine::start(int32_t sampleRate, int32_t channels, bool drif
     latencyUs_.store(0);
     lastTimestampPollFrame_ = 0;
     driftEmaUs_.store(0);
+    timelineUnusable_.store(false);
     underrunFrames_.store(0);
     lastRateMicros_.store(1000000);
     callbackCount_ = 0;
@@ -247,6 +275,9 @@ void SendspinOutputEngine::resetRing() {
     markerRead_.store(markerWrite_.load());
     driftEmaUs_.store(0);
     compGsDb_ = 0.0f;
+    // A flush is a new timeline: whatever made the old one implausible went with
+    // the markers that have just been dropped.
+    timelineUnusable_.store(false);
 }
 
 int32_t SendspinOutputEngine::write(const int16_t* pcm, int32_t frames, int64_t presentationLocalUs) {
@@ -455,10 +486,45 @@ oboe::DataCallbackResult SendspinOutputEngine::onAudioReady(
     // When will out[0] leave the DAC, and when was the ring head meant to play?
     int64_t dac0 = dacPresentationUsForNextWrite(framesWritten);
     int64_t intendedHead;
-    if (!intendedPresentationUs(read, &intendedHead)) {
+    const bool haveMarker = intendedPresentationUs(read, &intendedHead);
+    if (!haveMarker) {
         intendedHead = dac0; // no marker covers it yet: play as-is
     }
     const int64_t rawDriftUs = intendedHead - dac0; // >0 early (insert), <0 late (skip)
+
+    // A drift this size is not a drift — see IMPLAUSIBLE_DRIFT_US. The correction
+    // is abandoned for the rest of the stream rather than per callback: a timeline
+    // that is eleven days out does not become trustworthy three callbacks later,
+    // and flapping between corrected and uncorrected would be audible.
+    const bool timelineWasUsable = !timelineUnusable_.load(std::memory_order_relaxed);
+    if (timelineWasUsable && (rawDriftUs > IMPLAUSIBLE_DRIFT_US || rawDriftUs < -IMPLAUSIBLE_DRIFT_US)) {
+        timelineUnusable_.store(true, std::memory_order_relaxed);
+        LOGE("timeline unusable: rawDrift=%lldus (intendedHead=%lld dac0=%lld marker=%d latency=%lld) "
+             "- drift correction OFF for this stream; audio will play unsynchronised rather than silent",
+             (long long)rawDriftUs, (long long)intendedHead, (long long)dac0,
+             haveMarker ? 1 : 0, (long long)latencyUs_.load());
+    }
+
+    // The two halves, separately.
+    //
+    // Every number this engine has ever reported about the timeline has been their
+    // *difference* — driftEma, raw drift, the refusal log on the Kotlin side — so
+    // three attempts at this bug have been made without anyone seeing which half
+    // was wrong. `intendedHead` comes from the marker the producer wrote (Kotlin's
+    // presentation anchor, via write()); `dac0` comes from Oboe's own timestamp.
+    // They are computed by different code, in different languages, on different
+    // clocks. Printed apart, one line says which.
+    if (callbackCount_ <= DIAG_HEAD_CALLBACKS ||
+        (timelineUnusable_.load(std::memory_order_relaxed) &&
+         (callbackCount_ % DIAG_REPEAT_CALLBACKS) == 0)) {
+        LOGI("timeline cb#%lld: intendedHead=%lld dac0=%lld rawDrift=%lld marker=%d "
+             "anchorFrame=%lld anchorTime=%lld latency=%lld framesWritten=%lld read=%lld write=%lld now=%lld",
+             (long long)callbackCount_, (long long)intendedHead, (long long)dac0,
+             (long long)rawDriftUs, haveMarker ? 1 : 0,
+             (long long)anchorFramePosition_.load(), (long long)anchorTimeUs_.load(),
+             (long long)latencyUs_.load(), (long long)framesWritten,
+             (long long)read, (long long)write, (long long)monotonicNowUs());
+    }
 
     // Outlier-resistant smoothed drift. A bad getTimestamp reading spikes the
     // raw drift for a callback or two; correcting against that raw spike would
@@ -485,7 +551,7 @@ oboe::DataCallbackResult SendspinOutputEngine::onAudioReady(
     // --- Drift correction (SYNC only) ------------------------------------
     // Solo/DIRECT leaves driftCorrection off -> rate stays 1.0 (exact
     // passthrough). Grouped/SYNC aligns to the absolute group timeline.
-    if (driftCorrection_.load()) {
+    if (driftCorrection_.load() && !timelineUnusable_.load(std::memory_order_relaxed)) {
         const int64_t adrift = driftUs < 0 ? -driftUs : driftUs;
         // While the output is silent (g≈0: startup, seek, resume — the engine
         // mutes across these and only unmutes once locked), SNAP onto the
