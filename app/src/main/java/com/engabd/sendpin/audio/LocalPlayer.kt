@@ -666,8 +666,21 @@ class LocalPlayer(private val context: Context) {
      */
     private fun applyGain() {
         val factor = ReplayGain.factor(_current.value?.sourceQuality, replayGainMode)
-        player.volume = (userVolume * factor * fadeFactor).coerceIn(0f, 1f)
+        player.volume = (userVolume * factor * fadeFactor * speedGainFactor).coerceIn(0f, 1f)
     }
+
+    /**
+     * Where [speedGainFactor] is ramping toward — set by [SendpinApp.speedMonitor]
+     * from [SpeedAdaptiveGain.gainFactor] on each GPS reading, or left at 1f (no
+     * offset) whenever `AppSettings.speedAdaptiveVolume` is off. Public because the
+     * monitor that drives it lives one layer up, in `service/`.
+     */
+    @Volatile
+    var speedGainTarget: Float = 1f
+
+    /** Ramps toward [speedGainTarget] a step per tick, so a speed change never jumps the volume. */
+    @Volatile
+    private var speedGainFactor: Float = 1f
 
     /**
      * Seconds of fade at each end of a track, or 0 for none.
@@ -759,6 +772,12 @@ class LocalPlayer(private val context: Context) {
                         fadeFactor = next
                         applyGain()
                     }
+                }
+                // Steps a quarter of the remaining gap per 250ms tick — about a
+                // second to converge on a new target, never an instant jump.
+                if (kotlin.math.abs(speedGainTarget - speedGainFactor) > 0.001f) {
+                    speedGainFactor += (speedGainTarget - speedGainFactor) * 0.25f
+                    applyGain()
                 }
                 delay(POSITION_TICK_MS)
             }

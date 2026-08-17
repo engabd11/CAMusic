@@ -46,6 +46,15 @@
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
 
     <!--
+      Speed limit alert and speed-adaptive volume (AppSettings.speedLimitAlertEnabled /
+      speedAdaptiveVolume, both off by default). Coarse would not do: the trigger
+      speed is computed to within a few km/h of a posted limit, and coarse location's
+      city-block-scale error would make the alert fire on the wrong stretch of road.
+      Requested at runtime only when either feature is turned on.
+    -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+
+    <!--
       Predictive back: targetSdk 36 expects an app to have opted in, and the M3
       motion work below relies on the back gesture being animated rather than
       cutting straight to the previous screen.

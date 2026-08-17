@@ -75,6 +75,8 @@ internal fun DrivingCard(settings: AppSettings, accent: Color, scope: CoroutineS
 
         CardDivider()
         PauseForCallsRow(settings, accent, scope)
+        CardDivider()
+        SpeedFeaturesRow(settings, accent, scope)
 
         if (!enabled) return@SettingsCard
 
@@ -215,6 +217,73 @@ private fun PauseForCallsRow(settings: AppSettings, accent: Color, scope: Corout
             scope.launch { settings.setPauseForCalls(on) }
             if (on) com.engabd.sendpin.SendpinApp.instance.callPauseObserver.start()
             else com.engabd.sendpin.SendpinApp.instance.callPauseObserver.stop()
+        }
+    }
+}
+
+/**
+ * Speed limit alert and speed-adaptive volume — both GPS-driven, so both share one
+ * `ACCESS_FINE_LOCATION` request. Nothing here reads location for anything but a
+ * speed reading; see `SpeedMonitor`'s own doc for the "why fine, not coarse".
+ */
+@Composable
+private fun SpeedFeaturesRow(settings: AppSettings, accent: Color, scope: CoroutineScope) {
+    val context = LocalContext.current
+    val alertEnabled by settings.speedLimitAlertEnabled.collectAsState(initial = false)
+    val adaptiveEnabled by settings.speedAdaptiveVolume.collectAsState(initial = false)
+    val limitKmh by settings.drivingSpeedLimitKmh.collectAsState(initial = 0)
+    val tolerancePct by settings.drivingSpeedTolerancePct.collectAsState(initial = 5)
+    val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ==
+        PackageManager.PERMISSION_GRANTED
+
+    val askLocation = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { ok -> if (ok) com.engabd.sendpin.SendpinApp.instance.speedMonitor.start() }
+
+    fun requestThenSet(on: Boolean, set: suspend () -> Unit) {
+        if (on && !granted) { askLocation.launch(Manifest.permission.ACCESS_FINE_LOCATION); return }
+        scope.launch { set() }
+    }
+
+    ToggleRow(
+        "Speed limit alert",
+        if (alertEnabled && granted && limitKmh > 0) {
+            val trigger = com.engabd.sendpin.service.SpeedAlert.triggerSpeedKmh(limitKmh, tolerancePct).toInt() + 1
+            "Beeps at $trigger km/h and above"
+        } else {
+            "A gentle tone if your GPS speed goes well over a limit you set"
+        },
+        alertEnabled && granted, accent,
+    ) { on -> requestThenSet(on) { settings.setSpeedLimitAlertEnabled(on) } }
+
+    if (alertEnabled && granted) {
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+            OledField(
+                value = if (limitKmh > 0) limitKmh.toString() else "",
+                onChange = { v -> scope.launch { settings.setDrivingSpeedLimitKmh(v.filter(Char::isDigit).toIntOrNull() ?: 0) } },
+                label = "Limit (km/h)", placeholder = "e.g. 100", accent = accent,
+                modifier = Modifier.weight(1f),
+            )
+            OledField(
+                value = tolerancePct.toString(),
+                onChange = { v -> scope.launch { settings.setDrivingSpeedTolerancePct(v.filter(Char::isDigit).toIntOrNull() ?: 0) } },
+                label = "Tolerance (%)", placeholder = "5", accent = accent,
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+
+    Spacer(Modifier.height(4.dp))
+    ToggleRow(
+        "Speed-adaptive volume",
+        "Nudges volume up at speed to compensate for road noise, fading back down when you slow.",
+        adaptiveEnabled && granted, accent,
+    ) { on -> requestThenSet(on) { settings.setSpeedAdaptiveVolume(on) } }
+
+    if ((alertEnabled || adaptiveEnabled) && !granted) {
+        Note("Needs location permission — GPS speed only, nothing is stored or sent anywhere.")
+        OledButton("Allow location", accent = accent, outline = true) {
+            askLocation.launch(Manifest.permission.ACCESS_FINE_LOCATION)
         }
     }
 }

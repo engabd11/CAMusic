@@ -87,6 +87,10 @@ class AppSettings(private val context: Context) {
         private val DRIVING_CAR_ADDRESS = stringPreferencesKey("driving_car_address") // bonded device MAC
         private val DRIVING_CAR_NAME = stringPreferencesKey("driving_car_name")       // for the settings row
         private val PAUSE_FOR_CALLS = booleanPreferencesKey("pause_for_calls")        // auto-pause playback while the phone rings/is on a call
+        private val SPEED_LIMIT_ALERT_ENABLED = booleanPreferencesKey("speed_limit_alert_enabled")
+        private val DRIVING_SPEED_LIMIT_KMH = stringPreferencesKey("driving_speed_limit_kmh")   // 0 = not set
+        private val DRIVING_SPEED_TOLERANCE_PCT = stringPreferencesKey("driving_speed_tolerance_pct")
+        private val SPEED_ADAPTIVE_VOLUME = booleanPreferencesKey("speed_adaptive_volume")
 
         // Self-hosted crash reporting
         private val CRASH_GITHUB_REPO = stringPreferencesKey("crash_github_repo") // owner/repo, e.g. engabd11/CAMusic
@@ -1105,6 +1109,33 @@ class AppSettings(private val context: Context) {
      * — the same "don't ask until it's wanted" rule the driving-car picker follows.
      */
     val pauseForCalls: Flow<Boolean> = context.dataStore.data.map { it[PAUSE_FOR_CALLS] ?: false }
+
+    /**
+     * GPS speed-limit alert. Off by default and needs `ACCESS_FINE_LOCATION`,
+     * requested at runtime only when turned on — see [SpeedMonitor].
+     */
+    val speedLimitAlertEnabled: Flow<Boolean> = context.dataStore.data.map { it[SPEED_LIMIT_ALERT_ENABLED] ?: false }
+
+    /** 0 means "not set" — [SpeedMonitor] treats that as "nothing to alert on". */
+    val drivingSpeedLimitKmh: Flow<Int> = context.dataStore.data.map { it[DRIVING_SPEED_LIMIT_KMH]?.toIntOrNull() ?: 0 }
+
+    /** How far over [drivingSpeedLimitKmh] before the alert fires. Default 5%, per SpeedAlert's own doc. */
+    val drivingSpeedTolerancePct: Flow<Int> = context.dataStore.data.map { it[DRIVING_SPEED_TOLERANCE_PCT]?.toIntOrNull() ?: 5 }
+
+    /** Speed-adaptive volume boost. Off by default; shares [SpeedMonitor] with the alert above. */
+    val speedAdaptiveVolume: Flow<Boolean> = context.dataStore.data.map { it[SPEED_ADAPTIVE_VOLUME] ?: false }
+
+    suspend fun setSpeedLimitAlertEnabled(on: Boolean) = context.dataStore.edit { it[SPEED_LIMIT_ALERT_ENABLED] = on }
+
+    suspend fun setDrivingSpeedLimitKmh(value: Int) = context.dataStore.edit {
+        it[DRIVING_SPEED_LIMIT_KMH] = value.coerceIn(0, 300).toString()
+    }
+
+    suspend fun setDrivingSpeedTolerancePct(value: Int) = context.dataStore.edit {
+        it[DRIVING_SPEED_TOLERANCE_PCT] = value.coerceIn(0, 25).toString()
+    }
+
+    suspend fun setSpeedAdaptiveVolume(on: Boolean) = context.dataStore.edit { it[SPEED_ADAPTIVE_VOLUME] = on }
 
     suspend fun setDrivingEnabled(on: Boolean) {
         context.dataStore.edit { it[DRIVING_ENABLED] = on }

@@ -120,6 +120,17 @@ class SendpinApp : Application(), ImageLoaderFactory {
     val callPauseObserver: CallPauseObserver by lazy { CallPauseObserver(this) }
 
     /**
+     * GPS speed for the speed-limit alert and speed-adaptive volume. Its own
+     * `start()` gates location updates on driving-mode being active and at least
+     * one of the two features being on, so — unlike [callPauseObserver] — this is
+     * safe to call unconditionally from [onCreate]: it does nothing until both
+     * conditions are true.
+     */
+    val speedMonitor: com.engabd.sendpin.service.SpeedMonitor by lazy {
+        com.engabd.sendpin.service.SpeedMonitor(this, drivingMode)
+    }
+
+    /**
      * Whichever backend is actually producing sound right now, for
      * [directLightSync] — MA (via [com.engabd.sendpin.audio.SendspinExoEngine])
      * when it has a tap installed *and* is playing, else [localPlayer] always.
@@ -242,6 +253,7 @@ class SendpinApp : Application(), ImageLoaderFactory {
         // itself no-ops without the permission, so this is safe to call blind — and
         // it runs off the main thread rather than blocking onCreate on a DataStore read.
         appScope.launch { if (AppSettings(this@SendpinApp).pauseForCalls.first()) callPauseObserver.start() }
+        speedMonitor.start()
         // The storage cap evicts oldest-first, and the one file it must never take is
         // the one being listened to. Published here rather than looked up inside the
         // download manager, which has no business holding a reference to the player.
