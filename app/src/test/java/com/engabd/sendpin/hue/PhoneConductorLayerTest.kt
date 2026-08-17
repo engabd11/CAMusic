@@ -15,7 +15,12 @@ import kotlin.test.assertTrue
  */
 class PhoneConductorLayerTest {
 
-    private fun contextOf(positions: Map<Int, Vec3>, topology: RoomTopology, dt: Float = 0.05f) = LayerContext(
+    private fun contextOf(
+        positions: Map<Int, Vec3>,
+        topology: RoomTopology,
+        dt: Float = 0.05f,
+        brightness: Float = 1f,
+    ) = LayerContext(
         frame = AnalysisFrame(),
         structure = null,
         scan = null,
@@ -23,6 +28,7 @@ class PhoneConductorLayerTest {
         topology = topology,
         trackPositionS = -1f,
         dt = dt,
+        brightness = brightness,
     )
 
     private val onePosition = mapOf(1 to Vec3(0.8f, 0.5f, 0.5f))
@@ -83,6 +89,31 @@ class PhoneConductorLayerTest {
             outputs.toSet().size > 1,
             "sustained rotation should keep moving the colour across frames rather than settling on the first one",
         )
+    }
+
+    @Test
+    fun `neither a flick nor a tilt-up may push a lamp above the brightness ceiling`() {
+        val renderer = ConductorRenderer()
+        // Tilt fully up (the 1.5x multiplier) and flick at the same time, which
+        // is the brightest this layer can ever ask for.
+        val brightest = DeviceMotionState(active = true, tiltY = 1f, flick = true)
+        val out = renderer.apply(base, contextOf(onePosition, RoomTopology.FIELD, brightness = 0.5f), brightest)
+
+        val v = out.getValue(1).let { maxOf(it.first, it.second, it.third) }
+        assertTrue(v <= 0.5f + 1e-5f, "the loudest gesture must still respect a 50% ceiling, was $v")
+    }
+
+    @Test
+    fun `a tilt-up still visibly brightens a lamp sitting below the ceiling`() {
+        val renderer = ConductorRenderer()
+        val ctx = contextOf(onePosition, RoomTopology.FIELD, brightness = 1f)
+        fun brightness(rgb: Rgb) = maxOf(rgb.first, rgb.second, rgb.third)
+
+        // base sits at 0.5, so a 1.5x tilt has room to climb without clamping —
+        // capping at the ceiling must not have flattened the gesture itself.
+        val still = brightness(renderer.apply(base, ctx, DeviceMotionState(active = true)).getValue(1))
+        val up = brightness(renderer.apply(base, ctx, DeviceMotionState(active = true, tiltY = 1f)).getValue(1))
+        assertTrue(up > still, "tilting up should still brighten: $still -> $up")
     }
 
     @Test

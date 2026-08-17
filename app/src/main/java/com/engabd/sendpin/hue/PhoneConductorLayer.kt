@@ -97,6 +97,12 @@ internal class ConductorRenderer {
         val brightnessMul = (1f + state.tiltY.coerceIn(-1f, 1f) * TILT_BRIGHTNESS_RANGE)
             .coerceIn(1f - TILT_BRIGHTNESS_RANGE, 1f + TILT_BRIGHTNESS_RANGE)
 
+        // Tilt-up and a flick both push *above* what the engine rendered, and
+        // the engine had already applied the user's ceiling — so clamp to that,
+        // not to 1f. The gesture still reads: most lamps sit well below the
+        // ceiling on any given frame, so there is room to brighten into.
+        val ceiling = context.brightness.coerceIn(0f, 1f)
+
         return base.mapValues { (id, rgb) ->
             val pos = context.positions[id]
             val (h0, s, v0) = rgbToHsv(rgb)
@@ -121,7 +127,8 @@ internal class ConductorRenderer {
                 }
             }
 
-            val v = (v0 * brightnessMul + flashLevel * FLASH_BRIGHTNESS_GAIN).coerceIn(0f, 1f)
+            val v = (v0 * brightnessMul + flashLevel * FLASH_BRIGHTNESS_GAIN * ceiling)
+                .coerceIn(0f, ceiling)
             hsvToRgb(h, s, v)
         }
     }

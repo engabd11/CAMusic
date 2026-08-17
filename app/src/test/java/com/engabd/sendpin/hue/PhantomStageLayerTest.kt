@@ -16,6 +16,7 @@ class PhantomStageLayerTest {
         positions: Map<Int, Vec3>,
         topology: RoomTopology,
         frame: AnalysisFrame = AnalysisFrame(),
+        brightness: Float = 1f,
     ) = LayerContext(
         frame = frame,
         structure = null,
@@ -24,6 +25,7 @@ class PhantomStageLayerTest {
         topology = topology,
         trackPositionS = -1f,
         dt = 0.02f,
+        brightness = brightness,
     )
 
     private val black: Rgb = Triple(0f, 0f, 0f)
@@ -90,5 +92,36 @@ class PhantomStageLayerTest {
             brightness(hit.getValue(1)) > brightness(quiet.getValue(1)),
             "a bass onset should brighten the bass-assigned lamp: ${quiet.getValue(1)} -> ${hit.getValue(1)}",
         )
+    }
+
+    @Test
+    fun `the glow scales with the user's brightness ceiling instead of ignoring it`() {
+        val positions = mapOf(1 to Vec3(0.10f, 0.5f, 0.10f))
+        val base = mapOf(1 to black)
+        val hit = AnalysisFrame(bassBeat = true, bassStrength = 1.5f)
+
+        fun brightness(rgb: Rgb) = maxOf(rgb.first, rgb.second, rgb.third)
+        val full = brightness(
+            PhantomStageLayer().apply(base, contextOf(positions, RoomTopology.FIELD, hit, brightness = 1f))
+                .getValue(1),
+        )
+        val dimmed = brightness(
+            PhantomStageLayer().apply(base, contextOf(positions, RoomTopology.FIELD, hit, brightness = 0.2f))
+                .getValue(1),
+        )
+
+        assertTrue(dimmed < full, "the same onset at a 20% ceiling should be dimmer than at 100%: $dimmed vs $full")
+        assertTrue(dimmed <= 0.2f + 1e-5f, "nothing may sit above the ceiling the user set, was $dimmed")
+    }
+
+    @Test
+    fun `a zero ceiling leaves the room dark rather than glowing`() {
+        val positions = mapOf(1 to Vec3(0.10f, 0.5f, 0.10f))
+        val base = mapOf(1 to black)
+        val out = PhantomStageLayer().apply(
+            base,
+            contextOf(positions, RoomTopology.FIELD, AnalysisFrame(bassBeat = true, bassStrength = 1.5f), 0f),
+        )
+        assertEquals(black, out.getValue(1), "at a zero ceiling the layer must add no light at all")
     }
 }

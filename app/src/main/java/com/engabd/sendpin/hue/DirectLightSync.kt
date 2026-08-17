@@ -337,6 +337,24 @@ class DirectLightSync(
     /** Seconds into the current track, published from [onAnalysisFrame]. */
     @Volatile private var latestPositionS: Float = -1f
 
+    /**
+     * The user's brightness ceiling, mirrored from [SyncoEngine.brightness] so
+     * the layer chain can see it.
+     *
+     * The engine applies it as the last step of its own render, and the chain
+     * runs after that, so a layer with no view of it would be adding light back
+     * on top of a ceiling the user set. Written by [applyBrightness] alongside
+     * every write to the engine's own copy, so the two cannot drift.
+     */
+    @Volatile private var layerBrightness = 1f
+
+    /** Set the brightness ceiling on the engine and on the layer chain together. */
+    private fun applyBrightness(fraction: Float) {
+        val clamped = fraction.coerceIn(0f, 1f)
+        engine?.brightness = clamped
+        layerBrightness = clamped
+    }
+
     private val musicDnaLayer = MusicDnaLayer()
     private val emotionalArcLayer = EmotionalArcLayer()
     private val phantomStageLayer = PhantomStageLayer()
@@ -568,6 +586,7 @@ class DirectLightSync(
                 it.effect = SyncEffect.fromWire(settings.lightSyncEffect.first())
                 it.setScheme(ColorScheme.fromWire(settings.lightSyncColor.first()))
                 it.brightness = settings.lightSyncBrightness.first() / 100f
+                layerBrightness = it.brightness
                 it.setTunables(activeTunables)
                 // Apply cached album colours if the collector already extracted
                 // them before the engine existed. Without this the first track's
@@ -926,6 +945,7 @@ class DirectLightSync(
                         topology = roomTopology,
                         trackPositionS = latestPositionS,
                         dt = dt,
+                        brightness = layerBrightness,
                     ),
                 )
             }
@@ -1455,7 +1475,7 @@ class DirectLightSync(
             }
         }
         scope.launch {
-            settings.lightSyncBrightness.collect { pct -> engine?.brightness = pct.coerceIn(0, 100) / 100f }
+            settings.lightSyncBrightness.collect { pct -> applyBrightness(pct.coerceIn(0, 100) / 100f) }
         }
         scope.launch {
             settings.lightSyncTunables.collect { tunables ->
@@ -1520,7 +1540,7 @@ class DirectLightSync(
 
     /** As [previewTunables], for the brightness ceiling. [pct] is 0..100. */
     fun previewBrightness(pct: Int) {
-        engine?.brightness = pct.coerceIn(0, 100) / 100f
+        applyBrightness(pct.coerceIn(0, 100) / 100f)
     }
 
     /** Album-art colours, pushed by the player when the track changes. */

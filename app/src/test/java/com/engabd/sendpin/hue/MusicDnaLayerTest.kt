@@ -9,6 +9,7 @@ import com.engabd.sendpin.audio.TrackScan
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
+import kotlin.test.assertTrue
 
 /**
  * Does the per-track fingerprint actually vary with the track — a different
@@ -36,7 +37,12 @@ class MusicDnaLayerTest {
         key = key,
     )
 
-    private fun contextOf(scan: TrackScan?, posS: Float, dt: Float = 0f) = LayerContext(
+    private fun contextOf(
+        scan: TrackScan?,
+        posS: Float,
+        dt: Float = 0f,
+        brightness: Float = 1f,
+    ) = LayerContext(
         frame = AnalysisFrame(),
         structure = null,
         scan = scan,
@@ -44,6 +50,7 @@ class MusicDnaLayerTest {
         topology = RoomTopology.CLUSTER,
         trackPositionS = posS,
         dt = dt,
+        brightness = brightness,
     )
 
     /** A saturated red, so a hue shift is visible in the raw RGB output. */
@@ -100,5 +107,14 @@ class MusicDnaLayerTest {
         // should still do something (tempo, sections) rather than no-op.
         val out = MusicDnaLayer().apply(redBase, contextOf(scanOf(key = null), posS = 5f))
         assertNotEquals(redBase.getValue(1), out.getValue(1))
+    }
+
+    @Test
+    fun `the brightness arc lifts within the ceiling, never above it`() {
+        // The arc's top end is a >1x multiplier by design, so a full-value input
+        // is exactly the case that used to escape the user's setting.
+        val out = MusicDnaLayer().apply(redBase, contextOf(scanOf(), posS = 5f, brightness = 0.4f))
+        val v = out.getValue(1).let { maxOf(it.first, it.second, it.third) }
+        assertTrue(v <= 0.4f + 1e-5f, "the arc must not lift a lamp above a 40% ceiling, was $v")
     }
 }

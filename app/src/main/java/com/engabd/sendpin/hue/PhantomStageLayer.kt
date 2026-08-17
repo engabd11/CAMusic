@@ -41,19 +41,26 @@ class PhantomStageLayer : LightShowLayer {
         decayFlashes(context.dt)
         triggerFlashes(context.frame)
 
+        // This layer's glow is *additive*, so unlike the engine's own output it
+        // has never been through [SyncoEngine.brightness]. Scaling the level by
+        // the ceiling is what keeps "the bassist's corner" proportional to the
+        // rest of the show instead of drowning it: at a 20% setting an unscaled
+        // 0.12 base glow is most of the visible field on its own.
+        val ceiling = context.brightness.coerceIn(0f, 1f)
+
         return base.mapValues { (id, rgb) ->
             val inst = channelInstrument[id] ?: return@mapValues rgb
             val level = (
                 PERSISTENT_GLOW +
                     sustainedGlow(inst, context.frame) +
                     (flash[inst] ?: 0f)
-                ).coerceIn(0f, 1f)
+                ).coerceIn(0f, 1f) * ceiling
             val (addR, addG, addB) = hsvToRgb(HUE.getValue(inst), GLOW_SATURATION, level)
             val (r, g, b) = rgb
             Triple(
-                (r + addR).coerceIn(0f, 1f),
-                (g + addG).coerceIn(0f, 1f),
-                (b + addB).coerceIn(0f, 1f),
+                (r + addR).coerceIn(0f, ceiling),
+                (g + addG).coerceIn(0f, ceiling),
+                (b + addB).coerceIn(0f, ceiling),
             )
         }
     }

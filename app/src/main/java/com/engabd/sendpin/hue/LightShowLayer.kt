@@ -29,14 +29,17 @@ interface LightShowLayer {
  * Everything a layer might need, gathered once per render frame by
  * [DirectLightSync].
  *
- * Deliberately narrow. `palette`/`brightness` are not here: every layer in
- * this file works by nudging the HSV of whatever [SyncoEngine] already
- * rendered, not by reaching into its internal [Palette]/`ModeParams` — so
- * those fields would be dead weight on every layer that doesn't touch
- * colour selection directly. Device motion is not here either — only
- * [PhoneConductorLayer] needs it, and it has its own lifecycle (sensor
- * registration tied to a setting and to whether a stream is even running),
- * not per-frame render data, so it lives as that layer's own private state.
+ * Deliberately narrow. `palette` is not here: every layer works by nudging the
+ * HSV of whatever [SyncoEngine] already rendered, not by reaching into its
+ * internal [Palette]/`ModeParams`, so it would be dead weight on all four.
+ * Device motion is not here either — only [PhoneConductorLayer] needs it, and
+ * it has its own lifecycle (sensor registration tied to a setting and to
+ * whether a stream is even running), not per-frame render data, so it lives as
+ * that layer's own private state.
+ *
+ * [brightness] *is* here, and has to be: the engine applies it as the very last
+ * step of its own render, so a layer that adds or multiplies afterwards is
+ * working above a ceiling the user set. See its own note below.
  */
 data class LayerContext(
     /** The live analysis frame this render step is driving from. */
@@ -53,6 +56,22 @@ data class LayerContext(
     val trackPositionS: Float,
     /** Elapsed time since the previous frame, for any layer that integrates. */
     val dt: Float,
+    /**
+     * The user's brightness ceiling, 0..1 — the same value [SyncoEngine.brightness]
+     * already scaled `base` by.
+     *
+     * A layer must not produce a channel above it. The engine applies the
+     * setting as the last thing it does, so anything the chain adds on top
+     * (Phantom Stage's glow) or multiplies up (Music DNA's arc, the Conductor's
+     * tilt) lands *outside* it, and [FieldSafety] does not catch that — it
+     * limits how often the field may flash, not how bright it may sit. At a 20%
+     * setting an uncapped additive glow is most of the visible field.
+     *
+     * Defaults to 1f — no ceiling — so a test fixture only states it when
+     * that is what it is testing. The one production caller always passes the
+     * live setting.
+     */
+    val brightness: Float = 1f,
 )
 
 /**

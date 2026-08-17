@@ -45,11 +45,17 @@ class MusicDnaLayer : LightShowLayer {
         val arc = scan.intensitySignalAt(context.trackPositionS) ?: 0.7f
         val level = BRIGHTNESS_MIN + (BRIGHTNESS_MAX - BRIGHTNESS_MIN) * arc.coerceIn(0f, 1f)
 
+        // The arc's top end lifts above 1.0 deliberately — a loud chorus should
+        // read louder than the engine alone made it. It must still not lift
+        // above what the user asked for: the ceiling is where the engine already
+        // left off, so that is the clamp, not 1f.
+        val ceiling = context.brightness.coerceIn(0f, 1f)
+
         return base.mapValues { (_, rgb) ->
             val (h, s, v) = rgbToHsv(rgb)
             val blendedHue = blendHue(h, hue, fp.hueBlendWeight)
             val sat = (s * fp.saturationMul).coerceIn(0f, 1f)
-            hsvToRgb(blendedHue, sat, (v * level).coerceIn(0f, 1f))
+            hsvToRgb(blendedHue, sat, (v * level).coerceIn(0f, ceiling))
         }
     }
 
