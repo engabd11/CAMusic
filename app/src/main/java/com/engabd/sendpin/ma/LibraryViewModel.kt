@@ -1631,6 +1631,15 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     fun playDownload(track: DownloadedTrack) = play(downloadItem(track))
 
     /**
+     * Play a set of downloads as one queue — a downloaded album, in its own order.
+     *
+     * The Downloads screen groups by album, and an album's play button that started a
+     * queue of one would be an album button that does not play the album.
+     */
+    fun playDownloads(tracks: List<DownloadedTrack>, option: String = "replace") =
+        playAll(tracks.map { downloadItem(it) }, option)
+
+    /**
      * Bytes on disk per downloaded track.
      *
      * Stat-ing every file, so it is the caller's job to keep this off the main thread
@@ -2385,13 +2394,23 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * land.
      */
     private fun downloadItems(list: List<DownloadedTrack>): List<MaItem> = list
-        .sortedWith(compareBy({ it.album ?: "" }, { it.trackNumber ?: Int.MAX_VALUE }, { it.title }))
+        .sortedWith(
+            compareBy(
+                { it.album ?: "" },
+                // Disc before track: a two-disc album otherwise interleaves, playing
+                // track 1 of disc 1, track 1 of disc 2, track 2 of disc 1…
+                { it.discNumber ?: 0 },
+                { it.trackNumber ?: Int.MAX_VALUE },
+                { it.title },
+            )
+        )
         .map { downloadItem(it) }
 
     private fun downloadItem(d: DownloadedTrack) = MaItem(
         itemId = d.id, provider = DOWNLOAD, name = d.title, uri = d.filePath, mediaType = "track",
         subtitle = d.artist, image = d.artUri, duration = (d.durationMs / 1000).toInt().takeIf { it > 0 },
         album = d.album, parentId = d.albumId, trackNumber = d.trackNumber,
+        discNumber = d.discNumber,
         // Recorded when the file was fetched, so the Downloads shelf can show what is
         // actually on disk with the server unreachable — which is the one time it
         // matters most.

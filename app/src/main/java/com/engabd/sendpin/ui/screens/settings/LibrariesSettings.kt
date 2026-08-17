@@ -1,10 +1,8 @@
 package com.engabd.sendpin.ui.screens.settings
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.MenuBook
@@ -19,7 +17,6 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -57,8 +54,9 @@ import androidx.compose.ui.platform.LocalContext
  * exactly what this app now has.
  *
  * So: one list. Each server is a card saying what it is, where it is and whether it is
- * answering; one is marked Active and that is the one the Library tab browses. Adding
- * a server is a button rather than a schema change.
+ * the one being browsed — picked with a radio button, because that is the shape of the
+ * question — with its own settings a labelled row away. Adding a server is a button
+ * rather than a schema change.
  */
 @Composable
 internal fun LibrariesSection(
@@ -123,8 +121,8 @@ private fun ServerList(
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         SettingsCard(
             title = "Your libraries",
-            lead = "One of these is what the Library tab browses. The others stay configured — " +
-                "downloads keep playing whichever server they came from.",
+            lead = "Pick the one the Library tab browses. The others stay set up and keep their " +
+                "logins, and downloads play whichever server they came from either way.",
         ) {}
 
         if (servers.isEmpty()) {
@@ -149,27 +147,40 @@ private fun ServerList(
         OledButton("Add a server", accent = accent, outline = servers.isNotEmpty()) { onDetail(PICK_ROUTE) }
 
         servers.firstOrNull { it.id == activeId }?.let { active ->
-            SettingsCard(title = "What the active library changes") {
-                Note(
-                    if (active.kind.playsLocally)
-                        "${active.displayName} plays on this phone. Speaker grouping is a Music " +
-                            "Assistant feature, so that tab is off. Light Sync still works, over " +
-                            "the Hue Bridge directly."
-                    else
-                        "Music Assistant browses the whole library, plays to any speaker on the " +
-                            "network, and keeps grouping and Light Sync available.",
-                )
-            }
+            // A lead rather than a Note inside an otherwise empty card: this card has no
+            // controls, so the sentence *is* the card, and every other card here says
+            // what it is for in the lead.
+            SettingsCard(
+                title = "What ${active.displayName} means for the rest of the app",
+                lead = if (active.kind.playsLocally)
+                    "${active.displayName} plays on this phone. Speaker grouping is a Music " +
+                        "Assistant feature, so that tab is off. Light Sync still works, over " +
+                        "the Hue Bridge directly."
+                else
+                    "Music Assistant browses the whole library, plays to any speaker on the " +
+                        "network, and keeps grouping and Light Sync available.",
+            ) {}
         }
     }
 }
 
 /**
- * One server at a glance.
+ * One server, as a choice and a place to go.
  *
- * The Active pill is a state, not a button — tapping the card opens its settings,
- * which is what a tap on a row of text should do. Switching library is its own
- * labelled action, because it changes which tabs work.
+ * The card used to do both jobs through one tap and one button, and neither said which
+ * was which: tapping anywhere opened a settings form, while the only button read
+ * "Browse this library" — which sounds like it opens the library, and actually changes
+ * which server the whole app is pointed at.
+ *
+ * So the two jobs are now two controls with the idiom each deserves. Picking the active
+ * library is a *choice among the servers listed*, which is a radio button — the same one
+ * [JellyfinLibraryCard] below uses for the same shape of question — and tapping the row
+ * makes it. Opening this server's own settings is going somewhere, so it is a labelled
+ * row with a chevron, like every other navigation row in Settings.
+ *
+ * The consequence of switching is printed under the choice rather than in a footnote
+ * below the list, because it is not a small one: it decides whether Speakers works, and
+ * where Light Sync gets its audio from.
  */
 @Composable
 private fun ServerCard(
@@ -181,10 +192,16 @@ private fun ServerCard(
 ) {
     GlassCard(radius = 18.dp) {
         Column(
-            Modifier.fillMaxWidth().clickable(onClick = onOpen).padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+            Modifier.fillMaxWidth().padding(vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             Row(
+                Modifier
+                    .fillMaxWidth()
+                    // The active server is already chosen; re-picking it would drop the
+                    // connection and rebuild it for no change.
+                    .clickable(enabled = !active, onClick = onActivate)
+                    .padding(horizontal = 20.dp, vertical = 14.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(14.dp),
             ) {
@@ -209,27 +226,43 @@ private fun ServerCard(
                         config.host, color = TextFaint, fontFamily = MonoFont, fontSize = 12.sp,
                         maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
+                    Text(
+                        if (active) "The Library tab is browsing this"
+                        else "Tap to browse this instead",
+                        color = if (active) accent else TextMuted,
+                        fontFamily = AppFont, fontSize = 11.sp,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis,
+                    )
                 }
-                if (active) {
-                    Row(
-                        Modifier.clip(RoundedCornerShape(100)).background(accent.a(0.16f))
-                            .border(1.dp, accent.a(0.4f), RoundedCornerShape(100))
-                            .padding(horizontal = 10.dp, vertical = 5.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(5.dp),
-                    ) {
-                        Box(Modifier.size(5.dp).clip(CircleShape).background(accent))
-                        Text(
-                            "Active", color = accent, fontFamily = AppFont,
-                            fontWeight = FontWeight.Bold, fontSize = 10.sp,
-                        )
-                    }
-                } else {
-                    Icon(Icons.Default.ChevronRight, null, tint = TextMuted, modifier = Modifier.size(20.dp))
-                }
+                Icon(
+                    if (active) Icons.Default.RadioButtonChecked else Icons.Default.RadioButtonUnchecked,
+                    if (active) "Active library" else "Switch to ${config.displayName}",
+                    tint = if (active) accent else TextMuted,
+                    modifier = Modifier.size(22.dp),
+                )
             }
-            if (!active) {
-                OledButton("Browse this library", accent = accent, onClick = onActivate)
+
+            Box(Modifier.padding(horizontal = 20.dp)) { CardDivider() }
+
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onOpen)
+                    .padding(horizontal = 20.dp, vertical = 13.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Icon(Icons.Default.Tune, null, tint = TextMuted, modifier = Modifier.size(17.dp))
+                Text(
+                    // Named, because two servers of the same kind are common and
+                    // "Settings" over a list of three says nothing about which.
+                    "${config.displayName} settings",
+                    color = TextSecondary, fontFamily = AppFont,
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
+                Icon(Icons.Default.ChevronRight, null, tint = TextMuted, modifier = Modifier.size(20.dp))
             }
         }
     }

@@ -798,7 +798,7 @@ class SubsonicClient(
         favorite = o.str("starred") != null,
     )
 
-    private fun albumItem(o: JsonObject) = MaItem(
+    internal fun albumItem(o: JsonObject) = MaItem(
         itemId = o.str("id") ?: "", provider = PROVIDER,
         name = o.str("name") ?: o.str("album") ?: "Unknown album",
         uri = o.str("id"), mediaType = "album", subtitle = o.str("artist"),
@@ -811,7 +811,25 @@ class SubsonicClient(
         // count where the MA one showed a genre too — and nothing had a genre to fall
         // back on when looking for something similar.
         genres = genreList(o),
+        discTitles = discTitles(o),
     )
+
+    /**
+     * OpenSubsonic's `discTitles`: `[{ "disc": 2, "title": "Live at the Fillmore" }]`.
+     *
+     * Absent on plain Subsonic and on any record nobody named the discs of, which is
+     * most of them — hence a map rather than a list, so a disc with no name of its own
+     * simply isn't in it.
+     */
+    private fun discTitles(o: JsonObject): Map<Int, String> =
+        (o["discTitles"] as? JsonArray).orEmptyArray()
+            .mapNotNull { entry ->
+                val disc = entry as? JsonObject ?: return@mapNotNull null
+                val number = disc.int("disc") ?: return@mapNotNull null
+                val title = disc.str("title") ?: return@mapNotNull null
+                number to title
+            }
+            .toMap()
 
     /**
      * Genres, however this server spells them.
@@ -827,7 +845,12 @@ class SubsonicClient(
         return (listOfNotNull(one) + many).map { it.trim() }.filter { it.isNotEmpty() }.distinct()
     }
 
-    private fun songItem(o: JsonObject) = MaItem(
+    /**
+     * Internal rather than private so `SubsonicItemParseTest` can hold a real
+     * `getAlbum` payload against it. The disc number reaching the album screen has
+     * failed here before and it is invisible from outside the client.
+     */
+    internal fun songItem(o: JsonObject) = MaItem(
         itemId = o.str("id") ?: "", provider = PROVIDER, name = o.str("title") ?: "Unknown title",
         uri = o.str("id"), mediaType = "track", subtitle = o.str("artist"),
         image = coverUrl(o.str("coverArt") ?: o.str("albumId") ?: o.str("id")),

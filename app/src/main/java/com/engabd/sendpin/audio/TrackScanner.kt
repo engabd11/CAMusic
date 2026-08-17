@@ -141,7 +141,15 @@ object TrackScanner {
                     }
                 }
             }
-            return finishScan(ex)
+            // The container's own duration, which the decode cannot know: a capped
+            // decode stops early and its frame count then describes the analysis, not
+            // the track. See [TrackScan.analysedS].
+            val fullDurationS = runCatching {
+                if (inputFormat.containsKey(MediaFormat.KEY_DURATION)) {
+                    inputFormat.getLong(MediaFormat.KEY_DURATION) / 1_000_000f
+                } else 0f
+            }.getOrDefault(0f)
+            return finishScan(ex, fullDurationS)
         } finally {
             runCatching { codec?.stop() }
             runCatching { codec?.release() }

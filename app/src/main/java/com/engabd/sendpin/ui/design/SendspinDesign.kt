@@ -653,6 +653,38 @@ fun RingProgress(progress: Float, modifier: Modifier = Modifier, size: Dp = 20.d
     )
 }
 
+/**
+ * A horizontal determinate bar.
+ *
+ * The flat counterpart to [RingProgress], for the places where the question is "how far
+ * through" rather than "is this row busy" — a library sweep, a share of the disk. Both
+ * the analysis card and the downloads storage panel drew their own before this; they
+ * were three pixels tall in one place and four in the other.
+ */
+@Composable
+fun MeterBar(
+    fraction: Float,
+    modifier: Modifier = Modifier,
+    height: Dp = 4.dp,
+    color: Color = LocalAccent.current,
+) {
+    Box(
+        modifier
+            .fillMaxWidth()
+            .height(height)
+            .clip(RoundedCornerShape(100))
+            .background(inkOn(0.12f)),
+    ) {
+        Box(
+            Modifier
+                .fillMaxWidth(fraction.coerceIn(0f, 1f))
+                .fillMaxHeight()
+                .clip(RoundedCornerShape(100))
+                .background(color),
+        )
+    }
+}
+
 /** An artist's initial on a two-tone album-derived disc. */
 @Composable
 fun GradientAvatar(letter: String, index: Int, modifier: Modifier = Modifier, size: Dp = 46.dp) {

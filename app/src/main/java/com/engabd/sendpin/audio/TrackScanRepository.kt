@@ -2,6 +2,7 @@ package com.engabd.sendpin.audio
 
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
 import android.util.Log
 import com.engabd.sendpin.data.AppSettings
@@ -74,6 +75,23 @@ class TrackScanRepository(
 
     private var sweepJob: Job? = null
 
+    /**
+     * Requests set aside because the phone is on a metered connection and the setting
+     * says not to pull audio over one.
+     *
+     * Held rather than dropped, and put back the moment the network becomes unmetered —
+     * see [watchNetwork]. Keyed so a track parked twice is parked once.
+     */
+    private val parked = LinkedHashMap<String, ScanRequest>()
+
+    /**
+     * The ones that failed, newest last, with enough of the request kept to try again.
+     *
+     * Bounded: a sweep over a library of unreadable files should cost a fixed amount of
+     * memory, and nobody reads the four-hundredth entry.
+     */
+    private val failedRequests = LinkedHashMap<String, Pair<ScanRequest, ScanFailureNote>>()
+
     /** Keys already queued, so a track played twice isn't scanned twice. */
     private val queued = HashSet<String>()
 
@@ -100,6 +118,67 @@ class TrackScanRepository(
 
     init {
         scope.launch { worker() }
+        watchNetwork()
+        // Turning "Wi-Fi only" off is the other way the parked ones become runnable, and
+        // it would otherwise take a network change to notice.
+        scope.launch {
+            settings.lightSyncPrescanWifiOnly.collect { wifiOnly -> if (!wifiOnly) releaseParked() }
+        }
+    }
+
+    /**
+     * Put parked requests back on the queue when the connection stops being metered.
+     *
+     * A callback rather than a poll: the sweep can be parked for hours, and the answer
+     * arrives from the system the instant it changes. Best-effort — a device that
+     * refuses the callback simply keeps its parked tracks until the next sweep, which
+     * is what happened to all of them before.
+     */
+    private fun watchNetwork() {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return
+        runCatching {
+            cm.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
+                override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                    if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)) {
+                        releaseParked()
+                    }
+                }
+            })
+        }.onFailure { Log.w(TAG, "No network callback: ${it.message}") }
+    }
+
+    /** Everything parked, back on the queue. Does nothing when nothing is parked. */
+    fun releaseParked() {
+        val waiting = synchronized(parked) {
+            if (parked.isEmpty()) return
+            parked.values.toList().also { parked.clear() }
+        }
+        _progress.update { it.copy(parked = 0) }
+        scope.launch { for (request in waiting) enqueue(request) }
+    }
+
+    /**
+     * Try the tracks that failed for a reason that might not repeat.
+     *
+     * Silence and too-little-audio are verdicts about the file and are left alone — a
+     * retry of those is a decode nobody needs, and on a streamed library a download to
+     * go with it.
+     */
+    fun retryFailed() {
+        val retryable = synchronized(failedRequests) {
+            failedRequests.values.filter { it.second.retryable }.map { it.first }
+                .also { list -> list.forEach { failedRequests.remove(it.key) } }
+        }
+        synchronized(failures) { retryable.forEach { failures.remove(it.key) } }
+        _progress.update { note ->
+            note.copy(
+                failed = (note.failed - retryable.size).coerceAtLeast(0),
+                failures = note.failures.filterNot { it.retryable },
+                error = null,
+            )
+        }
+        scope.launch { for (request in retryable) enqueue(request.copy(rescan = true)) }
     }
 
     // ── What the light sync path uses ──────────────────────────────────────
@@ -156,6 +235,16 @@ class TrackScanRepository(
 
     suspend fun usage(): Pair<Int, Long> = withContext(Dispatchers.IO) { store.usage() }
 
+    /**
+     * How many stored scans a newer analyser would improve on.
+     *
+     * A directory walk, so it is asked when the analysis screen opens and when a sweep
+     * ends — not on the screen's polling timer.
+     */
+    suspend fun outdatedCount(): Int = withContext(Dispatchers.IO) {
+        store.outdated(TrackScan.ANALYSER_VERSION)
+    }
+
     // ── The library sweep ──────────────────────────────────────────────────
 
     /**
@@ -167,10 +256,19 @@ class TrackScanRepository(
      * tracks are skipped, so a sweep interrupted halfway resumes rather than
      * restarts.
      */
-    fun sweep(enumerate: suspend () -> List<LocalTrack>) {
+    fun sweep(refreshOutdated: Boolean = false, enumerate: suspend () -> List<LocalTrack>) {
         if (sweepJob?.isActive == true) return
         sweepJob = scope.launch {
-            _progress.update { it.copy(sweeping = true, sweepDone = 0, sweepTotal = 0) }
+            // A sweep is the fresh start for the session's tally: the forty failures
+            // from the last one are not this one's, and anything parked is about to be
+            // asked for again.
+            synchronized(parked) { parked.clear() }
+            _progress.update {
+                it.copy(
+                    sweeping = true, sweepDone = 0, sweepTotal = 0,
+                    parked = 0, failed = 0, failures = emptyList(),
+                )
+            }
             val tracks = try {
                 enumerate()
             } catch (e: CancellationException) {
@@ -182,10 +280,21 @@ class TrackScanRepository(
                 }
                 return@launch
             }
-            val wanted = tracks.filterNot { store.has(keyFor(it)) || givenUpOn(keyFor(it)) }
+            // A refresh wants the tracks that *have* a scan, so "already scanned" stops
+            // being a reason to skip. Which of them are actually out of date is decided
+            // per track in [run], where the file is being opened anyway — deciding it
+            // here would read every scan on disk before the first one was analysed.
+            val wanted = tracks.filterNot {
+                (!refreshOutdated && store.has(keyFor(it))) || givenUpOn(keyFor(it))
+            }
             _progress.update { it.copy(sweepTotal = wanted.size, error = null) }
             for (track in wanted) {
-                enqueue(ScanRequest(track, keyFor(track), urgent = false, rescan = false, fromSweep = true))
+                enqueue(
+                    ScanRequest(
+                        track, keyFor(track), urgent = false, rescan = false,
+                        fromSweep = true, rescanOutdated = refreshOutdated,
+                    )
+                )
             }
             // The sweep flag comes down when the queue drains, not here — the
             // requests have only been posted at this point.
@@ -196,6 +305,12 @@ class TrackScanRepository(
     fun cancelSweep() {
         sweepJob?.cancel()
         sweepJob = null
+        // Parked sweep tracks go with it: they are waiting to do the work that has just
+        // been called off. A parked track from ordinary playback prefetch stays.
+        val stillParked = synchronized(parked) {
+            parked.entries.removeAll { it.value.fromSweep }
+            parked.size
+        }
         // Drained and re-posted rather than cleared, because the same queue
         // carries the next-track prefetch, and cancelling a sweep is not a
         // request to stop preparing the song about to play.
@@ -208,7 +323,10 @@ class TrackScanRepository(
         for (request in keep) queue.trySend(request)
         val stillQueued = synchronized(queued) { queued.size }
         _progress.update {
-            it.copy(sweeping = false, sweepTotal = 0, sweepDone = 0, pending = stillQueued)
+            it.copy(
+                sweeping = false, sweepTotal = 0, sweepDone = 0,
+                pending = stillQueued, parked = stillParked,
+            )
         }
     }
 
@@ -224,8 +342,9 @@ class TrackScanRepository(
                     queue.onReceive { it }
                 }
             }
+            var outcome = Outcome.DONE
             try {
-                run(request)
+                outcome = run(request)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -236,24 +355,42 @@ class TrackScanRepository(
                     queued.size
                 }
                 _progress.update {
-                    val done = if (request.fromSweep) it.sweepDone + 1 else it.sweepDone
+                    // A parked track has not been swept — it is waiting. Counting it as
+                    // done is what let a sweep report completion over an empty result.
+                    val done = if (request.fromSweep && outcome == Outcome.DONE) {
+                        it.sweepDone + 1
+                    } else it.sweepDone
+                    val left = it.sweepTotal - done - it.parked
                     it.copy(
                         pending = stillQueued,
                         current = null,
                         sweepDone = done,
-                        sweeping = it.sweeping && done < it.sweepTotal,
+                        sweeping = it.sweeping && left > 0,
                     )
                 }
             }
         }
     }
 
-    private suspend fun run(request: ScanRequest) {
-        if (!request.rescan && store.has(request.key)) return
+    /** What became of one request, which is not always "it ran". */
+    private enum class Outcome { DONE, PARKED }
+
+    private suspend fun run(request: ScanRequest): Outcome {
+        if (!request.rescan) {
+            // `has` rather than `load` for the ordinary case: the common answer is "yes,
+            // and nothing else needs to be known", and loading it would read a file per
+            // track for nothing. Only a refresh has to look at what is in there.
+            if (request.rescanOutdated) {
+                val existing = withContext(Dispatchers.IO) { store.load(request.key) }
+                if (existing != null && !existing.outdated) return Outcome.DONE
+            } else if (store.has(request.key)) {
+                return Outcome.DONE
+            }
+        }
         // Re-checked here, not only when enqueued, so switching the setting off
         // stops a sweep already in flight rather than letting it run to the end.
         // A rescan is exempt: it is something the user just asked for by hand.
-        if (!request.rescan && !settings.lightSyncPrescan.first()) return
+        if (!request.rescan && !settings.lightSyncPrescan.first()) return Outcome.DONE
 
         _progress.update { it.copy(current = request.track.title, error = null) }
 
@@ -265,15 +402,16 @@ class TrackScanRepository(
             path = local
         } else {
             val url = request.track.streamUrl
-            if (url.isNullOrBlank()) return
+            if (url.isNullOrBlank()) return Outcome.DONE
             if (settings.lightSyncPrescanWifiOnly.first() && isMetered()) {
-                // Not an error to report: the sweep will pick this up next time
-                // the phone is on Wi-Fi, which is what the setting asks for.
-                return
+                // Not a failure — the setting is being honoured. Held until the
+                // connection is unmetered, and counted so the screen can say so.
+                park(request)
+                return Outcome.PARKED
             }
             temp = fetch(url) ?: run {
                 noteFailure(request, "could not fetch the audio", ScanFailure.DECODE)
-                return
+                return Outcome.DONE
             }
             path = temp.absolutePath
         }
@@ -282,6 +420,7 @@ class TrackScanRepository(
             when (val result = TrackScanner.scan(path)) {
                 is ScanResult.Ok -> {
                     synchronized(failures) { failures.remove(request.key) }
+                    synchronized(failedRequests) { failedRequests.remove(request.key) }
                     store.save(request.key, result.scan)
                     _completed.tryEmit(request.key)
                 }
@@ -290,6 +429,15 @@ class TrackScanRepository(
         } finally {
             temp?.delete()
         }
+        return Outcome.DONE
+    }
+
+    private fun park(request: ScanRequest) {
+        val count = synchronized(parked) {
+            parked[request.key] = request
+            parked.size
+        }
+        _progress.update { it.copy(parked = count, current = null) }
     }
 
     private fun noteFailure(request: ScanRequest, why: String, reason: ScanFailure) {
@@ -301,7 +449,21 @@ class TrackScanRepository(
         synchronized(failures) {
             failures[request.key] = if (permanent) MAX_ATTEMPTS else (failures[request.key] ?: 0) + 1
         }
-        _progress.update { it.copy(failed = it.failed + 1, error = "${request.track.title} — $why") }
+        val note = ScanFailureNote(request.track.title, why, retryable = !permanent)
+        val notes = synchronized(failedRequests) {
+            failedRequests[request.key] = request to note
+            while (failedRequests.size > MAX_REMEMBERED_FAILURES) {
+                failedRequests.remove(failedRequests.keys.first())
+            }
+            failedRequests.values.map { it.second }.asReversed()
+        }
+        _progress.update {
+            it.copy(
+                failed = it.failed + 1,
+                failures = notes,
+                error = "${request.track.title} — $why",
+            )
+        }
     }
 
     private fun describe(result: ScanResult.Failed): String = when (result.reason) {
@@ -360,6 +522,14 @@ class TrackScanRepository(
          * song currently playing.
          */
         val fromSweep: Boolean = false,
+        /**
+         * Re-analyse if the stored scan came from an older analyser.
+         *
+         * Distinct from [rescan], which throws the scan away before asking: this one
+         * keeps whatever is there unless a newer analyser would do better, so a refresh
+         * over a library costs a decode only for the tracks that stand to gain.
+         */
+        val rescanOutdated: Boolean = false,
     )
 
     companion object {
@@ -369,6 +539,14 @@ class TrackScanRepository(
 
         /** Attempts at one track before it is left alone for this session. */
         private const val MAX_ATTEMPTS = 3
+
+        /**
+         * How many failures are kept for the screen to show and the retry to act on.
+         *
+         * A sweep over a library where a whole folder is unreadable would otherwise grow
+         * this without limit, and nobody scrolls a list of four hundred.
+         */
+        private const val MAX_REMEMBERED_FAILURES = 40
 
         /**
          * What identifies a track's analysis.
@@ -399,8 +577,40 @@ data class ScanProgress(
     val sweepTotal: Int = 0,
     /** Tracks that produced no usable analysis this session. */
     val failed: Int = 0,
+    /**
+     * Tracks set aside until the phone is back on an unmetered network.
+     *
+     * They used to be dropped: the worker returned without a word, counted the track as
+     * swept and moved on, so a sweep begun on mobile data "finished" having analysed
+     * nothing at all and said so nowhere. Parked instead — held, counted, and put back
+     * on the queue when the network changes.
+     */
+    val parked: Int = 0,
+    /** What went wrong, most recent first, for the ones that did. */
+    val failures: List<ScanFailureNote> = emptyList(),
     /** The most recent problem worth showing. */
     val error: String? = null,
 ) {
     val busy: Boolean get() = current != null || pending > 0
+
+    /** Nothing to do until the network changes — not idle, and not working either. */
+    val waitingForNetwork: Boolean get() = parked > 0 && !busy
+
+    /** 0..1 through the sweep, or null when there is no sweep to be through. */
+    val sweepFraction: Float?
+        get() = if (sweepTotal > 0) (sweepDone.toFloat() / sweepTotal).coerceIn(0f, 1f) else null
 }
+
+/**
+ * One track that could not be analysed, and why.
+ *
+ * Kept as a list rather than the single "most recent problem" line that came before it:
+ * one message at a time, overwritten by the next, made a sweep with forty unreadable
+ * files look like a sweep with one. [retryable] is what separates a bad moment on the
+ * network from a verdict about the file.
+ */
+data class ScanFailureNote(
+    val title: String,
+    val why: String,
+    val retryable: Boolean,
+)

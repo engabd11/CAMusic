@@ -41,7 +41,32 @@ data class TrackScan(
      * that field for why no live estimate can produce it.
      */
     val melbankRef: FloatArray = FloatArray(0),
+    /**
+     * Which build of the analyser produced this.
+     *
+     * Separate from the *file* format on purpose. The format says whether these bytes
+     * can be read; this says whether they are still the best answer available. Improving
+     * the analyser used to leave every stored scan silently worse than a fresh one, with
+     * no way to tell them apart and nothing short of "Delete analyses" to do about it —
+     * and that throws away the good ones too. See [ANALYSER_VERSION].
+     */
+    val analyserVersion: Int = ANALYSER_VERSION,
+    /**
+     * How much of the track was actually analysed, in seconds.
+     *
+     * Usually [durationS]. It is less on a track past [TrackScanner.MAX_TRACK_S], where
+     * the decode stops and the grid simply ends — the show falls back to working it out
+     * live from there. That used to be invisible: a half-analysed DJ set presented
+     * itself as analysed, and the moment the lights started guessing looked like a bug.
+     */
+    val analysedS: Float = durationS,
 ) {
+    /** The scan covers the whole track, rather than stopping at the analysis cap. */
+    val complete: Boolean get() = analysedS >= durationS - 1f
+
+    /** A newer analyser has since been shipped, so re-reading this track would improve it. */
+    val outdated: Boolean get() = analyserVersion < ANALYSER_VERSION
+
     /**
      * The grid is worth scheduling the show against.
      *
@@ -143,7 +168,8 @@ data class TrackScan(
             confidence == other.confidence && downbeat == other.downbeat &&
             beats.contentEquals(other.beats) && accents.contentEquals(other.accents) &&
             sections == other.sections && intensity == other.intensity &&
-            melbankRef.contentEquals(other.melbankRef)
+            melbankRef.contentEquals(other.melbankRef) &&
+            analyserVersion == other.analyserVersion && analysedS == other.analysedS
     }
 
     override fun hashCode(): Int {
@@ -156,10 +182,27 @@ data class TrackScan(
         result = 31 * result + sections.hashCode()
         result = 31 * result + (intensity?.hashCode() ?: 0)
         result = 31 * result + melbankRef.contentHashCode()
+        result = 31 * result + analyserVersion
+        result = 31 * result + analysedS.hashCode()
         return result
     }
 
     companion object {
+        /**
+         * What this build's analyser produces, stamped into every scan it writes.
+         *
+         * Bump it when a change to [TrackAnalysis] or [TrackScanner] would give a
+         * *better* answer for the same audio — a retuned grid, a wider analysis window —
+         * and not for anything that only changes how a scan is stored or read. Scans
+         * below it keep working exactly as they did; they are simply the ones the
+         * analysis card can then offer to re-read, so an improvement reaches a library
+         * that was analysed months ago without anyone having to delete the lot.
+         *
+         * 1 — the first version to record its own number, and the first whose scans
+         * say how much of the track they cover.
+         */
+        const val ANALYSER_VERSION = 1
+
         /**
          * Below this the grid is not served. Matches syncoV2's
          * `trackmap.MIN_MAP_CONFIDENCE`; the constants feeding it are calibrated

@@ -6,13 +6,11 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -27,11 +25,13 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.audio.ScanLibrarySource
+import com.engabd.sendpin.audio.ScanFailureNote
+import com.engabd.sendpin.audio.ScanProgress
+import com.engabd.sendpin.audio.TrackScan
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.hue.DiscoveredBridge
 import com.engabd.sendpin.hue.LinkButtonNotPressed
-import com.engabd.sendpin.ui.design.GlassCard
-import com.engabd.sendpin.ui.design.a
+import com.engabd.sendpin.ui.design.MeterBar
 import com.engabd.sendpin.ui.design.Pill
 import com.engabd.sendpin.ui.design.SegmentedToggle
 import com.engabd.sendpin.ui.design.TitleGap
@@ -82,7 +82,8 @@ internal fun LightSyncSection(
         SettingsCard(
             title = "How the lights hear the music",
             lead = "Two ways to drive them, and which one is right follows where the audio " +
-                "actually comes out.",
+                "actually comes out. The show itself — which room, how hard it reacts, the " +
+                "effect, the colours — lives on the Lights tab.",
         ) {
             SegmentedToggle(
                 options = listOf("Home Assistant", "Hue Bridge"),
@@ -132,14 +133,6 @@ internal fun LightSyncSection(
             ) { onDetail(BRIDGE_ROUTE) }
         } else {
             HomeAssistantCard(settings, accent, scope, haUrl, onHaUrl, haToken, onHaToken)
-        }
-
-        SettingsCard(title = "The show itself") {
-            Note(
-                "Which room, how hard it reacts, the effect and the colour scheme all live on " +
-                    "the Lights tab — they are things you change while listening, not things " +
-                    "you set up once.",
-            )
         }
     }
 }
@@ -375,6 +368,11 @@ private fun DirectBridgeSetup(settings: AppSettings, scope: CoroutineScope, acce
  * Moved here from the Lights tab: it is a background job with a storage cost, not a
  * light-show control, and it was sitting between the intensity pills and the colour
  * picker.
+ *
+ * What it now says about itself is the part that changed. A background job whose only
+ * output was a count and a one-line "most recent problem" could be parked on a metered
+ * connection, fail on forty files, or be working from months-old analyses, and look
+ * identical in all three cases: a number that was not going up.
  */
 @Composable
 private fun TrackAnalysisCard(settings: AppSettings, accent: Color) {
@@ -393,11 +391,27 @@ private fun TrackAnalysisCard(settings: AppSettings, accent: Color) {
     // five thousand listings of a directory that is still growing.
     var usage by remember { mutableStateOf(0 to 0L) }
     var confirmDelete by remember { mutableStateOf(false) }
+    var showFailures by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         while (true) {
             usage = scans.usage()
             delay(if (scans.progress.value.busy) 4_000L else 30_000L)
         }
+    }
+
+    // How many stored scans a newer analyser would improve on. Opening each file's
+    // header is too much for the poll above, and the answer only changes when a sweep
+    // ends or the app is updated — so it is asked on arrival and after each sweep.
+    var outdated by remember { mutableStateOf(0) }
+    LaunchedEffect(progress.sweeping) {
+        if (!progress.sweeping) outdated = runCatching { scans.outdatedCount() }.getOrDefault(0)
+    }
+
+    // What the show knows about the song playing right now — the one track the reader
+    // can check the claim against by looking at their own lights.
+    var playingScan by remember { mutableStateOf<TrackScan?>(null) }
+    LaunchedEffect(playing?.id, progress.current) {
+        playingScan = playing?.let { runCatching { scans.cached(it) }.getOrNull() }
     }
 
     SettingsCard(
@@ -411,6 +425,7 @@ private fun TrackAnalysisCard(settings: AppSettings, accent: Color) {
             "Read tracks ahead",
             when {
                 progress.current != null -> "Analysing ${progress.current}"
+                progress.waitingForNetwork -> "Waiting for Wi-Fi"
                 progress.pending > 0 -> "${progress.pending} queued"
                 on -> "New tracks are analysed in the background"
                 else -> "The show works it out as it goes"
@@ -427,20 +442,29 @@ private fun TrackAnalysisCard(settings: AppSettings, accent: Color) {
             wifiOnly, accent,
         ) { checked -> scope.launch { settings.setLightSyncPrescanWifiOnly(checked) } }
 
+        // ── This song ────────────────────────────────────────────────────
+        playing?.let { track -> PlayingTrackScan(track.title, playingScan, accent) }
+
+        // ── The sweep, while it runs ─────────────────────────────────────
+        if (progress.sweeping || progress.waitingForNetwork) {
+            SweepProgress(progress, accent)
+        }
+
         val (count, bytes) = usage
         StatusPanel {
             StatusRow("Analysed", if (count == 0) "None yet" else count.toString())
             StatusRow("On disk", formatBytes(bytes))
-            if (progress.sweeping && progress.sweepTotal > 0) {
-                StatusRow("Sweep", "${progress.sweepDone} of ${progress.sweepTotal}")
-            }
+            if (outdated > 0) StatusRow("From an older version", outdated.toString())
         }
 
-        if (progress.failed > 0) {
-            Note(
-                "${progress.failed} could not be analysed this session" +
-                    (progress.error?.let { " — $it" } ?: ""),
-                warn = true,
+        // ── What failed ──────────────────────────────────────────────────
+        if (progress.failures.isNotEmpty()) {
+            FailureList(
+                failures = progress.failures,
+                expanded = showFailures,
+                onToggle = { showFailures = !showFailures },
+                accent = accent,
+                onRetry = scans::retryFailed,
             )
         }
 
@@ -455,6 +479,15 @@ private fun TrackAnalysisCard(settings: AppSettings, accent: Color) {
                     scans.sweep { ScanLibrarySource.tracks(context.applicationContext, app.downloads) }
                 }
             }
+            // Only offered when there is something to gain: a refresh with nothing out
+            // of date is a full library decode that ends where it started.
+            if (outdated > 0 && !progress.sweeping) {
+                Pill("Refresh $outdated older", false) {
+                    scans.sweep(refreshOutdated = true) {
+                        ScanLibrarySource.tracks(context.applicationContext, app.downloads)
+                    }
+                }
+            }
             playing?.let { track -> Pill("Re-analyse this track", false) { scans.rescan(track) } }
             // Two taps, because this can throw away hours of decoding — and on a
             // streamed library, a gigabyte of transfer — that nothing can get back
@@ -462,7 +495,7 @@ private fun TrackAnalysisCard(settings: AppSettings, accent: Color) {
             Pill(if (confirmDelete) "Delete them all?" else "Delete analyses", confirmDelete) {
                 if (confirmDelete) {
                     confirmDelete = false
-                    scope.launch { scans.deleteAll(); usage = 0 to 0L }
+                    scope.launch { scans.deleteAll(); usage = 0 to 0L; outdated = 0 }
                 } else confirmDelete = true
             }
         }
@@ -472,5 +505,105 @@ private fun TrackAnalysisCard(settings: AppSettings, accent: Color) {
                 "direct path ever sees. It skips anything already analysed, so stopping and " +
                 "starting it again picks up where it left off.",
         )
+    }
+}
+
+/**
+ * What the analysis knows about the song playing right now.
+ *
+ * The card had a "Re-analyse this track" button and no way to tell whether the track had
+ * been analysed, or whether the analysis was any good — so the button was a guess, and
+ * the honest answer to "why did the lights not hit that drop" was not on the screen at
+ * all. The grid confidence is the thing worth showing: below
+ * [TrackScan.MIN_GRID_CONFIDENCE] the show falls back to finding the beat live, which is
+ * exactly what a listener would describe as "it did not seem to know the song".
+ */
+@Composable
+private fun PlayingTrackScan(title: String, scan: TrackScan?, accent: Color) {
+    val (text, health) = when {
+        scan == null -> "Not analysed yet — the show is working this one out as it plays" to Health.IDLE
+        !scan.gridUsable -> "Analysed, but the beat is unclear — the show tracks it live" to Health.WARN
+        !scan.complete ->
+            "Analysed for the first ${(scan.analysedS / 60f).toInt()} min; the rest is worked out live" to Health.WARN
+        else -> "Analysed — ${scan.bpm.toInt()} BPM, beat grid known from the first bar" to Health.GOOD
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        FieldLabel("Playing now")
+        Text(
+            title, color = TextSecondary, fontFamily = AppFont, fontSize = 12.sp,
+            maxLines = 1, overflow = TextOverflow.Ellipsis,
+        )
+        StatusLine(text, health, accent)
+    }
+}
+
+/**
+ * How far through the sweep is, and why it is not moving when it is not.
+ *
+ * A count with no total cannot say whether a sweep is nearly done or has barely started,
+ * and "parked, waiting for Wi-Fi" was previously indistinguishable from "finished".
+ */
+@Composable
+private fun SweepProgress(progress: ScanProgress, accent: Color) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        progress.sweepFraction?.let { MeterBar(it, color = accent) }
+        val done = progress.sweepDone
+        val total = progress.sweepTotal
+        if (total > 0) {
+            Text(
+                "$done of $total" + (progress.current?.let { " · $it" } ?: ""),
+                color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (progress.parked > 0) {
+            StatusLine(
+                "${progress.parked} waiting for Wi-Fi — they resume when you are back on one",
+                Health.WARN, accent,
+            )
+        }
+    }
+}
+
+/**
+ * The tracks that produced no usable analysis, and one button for the ones worth
+ * another go.
+ *
+ * Collapsed by default: the count is what most people want, and the list is what the
+ * one person with a folder of broken files needs.
+ */
+@Composable
+private fun FailureList(
+    failures: List<ScanFailureNote>,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    accent: Color,
+    onRetry: () -> Unit,
+) {
+    val retryable = failures.count { it.retryable }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            "${failures.size} could not be analysed" + if (expanded) "" else " — tap to see them",
+            color = WarnAmber, fontFamily = AppFont, fontSize = 12.sp,
+            modifier = Modifier.clickable(onClick = onToggle),
+        )
+        if (expanded) {
+            StatusPanel {
+                failures.forEach { failure ->
+                    Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                        Text(
+                            failure.title, color = TextSecondary, fontFamily = AppFont, fontSize = 12.sp,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(failure.why, color = TextFaint, fontFamily = AppFont, fontSize = 11.sp)
+                    }
+                }
+            }
+        }
+        if (retryable > 0) {
+            // Only the ones that might come out differently. A silent file will be
+            // silent again, and on a streamed library that retry costs a download.
+            Pill("Try $retryable again", false, onClick = onRetry)
+        }
     }
 }

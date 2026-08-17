@@ -25,6 +25,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
@@ -74,21 +75,29 @@ fun LyricsPane(
 ) {
     val load by viewModel.lyrics.collectAsStateWithLifecycle()
     val accent = LocalAccent.current
-    val currentItem by viewModel.currentItem.collectAsStateWithLifecycle()
     val offsetMs by viewModel.lyricsOffsetMs.collectAsStateWithLifecycle()
 
-    // Keyed on the track, not on `Unit`. A new track resets the lyrics to Idle in the
-    // view model, but a `LaunchedEffect(Unit)` had already run for the life of this
-    // pane and would not run again — so with the lyrics open, every track after the
-    // first sat on a spinner that had nothing behind it until the pane was closed and
-    // reopened. Re-keying makes the pane follow the track it is sitting on.
-    LaunchedEffect(currentItem?.itemId) {
-        if (viewModel.lyrics.value is Load.Idle) viewModel.loadLyrics()
+    // The pane says when it is on screen; the view model decides when to fetch.
+    //
+    // It used to fetch for itself, keyed on `currentItem?.itemId` — but that is null for
+    // the whole of a local session, so on Navidrome, Jellyfin and offline the key never
+    // changed, the effect never re-ran, and every track after the first sat on a spinner
+    // until the pane was closed and reopened. Even on Music Assistant it was a race
+    // against the view model's own reset. Both are gone: see
+    // [NowPlayingViewModel.setLyricsOpen].
+    DisposableEffect(viewModel) {
+        viewModel.setLyricsOpen(true)
+        onDispose { viewModel.setLyricsOpen(false) }
     }
 
     Box(modifier, contentAlignment = Alignment.Center) {
         when (val l = load) {
-            is Load.Loading, Load.Idle ->
+            // Idle is "nothing has been asked for yet", which lasts a frame or two while
+            // the view model gets going. A spinner for it is what made a load that never
+            // happened indistinguishable from one in flight.
+            Load.Idle -> Unit
+
+            Load.Loading ->
                 CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp, color = accent)
 
             is Load.Failed -> Notice(Icons.Default.CloudOff, l.message)

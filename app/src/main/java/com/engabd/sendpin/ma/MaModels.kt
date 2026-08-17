@@ -135,6 +135,16 @@ data class MaItem(
     /** Disc number for multi-disc albums (for tracks). */
     val discNumber: Int? = null,
     /**
+     * A multi-disc album's disc names, keyed by disc number (for albums).
+     *
+     * OpenSubsonic's `discTitles` is the only backend that offers these today, and only
+     * for the records where somebody bothered — a live disc, a bonus disc. Empty
+     * everywhere else, in which case the album screen heads each disc with its number
+     * alone. Immutable by the same promise the other collections here make: built once
+     * at parse time, only ever read.
+     */
+    val discTitles: Map<Int, String> = emptyMap(),
+    /**
      * Long-form prose about the item — an artist's biography, an album's notes.
      *
      * Music Assistant keeps it at `metadata.description`, which the app was not
