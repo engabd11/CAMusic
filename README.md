@@ -229,26 +229,6 @@ API, which controls Philips Hue lights through the Entertainment API: per-zone e
 and all 19 colour schemes previewed with their real gradient colours. It follows an HA
 `media_player` entity, which is what lets it reach speakers this phone is not playing through.
 
-#### Ambient and entertainment scenes
-
-The Hue Entertainment pipeline is audio-agnostic — the DTLS connection, 60 Hz frame rate, spatial
-field renderer, and safety limiter all work without music. A suite of standalone light-show scenes
-drives the lights from elapsed time alone, no audio input needed:
-
-- **Ambient**: sunset, aurora, fireplace — slow, continuous mood lighting
-- **Entertainment**: fireworks, lightning, party — dynamic show pieces
-- **Phone conductor** — the phone's motion (gyroscope + accelerometer) becomes the conductor's
-  baton: tilt and movement drive the lights' intensity and colour, so the room responds to how
-  you're holding the phone
-- **Music DNA** — a structural layer that reads the track's pre-scanned form (verse, chorus, bridge,
-  drop) and renders each section as a distinct lighting identity
-- **Emotional arc** — tracks the energy curve of a track from scan data and shifts the room's
-  warmth and brightness to follow it
-- **Phantom stage** — places virtual light sources on a stage and sweeps them through the room,
-  extending the room-gesture concept to non-music scenes
-
-See [docs/creative-light-shows.md](docs/creative-light-shows.md) for the full design.
-
 ### Offline Playback and Library — download and go
 
 Download a track, album or playlist for offline use — audio and cover art — with a storage cap and
@@ -563,10 +543,6 @@ later phase again.
 - [x] **Auto-pause on phone call** — pauses on `CALL_STATE_RINGING`, does not auto-resume (offers
       a notification instead)
 - [x] **Speed-adaptive volume** — gradually increases volume at higher speeds with smooth ramping
-- [x] **Creative light shows** — ambient and entertainment scenes (sunset, aurora, fireplace,
-      fireworks, lightning, party) driving the Hue Entertainment pipeline without music input;
-      phone-as-conductor motion-driven layer; music-DNA structural layer; emotional arc layer;
-      phantom stage layer. See [docs/creative-light-shows.md](docs/creative-light-shows.md)
 
 ### Next up
 
@@ -606,8 +582,8 @@ later phase again.
       deliberately not compiled. `flac_decode()` is still a skeleton and the ring buffer is
       byte-level rather than frame-level. The largest single audio item on the roadmap.
 - [ ] **Wider instrumented coverage** — 727 unit tests cover protocol, clock, DSP, parsing, the
-      server list, the Philips Hue Entertainment sync engine, speed alert logic, beat-matched
-      crossfade, and creative light-show layers, and two instrumented tests now pin
+      server list, the Philips Hue Entertainment sync engine, speed alert logic, and
+      beat-matched crossfade, and two instrumented tests now pin
       the two regressions that each cost a release. Nothing yet covers the audio path end to end,
       the service lifecycle, or the UI.
 - [ ] **A hosted crash backend** — crashes are stored locally and, with a token configured, filed
@@ -704,10 +680,7 @@ Releases are cut locally. See the header of
 
 - [Release notes](docs/release-notes/) — what changed in each release, and why
 - [v0.10 plan](docs/v0.10-plan.md) — the current plan: correctness fixes, new features, and
-  driving enhancements, with a Phase 4 for ambient light shows
-- [Creative light shows](docs/creative-light-shows.md) — ambient and entertainment scenes for the
-  Hue Entertainment pipeline, and the phone-conductor / music-DNA / emotional-arc / phantom-stage
-  layers
+  driving enhancements
 - [v0.9 plan](docs/v0.9-plan.md) and [what's left of it](docs/v0.9-remaining.md) — the previous
   plan, and the working queue that re-verified it against the source. The second is worth reading
   for the parts that turned out **wrong**: it opens with five load-bearing premises of the plan
