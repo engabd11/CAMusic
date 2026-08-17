@@ -1,6 +1,7 @@
 package com.engabd.sendpin.ui.screens
 
 import android.content.Context
+import android.content.Intent
 import android.media.AudioManager
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -9,9 +10,11 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
@@ -44,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
+import kotlinx.coroutines.launch
 import com.engabd.sendpin.audio.DeviceCapabilities
 import com.engabd.sendpin.audio.FormatNegotiator
 import com.engabd.sendpin.audio.ReplayGain
@@ -51,6 +55,7 @@ import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ma.MaDspDetails
+import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ma.MaLoudness
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
@@ -62,6 +67,7 @@ import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
  * OLED screen the cover has no frame — it just stops. Every accent on the
  * screen (controls, glows, badge, scrubber) is sampled from that same cover.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun NowPlayingScreen(
     viewModel: NowPlayingViewModel = viewModel(),
@@ -74,6 +80,9 @@ fun NowPlayingScreen(
      */
     libraryViewModel: LibraryViewModel,
     onBrowse: () -> Unit = {},
+    /** Long-press the album art → "Go to album"/"Go to artist". No-op if unset. */
+    onAlbumClick: (MaItem) -> Unit = {},
+    onArtistClick: (MaItem) -> Unit = {},
 ) {
     val st by viewModel.state.collectAsStateWithLifecycle()
     val connected by viewModel.connected.collectAsStateWithLifecycle()
@@ -81,6 +90,7 @@ fun NowPlayingScreen(
     val currentItem by viewModel.currentItem.collectAsStateWithLifecycle()
     val favouritable by viewModel.favouritableItem.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
 
     // Which sheet or card is up, if any. Shared with the overlay layout so the two
     // cannot drift — see PlayerSheetState.
@@ -173,7 +183,19 @@ fun NowPlayingScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(1f)
-                            .alpha(if (st.idle) 0.55f else 1f),
+                            .alpha(if (st.idle) 0.55f else 1f)
+                            // Long-press → quick actions (go to album/artist, share).
+                            // No ripple: a tap here has never done anything, and
+                            // adding one now would read as a new, absent affordance.
+                            // Nothing to act on with an empty player.
+                            .combinedClickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                onClick = {},
+                                onLongClick = if (favouritable != null) {
+                                    { sheets.actions = true }
+                                } else null,
+                            ),
                         glowAlpha = if (st.idle) 0.18f else 0.45f,
                         placeholder = Icons.AutoMirrored.Filled.QueueMusic,
                     )
@@ -260,6 +282,41 @@ fun NowPlayingScreen(
             // Every sheet and card that sits over the player, in one call so the two
             // layouts cannot disagree about their order — see PlayerOverlays.
             PlayerOverlays(st, sheets, viewModel)
+
+            // The long-press quick-actions sheet off the album art. Not folded into
+            // PlayerOverlays: it needs the resolved MaItem and the nav callbacks,
+            // neither of which that shared function has a reason to carry.
+            if (sheets.actions) {
+                favouritable?.let { item ->
+                    MediaActionsSheet(
+                        item = item,
+                        onClose = { sheets.actions = false },
+                        onPlayNow = {},
+                        onPlayNext = {},
+                        onAddToQueue = {},
+                        onGoToAlbum = {
+                            scope.launch {
+                                viewModel.resolveAlbum(st.album)?.let(onAlbumClick)
+                            }
+                        },
+                        onGoToArtist = {
+                            scope.launch {
+                                viewModel.resolveArtist(st.artist)?.let(onArtistClick)
+                            }
+                        },
+                        onShare = {
+                            val text = listOf(item.name, st.artist, st.album)
+                                .filter { it.isNotBlank() }
+                                .joinToString(" — ")
+                            val send = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_TEXT, text)
+                            }
+                            context.startActivity(Intent.createChooser(send, "Share"))
+                        },
+                    )
+                }
+            }
         }
     }
 }

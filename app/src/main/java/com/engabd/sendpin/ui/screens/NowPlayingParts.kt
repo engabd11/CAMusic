@@ -230,11 +230,13 @@ class PlayerSheetState {
     var speakers by mutableStateOf(false)
     var quality by mutableStateOf(false)
     var device by mutableStateOf(false)
+    /** The long-press quick-actions sheet off the album art. */
+    var actions by mutableStateOf(false)
 
     /** A sheet — not an overlay card — is up, so swipes belong to it. */
-    val sheetOpen: Boolean get() = panel != null || options || speakers
+    val sheetOpen: Boolean get() = panel != null || options || speakers || actions
 
-    fun closeSheets() { panel = null; options = false; speakers = false }
+    fun closeSheets() { panel = null; options = false; speakers = false; actions = false }
 }
 
 @Composable

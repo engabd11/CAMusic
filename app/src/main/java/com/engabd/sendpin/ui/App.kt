@@ -506,10 +506,17 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                 ) {
                     if (!isOverlay) {
                         screen("now_playing") {
+                            val navToItem: (String, MaItem) -> Unit = { route, item ->
+                                val n = android.net.Uri.encode(item.name)
+                                val a = item.image?.let { android.net.Uri.encode(it) } ?: ""
+                                navController.navigate("$route/${android.net.Uri.encode(item.itemId)}/${android.net.Uri.encode(item.provider)}?name=$n&art=$a")
+                            }
                             NowPlayingScreen(
                                 viewModel = nowPlayingVm,
                                 libraryViewModel = libraryVm,
                                 onBrowse = { go("library") },
+                                onAlbumClick = { navToItem("album", it) },
+                                onArtistClick = { navToItem("artist", it) },
                             )
                         }
                     }

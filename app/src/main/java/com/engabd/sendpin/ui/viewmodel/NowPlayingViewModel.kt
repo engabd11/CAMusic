@@ -1095,6 +1095,59 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // --- long-press quick actions --------------------------------------------
+
+    /**
+     * Resolve the currently playing track's album, for the long-press "Go to
+     * album" action.
+     *
+     * Subsonic-family tracks carry the album id directly in [MaItem.parentId] —
+     * exact. A Music Assistant track doesn't (MA addresses everything by uri), so
+     * that path falls back to searching [albumName]: a heuristic, not an id
+     * lookup, but there is no richer one exposed anywhere in this codebase to fall
+     * back to instead. Null (with a toast) when neither resolves.
+     */
+    suspend fun resolveAlbum(albumName: String): MaItem? {
+        val item = favouritableItem.value
+        val result = try {
+            val parentId = item?.parentId
+            val sc = item?.let { i -> SendpinApp.instance.musicSource.value?.takeIf { it.providerId == i.provider } }
+            when {
+                parentId != null && sc != null -> sc.albumDetail(parentId).first
+                albumName.isNotBlank() -> {
+                    val albums = repo.search(albumName, limit = 15).albums
+                    albums.firstOrNull { it.name.equals(albumName, ignoreCase = true) } ?: albums.firstOrNull()
+                }
+                else -> null
+            }
+        } catch (e: Exception) { null }
+        if (result == null) _toast.tryEmit("Couldn't find that album")
+        return result
+    }
+
+    /**
+     * Resolve the currently playing track's artist, for "Go to artist". Same
+     * shape as [resolveAlbum]: the Subsonic id chain (track → album → artist) is
+     * exact where it's available; [artistName] search is the fallback for
+     * Music Assistant and for anything the id chain couldn't resolve.
+     */
+    suspend fun resolveArtist(artistName: String): MaItem? {
+        val item = favouritableItem.value
+        val result = try {
+            val sc = item?.let { i -> SendpinApp.instance.musicSource.value?.takeIf { it.providerId == i.provider } }
+            val albumParentId = item?.parentId
+            val viaId = if (albumParentId != null && sc != null) {
+                sc.albumDetail(albumParentId).first?.parentId?.let { sc.artistDetail(it).first }
+            } else null
+            viaId ?: artistName.takeIf { it.isNotBlank() }?.let { name ->
+                val artists = repo.search(name, limit = 15).artists
+                artists.firstOrNull { it.name.equals(name, ignoreCase = true) } ?: artists.firstOrNull()
+            }
+        } catch (e: Exception) { null }
+        if (result == null) _toast.tryEmit("Couldn't find that artist")
+        return result
+    }
+
     // --- queue -------------------------------------------------------------
 
     /**
