@@ -54,6 +54,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.engabd.sendpin.ui.viewmodel.DspViewModel
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel.Load
+import com.engabd.sendpin.ui.viewmodel.formatListeningTime
 
 /**
  * Which panel the sheet is showing. Lyrics moved into the player itself (it takes
@@ -145,6 +146,7 @@ fun BoxScope.NowPlayingSheet(
 private fun ColumnScope.QueuePanel(viewModel: NowPlayingViewModel, accent: Color) {
     val load by viewModel.queueItems.collectAsStateWithLifecycle()
     val st by viewModel.state.collectAsStateWithLifecycle()
+    val remainingMs by viewModel.queueRemainingMs.collectAsStateWithLifecycle()
     var naming by remember { mutableStateOf(false) }
     var playlistName by remember { mutableStateOf("") }
     var confirmClear by remember { mutableStateOf(false) }
@@ -158,7 +160,10 @@ private fun ColumnScope.QueuePanel(viewModel: NowPlayingViewModel, accent: Color
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            "${st.queueSize} ${if (st.queueSize == 1) "track" else "tracks"}",
+            buildString {
+                append("${st.queueSize} ${if (st.queueSize == 1) "track" else "tracks"}")
+                remainingMs?.let { append(" · ${formatListeningTime(it)} left") }
+            },
             color = TextFaint, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 11.sp,
             modifier = Modifier.weight(1f),
         )

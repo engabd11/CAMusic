@@ -73,6 +73,11 @@ internal fun DrivingCard(settings: AppSettings, accent: Color, scope: CoroutineS
             enabled, accent,
         ) { on -> scope.launch { settings.setDrivingEnabled(on) } }
 
+        CardDivider()
+        PauseForCallsRow(settings, accent, scope)
+        CardDivider()
+        SpeedFeaturesRow(settings, accent, scope)
+
         if (!enabled) return@SettingsCard
 
         CardDivider()
@@ -171,6 +176,115 @@ internal fun DrivingCard(settings: AppSettings, accent: Color, scope: CoroutineS
             "However it is turned on, the controls never appear with nothing playing — a " +
                 "transport with nothing to transport is just clutter over a map.",
         )
+    }
+}
+
+/**
+ * Auto-pause on a ringing or answered call. Not tied to [DrivingCard]'s own toggle —
+ * a call interrupting music is just as real parked as it is driving — but lives in
+ * this card because it needs the same kind of runtime permission request the car
+ * picker above does, and one settings card asking for phone permissions is enough.
+ *
+ * Never auto-resumes on hangup — see `PlaybackOwner.pause`'s doc for why — so this
+ * only ever says what it does going in, not what happens coming out.
+ */
+@Composable
+private fun PauseForCallsRow(settings: AppSettings, accent: Color, scope: CoroutineScope) {
+    val context = LocalContext.current
+    val enabled by settings.pauseForCalls.collectAsState(initial = false)
+    // Re-read on every recomposition, not remembered — see the identical BLUETOOTH_CONNECT
+    // comment above: this is granted in a system dialog, not by this screen.
+    val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) ==
+        PackageManager.PERMISSION_GRANTED
+
+    val askPhoneState = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { ok ->
+        if (ok) {
+            scope.launch { settings.setPauseForCalls(true) }
+            com.engabd.sendpin.SendpinApp.instance.callPauseObserver.start()
+        }
+    }
+
+    ToggleRow(
+        "Pause for calls",
+        "Pauses playback when the phone rings or you answer — never resumes on its own.",
+        enabled && granted, accent,
+    ) { on ->
+        if (on && !granted) {
+            askPhoneState.launch(Manifest.permission.READ_PHONE_STATE)
+        } else {
+            scope.launch { settings.setPauseForCalls(on) }
+            if (on) com.engabd.sendpin.SendpinApp.instance.callPauseObserver.start()
+            else com.engabd.sendpin.SendpinApp.instance.callPauseObserver.stop()
+        }
+    }
+}
+
+/**
+ * Speed limit alert and speed-adaptive volume — both GPS-driven, so both share one
+ * `ACCESS_FINE_LOCATION` request. Nothing here reads location for anything but a
+ * speed reading; see `SpeedMonitor`'s own doc for the "why fine, not coarse".
+ */
+@Composable
+private fun SpeedFeaturesRow(settings: AppSettings, accent: Color, scope: CoroutineScope) {
+    val context = LocalContext.current
+    val alertEnabled by settings.speedLimitAlertEnabled.collectAsState(initial = false)
+    val adaptiveEnabled by settings.speedAdaptiveVolume.collectAsState(initial = false)
+    val limitKmh by settings.drivingSpeedLimitKmh.collectAsState(initial = 0)
+    val tolerancePct by settings.drivingSpeedTolerancePct.collectAsState(initial = 5)
+    val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ==
+        PackageManager.PERMISSION_GRANTED
+
+    val askLocation = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { ok -> if (ok) com.engabd.sendpin.SendpinApp.instance.speedMonitor.start() }
+
+    fun requestThenSet(on: Boolean, set: suspend () -> Unit) {
+        if (on && !granted) { askLocation.launch(Manifest.permission.ACCESS_FINE_LOCATION); return }
+        scope.launch { set() }
+    }
+
+    ToggleRow(
+        "Speed limit alert",
+        if (alertEnabled && granted && limitKmh > 0) {
+            val trigger = com.engabd.sendpin.service.SpeedAlert.triggerSpeedKmh(limitKmh, tolerancePct).toInt() + 1
+            "Beeps at $trigger km/h and above"
+        } else {
+            "A gentle tone if your GPS speed goes well over a limit you set"
+        },
+        alertEnabled && granted, accent,
+    ) { on -> requestThenSet(on) { settings.setSpeedLimitAlertEnabled(on) } }
+
+    if (alertEnabled && granted) {
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+            OledField(
+                value = if (limitKmh > 0) limitKmh.toString() else "",
+                onChange = { v -> scope.launch { settings.setDrivingSpeedLimitKmh(v.filter(Char::isDigit).toIntOrNull() ?: 0) } },
+                label = "Limit (km/h)", placeholder = "e.g. 100", accent = accent,
+                modifier = Modifier.weight(1f),
+            )
+            OledField(
+                value = tolerancePct.toString(),
+                onChange = { v -> scope.launch { settings.setDrivingSpeedTolerancePct(v.filter(Char::isDigit).toIntOrNull() ?: 0) } },
+                label = "Tolerance (%)", placeholder = "5", accent = accent,
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+
+    Spacer(Modifier.height(4.dp))
+    ToggleRow(
+        "Speed-adaptive volume",
+        "Nudges volume up at speed to compensate for road noise, fading back down when you slow.",
+        adaptiveEnabled && granted, accent,
+    ) { on -> requestThenSet(on) { settings.setSpeedAdaptiveVolume(on) } }
+
+    if ((alertEnabled || adaptiveEnabled) && !granted) {
+        Note("Needs location permission — GPS speed only, nothing is stored or sent anywhere.")
+        OledButton("Allow location", accent = accent, outline = true) {
+            askLocation.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
     }
 }
 

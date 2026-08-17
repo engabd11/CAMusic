@@ -7,6 +7,8 @@ import coil.ImageLoaderFactory
 import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import com.engabd.sendpin.audio.LocalPlayer
+import com.engabd.sendpin.audio.UsbDacMonitor
+import com.engabd.sendpin.service.CallPauseObserver
 import com.engabd.sendpin.crash.CrashReporter
 import com.engabd.sendpin.download.DownloadManager
 import com.engabd.sendpin.ma.MaApiClient
@@ -99,6 +101,33 @@ class SendpinApp : Application(), ImageLoaderFactory {
      */
     val drivingMode: com.engabd.sendpin.service.DrivingMode by lazy {
         com.engabd.sendpin.service.DrivingMode(this)
+    }
+
+    /**
+     * Notices a USB DAC connect and tells the user it can be pinned in Settings.
+     * Process-scoped and started in [onCreate] for the same reason [drivingMode]
+     * is: the connect it exists to notice can happen before any screen opens.
+     */
+    val usbDacMonitor: UsbDacMonitor by lazy { UsbDacMonitor(this) }
+
+    /**
+     * Pauses playback for a ringing/answered call. Opt-in — see
+     * `AppSettings.pauseForCalls` — so unlike [drivingMode] this is not touched
+     * unconditionally in [onCreate]; the settings collector there starts it only
+     * when both the setting and the permission are already in place, and the
+     * Settings row starts it directly the moment the permission is granted.
+     */
+    val callPauseObserver: CallPauseObserver by lazy { CallPauseObserver(this) }
+
+    /**
+     * GPS speed for the speed-limit alert and speed-adaptive volume. Its own
+     * `start()` gates location updates on driving-mode being active and at least
+     * one of the two features being on, so — unlike [callPauseObserver] — this is
+     * safe to call unconditionally from [onCreate]: it does nothing until both
+     * conditions are true.
+     */
+    val speedMonitor: com.engabd.sendpin.service.SpeedMonitor by lazy {
+        com.engabd.sendpin.service.SpeedMonitor(this, drivingMode)
     }
 
     /**
@@ -218,6 +247,13 @@ class SendpinApp : Application(), ImageLoaderFactory {
         // thing it is watching for is the car connecting, which happens before any
         // screen opens.
         drivingMode
+        usbDacMonitor.start()
+        // Opt-in, unlike the two above: only starts if a previous run already had
+        // both the setting on and the permission granted. `CallPauseObserver.start`
+        // itself no-ops without the permission, so this is safe to call blind — and
+        // it runs off the main thread rather than blocking onCreate on a DataStore read.
+        appScope.launch { if (AppSettings(this@SendpinApp).pauseForCalls.first()) callPauseObserver.start() }
+        speedMonitor.start()
         // The storage cap evicts oldest-first, and the one file it must never take is
         // the one being listened to. Published here rather than looked up inside the
         // download manager, which has no business holding a reference to the player.

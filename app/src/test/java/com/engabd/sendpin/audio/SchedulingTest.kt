@@ -16,7 +16,7 @@ import kotlin.test.assertTrue
  */
 class SchedulingTest {
 
-    private val sched = SendspinAudioEngine.Scheduling
+    private val sched = SendspinPlaybackSupport.Scheduling
 
     /** A fresh track holds nothing, so this must behave exactly as it always did. */
     @Test

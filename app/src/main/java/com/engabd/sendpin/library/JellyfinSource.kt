@@ -91,19 +91,29 @@ class JellyfinSource(private val client: JellyfinClient) : MusicSource {
      * [startedAtMs] is a wall-clock epoch — forwarding it raw put `PositionTicks`
      * about fifty-six years into a three-minute song.
      *
-     * The elapsed time since [startedAtMs] *is* a usable position, though, and it is
-     * what the completion report should carry: sending 0 forever meant Jellyfin could
-     * never build a resume point, so "continue listening" never had anything in it.
-     * It is wall-clock rather than player-clock, so a pause inflates it — bounded
-     * below by 0 and left otherwise honest, since the alternative on this call path is
-     * no position at all. The accurate figure travels on [reportProgress], which the
-     * player drives from its own position.
+     * [positionMs] — the player's own tracked position — is what the completion
+     * report should carry, and callers on the local-playback path always have it.
+     * The wall-clock fallback below only runs when a caller genuinely has nothing
+     * else: it drifts across a pause (elapsed time keeps counting; playback
+     * doesn't), so it is strictly worse and exists only so this never regresses to
+     * sending 0 forever, which left Jellyfin unable to build a resume point at all.
      */
-    override suspend fun scrobble(id: String, completed: Boolean, startedAtMs: Long?) {
-        val positionMs = startedAtMs
-            ?.let { (System.currentTimeMillis() - it).coerceAtLeast(0L) }
+    override suspend fun scrobble(id: String, completed: Boolean, startedAtMs: Long?, positionMs: Long?) {
+        client.reportPlayback(id, completed, resolvePosition(positionMs, startedAtMs))
+    }
+
+    companion object {
+        /**
+         * Pure so the drift-across-a-pause regression is testable without a client —
+         * see [scrobble]'s doc for why [positionMs] must win whenever it's available.
+         */
+        internal fun resolvePosition(
+            positionMs: Long?,
+            startedAtMs: Long?,
+            nowMs: Long = System.currentTimeMillis(),
+        ): Long = positionMs
+            ?: startedAtMs?.let { (nowMs - it).coerceAtLeast(0L) }
             ?: 0L
-        client.reportPlayback(id, completed, positionMs)
     }
 
     override suspend fun reportProgress(id: String, positionMs: Long, paused: Boolean) =

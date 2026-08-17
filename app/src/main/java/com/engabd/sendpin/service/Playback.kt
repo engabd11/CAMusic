@@ -9,9 +9,9 @@ import com.engabd.sendpin.audio.AudioAnalysisTap
 import com.engabd.sendpin.audio.AudioLead
 import com.engabd.sendpin.audio.AudioOutputs
 import com.engabd.sendpin.audio.FormatNegotiator
-import com.engabd.sendpin.audio.SendspinAudioEngine
 import com.engabd.sendpin.audio.SendspinExoEngine
 import com.engabd.sendpin.audio.SendspinPlaybackEngine
+import com.engabd.sendpin.audio.SendspinPlaybackSupport
 import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.MaDiscovery
@@ -140,12 +140,12 @@ class Playback(private val app: Context) {
 
     /**
      * The tap/lead pair actually installed in the current MA engine's render
-     * chain, when MA is playing through [SendspinExoEngine] (the experimental
-     * ExoPlayer path) — null otherwise, including whenever the default
-     * [SendspinAudioEngine] (no tap at all) is in use. A live [StateFlow]
-     * rather than a one-time read because it changes on every reconnect: a new
-     * `SendspinExoEngine` means a new [AudioAnalysisTap] instance, and
-     * [com.engabd.sendpin.hue.DirectLightSync] needs to notice and re-hook it.
+     * chain, when [SendspinExoEngine] is up and connected — null otherwise,
+     * including while a fresh connection is still being established. A live
+     * [StateFlow] rather than a one-time read because it changes on every
+     * reconnect: a new `SendspinExoEngine` means a new [AudioAnalysisTap]
+     * instance, and [com.engabd.sendpin.hue.DirectLightSync] needs to notice
+     * and re-hook it.
      */
     private val _maAudioSource = MutableStateFlow<Pair<AudioAnalysisTap, AudioLead>?>(null)
     val maAudioSource: StateFlow<Pair<AudioAnalysisTap, AudioLead>?> = _maAudioSource
@@ -443,14 +443,12 @@ class Playback(private val app: Context) {
         // It was an experimental switch, off by default, on the reasoning that the
         // path was unvalidated on hardware and should not silently become everyone's
         // player on upgrade. Hardware has since answered: the hand-built
-        // MediaCodec + AudioTrack engine produces no audio on the owner's device,
-        // and the ExoPlayer path does. A toggle whose off position is silence is not
-        // a safety measure.
-        //
-        // [SendspinAudioEngine] is deliberately left in the tree rather than deleted
-        // — it still owns END_LINGER_MS, and the two engines fail in different
-        // enough places that having the other one to compare against has been worth
-        // more than once — but nothing selects it any more.
+        // MediaCodec + AudioTrack engine (`SendspinAudioEngine`) produced no audio
+        // on the owner's device, and the ExoPlayer path does. A toggle whose off
+        // position is silence is not a safety measure. That dead engine has since
+        // been removed; its two still-relied-on decisions (END_LINGER_MS below, and
+        // the head gate `SyncGate.MAX_MUTE_MS` mirrors) now live in
+        // [SendspinPlaybackSupport].
         //
         // Oboe stays opt-in and off: that path is still silent, and the
         // investigation is live in `docs/oboe-investigation.md`.
@@ -557,7 +555,7 @@ class Playback(private val app: Context) {
                 eng.endOfStream()
                 idleJob?.cancel()
                 idleJob = scope.launch {
-                    delay(SendspinAudioEngine.END_LINGER_MS)
+                    delay(SendspinPlaybackSupport.END_LINGER_MS)
                     _isPlaying.value = false
                     SendspinService.idleMedia(app)
                 }
@@ -577,9 +575,8 @@ class Playback(private val app: Context) {
         // Speakers screen re-reads on it instead of waiting out its 5 s poll.
         //
         // Also the only signal SendspinExoEngine has for solo vs grouped mode
-        // (SendspinSyncDataSource vs SendspinDirectDataSource) — SendspinAudioEngine
-        // doesn't need it, it always schedules the same way. A groupId means this
-        // player has been placed on the shared timeline; null means solo.
+        // (SendspinSyncDataSource vs SendspinDirectDataSource). A groupId means
+        // this player has been placed on the shared timeline; null means solo.
         scope.launch {
             c.groupUpdates.collect {
                 _groupUpdates.tryEmit(it)
@@ -878,6 +875,9 @@ class Playback(private val app: Context) {
     }
 
     fun onPlayPause() = transport { if (_isPlaying.value) it.pause(playerId) else it.play(playerId) }
+
+    /** Explicit, not a toggle — for callers (auto-pause on a phone call) that must never accidentally resume. */
+    fun onMediaPause() = transport { it.pause(playerId) }
 
     /**
      * Stop this phone's Sendspin stream because the local player has taken over.

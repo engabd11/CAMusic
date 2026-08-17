@@ -583,6 +583,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         // The fade belongs to the player, and the setting can change under a queue
         // that is already running.
         viewModelScope.launch { settings.navFadeSeconds.collect { localPlayer.fadeSeconds = it } }
+        viewModelScope.launch { settings.beatMatchedCrossfade.collect { localPlayer.beatMatchedFade = it } }
         // A local track that actually started is a play worth reporting, so
         // Navidrome's play counts and its "recently played" shelf stay honest.
         //
@@ -1093,6 +1094,32 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 }
             } catch (e: Exception) {
                 _toast.tryEmit(e.message ?: "Couldn't play")
+            }
+        }
+    }
+
+    /**
+     * Queue a single track without disturbing what's playing or pulling in the rest
+     * of the list it lives in.
+     *
+     * Deliberately not [play] with `option = "next"`/`"add"`: on the local/download
+     * path that goes through [localContext], which resolves a track to *every
+     * sibling in the visible list* (right for "tap plays this list from here", wrong
+     * for "queue just this one"). This builds a single [LocalTrack] directly instead.
+     */
+    fun enqueueTrack(item: MaItem, option: String) {
+        viewModelScope.launch {
+            try {
+                if (item.provider == DOWNLOAD || MusicSources.isLocalProvider(item.provider)) {
+                    val track = localTrack(item)
+                    if (option == "next") localPlayer.playNext(listOf(track)) else localPlayer.addToQueue(listOf(track))
+                } else {
+                    val uri = item.uri ?: run { _toast.tryEmit("Couldn't queue that"); return@launch }
+                    maRepo.playOn(playTarget(), listOf(uri), option, radioMode())
+                }
+                _toast.tryEmit(if (option == "next") "Playing next" else "Added to queue")
+            } catch (e: Exception) {
+                _toast.tryEmit(e.message ?: "Couldn't queue that")
             }
         }
     }
@@ -2214,7 +2241,16 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 else -> null                                                // still listening
             }
         }.first { it != null }
-        if (played == true) runCatching { sink.scrobble(id, completed = true, startedAtMs = startedAtMs) }
+        if (played == true) {
+            runCatching {
+                sink.scrobble(
+                    id,
+                    completed = true,
+                    startedAtMs = startedAtMs,
+                    positionMs = localPlayer.positionMs.value,
+                )
+            }
+        }
     }
 
     private fun loadFavoriteAlbums(): Job? {

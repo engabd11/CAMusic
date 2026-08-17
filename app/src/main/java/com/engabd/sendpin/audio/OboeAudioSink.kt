@@ -248,10 +248,11 @@ class OboeAudioSink(
     /**
      * One line per stream, the first time PCM is actually accepted by the native ring.
      *
-     * The equivalent line on [SendspinAudioEngine] is what separates "nothing ever
-     * decoded" from "audio reached the output and was inaudible anyway" — and this path
-     * had no counterpart, so the one device session that hit it had to be diagnosed from
-     * `AAudio` and `dumpsys audio` instead. That detour is the reason this exists.
+     * The equivalent line on the raw-`AudioTrack` engine path is what separates
+     * "nothing ever decoded" from "audio reached the output and was inaudible
+     * anyway" — and this path had no counterpart, so the one device session that
+     * hit it had to be diagnosed from `AAudio` and `dumpsys audio` instead. That
+     * detour is the reason this exists.
      */
     private fun logFirstWrite(framesAccepted: Int, offered: Int) {
         if (firstWriteLogged || framesAccepted <= 0) return
@@ -371,8 +372,8 @@ class OboeAudioSink(
     override fun setPreferredDevice(audioDeviceInfo: AudioDeviceInfo?) {
         // Not supported: SendspinOutputEngine opens its Oboe stream without a
         // preferred-device pin. USB DAC routing for the Oboe path is a gap
-        // relative to the default AudioTrack path (SendspinAudioEngine,
-        // SendspinExoEngine without Oboe), both of which honour it.
+        // relative to the raw-AudioTrack path (SendspinExoEngine without Oboe),
+        // which honours it.
     }
 
     override fun getAudioTrackBufferSizeUs(): Long = RING_BUFFER_US

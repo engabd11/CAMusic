@@ -202,11 +202,12 @@ internal fun OledField(
     visualTransformation: VisualTransformation = VisualTransformation.None,
     enabled: Boolean = true,
     trailingIcon: @Composable (() -> Unit)? = null,
+    modifier: Modifier = Modifier,
 ) {
     OutlinedTextField(
         value = value, onValueChange = onChange,
         label = { Text(label) }, placeholder = { Text(placeholder) },
-        singleLine = true, modifier = Modifier.fillMaxWidth(),
+        singleLine = true, modifier = modifier.fillMaxWidth(),
         enabled = enabled,
         visualTransformation = visualTransformation,
         colors = OutlinedTextFieldDefaults.colors(

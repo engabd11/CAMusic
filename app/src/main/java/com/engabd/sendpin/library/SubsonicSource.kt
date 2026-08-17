@@ -121,8 +121,9 @@ class SubsonicSource(
     override suspend fun setStarred(item: MaItem, starred: Boolean) = client.setStarred(item, starred)
 
     // Subsonic's `time` *is* the epoch this parameter carries, so it passes straight
-    // through — the one provider where that is true.
-    override suspend fun scrobble(id: String, completed: Boolean, startedAtMs: Long?) =
+    // through — the one provider where that is true. `positionMs` is Jellyfin-only
+    // (Subsonic's `scrobble` has no position field) and is ignored here.
+    override suspend fun scrobble(id: String, completed: Boolean, startedAtMs: Long?, positionMs: Long?) =
         client.scrobble(id, submission = completed, timeMs = startedAtMs)
 
     override suspend fun createPlaylist(name: String, songIds: List<String>): String? =

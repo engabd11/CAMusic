@@ -5,11 +5,12 @@ import com.engabd.sendpin.protocol.StreamStartPlayerInfo
 
 /**
  * What [com.engabd.sendpin.service.Playback] needs from a Sendspin (MA) playback
- * engine - implemented by [SendspinAudioEngine] (the default) and [SendspinExoEngine]
- * (experimental, opt-in via [com.engabd.sendpin.data.AppSettings.useExoPlayerForSendspin]).
+ * engine - implemented by [SendspinExoEngine], the only one now that the original
+ * hand-built `MediaCodec`+`AudioTrack` engine has been removed as dead code.
  * Audio focus, the noisy-headphones receiver, and the volume/mute/staticDelay/
- * preferredDevice forwarding in `Playback.kt` all go through this, so none of
- * them need to know which engine is actually live.
+ * preferredDevice forwarding in `Playback.kt` all go through this interface
+ * rather than the concrete engine, so a future second implementation would not
+ * need every caller to know which one is live.
  */
 interface SendspinPlaybackEngine {
     fun start(format: StreamStartPlayerInfo)

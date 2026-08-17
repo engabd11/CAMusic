@@ -34,7 +34,7 @@ import java.util.concurrent.atomic.AtomicInteger
  *
  * The two subclasses are Massdroid's solo/grouped split: [SendspinSyncDataSource]
  * blocks [read] until each frame's server-clock schedule says it's due - every
- * frame, not just the head, because unlike [SendspinAudioEngine] there is no
+ * frame, not just the head, because unlike a raw-`AudioTrack` engine there is no
  * downstream `AudioTrack` left to pace playback once the bytes leave here (see the
  * plan's design decision #2, "clock sync via DataSource pre-buffering").
  * [SendspinDirectDataSource] never blocks. Picking one is the caller's job.
@@ -152,12 +152,13 @@ abstract class SendspinDataSource(
      * until the queue runs dry, so the backlog plays out in full and the music carries
      * on for another half-minute after the button was pressed.
      *
-     * [SendspinAudioEngine.endOfStream] has cleared its queue for exactly this reason
-     * since 0.4.2 — its own comment records that 0.4.0 and 0.4.1 shipped the version
-     * that played the buffer out, and what that cost. This path took that method's
-     * conclusion ("this is not a stop") without the mechanism that makes it safe.
+     * The original Sendspin engine's `endOfStream()` has cleared its queue for
+     * exactly this reason since 0.4.2 — its own comment records that 0.4.0 and 0.4.1
+     * shipped the version that played the buffer out, and what that cost. This path
+     * took that method's conclusion ("this is not a stop") without the mechanism
+     * that makes it safe.
      *
-     * The trade is the same one the default engine already accepted deliberately: a
+     * The trade is the same one that engine already accepted deliberately: a
      * track boundary loses whatever tail was still buffered. Between cutting a track's
      * last moment short and ignoring the pause button, the pause button wins — and
      * telling the two apart is the separate piece of work the plan tracks as gapless.
@@ -226,7 +227,7 @@ abstract class SendspinDataSource(
         transferEnded()
     }
 
-    /** Matches [SendspinAudioEngine.opusHead] - a minimal OpusHead when the server sends none. */
+    /** A minimal synthesized OpusHead when the server sends no `codec_header`. */
     private fun opusHeadPacket(channels: Int, sampleRate: Int): ByteArray =
         ByteBuffer.allocate(19).order(ByteOrder.LITTLE_ENDIAN).apply {
             put("OpusHead".toByteArray(Charsets.US_ASCII))

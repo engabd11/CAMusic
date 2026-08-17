@@ -10,6 +10,8 @@ import com.engabd.sendpin.audio.LocalTrack
 import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.PlayerIdentity
+import com.engabd.sendpin.local.db.LocalMediaDatabase
+import com.engabd.sendpin.local.db.PlayHistoryEntity
 import com.engabd.sendpin.ma.MaApiClient
 import com.engabd.sendpin.ma.MaDspDetails
 import com.engabd.sendpin.ma.MaItem
@@ -133,6 +135,8 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     /** Live, not captured — see [PlayerIdentity.getPlayerId]. */
     private val myPlayerId: String get() = PlayerIdentity.getPlayerId(getApplication<Application>())
     private val api = (app as SendpinApp).maApi
+    /** The one play-history watch in flight, cancelled and replaced on every track change. */
+    private var historyJob: Job? = null
 
     /**
      * The process-scoped poller that owns `players/all` and `player_queues/all`.
@@ -754,6 +758,33 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     private val _queueItems = MutableStateFlow<Load<List<MaQueueItem>>>(Load.Idle)
     val queueItems: StateFlow<Load<List<MaQueueItem>>> = _queueItems
 
+    /**
+     * How much is left in the queue — the current track's remaining time, plus
+     * everything after it — for "1h 23m left in queue" in the driving bar.
+     *
+     * Null while there's nothing to sum: no track loaded, or — on the MA path —
+     * the queue's items haven't been fetched yet. [queueItems] otherwise only
+     * loads on demand when the panel opens; [onStart] below triggers that same
+     * silent fetch the first time anything actually collects this flow, so the
+     * driving bar doesn't have to know that detail to get a real number.
+     */
+    val queueRemainingMs: StateFlow<Long?> =
+        combine(state, _queueItems, local.queue, local.current) { s, items, localQueue, localCurrent ->
+            val remainingCurrent = (s.durationMs - s.positionMs).coerceAtLeast(0)
+            if (isLocal) {
+                val idx = localQueue.indexOfFirst { it.id == localCurrent?.id }
+                if (idx < 0) return@combine null
+                remainingCurrent + localQueue.drop(idx + 1).sumOf { it.durationMs }
+            } else {
+                val ready = items as? Load.Ready ?: return@combine null
+                val idx = ready.value.indexOfFirst { it.queueItemId == s.currentQueueItemId }
+                if (idx < 0) return@combine null
+                remainingCurrent + ready.value.drop(idx + 1).sumOf { (it.duration ?: 0) * 1_000L }
+            }
+        }
+            .onStart { if (!isLocal && _queueItems.value is Load.Idle) loadQueue(silent = true) }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
     private val _lyrics = MutableStateFlow<Load<MaLyrics?>>(Load.Idle)
     val lyrics: StateFlow<Load<MaLyrics?>> = _lyrics
 
@@ -1093,6 +1124,59 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                 _toast.tryEmit(e.message ?: "Couldn't change favourite")
             }
         }
+    }
+
+    // --- long-press quick actions --------------------------------------------
+
+    /**
+     * Resolve the currently playing track's album, for the long-press "Go to
+     * album" action.
+     *
+     * Subsonic-family tracks carry the album id directly in [MaItem.parentId] —
+     * exact. A Music Assistant track doesn't (MA addresses everything by uri), so
+     * that path falls back to searching [albumName]: a heuristic, not an id
+     * lookup, but there is no richer one exposed anywhere in this codebase to fall
+     * back to instead. Null (with a toast) when neither resolves.
+     */
+    suspend fun resolveAlbum(albumName: String): MaItem? {
+        val item = favouritableItem.value
+        val result = try {
+            val parentId = item?.parentId
+            val sc = item?.let { i -> SendpinApp.instance.musicSource.value?.takeIf { it.providerId == i.provider } }
+            when {
+                parentId != null && sc != null -> sc.albumDetail(parentId).first
+                albumName.isNotBlank() -> {
+                    val albums = repo.search(albumName, limit = 15).albums
+                    albums.firstOrNull { it.name.equals(albumName, ignoreCase = true) } ?: albums.firstOrNull()
+                }
+                else -> null
+            }
+        } catch (e: Exception) { null }
+        if (result == null) _toast.tryEmit("Couldn't find that album")
+        return result
+    }
+
+    /**
+     * Resolve the currently playing track's artist, for "Go to artist". Same
+     * shape as [resolveAlbum]: the Subsonic id chain (track → album → artist) is
+     * exact where it's available; [artistName] search is the fallback for
+     * Music Assistant and for anything the id chain couldn't resolve.
+     */
+    suspend fun resolveArtist(artistName: String): MaItem? {
+        val item = favouritableItem.value
+        val result = try {
+            val sc = item?.let { i -> SendpinApp.instance.musicSource.value?.takeIf { it.providerId == i.provider } }
+            val albumParentId = item?.parentId
+            val viaId = if (albumParentId != null && sc != null) {
+                sc.albumDetail(albumParentId).first?.parentId?.let { sc.artistDetail(it).first }
+            } else null
+            viaId ?: artistName.takeIf { it.isNotBlank() }?.let { name ->
+                val artists = repo.search(name, limit = 15).artists
+                artists.firstOrNull { it.name.equals(name, ignoreCase = true) } ?: artists.firstOrNull()
+            }
+        } catch (e: Exception) { null }
+        if (result == null) _toast.tryEmit("Couldn't find that artist")
+        return result
     }
 
     // --- queue -------------------------------------------------------------
@@ -1539,6 +1623,13 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
 
         /** How close the server's clock must land to a seek target to count as landed. */
         const val SEEK_CONFIRM_MS = 3_000L
+
+        /**
+         * Matches LibraryViewModel.SCROBBLE_MAX_MS — the same "was this a real play" call.
+         * Used by [recordHistoryWhenPlayed] so a skip doesn't inflate the stats the same
+         * way it doesn't inflate a scrobble.
+         */
+        const val HISTORY_THRESHOLD_MS = 4 * 60 * 1000L
     }
 
     /**
@@ -1699,6 +1790,20 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                 if (_queueItems.value !is Load.Idle) loadQueue(silent = true)
             }
         }
+        // Listening history, for the Stats screen. Driven off [state] rather than
+        // separately for the MA and local paths — title/artist/album identity is
+        // already unified there, which a per-backend hook (mirroring how the
+        // scrobble path in LibraryViewModel is local-only) would not be.
+        viewModelScope.launch {
+            state.map { TrackIdentity(it.title, it.artist, it.album) to it.hasTrack }
+                .distinctUntilChanged()
+                .collect { (identity, hasTrack) ->
+                    historyJob?.cancel()
+                    historyJob = if (hasTrack && identity.title.isNotBlank()) {
+                        viewModelScope.launch { recordHistoryWhenPlayed(identity) }
+                    } else null
+                }
+        }
     }
 
     /**
@@ -1741,6 +1846,53 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                     durationMs = playback.playbackDurationMs.takeIf { it > 0 },
                 )
             }
+        }
+    }
+
+    // --- listening history ---------------------------------------------------
+
+    /** Title/artist/album, as the "is this still the same track" identity for history. */
+    private data class TrackIdentity(val title: String, val artist: String, val album: String)
+
+    /**
+     * Wait until [identity] has been listened to, then log it for the Stats screen.
+     *
+     * Same threshold as [com.engabd.sendpin.ma.LibraryViewModel.submitWhenPlayed]'s
+     * scrobble — half the track, or four minutes, whichever comes first — so a
+     * skip doesn't inflate the stats the same way it doesn't inflate a scrobble.
+     * Cancelled by the caller the moment the track identity changes, so this only
+     * ever runs to completion for the track it started watching.
+     */
+    private suspend fun recordHistoryWhenPlayed(identity: TrackIdentity) {
+        val played = state.map { s ->
+            when {
+                TrackIdentity(s.title, s.artist, s.album) != identity -> false
+                s.durationMs > 0 && s.positionMs >= minOf(s.durationMs / 2, HISTORY_THRESHOLD_MS) -> true
+                else -> null
+            }
+        }.first { it != null }
+        if (played != true) return
+        val s = state.value
+        try {
+            val dao = LocalMediaDatabase.get(getApplication()).playHistoryDao()
+            dao.insert(
+                PlayHistoryEntity(
+                    timestamp = System.currentTimeMillis(),
+                    trackId = s.currentQueueItemId ?: "${identity.title}|${identity.artist}|${identity.album}",
+                    title = identity.title,
+                    artist = identity.artist,
+                    album = identity.album,
+                    provider = s.source,
+                    codec = s.sourceQuality?.codec,
+                    sampleRate = s.sourceQuality?.sampleRateHz ?: 0,
+                    bitDepth = s.sourceQuality?.bitDepth ?: 0,
+                    durationPlayedMs = s.positionMs,
+                ),
+            )
+            dao.trimTo()
+        } catch (e: Exception) {
+            // Best-effort: a failed history write is not worth surfacing to the
+            // listener, and must not be allowed to look like a playback problem.
         }
     }
 

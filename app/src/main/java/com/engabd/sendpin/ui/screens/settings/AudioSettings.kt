@@ -47,7 +47,7 @@ internal fun AudioSection(
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         OutputCard(settings, accent, scope)
         LoudnessCard(settings, accent, scope)
-        ContinuousPlayCard(settings, scope)
+        ContinuousPlayCard(settings, accent, scope)
         // Here rather than in a section of its own: it is about how playback is
         // *controlled* on this device, which is what this section already is, and a
         // top-level entry for one card is the shape the "CAMusic player" section
@@ -223,8 +223,9 @@ private fun LoudnessCard(settings: AppSettings, accent: Color, scope: CoroutineS
 // ── Between tracks ────────────────────────────────────────────────────────
 
 @Composable
-private fun ContinuousPlayCard(settings: AppSettings, scope: CoroutineScope) {
+private fun ContinuousPlayCard(settings: AppSettings, accent: Color, scope: CoroutineScope) {
     val fade by settings.navFadeSeconds.collectAsStateWithLifecycle(initialValue = 0)
+    val beatMatched by settings.beatMatchedCrossfade.collectAsStateWithLifecycle(initialValue = false)
 
     SettingsCard(
         title = "Between tracks",
@@ -251,6 +252,19 @@ private fun ContinuousPlayCard(settings: AppSettings, scope: CoroutineScope) {
                 "while the queue is a single record, however it is set. It is not a crossfade: " +
                 "the two tracks don't overlap, because one player has one output.",
         )
+        if (fade > 0) {
+            Spacer(Modifier.height(4.dp))
+            ToggleRow(
+                title = "Beat-matched fade",
+                subtitle = "Time the fade to end on a beat, when the track has been scanned",
+                checked = beatMatched,
+                accent = accent,
+            ) { on -> scope.launch { settings.setBeatMatchedCrossfade(on) } }
+            Note(
+                "Needs a scan of the track — the same analysis Light Sync uses — already loaded " +
+                    "this session. Silently uses the fixed fade above otherwise.",
+            )
+        }
         Note(
             "What happens when the queue runs out altogether is a player setting — the " +
                 "options chip under the artwork on Now Playing, next to the queue it governs.",

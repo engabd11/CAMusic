@@ -10,10 +10,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
+import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.LibraryAdd
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.MaterialTheme
@@ -67,6 +70,12 @@ fun BoxScope.MediaActionsSheet(
     onDownload: (() -> Unit)? = null,
     /** Null leaves the row out. Absent for a playlist — filing one into itself. */
     onAddToPlaylist: (() -> Unit)? = null,
+    /** Null leaves the row out. Only ever passed for a track's album. */
+    onGoToAlbum: (() -> Unit)? = null,
+    /** Null leaves the row out. Only ever passed for a track's artist. */
+    onGoToArtist: (() -> Unit)? = null,
+    /** Null leaves the row out. */
+    onShare: (() -> Unit)? = null,
     /** Null leaves the row out. Only ever passed for a playlist the server owns. */
     onDelete: (() -> Unit)? = null,
 ) {
@@ -141,6 +150,15 @@ fun BoxScope.MediaActionsSheet(
                     Icons.Default.LibraryAdd, "Add to playlist",
                     if (whole) "Every track in it" else "Pick a playlist",
                 ) { onClose(); add() }
+            }
+            onGoToAlbum?.let { go ->
+                ActionRow(Icons.Default.Album, "Go to album", item.album ?: "Open the album") { onClose(); go() }
+            }
+            onGoToArtist?.let { go ->
+                ActionRow(Icons.Default.Person, "Go to artist", item.subtitle ?: "Open the artist") { onClose(); go() }
+            }
+            onShare?.let { share ->
+                ActionRow(Icons.Default.Share, "Share", item.name) { onClose(); share() }
             }
             onDownload?.let { dl ->
                 ActionRow(

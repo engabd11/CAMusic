@@ -84,6 +84,7 @@ import com.engabd.sendpin.ui.screens.PlaylistDetailScreen
 import com.engabd.sendpin.ui.screens.SettingsScreen
 import com.engabd.sendpin.ui.screens.SettingsSection
 import com.engabd.sendpin.ui.screens.SpeakersScreen
+import com.engabd.sendpin.ui.screens.StatsScreen
 import com.engabd.sendpin.ui.theme.AccentChoice
 import com.engabd.sendpin.ui.theme.Ink
 import com.engabd.sendpin.ui.theme.LocalSendspinColors
@@ -506,10 +507,17 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                 ) {
                     if (!isOverlay) {
                         screen("now_playing") {
+                            val navToItem: (String, MaItem) -> Unit = { route, item ->
+                                val n = android.net.Uri.encode(item.name)
+                                val a = item.image?.let { android.net.Uri.encode(it) } ?: ""
+                                navController.navigate("$route/${android.net.Uri.encode(item.itemId)}/${android.net.Uri.encode(item.provider)}?name=$n&art=$a")
+                            }
                             NowPlayingScreen(
                                 viewModel = nowPlayingVm,
                                 libraryViewModel = libraryVm,
                                 onBrowse = { go("library") },
+                                onAlbumClick = { navToItem("album", it) },
+                                onArtistClick = { navToItem("artist", it) },
                             )
                         }
                     }
@@ -661,6 +669,9 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                             onBack = { navController.popBackStack() },
                         )
                     }
+                    screen("stats") {
+                        StatsScreen(onBack = { navController.popBackStack() })
+                    }
                     screen("speakers") { SpeakersScreen(onBack = { navController.popBackStack() }) }
                     screen("light_sync") {
                         LightSyncScreen(
@@ -687,6 +698,7 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                             detail = settingsDetail,
                             onDetail = { settingsDetail = it },
                             onOpenDownloads = { navController.navigate("downloads") },
+                            onOpenStats = { navController.navigate("stats") },
                         )
                     }
                     } // NavHost

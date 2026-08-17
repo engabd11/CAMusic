@@ -17,11 +17,13 @@ import com.engabd.sendpin.protocol.ClockSync
 import com.engabd.sendpin.protocol.StreamStartPlayerInfo
 
 /**
- * Experimental ExoPlayer-based replacement for [SendspinAudioEngine] - see
- * `docs/exoplayer-upgrade-plan.md`. Opt-in via [com.engabd.sendpin.data.AppSettings.useExoPlayerForSendspin];
- * [SendspinAudioEngine] remains the default.
+ * ExoPlayer-based Sendspin (MA) playback engine - see `docs/exoplayer-upgrade-plan.md`.
+ * Was opt-in behind a toggle while it was being validated against the original,
+ * hand-built `MediaCodec`+`AudioTrack` engine; that engine has since been removed
+ * as dead code (it produced no audio on the hardware that mattered) and this one
+ * is now the only MA engine - see [com.engabd.sendpin.service.Playback.startSendspin].
  *
- * What this gets MA playback that the old engine can't: [AudioAnalysisTap] sits
+ * What this gets MA playback that the old engine couldn't: [AudioAnalysisTap] sits
  * in this player's render chain exactly like it does for [LocalPlayer], via the
  * same [TapRenderersFactory] - direct Hue Bridge Light Sync becomes possible for
  * MA the same way it already works for local playback. This is wired up:
@@ -42,7 +44,7 @@ import com.engabd.sendpin.protocol.StreamStartPlayerInfo
  * combining [useOboe] with [bitPerfect] is a real gap, not yet handled.
  *
  * One instance per Sendspin connection (see [com.engabd.sendpin.service.Playback.startSendspin]).
- * Unlike [SendspinAudioEngine] - which ran its own decode thread and could be
+ * Unlike the old hand-rolled engine - which ran its own decode thread and could be
  * driven from anywhere - ExoPlayer may only be built and touched on the thread
  * that built it, and [com.engabd.sendpin.service.Playback] drives its engine
  * from a `Dispatchers.Default` scope, `AudioManager` focus callbacks, and the
@@ -319,7 +321,7 @@ class SendspinExoEngine(
         currentDataSource?.submit(serverTsUs, payload)
     }
 
-    /** `stream/end` - see [SendspinAudioEngine.endOfStream] for why this isn't a stop. */
+    /** `stream/end` - a likely track boundary, not a stop; see the comment below. */
     override fun endOfStream() {
         // Discard *then* signal: the queue has to be empty when [awaitNextFrame] next
         // checks, or it goes on serving the backlog it was just told to abandon.
@@ -340,7 +342,7 @@ class SendspinExoEngine(
         runOnMain { player.volume = effectiveVolume() }
     }
 
-    /** Mute/unmute for clock-convergence reasons - see [SendspinAudioEngine.setSyncMuted]. */
+    /** Mute/unmute for clock-convergence reasons - see [SyncGate]. */
     override fun setSyncMuted(muted: Boolean) {
         if (syncMuted == muted) return
         syncMuted = muted

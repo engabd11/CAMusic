@@ -24,7 +24,7 @@ endpoints, or messages, and the file it touches.
 | Favorites | Add/remove (optimistic) | — | Star/unstar, `setRating` |
 | Speakers | Group/ungroup, group volume, sync delay, rename, power, mute | `server/command` volume/mute/set_static_delay, `group/update` | — |
 | Downloads | — | — | Track/album/playlist, offline playback, cached covers, Wi-Fi-only, storage cap |
-| Light Sync | — | — | Drives syncoV2 via HA WebSocket |
+| Light Sync | Direct to Hue Bridge (DTLS 1.2, 60 Hz) + HA via syncoV2 | — | Drives syncoV2 via HA WebSocket |
 | Notifications | Media notification for selected player | Connection service notification | Local playback notification |
 | Sleep timer | Fade-out + pause (shared) | — | — |
 | Scrobble | — | — | Now-playing ping + completed-play submission (incl. the play-original path) |
@@ -419,11 +419,21 @@ Genuinely still open:
   hardware — CI covers unit tests, lint and a debug build, and that is all.
 - **Android Auto.** Both media services are plain `Service`s owning a
   `MediaSession`; a browse tree needs `MediaLibraryService`.
-- **A home-screen widget** (Glance).
-- **Crash reporting has no backend.** `crash/CrashReporter` stores locally and
-  can open a GitHub issue if the user supplies a token; there is no service
-  behind it.
-- **No instrumented tests.** Audio, service lifecycle and UI are uncovered.
-- **The oversized files.** `LibraryViewModel.kt`, `SyncoEngine.kt`,
-  `NowPlayingViewModel.kt` and `LibraryScreen.kt` are each well past the point
-  where they should have been split.
+- **MA-path gapless.** Detection of `stream/end` pause vs. track boundary,
+  and seam-joining in `SendspinExoEngine`. Groundwork was in `SendspinAudioEngine`
+  which is no longer the selected engine — see `docs/v0.10-plan.md`.
+- **Crash reporting throughput.** `crash/CrashReporter` stores locally and can
+  post to GitHub, but only uploads the most recent crash per launch.
+- **No UI or service-lifecycle instrumented tests.** Two androidTest files pin
+  specific regressions but do not cover the audio path end to end.
+- **The oversized files.** `LibraryViewModel.kt` (2,483 lines), `Playback.kt`
+  (1,121 lines), and `SyncoEngine.kt` are each well past the point where they
+  should have been split.
+- **`SendspinAudioEngine.kt`** (1,035 lines) is no longer selected by
+  `Playback.startSendspin` — it is dead code kept for `END_LINGER_MS` and
+  `StreamContinuity`. See `docs/v0.10-plan.md` for the deprecation plan.
+- **`HaClient` has no reconnection logic.** Unlike `MaApiClient` (backoff +
+  `reconnectNow()`), a dropped HA WebSocket stays dead, silently disabling
+  HA-based light sync.
+- **`LocalMediaSource` is minimal.** Only SEARCH capability. No genres,
+  playlists, favorites, lyrics, scrobble, rich format. Cover art always null.

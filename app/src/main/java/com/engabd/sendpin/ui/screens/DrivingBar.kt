@@ -11,6 +11,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.Icon
@@ -42,13 +43,16 @@ import com.engabd.sendpin.ui.theme.*
  *
  * Shared by both window mechanisms in shape but only rendered by the overlay path:
  * Picture-in-Picture cannot host a composable, and expresses the same three actions
- * as `RemoteAction`s instead. That is one of the limits E1 exists to lift.
+ * as `RemoteAction`s instead. That is one of the limits E1 exists to lift. Shuffle
+ * is a fourth control on top of those three, and stays overlay-only for the same
+ * reason: PiP's `RemoteAction` budget is 3, already spent on transport.
  */
 @Composable
 fun DrivingBar(
     onPlayPause: () -> Unit,
     onNext: () -> Unit,
     onPrevious: () -> Unit,
+    onShuffle: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val app = SendpinApp.instance
@@ -56,10 +60,13 @@ fun DrivingBar(
     val localTrack by app.localPlayer.current.collectAsStateWithLifecycle()
     val localPlaying by app.localPlayer.playing.collectAsStateWithLifecycle()
     val ownerState by app.playbackOwner.state.collectAsStateWithLifecycle()
+    val localShuffle by app.localPlayer.shuffle.collectAsStateWithLifecycle()
+    val maShuffle by app.maNowPlaying.shuffleActive.collectAsStateWithLifecycle()
 
     val isLocal = ownerState.sessionOwner == com.engabd.sendpin.service.PlaybackOwner.Who.LOCAL
     val title = if (isLocal) localTrack?.title.orEmpty() else maNow?.title.orEmpty()
     val playing = if (isLocal) localPlaying else ownerState.sendspinPlaying || maNow?.isPlaying == true
+    val shuffleOn = if (isLocal) localShuffle else maShuffle
 
     // Which edge the bar sits on. A cradle's position varies, and the bar must never
     // permanently cover the map's own controls — so a vertical drag moves it, and
@@ -114,6 +121,22 @@ fun DrivingBar(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f).padding(start = 6.dp),
+            )
+
+            // Smaller than the transport row on purpose: three 76dp targets already
+            // claim most of a compact phone's width, and a fourth at the same size
+            // would leave the title no room to say anything before truncating.
+            // Still well past the 48dp a glance-and-tap can manage.
+            Icon(
+                Icons.Default.Shuffle,
+                if (shuffleOn) "Shuffle on" else "Shuffle off",
+                tint = if (shuffleOn) LocalAccentOrDefault() else TextMuted,
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .background(if (shuffleOn) Ink3 else Color.Transparent)
+                    .clickable(onClick = onShuffle)
+                    .padding(11.dp),
             )
 
             // Small, and the only small target here, because dismissing by accident

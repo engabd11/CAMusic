@@ -154,8 +154,14 @@ interface MusicSource {
      * `time` parameter; a provider that wants a playback position instead must not
      * forward this one, which is a mistake worth naming here because the two are both
      * `Long` milliseconds and the compiler has nothing to say about it.
+     *
+     * [positionMs] is the real, player-tracked position at the moment of the report —
+     * unlike [startedAtMs], it does not drift when playback is paused. Providers whose
+     * completion report wants a position (Jellyfin) should prefer this over deriving
+     * one from [startedAtMs]; callers that have a live position (anything driven by
+     * [com.engabd.sendpin.audio.LocalPlayer]) should always pass it.
      */
-    suspend fun scrobble(id: String, completed: Boolean, startedAtMs: Long? = null) = Unit
+    suspend fun scrobble(id: String, completed: Boolean, startedAtMs: Long? = null, positionMs: Long? = null) = Unit
 
     /**
      * Periodic "still playing, and here is where" — [positionMs] *is* a position

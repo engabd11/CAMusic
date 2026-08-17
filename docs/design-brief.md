@@ -1,5 +1,14 @@
 # CAMusic (Android) — Design Brief
 
+> **Status: historical artifact.** This brief was written when the app had two backends
+> (MA + Navidrome), three nav tabs, no light sync, no driving mode, no widgets, and no
+> Jellyfin. The app has since grown to four+ library providers, five nav surfaces (Now
+> Playing, Library, Speakers, Lights, Settings), direct Hue Bridge sync, driving mode,
+> a Glance widget, and an Oboe native output path. The visual DNA and design principles
+> below are still the app's identity and remain accurate; the information architecture
+> (§4), screen inventory (§5), and "what exists today" (§11) are significantly outdated.
+> Read this for the aesthetic foundation, not for the feature list.
+
 ## 1. What this is
 
 **CAMusic** is a native Android **music player** for **Music Assistant** (and a direct

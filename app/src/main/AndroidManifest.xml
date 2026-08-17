@@ -38,6 +38,29 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <!--
+      "Pause for calls" (AppSettings.pauseForCalls, off by default). Only needed for
+      TelephonyCallback.CallStateListener to notice a ringing/answered call — this
+      app reads no phone number, no call log, nothing beyond the state enum, and
+      only registers the listener when the setting is turned on.
+    -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+
+    <!--
+      Speed limit alert and speed-adaptive volume (AppSettings.speedLimitAlertEnabled /
+      speedAdaptiveVolume, both off by default). Coarse would not do: the trigger
+      speed is computed to within a few km/h of a posted limit, and coarse location's
+      city-block-scale error would make the alert fire on the wrong stretch of road.
+      Requested at runtime only when either feature is turned on.
+
+      ACCESS_COARSE_LOCATION is declared alongside the fine permission because
+      Android 12+ requires both when FINE is requested — the user may grant only
+      coarse, and the speed alert degrades gracefully (it simply triggers a few
+      km/h earlier or later, which the tolerance percentage already absorbs).
+    -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+    <!--
       Predictive back: targetSdk 36 expects an app to have opted in, and the M3
       motion work below relies on the back gesture being animated rather than
       cutting straight to the previous screen.

@@ -9,10 +9,14 @@ import com.engabd.sendpin.library.ServerConfig
 import com.engabd.sendpin.library.ServerKind
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.floatOrNull
 import kotlinx.serialization.json.jsonPrimitive
 
@@ -71,6 +75,7 @@ class AppSettings(private val context: Context) {
         private val DOWNLOAD_WIFI_ONLY = booleanPreferencesKey("download_wifi_only") // skip downloads on mobile data
         private val RADIO_MODE = booleanPreferencesKey("radio_mode")            // keep the music going past the queue
         private val NAV_FADE_SECONDS = stringPreferencesKey("nav_fade_seconds") // 0 = off, gapless
+        private val BEAT_MATCHED_CROSSFADE = booleanPreferencesKey("beat_matched_crossfade") // time the fade to land on a beat
         private val STATIC_DELAY_MS = stringPreferencesKey("sendspin_static_delay_ms") // per-player latency trim
         private val REPLAY_GAIN = stringPreferencesKey("replay_gain_mode")      // off | track | album
         private val LYRICS_OFFSET_MS = stringPreferencesKey("lyrics_offset_ms") // +ve = lyrics run late
@@ -81,6 +86,11 @@ class AppSettings(private val context: Context) {
         private val DRIVING_MECHANISM = stringPreferencesKey("driving_mechanism") // pip | overlay
         private val DRIVING_CAR_ADDRESS = stringPreferencesKey("driving_car_address") // bonded device MAC
         private val DRIVING_CAR_NAME = stringPreferencesKey("driving_car_name")       // for the settings row
+        private val PAUSE_FOR_CALLS = booleanPreferencesKey("pause_for_calls")        // auto-pause playback while the phone rings/is on a call
+        private val SPEED_LIMIT_ALERT_ENABLED = booleanPreferencesKey("speed_limit_alert_enabled")
+        private val DRIVING_SPEED_LIMIT_KMH = stringPreferencesKey("driving_speed_limit_kmh")   // 0 = not set
+        private val DRIVING_SPEED_TOLERANCE_PCT = stringPreferencesKey("driving_speed_tolerance_pct")
+        private val SPEED_ADAPTIVE_VOLUME = booleanPreferencesKey("speed_adaptive_volume")
 
         // Self-hosted crash reporting
         private val CRASH_GITHUB_REPO = stringPreferencesKey("crash_github_repo") // owner/repo, e.g. engabd11/CAMusic
@@ -207,6 +217,20 @@ class AppSettings(private val context: Context) {
         private const val LEGACY_NAV_ID = "legacy-navidrome"
 
         private val serverJson = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+
+        /**
+         * Individually-[Crypto]-encrypted legacy keys — decrypted before an export and
+         * re-encrypted (under the *importing* device's own Keystore key) on the way
+         * back in. [SERVERS] carries its own per-field encryption and is handled
+         * separately in [exportSettings]/[importSettings], not through this set.
+         */
+        private val ENCRYPTED_KEY_NAMES = setOf(
+            MA_PASSWORD.name, NAV_PASSWORD.name, HA_TOKEN.name,
+            HUE_APP_KEY.name, HUE_CLIENT_KEY.name, CRASH_GITHUB_TOKEN.name,
+        )
+
+        /** Not a real preference key — [SERVERS]' decrypted export lives under this in the JSON. */
+        private const val SERVERS_EXPORT_KEY = "__servers_v1"
 
         /**
          * Which Light Sync transport a library implies.
@@ -449,6 +473,72 @@ class AppSettings(private val context: Context) {
             .map { it.copy(password = Crypto.decrypt(it.password), token = Crypto.decrypt(it.token)) }
     }.getOrNull()
 
+    // ── Settings export / import ────────────────────────────────────────────
+    //
+    // Every stored key, as portable JSON encrypted with a user passphrase rather
+    // than the on-device Keystore key [Crypto] otherwise uses — that key is
+    // deliberately non-exportable, so writing it straight to a file would produce
+    // a blob unreadable on any other device (or after a reinstall). Individually-
+    // encrypted legacy fields are decrypted first and the *whole* resulting JSON
+    // is what gets encrypted, so nothing here ever touches disk unencrypted.
+
+    /** Every setting, as a password-encrypted portable blob. Null if encryption fails. */
+    suspend fun exportSettings(password: String): String? {
+        val prefs = context.dataStore.data.first()
+        val obj = buildJsonObject {
+            prefs.asMap().forEach { (key, value) ->
+                if (key.name == SERVERS.name) return@forEach   // handled below, decrypted properly
+                when (val v = if (key.name in ENCRYPTED_KEY_NAMES) Crypto.decrypt(value as? String ?: "") else value) {
+                    is String -> put(key.name, JsonPrimitive(v))
+                    is Boolean -> put(key.name, JsonPrimitive(v))
+                    // This app has never stored an Int/Float/Long/Set<String> preference;
+                    // numeric settings are stringPreferencesKey. Nothing to handle here.
+                    else -> Unit
+                }
+            }
+            put(SERVERS_EXPORT_KEY, JsonPrimitive(serverJson.encodeToString(ListSerializer(ServerConfig.serializer()), storedServers(prefs))))
+        }
+        return PortableCrypto.encrypt(obj.toString(), password)
+    }
+
+    /**
+     * Restore settings from an [exportSettings] blob.
+     *
+     * Server credentials and the individually-encrypted legacy keys are
+     * re-encrypted under *this* device's Keystore key on the way back in — the
+     * password-derived encryption the file carries never itself reaches disk.
+     *
+     * @return true on success; false on a wrong password, or a blob that isn't
+     *   one of these exports at all.
+     */
+    suspend fun importSettings(blob: String, password: String): Boolean {
+        val json = PortableCrypto.decrypt(blob, password) ?: return false
+        val obj = try {
+            Json.parseToJsonElement(json) as? JsonObject ?: return false
+        } catch (e: Exception) {
+            return false
+        }
+        context.dataStore.edit { prefs ->
+            obj.forEach { (name, element) ->
+                if (name == SERVERS_EXPORT_KEY) return@forEach
+                val primitive = element as? JsonPrimitive ?: return@forEach
+                val bool = primitive.booleanOrNull
+                if (bool != null) {
+                    prefs[booleanPreferencesKey(name)] = bool
+                } else {
+                    val str = primitive.content
+                    prefs[stringPreferencesKey(name)] = if (name in ENCRYPTED_KEY_NAMES) Crypto.encrypt(str) else str
+                }
+            }
+            (obj[SERVERS_EXPORT_KEY] as? JsonPrimitive)?.let { serversEl ->
+                val list = serverJson.decodeFromString(ListSerializer(ServerConfig.serializer()), serversEl.content)
+                prefs[SERVERS] = encodeServers(list)
+                mirrorLegacyKeys(prefs, list, resolveActiveId(prefs, list))
+            }
+        }
+        return true
+    }
+
     val backend: Flow<String> = context.dataStore.data.map { it[BACKEND] ?: "ma" }
     val maBaseUrl: Flow<String> = context.dataStore.data.map { it[MA_BASE_URL] ?: "" }
     val maUsername: Flow<String> = context.dataStore.data.map { it[MA_USERNAME] ?: "" }
@@ -506,7 +596,7 @@ class AppSettings(private val context: Context) {
     /**
      * Whether to request 24-bit bit-perfect playback from the AudioTrack path.
      * When true and the device supports `ENCODING_PCM_24BIT_PACKED` (API 31+,
-     * which is our minSdk), [SendspinAudioEngine] builds a 24-bit AudioTrack
+     * which is our minSdk), [SendspinExoEngine] builds a 24-bit AudioTrack
      * instead of truncating to 16-bit. The server must also be sending 24-bit
      * — see [FormatNegotiator.MAX_BIT_DEPTH], which is now 24.
      */
@@ -535,7 +625,7 @@ class AppSettings(private val context: Context) {
      * The system AudioDeviceInfo ID to route audio to, for USB DAC support.
      * Empty string means "let the system pick" (default speaker/headset).
      * Set by [com.engabd.sendpin.service.Playback] when a USB audio device is
-     * detected; consumed by both [SendspinAudioEngine] and [LocalPlayer].
+     * detected; consumed by both [SendspinExoEngine] and [LocalPlayer].
      */
     val preferredAudioDeviceId: Flow<String> = context.dataStore.data.map { it[PREFERRED_AUDIO_DEVICE_ID] ?: "" }
 
@@ -637,6 +727,19 @@ class AppSettings(private val context: Context) {
 
     suspend fun setNavFadeSeconds(value: Int) = context.dataStore.edit {
         it[NAV_FADE_SECONDS] = value.coerceIn(0, 12).toString()
+    }
+
+    /**
+     * Time [navFadeSeconds]' fade to land on a beat rather than an arbitrary N
+     * seconds before the end — see [BeatAlignedFade]. Off by default: it needs a
+     * track scan to do anything, and the first play of an unscanned track falls
+     * back to the fixed window silently either way, so there's nothing lost by
+     * defaulting it off beyond the listener not knowing to turn it on.
+     */
+    val beatMatchedCrossfade: Flow<Boolean> = context.dataStore.data.map { it[BEAT_MATCHED_CROSSFADE] ?: false }
+
+    suspend fun setBeatMatchedCrossfade(value: Boolean) = context.dataStore.edit {
+        it[BEAT_MATCHED_CROSSFADE] = value
     }
 
     suspend fun setBackend(value: String) {
@@ -1000,6 +1103,40 @@ class AppSettings(private val context: Context) {
     val drivingCarAddress: Flow<String> = context.dataStore.data.map { it[DRIVING_CAR_ADDRESS] ?: "" }
     val drivingCarName: Flow<String> = context.dataStore.data.map { it[DRIVING_CAR_NAME] ?: "" }
 
+    /**
+     * Auto-pause playback while the phone is ringing or on a call. Off by default:
+     * it needs `READ_PHONE_STATE`, requested at runtime only when this is turned on
+     * — the same "don't ask until it's wanted" rule the driving-car picker follows.
+     */
+    val pauseForCalls: Flow<Boolean> = context.dataStore.data.map { it[PAUSE_FOR_CALLS] ?: false }
+
+    /**
+     * GPS speed-limit alert. Off by default and needs `ACCESS_FINE_LOCATION`,
+     * requested at runtime only when turned on — see [SpeedMonitor].
+     */
+    val speedLimitAlertEnabled: Flow<Boolean> = context.dataStore.data.map { it[SPEED_LIMIT_ALERT_ENABLED] ?: false }
+
+    /** 0 means "not set" — [SpeedMonitor] treats that as "nothing to alert on". */
+    val drivingSpeedLimitKmh: Flow<Int> = context.dataStore.data.map { it[DRIVING_SPEED_LIMIT_KMH]?.toIntOrNull() ?: 0 }
+
+    /** How far over [drivingSpeedLimitKmh] before the alert fires. Default 5%, per SpeedAlert's own doc. */
+    val drivingSpeedTolerancePct: Flow<Int> = context.dataStore.data.map { it[DRIVING_SPEED_TOLERANCE_PCT]?.toIntOrNull() ?: 5 }
+
+    /** Speed-adaptive volume boost. Off by default; shares [SpeedMonitor] with the alert above. */
+    val speedAdaptiveVolume: Flow<Boolean> = context.dataStore.data.map { it[SPEED_ADAPTIVE_VOLUME] ?: false }
+
+    suspend fun setSpeedLimitAlertEnabled(on: Boolean) = context.dataStore.edit { it[SPEED_LIMIT_ALERT_ENABLED] = on }
+
+    suspend fun setDrivingSpeedLimitKmh(value: Int) = context.dataStore.edit {
+        it[DRIVING_SPEED_LIMIT_KMH] = value.coerceIn(0, 300).toString()
+    }
+
+    suspend fun setDrivingSpeedTolerancePct(value: Int) = context.dataStore.edit {
+        it[DRIVING_SPEED_TOLERANCE_PCT] = value.coerceIn(0, 25).toString()
+    }
+
+    suspend fun setSpeedAdaptiveVolume(on: Boolean) = context.dataStore.edit { it[SPEED_ADAPTIVE_VOLUME] = on }
+
     suspend fun setDrivingEnabled(on: Boolean) {
         context.dataStore.edit { it[DRIVING_ENABLED] = on }
     }
@@ -1013,6 +1150,10 @@ class AppSettings(private val context: Context) {
             it[DRIVING_CAR_ADDRESS] = address
             it[DRIVING_CAR_NAME] = name
         }
+    }
+
+    suspend fun setPauseForCalls(on: Boolean) {
+        context.dataStore.edit { it[PAUSE_FOR_CALLS] = on }
     }
 
     suspend fun setLightSyncEnabled(on: Boolean) {

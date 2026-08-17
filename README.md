@@ -38,9 +38,14 @@ engine, with no feature locked behind a paywall:
 | Offline playback | ✅ | ✅ (some) | ❌ |
 | Parametric EQ per speaker | ✅ | ❌ | ❌ |
 | 24-bit / hi-res output | ✅ | ❌ | ❌ |
-| Driving controls over the map | ✅ | ❌ | ❌ |
-| Home-screen widget | ✅ | ✅ (some) | ❌ |
-| One app, no subscription | ✅ | — | — |
+|| Driving controls over the map | ✅ | ❌ | ❌ |
+|| Speed limit alert with tolerance | ✅ | ❌ | ❌ |
+|| Auto-pause for phone calls | ✅ | ❌ | ❌ |
+|| Listening statistics | ✅ | ❌ | ❌ |
+|| USB DAC detection | ✅ | ❌ | ❌ |
+|| Settings export / import (encrypted) | ✅ | ❌ | ❌ |
+|| Home-screen widget | ✅ | ✅ (some) | ❌ |
+|| One app, no subscription | ✅ | — | — |
 
 ---
 
@@ -224,6 +229,31 @@ API, which controls Philips Hue lights through the Entertainment API: per-zone e
 and all 19 colour schemes previewed with their real gradient colours. It follows an HA
 `media_player` entity, which is what lets it reach speakers this phone is not playing through.
 
+#### Creative light-show layers
+
+Four additive layers that use CAMusic's existing analysis infrastructure — pre-scanned track
+data, real-time structure detection, instrument-to-position mapping, and phone motion — to do
+things no Hue app can. Each is a toggle, off by default, layered on top of the existing music
+sync rather than replacing it:
+
+- **Music DNA** — every track gets a deterministic visual fingerprint: tempo → wave speed,
+  key → base hue, intensity profile → brightness arc, section structure → colour shifts. Same
+  song always produces the same show.
+- **Emotional arc** — colour temperature follows the song's structural journey: verses are cool
+  blue, builds warm toward orange, drops go hot and saturated, breakdowns go cold, outros fade
+  warm.
+- **Phantom stage** — instruments mapped to fixed physical positions in the room. Bass left
+  corner, vocals centre, guitar right, drums spread by height. When a solo comes in, that part
+  of the room brightens — you can see who is playing by which part of the room is lit.
+- **Phone as conductor** — the phone's accelerometer and gyroscope become a conductor's baton.
+  Tilt shifts colour through the spatial field, a sharp flick flashes all lights, slow circular
+  motion rotates hue around the room. Phone flat auto-disables after 5 seconds.
+
+All layers implement a shared `LightShowLayer` interface and run after `SyncoEngine.render()`
+and before `FieldSafety`. Direct-to-bridge only (the HA path has no analysis tap access).
+
+See [docs/creative-light-shows.md](docs/creative-light-shows.md) for the full design.
+
 ### Offline Playback and Library — download and go
 
 Download a track, album or playlist for offline use — audio and cover art — with a storage cap and
@@ -236,16 +266,24 @@ and play counts write back to the library the track came from when you're back o
 
 ### Audiophile-grade playback
 
-| Feature | Music Assistant path | Standalone path |
+|| Feature | Music Assistant path | Standalone path |
 |---|:---:|:---:|
 | Hi-res (88.2 / 96 kHz) | ✅ | ✅ |
 | 24-bit float output | ✅ (bit-perfect mode) | ✅ (bit-perfect mode) |
 | Gapless | ✅ (server-side) | ✅ (ExoPlayer) |
+| Beat-matched crossfade | ✅ (server-side) | ✅ (when scans available) |
 | ReplayGain | ✅ (MA normalisation) | ✅ (track / album) |
 | Original file format | ✅ (format=raw) | ✅ (original stream) |
 | Continuous play / radio | ✅ (server-side) | ✅ (on-device) |
 | Smooth transitions | — | ✅ (1–12 s, auto-suppressed for albums) |
+| USB DAC detection | ✅ | ✅ |
 | EQ | ✅ (server DSP) | Planned |
+
+When a USB DAC is plugged in, CAMusic detects it through an `AudioDeviceCallback`
+and posts a low-priority notification showing what the DAC can do — sample rates,
+bit depths — and points to **Settings → Audio** to pin the output to it. It does
+not change routing on its own: if you already chose a Bluetooth headset, plugging
+in a DAC doesn't yank the audio away. It just tells you the option is there.
 
 ### Driving — control the music without leaving the map
 
@@ -279,6 +317,18 @@ It never appears with nothing playing, whatever the trigger says. Three controls
 truncates rather than scrolls — movement in peripheral vision while driving is the worst possible
 place for a marquee — and nothing that invites reading.
 
+**Optional driving enhancements** (all off by default, under **Settings → Playback & audio → Driving**):
+
+- **Speed limit alert** — a gentle audible beep when GPS speed exceeds a limit you set, with a
+  configurable tolerance percentage so minor overages don't nag. Uses a 5-consecutive-reading
+  rule to filter GPS noise, and repeats at most every 30 seconds, not every reading. The speed
+  is never shown on screen — reading a number while driving is worse than hearing a tone.
+- **Auto-pause for phone calls** — pauses playback when a call starts ringing and does not
+  auto-resume when it ends (a notification offers to resume instead). Surprising auto-resume
+  after a conversation is worse than a tap.
+- **Speed-adaptive volume** — gradually increases volume at higher speeds to compensate for road
+  noise, with smooth 1-second ramping so the change is never a jump.
+
 ### Home-screen widget
 
 What's playing, with previous, play/pause and next, without unlocking or opening anything. Built
@@ -294,6 +344,15 @@ speaker you're actually listening to, not always the phone.
 - **Similar** — acoustically similar tracks, or a natural-language search over sonic embeddings
   ("late night drive, warm synths").
 - **Playlists** — create, delete, and add tracks on both backends.
+- **Swipe-to-queue** — swipe a track row right to add it to the queue, left to play it next. Both
+  actions snap back after firing, with haptic feedback at the trigger point.
+- **Listening statistics** — a "Your Listening" screen showing the last 7 days: total listening
+  time, most played track, top artists, format breakdown, and server breakdown. Uses the same
+  completion threshold as the scrobbler (half the track or four minutes), so a skip doesn't inflate
+  the stats.
+- **Settings export / import** — every server config, credential, and preference exported as a
+  password-encrypted portable blob. Import re-encrypts credentials under the new device's Keystore,
+  so the file's password-derived encryption never reaches disk.
 - **Favourites, preview, playback speed, sleep timer.**
 
 ---
@@ -488,14 +547,43 @@ later phase again.
 - [x] Player status moved onto its own server's page; the empty top-level player section removed
 - [x] The three largest files split by responsibility (1,457 → 596 and 2,121 → 1,703)
 
+**v0.10:**
+
+- [x] **Dead code removal** — `SendspinAudioEngine` (1,035 lines, unselected since v0.8.8) removed
+- [x] **Jellyfin scrobble fix** — position now tracked from the player, not wall clock, so pauses
+      don't drift the scrobbled position
+- [x] **Beat-matched crossfade** — transitions align to the beat grid of both tracks when pre-scan
+      data is available, falling back to fixed-duration smooth transitions otherwise
+- [x] **USB DAC detection** — `AudioDeviceCallback` notices a USB DAC connect, posts a notification
+      with its capabilities, and points to Settings to pin the output
+- [x] **Swipe-to-queue** — swipe right on a track row to add to queue, left to play next, with
+      haptic feedback and snap-back
+- [x] **Listening statistics** — a "Your Listening" screen with 7-day stats: total listening time,
+      most played track, top artists, format and server breakdown, backed by a Room `play_history`
+      table
+- [x] **Settings export / import** — password-encrypted portable JSON blob with all servers,
+      credentials, and preferences; re-encrypts credentials under the new device's Keystore on import
+- [x] **Speed limit alert** — optional GPS-speed beep with configurable tolerance percentage,
+      5-consecutive-reading noise filter, and 30-second repeat interval
+- [x] **Auto-pause on phone call** — pauses on `CALL_STATE_RINGING`, does not auto-resume (offers
+      a notification instead)
+- [x] **Speed-adaptive volume** — gradually increases volume at higher speeds with smooth ramping
+- [x] **Creative light-show layers** — four additive Hue layers using CAMusic's analysis
+      infrastructure: Music DNA (deterministic visual fingerprint per track), Emotional Arc
+      (colour temperature follows song structure), Phantom Stage (instruments mapped to physical
+      positions), Phone as Conductor (motion-driven lighting). PR #71
+
 ### Next up
 
-- [ ] **On-device verification of v0.9.** The playback chain is confirmed; the driving bar, the
-      widget, the shared-element flight, the palette rework and the file split are not. Two can
-      only be judged by eye and one only in a car.
+- [ ] **On-device verification of v0.9 and v0.10.** The playback chain is confirmed; the driving bar,
+      the widget, the shared-element flight, the palette rework, the file split, the stats screen,
+      swipe-to-queue, USB DAC detection, and the driving enhancements (speed alert, auto-pause,
+      adaptive volume) are not. Several can only be judged by eye, one only in a car, and the speed
+      alert only on a road.
 - [ ] **True overlapping crossfade** on the standalone path — a second ExoPlayer ping-ponged with
       volume ramps, moving queue ownership and touching ReplayGain, the notification, and the
-      analysis tap. The shipped smooth transitions are the first half; this is the second.
+      analysis tap. The shipped smooth transitions and beat-matched crossfade are the first two
+      halves; this is the third.
 - [ ] **Android Auto** — media3-session is already a dependency and the `MediaSession` exists.
       Both media services are plain `Service`s though, so the work is a `MediaLibraryService` and a
       browse tree, not just a manifest line. It overlaps driving mode in purpose but not in reach:
@@ -504,9 +592,9 @@ later phase again.
       nothing; the path is opt-in and off.
 - [ ] **Music Assistant gapless** — MA treats gapless as crossfade, so there is no server switch to
       ask for: joining two streams without a seam is client-side work here.
-- [ ] **Spatial swells** — lights that move across or around the room when the music does. Designed
-      but not built; see [PR #60](https://github.com/engabd11/CAMusic/pull/60), whose first
-      step is a detector that logs and renders nothing.
+- [ ] **Room gestures** shipped in v0.9.1 (see the shipped list above). The spatial swell detector
+      and rendering are built; the remaining work is device verification of detection frequency
+      against real music.
 
 ### Planned
 
@@ -522,8 +610,9 @@ later phase again.
 - [ ] **Bit-perfect exclusive-mode output** — the native AAudio I24 path is written and
       deliberately not compiled. `flac_decode()` is still a skeleton and the ring buffer is
       byte-level rather than frame-level. The largest single audio item on the roadmap.
-- [ ] **Wider instrumented coverage** — 538 unit tests cover protocol, clock, DSP, parsing, the
-      server list and the Philips Hue Entertainment sync engine, and two instrumented tests now pin
+- [ ] **Wider instrumented coverage** — 727 unit tests cover protocol, clock, DSP, parsing, the
+      server list, the Philips Hue Entertainment sync engine, speed alert logic, beat-matched
+      crossfade, and the creative light-show layers, and two instrumented tests now pin
       the two regressions that each cost a release. Nothing yet covers the audio path end to end,
       the service lifecycle, or the UI.
 - [ ] **A hosted crash backend** — crashes are stored locally and, with a token configured, filed
@@ -591,7 +680,7 @@ default. (The README said "no NDK needed" for several releases after that stoppe
 
 ```bash
 ./gradlew assembleRelease        # app/build/outputs/apk/release/app-release.apk
-./gradlew :app:testDebugUnitTest # 538 unit tests
+./gradlew :app:testDebugUnitTest # 727 unit tests
 ./gradlew :app:lintDebug
 ```
 
@@ -619,7 +708,11 @@ Releases are cut locally. See the header of
 ## Documentation
 
 - [Release notes](docs/release-notes/) — what changed in each release, and why
-- [v0.9 plan](docs/v0.9-plan.md) and [what's left of it](docs/v0.9-remaining.md) — the current
+- [v0.10 plan](docs/v0.10-plan.md) — the current plan: correctness fixes, new features, and
+  driving enhancements
+- [Creative light shows](docs/creative-light-shows.md) — the four additive Hue layers: music DNA,
+  emotional arc, phantom stage, and phone-as-conductor
+- [v0.9 plan](docs/v0.9-plan.md) and [what's left of it](docs/v0.9-remaining.md) — the previous
   plan, and the working queue that re-verified it against the source. The second is worth reading
   for the parts that turned out **wrong**: it opens with five load-bearing premises of the plan
   that did not survive being checked, and later records three of its own that did not survive

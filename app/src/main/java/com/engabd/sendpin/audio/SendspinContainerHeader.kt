@@ -9,8 +9,7 @@ import java.util.Base64
  * the raw elementary-stream bytes Sendspin puts on the wire.
  *
  * MediaCodec and ExoPlayer's extractors want different things from the *same* wire
- * data. MediaCodec's FLAC/Opus decoders take `codec_header` directly as CSD — see
- * [SendspinAudioEngine.createFlacDecoder]/[SendspinAudioEngine.createOpusDecoder] —
+ * data. MediaCodec's FLAC/Opus decoders take `codec_header` directly as CSD —
  * because MediaCodec is handed pre-parsed codec parameters out of band. ExoPlayer's
  * extractors instead *sniff* a real container from the byte stream itself, so this
  * class exists purely to wrap the same bytes in the minimal container each
@@ -73,8 +72,8 @@ object SendspinContainerHeader {
     /**
      * The MIME decoder, not the plain one: it tolerates embedded line breaks,
      * matching android.util.Base64.DEFAULT's leniency on the encoders elsewhere in
-     * this codebase (see [SendspinAudioEngine.createFlacDecoder]) without depending
-     * on the Android framework - this class stays plain-JVM testable because of it.
+     * this codebase, without depending on the Android framework - this class
+     * stays plain-JVM testable because of it.
      *
      * Also pads to a multiple of 4 first: unlike `android.util.Base64.DEFAULT`,
      * `java.util.Base64`'s decoders reject unpadded input, and nothing guarantees
@@ -91,7 +90,7 @@ object SendspinContainerHeader {
     /**
      * A canonical 44-byte WAV/RIFF header for the raw PCM Sendspin sends when the
      * negotiated codec is `"pcm"` - passthrough, no decoder involved, so the wire
-     * bytes *are* the sample data (see [SendspinAudioEngine.start]'s `isPcm` path).
+     * bytes *are* the sample data.
      *
      * The stream is live and unbounded, so the declared sizes can't be the real
      * ones - [Int.MAX_VALUE] is the standard placeholder streaming encoders use for

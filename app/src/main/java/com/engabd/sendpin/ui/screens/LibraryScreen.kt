@@ -507,7 +507,7 @@ private fun Browse(
                     "playlist" -> { { onPlaylistClick(entry) } }
                     else -> null
                 }
-                ItemRow(entry, viewModel, rows.of(entry), click, onLongPress)
+                ItemRow(entry, viewModel, rows.of(entry), click, onLongPress, swipeToQueue = true)
             }
         }
     }
@@ -597,7 +597,7 @@ private fun androidx.compose.foundation.lazy.grid.LazyGridScope.searchSection(
             "playlist" -> { { onPlaylistClick(entry) } }
             else -> null
         }
-        ItemRow(entry, viewModel, rows.of(entry), click, onLongPress)
+        ItemRow(entry, viewModel, rows.of(entry), click, onLongPress, swipeToQueue = true)
     }
 }
 
@@ -711,7 +711,7 @@ private fun androidx.compose.foundation.lazy.grid.LazyGridScope.typedSection(
                 "playlist" -> { { onPlaylistClick(entry) } }
                 else -> null
             }
-            ItemRow(entry, viewModel, rows.of(entry), click, onLongPress)
+            ItemRow(entry, viewModel, rows.of(entry), click, onLongPress, swipeToQueue = true)
         }
     }
 }
@@ -750,6 +750,6 @@ private fun androidx.compose.foundation.lazy.grid.LazyGridScope.downloadsSection
             key = { i, entry -> itemKey("d", i, entry) },
             contentType = { _, _ -> "row" },
             span = { _, _ -> full(gridCols) },
-        ) { _, entry -> ItemRow(entry, viewModel, rows.of(entry)) }
+        ) { _, entry -> ItemRow(entry, viewModel, rows.of(entry), swipeToQueue = true) }
     }
 }

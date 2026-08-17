@@ -1,6 +1,6 @@
 package com.engabd.sendpin.protocol
 
-import com.engabd.sendpin.audio.SendspinAudioEngine
+import com.engabd.sendpin.audio.SendspinPlaybackSupport
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -53,6 +53,6 @@ class SyncGateTest {
      */
     @Test
     fun `the mute deadline matches the head gate's`() {
-        assertEquals(SendspinAudioEngine.HeadGate.MAX_STALL_MS, SyncGate.MAX_MUTE_MS)
+        assertEquals(SendspinPlaybackSupport.HeadGate.MAX_STALL_MS, SyncGate.MAX_MUTE_MS)
     }
 }

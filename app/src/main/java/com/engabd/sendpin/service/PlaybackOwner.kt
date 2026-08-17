@@ -90,11 +90,11 @@ class PlaybackOwner(
         /**
          * The tap/lead pair installed in the Sendspin engine's render chain, or null.
          *
-         * Non-null only for [com.engabd.sendpin.audio.SendspinExoEngine] — the
-         * default [com.engabd.sendpin.audio.SendspinAudioEngine] writes straight to
-         * an `AudioTrack` and has no tap at all. So "MA is playing" and "MA's audio
-         * can be read" are *different questions*, and opening the light bridge on
-         * the first would leave the room reacting to the local player's silent tap.
+         * Set once [com.engabd.sendpin.audio.SendspinExoEngine] — the only Sendspin
+         * engine — is up and has installed its tap; null before that point, or when
+         * nothing is connected. So "MA is playing" and "MA's audio can be read" are
+         * *different questions*, and opening the light bridge on the first would
+         * leave the room reacting to a tap that isn't there yet.
          */
         val sendspinTap: Pair<AudioAnalysisTap, AudioLead>?,
     ) {
@@ -207,6 +207,27 @@ class PlaybackOwner(
         local = { local.previous() },
         selfSendspin = { sendspin.onMediaPrevious() },
         remote = { maNowPlaying.previous() },
+    )
+
+    /**
+     * Pause, explicitly — never a toggle. For callers a race must never turn into an
+     * accidental resume: auto-pause on a phone call is the one that exists today.
+     */
+    fun pause() = route(
+        local = { local.pause() },
+        selfSendspin = { sendspin.onMediaPause() },
+        remote = { maNowPlaying.pause() },
+    )
+
+    /**
+     * Toggle shuffle. Unlike transport, this isn't a Sendspin-vs-remote question —
+     * shuffle is a property of the Music Assistant *queue*, the same call whichever
+     * player is producing the sound — so both non-local cases route the same way.
+     */
+    fun toggleShuffle() = route(
+        local = { local.setShuffle(!local.shuffle.value) },
+        selfSendspin = { maNowPlaying.toggleShuffle() },
+        remote = { maNowPlaying.toggleShuffle() },
     )
 
     /**

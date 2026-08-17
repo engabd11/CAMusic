@@ -1,5 +1,9 @@
 # Sendpin Android — roadmap (resume + re-align to the current Sendspin spec)
 
+> **Status: historical.** All milestones M0–M4 have shipped. The app has grown well beyond
+> this scope — see the README roadmap section and `docs/improvement-roadmap.md` for the
+> current state. This document is kept as the original plan of record.
+
 ## Context
 
 The native **Android player** for the synco → Sendspin music-player program. The Home Assistant
@@ -48,7 +52,7 @@ clock, and the reconnect/ordering behaviour, then wiring the audio engine.
 
 - The JVM test suite is the main verifiable surface off-device — protocol
   (de)serialization, clock math, format negotiation, the light-sync DSP and room
-  geometry (`./gradlew :app:testDebugUnitTest`, ~526 tests). Everything that
+  geometry (`./gradlew :app:testDebugUnitTest`, ~538 tests). Everything that
   needs real hardware — audio output, the Hue bridge, the phone's own volume —
   is still unverified there, and that gap is the one thing standing between this
   and calling it production-ready.

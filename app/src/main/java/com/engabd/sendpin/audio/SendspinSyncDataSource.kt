@@ -14,8 +14,8 @@ import java.util.concurrent.TimeUnit
  * See Massdroid's `SendspinSyncEngine`, which this mirrors: the 200ms is the
  * agreed instant every client in the group plays at, not slack to trim.
  *
- * Unlike [SendspinAudioEngine], which scheduled only the *head* of a stream and
- * then let `AudioTrack` pace the rest itself, every frame is scheduled here -
+ * Unlike a raw-`AudioTrack` engine, which schedules only the *head* of a stream and
+ * then lets `AudioTrack` pace the rest itself, every frame is scheduled here -
  * there is no downstream `AudioTrack` in this pipeline, so [read] blocking is
  * the only pacing ExoPlayer's loading thread sees.
  */
@@ -29,7 +29,7 @@ class SendspinSyncDataSource(
         /** sendspin-js `SCHEDULE_HEADROOM_SEC` - the shared group playout phase. */
         const val SCHEDULE_HEADROOM_US = 200_000L
 
-        /** How long the head of a stream may hold for the clock to converge before giving up - matches [SendspinAudioEngine.HeadGate]. */
+        /** How long the head of a stream may hold for the clock to converge before giving up - matches [SendspinPlaybackSupport.HeadGate]. */
         const val MAX_STALL_MS = 3_000L
         const val HOLD_POLL_MS = 25L
 
@@ -48,7 +48,7 @@ class SendspinSyncDataSource(
     private enum class HeadGateDecision { HOLD, SCHEDULE, PLAY_NOW }
 
     /**
-     * Decided once, from the first frame, matching [SendspinAudioEngine.HeadGate]'s
+     * Decided once, from the first frame, matching [SendspinPlaybackSupport.HeadGate]'s
      * reasoning: scheduling only part of a stream - say, once the clock happens to
      * converge mid-stream - is exactly the stall a listener hears as a skip.
      * Either the whole stream is scheduled, or none of it is.
@@ -82,7 +82,7 @@ class SendspinSyncDataSource(
             if (!scheduleFrames) {
                 // The head gate gave up on the clock entirely for this stream -
                 // there is no trustworthy schedule to anchor against, so this is
-                // a best-effort "now" (matches SendspinAudioEngine.HeadGate.PLAY_NOW).
+                // a best-effort "now" (matches SendspinPlaybackSupport.HeadGate.PLAY_NOW).
                 armPresentationAnchor(MonotonicClock.nowUs())
                 return frame.payload
             }
