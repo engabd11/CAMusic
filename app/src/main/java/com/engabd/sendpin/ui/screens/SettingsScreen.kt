@@ -130,6 +130,8 @@ fun SettingsScreen(
      * to search and sort, which is a screen, not a settings card.
      */
     onOpenDownloads: () -> Unit = {},
+    /** Stats gets a screen of its own for the same reason. */
+    onOpenStats: () -> Unit = {},
 ) {
     // Back unwinds one level at a time, so a server's page returns to the server list
     // rather than all the way out of Settings.
@@ -231,7 +233,7 @@ fun SettingsScreen(
 
                             SettingsSection.APPEARANCE -> AppearanceSection(settings, accent, scope)
 
-                            SettingsSection.ABOUT -> AboutSection(accent)
+                            SettingsSection.ABOUT -> AboutSection(accent, onOpenStats)
                         }
                     }
                 }

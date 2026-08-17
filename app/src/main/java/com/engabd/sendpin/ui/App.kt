@@ -668,6 +668,9 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                             onBack = { navController.popBackStack() },
                         )
                     }
+                    screen("stats") {
+                        StatsScreen(onBack = { navController.popBackStack() })
+                    }
                     screen("speakers") { SpeakersScreen(onBack = { navController.popBackStack() }) }
                     screen("light_sync") {
                         LightSyncScreen(
@@ -694,6 +697,7 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                             detail = settingsDetail,
                             onDetail = { settingsDetail = it },
                             onOpenDownloads = { navController.navigate("downloads") },
+                            onOpenStats = { navController.navigate("stats") },
                         )
                     }
                     } // NavHost

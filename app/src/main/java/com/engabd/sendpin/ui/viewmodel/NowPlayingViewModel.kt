@@ -10,6 +10,8 @@ import com.engabd.sendpin.audio.LocalTrack
 import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.PlayerIdentity
+import com.engabd.sendpin.local.db.LocalMediaDatabase
+import com.engabd.sendpin.local.db.PlayHistoryEntity
 import com.engabd.sendpin.ma.MaApiClient
 import com.engabd.sendpin.ma.MaDspDetails
 import com.engabd.sendpin.ma.MaItem
@@ -133,6 +135,8 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     /** Live, not captured — see [PlayerIdentity.getPlayerId]. */
     private val myPlayerId: String get() = PlayerIdentity.getPlayerId(getApplication<Application>())
     private val api = (app as SendpinApp).maApi
+    /** The one play-history watch in flight, cancelled and replaced on every track change. */
+    private var historyJob: Job? = null
 
     /**
      * The process-scoped poller that owns `players/all` and `player_queues/all`.
@@ -1752,6 +1756,20 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                 if (_queueItems.value !is Load.Idle) loadQueue(silent = true)
             }
         }
+        // Listening history, for the Stats screen. Driven off [state] rather than
+        // separately for the MA and local paths — title/artist/album identity is
+        // already unified there, which a per-backend hook (mirroring how the
+        // scrobble path in LibraryViewModel is local-only) would not be.
+        viewModelScope.launch {
+            state.map { TrackIdentity(it.title, it.artist, it.album) to it.hasTrack }
+                .distinctUntilChanged()
+                .collect { (identity, hasTrack) ->
+                    historyJob?.cancel()
+                    historyJob = if (hasTrack && identity.title.isNotBlank()) {
+                        viewModelScope.launch { recordHistoryWhenPlayed(identity) }
+                    } else null
+                }
+        }
     }
 
     /**
@@ -1797,4 +1815,55 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // --- listening history ---------------------------------------------------
+
+    /** Title/artist/album, as the "is this still the same track" identity for history. */
+    private data class TrackIdentity(val title: String, val artist: String, val album: String)
+
+    /**
+     * Wait until [identity] has been listened to, then log it for the Stats screen.
+     *
+     * Same threshold as [com.engabd.sendpin.ma.LibraryViewModel.submitWhenPlayed]'s
+     * scrobble — half the track, or four minutes, whichever comes first — so a
+     * skip doesn't inflate the stats the same way it doesn't inflate a scrobble.
+     * Cancelled by the caller the moment the track identity changes, so this only
+     * ever runs to completion for the track it started watching.
+     */
+    private suspend fun recordHistoryWhenPlayed(identity: TrackIdentity) {
+        val played = state.map { s ->
+            when {
+                TrackIdentity(s.title, s.artist, s.album) != identity -> false
+                s.durationMs > 0 && s.positionMs >= minOf(s.durationMs / 2, HISTORY_THRESHOLD_MS) -> true
+                else -> null
+            }
+        }.first { it != null }
+        if (played != true) return
+        val s = state.value
+        try {
+            val dao = LocalMediaDatabase.get(getApplication()).playHistoryDao()
+            dao.insert(
+                PlayHistoryEntity(
+                    timestamp = System.currentTimeMillis(),
+                    trackId = s.currentQueueItemId ?: "${identity.title}|${identity.artist}|${identity.album}",
+                    title = identity.title,
+                    artist = identity.artist,
+                    album = identity.album,
+                    provider = s.source,
+                    codec = s.sourceQuality?.codec,
+                    sampleRate = s.sourceQuality?.sampleRate ?: 0,
+                    bitDepth = s.sourceQuality?.bitDepth ?: 0,
+                    durationPlayedMs = s.positionMs,
+                ),
+            )
+            dao.trimTo()
+        } catch (e: Exception) {
+            // Best-effort: a failed history write is not worth surfacing to the
+            // listener, and must not be allowed to look like a playback problem.
+        }
+    }
+
+    private companion object {
+        /** Matches LibraryViewModel.SCROBBLE_MAX_MS — the same "was this a real play" call. */
+        const val HISTORY_THRESHOLD_MS = 4 * 60 * 1000L
+    }
 }

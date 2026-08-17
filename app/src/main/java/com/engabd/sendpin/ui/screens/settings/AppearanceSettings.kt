@@ -10,6 +10,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
@@ -143,7 +144,7 @@ internal fun AppearanceSection(settings: AppSettings, accent: Color, scope: Coro
 
 /** Version, licence, where the code is, and how crashes are reported. */
 @Composable
-internal fun AboutSection(accent: Color) {
+internal fun AboutSection(accent: Color, onOpenStats: () -> Unit = {}) {
     val context = LocalContext.current
     val settings = remember(context) { AppSettings(context) }
     val scope = rememberCoroutineScope()
@@ -192,6 +193,14 @@ internal fun AboutSection(accent: Color) {
                 )
             }
         }
+
+        NavRow(
+            Icons.Default.BarChart,
+            "Listening stats",
+            "This week's top artists, total time, and format breakdown",
+            accent,
+            onClick = onOpenStats,
+        )
 
         SettingsCard(
             title = "Crash reporting",
