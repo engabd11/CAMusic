@@ -21,13 +21,22 @@ import java.nio.ByteOrder
  * to) rather than a full custom `Renderer`. There is no reference to port here:
  * Massdroid doesn't route through ExoPlayer's `AudioSink`/`AudioProcessor` SPI
  * at all - it calls the native engine directly from its own MediaCodec decode
- * loop. This is new integration code, unverified beyond compiling.
+ * loop, tagging every chunk with its own `server_ts_us` as it goes. Going
+ * through ExoPlayer's extractors instead means that association is lost by the
+ * time bytes reach here, which is what the next paragraph is about.
  *
  * Presentation time: [handleBuffer] gets ExoPlayer's own `presentationTimeUs`,
- * which is *media-relative* (elapsed samples since the stream started), not the
- * original Sendspin `server_ts_us` - that association is long gone by the time
- * bytes reach here. See [SendspinDataSource.presentationLocalUs] for how the
- * absolute local target is recovered from it.
+ * which is *media-relative* (elapsed samples since the stream started) - except
+ * that on-device measurement (#59, #67) found the WAV/FLAC/Ogg extractors don't
+ * actually start it at 0: they seed it from whatever `timeUs` the loader passes
+ * to `Extractor.seek(position, timeUs)`, which isn't guaranteed to be 0 for a
+ * freshly configured stream and measured as ~1,000,000 seconds on the first
+ * buffer of one. [mediaTimeBaselineUs] re-zeroes against this stream's own
+ * first buffer instead of trusting the extractor's base - the *increments*
+ * from there on are real elapsed samples regardless of format (confirmed by
+ * reading all three extractors), which is what the arithmetic in that
+ * measurement showed too. See [SendspinDataSource.presentationLocalUs] for how
+ * the absolute local target is recovered from the corrected value.
  *
  * [tap] is fed a copy of every buffer, independent of the copy that actually
  * reaches Oboe: a bug in the tap's `AudioProcessor` contract (which this drives
@@ -96,6 +105,20 @@ class OboeAudioSink(
     private var firstWriteLogged = false
 
     /**
+     * The `presentationTimeUs` of this stream's first buffer, or null before it arrives.
+     *
+     * ExoPlayer's own extractors (Wav/Flac/Ogg alike — confirmed by reading all three: they
+     * share the shape `startTimeUs + elapsedSincePosition`) seed `presentationTimeUs` from
+     * whatever `timeUs` the loader passes to `Extractor.seek(position, timeUs)`, which is not
+     * guaranteed to be 0 for a freshly configured stream — see #59/#67, where it measured as
+     * ~1,000,000 seconds on the very first buffer. What *is* guaranteed, and confirmed correct
+     * by that measurement, is that every buffer after the first advances by real elapsed
+     * samples. So this stream's own first observed value becomes the zero point instead of
+     * trusting the extractor's base — see [handleBuffer].
+     */
+    private var mediaTimeBaselineUs: Long? = null
+
+    /**
      * Back pressure or a fault — see [SinkStallDetector], where that judgement lives.
      */
     private val stall = SinkStallDetector()
@@ -141,6 +164,7 @@ class OboeAudioSink(
         configuredFormat = format
         firstWriteLogged = false
         timelineLogged = false
+        mediaTimeBaselineUs = null
         stall.reset()
         val drift = driftCorrection()
         // Logged before the call, so a native start that never returns is still
@@ -196,10 +220,12 @@ class OboeAudioSink(
         // with nothing logged and no error. Drift correction has a defined answer for a
         // missing anchor already (`presentationLocalUs` falls back to "now"), so fall
         // back to that rather than dropping samples on the floor.
+        val baselineUs = mediaTimeBaselineUs ?: presentationTimeUs.also { mediaTimeBaselineUs = it }
+        val relativeMediaTimeUs = presentationTimeUs - baselineUs
         val source = currentDataSource()
-        val presentationLocalUs = source?.presentationLocalUs(presentationTimeUs)
-            ?: (com.engabd.sendpin.protocol.MonotonicClock.nowUs() + presentationTimeUs)
-        logTimeline(source, presentationTimeUs, presentationLocalUs)
+        val presentationLocalUs = source?.presentationLocalUs(relativeMediaTimeUs)
+            ?: (com.engabd.sendpin.protocol.MonotonicClock.nowUs() + relativeMediaTimeUs)
+        logTimeline(source, relativeMediaTimeUs, baselineUs, presentationLocalUs)
 
         val framesAccepted = nativeOutput.write(scratch, 0, remaining, presentationLocalUs)
         val bytesAccepted = (framesAccepted * bytesPerFrame).coerceIn(0, remaining)
@@ -230,17 +256,21 @@ class OboeAudioSink(
      * missing.
      *
      * `anchor` is what [SendspinDataSource] armed from the frame it released; `media` is
-     * ExoPlayer's own stream-relative time; `local` is their sum, which is what the ring
-     * gets. `boot` and `mono` are printed because the two differ by suspend time and the
-     * conversion between them at the JNI boundary is one of the things under suspicion.
+     * ExoPlayer's own stream-relative time, re-zeroed against this stream's first buffer (see
+     * [mediaTimeBaselineUs] — #59/#67 measured the extractor's own base as ~1,000,000 seconds
+     * on the first buffer, not 0); `mediaBase` is what got subtracted, logged so a regression
+     * shows up here again instead of needing to be re-discovered; `local` is anchor+media, which
+     * is what the ring gets. `boot` and `mono` are printed because the two differ by suspend
+     * time and the conversion between them at the JNI boundary is one of the things under
+     * suspicion.
      */
-    private fun logTimeline(source: SendspinDataSource?, mediaTimeUs: Long, localUs: Long) {
+    private fun logTimeline(source: SendspinDataSource?, mediaTimeUs: Long, mediaBaseUs: Long, localUs: Long) {
         if (timelineLogged) return
         timelineLogged = true
         Log.i(
             TAG,
             "timeline (producer): anchor=${source?.presentationAnchorUs} media=$mediaTimeUs " +
-                "local=$localUs boot=${com.engabd.sendpin.protocol.MonotonicClock.nowUs()} " +
+                "mediaBase=$mediaBaseUs local=$localUs boot=${com.engabd.sendpin.protocol.MonotonicClock.nowUs()} " +
                 "mono=${System.nanoTime() / 1000} source=${source?.javaClass?.simpleName}",
         )
     }
