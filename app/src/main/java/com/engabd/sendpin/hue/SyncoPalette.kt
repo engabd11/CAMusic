@@ -99,23 +99,6 @@ class Palette(val colors: List<Rgb>, weights: List<Float>? = null) {
     }
 }
 
-/** HSV to RGB. */
-private fun hsvToRgb(h: Float, s: Float, v: Float): Rgb {
-    val i = (h * 6).toInt()
-    val f = h * 6 - i
-    val p = v * (1 - s)
-    val q = v * (1 - f * s)
-    val t = v * (1 - (1 - f) * s)
-    return when (i % 6) {
-        0 -> Triple(v, t, p)
-        1 -> Triple(q, v, p)
-        2 -> Triple(p, v, t)
-        3 -> Triple(p, q, v)
-        4 -> Triple(t, p, v)
-        else -> Triple(v, p, q)
-    }
-}
-
 /** The 16 static colour schemes (dynamic ones use album art). */
 private val STATIC_SCHEMES = mapOf(
     ColorScheme.SUNSET to Palette(listOf(

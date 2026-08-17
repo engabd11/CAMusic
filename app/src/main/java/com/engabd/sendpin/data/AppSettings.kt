@@ -154,6 +154,15 @@ class AppSettings(private val context: Context) {
          * on real tracks in a real room, the honest default is off.
          */
         private val LIGHT_SYNC_SPATIAL = booleanPreferencesKey("light_sync_spatial")
+
+        // Four creative light-show layers — see `docs/creative-light-shows.md`.
+        // Each is additive on top of the existing Synco show and off by
+        // default, for the same reason LIGHT_SYNC_SPATIAL is: unproven on a
+        // real track in a real room until a user turns it on.
+        private val MUSIC_DNA_ENABLED = booleanPreferencesKey("music_dna_enabled")
+        private val EMOTIONAL_ARC_ENABLED = booleanPreferencesKey("emotional_arc_enabled")
+        private val PHANTOM_STAGE_ENABLED = booleanPreferencesKey("phantom_stage_enabled")
+        private val PHONE_CONDUCTOR_ENABLED = booleanPreferencesKey("phone_conductor_enabled")
         // Whether the onboarding wizard has been completed or skipped. When false, the
         // app shows the wizard instead of the main UI on launch.
         private val ONBOARDING_COMPLETED = booleanPreferencesKey("onboarding_completed")
@@ -898,6 +907,18 @@ class AppSettings(private val context: Context) {
     val lightSyncSpatial: Flow<Boolean> =
         context.dataStore.data.map { it[LIGHT_SYNC_SPATIAL] ?: false }
 
+    /** Layer 1 — a deterministic per-track visual fingerprint. Off by default. */
+    val musicDnaEnabled: Flow<Boolean> = context.dataStore.data.map { it[MUSIC_DNA_ENABLED] ?: false }
+
+    /** Layer 2 — colour temperature follows the song's live structure. Off by default. */
+    val emotionalArcEnabled: Flow<Boolean> = context.dataStore.data.map { it[EMOTIONAL_ARC_ENABLED] ?: false }
+
+    /** Layer 3 — instrument groups at fixed positions in the room. Off by default. */
+    val phantomStageEnabled: Flow<Boolean> = context.dataStore.data.map { it[PHANTOM_STAGE_ENABLED] ?: false }
+
+    /** Layer 4 — phone motion as a lighting controller. Off by default. */
+    val phoneConductorEnabled: Flow<Boolean> = context.dataStore.data.map { it[PHONE_CONDUCTOR_ENABLED] ?: false }
+
     suspend fun setHueBridge(
         ip: String,
         appKey: String,
@@ -1037,6 +1058,22 @@ class AppSettings(private val context: Context) {
 
     suspend fun setLightSyncSpatial(on: Boolean) {
         context.dataStore.edit { it[LIGHT_SYNC_SPATIAL] = on }
+    }
+
+    suspend fun setMusicDnaEnabled(on: Boolean) {
+        context.dataStore.edit { it[MUSIC_DNA_ENABLED] = on }
+    }
+
+    suspend fun setEmotionalArcEnabled(on: Boolean) {
+        context.dataStore.edit { it[EMOTIONAL_ARC_ENABLED] = on }
+    }
+
+    suspend fun setPhantomStageEnabled(on: Boolean) {
+        context.dataStore.edit { it[PHANTOM_STAGE_ENABLED] = on }
+    }
+
+    suspend fun setPhoneConductorEnabled(on: Boolean) {
+        context.dataStore.edit { it[PHONE_CONDUCTOR_ENABLED] = on }
     }
 
     // ── Crash reporting ────────────────────────────────────────────────────

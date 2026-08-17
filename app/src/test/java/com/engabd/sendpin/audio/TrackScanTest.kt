@@ -33,6 +33,7 @@ class TrackScanTest {
         bpm: Float = 120f,
         confidence: Float = 0.7f,
         downbeat: Int = 0,
+        key: MusicalKey? = null,
     ): TrackScan {
         val period = 60f / bpm
         return TrackScan(
@@ -52,6 +53,7 @@ class TrackScanTest {
                 curve = floatArrayOf(0f, 0.5f, 1f), curveRateHz = 1f,
             ),
             melbankRef = FloatArray(MELBANK_BINS) { (it + 1) / MELBANK_BINS.toFloat() },
+            key = key,
         )
     }
 
@@ -166,12 +168,29 @@ class TrackScanTest {
         assertEquals(0.03f, profile.mood, 1e-5f)
     }
 
+    // ── Key detection versioning ───────────────────────────────────────────
+
+    @Test
+    fun `the analyser version reflects key detection`() {
+        assertEquals(2, TrackScan.ANALYSER_VERSION)
+    }
+
+    @Test
+    fun `a scan from before key detection is outdated`() {
+        val preKey = scanOf().copy(analyserVersion = 1)
+        assertTrue(preKey.outdated, "an analyser-version-1 scan should be flagged for re-analysis")
+        assertNull(preKey.key)
+
+        val current = preKey.copy(analyserVersion = TrackScan.ANALYSER_VERSION)
+        assertFalse(current.outdated)
+    }
+
     // ── The store ──────────────────────────────────────────────────────────
 
     @Test
     fun `a scan survives the round trip to disk`() {
         val store = TrackScanStore(temp)
-        val original = scanOf()
+        val original = scanOf(key = MusicalKey(tonic = 7, mode = MusicalMode.MINOR, confidence = 0.62f))
         store.save("track-1", original)
 
         // A fresh store, so the answer cannot come out of the memory map.
@@ -202,6 +221,48 @@ class TrackScanTest {
         assertEquals(original.intensity!!.dynamics, profile.dynamics)
         assertEquals(original.intensity!!.curveRateHz, profile.curveRateHz)
         assertEquals(original.intensity!!.curve.size, profile.curve.size)
+
+        val key = loaded.key
+        assertNotNull(key, "the key should have survived the round trip")
+        assertEquals(7, key.tonic)
+        assertEquals(MusicalMode.MINOR, key.mode)
+        assertEquals(0.62f, key.confidence, 1f / 255f)
+    }
+
+    @Test
+    fun `a scan with no key round-trips too`() {
+        val store = TrackScanStore(temp)
+        store.save("no-key", scanOf(key = null))
+        val loaded = TrackScanStore(temp).load("no-key")
+        assertNotNull(loaded)
+        assertNull(loaded.key)
+    }
+
+    @Test
+    fun `a format-2 file, written before key detection existed, still reads with no key`() {
+        // A hand-rolled format-2 file: everything format 3 added is simply
+        // absent, which is exactly what every scan on disk before this
+        // release looks like.
+        val store = TrackScanStore(temp)
+        temp.mkdirs()
+        val file = java.io.File(temp, TrackScanStore.fileName("legacy"))
+        java.io.DataOutputStream(file.outputStream()).use { out ->
+            out.writeInt(0x43414D53)
+            out.writeInt(2)
+            out.writeFloat(30f); out.writeFloat(120f); out.writeFloat(0.7f)
+            out.writeInt(0)
+            out.writeInt(0) // beats
+            out.writeInt(0) // accents
+            out.writeInt(0) // sections
+            out.writeBoolean(false) // no intensity profile
+            out.writeInt(0) // melbankRef
+            out.writeInt(1) // analyserVersion
+            out.writeFloat(30f) // analysedS
+        }
+        val loaded = store.load("legacy")
+        assertNotNull(loaded, "a format-2 file must still be readable")
+        assertNull(loaded.key)
+        assertTrue(loaded.outdated)
     }
 
     @Test

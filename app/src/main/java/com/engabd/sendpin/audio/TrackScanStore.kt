@@ -207,6 +207,18 @@ class TrackScanStore(private val dir: File) {
         // fields with what a v1 file implies rather than refusing it.
         out.writeInt(scan.analyserVersion)
         out.writeFloat(scan.analysedS)
+
+        // ── Format 3 tail ────────────────────────────────────────────────
+        // Same append-only reasoning: a format-2 file simply predates key
+        // detection, which is exactly what the ANALYSER_VERSION bump exists
+        // to flag for re-analysis.
+        val key = scan.key
+        out.writeBoolean(key != null)
+        if (key != null) {
+            out.writeByte(key.tonic)
+            out.writeByte(key.mode.ordinal)
+            out.writeByte(quantise(key.confidence))
+        }
     }
 
     private fun read(file: File): TrackScan? = DataInputStream(file.inputStream().buffered()).use { input ->
@@ -255,6 +267,37 @@ class TrackScanStore(private val dir: File) {
             val analyserVersion = if (format >= 2) input.readInt() else 0
             val analysedS = if (format >= 2) input.readFloat() else durationS
 
+            // A format-1 or format-2 file predates key detection. It simply has
+            // no key — analyserVersion above is already what flags it outdated,
+            // so there is nothing to fill in here beyond null.
+            //
+            // Both bytes are range-checked for the same reason readIntBounded
+            // exists: a corrupt tonic would otherwise become a nonsense hue, and
+            // a corrupt mode would index a two-element enum out of bounds. The
+            // caller treats *any* throw from here as "this file will never
+            // parse" and deletes it, so three bad bytes would cost the whole
+            // scan — a library's worth of decoding to get back. A key is the one
+            // thing in the file that is optional, so dropping just the key and
+            // keeping the beat grid is strictly the better trade.
+            //
+            // Dropped silently rather than logged, and that is fine: a keyless
+            // scan is exactly a pre-key-detection scan, which every consumer
+            // already handles (see MusicDnaLayer's no-key fingerprint). Logging
+            // here would also mean this function could no longer be unit-tested
+            // — `android.util.Log` is a throwing stub under plain JVM tests.
+            val key = if (format >= 3 && input.readBoolean()) {
+                val tonic = input.readByte().toInt() and 0xFF
+                val mode = MusicalMode.entries.getOrNull(input.readByte().toInt() and 0xFF)
+                val conf = dequantise(input.readByte())
+                if (mode != null && tonic in 0..11) {
+                    MusicalKey(tonic = tonic, mode = mode, confidence = conf)
+                } else {
+                    null
+                }
+            } else {
+                null
+            }
+
             TrackScan(
                 durationS = durationS,
                 bpm = bpm,
@@ -267,6 +310,7 @@ class TrackScanStore(private val dir: File) {
                 melbankRef = melbankRef,
                 analyserVersion = analyserVersion,
                 analysedS = analysedS,
+                key = key,
             )
         } catch (e: EOFException) {
             null  // truncated: treat as absent and rescan
@@ -295,8 +339,8 @@ class TrackScanStore(private val dir: File) {
         /** "CAMS" — enough to reject a file that is not one of ours at all. */
         private const val MAGIC = 0x43414D53
 
-        private const val FORMAT = 2
-        private val COMPATIBLE_FORMATS = setOf(1, 2)
+        private const val FORMAT = 3
+        private val COMPATIBLE_FORMATS = setOf(1, 2, 3)
 
         private const val SUFFIX = ".scan"
 

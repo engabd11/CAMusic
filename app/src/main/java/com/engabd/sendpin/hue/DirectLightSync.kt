@@ -321,6 +321,80 @@ class DirectLightSync(
     private var spatialEnabled = false
     private var reducedMotion = false
 
+    // ── Light show layers ──────────────────────────────────────────────────
+    //
+    // Four additive, off-by-default post-processing layers — see
+    // `docs/creative-light-shows.md`. Each is a small pure `LightShowLayer`;
+    // [layerChain] is rebuilt whenever a flag flips (rare — a settings
+    // toggle, not a per-frame event) rather than filtered per frame.
+
+    /** Normalised room-cube position of every channel, cached alongside [channels]. */
+    private var roomPositions: Map<Int, Vec3> = emptyMap()
+
+    /** What shape the lamps are in, cached alongside [channels]. */
+    private var roomTopology: RoomTopology = RoomTopology.CLUSTER
+
+    /** Seconds into the current track, published from [onAnalysisFrame]. */
+    @Volatile private var latestPositionS: Float = -1f
+
+    /**
+     * The user's brightness ceiling, mirrored from [SyncoEngine.brightness] so
+     * the layer chain can see it.
+     *
+     * The engine applies it as the last step of its own render, and the chain
+     * runs after that, so a layer with no view of it would be adding light back
+     * on top of a ceiling the user set. Written by [applyBrightness] alongside
+     * every write to the engine's own copy, so the two cannot drift.
+     */
+    @Volatile private var layerBrightness = 1f
+
+    /** Set the brightness ceiling on the engine and on the layer chain together. */
+    private fun applyBrightness(fraction: Float) {
+        val clamped = fraction.coerceIn(0f, 1f)
+        engine?.brightness = clamped
+        layerBrightness = clamped
+    }
+
+    private val musicDnaLayer = MusicDnaLayer()
+    private val emotionalArcLayer = EmotionalArcLayer()
+    private val phantomStageLayer = PhantomStageLayer()
+    private val phoneConductorLayer = PhoneConductorLayer(context)
+
+    /**
+     * Every layer, in chain order.
+     *
+     * The order is the contract: [PhoneConductorLayer] modulates the combined
+     * output of everything else, so it goes last. [layerChain] is this list
+     * filtered by [enabledLayerIds], which is what keeps enabling one layer from
+     * changing where the others sit relative to each other.
+     */
+    private val allLayers = listOf(musicDnaLayer, emotionalArcLayer, phantomStageLayer, phoneConductorLayer)
+
+    private val layerLock = Any()
+
+    /** [LightShowLayer.id]s of the layers currently switched on. Guarded by [layerLock]. */
+    private val enabledLayerIds = HashSet<String>()
+
+    @Volatile private var layerChain: LayerChain = LayerChain.EMPTY
+
+    /**
+     * Switch one layer on or off and rebuild the chain.
+     *
+     * A layer coming *on* is reset first, so it starts from where the room
+     * actually is rather than from wherever it was when the user last switched
+     * it off — an Emotional Arc switched off mid-drop should not resume at that
+     * drop's temperature an hour later. Only the layer that changed is reset:
+     * flipping one toggle must not disturb a layer that was already running.
+     */
+    private fun setLayerEnabled(layer: LightShowLayer, on: Boolean) = synchronized(layerLock) {
+        val changed = if (on) enabledLayerIds.add(layer.id) else enabledLayerIds.remove(layer.id)
+        if (changed && on) layer.reset()
+        layerChain = LayerChain(allLayers.filter { it.id in enabledLayerIds })
+    }
+
+    private val phoneConductorEnabled: Boolean
+        get() = synchronized(layerLock) { phoneConductorLayer.id in enabledLayerIds }
+
     // ── Track scan state ───────────────────────────────────────────────────
     //
     // Written by the orchestrator scope as the track changes, read by the
@@ -492,6 +566,8 @@ class DirectLightSync(
                 ?: throw DtlsException("No entertainment area found on the bridge")
 
             channels = config.channels
+            roomPositions = normalizePositions(channels)
+            roomTopology = classifyTopology(channels)
 
             // 2. Start the stream on the bridge (PUT action:start).
             // Passing our own application id lets the bridge tell "someone else has
@@ -529,6 +605,11 @@ class DirectLightSync(
                 it.effect = SyncEffect.fromWire(settings.lightSyncEffect.first())
                 it.setScheme(ColorScheme.fromWire(settings.lightSyncColor.first()))
                 it.brightness = settings.lightSyncBrightness.first() / 100f
+                // Not via applyBrightness: the [engine] field is not assigned
+                // until this `also` block returns, so it would write the ceiling
+                // to the *previous* engine (or to nothing at all on the first
+                // stream). Mirrored by hand here, and only here.
+                layerBrightness = it.brightness
                 it.setTunables(activeTunables)
                 // Apply cached album colours if the collector already extracted
                 // them before the engine existed. Without this the first track's
@@ -549,6 +630,11 @@ class DirectLightSync(
             latestGrid = null
             latestStructure = null
             latestGesture = null
+            latestPositionS = -1f
+            // A new session starts from the room as it is, not from whatever the
+            // last one left behind — the layers outlive any one stream, since
+            // they are plain fields on this object rather than per-session state.
+            layerChain.reset()
             // The analyzer's frame period, not the render period: these step once
             // per hop, off the analyzer's own clock.
             val framePeriod = ANALYSIS_HOP.toFloat() / ANALYSIS_SAMPLE_RATE
@@ -565,6 +651,12 @@ class DirectLightSync(
             running.set(true)
             _active.value = true
             _error.value = null
+
+            // The setting may already have been on when this session started —
+            // its own collector only fires on a *change*, and running was false
+            // the last time it did. Battery consciousness: sensors only ever
+            // run while both the setting and a stream are live.
+            if (phoneConductorEnabled) phoneConductorLayer.start()
 
             // 6. Start the render/send loop and the keepalive.
             renderJob = scope.launch { renderLoop() }
@@ -610,6 +702,11 @@ class DirectLightSync(
         structure = null
         latestGrid = null
         latestStructure = null
+
+        // Always, regardless of the setting's last-known value: a session
+        // stop must tear sensors down, not leave them registered because the
+        // last toggle collector happened to fire while a stream was up.
+        phoneConductorLayer.stop()
 
         renderJob?.cancel(); renderJob = null
         keepaliveJob?.cancel(); keepaliveJob = null
@@ -678,6 +775,10 @@ class DirectLightSync(
         // actually wired (see rewireTap).
         val pos = wiredTap?.analysisPositionS ?: Float.NaN
         if (!pos.isNaN()) {
+            // Published unconditionally (not just once a scan is committed) —
+            // the light-show layers want "where in the track are we" whether
+            // or not a scan exists for it.
+            latestPositionS = pos
             // Decided once per track, and only inside the window. Before it, a
             // missing scan means "not arrived yet", not "there isn't one".
             if (mapCommitted == null) {
@@ -781,6 +882,12 @@ class DirectLightSync(
         // seeking does not make it less true. Only the per-query state goes.
         mapPrevPos = null
         mapSection = null
+        // For the same reason the structure tracker resets: a layer's smoothed
+        // temperature, decaying flash or accumulated phase describes the audio
+        // that was playing, and a new track is not that audio. Each layer
+        // decides what of its own state is per-track and what outlives it —
+        // Phantom Stage's room layout, for instance, deliberately survives.
+        layerChain.reset()
     }
 
     // ── Render loop ─────────────────────────────────────────────────────────
@@ -852,10 +959,34 @@ class DirectLightSync(
             delayQueue.offer(colours, now)
             val held = delayQueue.poll(now) ?: continue
 
+            // The creative light-show layers — see `docs/creative-light-shows.md`.
+            // Skipped while idle: `frame` is SILENCE and `activeScan`/
+            // `latestStructure` are stale in that branch, so every layer would
+            // either no-op or read garbage anyway. Applied before Safety, not
+            // after, so every layer's output still gets flash-safety and
+            // rate-limiting for free.
+            val layered = if (isIdle) {
+                held
+            } else {
+                layerChain.apply(
+                    held,
+                    LayerContext(
+                        frame = frame,
+                        structure = latestStructure,
+                        scan = activeScan,
+                        positions = roomPositions,
+                        topology = roomTopology,
+                        trackPositionS = latestPositionS,
+                        dt = dt,
+                        brightness = layerBrightness,
+                    ),
+                )
+            }
+
             // Safety runs on what is about to be sent, at the moment it is sent —
             // its flash budget is measured in wall-clock seconds, so it has to
             // sit after the delay queue rather than before it.
-            val guarded = safety?.process(held, dt) ?: held
+            val guarded = safety?.process(layered, dt) ?: layered
             val due = rateLimiter.process(guarded, dt)
 
             // The bridge relays at 25 Hz over Zigbee and the spec asks for a
@@ -1377,7 +1508,7 @@ class DirectLightSync(
             }
         }
         scope.launch {
-            settings.lightSyncBrightness.collect { pct -> engine?.brightness = pct.coerceIn(0, 100) / 100f }
+            settings.lightSyncBrightness.collect { pct -> applyBrightness(pct.coerceIn(0, 100) / 100f) }
         }
         scope.launch {
             settings.lightSyncTunables.collect { tunables ->
@@ -1389,6 +1520,19 @@ class DirectLightSync(
             settings.lightSyncSpatial.collect { on ->
                 spatialEnabled = on
                 applySpatialGestures()
+            }
+        }
+        scope.launch { settings.musicDnaEnabled.collect { setLayerEnabled(musicDnaLayer, it) } }
+        scope.launch { settings.emotionalArcEnabled.collect { setLayerEnabled(emotionalArcLayer, it) } }
+        scope.launch { settings.phantomStageEnabled.collect { setLayerEnabled(phantomStageLayer, it) } }
+        scope.launch {
+            settings.phoneConductorEnabled.collect { on ->
+                setLayerEnabled(phoneConductorLayer, on)
+                // Battery consciousness: sensors only run while both this
+                // setting and a stream are live. The stream-start case (the
+                // setting already being on when start() runs) is handled
+                // there, since this collector only fires on a *change*.
+                if (on && running.get()) phoneConductorLayer.start() else phoneConductorLayer.stop()
             }
         }
         scope.launch {
@@ -1422,7 +1566,7 @@ class DirectLightSync(
 
     /** As [previewTunables], for the brightness ceiling. [pct] is 0..100. */
     fun previewBrightness(pct: Int) {
-        engine?.brightness = pct.coerceIn(0, 100) / 100f
+        applyBrightness(pct.coerceIn(0, 100) / 100f)
     }
 
     /** Album-art colours, pushed by the player when the track changes. */

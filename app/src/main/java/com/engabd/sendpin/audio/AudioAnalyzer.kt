@@ -111,8 +111,13 @@ private const val MID_RISE_RATIO = 1.05f
 // Live chroma range: narrower than offline analysis because the 1024-sample
 // window's ~21.5 Hz bins are too coarse to name pitches below ~80 Hz, and
 // cymbal/hiss harmonics above ~2 kHz muddy the key. Matches syncoV2.
-private const val CHROMA_FMIN = 80f
-private const val CHROMA_FMAX = 2000f
+//
+// Internal, not private: [OfflineExtractor] reuses these exact bounds to
+// accumulate a whole-track chroma vector for key detection, and a second
+// copy of either number would be a silent desync from the live analyzer the
+// same way a second copy of the FFT geometry constants above would be.
+internal const val CHROMA_FMIN = 80f
+internal const val CHROMA_FMAX = 2000f
 
 // Live tempo estimate: how many recent beat times to keep, and the valid
 // interval window (30-240 BPM). Matches syncoV2's _estimate_tempo().
