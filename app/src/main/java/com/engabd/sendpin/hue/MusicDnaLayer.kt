@@ -97,7 +97,19 @@ class MusicDnaLayer : LightShowLayer {
                     // [SongPalette] already established for the Song colour
                     // scheme: adjacent semitones stay adjacent in hue.
                     baseHue = key.tonic / 12f,
-                    hueBlendWeight = HUE_BLEND_WEIGHT,
+                    // Weighted by how sure the detector is. [detectKey] measures
+                    // confidence as the gap between the best and second-best
+                    // correlation precisely because two keys a fifth apart
+                    // scoring alike is this method's standard failure, and a
+                    // coin-flip between them has no business anchoring the room
+                    // as firmly as a clean read. At zero confidence this lands
+                    // exactly on the no-key weight below, so an unresolvable key
+                    // degrades into "no key" rather than falling off a step.
+                    hueBlendWeight = lerp(
+                        HUE_BLEND_WEIGHT_NO_KEY,
+                        HUE_BLEND_WEIGHT,
+                        key.confidence.coerceIn(0f, 1f),
+                    ),
                     saturationMul = if (key.mode == MusicalMode.MINOR) MINOR_SATURATION_MUL else 1f,
                 )
             } else {
@@ -114,10 +126,18 @@ class MusicDnaLayer : LightShowLayer {
             }
         }
 
+        private fun lerp(a: Float, b: Float, t: Float): Float = a + (b - a) * t
+
         private const val DEFAULT_WAVE_HZ = 0.5f
         private const val NEUTRAL_HUE = 0.58f
 
-        /** How strongly the fingerprint's hue pulls the engine's own colour. */
+        /**
+         * How strongly the fingerprint's hue pulls the engine's own colour, at
+         * full and at zero key confidence respectively. The floor is not zero:
+         * tempo and section structure still make the fingerprint the track's
+         * own, and the anchor hue is only a lighter touch when the key behind it
+         * is a guess.
+         */
         private const val HUE_BLEND_WEIGHT = 0.35f
         private const val HUE_BLEND_WEIGHT_NO_KEY = 0.15f
 

@@ -110,6 +110,42 @@ class MusicDnaLayerTest {
     }
 
     @Test
+    fun `an unsure key anchors the hue less firmly than a clean read`() {
+        // Same tonic, same everything — only how much detectKey trusted it
+        // differs. A fifth-apart coin flip should not steer the room as hard as
+        // an unambiguous read.
+        fun hueOf(confidence: Float): Float {
+            val out = MusicDnaLayer().apply(
+                redBase,
+                contextOf(scanOf(key = MusicalKey(4, MusicalMode.MAJOR, confidence)), posS = 5f),
+            )
+            return rgbToHsv(out.getValue(1))[0]
+        }
+
+        // Base is pure red (hue 0) and the anchor is above it, so a stronger
+        // pull means a larger hue.
+        assertTrue(hueOf(1f) > hueOf(0.1f), "a confident key should pull hue further than an unsure one")
+    }
+
+    @Test
+    fun `a zero-confidence key pulls exactly as weakly as no key at all`() {
+        // The anchor hue still comes from the tonic — a zero-confidence key is
+        // still a guess at E, not an absence — but the *weight* behind it must
+        // land on the no-key weight rather than falling off a step as
+        // confidence approaches zero.
+        val out = MusicDnaLayer().apply(
+            redBase,
+            contextOf(scanOf(key = MusicalKey(4, MusicalMode.MAJOR, 0f)), posS = 5f),
+        )
+        assertEquals(
+            blendHue(current = 0f, target = 4f / 12f, weight = 0.15f),
+            rgbToHsv(out.getValue(1))[0],
+            1e-4f,
+            "at zero confidence the hue should be blended at the no-key weight",
+        )
+    }
+
+    @Test
     fun `the brightness arc lifts within the ceiling, never above it`() {
         // The arc's top end is a >1x multiplier by design, so a full-value input
         // is exactly the case that used to escape the user's setting.
