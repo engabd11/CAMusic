@@ -223,6 +223,8 @@ fun AlbumDetailScreen(
                                     onPlay = { viewModel.playTrack(track) },
                                     onFavorite = { viewModel.toggleFavorite(track) },
                                     onLongPress = { actionsFor = track },
+                                    onAddToQueue = { viewModel.enqueueTrack(track, "add") },
+                                    onPlayNext = { viewModel.enqueueTrack(track, "next") },
                                 )
                             }
                             runningIndex += group.tracks.size
@@ -526,15 +528,37 @@ internal fun TrackRow(
     onFavorite: (() -> Unit)? = null,
     /** Long-press opens the queue actions. Null leaves the row tap-only. */
     onLongPress: (() -> Unit)? = null,
+    /**
+     * One-motion swipe alternative to long-press → "Add to queue"/"Play next" in
+     * the sheet. Both null (the default) leaves the row swipe-free.
+     */
+    onAddToQueue: (() -> Unit)? = null,
+    onPlayNext: (() -> Unit)? = null,
 ) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .combinedClickable(onClick = onPlay, onLongClick = onLongPress)
-            .padding(horizontal = 20.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
+    val row = @Composable {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .combinedClickable(onClick = onPlay, onLongClick = onLongPress)
+                .padding(horizontal = 20.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) { TrackRowContent(track, index, accent, onFavorite) }
+    }
+    if (onAddToQueue != null && onPlayNext != null) {
+        SwipeToQueueRow(accent = accent, onAddToQueue = onAddToQueue, onPlayNext = onPlayNext) { row() }
+    } else {
+        row()
+    }
+}
+
+@Composable
+private fun RowScope.TrackRowContent(
+    track: MaItem,
+    index: Int,
+    accent: Color,
+    onFavorite: (() -> Unit)?,
+) {
         // Track number or equalizer (for now just the number — equalizer needs now-playing state)
         Text(
             "${track.trackNumber ?: (index + 1)}",
@@ -602,7 +626,6 @@ internal fun TrackRow(
                 modifier = Modifier.size(16.dp).clip(CircleShape).clickable(onClick = fav),
             )
         }
-    }
 }
 
 // --- liner notes ---------------------------------------------------------

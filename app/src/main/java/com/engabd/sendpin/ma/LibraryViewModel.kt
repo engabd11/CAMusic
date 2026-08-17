@@ -1097,6 +1097,32 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Queue a single track without disturbing what's playing or pulling in the rest
+     * of the list it lives in.
+     *
+     * Deliberately not [play] with `option = "next"`/`"add"`: on the local/download
+     * path that goes through [localContext], which resolves a track to *every
+     * sibling in the visible list* (right for "tap plays this list from here", wrong
+     * for "queue just this one"). This builds a single [LocalTrack] directly instead.
+     */
+    fun enqueueTrack(item: MaItem, option: String) {
+        viewModelScope.launch {
+            try {
+                if (item.provider == DOWNLOAD || MusicSources.isLocalProvider(item.provider)) {
+                    val track = localTrack(item)
+                    if (option == "next") localPlayer.playNext(listOf(track)) else localPlayer.addToQueue(listOf(track))
+                } else {
+                    val uri = item.uri ?: run { _toast.tryEmit("Couldn't queue that"); return@launch }
+                    maRepo.playOn(playTarget(), listOf(uri), option, radioMode())
+                }
+                _toast.tryEmit(if (option == "next") "Playing next" else "Added to queue")
+            } catch (e: Exception) {
+                _toast.tryEmit(e.message ?: "Couldn't queue that")
+            }
+        }
+    }
+
     /** Hand a resolved list to the local player under the requested queue option. */
     private fun playLocal(context: PlayContext, option: String) {
         if (context.tracks.isEmpty()) { _toast.tryEmit("Nothing to play"); return }

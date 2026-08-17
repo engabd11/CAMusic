@@ -141,6 +141,8 @@ fun PlaylistDetailScreen(
                                 onPlay = { viewModel.playTrack(track) },
                                 onFavorite = { viewModel.toggleFavorite(track) },
                                 onLongPress = { actionsFor = track },
+                                onAddToQueue = { viewModel.enqueueTrack(track, "add") },
+                                onPlayNext = { viewModel.enqueueTrack(track, "next") },
                             )
                         }
                     }

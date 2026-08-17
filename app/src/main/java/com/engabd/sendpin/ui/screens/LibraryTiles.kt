@@ -190,6 +190,12 @@ internal fun ItemRow(
     flags: RowFlags,
     onClick: (() -> Unit)? = null,
     onLongPress: ((MaItem) -> Unit)? = null,
+    /**
+     * One-motion swipe alternative to the long-press sheet's "Add to queue"/"Play
+     * next" — track rows only, gated below. Both false (the default) leaves every
+     * row swipe-free.
+     */
+    swipeToQueue: Boolean = false,
 ) {
     val accent = LocalAccent.current
     val isCategory = item.provider == "__cat__"
@@ -207,15 +213,20 @@ internal fun ItemRow(
     val longPressable = !isCategory && !isDownload &&
         item.mediaType in LongPressableTypes
 
-    RowCard(
-        onClick = {
-            if (onClick != null) onClick()
-            else viewModel.open(item)
-        },
-        onLongClick = if (longPressable && onLongPress != null) {
-            { onLongPress(item) }
-        } else null,
-    ) {
+    // Only a real track resolves to a single queueable item — a swipe on an
+    // album/artist/playlist row has no equivalent "just this one" enqueue.
+    val swipeable = swipeToQueue && !isCategory && !isDownload && item.mediaType == "track"
+
+    val card = @Composable {
+        RowCard(
+            onClick = {
+                if (onClick != null) onClick()
+                else viewModel.open(item)
+            },
+            onLongClick = if (longPressable && onLongPress != null) {
+                { onLongPress(item) }
+            } else null,
+        ) {
         when {
             isCategory -> Box(
                 Modifier.size(46.dp).clip(RoundedCornerShape(11.dp)).background(accent.a(0.12f)),
@@ -313,6 +324,16 @@ internal fun ItemRow(
             isCategory || item.browsable -> Icon(Icons.Default.ChevronRight, null, tint = TextFaint, modifier = Modifier.size(16.dp))
             item.playable -> Icon(Icons.Default.PlayArrow, "Play", tint = accent, modifier = Modifier.size(18.dp))
         }
+    }
+    }
+    if (swipeable) {
+        SwipeToQueueRow(
+            accent = accent,
+            onAddToQueue = { viewModel.enqueueTrack(item, "add") },
+            onPlayNext = { viewModel.enqueueTrack(item, "next") },
+        ) { card() }
+    } else {
+        card()
     }
 }
 

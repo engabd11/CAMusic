@@ -240,6 +240,8 @@ fun ArtistDetailScreen(
                                     onPlay = { viewModel.playTrack(track) },
                                     onFavorite = { viewModel.toggleTrackFavorite(track) },
                                     onLongPress = { actionsFor = track },
+                                    onAddToQueue = { viewModel.enqueueTrack(track, "add") },
+                                    onPlayNext = { viewModel.enqueueTrack(track, "next") },
                                 )
                             }
                         }

@@ -466,6 +466,31 @@ class ArtistDetailViewModel(
         }
     }
 
+    /**
+     * Queue a single top track without disturbing what's playing.
+     *
+     * [option] is Music Assistant's: `next` or `add`. Deliberately separate from
+     * [playAlbum] — that one resolves `album.itemId` through `sc.albumDetail(...)`
+     * on the local path, which is the wrong lookup for a track id.
+     */
+    fun enqueueTrack(track: MaItem, option: String) {
+        viewModelScope.launch {
+            try {
+                if (isLocal) {
+                    val one = localTracks(listOf(track))
+                    if (one.isEmpty()) { _toast.tryEmit("Couldn't queue that"); return@launch }
+                    if (option == "next") localPlayer.playNext(one) else localPlayer.addToQueue(one)
+                } else {
+                    val uri = track.uri ?: run { _toast.tryEmit("Couldn't queue that"); return@launch }
+                    maRepo.enqueue(playTarget(), listOf(uri), option)
+                }
+                _toast.tryEmit(if (option == "next") "Playing next" else "Added to queue")
+            } catch (e: Exception) {
+                _toast.tryEmit(e.message ?: "Couldn't queue that")
+            }
+        }
+    }
+
     /** Star or unstar one of the top tracks, optimistically. */
     fun toggleTrackFavorite(track: MaItem) {
         val want = !track.favorite
