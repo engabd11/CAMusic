@@ -5,6 +5,7 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
 import kotlin.math.sqrt
 
@@ -13,7 +14,7 @@ import kotlin.math.sqrt
  *
  * @param tiltX smoothed gravity-vector tilt, left/right, roughly -1..1.
  * @param tiltY smoothed gravity-vector tilt, up/down, roughly -1..1.
- * @param flick one-shot: a sharp jerk happened since the last [DeviceMotionSource.state] read.
+ * @param flick one-shot: a sharp jerk happened since the last [DeviceMotionSource.snapshot].
  * @param rotationRateZ gyroscope yaw rate, rad/s.
  * @param active false once the phone has sat still for the spec's 5 s auto-disable window.
  */
@@ -62,7 +63,16 @@ class DeviceMotionSource(context: Context) : SensorEventListener {
     @Volatile private var gy = 0f
     private var lastAccelMagnitude = SensorManager.GRAVITY_EARTH
     @Volatile private var lastMotionAtNanos = 0L
-    @Volatile private var flickPending = false
+
+    /**
+     * A flick the render loop has not consumed yet.
+     *
+     * Atomic rather than `@Volatile`, because the set and the clear happen on
+     * different threads: the sensor callback raises it, [snapshot] lowers it
+     * once it has been reported. A read-then-write on a plain volatile can lose
+     * a flick raised between the two halves, or replay one.
+     */
+    private val flickPending = AtomicBoolean(false)
     @Volatile private var rotationRateZ = 0f
 
     fun start() {
@@ -81,19 +91,20 @@ class DeviceMotionSource(context: Context) : SensorEventListener {
     }
 
     /**
-     * The latest snapshot. [DeviceMotionState.flick] is consumed on read —
-     * a caller polling this once a frame sees each flick exactly once, the
-     * same one-shot shape [StructureState.dropNow] already has.
+     * The latest snapshot. [DeviceMotionState.flick] is *consumed* by this call
+     * — a caller polling once a frame sees each flick exactly once, the same
+     * one-shot shape [StructureState.dropNow] already has.
+     *
+     * A function rather than a property precisely because of that: reading it
+     * twice in one frame is not the same as reading it once, and a `val` that
+     * quietly means different things on a second read is a trap.
      */
-    val state: DeviceMotionState
-        get() {
-            if (!running) return DeviceMotionState()
-            val (tiltX, tiltY) = tiltFrom(gx, gy, SensorManager.GRAVITY_EARTH)
-            val flick = flickPending
-            flickPending = false
-            val active = !isStillnessTimedOut(lastMotionAtNanos, System.nanoTime(), STILLNESS_TIMEOUT_NANOS)
-            return DeviceMotionState(tiltX, tiltY, flick, rotationRateZ, active)
-        }
+    fun snapshot(): DeviceMotionState {
+        if (!running) return DeviceMotionState()
+        val (tiltX, tiltY) = tiltFrom(gx, gy, SensorManager.GRAVITY_EARTH)
+        val active = !isStillnessTimedOut(lastMotionAtNanos, System.nanoTime(), STILLNESS_TIMEOUT_NANOS)
+        return DeviceMotionState(tiltX, tiltY, flickPending.getAndSet(false), rotationRateZ, active)
+    }
 
     override fun onSensorChanged(event: SensorEvent) {
         when (event.sensor.type) {
@@ -113,7 +124,7 @@ class DeviceMotionSource(context: Context) : SensorEventListener {
         val moved = abs(magnitude - SensorManager.GRAVITY_EARTH) > STILLNESS_ACCEL_THRESHOLD
         lastAccelMagnitude = magnitude
         if (flick) {
-            flickPending = true
+            flickPending.set(true)
             lastMotionAtNanos = System.nanoTime()
         } else if (moved) {
             lastMotionAtNanos = System.nanoTime()

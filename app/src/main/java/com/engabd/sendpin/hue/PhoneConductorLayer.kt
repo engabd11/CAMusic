@@ -34,7 +34,7 @@ class PhoneConductorLayer(context: Context) : LightShowLayer {
     override fun reset() = renderer.reset()
 
     override fun apply(base: Map<Int, Rgb>, context: LayerContext): Map<Int, Rgb> =
-        renderer.apply(base, context, motion.state)
+        renderer.apply(base, context, motion.snapshot())
 }
 
 /**
