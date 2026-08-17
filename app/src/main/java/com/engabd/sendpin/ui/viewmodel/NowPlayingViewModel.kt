@@ -758,6 +758,33 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     private val _queueItems = MutableStateFlow<Load<List<MaQueueItem>>>(Load.Idle)
     val queueItems: StateFlow<Load<List<MaQueueItem>>> = _queueItems
 
+    /**
+     * How much is left in the queue — the current track's remaining time, plus
+     * everything after it — for "1h 23m left in queue" in the driving bar.
+     *
+     * Null while there's nothing to sum: no track loaded, or — on the MA path —
+     * the queue's items haven't been fetched yet. [queueItems] otherwise only
+     * loads on demand when the panel opens; [onStart] below triggers that same
+     * silent fetch the first time anything actually collects this flow, so the
+     * driving bar doesn't have to know that detail to get a real number.
+     */
+    val queueRemainingMs: StateFlow<Long?> =
+        combine(state, _queueItems, local.queue, local.current) { s, items, localQueue, localCurrent ->
+            val remainingCurrent = (s.durationMs - s.positionMs).coerceAtLeast(0)
+            if (isLocal) {
+                val idx = localQueue.indexOfFirst { it.id == localCurrent?.id }
+                if (idx < 0) return@combine null
+                remainingCurrent + localQueue.drop(idx + 1).sumOf { it.durationMs }
+            } else {
+                val ready = items as? Load.Ready ?: return@combine null
+                val idx = ready.value.indexOfFirst { it.queueItemId == s.currentQueueItemId }
+                if (idx < 0) return@combine null
+                remainingCurrent + ready.value.drop(idx + 1).sumOf { (it.duration ?: 0) * 1_000L }
+            }
+        }
+            .onStart { if (!isLocal && _queueItems.value is Load.Idle) loadQueue(silent = true) }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
     private val _lyrics = MutableStateFlow<Load<MaLyrics?>>(Load.Idle)
     val lyrics: StateFlow<Load<MaLyrics?>> = _lyrics
 
