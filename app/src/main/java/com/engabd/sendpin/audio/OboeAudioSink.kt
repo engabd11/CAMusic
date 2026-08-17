@@ -230,18 +230,32 @@ class OboeAudioSink(
         val framesAccepted = nativeOutput.write(scratch, 0, remaining, presentationLocalUs)
         val bytesAccepted = (framesAccepted * bytesPerFrame).coerceIn(0, remaining)
 
+        // A leftover smaller than one frame can never become a frame - `nativeWrite`
+        // divides by bytesPerFrame, so 1-3 stray bytes round to 0 forever, no matter
+        // how many times they're retried. Measured on-device (#69): the very first
+        // buffer of a stream came in as 10445 bytes - one byte past a whole number of
+        // 4-byte frames - and that orphan byte was refused on every one of the ~300
+        // retries ExoPlayer made before the sink gave up and fell back, even though
+        // the ring was draining everything real it was offered the entire time. Where
+        // the stray byte comes from (decoder or extractor) doesn't matter: it is
+        // unplayable padding either way, so it is dropped here rather than retried.
+        val leftover = remaining - bytesAccepted
+        val danglingSubFrame = leftover in 1 until bytesPerFrame
+        val consumed = if (danglingSubFrame) remaining else bytesAccepted
+
         // Rewind to exactly what was left over, so the re-presented buffer starts where
         // the ring stopped taking rather than replaying audio it already holds.
-        if (bytesAccepted < remaining) buffer.position(startPosition + bytesAccepted)
+        if (consumed < remaining) buffer.position(startPosition + consumed)
 
         // Only the accepted bytes reach the tap: the rest is coming back on the next
-        // call, and analysing it twice would double-count it into the light show.
+        // call (or, for a dangling sub-frame remainder, is being dropped outright), and
+        // analysing it twice would double-count it into the light show.
         if (bytesAccepted > 0) feedTap(scratch, bytesAccepted)
 
         framesWrittenTotal += framesAccepted
         logFirstWrite(framesAccepted, remaining)
-        noteRefusal(bytesAccepted, remaining)
-        return bytesAccepted >= remaining
+        noteRefusal(consumed, remaining)
+        return consumed >= remaining
     }
 
     /**

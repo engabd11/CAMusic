@@ -171,6 +171,8 @@ private:
     int32_t capacityFrames_ = 0;
     std::atomic<int64_t> writeIndex_{0}; // next frame the producer will write
     std::atomic<int64_t> readIndex_{0};  // floor(readPos_), published for the producer
+    // Producer-thread call count for write() — see its diagnostic logging.
+    std::atomic<int64_t> writeCallCount_{0};
     // Fractional consumer position (callback thread only). Advancing it by a
     // rate != 1.0 with linear interpolation IS the steady-state resampler.
     double readPos_ = 0.0;

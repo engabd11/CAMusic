@@ -281,11 +281,35 @@ void SendspinOutputEngine::resetRing() {
 }
 
 int32_t SendspinOutputEngine::write(const int16_t* pcm, int32_t frames, int64_t presentationLocalUs) {
-    if (frames <= 0 || !ring_ || flushRequested_.load()) return 0;
+    // Producer-thread call count, purely diagnostic: #59/#67 fixed the drift
+    // this engine was refusing to correct, but the refusal itself (native ring
+    // never drains once drift correction is genuinely active) survived that
+    // fix for a reason not yet measured. write() is the only place that
+    // decides refuse-vs-accept, and every one of its branches is silent - the
+    // Kotlin-side "refused N consecutive buffers" log only ever sees the
+    // aggregate 0, never which of frames/ring/flush/freeFrames caused it. This
+    // throttled logging (same head+periodic shape as the timeline diagnostic
+    // above) is what will settle it, the same way the drift diagnostic did.
+    const int64_t callNum = writeCallCount_.fetch_add(1, std::memory_order_relaxed) + 1;
+    const bool logThis = callNum <= DIAG_HEAD_CALLBACKS || (callNum % DIAG_REPEAT_CALLBACKS) == 0;
+
+    if (frames <= 0 || !ring_ || flushRequested_.load()) {
+        if (logThis) {
+            LOGI("write#%lld refused: frames=%d ring=%d flushRequested=%d",
+                 (long long)callNum, frames, ring_ ? 1 : 0, flushRequested_.load() ? 1 : 0);
+        }
+        return 0;
+    }
     int64_t w = writeIndex_.load(std::memory_order_relaxed);
     int64_t r = readIndex_.load(std::memory_order_acquire);
     int64_t freeFrames = static_cast<int64_t>(capacityFrames_) - (w - r);
-    if (freeFrames <= 0) return 0;
+    if (freeFrames <= 0) {
+        if (logThis) {
+            LOGI("write#%lld refused: freeFrames<=0 (w=%lld r=%lld cap=%d frames=%d)",
+                 (long long)callNum, (long long)w, (long long)r, capacityFrames_, frames);
+        }
+        return 0;
+    }
     int32_t toWrite = static_cast<int32_t>(std::min<int64_t>(frames, freeFrames));
 
     // Timeline marker for the first frame of this segment.
@@ -306,6 +330,11 @@ int32_t SendspinOutputEngine::write(const int16_t* pcm, int32_t frames, int64_t 
                     static_cast<size_t>(toWrite - first) * channels_ * sizeof(int16_t));
     }
     writeIndex_.store(w + toWrite, std::memory_order_release);
+    if (logThis) {
+        LOGI("write#%lld ok: frames=%d toWrite=%d presUs=%lld w=%lld->%lld",
+             (long long)callNum, frames, toWrite, (long long)presentationLocalUs,
+             (long long)w, (long long)(w + toWrite));
+    }
     return toWrite;
 }
 

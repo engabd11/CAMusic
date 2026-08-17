@@ -1,5 +1,6 @@
 #include <jni.h>
 #include <android/log.h>
+#include <atomic>
 
 #include "sendspin_output_engine.h"
 
@@ -11,8 +12,17 @@
 
 #define LOG_TAG "SendspinNative"
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 
 using sendspin::SendspinOutputEngine;
+
+// Diagnostic only, mirrors SendspinOutputEngine::write()'s own throttle: the
+// two engines' write diagnostics showed write#1/write#2 succeeding and then
+// nothing at all, not even a refused-branch log, for the 50-250 calls that
+// followed. That means the refusal isn't inside SendspinOutputEngine::write()
+// - it's one of this JNI wrapper's own early returns, which had no logging of
+// their own. This settles which one.
+static std::atomic<long long> jniWriteCallCount{0};
 
 extern "C" {
 
@@ -53,21 +63,46 @@ JNIEXPORT jint JNICALL
 Java_com_engabd_sendpin_audio_SendspinNativeOutput_nativeWrite(
     JNIEnv* env, jobject /*thiz*/, jlong ptr, jbyteArray pcm, jint offset, jint length,
     jlong presentationLocalUs) {
-    if (ptr == 0 || pcm == nullptr || length <= 0) return 0;
+    const long long callNum = jniWriteCallCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    const bool logThis = callNum <= 12 || (callNum % 2048) == 0;
+
+    if (ptr == 0 || pcm == nullptr || length <= 0) {
+        if (logThis) {
+            LOGI("nativeWrite#%lld refused: ptr=%lld pcm=%d length=%d",
+                 callNum, (long long)ptr, pcm != nullptr, length);
+        }
+        return 0;
+    }
     auto* engine = reinterpret_cast<SendspinOutputEngine*>(ptr);
     const int32_t bytesPerFrame = engine->bytesPerFrame();
-    if (bytesPerFrame <= 0) return 0;
+    if (bytesPerFrame <= 0) {
+        if (logThis) LOGI("nativeWrite#%lld refused: bytesPerFrame=%d", callNum, bytesPerFrame);
+        return 0;
+    }
     const int32_t frames = length / bytesPerFrame;
-    if (frames <= 0) return 0;
+    if (frames <= 0) {
+        if (logThis) {
+            LOGI("nativeWrite#%lld refused: length=%d bytesPerFrame=%d (frames rounds to 0)",
+                 callNum, length, bytesPerFrame);
+        }
+        return 0;
+    }
 
     // Zero-copy access to the Java PCM buffer; engine->write only does a memcpy
     // into the ring (no JNI calls), so the critical section stays short.
     void* base = env->GetPrimitiveArrayCritical(pcm, nullptr);
-    if (base == nullptr) return 0;
+    if (base == nullptr) {
+        if (logThis) LOGI("nativeWrite#%lld refused: GetPrimitiveArrayCritical returned null", callNum);
+        return 0;
+    }
     const auto* samples = reinterpret_cast<const int16_t*>(
         static_cast<const uint8_t*>(base) + offset);
     int32_t written = engine->write(samples, frames, presentationLocalUs);
     env->ReleasePrimitiveArrayCritical(pcm, base, JNI_ABORT);
+    if (logThis) {
+        LOGI("nativeWrite#%lld: length=%d offset=%d frames=%d written=%d",
+             callNum, length, offset, frames, written);
+    }
     return written;
 }
 
