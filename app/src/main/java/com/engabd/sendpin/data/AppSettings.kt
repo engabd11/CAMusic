@@ -86,6 +86,7 @@ class AppSettings(private val context: Context) {
         private val DRIVING_MECHANISM = stringPreferencesKey("driving_mechanism") // pip | overlay
         private val DRIVING_CAR_ADDRESS = stringPreferencesKey("driving_car_address") // bonded device MAC
         private val DRIVING_CAR_NAME = stringPreferencesKey("driving_car_name")       // for the settings row
+        private val PAUSE_FOR_CALLS = booleanPreferencesKey("pause_for_calls")        // auto-pause playback while the phone rings/is on a call
 
         // Self-hosted crash reporting
         private val CRASH_GITHUB_REPO = stringPreferencesKey("crash_github_repo") // owner/repo, e.g. engabd11/CAMusic
@@ -1098,6 +1099,13 @@ class AppSettings(private val context: Context) {
     val drivingCarAddress: Flow<String> = context.dataStore.data.map { it[DRIVING_CAR_ADDRESS] ?: "" }
     val drivingCarName: Flow<String> = context.dataStore.data.map { it[DRIVING_CAR_NAME] ?: "" }
 
+    /**
+     * Auto-pause playback while the phone is ringing or on a call. Off by default:
+     * it needs `READ_PHONE_STATE`, requested at runtime only when this is turned on
+     * — the same "don't ask until it's wanted" rule the driving-car picker follows.
+     */
+    val pauseForCalls: Flow<Boolean> = context.dataStore.data.map { it[PAUSE_FOR_CALLS] ?: false }
+
     suspend fun setDrivingEnabled(on: Boolean) {
         context.dataStore.edit { it[DRIVING_ENABLED] = on }
     }
@@ -1111,6 +1119,10 @@ class AppSettings(private val context: Context) {
             it[DRIVING_CAR_ADDRESS] = address
             it[DRIVING_CAR_NAME] = name
         }
+    }
+
+    suspend fun setPauseForCalls(on: Boolean) {
+        context.dataStore.edit { it[PAUSE_FOR_CALLS] = on }
     }
 
     suspend fun setLightSyncEnabled(on: Boolean) {

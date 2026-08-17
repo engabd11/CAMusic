@@ -8,6 +8,7 @@ import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import com.engabd.sendpin.audio.LocalPlayer
 import com.engabd.sendpin.audio.UsbDacMonitor
+import com.engabd.sendpin.service.CallPauseObserver
 import com.engabd.sendpin.crash.CrashReporter
 import com.engabd.sendpin.download.DownloadManager
 import com.engabd.sendpin.ma.MaApiClient
@@ -108,6 +109,15 @@ class SendpinApp : Application(), ImageLoaderFactory {
      * is: the connect it exists to notice can happen before any screen opens.
      */
     val usbDacMonitor: UsbDacMonitor by lazy { UsbDacMonitor(this) }
+
+    /**
+     * Pauses playback for a ringing/answered call. Opt-in — see
+     * `AppSettings.pauseForCalls` — so unlike [drivingMode] this is not touched
+     * unconditionally in [onCreate]; the settings collector there starts it only
+     * when both the setting and the permission are already in place, and the
+     * Settings row starts it directly the moment the permission is granted.
+     */
+    val callPauseObserver: CallPauseObserver by lazy { CallPauseObserver(this) }
 
     /**
      * Whichever backend is actually producing sound right now, for
@@ -227,6 +237,11 @@ class SendpinApp : Application(), ImageLoaderFactory {
         // screen opens.
         drivingMode
         usbDacMonitor.start()
+        // Opt-in, unlike the two above: only starts if a previous run already had
+        // both the setting on and the permission granted. `CallPauseObserver.start`
+        // itself no-ops without the permission, so this is safe to call blind — and
+        // it runs off the main thread rather than blocking onCreate on a DataStore read.
+        appScope.launch { if (AppSettings(this@SendpinApp).pauseForCalls.first()) callPauseObserver.start() }
         // The storage cap evicts oldest-first, and the one file it must never take is
         // the one being listened to. Published here rather than looked up inside the
         // download manager, which has no business holding a reference to the player.

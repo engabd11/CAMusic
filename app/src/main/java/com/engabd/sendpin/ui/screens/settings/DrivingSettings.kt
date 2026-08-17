@@ -73,6 +73,9 @@ internal fun DrivingCard(settings: AppSettings, accent: Color, scope: CoroutineS
             enabled, accent,
         ) { on -> scope.launch { settings.setDrivingEnabled(on) } }
 
+        CardDivider()
+        PauseForCallsRow(settings, accent, scope)
+
         if (!enabled) return@SettingsCard
 
         CardDivider()
@@ -171,6 +174,48 @@ internal fun DrivingCard(settings: AppSettings, accent: Color, scope: CoroutineS
             "However it is turned on, the controls never appear with nothing playing — a " +
                 "transport with nothing to transport is just clutter over a map.",
         )
+    }
+}
+
+/**
+ * Auto-pause on a ringing or answered call. Not tied to [DrivingCard]'s own toggle —
+ * a call interrupting music is just as real parked as it is driving — but lives in
+ * this card because it needs the same kind of runtime permission request the car
+ * picker above does, and one settings card asking for phone permissions is enough.
+ *
+ * Never auto-resumes on hangup — see `PlaybackOwner.pause`'s doc for why — so this
+ * only ever says what it does going in, not what happens coming out.
+ */
+@Composable
+private fun PauseForCallsRow(settings: AppSettings, accent: Color, scope: CoroutineScope) {
+    val context = LocalContext.current
+    val enabled by settings.pauseForCalls.collectAsState(initial = false)
+    // Re-read on every recomposition, not remembered — see the identical BLUETOOTH_CONNECT
+    // comment above: this is granted in a system dialog, not by this screen.
+    val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) ==
+        PackageManager.PERMISSION_GRANTED
+
+    val askPhoneState = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { ok ->
+        if (ok) {
+            scope.launch { settings.setPauseForCalls(true) }
+            com.engabd.sendpin.SendpinApp.instance.callPauseObserver.start()
+        }
+    }
+
+    ToggleRow(
+        "Pause for calls",
+        "Pauses playback when the phone rings or you answer — never resumes on its own.",
+        enabled && granted, accent,
+    ) { on ->
+        if (on && !granted) {
+            askPhoneState.launch(Manifest.permission.READ_PHONE_STATE)
+        } else {
+            scope.launch { settings.setPauseForCalls(on) }
+            if (on) com.engabd.sendpin.SendpinApp.instance.callPauseObserver.start()
+            else com.engabd.sendpin.SendpinApp.instance.callPauseObserver.stop()
+        }
     }
 }
 

@@ -38,6 +38,14 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <!--
+      "Pause for calls" (AppSettings.pauseForCalls, off by default). Only needed for
+      TelephonyCallback.CallStateListener to notice a ringing/answered call — this
+      app reads no phone number, no call log, nothing beyond the state enum, and
+      only registers the listener when the setting is turned on.
+    -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+
+    <!--
       Predictive back: targetSdk 36 expects an app to have opted in, and the M3
       motion work below relies on the back gesture being animated rather than
       cutting straight to the previous screen.

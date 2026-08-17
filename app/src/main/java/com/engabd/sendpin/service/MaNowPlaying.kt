@@ -464,6 +464,9 @@ class MaNowPlaying(private val app: Context) {
 
     fun stop() = command { repo.stop(targetId()) }
 
+    /** Explicit, not [playPause]'s toggle — for callers that must never accidentally resume. */
+    fun pause() = command { repo.pause(targetId()) }
+
     /** Shuffle is a queue property, not a player one — resolved via [streamId] like the rest. */
     fun toggleShuffle() = command {
         val id = targetId()

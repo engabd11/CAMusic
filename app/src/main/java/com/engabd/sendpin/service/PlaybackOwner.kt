@@ -210,6 +210,16 @@ class PlaybackOwner(
     )
 
     /**
+     * Pause, explicitly — never a toggle. For callers a race must never turn into an
+     * accidental resume: auto-pause on a phone call is the one that exists today.
+     */
+    fun pause() = route(
+        local = { local.pause() },
+        selfSendspin = { sendspin.onMediaPause() },
+        remote = { maNowPlaying.pause() },
+    )
+
+    /**
      * Toggle shuffle. Unlike transport, this isn't a Sendspin-vs-remote question —
      * shuffle is a property of the Music Assistant *queue*, the same call whichever
      * player is producing the sound — so both non-local cases route the same way.

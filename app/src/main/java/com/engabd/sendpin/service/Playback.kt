@@ -876,6 +876,9 @@ class Playback(private val app: Context) {
 
     fun onPlayPause() = transport { if (_isPlaying.value) it.pause(playerId) else it.play(playerId) }
 
+    /** Explicit, not a toggle — for callers (auto-pause on a phone call) that must never accidentally resume. */
+    fun onMediaPause() = transport { it.pause(playerId) }
+
     /**
      * Stop this phone's Sendspin stream because the local player has taken over.
      *
