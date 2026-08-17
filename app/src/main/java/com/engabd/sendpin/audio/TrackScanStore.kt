@@ -279,6 +279,12 @@ class TrackScanStore(private val dir: File) {
             // scan — a library's worth of decoding to get back. A key is the one
             // thing in the file that is optional, so dropping just the key and
             // keeping the beat grid is strictly the better trade.
+            //
+            // Dropped silently rather than logged, and that is fine: a keyless
+            // scan is exactly a pre-key-detection scan, which every consumer
+            // already handles (see MusicDnaLayer's no-key fingerprint). Logging
+            // here would also mean this function could no longer be unit-tested
+            // — `android.util.Log` is a throwing stub under plain JVM tests.
             val key = if (format >= 3 && input.readBoolean()) {
                 val tonic = input.readByte().toInt() and 0xFF
                 val mode = MusicalMode.entries.getOrNull(input.readByte().toInt() and 0xFF)
@@ -286,7 +292,6 @@ class TrackScanStore(private val dir: File) {
                 if (mode != null && tonic in 0..11) {
                     MusicalKey(tonic = tonic, mode = mode, confidence = conf)
                 } else {
-                    Log.w(TAG, "Ignoring an out-of-range key in ${file.name}: tonic $tonic")
                     null
                 }
             } else {
