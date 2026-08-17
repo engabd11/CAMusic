@@ -24,15 +24,15 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.engabd.sendpin.data.AppSettings
-import com.engabd.sendpin.library.ServerKind
 import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ui.design.LocalAccent
 import com.engabd.sendpin.ui.design.navBarInset
 import com.engabd.sendpin.ui.screens.settings.*
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.PlayerViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * The top level of Settings.
@@ -152,6 +152,8 @@ fun SettingsScreen(
         haToken = settings.haToken.first()
     }
 
+    val state = rememberSettingsOverview(settings, libraryViewModel)
+
     Box(Modifier.fillMaxSize().background(Ink)) {
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars)) {
             Row(
@@ -179,9 +181,22 @@ fun SettingsScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 if (section == null) {
-                    // The index. Every row says what lives behind it.
+                    // Nothing set up yet: the index reads identically whether the app is
+                    // configured or completely empty, and a new user's first question is
+                    // not which of six categories to browse.
+                    if (state.servers == 0) {
+                        item(key = "get-started") {
+                            GetStartedCard(accent) { onSection(SettingsSection.LIBRARIES); onDetail(null) }
+                        }
+                    }
+                    // The index. Every row says what is behind it *right now* — a static
+                    // description of a category is a definition, and the reader already
+                    // knows what "Downloads" means; what they do not know is whether
+                    // theirs are taking a gigabyte or whether the bridge ever paired.
                     items(SettingsSection.entries, key = { it.name }, contentType = { "category" }) { s ->
-                        NavRow(s.icon, s.title, s.subtitle, accent) { onSection(s); onDetail(null) }
+                        NavRow(s.icon, s.title, state.subtitleFor(s) ?: s.subtitle, accent) {
+                            onSection(s); onDetail(null)
+                        }
                     }
                 } else {
                     // One item per section: each is a page of cards, and a page is not
@@ -222,6 +237,111 @@ fun SettingsScreen(
                 }
             }
         }
+    }
+}
+
+// ── The index's live state ────────────────────────────────────────────────
+
+/**
+ * What each settings category currently *is*, for the row that points at it.
+ *
+ * Gathered in one place rather than per row: every value here already exists as a flow
+ * somebody else is collecting, and six rows each opening their own subscription to
+ * answer one line of text would be six collectors on the index of a screen the user is
+ * usually passing through.
+ */
+private data class SettingsOverview(
+    val servers: Int = 0,
+    val activeLibrary: String? = null,
+    val libraryStatus: String? = null,
+    val downloadCount: Int = 0,
+    val downloadBytes: Long = 0,
+    val lightSyncSummary: String? = null,
+    val appearanceSummary: String? = null,
+) {
+    /** The live line for [section], or null to fall back to its written description. */
+    fun subtitleFor(section: SettingsSection): String? = when (section) {
+        SettingsSection.LIBRARIES -> when {
+            servers == 0 -> "No music library yet — start here"
+            else -> listOfNotNull(activeLibrary, libraryStatus).joinToString(" · ")
+                .takeIf { it.isNotBlank() }
+        }
+        SettingsSection.DOWNLOADS -> when (downloadCount) {
+            0 -> "Nothing kept on this phone yet"
+            else -> "$downloadCount ${if (downloadCount == 1) "track" else "tracks"} · " +
+                formatBytes(downloadBytes)
+        }
+        SettingsSection.LIGHTS -> lightSyncSummary
+        SettingsSection.APPEARANCE -> appearanceSummary
+        // Nothing about the audio path or the app itself changes often enough to be
+        // worth a live line, and a row that reads "Output: Phone speaker" would be
+        // wrong every time headphones are plugged in while this screen is not open.
+        SettingsSection.AUDIO, SettingsSection.ABOUT -> null
+    }
+}
+
+@Composable
+private fun rememberSettingsOverview(
+    settings: AppSettings,
+    libraryViewModel: LibraryViewModel,
+): SettingsOverview {
+    val servers by settings.servers.collectAsStateWithLifecycle(initialValue = emptyList())
+    val activeId by settings.activeServerId.collectAsStateWithLifecycle(initialValue = "")
+    val ready by libraryViewModel.ready.collectAsStateWithLifecycle()
+    val connecting by libraryViewModel.connecting.collectAsStateWithLifecycle()
+    val offline by libraryViewModel.offline.collectAsStateWithLifecycle()
+    val downloads by libraryViewModel.downloads.collectAsStateWithLifecycle()
+    val mode by settings.lightSyncMode.collectAsStateWithLifecycle(initialValue = AppSettings.MODE_HA)
+    val bridgeIp by settings.hueBridgeIp.collectAsStateWithLifecycle(initialValue = "")
+    val haAddress by settings.haUrl.collectAsStateWithLifecycle(initialValue = "")
+    val themeKey by settings.theme.collectAsStateWithLifecycle(initialValue = ThemeChoice.OLED.key)
+    val accentKey by settings.accentSource.collectAsStateWithLifecycle(initialValue = AccentChoice.ALBUM.key)
+
+    // Stat-ing the files is disk work, so it happens off the main thread and only when
+    // the index of downloads actually changes.
+    var bytes by remember { mutableStateOf(0L) }
+    LaunchedEffect(downloads) {
+        bytes = withContext(Dispatchers.IO) { libraryViewModel.downloadBytes() }
+    }
+
+    val active = servers.firstOrNull { it.id == activeId }
+    return SettingsOverview(
+        servers = servers.size,
+        activeLibrary = active?.displayName,
+        libraryStatus = when {
+            active == null -> null
+            connecting -> "Connecting…"
+            offline -> "Offline — playing downloads"
+            ready -> "Connected"
+            else -> "Not connected"
+        },
+        downloadCount = downloads.size,
+        downloadBytes = bytes,
+        lightSyncSummary = if (mode == AppSettings.MODE_DIRECT) {
+            if (bridgeIp.isNotBlank()) "Hue Bridge · paired" else "Hue Bridge · not paired yet"
+        } else {
+            if (haAddress.isNotBlank()) "Home Assistant · $haAddress" else "Home Assistant · not set up"
+        },
+        appearanceSummary = "${ThemeChoice.from(themeKey).label} · ${AccentChoice.from(accentKey).label}",
+    )
+}
+
+/**
+ * The one card a phone with no library needs.
+ *
+ * Six categories, all of them about parts of a thing that has not been set up, is a
+ * poor first screen: the app cannot browse, play, download or light anything until a
+ * server exists, and none of the six rows says so.
+ */
+@Composable
+private fun GetStartedCard(accent: androidx.compose.ui.graphics.Color, onAddLibrary: () -> Unit) {
+    SettingsCard(
+        title = "Start here",
+        lead = "CAMusic plays your own library — Music Assistant for speakers around the " +
+            "house, or Navidrome, Subsonic or Jellyfin to play on this phone with downloads " +
+            "that work with no network at all. Add one and the rest of the app comes alive.",
+    ) {
+        OledButton("Add a music library", accent = accent, onClick = onAddLibrary)
     }
 }
 

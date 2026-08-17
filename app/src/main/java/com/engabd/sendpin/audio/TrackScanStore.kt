@@ -128,6 +128,32 @@ class TrackScanStore(private val dir: File) {
         return files.size to files.sumOf { it.length() }
     }
 
+    /**
+     * How many stored scans were produced by an analyser older than [version].
+     *
+     * Reads twelve bytes of each file rather than parsing it, because the answer is in
+     * the header and the whole point is to be cheap enough to ask about a library of
+     * thousands. Still a directory's worth of opens, so it is asked when the analysis
+     * page is opened and after a sweep — not on a timer.
+     */
+    fun outdated(version: Int): Int {
+        val files = dir.listFiles { f: File -> f.name.endsWith(SUFFIX) } ?: return 0
+        return files.count { f ->
+            runCatching {
+                DataInputStream(f.inputStream().buffered()).use { input ->
+                    if (input.readInt() != MAGIC) return@use false
+                    // Format 1 files carry no version field and are older by
+                    // definition; only a format 2 file can claim to be current, and
+                    // its version sits at the end, so the scan has to be read for it.
+                    if (input.readInt() < 2) true else (peekVersion(f) ?: 0) < version
+                }
+            }.getOrDefault(false)
+        }
+    }
+
+    /** The analyser version recorded in a format-2 file, or null if it cannot be read. */
+    private fun peekVersion(file: File): Int? = runCatching { read(file)?.analyserVersion }.getOrNull()
+
     fun has(key: String): Boolean = peek(key) != null || fileFor(key).exists()
 
     private fun fileFor(key: String): File = File(dir, fileName(key))
@@ -174,18 +200,25 @@ class TrackScanStore(private val dir: File) {
 
         out.writeInt(scan.melbankRef.size)
         for (v in scan.melbankRef) out.writeByte(quantise(v))
+
+        // ── Format 2 tail ────────────────────────────────────────────────
+        // Appended rather than woven in, so a v1 reader would still have read
+        // everything above it correctly, and so this reader can fill the two
+        // fields with what a v1 file implies rather than refusing it.
+        out.writeInt(scan.analyserVersion)
+        out.writeFloat(scan.analysedS)
     }
 
     private fun read(file: File): TrackScan? = DataInputStream(file.inputStream().buffered()).use { input ->
         try {
             if (input.readInt() != MAGIC) return null
             val format = input.readInt()
-            // One format so far. When a second arrives, read the old layouts
-            // here rather than bumping past them — a user's pre-analysed library
-            // is worth far more than the code saved by discarding it, and
-            // rescanning it is hours of decoding they did not ask for. Anything
-            // this build genuinely cannot read is deleted by the caller, so a
-            // bump without a reader silently costs the whole library.
+            // Old layouts are read here rather than bumped past: a user's
+            // pre-analysed library is worth far more than the code saved by
+            // discarding it, and rescanning it is hours of decoding they did not
+            // ask for. Anything this build genuinely cannot read is deleted by the
+            // caller, so a bump without a reader silently costs the whole library.
+            // Format 2 appends two fields to format 1 and reads both back.
             if (format !in COMPATIBLE_FORMATS) return null
 
             val durationS = input.readFloat()
@@ -214,6 +247,14 @@ class TrackScanStore(private val dir: File) {
 
             val melbankRef = FloatArray(input.readIntBounded(MELBANK_BINS)) { dequantise(input.readByte()) }
 
+            // A format-1 file predates both fields. It was written by analyser
+            // version 0 by definition, and it claimed to cover the whole track —
+            // which was true of every track short enough for the old cap and
+            // quietly false for the rest. Version 0 is what makes the difference
+            // visible: those files are exactly the ones a refresh is for.
+            val analyserVersion = if (format >= 2) input.readInt() else 0
+            val analysedS = if (format >= 2) input.readFloat() else durationS
+
             TrackScan(
                 durationS = durationS,
                 bpm = bpm,
@@ -224,6 +265,8 @@ class TrackScanStore(private val dir: File) {
                 sections = sections,
                 intensity = profile,
                 melbankRef = melbankRef,
+                analyserVersion = analyserVersion,
+                analysedS = analysedS,
             )
         } catch (e: EOFException) {
             null  // truncated: treat as absent and rescan
@@ -252,8 +295,8 @@ class TrackScanStore(private val dir: File) {
         /** "CAMS" — enough to reject a file that is not one of ours at all. */
         private const val MAGIC = 0x43414D53
 
-        private const val FORMAT = 1
-        private val COMPATIBLE_FORMATS = setOf(1)
+        private const val FORMAT = 2
+        private val COMPATIBLE_FORMATS = setOf(1, 2)
 
         private const val SUFFIX = ".scan"
 

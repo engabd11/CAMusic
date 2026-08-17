@@ -75,9 +75,18 @@ class JellyfinClient(
         /** The types worth listing from a music library. */
         private const val MUSIC_TYPES = "MusicArtist,MusicAlbum,Audio"
 
-        /** Fields every browse needs, whatever the item type. */
+        /**
+         * Fields every browse needs, whatever the item type.
+         *
+         * `ParentIndexNumber` is a track's *disc*, and it is named here rather than
+         * left to the default projection: which fields a `/Items` response carries
+         * without being asked depends on the server's version, and a disc number that
+         * arrives on one Jellyfin and not on another is exactly the shape of "the
+         * album screen shows disc headers for some people".
+         */
         private const val BASE_FIELDS =
-            "Genres,DateCreated,ChildCount,ProductionYear,AlbumId,ParentId,AlbumArtists,ArtistItems"
+            "Genres,DateCreated,ChildCount,ProductionYear,AlbumId,ParentId,AlbumArtists," +
+                "ArtistItems,ParentIndexNumber,IndexNumber"
 
         /**
          * Containers this phone can decode, for `/universal` to negotiate against.
@@ -661,7 +670,9 @@ class JellyfinClient(
      * `Type` — so this is the only place the difference has to be handled, and every
      * caller above gets the same model the Subsonic client produces.
      */
-    private fun item(o: JsonObject): MaItem? {
+    // Internal rather than private so `JellyfinItemParseTest` can hold a real
+    // `/Items` payload against it — see `SubsonicClient.songItem` for why.
+    internal fun item(o: JsonObject): MaItem? {
         val id = o.str("Id") ?: return null
         val type = o.str("Type").orEmpty()
         val mediaType = when (type) {

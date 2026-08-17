@@ -107,8 +107,12 @@ fun AlbumDetailScreen(
     // rebuilds, which is on every state change this screen has.
     val totalDuration = remember(tracks) { tracks.sumOf { it.duration ?: 0 } }
     // Multi-disc grouping: when tracks span 2+ discs, a "Disc N" header goes between
-    // groups. A single disc (or all null/1) renders flat as before.
-    val discGroups = remember(tracks) { tracks.groupBy { it.discNumber ?: 1 } }
+    // groups. A single disc renders flat as before. See [discGroups] for why the disc
+    // is sometimes worked out from the track numbers rather than read off the track —
+    // Navidrome and Jellyfin both drop the field when the file has no disc tag.
+    val discs = remember(tracks, album?.discTitles) {
+        discGroups(tracks, album?.discTitles.orEmpty())
+    }
 
     val musicBrainzId by viewModel.musicBrainzId.collectAsStateWithLifecycle()
     val related by viewModel.related.collectAsStateWithLifecycle()
@@ -116,12 +120,12 @@ fun AlbumDetailScreen(
 
     // The facts worth stating about a record, gathered once rather than inside the
     // LazyListScope body (which is not composable and has no `remember`).
-    val facts = remember(album, tracks, totalDuration, discGroups) {
+    val facts = remember(album, tracks, totalDuration, discs) {
         val a = album
         buildList {
             a?.year?.takeIf { it > 0 }?.let { add("Released" to it.toString()) }
             a?.genres?.takeIf { it.isNotEmpty() }?.let { add("Genre" to it.take(3).joinToString(", ")) }
-            if (discGroups.size > 1) add("Discs" to discGroups.size.toString())
+            if (discs.size > 1) add("Discs" to discs.size.toString())
             if (tracks.isNotEmpty()) {
                 add("Tracks" to tracks.size.toString())
                 add("Length" to formatDuration(totalDuration))
@@ -185,17 +189,21 @@ fun AlbumDetailScreen(
                     } else if (tracks.isEmpty()) {
                         item { EmptyState("No tracks", "This album appears to be empty.") }
                     } else {
-                        val multiDisc = discGroups.size > 1
+                        val multiDisc = discs.size > 1
                         var runningIndex = 0
-                        discGroups.forEach { (disc, discTracks) ->
+                        discs.forEach { group ->
                             if (multiDisc) {
-                                item(key = "disc:$disc", contentType = "discHeader") {
-                                    DiscHeader(disc = disc, accent = albumPalette.accent)
+                                item(key = "disc:${group.number}", contentType = "discHeader") {
+                                    DiscHeader(
+                                        disc = group.number,
+                                        title = group.title,
+                                        accent = albumPalette.accent,
+                                    )
                                 }
                             }
                             itemsIndexed(
-                                discTracks,
-                                key = { i, t -> "track:$disc:$i:${t.itemId}" },
+                                group.tracks,
+                                key = { i, t -> "track:${group.number}:$i:${t.itemId}" },
                                 contentType = { _, _ -> "track" },
                             ) { offset, track ->
                                 val index = runningIndex + offset
@@ -208,7 +216,7 @@ fun AlbumDetailScreen(
                                     onLongPress = { actionsFor = track },
                                 )
                             }
-                            runningIndex += discTracks.size
+                            runningIndex += group.tracks.size
                         }
                     }
 
@@ -720,10 +728,14 @@ private fun RelatedAlbums(title: String, albums: List<MaItem>, onClick: (MaItem)
 
 /**
  * A "Disc N" header that sits between track groups on a multi-disc album.
- * Only rendered when the album has 2+ distinct disc numbers.
+ * Only rendered when the album has 2+ discs.
+ *
+ * [title] is the disc's own name where the server offers one (OpenSubsonic's
+ * `discTitles`) — "Disc 2 · Live at the Fillmore" says more than "Disc 2", and on a
+ * box set it is the only thing that tells one disc from another.
  */
 @Composable
-private fun DiscHeader(disc: Int, accent: Color) {
+private fun DiscHeader(disc: Int, title: String?, accent: Color) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -746,6 +758,13 @@ private fun DiscHeader(disc: Int, accent: Color) {
             fontSize = 13.sp,
             letterSpacing = 0.5.sp,
         )
+        title?.takeIf { it.isNotBlank() }?.let {
+            Text(
+                it,
+                color = TextMuted, fontFamily = AppFont, fontSize = 12.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
 }
 

@@ -25,6 +25,14 @@ data class DownloadedTrackEntity(
     val coverPath: String? = null,
     val durationMs: Long = 0,
     val trackNumber: Int? = null,
+    /**
+     * Disc number, for the albums that have more than one.
+     *
+     * Nullable and added in schema v2: rows written before it exists carry null, which
+     * is the same thing an album with no disc tags says, so nothing has to be
+     * re-downloaded for the ordering to be right for everything since.
+     */
+    val discNumber: Int? = null,
     val albumId: String? = null,
     /** Original file format recorded at download time. */
     val codec: String? = null,

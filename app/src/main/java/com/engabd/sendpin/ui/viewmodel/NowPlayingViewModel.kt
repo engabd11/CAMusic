@@ -758,6 +758,45 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     val lyrics: StateFlow<Load<MaLyrics?>> = _lyrics
 
     /**
+     * What is playing, whichever engine is playing it — the identity the track-scoped
+     * panels reload on.
+     *
+     * [currentItem] cannot serve: it is deliberately null for the whole of a local
+     * session (`if (l.active) return@combine null`), because the MA-scoped controls
+     * have no handle to act on there. A panel keyed on it therefore never re-keyed on
+     * Navidrome, Jellyfin or offline — which is exactly how the lyrics pane came to
+     * sit on a spinner for every track after the first.
+     */
+    private val lyricsKey: StateFlow<String?> = combine(currentItem, localSnap) { item, l ->
+        if (l.active) l.track?.let { it.id.ifBlank { it.streamUrl ?: it.title } } else item?.itemId
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /**
+     * Whether the lyrics pane is on screen.
+     *
+     * The pane used to fetch for itself from a `LaunchedEffect` guarded on the state
+     * being [Load.Idle], which made the load depend on whether composition ran before
+     * or after the view model reset that state on a track change. It is a race, and
+     * losing it means no fetch is ever issued and the spinner stays up. Told when the
+     * pane opens and closes, the view model can drive the load off the track identity
+     * alone — no ordering to get right.
+     */
+    private val _lyricsOpen = MutableStateFlow(false)
+
+    /**
+     * Counted rather than set, because there are two players — the full screen and the
+     * overlay — and a moment where both are composed would otherwise have one pane's
+     * disposal report the other's open pane as closed. Main-thread only, which is where
+     * composition effects run.
+     */
+    private var openLyricsPanes = 0
+
+    fun setLyricsOpen(open: Boolean) {
+        openLyricsPanes = (openLyricsPanes + if (open) 1 else -1).coerceAtLeast(0)
+        _lyricsOpen.value = openLyricsPanes > 0
+    }
+
+    /**
      * The listener's manual trim on synced lyrics, in milliseconds.
      *
      * Read here rather than in the pane so the pane stays a renderer and the setting
@@ -1560,14 +1599,39 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                 players.firstOrNull { it.playerId == id }?.nowPlaying
             }.collect { np -> if (np != null && np.title.isNotBlank()) _lastTrack.value = np }
         }
-        // A new track invalidates whatever the panels were showing.
+        // A new track invalidates whatever the panels were showing. Lyrics are not in
+        // here: they follow [lyricsKey], which is the identity of what is playing on
+        // *either* engine — see the collector below.
         viewModelScope.launch {
             currentItem.map { it?.itemId }.distinctUntilChanged().collect {
-                _lyrics.value = Load.Idle
                 _similar.value = Load.Idle
                 _favoriteOverride.value = null
                 if (_queueItems.value !is Load.Idle) loadQueue(silent = true)
             }
+        }
+        // Lyrics, in one place for both engines.
+        //
+        // Driven from the view model rather than from the pane's own effect, because
+        // the pane's effect and this reset are two independent things racing: whichever
+        // ran second decided whether a fetch happened at all. Here there is only one
+        // rule — the track changed, so throw the words away; the pane is open, so go and
+        // get the new ones — and it holds no matter which engine is playing or when the
+        // pane was opened.
+        viewModelScope.launch {
+            var lastKey: String? = null
+            var seeded = false
+            combine(lyricsKey, _lyricsOpen) { key, open -> key to open }
+                .distinctUntilChanged()
+                .collect { (key, open) ->
+                    if (key != lastKey || !seeded) {
+                        lastKey = key
+                        seeded = true
+                        _lyrics.value = Load.Idle
+                    }
+                    // Idle-guarded so closing and reopening the pane on the same track
+                    // shows what was already fetched instead of asking again.
+                    if (open && _lyrics.value is Load.Idle) loadLyrics()
+                }
         }
         // The local queue lives in memory and can change under an open panel — a
         // track finishing, a "play next", a drag — so the panel follows it.
@@ -1576,10 +1640,13 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                 if (isLocal && _queueItems.value !is Load.Idle) _queueItems.value = Load.Ready(localQueueItems())
             }
         }
+        // `local.current` re-emits for reasons that are not a track change — a
+        // re-tagged entry, a stream URL refreshed — so it is compared by identity
+        // first. Without that, a mid-song re-emission threw away lyrics that were
+        // already on screen.
         viewModelScope.launch {
-            local.current.collect {
+            local.current.map { it?.id }.distinctUntilChanged().collect {
                 if (!isLocal) return@collect
-                _lyrics.value = Load.Idle
                 _similar.value = Load.Idle
             }
         }

@@ -40,6 +40,13 @@ data class DownloadedTrack(
     val coverPath: String? = null,
     val durationMs: Long = 0,
     val trackNumber: Int? = null,
+    /**
+     * Disc number, so a downloaded box set plays in the order it was pressed in.
+     *
+     * Defaulted, so an index written before this field existed still loads — those
+     * rows simply sort by track number alone, as they did before.
+     */
+    val discNumber: Int? = null,
     /** The album this came from, so a downloaded album can be grouped and played whole. */
     val albumId: String? = null,
     /**
@@ -317,7 +324,8 @@ class DownloadManager(
                 filePath = file.absolutePath, image = item.image,
                 album = item.album, coverPath = cover?.absolutePath,
                 durationMs = (item.duration ?: 0).toLong() * 1000,
-                trackNumber = item.trackNumber, albumId = item.parentId,
+                trackNumber = item.trackNumber, discNumber = item.discNumber,
+                albumId = item.parentId,
                 format = item.audioFormat,
                 sourceProvider = item.provider,
             ).toEntity()

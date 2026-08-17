@@ -1077,7 +1077,7 @@ private fun subtractRollingMean(x: DoubleArray, win: Int): DoubleArray {
  * was truncated, and a silent "track" must stay unanalysable rather than become
  * an all-dark scan that the show then faithfully reproduces.
  */
-internal fun finishScan(ex: OfflineExtractor): ScanResult {
+internal fun finishScan(ex: OfflineExtractor, fullDurationS: Float = 0f): ScanResult {
     val n = ex.frames
     if (n < MIN_ANALYSIS_FRAMES) return ScanResult.Failed(ScanFailure.TOO_SHORT)
     val rmsD = ex.rms.toDoubleArray()
@@ -1085,6 +1085,10 @@ internal fun finishScan(ex: OfflineExtractor): ScanResult {
 
     val env = ex.env.toDoubleArray()
     val bassEnvD = ex.bassEnv.toDoubleArray()
+    // What was analysed, which is what every window, threshold and segmentation below
+    // is measured against. It is the whole track unless the decode stopped at
+    // `TrackScanner.MAX_TRACK_S`, and [fullDurationS] — the container's own answer,
+    // which the decode has no way to reach — is what tells the two apart.
     val durationS = n * FRAME_PERIOD
 
     val (rawBpm, autocorrConf) = estimateTempo(env)
@@ -1149,7 +1153,11 @@ internal fun finishScan(ex: OfflineExtractor): ScanResult {
 
     return ScanResult.Ok(
         TrackScan(
-            durationS = durationS,
+            // The track's real length where the container gave one, so a scan that
+            // covers the first twelve minutes of a forty-minute set says so rather than
+            // presenting itself as a complete reading of a twelve-minute track.
+            durationS = if (fullDurationS > durationS) fullDurationS else durationS,
+            analysedS = durationS,
             bpm = bpm.toFloat(),
             confidence = confidence.toFloat(),
             beats = beatTimes,
