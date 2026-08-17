@@ -73,7 +73,7 @@ class StreamContinuityTest {
     /** Different sample encoding on the way out — the track cannot be shared. */
     @Test
     fun `a bit-perfect change rebuilds the track`() {
-        val p = SendspinAudioEngine.StreamContinuity.plan(
+        val p = SendspinPlaybackSupport.StreamContinuity.plan(
             prev = fmt(depth = 24), next = fmt(depth = 24),
             prevHiRes = false, nextHiRes = true,
         )
@@ -97,7 +97,7 @@ class StreamContinuityTest {
     /** Nothing playing yet — there is no track to continue into. */
     @Test
     fun `a cold start reuses nothing`() {
-        val p = SendspinAudioEngine.StreamContinuity.plan(
+        val p = SendspinPlaybackSupport.StreamContinuity.plan(
             prev = null, next = fmt(), prevHiRes = false, nextHiRes = false,
         )
         assertFalse(p.reuseTrack)
@@ -107,5 +107,5 @@ class StreamContinuityTest {
     private fun StreamContinuityPlan(
         prev: StreamStartPlayerInfo,
         next: StreamStartPlayerInfo,
-    ) = SendspinAudioEngine.StreamContinuity.plan(prev, next, prevHiRes = false, nextHiRes = false)
+    ) = SendspinPlaybackSupport.StreamContinuity.plan(prev, next, prevHiRes = false, nextHiRes = false)
 }

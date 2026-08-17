@@ -1,7 +1,7 @@
 package com.engabd.sendpin.audio
 
-import com.engabd.sendpin.audio.SendspinAudioEngine.HeadGate
-import com.engabd.sendpin.audio.SendspinAudioEngine.HeadGate.Decision
+import com.engabd.sendpin.audio.SendspinPlaybackSupport.HeadGate
+import com.engabd.sendpin.audio.SendspinPlaybackSupport.HeadGate.Decision
 import kotlin.test.Test
 import kotlin.test.assertEquals
 

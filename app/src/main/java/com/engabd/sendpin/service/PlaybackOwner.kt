@@ -90,11 +90,11 @@ class PlaybackOwner(
         /**
          * The tap/lead pair installed in the Sendspin engine's render chain, or null.
          *
-         * Non-null only for [com.engabd.sendpin.audio.SendspinExoEngine] — the
-         * default [com.engabd.sendpin.audio.SendspinAudioEngine] writes straight to
-         * an `AudioTrack` and has no tap at all. So "MA is playing" and "MA's audio
-         * can be read" are *different questions*, and opening the light bridge on
-         * the first would leave the room reacting to the local player's silent tap.
+         * Set once [com.engabd.sendpin.audio.SendspinExoEngine] — the only Sendspin
+         * engine — is up and has installed its tap; null before that point, or when
+         * nothing is connected. So "MA is playing" and "MA's audio can be read" are
+         * *different questions*, and opening the light bridge on the first would
+         * leave the room reacting to a tap that isn't there yet.
          */
         val sendspinTap: Pair<AudioAnalysisTap, AudioLead>?,
     ) {

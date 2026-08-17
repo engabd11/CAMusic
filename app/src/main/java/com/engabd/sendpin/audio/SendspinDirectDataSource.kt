@@ -9,7 +9,7 @@ import java.util.concurrent.TimeUnit
 /**
  * Solo (single-device) playback: there is no peer to phase-lock to, so absolute
  * server-time scheduling buys nothing and only adds latency (and the far-future-
- * timestamp startup hang [SendspinAudioEngine.HeadGate] otherwise guards against).
+ * timestamp startup hang [SendspinPlaybackSupport.HeadGate] otherwise guards against).
  * See Massdroid's `SendspinDirectEngine`, which this mirrors: [awaitNextFrame]
  * never blocks on the clock. Frames reach ExoPlayer as soon as they're queued.
  *

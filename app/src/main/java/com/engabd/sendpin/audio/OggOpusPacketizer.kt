@@ -6,10 +6,9 @@ import java.nio.ByteOrder
 /**
  * Wraps raw Opus packets in Ogg pages, per RFC 3533 (Ogg) + RFC 7845 (Ogg
  * encapsulation for Opus) - the container `OggExtractor`/`OpusReader` need, since
- * ExoPlayer has no notion of a bare Opus elementary stream the way MediaCodec does
- * (see [SendspinAudioEngine.createOpusDecoder], which takes `codec_header` as CSD
- * directly). No audio bytes are touched - each Sendspin frame becomes exactly one
- * packet in exactly one page.
+ * ExoPlayer has no notion of a bare Opus elementary stream the way a MediaCodec
+ * decoder does when handed `codec_header` as CSD directly. No audio bytes are
+ * touched - each Sendspin frame becomes exactly one packet in exactly one page.
  *
  * One packet per page (rather than batching several packets into one page, which
  * real encoders do to amortise the ~27+ byte page overhead) trades bandwidth
@@ -44,8 +43,8 @@ class OggOpusPacketizer(private val serialNumber: Int) {
      * every Ogg-Opus stream before any audio page, per RFC 7845 §5.
      *
      * @param opusHeadPacket the `OpusHead` packet - either `stream/start.codec_header`
-     *   decoded, or the same synthesized packet [SendspinAudioEngine.opusHead] already
-     *   builds for MediaCodec when the server omits it.
+     *   decoded, or a synthesized minimal OpusHead ([SendspinDataSource.opusHeadPacket])
+     *   when the server omits it.
      */
     fun headerPages(opusHeadPacket: ByteArray): ByteArray {
         val head = buildPage(

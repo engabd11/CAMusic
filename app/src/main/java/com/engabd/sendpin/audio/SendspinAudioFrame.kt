@@ -2,9 +2,8 @@ package com.engabd.sendpin.audio
 
 /**
  * The wire format of one Sendspin binary audio message:
- * `[type:uint8 = 4][server_ts_us: int64 big-endian][payload...]`. Shared between
- * [SendspinAudioEngine] and [SendspinExoEngine] - the two playback engines that
- * consume the same frames through different pipelines - so the header layout has
+ * `[type:uint8 = 4][server_ts_us: int64 big-endian][payload...]`. Kept as its own
+ * type rather than inlined into [SendspinExoEngine] so the header layout has
  * exactly one definition to drift out of sync.
  */
 object SendspinAudioFrame {

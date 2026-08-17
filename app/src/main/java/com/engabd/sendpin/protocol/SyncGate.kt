@@ -1,6 +1,6 @@
 package com.engabd.sendpin.protocol
 
-import com.engabd.sendpin.audio.SendspinAudioEngine
+import com.engabd.sendpin.audio.SendspinPlaybackSupport
 
 /**
  * What to report in `client/state`, and whether to mute, while the clock filter is
@@ -13,19 +13,20 @@ import com.engabd.sendpin.audio.SendspinAudioEngine
  * tells the server the player is ready to join a group while its offset is still
  * seconds wide: in a group that is audible, and it is the listener who finds out.
  *
- * Pure, like [SendspinAudioEngine.HeadGate], so it can be tested without a socket
- * or a clock.
+ * Pure, like [SendspinPlaybackSupport.HeadGate], so it can be tested without a
+ * socket or a clock.
  */
 object SyncGate {
     /**
      * How long to keep the output muted waiting for convergence.
      *
-     * Deliberately the same deadline [SendspinAudioEngine.HeadGate] uses to give up
-     * holding the head of a stream. If this were longer, the head gate would release
-     * audio into a still-muted track and the opening of the song would be silently
-     * eaten; if shorter, the mute would lift before there was anything to hear.
+     * Deliberately the same deadline [SendspinPlaybackSupport.HeadGate] uses to give
+     * up holding the head of a stream. If this were longer, the head gate would
+     * release audio into a still-muted track and the opening of the song would be
+     * silently eaten; if shorter, the mute would lift before there was anything to
+     * hear.
      */
-    const val MAX_MUTE_MS = SendspinAudioEngine.HeadGate.MAX_STALL_MS
+    const val MAX_MUTE_MS = SendspinPlaybackSupport.HeadGate.MAX_STALL_MS
 
     enum class Report {
         /** The clock is trustworthy — normal operation. */

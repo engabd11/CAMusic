@@ -506,7 +506,7 @@ class AppSettings(private val context: Context) {
     /**
      * Whether to request 24-bit bit-perfect playback from the AudioTrack path.
      * When true and the device supports `ENCODING_PCM_24BIT_PACKED` (API 31+,
-     * which is our minSdk), [SendspinAudioEngine] builds a 24-bit AudioTrack
+     * which is our minSdk), [SendspinExoEngine] builds a 24-bit AudioTrack
      * instead of truncating to 16-bit. The server must also be sending 24-bit
      * — see [FormatNegotiator.MAX_BIT_DEPTH], which is now 24.
      */
@@ -535,7 +535,7 @@ class AppSettings(private val context: Context) {
      * The system AudioDeviceInfo ID to route audio to, for USB DAC support.
      * Empty string means "let the system pick" (default speaker/headset).
      * Set by [com.engabd.sendpin.service.Playback] when a USB audio device is
-     * detected; consumed by both [SendspinAudioEngine] and [LocalPlayer].
+     * detected; consumed by both [SendspinExoEngine] and [LocalPlayer].
      */
     val preferredAudioDeviceId: Flow<String> = context.dataStore.data.map { it[PREFERRED_AUDIO_DEVICE_ID] ?: "" }
 
