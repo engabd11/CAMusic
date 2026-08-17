@@ -221,6 +221,17 @@ private:
     std::atomic<int64_t> underrunFrames_{0};
     std::atomic<int64_t> lastRateMicros_{1000000}; // applied resampler rate * 1e6
     int64_t callbackCount_ = 0;
+    /**
+     * The producer's timeline has been rejected for this stream.
+     *
+     * Set when |intendedHead - dac0| exceeds IMPLAUSIBLE_DRIFT_US, which is a
+     * domain error somewhere upstream rather than a drift. Read and set by the
+     * callback, cleared by resetRing (also the callback) and by start (which runs
+     * on the caller's thread with no stream open — atomic so that crossing is
+     * defined rather than merely unlikely). While set, drift correction is skipped
+     * entirely: see the constant's comment for why silence is the worse failure.
+     */
+    std::atomic<bool> timelineUnusable_{false};
     // When >0, log every callback (decremented). Armed when a flush is acked so
     // we can see exactly what the callback emits across a skip/seek boundary.
     int postFlushCallbacks_ = 0;

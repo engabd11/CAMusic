@@ -204,6 +204,41 @@ class SendspinExoEngine(
         }
     }
 
+    /**
+     * Stop using the Oboe sink for the rest of this session.
+     *
+     * Called by [OboeAudioSink] the first time its ring takes nothing at all for long
+     * enough that back pressure cannot explain it — the failure PR #59 documents, whose
+     * root cause is still open. Whatever that cause turns out to be, a path that emits
+     * no sound must not be the one the listener is left on: the current stream fails
+     * loudly (the sink throws, which lands in [playerListener]), and the player is torn
+     * down so the *next* `stream/start` builds a platform-sink player instead.
+     *
+     * Session-scoped on purpose. The user's `useOboeOutput` preference is not touched:
+     * they asked for the experiment, this is one device on one stream, and silently
+     * rewriting a setting is not this code's decision to make. Restarting the app tries
+     * again, which is the right amount of persistence for something opt-in and off by
+     * default.
+     */
+    private fun abandonOboe() {
+        if (!useOboe) return
+        useOboe = false
+        Log.e(
+            "SendspinExoEngine",
+            "the Oboe output stalled - falling back to the platform sink for this session " +
+                "(useOboeOutput is unchanged and will be tried again next launch)",
+        )
+        runOnMain {
+            // Same teardown as [release], for the same reason: the player is released
+            // *and cleared*, so the next start() builds a fresh one — this time without
+            // OboeRenderersFactory, since useOboe is now false.
+            livePlayer?.release()
+            livePlayer = null
+            nativeOutput?.release()
+            nativeOutput = null
+        }
+    }
+
     private fun stateName(state: Int) = when (state) {
         Player.STATE_IDLE -> "IDLE"
         Player.STATE_BUFFERING -> "BUFFERING"
@@ -224,6 +259,7 @@ class SendspinExoEngine(
                 tap = audioAnalysisTap,
                 driftCorrection = { currentDataSource is SendspinSyncDataSource },
                 currentDataSource = { currentDataSource },
+                onStalled = ::abandonOboe,
             )
             OboeRenderersFactory(context, sink)
         } else {
