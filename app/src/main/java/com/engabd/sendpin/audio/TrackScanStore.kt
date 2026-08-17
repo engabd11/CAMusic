@@ -270,11 +270,25 @@ class TrackScanStore(private val dir: File) {
             // A format-1 or format-2 file predates key detection. It simply has
             // no key — analyserVersion above is already what flags it outdated,
             // so there is nothing to fill in here beyond null.
+            //
+            // Both bytes are range-checked for the same reason readIntBounded
+            // exists: a corrupt tonic would otherwise become a nonsense hue, and
+            // a corrupt mode would index a two-element enum out of bounds. The
+            // caller treats *any* throw from here as "this file will never
+            // parse" and deletes it, so three bad bytes would cost the whole
+            // scan — a library's worth of decoding to get back. A key is the one
+            // thing in the file that is optional, so dropping just the key and
+            // keeping the beat grid is strictly the better trade.
             val key = if (format >= 3 && input.readBoolean()) {
                 val tonic = input.readByte().toInt() and 0xFF
-                val mode = MusicalMode.entries[input.readByte().toInt() and 0xFF]
+                val mode = MusicalMode.entries.getOrNull(input.readByte().toInt() and 0xFF)
                 val conf = dequantise(input.readByte())
-                MusicalKey(tonic = tonic, mode = mode, confidence = conf)
+                if (mode != null && tonic in 0..11) {
+                    MusicalKey(tonic = tonic, mode = mode, confidence = conf)
+                } else {
+                    Log.w(TAG, "Ignoring an out-of-range key in ${file.name}: tonic $tonic")
+                    null
+                }
             } else {
                 null
             }

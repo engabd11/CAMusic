@@ -83,6 +83,39 @@ class TrackScanStoreTest {
     }
 
     @Test
+    fun `a corrupt key byte costs the key, not the whole scan`() {
+        TrackScanStore(dir).save("bent", scan(key = MusicalKey(4, MusicalMode.MAJOR, 0.9f)))
+
+        // The key is the last three bytes of the file — tonic, mode, confidence
+        // — so this bends the mode into a value no two-element enum has.
+        val file = dir.listFiles()!!.single { it.name.endsWith(".scan") }
+        val bytes = file.readBytes()
+        bytes[bytes.size - 2] = 0x7F
+        file.writeBytes(bytes)
+
+        val loaded = TrackScanStore(dir).load("bent")
+
+        assertNotNull(loaded, "a bad key byte must not take the beat grid down with it")
+        assertEquals(null, loaded.key, "an out-of-range mode should read as no key")
+        assertEquals(128f, loaded.bpm, "everything before the key tail should be intact")
+        assertTrue(file.exists(), "the file must survive: deleting it costs hours of re-decoding")
+    }
+
+    @Test
+    fun `an out-of-range tonic reads as no key`() {
+        TrackScanStore(dir).save("bent-tonic", scan(key = MusicalKey(4, MusicalMode.MAJOR, 0.9f)))
+
+        val file = dir.listFiles()!!.single { it.name.endsWith(".scan") }
+        val bytes = file.readBytes()
+        bytes[bytes.size - 3] = 99 // no pitch class 99
+        file.writeBytes(bytes)
+
+        val loaded = TrackScanStore(dir).load("bent-tonic")
+        assertNotNull(loaded)
+        assertEquals(null, loaded.key)
+    }
+
+    @Test
     fun `a scan with no key still round-trips`() {
         TrackScanStore(dir).save("no-key", scan(key = null))
         val loaded = TrackScanStore(dir).load("no-key")
