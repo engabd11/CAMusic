@@ -708,7 +708,7 @@ class JellyfinClient(
             favorite = (o["UserData"] as? JsonObject)?.bool("IsFavorite") ?: false,
             audioFormat = if (mediaType == "track") audioFormat(o) else null,
             trackNumber = o.int("IndexNumber"),
-            discNumber = o.int("ParentIndexNumber"),
+            discNumber = o.int("ParentIndexNumber")?.takeIf { it >= 0 },
             // An album's parent is its *artist*, which is what the "more by this
             // artist" shelf looks it up by. Falling back to `ParentId` handed that
             // shelf the id of the library folder, which resolves to no artist at all —
