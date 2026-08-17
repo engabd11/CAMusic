@@ -321,6 +321,43 @@ class DirectLightSync(
     private var spatialEnabled = false
     private var reducedMotion = false
 
+    // ── Light show layers ──────────────────────────────────────────────────
+    //
+    // Four additive, off-by-default post-processing layers — see
+    // `docs/creative-light-shows.md`. Each is a small pure `LightShowLayer`;
+    // [layerChain] is rebuilt whenever a flag flips (rare — a settings
+    // toggle, not a per-frame event) rather than filtered per frame.
+
+    /** Normalised room-cube position of every channel, cached alongside [channels]. */
+    private var roomPositions: Map<Int, Vec3> = emptyMap()
+
+    /** What shape the lamps are in, cached alongside [channels]. */
+    private var roomTopology: RoomTopology = RoomTopology.CLUSTER
+
+    /** Seconds into the current track, published from [onAnalysisFrame]. */
+    @Volatile private var latestPositionS: Float = -1f
+
+    private val musicDnaLayer = MusicDnaLayer()
+    private val emotionalArcLayer = EmotionalArcLayer()
+    private val phantomStageLayer = PhantomStageLayer()
+    private val phoneConductorLayer = PhoneConductorLayer(context)
+
+    private var musicDnaEnabled = false
+    private var emotionalArcEnabled = false
+    private var phantomStageEnabled = false
+    private var phoneConductorEnabled = false
+
+    @Volatile private var layerChain: LayerChain = LayerChain.EMPTY
+
+    private fun rebuildLayerChain() {
+        val layers = mutableListOf<LightShowLayer>()
+        if (musicDnaEnabled) layers.add(musicDnaLayer)
+        if (emotionalArcEnabled) layers.add(emotionalArcLayer)
+        if (phantomStageEnabled) layers.add(phantomStageLayer)
+        if (phoneConductorEnabled) layers.add(phoneConductorLayer)
+        layerChain = LayerChain(layers)
+    }
+
     // ── Track scan state ───────────────────────────────────────────────────
     //
     // Written by the orchestrator scope as the track changes, read by the
@@ -492,6 +529,8 @@ class DirectLightSync(
                 ?: throw DtlsException("No entertainment area found on the bridge")
 
             channels = config.channels
+            roomPositions = normalizePositions(channels)
+            roomTopology = classifyTopology(channels)
 
             // 2. Start the stream on the bridge (PUT action:start).
             // Passing our own application id lets the bridge tell "someone else has
@@ -549,6 +588,7 @@ class DirectLightSync(
             latestGrid = null
             latestStructure = null
             latestGesture = null
+            latestPositionS = -1f
             // The analyzer's frame period, not the render period: these step once
             // per hop, off the analyzer's own clock.
             val framePeriod = ANALYSIS_HOP.toFloat() / ANALYSIS_SAMPLE_RATE
@@ -565,6 +605,12 @@ class DirectLightSync(
             running.set(true)
             _active.value = true
             _error.value = null
+
+            // The setting may already have been on when this session started —
+            // its own collector only fires on a *change*, and running was false
+            // the last time it did. Battery consciousness: sensors only ever
+            // run while both the setting and a stream are live.
+            if (phoneConductorEnabled) phoneConductorLayer.start()
 
             // 6. Start the render/send loop and the keepalive.
             renderJob = scope.launch { renderLoop() }
@@ -610,6 +656,11 @@ class DirectLightSync(
         structure = null
         latestGrid = null
         latestStructure = null
+
+        // Always, regardless of the setting's last-known value: a session
+        // stop must tear sensors down, not leave them registered because the
+        // last toggle collector happened to fire while a stream was up.
+        phoneConductorLayer.stop()
 
         renderJob?.cancel(); renderJob = null
         keepaliveJob?.cancel(); keepaliveJob = null
@@ -678,6 +729,10 @@ class DirectLightSync(
         // actually wired (see rewireTap).
         val pos = wiredTap?.analysisPositionS ?: Float.NaN
         if (!pos.isNaN()) {
+            // Published unconditionally (not just once a scan is committed) —
+            // the light-show layers want "where in the track are we" whether
+            // or not a scan exists for it.
+            latestPositionS = pos
             // Decided once per track, and only inside the window. Before it, a
             // missing scan means "not arrived yet", not "there isn't one".
             if (mapCommitted == null) {
@@ -852,10 +907,33 @@ class DirectLightSync(
             delayQueue.offer(colours, now)
             val held = delayQueue.poll(now) ?: continue
 
+            // The creative light-show layers — see `docs/creative-light-shows.md`.
+            // Skipped while idle: `frame` is SILENCE and `activeScan`/
+            // `latestStructure` are stale in that branch, so every layer would
+            // either no-op or read garbage anyway. Applied before Safety, not
+            // after, so every layer's output still gets flash-safety and
+            // rate-limiting for free.
+            val layered = if (isIdle) {
+                held
+            } else {
+                layerChain.apply(
+                    held,
+                    LayerContext(
+                        frame = frame,
+                        structure = latestStructure,
+                        scan = activeScan,
+                        positions = roomPositions,
+                        topology = roomTopology,
+                        trackPositionS = latestPositionS,
+                        dt = dt,
+                    ),
+                )
+            }
+
             // Safety runs on what is about to be sent, at the moment it is sent —
             // its flash budget is measured in wall-clock seconds, so it has to
             // sit after the delay queue rather than before it.
-            val guarded = safety?.process(held, dt) ?: held
+            val guarded = safety?.process(layered, dt) ?: layered
             val due = rateLimiter.process(guarded, dt)
 
             // The bridge relays at 25 Hz over Zigbee and the spec asks for a
@@ -1389,6 +1467,26 @@ class DirectLightSync(
             settings.lightSyncSpatial.collect { on ->
                 spatialEnabled = on
                 applySpatialGestures()
+            }
+        }
+        scope.launch {
+            settings.musicDnaEnabled.collect { on -> musicDnaEnabled = on; rebuildLayerChain() }
+        }
+        scope.launch {
+            settings.emotionalArcEnabled.collect { on -> emotionalArcEnabled = on; rebuildLayerChain() }
+        }
+        scope.launch {
+            settings.phantomStageEnabled.collect { on -> phantomStageEnabled = on; rebuildLayerChain() }
+        }
+        scope.launch {
+            settings.phoneConductorEnabled.collect { on ->
+                phoneConductorEnabled = on
+                rebuildLayerChain()
+                // Battery consciousness: sensors only run while both this
+                // setting and a stream are live. The stream-start case (the
+                // setting already being on when start() runs) is handled
+                // there, since this collector only fires on a *change*.
+                if (on && running.get()) phoneConductorLayer.start() else phoneConductorLayer.stop()
             }
         }
         scope.launch {

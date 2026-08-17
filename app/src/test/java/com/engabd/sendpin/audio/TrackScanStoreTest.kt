@@ -32,6 +32,7 @@ class TrackScanStoreTest {
         durationS: Float = 200f,
         analysedS: Float = 200f,
         version: Int = TrackScan.ANALYSER_VERSION,
+        key: MusicalKey? = null,
     ) = TrackScan(
         durationS = durationS,
         bpm = 128f,
@@ -44,6 +45,7 @@ class TrackScanStoreTest {
         melbankRef = FloatArray(0),
         analyserVersion = version,
         analysedS = analysedS,
+        key = key,
     )
 
     @Test
@@ -64,6 +66,28 @@ class TrackScanStoreTest {
         assertEquals(200f, loaded.analysedS)
         assertTrue(loaded.complete)
         assertFalse(loaded.outdated)
+    }
+
+    @Test
+    fun `a track's musical key survives the trip to disk and back`() {
+        val key = MusicalKey(tonic = 4, mode = MusicalMode.MAJOR, confidence = 0.81f)
+        TrackScanStore(dir).save("keyed", scan(key = key))
+
+        val loaded = TrackScanStore(dir).load("keyed")
+
+        assertNotNull(loaded)
+        assertNotNull(loaded.key)
+        assertEquals(4, loaded.key.tonic)
+        assertEquals(MusicalMode.MAJOR, loaded.key.mode)
+        assertEquals(0.81f, loaded.key.confidence, 1f / 255f)
+    }
+
+    @Test
+    fun `a scan with no key still round-trips`() {
+        TrackScanStore(dir).save("no-key", scan(key = null))
+        val loaded = TrackScanStore(dir).load("no-key")
+        assertNotNull(loaded)
+        assertEquals(null, loaded.key)
     }
 
     @Test
