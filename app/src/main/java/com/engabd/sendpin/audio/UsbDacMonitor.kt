@@ -65,7 +65,7 @@ class UsbDacMonitor(private val context: Context) {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.stat_sys_data_usb)
+            .setSmallIcon(com.engabd.sendpin.R.drawable.ic_usb)
             .setContentTitle("${AudioOutputs.describe(device)} connected")
             .setContentText(text)
             .setAutoCancel(true)

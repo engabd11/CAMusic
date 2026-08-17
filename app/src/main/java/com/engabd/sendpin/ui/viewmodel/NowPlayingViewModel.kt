@@ -1623,6 +1623,13 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
 
         /** How close the server's clock must land to a seek target to count as landed. */
         const val SEEK_CONFIRM_MS = 3_000L
+
+        /**
+         * Matches LibraryViewModel.SCROBBLE_MAX_MS — the same "was this a real play" call.
+         * Used by [recordHistoryWhenPlayed] so a skip doesn't inflate the stats the same
+         * way it doesn't inflate a scrobble.
+         */
+        const val HISTORY_THRESHOLD_MS = 4 * 60 * 1000L
     }
 
     /**
@@ -1877,7 +1884,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                     album = identity.album,
                     provider = s.source,
                     codec = s.sourceQuality?.codec,
-                    sampleRate = s.sourceQuality?.sampleRate ?: 0,
+                    sampleRate = s.sourceQuality?.sampleRateHz ?: 0,
                     bitDepth = s.sourceQuality?.bitDepth ?: 0,
                     durationPlayedMs = s.positionMs,
                 ),
@@ -1889,8 +1896,4 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private companion object {
-        /** Matches LibraryViewModel.SCROBBLE_MAX_MS — the same "was this a real play" call. */
-        const val HISTORY_THRESHOLD_MS = 4 * 60 * 1000L
-    }
 }

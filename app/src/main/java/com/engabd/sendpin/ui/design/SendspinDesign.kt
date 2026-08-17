@@ -830,3 +830,23 @@ fun HSlider(
 private val BubbleWidth = 72.dp
 private val BubbleLift = 38.dp
 
+/**
+ * A small circular icon button used in screen headers — the same one
+ * [SpeakersScreen] defines privately; hoisted here so [StatsScreen] and
+ * other screens can share it without each keeping their own copy.
+ */
+@Composable
+fun CircleIconButton(icon: ImageVector, cd: String, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .size(34.dp)
+            .clip(CircleShape)
+            .background(Glass)
+            .border(1.dp, Hairline, CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, cd, tint = TextSecondary, modifier = Modifier.size(17.dp))
+    }
+}
+

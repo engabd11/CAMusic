@@ -489,14 +489,14 @@ class AppSettings(private val context: Context) {
             prefs.asMap().forEach { (key, value) ->
                 if (key.name == SERVERS.name) return@forEach   // handled below, decrypted properly
                 when (val v = if (key.name in ENCRYPTED_KEY_NAMES) Crypto.decrypt(value as? String ?: "") else value) {
-                    is String -> put(key.name, v)
-                    is Boolean -> put(key.name, v)
+                    is String -> put(key.name, JsonPrimitive(v))
+                    is Boolean -> put(key.name, JsonPrimitive(v))
                     // This app has never stored an Int/Float/Long/Set<String> preference;
                     // numeric settings are stringPreferencesKey. Nothing to handle here.
                     else -> Unit
                 }
             }
-            put(SERVERS_EXPORT_KEY, serverJson.encodeToString(ListSerializer(ServerConfig.serializer()), storedServers(prefs)))
+            put(SERVERS_EXPORT_KEY, JsonPrimitive(serverJson.encodeToString(ListSerializer(ServerConfig.serializer()), storedServers(prefs))))
         }
         return PortableCrypto.encrypt(obj.toString(), password)
     }

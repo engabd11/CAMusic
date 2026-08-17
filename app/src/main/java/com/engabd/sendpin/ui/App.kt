@@ -84,6 +84,7 @@ import com.engabd.sendpin.ui.screens.PlaylistDetailScreen
 import com.engabd.sendpin.ui.screens.SettingsScreen
 import com.engabd.sendpin.ui.screens.SettingsSection
 import com.engabd.sendpin.ui.screens.SpeakersScreen
+import com.engabd.sendpin.ui.screens.StatsScreen
 import com.engabd.sendpin.ui.theme.AccentChoice
 import com.engabd.sendpin.ui.theme.Ink
 import com.engabd.sendpin.ui.theme.LocalSendspinColors
