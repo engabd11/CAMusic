@@ -229,6 +229,31 @@ API, which controls Philips Hue lights through the Entertainment API: per-zone e
 and all 19 colour schemes previewed with their real gradient colours. It follows an HA
 `media_player` entity, which is what lets it reach speakers this phone is not playing through.
 
+#### Creative light-show layers
+
+Four additive layers that use CAMusic's existing analysis infrastructure — pre-scanned track
+data, real-time structure detection, instrument-to-position mapping, and phone motion — to do
+things no Hue app can. Each is a toggle, off by default, layered on top of the existing music
+sync rather than replacing it:
+
+- **Music DNA** — every track gets a deterministic visual fingerprint: tempo → wave speed,
+  key → base hue, intensity profile → brightness arc, section structure → colour shifts. Same
+  song always produces the same show.
+- **Emotional arc** — colour temperature follows the song's structural journey: verses are cool
+  blue, builds warm toward orange, drops go hot and saturated, breakdowns go cold, outros fade
+  warm.
+- **Phantom stage** — instruments mapped to fixed physical positions in the room. Bass left
+  corner, vocals centre, guitar right, drums spread by height. When a solo comes in, that part
+  of the room brightens — you can see who is playing by which part of the room is lit.
+- **Phone as conductor** — the phone's accelerometer and gyroscope become a conductor's baton.
+  Tilt shifts colour through the spatial field, a sharp flick flashes all lights, slow circular
+  motion rotates hue around the room. Phone flat auto-disables after 5 seconds.
+
+All layers implement a shared `LightShowLayer` interface and run after `SyncoEngine.render()`
+and before `FieldSafety`. Direct-to-bridge only (the HA path has no analysis tap access).
+
+See [docs/creative-light-shows.md](docs/creative-light-shows.md) for the full design.
+
 ### Offline Playback and Library — download and go
 
 Download a track, album or playlist for offline use — audio and cover art — with a storage cap and
@@ -543,6 +568,10 @@ later phase again.
 - [x] **Auto-pause on phone call** — pauses on `CALL_STATE_RINGING`, does not auto-resume (offers
       a notification instead)
 - [x] **Speed-adaptive volume** — gradually increases volume at higher speeds with smooth ramping
+- [x] **Creative light-show layers** — four additive Hue layers using CAMusic's analysis
+      infrastructure: Music DNA (deterministic visual fingerprint per track), Emotional Arc
+      (colour temperature follows song structure), Phantom Stage (instruments mapped to physical
+      positions), Phone as Conductor (motion-driven lighting). PR #71
 
 ### Next up
 
@@ -582,8 +611,8 @@ later phase again.
       deliberately not compiled. `flac_decode()` is still a skeleton and the ring buffer is
       byte-level rather than frame-level. The largest single audio item on the roadmap.
 - [ ] **Wider instrumented coverage** — 727 unit tests cover protocol, clock, DSP, parsing, the
-      server list, the Philips Hue Entertainment sync engine, speed alert logic, and
-      beat-matched crossfade, and two instrumented tests now pin
+      server list, the Philips Hue Entertainment sync engine, speed alert logic, beat-matched
+      crossfade, and the creative light-show layers, and two instrumented tests now pin
       the two regressions that each cost a release. Nothing yet covers the audio path end to end,
       the service lifecycle, or the UI.
 - [ ] **A hosted crash backend** — crashes are stored locally and, with a token configured, filed
@@ -681,6 +710,8 @@ Releases are cut locally. See the header of
 - [Release notes](docs/release-notes/) — what changed in each release, and why
 - [v0.10 plan](docs/v0.10-plan.md) — the current plan: correctness fixes, new features, and
   driving enhancements
+- [Creative light shows](docs/creative-light-shows.md) — the four additive Hue layers: music DNA,
+  emotional arc, phantom stage, and phone-as-conductor
 - [v0.9 plan](docs/v0.9-plan.md) and [what's left of it](docs/v0.9-remaining.md) — the previous
   plan, and the working queue that re-verified it against the source. The second is worth reading
   for the parts that turned out **wrong**: it opens with five load-bearing premises of the plan
