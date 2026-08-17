@@ -504,9 +504,9 @@ later phase again.
       nothing; the path is opt-in and off.
 - [ ] **Music Assistant gapless** — MA treats gapless as crossfade, so there is no server switch to
       ask for: joining two streams without a seam is client-side work here.
-- [ ] **Spatial swells** — lights that move across or around the room when the music does. Designed
-      but not built; see [PR #60](https://github.com/engabd11/CAMusic/pull/60), whose first
-      step is a detector that logs and renders nothing.
+- [ ] **Room gestures** shipped in v0.9.1 (see the shipped list above). The spatial swell detector
+      and rendering are built; the remaining work is device verification of detection frequency
+      against real music.
 
 ### Planned
 

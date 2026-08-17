@@ -11,11 +11,10 @@
 
 ```
 app/src/main/
-├── cpp/                          # Native C++ code (AAudio I24 path — not yet compiled)
+├── cpp/                          # Native C++ Oboe output engine (compiled; opt-in, off by default)
 │   ├── CMakeLists.txt
-│   ├── audio_engine.cpp
-│   ├── flac_decoder.cpp
-│   └── audio_engine.h / flac_decoder.h
+│   ├── sendspin_output_engine.cpp
+│   └── sendspin_output_engine.h
 ├── java/com/engabd/sendpin/
 │   ├── audio/                    # Audio pipeline (ExoPlayer, Sendspin, analysis, Light Sync tap)
 │   │   ├── AudioAnalysisTap.kt
@@ -94,9 +93,10 @@ app/src/main/
 
 ## Testing
 
-- **Unit tests:** `app/src/test/` (JUnit + MockK) — 463 tests across 54 classes
+- **Unit tests:** `app/src/test/` (JUnit + MockK) — 538 tests across 69 classes
 - **Instrumented tests:** `app/src/androidTest/` (AndroidX Test)
-- **Run:** `./gradlew :app:testDebugUnitTest` or `./gradlew connectedAndroidTest`
+- **NDK and CMake are required** — the native Oboe output engine in `app/src/main/cpp/` is part of the build
+- **Run:** `./gradlew :app:testDebugUnitTest` or `./gradlew :app:connectedDebugAndroidTest`
 
 ## Pull Requests
 
