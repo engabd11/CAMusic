@@ -154,20 +154,3 @@ class PhantomStageLayer : LightShowLayer {
         private const val FLASH_DECAY_S = 0.25f
     }
 }
-
-/** Local HSV to RGB. See the note on this in `MusicDnaLayer.kt`. */
-private fun hsvToRgb(h: Float, s: Float, v: Float): Rgb {
-    val i = (h * 6f).toInt()
-    val f = h * 6f - i
-    val p = v * (1f - s)
-    val q = v * (1f - s * f)
-    val t = v * (1f - s * (1f - f))
-    return when (i % 6) {
-        0 -> Triple(v, t, p)
-        1 -> Triple(q, v, p)
-        2 -> Triple(p, v, t)
-        3 -> Triple(p, q, v)
-        4 -> Triple(t, p, v)
-        else -> Triple(v, p, q)
-    }
-}
