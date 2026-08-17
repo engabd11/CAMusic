@@ -2,6 +2,7 @@ package com.engabd.sendpin.audio
 
 import android.content.Context
 import android.media.AudioDeviceInfo
+import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.data.AppSettings
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
@@ -273,6 +274,7 @@ class LocalPlayer(private val context: Context) {
             _titleFlow.value = track?.title.orEmpty()
             _positionMs.value = 0
             _durationMs.value = track?.durationMs ?: 0
+            perTrackFadeSeconds = computeBeatAlignedFadeSeconds(track)
             // The gain belongs to the track, so it has to be re-applied at every
             // boundary — including the gapless ones, where nothing else happens. The
             // fade resets with it, or a track entered mid-ramp would start quiet and
@@ -693,9 +695,38 @@ class LocalPlayer(private val context: Context) {
     @Volatile
     var smoothQueue: Boolean = true
 
+    /**
+     * Time [fadeSeconds]' window to land on a beat instead of an arbitrary N
+     * seconds before the end, when the current track has a scan already in
+     * memory (see [computeBeatAlignedFadeSeconds] for why disk isn't touched
+     * here). Off by default — see [AppSettings.beatMatchedCrossfade].
+     */
+    @Volatile
+    var beatMatchedFade: Boolean = false
+
+    /** This track's fade window if [beatMatchedFade] found a scan; null uses [fadeSeconds] as-is. */
+    @Volatile
+    private var perTrackFadeSeconds: Int? = null
+
     /** The ramp, multiplied into the output alongside user volume and ReplayGain. */
     @Volatile
     private var fadeFactor: Float = 1f
+
+    /**
+     * [beatMatchedFade]'s adjustment for [track], or null to leave [fadeSeconds]
+     * unmodified.
+     *
+     * [TrackScanStore.peek] only — never [TrackScanStore.load] — because this runs
+     * on `onMediaItemTransition`, ExoPlayer's own listener callback thread; a scan
+     * not already resident (i.e. never touched by Light Sync this session) simply
+     * doesn't beat-match this play, rather than blocking a playback callback on
+     * disk I/O to fetch one.
+     */
+    private fun computeBeatAlignedFadeSeconds(track: LocalTrack?): Int? {
+        if (!beatMatchedFade || track == null || fadeSeconds <= 0) return null
+        val scan = SendpinApp.instance.trackScans.store.peek(TrackScanRepository.keyFor(track)) ?: return null
+        return BeatAlignedFade.windowSeconds(scan.durationS, scan.beats, fadeSeconds)
+    }
 
     /**
      * Where in the track the fade should be, as a multiplier.
@@ -705,7 +736,7 @@ class LocalPlayer(private val context: Context) {
      * division.
      */
     private fun fadeAt(positionMs: Long, durationMs: Long): Float {
-        val secs = fadeSeconds
+        val secs = perTrackFadeSeconds ?: fadeSeconds
         if (secs <= 0 || !smoothQueue || durationMs <= 0) return 1f
         val window = secs * 1000L
         // A track shorter than two windows would spend its whole length fading.

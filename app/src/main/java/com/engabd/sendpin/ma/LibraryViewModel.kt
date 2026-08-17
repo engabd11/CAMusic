@@ -583,6 +583,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         // The fade belongs to the player, and the setting can change under a queue
         // that is already running.
         viewModelScope.launch { settings.navFadeSeconds.collect { localPlayer.fadeSeconds = it } }
+        viewModelScope.launch { settings.beatMatchedCrossfade.collect { localPlayer.beatMatchedFade = it } }
         // A local track that actually started is a play worth reporting, so
         // Navidrome's play counts and its "recently played" shelf stay honest.
         //

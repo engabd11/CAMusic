@@ -75,6 +75,7 @@ class AppSettings(private val context: Context) {
         private val DOWNLOAD_WIFI_ONLY = booleanPreferencesKey("download_wifi_only") // skip downloads on mobile data
         private val RADIO_MODE = booleanPreferencesKey("radio_mode")            // keep the music going past the queue
         private val NAV_FADE_SECONDS = stringPreferencesKey("nav_fade_seconds") // 0 = off, gapless
+        private val BEAT_MATCHED_CROSSFADE = booleanPreferencesKey("beat_matched_crossfade") // time the fade to land on a beat
         private val STATIC_DELAY_MS = stringPreferencesKey("sendspin_static_delay_ms") // per-player latency trim
         private val REPLAY_GAIN = stringPreferencesKey("replay_gain_mode")      // off | track | album
         private val LYRICS_OFFSET_MS = stringPreferencesKey("lyrics_offset_ms") // +ve = lyrics run late
@@ -721,6 +722,19 @@ class AppSettings(private val context: Context) {
 
     suspend fun setNavFadeSeconds(value: Int) = context.dataStore.edit {
         it[NAV_FADE_SECONDS] = value.coerceIn(0, 12).toString()
+    }
+
+    /**
+     * Time [navFadeSeconds]' fade to land on a beat rather than an arbitrary N
+     * seconds before the end — see [BeatAlignedFade]. Off by default: it needs a
+     * track scan to do anything, and the first play of an unscanned track falls
+     * back to the fixed window silently either way, so there's nothing lost by
+     * defaulting it off beyond the listener not knowing to turn it on.
+     */
+    val beatMatchedCrossfade: Flow<Boolean> = context.dataStore.data.map { it[BEAT_MATCHED_CROSSFADE] ?: false }
+
+    suspend fun setBeatMatchedCrossfade(value: Boolean) = context.dataStore.edit {
+        it[BEAT_MATCHED_CROSSFADE] = value
     }
 
     suspend fun setBackend(value: String) {
