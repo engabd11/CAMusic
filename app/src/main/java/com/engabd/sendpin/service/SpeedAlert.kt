@@ -36,7 +36,9 @@ object SpeedAlert {
      */
     class Tracker {
         private var consecutiveOver = 0
-        private var lastBeepAtMs = 0L
+        // -REPEAT_INTERVAL_MS so the first qualifying streak is never blocked by
+        // the repeat-interval gate (which would otherwise see nowMs - 0 < 30s).
+        private var lastBeepAtMs = -REPEAT_INTERVAL_MS
 
         /** @return true if this reading should trigger a beep. */
         fun onReading(speedKmh: Float, triggerKmh: Float, nowMs: Long): Boolean {
@@ -53,7 +55,7 @@ object SpeedAlert {
 
         fun reset() {
             consecutiveOver = 0
-            lastBeepAtMs = 0L
+            lastBeepAtMs = -REPEAT_INTERVAL_MS
         }
     }
 }
