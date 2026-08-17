@@ -2214,7 +2214,16 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 else -> null                                                // still listening
             }
         }.first { it != null }
-        if (played == true) runCatching { sink.scrobble(id, completed = true, startedAtMs = startedAtMs) }
+        if (played == true) {
+            runCatching {
+                sink.scrobble(
+                    id,
+                    completed = true,
+                    startedAtMs = startedAtMs,
+                    positionMs = localPlayer.positionMs.value,
+                )
+            }
+        }
     }
 
     private fun loadFavoriteAlbums(): Job? {

@@ -178,7 +178,7 @@ class LocalMediaSource(
     override fun coverUrl(id: String?, size: Int): String? = null
 
     override suspend fun setStarred(item: MaItem, starred: Boolean) {}
-    override suspend fun scrobble(id: String, completed: Boolean, startedAtMs: Long?) {}
+    override suspend fun scrobble(id: String, completed: Boolean, startedAtMs: Long?, positionMs: Long?) {}
     override suspend fun lyrics(songId: String): MaLyrics? = null
 
     // Not supported on local files.
