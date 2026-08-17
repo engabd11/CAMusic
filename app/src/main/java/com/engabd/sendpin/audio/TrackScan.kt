@@ -60,6 +60,13 @@ data class TrackScan(
      * itself as analysed, and the moment the lights started guessing looked like a bug.
      */
     val analysedS: Float = durationS,
+    /**
+     * The track's musical key, from a Krumhansl-Kessler correlation over the
+     * whole-track chroma accumulated during the scan. Null on a scan from
+     * before key detection existed (analyser version 1) — [outdated] is what
+     * flags those for re-analysis, not a guess here.
+     */
+    val key: MusicalKey? = null,
 ) {
     /** The scan covers the whole track, rather than stopping at the analysis cap. */
     val complete: Boolean get() = analysedS >= durationS - 1f
@@ -169,7 +176,8 @@ data class TrackScan(
             beats.contentEquals(other.beats) && accents.contentEquals(other.accents) &&
             sections == other.sections && intensity == other.intensity &&
             melbankRef.contentEquals(other.melbankRef) &&
-            analyserVersion == other.analyserVersion && analysedS == other.analysedS
+            analyserVersion == other.analyserVersion && analysedS == other.analysedS &&
+            key == other.key
     }
 
     override fun hashCode(): Int {
@@ -184,6 +192,7 @@ data class TrackScan(
         result = 31 * result + melbankRef.contentHashCode()
         result = 31 * result + analyserVersion
         result = 31 * result + analysedS.hashCode()
+        result = 31 * result + (key?.hashCode() ?: 0)
         return result
     }
 
@@ -200,8 +209,12 @@ data class TrackScan(
          *
          * 1 — the first version to record its own number, and the first whose scans
          * say how much of the track they cover.
+         *
+         * 2 — adds [key], a Krumhansl-Kessler musical key read off the whole-track
+         * chroma. A version-1 scan simply has no key; this is what flags it for
+         * the re-analysis that would give it one.
          */
-        const val ANALYSER_VERSION = 1
+        const val ANALYSER_VERSION = 2
 
         /**
          * Below this the grid is not served. Matches syncoV2's

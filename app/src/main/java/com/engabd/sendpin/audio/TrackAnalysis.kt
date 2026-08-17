@@ -146,6 +146,18 @@ internal class OfflineExtractor(sampleRate: Int = ANALYSIS_SAMPLE_RATE) {
 
     private val namedBins = namedBandBins(freqs)
 
+    /**
+     * Whole-track chroma, for key detection. Same projection matrix and same
+     * per-frame accumulation the live analyzer uses (`AudioAnalyzer.push`'s
+     * "Live chroma" block) — summed across the whole track instead of reset
+     * every frame, since a key is a property of the song, not the instant.
+     */
+    private val chromaProj: FloatArray = chromaProjection(freqs, CHROMA_FMIN, CHROMA_FMAX)
+    private val chromaAccum = FloatArray(12)
+
+    /** Accumulated 12-bin pitch-class energy (0=C .. 11=B) over every frame seen. */
+    val chroma: FloatArray get() = chromaAccum.copyOf()
+
     /** Sliding window over the input, with the newest samples at the end. */
     private val buf = FloatArray(window)
 
@@ -225,6 +237,20 @@ internal class OfflineExtractor(sampleRate: Int = ANALYSIS_SAMPLE_RATE) {
         // magnitudePower hands back power; the live analyzer square-roots in
         // place to get linear magnitude and everything downstream assumes it.
         for (i in mag.indices) mag[i] = sqrt(mag[i])
+
+        // Chroma: fold this frame's magnitude spectrum into pitch classes and
+        // add it to the running total. Same shape as the live analyzer's own
+        // per-frame fold, just summed rather than replaced.
+        if (chromaProj.isNotEmpty()) {
+            for (i in mag.indices) {
+                val m = mag[i]
+                if (m <= 0f) continue
+                val base = i * 12
+                for (p in 0 until 12) {
+                    chromaAccum[p] += m * chromaProj[base + p]
+                }
+            }
+        }
 
         var sq = 0f
         for (v in buf) sq += v * v
@@ -1150,6 +1176,7 @@ internal fun finishScan(ex: OfflineExtractor, fullDurationS: Float = 0f): ScanRe
     // event set, so it falls back to the flux-only blend rather than a grid we
     // have just rejected.
     val profile = buildIntensityProfile(ex, bpm.toFloat(), if (gridOk) beatTimes else FloatArray(0))
+    val key = detectKey(ex.chroma)
 
     return ScanResult.Ok(
         TrackScan(
@@ -1166,6 +1193,7 @@ internal fun finishScan(ex: OfflineExtractor, fullDurationS: Float = 0f): ScanRe
             sections = sections,
             intensity = profile,
             melbankRef = melbankReference(ex),
+            key = key,
         )
     )
 }

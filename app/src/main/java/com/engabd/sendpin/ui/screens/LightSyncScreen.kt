@@ -348,6 +348,10 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
     val brightnessPct by settings.lightSyncBrightness.collectAsState(initial = 100)
     val advanced by settings.lightSyncAdvanced.collectAsState(initial = false)
     val spatial by settings.lightSyncSpatial.collectAsState(initial = false)
+    val musicDna by settings.musicDnaEnabled.collectAsState(initial = false)
+    val emotionalArc by settings.emotionalArcEnabled.collectAsState(initial = false)
+    val phantomStage by settings.phantomStageEnabled.collectAsState(initial = false)
+    val phoneConductor by settings.phoneConductorEnabled.collectAsState(initial = false)
     val tunables by settings.lightSyncTunables.collectAsState(initial = emptyMap())
     val bridgeIp by settings.hueBridgeIp.collectAsState(initial = "")
     val configId by settings.hueEntertainmentConfigId.collectAsState(initial = "")
@@ -688,6 +692,84 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                         }
                         AccentSwitch(spatial) { on -> scope.launch { settings.setLightSyncSpatial(on) } }
                     }
+                }
+
+                // Four additive light-show layers — see `docs/creative-light-shows.md`.
+                // Outside the Advanced gate, deliberately: these are the
+                // headline features this screen exists to show off, not
+                // obscure tunables someone has to go looking for.
+                Spacer(Modifier.height(22.dp))
+                SectionLabel("Light show layers")
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    "Extra, off by default. Each one layers on top of the show above — never a replacement for it.",
+                    color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 11.sp,
+                )
+                Spacer(Modifier.height(12.dp))
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Music DNA", color = TextSecondary, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            "A visual fingerprint unique to each track — tempo, key and " +
+                                "structure shape a slow colour floor underneath the reactive " +
+                                "show. Locks in a few seconds into a track once it has been " +
+                                "analysed.",
+                            color = TextFaint, fontSize = 11.sp, lineHeight = 15.sp,
+                            modifier = Modifier.padding(end = 12.dp),
+                        )
+                    }
+                    AccentSwitch(musicDna) { on -> scope.launch { settings.setMusicDnaEnabled(on) } }
+                }
+
+                Spacer(Modifier.height(16.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Emotional arc", color = TextSecondary, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            "The room's colour temperature follows the song's own arc — " +
+                                "cool through the calm parts, warming into a build, hot on " +
+                                "the drop, cold on a breakdown.",
+                            color = TextFaint, fontSize = 11.sp, lineHeight = 15.sp,
+                            modifier = Modifier.padding(end = 12.dp),
+                        )
+                    }
+                    AccentSwitch(emotionalArc) { on -> scope.launch { settings.setEmotionalArcEnabled(on) } }
+                }
+
+                Spacer(Modifier.height(16.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Phantom stage", color = TextSecondary, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            "Bass, drums, guitar, vocals and synths each get a fixed spot " +
+                                "in the room for the session, glowing softly and flashing " +
+                                "when that part of the mix hits — a rough approximation " +
+                                "from frequency, not real instrument separation.",
+                            color = TextFaint, fontSize = 11.sp, lineHeight = 15.sp,
+                            modifier = Modifier.padding(end = 12.dp),
+                        )
+                    }
+                    AccentSwitch(phantomStage) { on -> scope.launch { settings.setPhantomStageEnabled(on) } }
+                }
+
+                Spacer(Modifier.height(16.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Phone conductor", color = TextSecondary, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            "Tilt the phone to shift colour across the room, flick it for a " +
+                                "flash, or turn it slowly to spin colour around the space. " +
+                                "Turns itself off after a few seconds of no motion.",
+                            color = TextFaint, fontSize = 11.sp, lineHeight = 15.sp,
+                            modifier = Modifier.padding(end = 12.dp),
+                        )
+                    }
+                    AccentSwitch(phoneConductor) { on -> scope.launch { settings.setPhoneConductorEnabled(on) } }
                 }
 
                 Spacer(Modifier.height(22.dp))
