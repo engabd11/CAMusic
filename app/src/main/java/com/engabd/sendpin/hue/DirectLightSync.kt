@@ -605,6 +605,10 @@ class DirectLightSync(
                 it.effect = SyncEffect.fromWire(settings.lightSyncEffect.first())
                 it.setScheme(ColorScheme.fromWire(settings.lightSyncColor.first()))
                 it.brightness = settings.lightSyncBrightness.first() / 100f
+                // Not via applyBrightness: the [engine] field is not assigned
+                // until this `also` block returns, so it would write the ceiling
+                // to the *previous* engine (or to nothing at all on the first
+                // stream). Mirrored by hand here, and only here.
                 layerBrightness = it.brightness
                 it.setTunables(activeTunables)
                 // Apply cached album colours if the collector already extracted
