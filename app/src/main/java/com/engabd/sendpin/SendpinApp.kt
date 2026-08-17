@@ -7,6 +7,7 @@ import coil.ImageLoaderFactory
 import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import com.engabd.sendpin.audio.LocalPlayer
+import com.engabd.sendpin.audio.UsbDacMonitor
 import com.engabd.sendpin.crash.CrashReporter
 import com.engabd.sendpin.download.DownloadManager
 import com.engabd.sendpin.ma.MaApiClient
@@ -100,6 +101,13 @@ class SendpinApp : Application(), ImageLoaderFactory {
     val drivingMode: com.engabd.sendpin.service.DrivingMode by lazy {
         com.engabd.sendpin.service.DrivingMode(this)
     }
+
+    /**
+     * Notices a USB DAC connect and tells the user it can be pinned in Settings.
+     * Process-scoped and started in [onCreate] for the same reason [drivingMode]
+     * is: the connect it exists to notice can happen before any screen opens.
+     */
+    val usbDacMonitor: UsbDacMonitor by lazy { UsbDacMonitor(this) }
 
     /**
      * Whichever backend is actually producing sound right now, for
@@ -218,6 +226,7 @@ class SendpinApp : Application(), ImageLoaderFactory {
         // thing it is watching for is the car connecting, which happens before any
         // screen opens.
         drivingMode
+        usbDacMonitor.start()
         // The storage cap evicts oldest-first, and the one file it must never take is
         // the one being listened to. Published here rather than looked up inside the
         // download manager, which has no business holding a reference to the player.
