@@ -858,7 +858,7 @@ class SubsonicClient(
         favorite = o.str("starred") != null,
         audioFormat = audioFormat(o),
         trackNumber = o.int("track"),
-        discNumber = o.int("discNumber"),
+        discNumber = o.discNumber("discNumber"),
         parentId = o.str("albumId"),
         album = o.str("album"),
         composer = o.str("composer"),
@@ -913,6 +913,16 @@ class SubsonicClient(
 
     private fun JsonObject.str(k: String) = this[k]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
     private fun JsonObject.int(k: String) = this[k]?.jsonPrimitive?.let { it.intOrNull ?: it.doubleOrNull?.toInt() }
+    private fun JsonObject.discNumber(k: String = "discNumber"): Int? =
+        this[k]?.jsonPrimitive?.let {
+            it.intOrNull
+                ?: it.doubleOrNull?.toInt()
+                ?: it.contentOrNull
+                    ?.takeIf { s -> s.isNotBlank() }
+                    ?.substringBefore("/")
+                    ?.substringBefore(" ")
+                    ?.toIntOrNull()
+        }?.takeIf { it >= 0 }
     private fun JsonObject.float(k: String) = this[k]?.jsonPrimitive?.let { it.floatOrNull ?: it.contentOrNull?.toFloatOrNull() }
     private fun JsonObject.long(k: String) = this[k]?.jsonPrimitive?.let { it.longOrNull ?: it.doubleOrNull?.toLong() }
 }

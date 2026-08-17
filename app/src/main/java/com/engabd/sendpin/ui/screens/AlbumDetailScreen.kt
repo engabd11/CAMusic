@@ -111,10 +111,18 @@ fun AlbumDetailScreen(
     // is sometimes worked out from the track numbers rather than read off the track —
     // Navidrome and Jellyfin both drop the field when the file has no disc tag.
     val discs = remember(tracks, album?.discTitles) {
-        discGroups(tracks, album?.discTitles.orEmpty())
+        if (provider == "library") {
+            // Music Assistant provides reliable disc numbers; keep the pre-regression
+            // simple grouping so multi-disc albums show headers exactly as before.
+            discGroupsFromNumbers(tracks, album?.discTitles.orEmpty())
+        } else {
+            // Navidrome and Jellyfin may omit discNumber when the file has no disc tag,
+            // so we use the fallback derivation. When they *do* provide the field it wins.
+            discGroups(tracks, album?.discTitles.orEmpty())
+        }
     }
-
     val musicBrainzId by viewModel.musicBrainzId.collectAsStateWithLifecycle()
+
     val related by viewModel.related.collectAsStateWithLifecycle()
     val relatedTitle by viewModel.relatedTitle.collectAsStateWithLifecycle()
 
@@ -192,6 +200,7 @@ fun AlbumDetailScreen(
                         val multiDisc = discs.size > 1
                         var runningIndex = 0
                         discs.forEach { group ->
+                            val groupStart = runningIndex
                             if (multiDisc) {
                                 item(key = "disc:${group.number}", contentType = "discHeader") {
                                     DiscHeader(
@@ -206,7 +215,7 @@ fun AlbumDetailScreen(
                                 key = { i, t -> "track:${group.number}:$i:${t.itemId}" },
                                 contentType = { _, _ -> "track" },
                             ) { offset, track ->
-                                val index = runningIndex + offset
+                                val index = groupStart + offset
                                 TrackRow(
                                     track = track,
                                     index = index,

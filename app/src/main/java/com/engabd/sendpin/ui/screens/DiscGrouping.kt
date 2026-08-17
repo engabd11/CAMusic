@@ -39,12 +39,16 @@ data class DiscGroup(
 fun discGroups(tracks: List<MaItem>, titles: Map<Int, String> = emptyMap()): List<DiscGroup> {
     if (tracks.isEmpty()) return emptyList()
 
-    val tagged = tracks.any { (it.discNumber ?: 0) > 0 }
+    val explicitDiscs = tracks.mapNotNull { it.discNumber }.distinct().sorted()
+    val tagged = explicitDiscs.size > 1 || (explicitDiscs.size == 1 && explicitDiscs[0] > 0)
     if (tagged) {
-        // A disc number of 0 or null on *some* tracks of an otherwise tagged album is a
-        // gap in the tags, not a disc zero — those tracks belong to the first disc.
+        // Servers like Navidrome and Jellyfin may use 0-based disc numbering
+        // (Disc 0 / Disc 1). Keep the values they send, but file untagged/null
+        // tracks under the first disc. When an explicit 0 is present, that first
+        // disc is 0; otherwise it is 1.
+        val fallback = explicitDiscs.firstOrNull() ?: 1
         return tracks
-            .groupBy { (it.discNumber ?: 0).takeIf { n -> n > 0 } ?: 1 }
+            .groupBy { it.discNumber ?: fallback }
             .toSortedMap()
             .map { (number, discTracks) ->
                 DiscGroup(number, titles[number], inTrackOrder(discTracks))
@@ -59,6 +63,20 @@ fun discGroups(tracks: List<MaItem>, titles: Map<Int, String> = emptyMap()): Lis
     }
 
     return listOf(DiscGroup(1, titles[1], inTrackOrder(tracks)))
+}
+
+fun discGroupsFromNumbers(tracks: List<MaItem>, titles: Map<Int, String> = emptyMap()): List<DiscGroup> {
+    if (tracks.isEmpty()) return emptyList()
+    return tracks
+        .groupBy { it.discNumber ?: 1 }
+        .toSortedMap()
+        .map { (number, discTracks) ->
+            DiscGroup(
+                number = number,
+                title = titles[number],
+                tracks = discTracks,
+            )
+        }
 }
 
 /**
