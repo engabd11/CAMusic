@@ -129,7 +129,7 @@ fun LibraryScreen(
     val addingToPlaylist by viewModel.addingToPlaylist.collectAsStateWithLifecycle()
     val playlistChoices by viewModel.playlistChoices.collectAsStateWithLifecycle()
     val activeServerConfig by viewModel.activeServerConfig.collectAsStateWithLifecycle()
-    val allServers by remember { viewModel.allServers }
+    val allServers by viewModel.allServers.collectAsStateWithLifecycle()
     val palette = LocalPalette.current
     val snackbar = remember { SnackbarHostState() }
     // Long-press target. Hoisted to the screen so the sheet is a sibling of the
