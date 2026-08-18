@@ -721,6 +721,10 @@ fun GradientAvatar(letter: String, index: Int, modifier: Modifier = Modifier, si
  *
  * [label] turns on the magnifier: a bubble above the knob showing where a release
  * would land, e.g. the timestamp being scrubbed to.
+ *
+ * Touch target is 48dp tall (standard Material touch target) with a 4dp visible
+ * track, making it easy to grab on small screens. The knob enlarges smoothly
+ * when touched.
  */
 @Composable
 fun HSlider(
@@ -739,6 +743,13 @@ fun HSlider(
     var dragValue by remember { mutableFloatStateOf(0f) }
 
     val v = (if (dragging) dragValue else value).coerceIn(0f, 1f)
+    
+    // Smooth knob size animation
+    val knobSize by animateFloatAsState(
+        targetValue = if (dragging) 1.35f else 1f,
+        animationSpec = Motion.spatial(),
+        label = "knobSize"
+    )
 
     fun commit(f: Float) {
         val c = f.coerceIn(0f, 1f)
@@ -748,7 +759,8 @@ fun HSlider(
     Box(
         modifier
             .fillMaxWidth()
-            .height(18.dp)
+            // Touch target is 48dp tall for easy grabbing, but visual track stays small
+            .height(48.dp)
             .onSizeChanged { width = if (it.width > 0) it.width else 1 }
             .pointerInput(Unit) {
                 detectTapGestures { o ->
@@ -766,12 +778,13 @@ fun HSlider(
                     },
                     onDragEnd = { dragging = false; commit(dragValue) },
                     onDragCancel = { dragging = false },
-                ) { change, _ ->
+                ) { change, dragAmount ->
+                    // Smoother drag: use absolute position, not delta
                     dragValue = (change.position.x / width).coerceIn(0f, 1f)
                     onChange(dragValue)
                 }
             },
-        contentAlignment = Alignment.CenterStart,
+        contentAlignment = Alignment.Center,
     ) {
         Box(Modifier.fillMaxWidth().height(trackHeight).clip(RoundedCornerShape(50)).background(inkOn(0.14f)))
         Box(
@@ -789,7 +802,7 @@ fun HSlider(
                 .then(if (accented) Modifier.shadow(10.dp, CircleShape, ambientColor = accent, spotColor = accent) else Modifier)
                 // TextPrimary, not literal white: the knob has to stay visible against
                 // its own track, which inverts with the theme.
-                .size(if (dragging) knob * 1.35f else knob).clip(CircleShape).background(TextPrimary)
+                .size(knob * knobSize).clip(CircleShape).background(TextPrimary)
         )
 
         // Magnifier — rides above the knob while dragging, clamped so it stays on
