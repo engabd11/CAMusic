@@ -360,7 +360,8 @@ fun Modifier.dismissOnDragDown(onDismiss: () -> Unit, threshold: Dp = 110.dp): M
     var shown by remember { mutableStateOf(false) }
     val enter by animateFloatAsState(
         targetValue = if (shown) 0f else 1f,
-        animationSpec = Motion.spatial(),
+        // Use smoother sheet slide animation for entry
+        animationSpec = Motion.sheetDismiss(),
         label = "sheetEnter",
     )
     LaunchedEffect(Unit) { shown = true }
@@ -379,17 +380,19 @@ fun Modifier.dismissOnDragDown(onDismiss: () -> Unit, threshold: Dp = 110.dp): M
                         if (offsetY.value > thresholdPx) {
                             // Slide it the rest of the way out before the caller drops
                             // it, so the sheet leaves rather than blinking away.
-                            offsetY.animateTo(height, Motion.spatial())
+                            // Use smoother sheet dismissal animation
+                            offsetY.animateTo(height, Motion.sheetDismiss())
                             onDismiss()
                         } else {
                             // Springs back rather than easing back: the sheet has just
                             // been thrown by a finger, and a spring is what carries the
                             // momentum of that gesture into the settle.
-                            offsetY.animateTo(0f, Motion.spatial())
+                            // Use smoother sheet slide animation for return
+                            offsetY.animateTo(0f, Motion.sheetDismiss())
                         }
                     }
                 },
-                onDragCancel = { scope.launch { offsetY.animateTo(0f, Motion.spatial()) } },
+                onDragCancel = { scope.launch { offsetY.animateTo(0f, Motion.sheetDismiss()) } },
                 onVerticalDrag = { change, dy ->
                     change.consume()
                     scope.launch { offsetY.snapTo((offsetY.value + dy).coerceAtLeast(0f)) }
