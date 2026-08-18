@@ -182,7 +182,7 @@ private fun GroupHeroCard(master: Float, activeCount: Int, title: String, onMast
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     Box(Modifier.size(6.dp).clip(CircleShape).background(accent))
-                    Text("LIVE", color = TextSecondary, fontWeight = FontWeight.Bold, fontSize = 10.sp, letterSpacing = 0.6.sp)
+                    Text("LEADER", color = TextSecondary, fontWeight = FontWeight.Bold, fontSize = 10.sp, letterSpacing = 0.6.sp)
                 }
             }
             Spacer(Modifier.height(16.dp))

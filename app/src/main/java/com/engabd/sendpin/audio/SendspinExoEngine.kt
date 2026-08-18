@@ -135,6 +135,18 @@ class SendspinExoEngine(
     private var userVolume = 1f
     private var syncMuted = false
 
+    /**
+     * True from [endOfStream] until the next [start]. [endOfStream] deliberately
+     * doesn't tear the player down (see its own doc - that's what keeps a real
+     * track boundary gapless), so a few hundred ms of already-buffered audio -
+     * shortened, but not eliminated, by [SendspinMediaSource]'s tighter load
+     * checks - plays out after every `stream/end`, pause included. That's an
+     * audible re-opening right after the listener just told it to stop. Muting
+     * for the tail keeps the decoder and track alive for gapless while making
+     * a pause sound like a pause.
+     */
+    private var streamEnded = false
+
     private val mainHandler = Handler(Looper.getMainLooper())
 
     /**
@@ -147,7 +159,7 @@ class SendspinExoEngine(
         if (Looper.myLooper() == Looper.getMainLooper()) action() else mainHandler.post(action)
     }
 
-    private fun effectiveVolume() = if (syncMuted) 0f else userVolume
+    private fun effectiveVolume() = if (syncMuted || streamEnded) 0f else userVolume
 
     /**
      * Consecutive [onPlayerError] calls since the last [Player.STATE_READY] or fresh
@@ -268,14 +280,26 @@ class SendspinExoEngine(
             TapRenderersFactory(context, audioAnalysisTap, audioLead)
                 .setEnableAudioFloatOutput(bitPerfect) as TapRenderersFactory
         }
-        // Shallow on purpose: SendspinSyncDataSource.read() is itself the pacing
-        // mechanism (it blocks until each frame is due), so a deep ExoPlayer
-        // buffer on top of that would only add latency, not safety margin - see
-        // the plan's risk #2.
+        // Shallow on purpose: SendspinSyncDataSource.read() is *usually* the pacing
+        // mechanism (it blocks until each frame is due), so a deep ExoPlayer buffer
+        // on top of that would only add latency, not safety margin - see the plan's
+        // risk #2. "Usually" is load-bearing: HeadGate falls back to PLAY_NOW
+        // (unscheduled - every frame handed over the moment it's queued, exactly
+        // like the solo/[SendspinDirectDataSource] path) whenever the clock filter
+        // hasn't reconverged within its 3s budget, which happens often enough after
+        // an idle→active transition (every pause→resume) to not be an edge case.
+        // With nothing pacing the loader on that path, maxBufferMs stopped being
+        // shallow and became the actual ceiling: measured on-device filling to
+        // 5-7s, all of which played out audibly after the next pause or seek,
+        // because [endOfStream] deliberately lets already-buffered media drain
+        // rather than hard-stopping (see its own doc - that's what keeps a genuine
+        // track boundary gapless). A few hundred ms is enough headroom against
+        // ordinary LAN jitter without turning "the clock wasn't ready yet" into a
+        // multi-second unresponsive pause button.
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                /* minBufferMs = */ 1_000,
-                /* maxBufferMs = */ 5_000,
+                /* minBufferMs = */ 500,
+                /* maxBufferMs = */ 1_000,
                 /* bufferForPlaybackMs = */ 200,
                 /* bufferForPlaybackAfterRebufferMs = */ 500,
             )
@@ -309,7 +333,9 @@ class SendspinExoEngine(
         // the main-thread block completes moments later, so the ordering is safe
         // either way.
         currentDataSource = dataSource
+        streamEnded = false
         runOnMain {
+            player.volume = effectiveVolume()
             player.setMediaSource(SendspinMediaSource.create(dataSource, format))
             player.prepare()
             player.play()
@@ -328,6 +354,10 @@ class SendspinExoEngine(
         // Without the discard, pausing took as long as the server's read-ahead to fall
         // silent — measured at over 20 s on-device. See [SendspinDataSource.discardQueued].
         currentDataSource?.apply { discardQueued(); signalEndOfStream() }
+        // Mute the tail rather than silence it by tearing the player down - see
+        // [streamEnded]'s own doc for why a hard stop here isn't the answer.
+        streamEnded = true
+        runOnMain { player.volume = effectiveVolume() }
     }
 
     /** `stream/clear` - a seek or track jump: the current source is now wrong. */

@@ -113,12 +113,28 @@ class SendspinSyncDataSource(
         return clock.serverTimeToLocal(serverTsUs) + SCHEDULE_HEADROOM_US - staticDelayMs * 1_000L
     }
 
-    /** Block until [targetLocalUs] is due. False if it's already too late to be worth playing. */
+    /**
+     * Block until [targetLocalUs] is due. False if it's already too late to be worth
+     * playing, or if the stream was ended out from under this wait.
+     *
+     * That second case is what a pause or a seek looks like from in here: both
+     * arrive as `stream/end`/`stream/clear` on [SendspinExoEngine]'s ingest
+     * coroutine, which calls [SendspinDataSource.discardQueued] and
+     * [SendspinDataSource.signalEndOfStream] on a *different* thread than this one.
+     * `discardQueued` only reaches frames still sitting in the queue - it does
+     * nothing for the one already popped out and being waited on right here, and
+     * without this check the wait ran to completion regardless: a frame scheduled
+     * [MAX_LEAD_US] out held pause silent for that long, no matter how loudly the
+     * queue behind it had already been told to stop. Checked once per sleep slice
+     * (~20ms), so an end signal is noticed almost immediately instead of at the
+     * frame's original, now-irrelevant schedule.
+     */
     private fun waitUntilDue(targetLocalUs: Long): Boolean {
         var waitUs = targetLocalUs - clock.nowUs()
         if (waitUs < -LATE_TOLERANCE_US) return false
         if (waitUs > MAX_LEAD_US) return true // implausible: don't stall on it
         while (waitUs > 0) {
+            if (isEndOfStreamSignalled()) return false
             val slice = waitUs.coerceAtMost(20_000L)
             try {
                 Thread.sleep(slice / 1_000L, ((slice % 1_000L) * 1_000L).toInt())
