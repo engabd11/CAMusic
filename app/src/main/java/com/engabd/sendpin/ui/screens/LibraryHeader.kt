@@ -67,6 +67,8 @@ internal fun Header(
     refreshing: Boolean = false,
     onRefresh: (() -> Unit)? = null,
     searching: Boolean = false,
+    /** Callback when the library badge is clicked — opens library switch overlay. */
+    onLibraryBadgeClick: (() -> Unit)? = null,
 ) {
     Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 14.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -91,7 +93,11 @@ internal fun Header(
                 // Which backend is on is a *setting* now, not a control that lives
                 // here — two places to change it meant the greyed-out Speakers and
                 // Lights tabs could disagree with what the library was browsing.
-                BackendTag(activeServerConfig?.displayName ?: if (backend == Backend.SUBSONIC) "Library" else "Music Assistant")
+                // Made clickable and larger: tap to switch libraries without going to Settings.
+                BackendTag(
+                    label = activeServerConfig?.displayName ?: if (backend == Backend.SUBSONIC) "Library" else "Music Assistant",
+                    onClick = onLibraryBadgeClick,
+                )
             }
             onRefresh?.let {
                 Spacer(Modifier.width(10.dp))
@@ -148,15 +154,17 @@ private fun RefreshButton(refreshing: Boolean, onClick: () -> Unit) {
 
 /** A quiet read-only badge naming the library backend Settings has selected. */
 @Composable
-private fun BackendTag(label: String) {
+private fun BackendTag(label: String, onClick: (() -> Unit)? = null) {
+    val hasClick = onClick != null
     Text(
-        label, color = TextFaint, fontFamily = AppFont, fontWeight = FontWeight.Bold,
-        fontSize = 10.sp, letterSpacing = 0.8.sp, maxLines = 1,
+        label, color = if (hasClick) TextPrimary else TextFaint, fontFamily = AppFont, fontWeight = FontWeight.Bold,
+        fontSize = 11.sp, letterSpacing = 0.6.sp, maxLines = 1,
         modifier = Modifier
             .clip(RoundedCornerShape(100))
-            .background(Glass)
-            .border(1.dp, HairlineSoft, RoundedCornerShape(100))
-            .padding(horizontal = 10.dp, vertical = 5.dp),
+            .background(if (hasClick) LocalAccent.current.copy(alpha = 0.15f) else Glass)
+            .border(1.dp, if (hasClick) LocalAccent.current.copy(alpha = 0.4f) else HairlineSoft, RoundedCornerShape(100))
+            .then(if (hasClick) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
     )
 }
 

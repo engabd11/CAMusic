@@ -91,6 +91,16 @@ enum class SettingsSection(
         "Home Assistant or the Hue Bridge, and reading tracks ahead of the show",
         Icons.Default.Lightbulb,
     ),
+    STATS(
+        "Listening stats",
+        "Your recent top artists, total listening time, and format breakdown",
+        Icons.Default.BarChart,
+    ),
+    BACKUP(
+        "Backup & restore",
+        "Export or import all settings and servers as encrypted file",
+        Icons.Default.Backup,
+    ),
     APPEARANCE(
         "Appearance",
         "Theme, accent colour, the Now Playing layout and lyrics timing",
@@ -196,8 +206,15 @@ fun SettingsScreen(
                     // knows what "Downloads" means; what they do not know is whether
                     // theirs are taking a gigabyte or whether the bridge ever paired.
                     items(SettingsSection.entries, key = { it.name }, contentType = { "category" }) { s ->
-                        NavRow(s.icon, s.title, state.subtitleFor(s) ?: s.subtitle, accent) {
-                            onSection(s); onDetail(null)
+                        // Stats and Backup open their own full-screen views rather than settings sub-pages.
+                        if (s == SettingsSection.STATS) {
+                            NavRow(s.icon, s.title, state.subtitleFor(s) ?: s.subtitle, accent, onClick = onOpenStats)
+                        } else if (s == SettingsSection.BACKUP) {
+                            NavRow(s.icon, s.title, state.subtitleFor(s) ?: s.subtitle, accent, onClick = { /* Backup opens in-place */ })
+                        } else {
+                            NavRow(s.icon, s.title, state.subtitleFor(s) ?: s.subtitle, accent) {
+                                onSection(s); onDetail(null)
+                            }
                         }
                     }
                 } else {
@@ -230,6 +247,8 @@ fun SettingsScreen(
                                 haToken = haToken,
                                 onHaToken = { haToken = it },
                             )
+
+                            SettingsSection.BACKUP -> BackupSection(settings, accent, scope)
 
                             SettingsSection.APPEARANCE -> AppearanceSection(settings, accent, scope)
 
@@ -361,4 +380,145 @@ private fun headerTitle(section: SettingsSection?, detail: String?): String = wh
     section == SettingsSection.LIBRARIES && detail != null -> "Server"
     section == SettingsSection.LIGHTS && detail == BRIDGE_ROUTE -> "Bridge & analysis"
     else -> section.title
+}
+
+// ── Backup & Restore section ─────────────────────────────────────────────
+
+/**
+ * Export every setting — including saved servers — to an encrypted JSON file, or
+ * restore one. The password never leaves this device: it exists only to derive
+ * [com.engabd.sendpin.data.PortableCrypto]'s key, which is why losing it means
+ * losing the backup — there is nothing to reset it with.
+ */
+@Composable
+private fun BackupSection(settings: AppSettings, accent: Color, scope: CoroutineScope) {
+    val context = LocalContext.current
+    var exportPrompt by remember { mutableStateOf(false) }
+    var importUri by remember { mutableStateOf<Uri?>(null) }
+    var status by remember { mutableStateOf<String?>(null) }
+    // Held between the picker's launch and its callback — CreateDocument hands off
+    // to a separate activity, and the composition (with its remember state) is
+    // what survives that round trip, not any local variable in the click handler.
+    var exportPassword by remember { mutableStateOf<String?>(null) }
+
+    val createDoc = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        val password = exportPassword
+        exportPassword = null
+        if (uri == null || password == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            status = try {
+                val blob = settings.exportSettings(password)
+                if (blob == null) {
+                    "Export failed"
+                } else {
+                    context.contentResolver.openOutputStream(uri)?.use { out ->
+                        OutputStreamWriter(out).use { it.write(blob) }
+                    }
+                    "Exported"
+                }
+            } catch (e: Exception) {
+                "Export failed: ${e.message}"
+            }
+        }
+    }
+    val openDoc = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        importUri = uri
+    }
+
+    SettingsCard(
+        title = "Backup & restore",
+        lead = "Export every setting — including saved servers — to an encrypted file, or " +
+            "restore one on a new install. The password is yours alone: there is no way to " +
+            "recover a backup without it.",
+    ) {
+        OledButton(text = "Export settings", accent = accent, outline = true) { exportPrompt = true }
+        Spacer(Modifier.height(8.dp))
+        OledButton(text = "Import settings", accent = accent, outline = true) {
+            openDoc.launch(arrayOf("application/json", "*/*"))
+        }
+        status?.let { Spacer(Modifier.height(6.dp)); Note(it, warn = it.startsWith("Export failed") || it.startsWith("Import failed")) }
+    }
+
+    if (exportPrompt) {
+        PasswordPromptDialog(
+            title = "Export settings",
+            note = "This password encrypts the file. Choose one you'll remember — it can't be reset.",
+            confirmLabel = "Export",
+            onDismiss = { exportPrompt = false },
+            onConfirm = { password ->
+                exportPrompt = false
+                exportPassword = password
+                createDoc.launch("camusic-settings-backup.json")
+            },
+        )
+    }
+
+    importUri?.let { uri ->
+        PasswordPromptDialog(
+            title = "Import settings",
+            note = "This replaces your saved servers and other settings on this device.",
+            confirmLabel = "Import",
+            onDismiss = { importUri = null },
+            onConfirm = { password ->
+                importUri = null
+                scope.launch {
+                    status = try {
+                        val text = context.contentResolver.openInputStream(uri)?.use { input ->
+                            BufferedReader(InputStreamReader(input)).readText()
+                        }
+                        if (text == null) {
+                            "Import failed: couldn't read that file"
+                        } else if (settings.importSettings(text, password)) {
+                            "Imported — restart the app for everything to take effect"
+                        } else {
+                            "Import failed: wrong password, or not a CAMusic backup"
+                        }
+                    } catch (e: Exception) {
+                        "Import failed: ${e.message}"
+                    }
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun PasswordPromptDialog(
+    title: String,
+    note: String,
+    confirmLabel: String,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
+    val accent = LocalAccent.current
+    var password by remember { mutableStateOf("") }
+    var visible by remember { mutableStateOf(false) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Ink2,
+        title = { Text(title, color = TextPrimary, fontFamily = AppFont, fontWeight = FontWeight.ExtraBold, fontSize = 17.sp) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                SecretField(
+                    value = password,
+                    onChange = { password = it },
+                    label = "Password",
+                    accent = accent,
+                    visible = visible,
+                    onVisibilityChange = { visible = it },
+                )
+                Note(note)
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(password) }, enabled = password.isNotBlank()) {
+                Text(confirmLabel, color = if (password.isBlank()) TextFaint else accent, fontFamily = AppFont, fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = TextMuted, fontFamily = AppFont)
+            }
+        },
+    )
 }

@@ -115,3 +115,87 @@ internal fun CreatePlaylistDialog(onDismiss: () -> Unit, onCreate: (String) -> U
         },
     )
 }
+
+/**
+ * Overlay for switching between configured libraries.
+ *
+ * Triggered by tapping the library badge in the header — a quicker way to switch
+ * than going to Settings, especially when there are multiple servers configured.
+ */
+@Composable
+internal fun LibrarySwitchOverlay(
+    servers: List<com.engabd.sendpin.library.ServerConfig>,
+    activeId: String?,
+    onDismiss: () -> Unit,
+    onSelect: (com.engabd.sendpin.library.ServerConfig) -> Unit,
+) {
+    val accent = LocalAccent.current
+    
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Ink2,
+        title = {
+            Text(
+                "Switch Library",
+                color = TextPrimary, fontFamily = AppFont,
+                fontWeight = FontWeight.ExtraBold, fontSize = 17.sp,
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (servers.isEmpty()) {
+                    Text(
+                        "No libraries configured yet.",
+                        color = TextMuted, fontFamily = AppFont, fontSize = 13.sp,
+                    )
+                } else {
+                    servers.forEach { config ->
+                        val isActive = config.id == activeId
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(if (isActive) accent.copy(alpha = 0.15f) else Glass)
+                                .border(1.dp, if (isActive) accent.copy(alpha = 0.4f) else Hairline, RoundedCornerShape(12.dp))
+                                .clickable { onSelect(config) }
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            Icon(
+                                if (isActive) Icons.Default.CheckCircle else Icons.Default.Dns,
+                                null,
+                                tint = if (isActive) accent else TextSecondary,
+                                modifier = Modifier.size(20.dp),
+                            )
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    config.displayName,
+                                    color = TextPrimary, fontFamily = AppFont,
+                                    fontWeight = FontWeight.Bold, fontSize = 14.sp,
+                                )
+                                Text(
+                                    config.kind.label,
+                                    color = TextMuted, fontFamily = AppFont,
+                                    fontSize = 11.sp,
+                                )
+                            }
+                            if (isActive) {
+                                Text(
+                                    "Active",
+                                    color = accent, fontFamily = AppFont,
+                                    fontWeight = FontWeight.SemiBold, fontSize = 11.sp,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = TextMuted, fontFamily = AppFont)
+            }
+        },
+    )
+}

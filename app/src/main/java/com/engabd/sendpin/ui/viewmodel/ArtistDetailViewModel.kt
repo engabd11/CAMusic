@@ -154,6 +154,8 @@ class ArtistDetailViewModel(
         // Seed from the route so the header paints before the round-trip lands.
         _artist.value = ref
         viewModelScope.launch { settings.targetPlayer.collect { _targetPlayer.value = it } }
+        // Load top tracks in parallel with artist info rather than after — they're
+        // part of the initial render and shouldn't populate after entering the page.
         loadArtist()
     }
 
@@ -162,6 +164,11 @@ class ArtistDetailViewModel(
             _loading.value = true
             _error.value = null
             try {
+                // Load top tracks in parallel with artist metadata — both are needed
+                // for the initial render, so there's no reason to wait for one before
+                // starting the other.
+                val topTracksDeferred = async { loadTopTracksInternal() }
+                
                 if (isLocal) {
                     val sc = source
                     if (sc == null) { _error.value = "That library isn't connected"; return@launch }
@@ -194,7 +201,8 @@ class ArtistDetailViewModel(
                             .getOrDefault(emptyList()),
                     )
                 }
-                loadTopTracks()
+                // Await the top tracks load — it's been running in parallel.
+                _topTracks.value = topTracksDeferred.await()
             } catch (e: Exception) {
                 _error.value = e.message ?: "Failed to load artist"
             }
@@ -222,6 +230,20 @@ class ArtistDetailViewModel(
             }.getOrDefault(emptyList())
             _topTracks.value = Load.Ready(tracks)
         }
+    }
+
+    /**
+     * Internal version that returns the Load state for parallel loading.
+     */
+    private suspend fun loadTopTracksInternal(): Load<List<MaItem>> {
+        val tracks = runCatching {
+            if (isLocal) {
+                source?.topSongs(ref.name, count = 10).orEmpty()
+            } else {
+                maRepo.topTracks(ref).take(10)
+            }
+        }.getOrDefault(emptyList())
+        return Load.Ready(tracks)
     }
 
     /**

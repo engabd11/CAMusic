@@ -129,11 +129,14 @@ fun LibraryScreen(
     val addingToPlaylist by viewModel.addingToPlaylist.collectAsStateWithLifecycle()
     val playlistChoices by viewModel.playlistChoices.collectAsStateWithLifecycle()
     val activeServerConfig by viewModel.activeServerConfig.collectAsStateWithLifecycle()
+    val allServers by remember { viewModel.allServers }
     val palette = LocalPalette.current
     val snackbar = remember { SnackbarHostState() }
     // Long-press target. Hoisted to the screen so the sheet is a sibling of the
     // grid rather than a child of a row that scrolls out from under it.
     var actionsFor by remember { mutableStateOf<MaItem?>(null) }
+    // Library switch overlay state
+    var showLibrarySwitch by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { viewModel.toast.collect { snackbar.showSnackbar(it) } }
 
@@ -180,6 +183,7 @@ fun LibraryScreen(
                 // form it would just be a button that does nothing.
                 onRefresh = if (ready) viewModel::refresh else null,
                 searching = searching,
+                onLibraryBadgeClick = { showLibrarySwitch = true },
             )
             // Only offer the connect form once we know there's nothing to connect
             // to. Showing it while a saved server is still handshaking made every
@@ -245,6 +249,20 @@ fun LibraryScreen(
                 playlists = playlistChoices,
                 onClose = viewModel::closeAddToPlaylist,
                 onPick = viewModel::addToPlaylist,
+            )
+        }
+
+        // Library switch overlay — triggered by tapping the library badge.
+        if (showLibrarySwitch) {
+            LibrarySwitchOverlay(
+                servers = allServers,
+                activeId = activeServerConfig?.id,
+                onDismiss = { showLibrarySwitch = false },
+                onSelect = { config ->
+                    viewModel.switchTo(config)
+                    viewModel.connect()
+                    showLibrarySwitch = false
+                },
             )
         }
     }
