@@ -254,7 +254,13 @@ class SubsonicClient(
                 http.newCall(Request.Builder().url(restUrl(endpoint, params, jsonFmt = true, repeated)).build())
                     .execute().use { resp ->
                         if (!resp.isSuccessful) {
-                            throw SubsonicException("Server returned HTTP ${resp.code}")
+                            val message = when (resp.code) {
+                                405 -> "Subsonic API endpoint not allowed - check if Subsonic API is enabled in server settings"
+                                404 -> "Subsonic API endpoint not found - server may be too old or misconfigured"
+                                401, 403 -> "Authentication failed - check your credentials"
+                                else -> "Server returned HTTP ${resp.code}"
+                            }
+                            throw SubsonicException(message)
                         }
                         resp.body?.string() ?: throw SubsonicException("Empty response from the server")
                     }

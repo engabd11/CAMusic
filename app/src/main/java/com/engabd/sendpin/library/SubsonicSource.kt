@@ -74,10 +74,14 @@ class SubsonicSource(
      * Ask the server which OpenSubsonic extensions it has.
      *
      * Called once after connecting. A server that doesn't know the endpoint answers
-     * with an error, which is itself the answer — it has none.
+     * with an error, which is itself the answer — it has none. Older Navidrome versions
+     * and plain Subsonic servers will return 404 or 405, which we treat as "no extensions".
      */
     suspend fun probeCapabilities() {
-        extensions = runCatching { client.openSubsonicExtensions().keys }.getOrDefault(emptySet())
+        extensions = runCatching { client.openSubsonicExtensions().keys }.getOrElse {
+            // Server doesn't support getOpenSubsonicExtensions (404/405) - use baseline capabilities
+            emptySet()
+        }
     }
 
     override suspend fun probe(): SourceError? = client.pingResult()?.let {

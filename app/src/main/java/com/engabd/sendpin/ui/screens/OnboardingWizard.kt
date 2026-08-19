@@ -183,12 +183,19 @@ fun OnboardingWizard(
                         onNext = { step = next(2) },
                         onBack = { step = 1 },
                     )
-                    3 -> SpeakersStep(
-                        playerVm = playerVm,
-                        accent = accent,
-                        onNext = { step = 4 },
-                        onBack = { step = 2 },
-                    )
+                    3 -> if (needsSpeakers) {
+                        SpeakersStep(
+                            playerVm = playerVm,
+                            accent = accent,
+                            onNext = { step = 4 },
+                            onBack = { step = previous(3) },
+                        )
+                    } else {
+                        // Non-MA backends (Navidrome, Jellyfin, Local) don't need speaker registration.
+                        // Skip directly to permissions rather than showing an irrelevant MA form.
+                        LaunchedEffect(Unit) { step = 4 }
+                        Box {} // Empty placeholder while transitioning
+                    }
                     4 -> PermissionsStep(
                         accent = accent,
                         onDone = { finish() },
