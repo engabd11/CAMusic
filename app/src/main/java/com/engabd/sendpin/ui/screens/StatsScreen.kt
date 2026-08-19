@@ -23,6 +23,7 @@ import com.engabd.sendpin.ui.design.Bloom
 import com.engabd.sendpin.ui.design.CircleIconButton
 import com.engabd.sendpin.ui.design.LocalAccent
 import com.engabd.sendpin.ui.design.TitleGap
+import com.engabd.sendpin.ui.design.navBarInset
 import com.engabd.sendpin.ui.screens.settings.Note
 import com.engabd.sendpin.ui.screens.settings.SettingsCard
 import com.engabd.sendpin.ui.screens.settings.StatusPanel
@@ -77,8 +78,8 @@ fun StatsScreen(onBack: () -> Unit = {}, viewModel: StatsViewModel = viewModel()
             }
 
             LazyColumn(
-                Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                Modifier.weight(1f).fillMaxWidth(),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = navBarInset() + 16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 item {
