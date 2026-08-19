@@ -289,13 +289,12 @@ class SendspinExoEngine(
         // hasn't reconverged within its 3s budget, which happens often enough after
         // an idle→active transition (every pause→resume) to not be an edge case.
         // With nothing pacing the loader on that path, maxBufferMs stopped being
-        // shallow and became the actual ceiling: measured on-device filling to
-        // 5-7s, all of which played out audibly after the next pause or seek,
-        // because [endOfStream] deliberately lets already-buffered media drain
-        // rather than hard-stopping (see its own doc - that's what keeps a genuine
-        // track boundary gapless). A few hundred ms is enough headroom against
-        // ordinary LAN jitter without turning "the clock wasn't ready yet" into a
-        // multi-second unresponsive pause button.
+        // Shallow on purpose: SendspinSyncDataSource.read() is itself the pacing
+        // mechanism (it blocks until each frame is due), so a deep ExoPlayer
+        // buffer on top of that would only add latency, not safety margin - see
+        // the plan's risk #2. Keep the buffer shallow so the analysis tap sees
+        // audio promptly - a deep buffer here means the lights wait seconds
+        // before reacting when MA starts playing.
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
                 /* minBufferMs = */ 500,
