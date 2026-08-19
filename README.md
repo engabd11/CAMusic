@@ -38,14 +38,14 @@ engine, with no feature locked behind a paywall:
 | Offline playback | ✅ | ✅ (some) | ❌ |
 | Parametric EQ per speaker | ✅ | ❌ | ❌ |
 | 24-bit / hi-res output | ✅ | ❌ | ❌ |
-|| Driving controls over the map | ✅ | ❌ | ❌ |
-|| Speed limit alert with tolerance | ✅ | ❌ | ❌ |
-|| Auto-pause for phone calls | ✅ | ❌ | ❌ |
-|| Listening statistics | ✅ | ❌ | ❌ |
-|| USB DAC detection | ✅ | ❌ | ❌ |
-|| Settings export / import (encrypted) | ✅ | ❌ | ❌ |
-|| Home-screen widget | ✅ | ✅ (some) | ❌ |
-|| One app, no subscription | ✅ | — | — |
+| Driving controls over the map | ✅ | ❌ | ❌ |
+| Speed limit alert with tolerance | ✅ | ❌ | ❌ |
+| Auto-pause for phone calls | ✅ | ❌ | ❌ |
+| Listening statistics | ✅ | ❌ | ❌ |
+| USB DAC detection | ✅ | ❌ | ❌ |
+| Settings export / import (encrypted) | ✅ | ❌ | ❌ |
+| Home-screen widget | ✅ | ✅ (some) | ❌ |
+| One app, no subscription | ✅ | — | — |
 
 ---
 
