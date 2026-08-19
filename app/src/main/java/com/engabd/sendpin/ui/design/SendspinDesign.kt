@@ -360,8 +360,7 @@ fun Modifier.dismissOnDragDown(onDismiss: () -> Unit, threshold: Dp = 110.dp): M
     var shown by remember { mutableStateOf(false) }
     val enter by animateFloatAsState(
         targetValue = if (shown) 0f else 1f,
-        // Use smoother sheet slide animation for entry
-        animationSpec = Motion.sheetDismiss(),
+        animationSpec = Motion.spatial(),
         label = "sheetEnter",
     )
     LaunchedEffect(Unit) { shown = true }
@@ -380,19 +379,17 @@ fun Modifier.dismissOnDragDown(onDismiss: () -> Unit, threshold: Dp = 110.dp): M
                         if (offsetY.value > thresholdPx) {
                             // Slide it the rest of the way out before the caller drops
                             // it, so the sheet leaves rather than blinking away.
-                            // Use smoother sheet dismissal animation
-                            offsetY.animateTo(height, Motion.sheetDismiss())
+                            offsetY.animateTo(height, Motion.spatial())
                             onDismiss()
                         } else {
                             // Springs back rather than easing back: the sheet has just
                             // been thrown by a finger, and a spring is what carries the
                             // momentum of that gesture into the settle.
-                            // Use smoother sheet slide animation for return
-                            offsetY.animateTo(0f, Motion.sheetDismiss())
+                            offsetY.animateTo(0f, Motion.spatial())
                         }
                     }
                 },
-                onDragCancel = { scope.launch { offsetY.animateTo(0f, Motion.sheetDismiss()) } },
+                onDragCancel = { scope.launch { offsetY.animateTo(0f, Motion.spatial()) } },
                 onVerticalDrag = { change, dy ->
                     change.consume()
                     scope.launch { offsetY.snapTo((offsetY.value + dy).coerceAtLeast(0f)) }
@@ -724,10 +721,6 @@ fun GradientAvatar(letter: String, index: Int, modifier: Modifier = Modifier, si
  *
  * [label] turns on the magnifier: a bubble above the knob showing where a release
  * would land, e.g. the timestamp being scrubbed to.
- *
- * Touch target is 48dp tall (standard Material touch target) with a 4dp visible
- * track, making it easy to grab on small screens. The knob enlarges smoothly
- * when touched.
  */
 @Composable
 fun HSlider(
@@ -746,13 +739,6 @@ fun HSlider(
     var dragValue by remember { mutableFloatStateOf(0f) }
 
     val v = (if (dragging) dragValue else value).coerceIn(0f, 1f)
-    
-    // Smooth knob size animation
-    val knobSize by animateFloatAsState(
-        targetValue = if (dragging) 1.35f else 1f,
-        animationSpec = Motion.spatial(),
-        label = "knobSize"
-    )
 
     fun commit(f: Float) {
         val c = f.coerceIn(0f, 1f)
@@ -762,8 +748,7 @@ fun HSlider(
     Box(
         modifier
             .fillMaxWidth()
-            // Touch target is 48dp tall for easy grabbing, but visual track stays small
-            .height(48.dp)
+            .height(18.dp)
             .onSizeChanged { width = if (it.width > 0) it.width else 1 }
             .pointerInput(Unit) {
                 detectTapGestures { o ->
@@ -781,13 +766,12 @@ fun HSlider(
                     },
                     onDragEnd = { dragging = false; commit(dragValue) },
                     onDragCancel = { dragging = false },
-                ) { change, dragAmount ->
-                    // Smoother drag: use absolute position, not delta
+                ) { change, _ ->
                     dragValue = (change.position.x / width).coerceIn(0f, 1f)
                     onChange(dragValue)
                 }
             },
-        contentAlignment = Alignment.Center,
+        contentAlignment = Alignment.CenterStart,
     ) {
         Box(Modifier.fillMaxWidth().height(trackHeight).clip(RoundedCornerShape(50)).background(inkOn(0.14f)))
         Box(
@@ -805,7 +789,7 @@ fun HSlider(
                 .then(if (accented) Modifier.shadow(10.dp, CircleShape, ambientColor = accent, spotColor = accent) else Modifier)
                 // TextPrimary, not literal white: the knob has to stay visible against
                 // its own track, which inverts with the theme.
-                .size(knob * knobSize).clip(CircleShape).background(TextPrimary)
+                .size(if (dragging) knob * 1.35f else knob).clip(CircleShape).background(TextPrimary)
         )
 
         // Magnifier — rides above the knob while dragging, clamped so it stays on
