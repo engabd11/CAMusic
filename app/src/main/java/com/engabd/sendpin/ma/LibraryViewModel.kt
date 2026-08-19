@@ -645,6 +645,22 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * playing, clearing the browse stack — and this adds the half it cannot know
      * about: *which* local library, when there is more than one.
      */
+    /**
+     * The library-switch overlay's entry point for "the user picked a different server".
+     *
+     * Persists through [AppSettings.setActiveServer] rather than calling [switchTo]
+     * directly, so [resolveActiveConfig] sees the new server as soon as the connect it
+     * triggers runs. Calling [switchTo] here first and settings after left a window
+     * where `settings.activeServer` still held the *previous* server while `connect()`
+     * was already underway — [resolveActiveConfig] prefers that stored value over the
+     * latched one, so it rebuilt the connection with the new server's address but the
+     * old server's kind and credentials. That is what made picking Navidrome sometimes
+     * connect as the old backend, or land on an empty library.
+     */
+    fun selectServer(config: ServerConfig) {
+        viewModelScope.launch { settings.setActiveServer(config.id) }
+    }
+
     fun switchTo(config: ServerConfig) {
         val want = if (config.kind.playsLocally) Backend.SUBSONIC else Backend.MA
         val changedServer = activeConfig?.id != config.id

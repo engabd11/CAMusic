@@ -144,7 +144,16 @@ fun TransportRow(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        TransportIcon(Icons.Default.Shuffle, "Shuffle", 20.dp, state.shuffle) { viewModel.toggleShuffle() }\n        TransportIcon(Icons.Default.SkipPrevious, "Previous", 26.dp) { viewModel.previous() }\n        Column(\n            horizontalAlignment = Alignment.CenterHorizontally,\n            verticalArrangement = Arrangement.spacedBy(4.dp),\n        ) {\n            TappableQualityChip(playing = state.quality, onClick = onShowQuality)\n            PlayButton(state.isPlaying) { viewModel.playPause() }\n        }\n        TransportIcon(Icons.Default.SkipNext, "Next", 26.dp) { viewModel.next() }
+        TransportIcon(Icons.Default.Shuffle, "Shuffle", 20.dp, state.shuffle) { viewModel.toggleShuffle() }
+        TransportIcon(Icons.Default.SkipPrevious, "Previous", 26.dp) { viewModel.previous() }
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            TappableQualityChip(playing = state.quality, onClick = onShowQuality)
+            PlayButton(state.isPlaying) { viewModel.playPause() }
+        }
+        TransportIcon(Icons.Default.SkipNext, "Next", 26.dp) { viewModel.next() }
         TransportIcon(
             if (state.repeatMode == "one") Icons.Default.RepeatOne else Icons.Default.Repeat,
             "Repeat", 20.dp, state.repeatMode != "off",

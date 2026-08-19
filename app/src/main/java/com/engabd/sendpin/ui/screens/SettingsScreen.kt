@@ -216,11 +216,9 @@ fun SettingsScreen(
                     // knows what "Downloads" means; what they do not know is whether
                     // theirs are taking a gigabyte or whether the bridge ever paired.
                     items(SettingsSection.entries, key = { it.name }, contentType = { "category" }) { s ->
-                        // Stats and Backup open their own full-screen views rather than settings sub-pages.
+                        // Stats opens its own full-screen view rather than a settings sub-page.
                         if (s == SettingsSection.STATS) {
                             NavRow(s.icon, s.title, state.subtitleFor(s) ?: s.subtitle, accent, onClick = onOpenStats)
-                        } else if (s == SettingsSection.BACKUP) {
-                            NavRow(s.icon, s.title, state.subtitleFor(s) ?: s.subtitle, accent, onClick = { /* Backup opens in-place */ })
                         } else {
                             NavRow(s.icon, s.title, state.subtitleFor(s) ?: s.subtitle, accent) {
                                 onSection(s); onDetail(null)
