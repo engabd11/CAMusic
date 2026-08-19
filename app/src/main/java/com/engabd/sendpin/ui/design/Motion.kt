@@ -114,32 +114,6 @@ object Motion {
     )
 
     /**
-     * Spatial motion for sheet slides (queue menu, options panels).
-     *
-     * Softer than [screenSlide] — sheets are lighter surfaces that should feel like
-     * they're gliding over the content rather than pushing it. Lower stiffness and
-     * slightly more damping makes the motion feel smooth and controlled.
-     */
-    fun sheetSlide(): FiniteAnimationSpec<IntOffset> = spring(
-        dampingRatio = 0.95f,
-        stiffness = 280f,
-        visibilityThreshold = IntOffset.VisibilityThreshold,
-    )
-
-    /**
-     * Spatial motion for sheet vertical drag dismissals.
-     *
-     * Balanced between responsiveness and smoothness — stiff enough to feel snappy
-     * when thrown, but damped enough to settle without bouncing. Threshold ensures
-     * clean completion without visible correction.
-     */
-    fun sheetDismiss(): FiniteAnimationSpec<Float> = spring(
-        dampingRatio = 0.85f,
-        stiffness = 600f,
-        visibilityThreshold = 2f,
-    )
-
-    /**
      * Spatial motion for a large pixel-scale drag-and-settle offset, e.g. the Now
      * Playing cover sliding down to the mini bar. Same problem as [screenSlide] but
      * for a raw `Float` `Animatable` rather than an `IntOffset`: without an explicit
