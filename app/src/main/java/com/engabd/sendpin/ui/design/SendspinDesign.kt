@@ -598,12 +598,12 @@ fun QualityPill(
  * a top-edge highlight, so it sits above the art rather than on it.
  */
 @Composable
-fun PlayButton(playing: Boolean, size: Dp = 68.dp, onClick: () -> Unit) {
+fun PlayButton(playing: Boolean, size: Dp = 68.dp, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val accent = LocalAccent.current
     // A colour, so an effects spec — a spatial one would overshoot the target hue on
     // the way in and read as a flicker as the album accent changes.
     val fill by animateColorAsState(accent, Motion.effects(), label = "playFill")
-    Box(Modifier.size(size)) {
+    Box(modifier.size(size)) {
         CastGlow(fill, CircleShape, blurRadius = 26.dp, alpha = 0.55f, offsetY = 10.dp)
         Box(
             Modifier
