@@ -259,8 +259,7 @@ fun LibraryScreen(
                 activeId = activeServerConfig?.id,
                 onDismiss = { showLibrarySwitch = false },
                 onSelect = { config ->
-                    viewModel.switchTo(config)
-                    viewModel.connect()
+                    viewModel.selectServer(config)
                     showLibrarySwitch = false
                 },
             )
