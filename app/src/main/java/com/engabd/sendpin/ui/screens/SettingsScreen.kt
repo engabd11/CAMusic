@@ -258,6 +258,11 @@ fun SettingsScreen(
                                 onHaToken = { haToken = it },
                             )
 
+                            SettingsSection.STATS -> {
+                                // STATS is handled via onOpenStats callback in the index view
+                                // This branch should never be reached
+                            }
+
                             SettingsSection.BACKUP -> BackupSection(settings, accent, scope)
 
                             SettingsSection.APPEARANCE -> AppearanceSection(settings, accent, scope)
@@ -521,12 +526,12 @@ private fun PasswordPromptDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = { onConfirm(password) }, enabled = password.isNotBlank()) {
+            androidx.compose.material3.TextButton(onClick = { onConfirm(password) }, enabled = password.isNotBlank()) {
                 Text(confirmLabel, color = if (password.isBlank()) TextFaint else accent, fontFamily = AppFont, fontWeight = FontWeight.Bold)
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
+            androidx.compose.material3.TextButton(onClick = onDismiss) {
                 Text("Cancel", color = TextMuted, fontFamily = AppFont)
             }
         },
