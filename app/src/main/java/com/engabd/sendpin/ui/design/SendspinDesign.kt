@@ -762,7 +762,8 @@ fun HSlider(
     Box(
         modifier
             .fillMaxWidth()
-            // Touch target is 48dp tall for easy grabbing, but visual track stays small
+            // Touch target is 48dp tall for easy grabbing, but visual track stays small.
+            // The Box height defines the touch target; content is positioned absolutely.
             .height(48.dp)
             .onSizeChanged { width = if (it.width > 0) it.width else 1 }
             .pointerInput(Unit) {
@@ -787,11 +788,23 @@ fun HSlider(
                     onChange(dragValue)
                 }
             },
-        contentAlignment = Alignment.Center,
     ) {
-        Box(Modifier.fillMaxWidth().height(trackHeight).clip(RoundedCornerShape(50)).background(inkOn(0.14f)))
+        // Track background - centered vertically in the 48dp touch target
+        val trackCenterY = 24.dp // Half of 48dp touch target
         Box(
-            Modifier.fillMaxWidth(v).height(trackHeight)
+            Modifier
+                .fillMaxWidth()
+                .height(trackHeight)
+                .offset { IntOffset(0, (trackCenterY - trackHeight / 2).roundToPx()) }
+                .clip(RoundedCornerShape(50))
+                .background(inkOn(0.14f))
+        )
+        // Filled portion of track
+        Box(
+            Modifier
+                .fillMaxWidth(v)
+                .height(trackHeight)
+                .offset { IntOffset(0, (trackCenterY - trackHeight / 2).roundToPx()) }
                 .then(if (accented) Modifier.shadow(10.dp, RoundedCornerShape(50), ambientColor = accent, spotColor = accent) else Modifier)
                 .clip(RoundedCornerShape(50))
                 .background(
@@ -799,9 +812,16 @@ fun HSlider(
                     else Brush.horizontalGradient(listOf(inkOn(0.62f), inkOn(0.62f)))
                 )
         )
+        // Knob - centered on the track
         Box(
             Modifier
-                .offset { IntOffset((v * width - knob.toPx() / 2f).roundToInt(), 0) }
+                .offset {
+                    val trackCenterYPx = trackCenterY.toPx()
+                    IntOffset(
+                        (v * width - knob.toPx() / 2f).roundToInt(),
+                        (trackCenterY - knob * knobSize / 2).roundToPx()
+                    )
+                }
                 .then(if (accented) Modifier.shadow(10.dp, CircleShape, ambientColor = accent, spotColor = accent) else Modifier)
                 // TextPrimary, not literal white: the knob has to stay visible against
                 // its own track, which inverts with the theme.

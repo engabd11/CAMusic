@@ -129,13 +129,13 @@ object Motion {
     /**
      * Spatial motion for sheet vertical drag dismissals.
      *
-     * Balanced between responsiveness and smoothness — stiff enough to feel snappy
-     * when thrown, but damped enough to settle without bouncing. Threshold ensures
-     * clean completion without visible correction.
+     * Balanced between responsiveness and smoothness — soft enough to feel like
+     * the sheet is gliding rather than snapping, but still responsive to user input.
+     * Lower stiffness and higher damping creates a smooth, controlled motion.
      */
     fun sheetDismiss(): FiniteAnimationSpec<Float> = spring(
-        dampingRatio = 0.85f,
-        stiffness = 600f,
+        dampingRatio = 0.9f,
+        stiffness = 200f,
         visibilityThreshold = 2f,
     )
 
