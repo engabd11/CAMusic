@@ -20,8 +20,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.layout.HorizontalAlignmentLine
-import androidx.compose.ui.layout.layout
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -128,24 +126,6 @@ fun SeekRow(scrubber: Scrubber, durationMs: Long) {
 }
 
 /**
- * A horizontal line at a box's own vertical center, distance-from-top like any
- * [HorizontalAlignmentLine]. Placed on the play button and read back on every
- * transport icon (see [centerOn]) so the row lines their centers up against the
- * play button's actual center rather than the center of the taller column it
- * shares with the quality chip above it — which is where plain
- * `Alignment.CenterVertically` would put them instead.
- */
-private val PlayCenterLine = HorizontalAlignmentLine { old, _ -> old }
-
-/** Reports this box's own vertical center on [PlayCenterLine], for [centerOn]. */
-private fun Modifier.reportOwnCenter(): Modifier = layout { measurable, constraints ->
-    val placeable = measurable.measure(constraints)
-    layout(placeable.width, placeable.height, mapOf(PlayCenterLine to placeable.height / 2)) {
-        placeable.place(0, 0)
-    }
-}
-
-/**
  * Shuffle, previous, play, next, repeat — with the quality badge floating above the
  * play button.
  *
@@ -162,21 +142,21 @@ fun TransportRow(
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        TransportIcon(Icons.Default.Shuffle, "Shuffle", 20.dp, state.shuffle, Modifier.alignBy(PlayCenterLine)) { viewModel.toggleShuffle() }
-        TransportIcon(Icons.Default.SkipPrevious, "Previous", 26.dp, modifier = Modifier.alignBy(PlayCenterLine)) { viewModel.previous() }
+        TransportIcon(Icons.Default.Shuffle, "Shuffle", 20.dp, state.shuffle) { viewModel.toggleShuffle() }
+        TransportIcon(Icons.Default.SkipPrevious, "Previous", 26.dp) { viewModel.previous() }
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(4.dp),
-            modifier = Modifier.alignBy(PlayCenterLine),
         ) {
             TappableQualityChip(playing = state.quality, onClick = onShowQuality)
-            PlayButton(state.isPlaying, modifier = Modifier.reportOwnCenter()) { viewModel.playPause() }
+            PlayButton(state.isPlaying) { viewModel.playPause() }
         }
-        TransportIcon(Icons.Default.SkipNext, "Next", 26.dp, modifier = Modifier.alignBy(PlayCenterLine)) { viewModel.next() }
+        TransportIcon(Icons.Default.SkipNext, "Next", 26.dp) { viewModel.next() }
         TransportIcon(
             if (state.repeatMode == "one") Icons.Default.RepeatOne else Icons.Default.Repeat,
-            "Repeat", 20.dp, state.repeatMode != "off", Modifier.alignBy(PlayCenterLine),
+            "Repeat", 20.dp, state.repeatMode != "off",
         ) { viewModel.cycleRepeat() }
     }
 }
@@ -324,12 +304,11 @@ internal fun TransportIcon(
     cd: String,
     size: Dp,
     active: Boolean = false,
-    modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
     val accent = LocalAccent.current
     Box(
-        modifier.clip(CircleShape).clickable(onClick = onClick).padding(6.dp),
+        Modifier.clip(CircleShape).clickable(onClick = onClick).padding(6.dp),
         contentAlignment = Alignment.Center,
     ) {
         if (active) Bloom(accent, size * 1.8f, 0.dp, 0.dp, 0.5f)
