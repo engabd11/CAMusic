@@ -1,6 +1,9 @@
 package com.engabd.sendpin.ui.screens
 
+import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -10,12 +13,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -30,9 +35,14 @@ import com.engabd.sendpin.ui.design.navBarInset
 import com.engabd.sendpin.ui.screens.settings.*
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.PlayerViewModel
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.io.OutputStreamWriter
 
 /**
  * The top level of Settings.
@@ -297,7 +307,7 @@ private data class SettingsOverview(
         // Nothing about the audio path or the app itself changes often enough to be
         // worth a live line, and a row that reads "Output: Phone speaker" would be
         // wrong every time headphones are plugged in while this screen is not open.
-        SettingsSection.AUDIO, SettingsSection.ABOUT -> null
+        SettingsSection.AUDIO, SettingsSection.STATS, SettingsSection.BACKUP, SettingsSection.ABOUT -> null
     }
 }
 
