@@ -13,6 +13,10 @@ android {
     namespace = "com.engabd.sendpin"
     compileSdk = 36
 
+    // NDK r27 is the minimum for the oboe prefab package (1.9.3) and CMake 3.22
+    // that this build uses. The prefab's libc++_shared.so must match the app's.
+    ndkVersion = "27.0.12077973"
+
     defaultConfig {
         applicationId = "com.engabd.sendpin"
         minSdk = 31
