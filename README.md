@@ -38,14 +38,14 @@ engine, with no feature locked behind a paywall:
 | Offline playback | ✅ | ✅ (some) | ❌ |
 | Parametric EQ per speaker | ✅ | ❌ | ❌ |
 | 24-bit / hi-res output | ✅ | ❌ | ❌ |
-|| Driving controls over the map | ✅ | ❌ | ❌ |
-|| Speed limit alert with tolerance | ✅ | ❌ | ❌ |
-|| Auto-pause for phone calls | ✅ | ❌ | ❌ |
-|| Listening statistics | ✅ | ❌ | ❌ |
-|| USB DAC detection | ✅ | ❌ | ❌ |
-|| Settings export / import (encrypted) | ✅ | ❌ | ❌ |
-|| Home-screen widget | ✅ | ✅ (some) | ❌ |
-|| One app, no subscription | ✅ | — | — |
+| Driving controls over the map | ✅ | ❌ | ❌ |
+| Speed limit alert with tolerance | ✅ | ❌ | ❌ |
+| Auto-pause for phone calls | ✅ | ❌ | ❌ |
+| Listening statistics | ✅ | ❌ | ❌ |
+| USB DAC detection | ✅ | ❌ | ❌ |
+| Settings export / import (encrypted) | ✅ | ❌ | ❌ |
+| Home-screen widget | ✅ | ✅ (some) | ❌ |
+| One app, no subscription | ✅ | — | — |
 
 ---
 
@@ -745,6 +745,12 @@ Releases are cut locally. See the header of
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). PRs against `master`, conventional commits, Android Studio
 for builds. The project uses Kotlin + Jetpack Compose + media3 + ExoPlayer.
+
+**Note on signing:** Releases are signed with the Android debug keystore so they can be
+installed without a dedicated release key. This means updating from one release to the next
+requires the same signer — installing a GitHub release over a locally-built debug APK, or
+vice versa, will show "package conflicts with an existing package". Uninstall the old build
+first, or use the `-PsideBySide` Gradle flag to install a test copy with its own data directory.
 
 ## Credits
 
