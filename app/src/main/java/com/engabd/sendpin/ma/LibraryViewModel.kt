@@ -284,6 +284,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, LibraryShelves())
 
+    /** All configured servers, for the library switch overlay. */
+    val allServers: StateFlow<List<ServerConfig>> = settings.servers
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
     val downloadJobs: StateFlow<List<DownloadJob>> get() = downloadManager.jobs
     /** Ids of everything on disk — what puts the "downloaded" tick on a track row. */
     val downloadedIds: StateFlow<Set<String>> = downloadManager.downloads
