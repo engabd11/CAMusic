@@ -126,18 +126,7 @@ object Motion {
         visibilityThreshold = IntOffset.VisibilityThreshold,
     )
 
-    /**
-     * Spatial motion for sheet vertical drag dismissals.
-     *
-     * Balanced between responsiveness and smoothness — stiff enough to feel snappy
-     * when thrown, but damped enough to settle without bouncing. Threshold ensures
-     * clean completion without visible correction.
-     */
-    fun sheetDismiss(): FiniteAnimationSpec<Float> = spring(
-        dampingRatio = 0.85f,
-        stiffness = 600f,
-        visibilityThreshold = 2f,
-    )
+    /**\n     * Spatial motion for sheet vertical drag dismissals.\n     *\n     * Balanced between responsiveness and smoothness — soft enough to feel like\n     * the sheet is gliding rather than snapping, but still responsive to user input.\n     * Lower stiffness and higher damping creates a smooth, controlled motion.\n     */\n    fun sheetDismiss(): FiniteAnimationSpec<Float> = spring(\n        dampingRatio = 0.9f,\n        stiffness = 200f,\n        visibilityThreshold = 2f,\n    )
 
     /**
      * Spatial motion for a large pixel-scale drag-and-settle offset, e.g. the Now

@@ -125,24 +125,8 @@ fun SeekRow(scrubber: Scrubber, durationMs: Long) {
     }
 }
 
-/**
- * Shuffle, previous, play, next, repeat — with the quality badge floating above the
- * play button.
- *
- * The badge's column is bottom-aligned so the play button still lines up with the
- * skip buttons either side of it.
- */
-@Composable
-fun TransportRow(
-    state: NowPlayingViewModel.State,
-    viewModel: NowPlayingViewModel,
-    onShowQuality: () -> Unit,
-) {
-    Row(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.Bottom,
-    ) {
+/**\n * Shuffle, previous, play, next, repeat — with the quality badge floating above the\n * play button.\n *\n * The transport icons are centered vertically so they align with the play button.\n * The quality chip sits above the play button in its own Column.\n */
+@Composable\nfun TransportRow(\n    state: NowPlayingViewModel.State,\n    viewModel: NowPlayingViewModel,\n    onShowQuality: () -> Unit,\n) {\n    Row(\n        Modifier.fillMaxWidth(),\n        horizontalArrangement = Arrangement.SpaceBetween,\n        verticalAlignment = Alignment.CenterVertically,\n    ) {
         TransportIcon(Icons.Default.Shuffle, "Shuffle", 20.dp, state.shuffle) { viewModel.toggleShuffle() }
         TransportIcon(Icons.Default.SkipPrevious, "Previous", 26.dp) { viewModel.previous() }
         Column(
