@@ -23,15 +23,20 @@ import androidx.lifecycle.LifecycleEventObserver
 /**
  * The app's motion tokens.
  *
- * These mirror Material 3's *expressive* motion scheme. The Expressive APIs
- * (`MaterialExpressiveTheme`, `MotionScheme.expressive()`) are internal in
- * material3 1.4.0 stable — they will be public in 1.5.0. Until then, these
- * spring values are the only way to get Expressive motion in the app.
+ * These mirror Material 3's *expressive* motion scheme. As of material3
+ * 1.5.0-alpha26 (overridden in build.gradle.kts over the BOM's 1.4.0),
+ * `MaterialExpressiveTheme` and `MotionScheme.expressive()` are wired into
+ * `SendspinTheme`. That means 21 M3 components (Switch, Slider, FAB,
+ * NavigationBar, Chip, Button, etc.) automatically use these exact spring
+ * values via `MaterialTheme.motionScheme`.
  *
- * When material3 1.5.0 stabilises:
- * - `SendspinTheme` can switch to `MaterialExpressiveTheme` with
- *   `MotionScheme.expressive()` — 21 M3 components will automatically pick up
- *   the motion scheme.
+ * This object remains for **custom components** that don't go through M3
+ * composables — `GlassCard`, `Pill`, `IconChip`, the Now Playing overlay,
+ * sheet dismissals, screen transitions. The values here are intentionally
+ * identical to the M3 Expressive scheme so the whole app feels cohesive.
+ *
+ * When material3 1.5.0 goes stable:
+ * - Remove the version override in build.gradle.kts (BOM will pick it up)
  * - Custom components can switch to `MaterialTheme.motionScheme.defaultSpatialSpec()`
  *   etc. The shapes of the two APIs line up deliberately.
  *
