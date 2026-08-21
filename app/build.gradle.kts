@@ -145,14 +145,8 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
-    // M3 Expressive motion physics — override BOM to alpha so we can use
-    // MaterialExpressiveTheme + MotionScheme.expressive(). The BOM 2026.06.01
-    // resolves material3 to 1.4.0 stable where these APIs are internal.
-    // The 1.4.0-alpha series had them as experimental (the blog post used
-    // alpha14). The 1.5.0-alpha series requires AGP 9.1 which the app doesn't use.
-    // When 1.5.0 goes stable with AGP 8.x support, switch to that.
-    implementation("androidx.compose.material3:material3:1.4.0-alpha14")
-    implementation("androidx.compose.material3:material3-window-size-class:1.4.0-alpha14")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material3:material3-window-size-class")
     implementation("androidx.compose.material:material-icons-extended")
 
     // Material Components library — provides Theme.Material3.NoActionBar (the XML

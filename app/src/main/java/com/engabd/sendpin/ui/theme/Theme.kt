@@ -3,10 +3,7 @@ package com.engabd.sendpin.ui.theme
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ColorScheme
-import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.MaterialExpressiveTheme
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.MotionScheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
@@ -161,8 +158,13 @@ private fun schemeFor(c: SendspinColors, accent: Color): ColorScheme {
 }
 
 /**
- * M3 shape scale mapped to the design system's corner radii — full 8-level
- * M3 Expressive scale.
+ * M3 shape scale mapped to the design system's corner radii.
+ *
+ * material3 1.4.0 stable (BOM 2026.06.01) exposes only the 5-level Shapes
+ * constructor. The 8-level constructor (largeIncreased, extraLargeIncreased,
+ * extraExtraLarge) requires material3 1.5.0-alpha26+ which in turn requires
+ * AGP 9.1 — the app stays on AGP 8.x. When 1.5.0 goes stable with AGP 8.x
+ * support, expand to 8 levels.
  *
  * | M3 role                  | Radius | Used by                          |
  * |--------------------------|--------|----------------------------------|
@@ -171,23 +173,18 @@ private fun schemeFor(c: SendspinColors, accent: Color): ColorScheme {
  * | medium                   | 12.dp  | cards, icon chips, quality pills |
  * | large                    | 16.dp  | glass cards, settings sections   |
  * | extraLarge               | 28.dp  | bottom sheets, dialogs           |
- * | largeIncreased (M3E)     | 20.dp  | medium-emphasis containers       |
- * | extraLargeIncreased (M3E)| 32.dp  | large hero containers            |
- * | extraExtraLarge (M3E)   | 48.dp  | full-bleed hero shapes           |
+ * | largeIncreased (M3E 1.5) | 20.dp  | medium-emphasis containers       |
+ * | extraLargeIncreased (1.5)| 32.dp  | large hero containers            |
+ * | extraExtraLarge (M3E 1.5)| 48.dp  | full-bleed hero shapes           |
  */
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 private val AppShapes = Shapes(
     extraSmall = RoundedCornerShape(4.dp),
     small = RoundedCornerShape(8.dp),
     medium = RoundedCornerShape(12.dp),
     large = RoundedCornerShape(16.dp),
     extraLarge = RoundedCornerShape(28.dp),
-    largeIncreased = RoundedCornerShape(20.dp),
-    extraLargeIncreased = RoundedCornerShape(32.dp),
-    extraExtraLarge = RoundedCornerShape(48.dp),
 )
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun SendspinTheme(
     theme: ThemeChoice = ThemeChoice.OLED,
@@ -240,18 +237,20 @@ fun SendspinTheme(
         // LocalReducedMotion for why this is a design flag and not a duration scale.
         LocalReducedMotion provides rememberReducedMotion(),
     ) {
-        // MaterialExpressiveTheme wraps MaterialTheme and provides the M3
-        // Expressive motion scheme. 21 Material components (Switch, Slider,
-        // FAB, NavigationBar, Chip, Button, etc.) automatically use spring-based
-        // motion physics — overshoot on spatial, critically damped on effects.
-        // Custom components continue to use Motion.kt specs directly.
-        // Requires material3 1.5.0-alpha+ (overridden in build.gradle.kts).
-        // When 1.5.0 goes stable, remove the version override.
-        MaterialExpressiveTheme(
+        // MaterialTheme is used rather than MaterialExpressiveTheme because
+        // MotionScheme / MaterialExpressiveTheme require material3 1.5.0-alpha26
+        // (per the official API reference), which pulls in Compose UI 1.12.0-beta01
+        // that requires AGP 9.1. The app stays on AGP 8.x.
+        //
+        // Motion: Motion.kt provides identical spring specs for custom components.
+        //   M3 components use default easing until 1.5.0 goes stable with AGP 8.x.
+        // Surface containers: filled in schemeFor() (stable API, works now).
+        // Typography: emphasized styles as standalone vals (see Type.kt).
+        // Shapes: 5-level constructor only (8-level needs 1.5.0).
+        MaterialTheme(
             colorScheme = scheme,
             typography = AppTypography,
             shapes = AppShapes,
-            motionScheme = MotionScheme.expressive(),
         ) {
             // One backdrop for the whole app: only one screen draws a wash at a time, so
             // one recorded layer is all that is ever needed, and providing it here means

@@ -109,9 +109,9 @@ private val TabTabs = listOf(
 // off — the parallax every platform's push uses.
 //
 // Springs rather than tweens, from the app's own motion tokens — see design/Motion.kt.
-// These use Motion.* specs directly for custom NavHost transitions (screen slides +
-// fade-through). M3 components inside the screens use MaterialTheme.motionScheme
-// via MaterialExpressiveTheme — 21 components get spring physics automatically.
+// MotionScheme requires material3 1.5.0-alpha26+ which needs AGP 9.1 (app is on 8.x).
+// When 1.5.0 goes stable with AGP 8.x support, SendspinTheme will switch to
+// MaterialExpressiveTheme and M3 components will use the scheme automatically.
 private val pushIn: AnimatedContentTransitionScope<NavBackStackEntry>.() -> EnterTransition = {
     slideInHorizontally(Motion.screenSlide()) { it } + fadeIn(Motion.effects())
 }

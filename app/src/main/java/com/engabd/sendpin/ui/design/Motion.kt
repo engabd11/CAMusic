@@ -23,20 +23,17 @@ import androidx.lifecycle.LifecycleEventObserver
 /**
  * The app's motion tokens.
  *
- * These mirror Material 3's *expressive* motion scheme. As of material3
- * 1.4.0-alpha14 (overridden in build.gradle.kts over the BOM's 1.4.0 stable),
- * `MaterialExpressiveTheme` and `MotionScheme.expressive()` are wired into
- * `SendspinTheme`. That means 21 M3 components (Switch, Slider, FAB,
- * NavigationBar, Chip, Button, etc.) automatically use these exact spring
- * values via `MaterialTheme.motionScheme`.
+ * These mirror Material 3's *expressive* motion scheme. Per the official Android
+ * API reference (developer.android.com), `MotionScheme` was added in
+ * material3 1.5.0-alpha26 — it was never in the 1.4.0-alpha series as a public
+ * API. However, 1.5.0-alpha26 pulls in Compose UI 1.12.0-beta01 which requires
+ * AGP 9.1, and the app stays on AGP 8.x. So these spring values remain the only
+ * way to get Expressive motion in the app until 1.5.0 goes stable with AGP 8.x.
  *
- * This object remains for **custom components** that don't go through M3
- * composables — `GlassCard`, `Pill`, `IconChip`, the Now Playing overlay,
- * sheet dismissals, screen transitions. The values here are intentionally
- * identical to the M3 Expressive scheme so the whole app feels cohesive.
- *
- * When material3 1.5.0 goes stable:
- * - Remove the version override in build.gradle.kts (BOM will pick it up)
+ * When material3 1.5.0 goes stable with AGP 8.x support:
+ * - `SendspinTheme` can switch to `MaterialExpressiveTheme` with
+ *   `MotionScheme.expressive()` — 21 M3 components will automatically pick up
+ *   the motion scheme.
  * - Custom components can switch to `MaterialTheme.motionScheme.defaultSpatialSpec()`
  *   etc. The shapes of the two APIs line up deliberately.
  *
