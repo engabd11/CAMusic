@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "com.engabd.sendpin.baselineprofile"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         // Baseline profile generation needs a device that can be root-shelled or a
