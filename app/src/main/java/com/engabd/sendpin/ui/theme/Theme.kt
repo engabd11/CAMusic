@@ -3,7 +3,10 @@ package com.engabd.sendpin.ui.theme
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ColorScheme
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.MaterialExpressiveTheme
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MotionScheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
@@ -135,6 +138,17 @@ private fun schemeFor(c: SendspinColors, accent: Color): ColorScheme {
         inverseSurface = c.textPrimary,
         inverseOnSurface = c.ink,
 
+        // Surface container roles — map the design's ink hierarchy to M3's
+        // surface container scale so M3 components (Card, BottomSheet, Dialog,
+        // Menu, NavigationBar) inherit the right surface tones automatically.
+        surfaceContainerLowest = c.ink,
+        surfaceContainerLow = c.ink2,
+        surfaceContainer = c.ink3,
+        surfaceContainerHigh = c.glass,
+        surfaceContainerHighest = c.glassStrong,
+        surfaceDim = c.ink,
+        surfaceBright = c.ink3,
+
         error = ErrorRed,
         onError = c.ink,
         errorContainer = ErrorRed.copy(alpha = 0.14f),
@@ -149,21 +163,34 @@ private fun schemeFor(c: SendspinColors, accent: Color): ColorScheme {
 /**
  * M3 shape scale mapped to the design system's corner radii.
  *
- * | M3 role      | Radius | Used by                          |
- * |--------------|--------|----------------------------------|
- * | small        | 9.dp   | chips, toggle chips              |
- * | medium       | 11.dp  | icon chips, quality pills        |
- * | large        | 16.dp  | glass cards, settings sections   |
- * | extraLarge   | 28.dp  | bottom sheets, dialogs           |
+ * With M3 Expressive, the scale expands from 5 to 8 levels. The three new
+ * levels (largeIncreased, extraLargeIncreased, extraExtraLarge) give M3
+ * components more shape variety for hero moments and decorative elements.
+ *
+ * | M3 role                  | Radius | Used by                          |
+ * |--------------------------|--------|----------------------------------|
+ * | extraSmall               | 4.dp   | small insets, badges             |
+ * | small                    | 8.dp   | chips, toggle chips              |
+ * | medium                   | 12.dp  | cards, icon chips, quality pills |
+ * | large                    | 16.dp  | glass cards, settings sections   |
+ * | extraLarge               | 28.dp  | bottom sheets, dialogs           |
+ * | largeIncreased (M3E)     | 20.dp  | medium-emphasis containers       |
+ * | extraLargeIncreased (M3E)| 32.dp  | large hero containers            |
+ * | extraExtraLarge (M3E)    | 48.dp  | full-bleed hero shapes           |
  */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 private val AppShapes = Shapes(
-    extraSmall = RoundedCornerShape(6.dp),
-    small = RoundedCornerShape(9.dp),
-    medium = RoundedCornerShape(11.dp),
+    extraSmall = RoundedCornerShape(4.dp),
+    small = RoundedCornerShape(8.dp),
+    medium = RoundedCornerShape(12.dp),
     large = RoundedCornerShape(16.dp),
     extraLarge = RoundedCornerShape(28.dp),
+    largeIncreased = RoundedCornerShape(20.dp),
+    extraLargeIncreased = RoundedCornerShape(32.dp),
+    extraExtraLarge = RoundedCornerShape(48.dp),
 )
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun SendspinTheme(
     theme: ThemeChoice = ThemeChoice.OLED,
@@ -199,6 +226,12 @@ fun SendspinTheme(
                 onSurface = colors.textPrimary,
                 outline = colors.hairline,
                 outlineVariant = colors.hairlineSoft,
+                // Preserve the app's surface hierarchy even under dynamic color.
+                surfaceContainerLowest = colors.ink,
+                surfaceContainerLow = colors.ink2,
+                surfaceContainer = colors.ink3,
+                surfaceContainerHigh = colors.glass,
+                surfaceContainerHighest = colors.glassStrong,
             )
         }
         else -> remember(colors, seedAccent) { schemeFor(colors, seedAccent) }
@@ -210,10 +243,16 @@ fun SendspinTheme(
         // LocalReducedMotion for why this is a design flag and not a duration scale.
         LocalReducedMotion provides rememberReducedMotion(),
     ) {
-        MaterialTheme(
+        // MaterialExpressiveTheme wraps MaterialTheme and provides the M3
+        // Expressive motion scheme. 21 Material components (Switch, Slider,
+        // FAB, NavigationBar, Chip, Button, etc.) automatically use spring-based
+        // motion physics — overshoot on spatial, critically damped on effects.
+        // Custom components continue to use Motion.kt specs directly.
+        MaterialExpressiveTheme(
             colorScheme = scheme,
             typography = AppTypography,
             shapes = AppShapes,
+            motionScheme = MotionScheme.expressive(),
         ) {
             // One backdrop for the whole app: only one screen draws a wash at a time, so
             // one recorded layer is all that is ever needed, and providing it here means
