@@ -209,12 +209,17 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 
     // JVM unit tests (pure protocol/clock logic): ./gradlew :app:testDebugUnitTest
-    // Pinned directly (not via the kotlin("test") DSL helper) because that helper
-    // resolves its version off the org.jetbrains.kotlin.android plugin, which AGP 9's
-    // built-in Kotlin support means this module no longer applies — with no plugin to
-    // read a version from, kotlin("test") pulled in an artifact without kotlin.test.Test
-    // on the classpath, breaking every JVM test file with "Unresolved reference 'Test'".
-    testImplementation("org.jetbrains.kotlin:kotlin-test:2.2.21")
+    // kotlin-test-junit, not the multiplatform "kotlin-test" facade: that facade
+    // publishes Gradle module metadata with separate jvm/js/metadata variants, and
+    // variant selection needs the "org.jetbrains.kotlin.platform.type" attribute that
+    // the org.jetbrains.kotlin.android plugin used to set on every configuration. AGP
+    // 9's built-in Kotlin support means this module no longer applies that plugin, so
+    // nothing sets the attribute and Gradle fell back to the metadata-only variant —
+    // real classes, no kotlin.test.Test — breaking every JVM test file with
+    // "Unresolved reference 'Test'". kotlin-test-junit is a plain single-target JVM
+    // artifact (no variant ambiguity) and is the artifact Kotlin recommends for
+    // non-multiplatform JUnit 4 projects anyway.
+    testImplementation("org.jetbrains.kotlin:kotlin-test-junit:2.2.21")
     testImplementation("junit:junit:4.13.2")
     testImplementation("androidx.room:room-testing:$roomVersion")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
