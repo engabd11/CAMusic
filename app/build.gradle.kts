@@ -87,6 +87,10 @@ android {
     // Maven dependency below - see CMakeLists.txt's find_package(oboe).
     buildFeatures { compose = true; buildConfig = true; prefab = true }
 
+    room {
+        schemaDirectory("$projectDir/schemas")
+    }
+
     // The Oboe native output engine (src/main/cpp/sendspin_output_*) - GC-immune
     // real-time PCM output for the experimental SendspinExoEngine path (see
     // docs/exoplayer-upgrade-plan.md). Adds an NDK/CMake toolchain download to a

@@ -148,9 +148,10 @@ fun TransportRow(
         TransportIcon(Icons.Default.SkipPrevious, "Previous", 26.dp) { viewModel.previous() }
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             TappableQualityChip(playing = state.quality, onClick = onShowQuality)
+
             PlayButton(state.isPlaying) { viewModel.playPause() }
         }
         TransportIcon(Icons.Default.SkipNext, "Next", 26.dp) { viewModel.next() }

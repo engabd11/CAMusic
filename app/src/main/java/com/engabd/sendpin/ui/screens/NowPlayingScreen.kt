@@ -67,6 +67,7 @@ import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
  * OLED screen the cover has no frame — it just stops. Every accent on the
  * screen (controls, glows, badge, scrubber) is sampled from that same cover.
  */
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun NowPlayingScreen(
@@ -201,12 +202,12 @@ fun NowPlayingScreen(
                     )
                 }
 
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(4.dp))
 
                 // Secondary actions — track-scoped chips only; the quality badge
                 // has moved to the transport row (between play and the seek bar).
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(9.dp),
+                    horizontalArrangement = Arrangement.spacedBy(19.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     IconChip(Icons.Default.Lyrics, "Lyrics", active = showLyrics) {
@@ -257,7 +258,7 @@ fun NowPlayingScreen(
                     )
                 }
 
-                Spacer(Modifier.height(14.dp))
+                Spacer(Modifier.height(6.dp))
 
                 if (st.idle) {
                     IdleNotice(st.playerName, st.blank, onBrowse)
@@ -266,11 +267,11 @@ fun NowPlayingScreen(
 
                 TrackTitleBlock(st)
 
-                Spacer(Modifier.height(20.dp))
+                Spacer(Modifier.height(14.dp))
 
                 SeekRow(scrubber, st.durationMs)
 
-                Spacer(Modifier.height(14.dp))
+                Spacer(Modifier.height(10.dp))
 
                 TransportRow(st, viewModel) { sheets.quality = true }
 

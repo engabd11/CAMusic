@@ -133,7 +133,7 @@ fun BoxScope.MeltBackdrop(url: String?, intensity: Float = 1f) {
                 model = art,
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
-                colorFilter = saturate(1.7f),
+                colorFilter = saturate(2.7f),
                 modifier = Modifier
                     .matchParentSize()
                     .scale(1.3f)
@@ -563,9 +563,9 @@ fun QualityPill(
     val shape = if (compact) RoundedCornerShape(50) else RoundedCornerShape(11.dp)
     val tint = if (lossless) accent else TextMuted
     val hPad = if (compact) 8.dp else 13.dp
-    val vPad = if (compact) 5.dp else 9.dp
+    val vPad = if (compact) 7.dp else 9.dp
     val dotSize = if (compact) 4.dp else 6.dp
-    val fontSize = if (compact) 9.sp else 11.sp
+    val fontSize = if (compact) 10.sp else 11.sp
     Row(
         modifier
             .then(if (hiRes) Modifier.shadow(14.dp, shape, ambientColor = accent, spotColor = accent) else Modifier)
@@ -613,7 +613,7 @@ fun PlayButton(playing: Boolean, size: Dp = 68.dp, onClick: () -> Unit) {
                 // Stays literal white in every theme: this is a specular highlight on a
                 // coloured disc, not a surface tint. Inverting it on a light theme would
                 // put a dark smear across the top of the play button.
-                .background(Brush.verticalGradient(0f to Color.White.a(0.28f), 0.55f to Color.Transparent))
+                .background(Brush.verticalGradient(0f to Color.White.a(0.25f), 0.55f to Color.Transparent))
                 .clickable(onClick = onClick),
             contentAlignment = Alignment.Center,
         ) {
