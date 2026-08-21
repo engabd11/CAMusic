@@ -11,7 +11,7 @@ plugins {
 
 android {
     namespace = "com.engabd.sendpin"
-    compileSdk = 36
+    compileSdk = 37
 
     // NDK r27 is the minimum for the oboe prefab package (1.9.3) and CMake 3.22
     // that this build uses. The prefab's libc++_shared.so must match the app's.
@@ -130,13 +130,12 @@ dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2026.06.01")
     implementation(composeBom)
 
-    // core 1.17+ and lifecycle 2.10+ are built against compileSdk 37 and demand AGP 9.1,
-    // so these two stop here while the app stays on AGP 8.x / compileSdk 36. Nothing
-    // else in the tree is held back by it — the Compose BOM below, and with it
-    // Material3 Expressive, resolves fine at 36.
-    implementation("androidx.core:core-ktx:1.16.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.4")
-    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.4")
+    // With AGP 9.2, these can move to latest. Previously pinned because
+    // core 1.17+ and lifecycle 2.10+ are built against compileSdk 37
+    // and demanded AGP 9.1+.
+    implementation("androidx.core:core-ktx:1.17.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.10.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.10.0")
     implementation("androidx.lifecycle:lifecycle-process:2.9.4")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.4")
     implementation("androidx.activity:activity-compose:1.13.0")
@@ -145,8 +144,13 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
-    implementation("androidx.compose.material3:material3")
-    implementation("androidx.compose.material3:material3-window-size-class")
+    // M3 Expressive — override BOM to pull material3 1.5.0-alpha26.
+    // The BOM 2026.06.01 resolves material3 to 1.4.0 stable where the Expressive
+    // APIs are internal. 1.5.0-alpha26 makes them public (MaterialExpressiveTheme,
+    // MotionScheme, 8-level Shapes, 30-param Typography). It requires AGP 9.1+
+    // (satisfied by AGP 9.2). When 1.5.0 goes stable, remove this override.
+    implementation("androidx.compose.material3:material3:1.5.0-alpha26")
+    implementation("androidx.compose.material3:material3-window-size-class:1.5.0-alpha26")
     implementation("androidx.compose.material:material-icons-extended")
 
     // Material Components library — provides Theme.Material3.NoActionBar (the XML

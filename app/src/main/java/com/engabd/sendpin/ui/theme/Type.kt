@@ -1,5 +1,6 @@
 package com.engabd.sendpin.ui.theme
 
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Typography
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -17,84 +18,177 @@ val AppFont: FontFamily = FontFamily.Default
 val MonoFont: FontFamily = FontFamily.Monospace
 
 /**
- * The M3 type scale populated with the Sendspin design's actual specifications.
+ * The M3 type scale — full 30-style scale (15 baseline + 15 emphasized).
  *
- * Each role maps to a concrete style that was previously hardcoded per `Text` call
- * across the 20+ screen files. Centralising them here means:
- * - M3 text components (Text, ListItem, Card title, etc.) pick up the right font
- *   automatically.
- * - One place to change when real Manrope / JetBrains Mono fonts are added.
- * - Consistent typography across the app — no more per-screen drift.
- *
- * The mapping was derived by scanning every `Text(...)` call in the codebase:
- *
+ * ## Baseline styles (15)
  * | M3 role           | Design usage                              |
  * |-------------------|-------------------------------------------|
  * | headlineLarge     | Screen titles ("Settings", "Library")     |
- * | titleMedium       | Card section titles ("Connection", etc.)  |
- * | bodyLarge         | Primary body text                         |
+ * | titleLarge        | Card/section titles ("Connection", etc.)  |
+ * | titleMedium       | Subsection labels (bold 12sp headers)     |
+ * | bodyLarge         | Primary body text (track titles, artists)  |
  * | bodyMedium        | Secondary text, helper labels             |
  * | bodySmall         | Faint descriptions, fine print             |
  * | labelLarge        | Buttons, pills, segmented toggle labels    |
  * | labelMedium       | Quality pill (mono), quality badge         |
  * | labelSmall        | Section labels (uppercase, tracked)        |
+ *
+ * ## Emphasized styles (15 — M3 Expressive)
+ * Higher weight for key UI moments: Now Playing title, primary actions,
+ * selected items, headlines. Accessible via MaterialTheme.typography.headlineLargeEmphasized.
+ *
+ * Weight deltas (baseline -> emphasized):
+ * - Display/Headline: ExtraBold -> Black
+ * - Title: Bold -> ExtraBold
+ * - Label: Bold -> ExtraBold
+ * - Body: Normal -> Medium
  */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 val AppTypography = Typography(
-    // Screen titles: "Settings" (26sp ExtraBold, -0.5 letterSpacing)
+    // ── Baseline styles (15) ──────────────────────────────────────────────
+
     headlineLarge = TextStyle(
         fontFamily = AppFont,
         fontWeight = FontWeight.ExtraBold,
         fontSize = 26.sp,
         letterSpacing = (-0.5).sp,
     ),
-    // Section/card titles within screens: "Connection", "Player", etc. (14sp Bold)
+    headlineMedium = TextStyle(
+        fontFamily = AppFont,
+        fontWeight = FontWeight.ExtraBold,
+        fontSize = 24.sp,
+    ),
+    headlineSmall = TextStyle(
+        fontFamily = AppFont,
+        fontWeight = FontWeight.ExtraBold,
+        fontSize = 22.sp,
+    ),
     titleLarge = TextStyle(
         fontFamily = AppFont,
         fontWeight = FontWeight.Bold,
         fontSize = 14.sp,
     ),
-    // Subsection labels: bold 12sp headers above toggle groups
     titleMedium = TextStyle(
         fontFamily = AppFont,
         fontWeight = FontWeight.Bold,
         fontSize = 12.sp,
     ),
-    // Primary body text — track titles, artist names
+    titleSmall = TextStyle(
+        fontFamily = AppFont,
+        fontWeight = FontWeight.Bold,
+        fontSize = 11.sp,
+    ),
     bodyLarge = TextStyle(
         fontFamily = AppFont,
         fontWeight = FontWeight.Normal,
         fontSize = 14.sp,
     ),
-    // Secondary body text — 13sp, used in descriptions and status lines
     bodyMedium = TextStyle(
         fontFamily = AppFont,
         fontWeight = FontWeight.Normal,
         fontSize = 13.sp,
     ),
-    // Fine print — 11sp / 15sp lineHeight, used for descriptions under controls
     bodySmall = TextStyle(
         fontFamily = AppFont,
         fontWeight = FontWeight.Normal,
         fontSize = 11.sp,
         lineHeight = 15.sp,
     ),
-    // Buttons, pills, segmented toggle labels — 12sp Bold
     labelLarge = TextStyle(
         fontFamily = AppFont,
         fontWeight = FontWeight.Bold,
         fontSize = 12.sp,
     ),
-    // Quality pill / badge text — mono 11sp Bold
     labelMedium = TextStyle(
         fontFamily = MonoFont,
         fontWeight = FontWeight.Bold,
         fontSize = 11.sp,
     ),
-    // Section labels — uppercase 10sp Bold with 1.4sp tracking
     labelSmall = TextStyle(
         fontFamily = AppFont,
         fontWeight = FontWeight.Bold,
         fontSize = 10.sp,
         letterSpacing = 1.4.sp,
+    ),
+
+    // ── Emphasized styles (15 — M3 Expressive) ────────────────────────────
+
+    headlineLargeEmphasized = TextStyle(
+        fontFamily = AppFont,
+        fontWeight = FontWeight.Black,
+        fontSize = 26.sp,
+        letterSpacing = (-0.5).sp,
+    ),
+    headlineMediumEmphasized = TextStyle(
+        fontFamily = AppFont,
+        fontWeight = FontWeight.Black,
+        fontSize = 24.sp,
+    ),
+    headlineSmallEmphasized = TextStyle(
+        fontFamily = AppFont,
+        fontWeight = FontWeight.ExtraBold,
+        fontSize = 22.sp,
+    ),
+    titleLargeEmphasized = TextStyle(
+        fontFamily = AppFont,
+        fontWeight = FontWeight.ExtraBold,
+        fontSize = 14.sp,
+    ),
+    titleMediumEmphasized = TextStyle(
+        fontFamily = AppFont,
+        fontWeight = FontWeight.ExtraBold,
+        fontSize = 12.sp,
+    ),
+    titleSmallEmphasized = TextStyle(
+        fontFamily = AppFont,
+        fontWeight = FontWeight.Bold,
+        fontSize = 11.sp,
+    ),
+    bodyLargeEmphasized = TextStyle(
+        fontFamily = AppFont,
+        fontWeight = FontWeight.Medium,
+        fontSize = 14.sp,
+    ),
+    bodyMediumEmphasized = TextStyle(
+        fontFamily = AppFont,
+        fontWeight = FontWeight.Medium,
+        fontSize = 13.sp,
+    ),
+    bodySmallEmphasized = TextStyle(
+        fontFamily = AppFont,
+        fontWeight = FontWeight.Medium,
+        fontSize = 11.sp,
+        lineHeight = 15.sp,
+    ),
+    labelLargeEmphasized = TextStyle(
+        fontFamily = AppFont,
+        fontWeight = FontWeight.ExtraBold,
+        fontSize = 12.sp,
+    ),
+    labelMediumEmphasized = TextStyle(
+        fontFamily = MonoFont,
+        fontWeight = FontWeight.ExtraBold,
+        fontSize = 11.sp,
+    ),
+    labelSmallEmphasized = TextStyle(
+        fontFamily = AppFont,
+        fontWeight = FontWeight.ExtraBold,
+        fontSize = 10.sp,
+        letterSpacing = 1.4.sp,
+    ),
+    displayLargeEmphasized = TextStyle(
+        fontFamily = AppFont,
+        fontWeight = FontWeight.Black,
+        fontSize = 26.sp,
+    ),
+    displayMediumEmphasized = TextStyle(
+        fontFamily = AppFont,
+        fontWeight = FontWeight.Black,
+        fontSize = 22.sp,
+    ),
+    displaySmallEmphasized = TextStyle(
+        fontFamily = AppFont,
+        fontWeight = FontWeight.ExtraBold,
+        fontSize = 18.sp,
     ),
 )
