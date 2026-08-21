@@ -209,7 +209,12 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 
     // JVM unit tests (pure protocol/clock logic): ./gradlew :app:testDebugUnitTest
-    testImplementation(kotlin("test"))
+    // Pinned directly (not via the kotlin("test") DSL helper) because that helper
+    // resolves its version off the org.jetbrains.kotlin.android plugin, which AGP 9's
+    // built-in Kotlin support means this module no longer applies — with no plugin to
+    // read a version from, kotlin("test") pulled in an artifact without kotlin.test.Test
+    // on the classpath, breaking every JVM test file with "Unresolved reference 'Test'".
+    testImplementation("org.jetbrains.kotlin:kotlin-test:2.2.21")
     testImplementation("junit:junit:4.13.2")
     testImplementation("androidx.room:room-testing:$roomVersion")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
