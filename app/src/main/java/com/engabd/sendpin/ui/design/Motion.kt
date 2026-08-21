@@ -24,7 +24,7 @@ import androidx.lifecycle.LifecycleEventObserver
  * The app's motion tokens.
  *
  * These mirror Material 3's *expressive* motion scheme. As of material3
- * 1.5.0-alpha26 (overridden in build.gradle.kts over the BOM's 1.4.0),
+ * 1.4.0-alpha14 (overridden in build.gradle.kts over the BOM's 1.4.0 stable),
  * `MaterialExpressiveTheme` and `MotionScheme.expressive()` are wired into
  * `SendspinTheme`. That means 21 M3 components (Switch, Slider, FAB,
  * NavigationBar, Chip, Button, etc.) automatically use these exact spring
