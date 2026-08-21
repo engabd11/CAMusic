@@ -53,6 +53,7 @@ class AppSettings(private val context: Context) {
         private val PLAYER_NAME = stringPreferencesKey("player_name")          // Sendspin client/hello name
         private val TARGET_PLAYER = stringPreferencesKey("target_player")      // MA player to play to / control ("" = this phone)
         private val NOW_PLAYING_LAYOUT = stringPreferencesKey("now_playing_layout") // "tab" (default) | "overlay"
+        private val SEEK_BAR_STYLE = stringPreferencesKey("seek_bar_style")     // "line" (default) | "wave"
         // Appearance. Defaults are the app as designed — OLED black with the accent
         // pulled from album art — so an untouched install looks exactly as before.
         private val THEME = stringPreferencesKey("theme")                       // oled | dark | light | system
@@ -555,6 +556,8 @@ class AppSettings(private val context: Context) {
         maOption(it, ServerConfig.OPT_TARGET_PLAYER) ?: it[TARGET_PLAYER] ?: ""
     }
     val nowPlayingLayout: Flow<String> = context.dataStore.data.map { it[NOW_PLAYING_LAYOUT] ?: "tab" }
+    /** How the Now Playing seek bar is drawn — a straight line, or a wobbling wave. */
+    val seekBarStyle: Flow<String> = context.dataStore.data.map { it[SEEK_BAR_STYLE] ?: "line" }
     val onboardingCompleted: Flow<Boolean> = context.dataStore.data.map { it[ONBOARDING_COMPLETED] ?: false }
     val theme: Flow<String> = context.dataStore.data.map { it[THEME] ?: "oled" }
     val accentSource: Flow<String> = context.dataStore.data.map { it[ACCENT_SOURCE] ?: "album" }
@@ -808,6 +811,10 @@ class AppSettings(private val context: Context) {
 
     suspend fun setNowPlayingLayout(layout: String) {
         context.dataStore.edit { it[NOW_PLAYING_LAYOUT] = layout }
+    }
+
+    suspend fun setSeekBarStyle(style: String) {
+        context.dataStore.edit { it[SEEK_BAR_STYLE] = style }
     }
 
     suspend fun setOnboardingCompleted(completed: Boolean) {

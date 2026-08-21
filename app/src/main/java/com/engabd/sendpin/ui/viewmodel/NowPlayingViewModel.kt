@@ -645,6 +645,15 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             }
             if (!confirmed) return
             releaseFreeze(key)
+            // [releaseFreeze] already snapped the anchor to exactly the confirmed
+            // target via [PlayerPositionTracker.confirmPlaying]. Falling through to
+            // the raw-elapsed [setAnchor] below on this same poll would immediately
+            // overwrite that with the poll's own reading — which is only guaranteed
+            // to be within [SEEK_CONFIRM_MS] of the target, not equal to it — and the
+            // bar would visibly jump by up to that much right as the freeze lifted.
+            // The next poll re-anchors normally; this one stops here.
+            q?.elapsedTimeLastUpdated?.let { lastStamp[key] = it }
+            return
         }
 
         // Freeze bookkeeping above still applies — a seek or skip has to be confirmed

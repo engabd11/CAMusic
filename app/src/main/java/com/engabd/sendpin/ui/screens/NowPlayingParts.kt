@@ -110,15 +110,31 @@ fun rememberScrubber(viewModel: NowPlayingViewModel): Scrubber {
 
 /** The seek bar and the two times under it. */
 @Composable
-fun SeekRow(scrubber: Scrubber, durationMs: Long) {
+fun SeekRow(scrubber: Scrubber, durationMs: Long, playing: Boolean = false) {
     val progress =
         if (durationMs > 0) (scrubber.positionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
-    HSlider(
-        progress,
-        onChange = { scrubber.onDrag(it, durationMs) },
-        onCommit = { scrubber.onRelease(it, durationMs) },
-        label = { fmtTime((it * durationMs).toLong()) },
-    )
+    // "Wave" is an Appearance setting rather than a parameter callers pass in — one
+    // read here, rather than every caller of a row this small threading a style
+    // through from Settings on its own.
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val settings = remember(context) { com.engabd.sendpin.data.AppSettings(context) }
+    val style by settings.seekBarStyle.collectAsStateWithLifecycle(initialValue = "line")
+    if (style == "wave") {
+        WaveSeekBar(
+            progress,
+            onChange = { scrubber.onDrag(it, durationMs) },
+            playing = playing,
+            onCommit = { scrubber.onRelease(it, durationMs) },
+            label = { fmtTime((it * durationMs).toLong()) },
+        )
+    } else {
+        HSlider(
+            progress,
+            onChange = { scrubber.onDrag(it, durationMs) },
+            onCommit = { scrubber.onRelease(it, durationMs) },
+            label = { fmtTime((it * durationMs).toLong()) },
+        )
+    }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
         TimeText(fmtTime(scrubber.positionMs))
         TimeText(if (durationMs > 0) fmtTime(durationMs) else "--:--")

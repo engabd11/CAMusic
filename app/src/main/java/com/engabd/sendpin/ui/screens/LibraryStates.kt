@@ -276,6 +276,16 @@ internal fun ConnectForm(viewModel: LibraryViewModel, backend: Backend, activeSe
             GlassField("Server URL", url, viewModel::setMaUrl, "http://192.168.0.10:8095")
             GlassField("Username", user, viewModel::setMaUser)
             GlassField("Password", pass, viewModel::setMaPass, secret = true)
+        } else if (activeConfig?.kind == ServerKind.LOCAL) {
+            // Music on the phone has no address, sign-in or password to ask for —
+            // only a folder, which is picked in Settings → Libraries, not here. This
+            // form only appears while that library is still being (re)built (see
+            // [LibraryViewModel.connect]); the button below just retries it.
+            SectionLabel("This device")
+            Text(
+                "Reading the music on this phone.",
+                color = TextMuted, style = MaterialTheme.typography.bodyMedium,
+            )
         } else {
             val url by viewModel.navUrl.collectAsStateWithLifecycle()
             val user by viewModel.navUser.collectAsStateWithLifecycle()
