@@ -1,6 +1,5 @@
 package com.engabd.sendpin.ui.theme
 
-import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Typography
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -16,6 +15,116 @@ import androidx.compose.ui.unit.sp
  */
 val AppFont: FontFamily = FontFamily.Default
 val MonoFont: FontFamily = FontFamily.Monospace
+
+/**
+ * Emphasized typography styles (M3 Expressive).
+ *
+ * material3 1.4.0 stable does not expose the 30-param Typography constructor —
+ * the emphasized parameters are internal. These styles are defined here as plain
+ * TextStyle values so they can be used directly via `style = HeadlineLargeEmphasized`
+ * in any Text() call, without going through the M3 Typography container.
+ *
+ * When material3 1.5.0 stabilises and the 30-param constructor becomes public,
+ * these can be folded into AppTypography and accessed via
+ * `MaterialTheme.typography.headlineLargeEmphasized`.
+ *
+ * Weight deltas (baseline -> emphasized):
+ * - Display/Headline: ExtraBold -> Black
+ * - Title: Bold -> ExtraBold
+ * - Label: Bold -> ExtraBold
+ * - Body: Normal -> Medium
+ */
+
+// Now Playing track title, screen hero titles
+val HeadlineLargeEmphasized = TextStyle(
+    fontFamily = AppFont,
+    fontWeight = FontWeight.Black,
+    fontSize = 26.sp,
+    letterSpacing = (-0.5).sp,
+)
+val HeadlineMediumEmphasized = TextStyle(
+    fontFamily = AppFont,
+    fontWeight = FontWeight.ExtraBold,
+    fontSize = 24.sp,
+)
+val HeadlineSmallEmphasized = TextStyle(
+    fontFamily = AppFont,
+    fontWeight = FontWeight.ExtraBold,
+    fontSize = 22.sp,
+)
+
+// Emphasized section titles — for selected state or key sections
+val TitleLargeEmphasized = TextStyle(
+    fontFamily = AppFont,
+    fontWeight = FontWeight.ExtraBold,
+    fontSize = 14.sp,
+)
+// Emphasized subsection labels — selected toggle group headers
+val TitleMediumEmphasized = TextStyle(
+    fontFamily = AppFont,
+    fontWeight = FontWeight.ExtraBold,
+    fontSize = 12.sp,
+)
+val TitleSmallEmphasized = TextStyle(
+    fontFamily = AppFont,
+    fontWeight = FontWeight.Bold,
+    fontSize = 11.sp,
+)
+
+// Emphasized body text — selected track title in lists
+val BodyLargeEmphasized = TextStyle(
+    fontFamily = AppFont,
+    fontWeight = FontWeight.Medium,
+    fontSize = 14.sp,
+)
+val BodyMediumEmphasized = TextStyle(
+    fontFamily = AppFont,
+    fontWeight = FontWeight.Medium,
+    fontSize = 13.sp,
+)
+val BodySmallEmphasized = TextStyle(
+    fontFamily = AppFont,
+    fontWeight = FontWeight.Medium,
+    fontSize = 11.sp,
+    lineHeight = 15.sp,
+)
+
+// Emphasized labels — primary action buttons (Play, Connect)
+val LabelLargeEmphasized = TextStyle(
+    fontFamily = AppFont,
+    fontWeight = FontWeight.ExtraBold,
+    fontSize = 12.sp,
+)
+// Emphasized quality badge — selected state
+val LabelMediumEmphasized = TextStyle(
+    fontFamily = MonoFont,
+    fontWeight = FontWeight.ExtraBold,
+    fontSize = 11.sp,
+)
+// Emphasized section labels — active/selected section
+val LabelSmallEmphasized = TextStyle(
+    fontFamily = AppFont,
+    fontWeight = FontWeight.ExtraBold,
+    fontSize = 10.sp,
+    letterSpacing = 1.4.sp,
+)
+
+// Display styles — used for large hero numbers or stats
+val DisplayLargeEmphasized = TextStyle(
+    fontFamily = AppFont,
+    fontWeight = FontWeight.Black,
+    fontSize = 26.sp,
+)
+val DisplayMediumEmphasized = TextStyle(
+    fontFamily = AppFont,
+    fontWeight = FontWeight.Black,
+    fontSize = 22.sp,
+)
+val DisplaySmallEmphasized = TextStyle(
+    fontFamily = AppFont,
+    fontWeight = FontWeight.ExtraBold,
+    fontSize = 18.sp,
+)
 
 /**
  * The M3 type scale populated with the Sendspin design's actual specifications.
@@ -40,25 +149,8 @@ val MonoFont: FontFamily = FontFamily.Monospace
  * | labelLarge        | Buttons, pills, segmented toggle labels    |
  * | labelMedium       | Quality pill (mono), quality badge         |
  * | labelSmall        | Section labels (uppercase, tracked)        |
- *
- * ## Emphasized styles (M3 Expressive)
- *
- * The 15 emphasized styles have higher weight than their baseline counterparts.
- * They are used for:
- * - Now Playing track title (headlineLargeEmphasized)
- * - Primary action buttons (labelLargeEmphasized)
- * - Selected list items / nav items
- * - Headlines and editorial moments
- *
- * Weight deltas (baseline -> emphasized):
- * - Display/Headline/Body: 400 -> 500 (design uses ExtraBold -> Black)
- * - Title: Bold -> ExtraBold
- * - Label: Bold -> ExtraBold
  */
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 val AppTypography = Typography(
-    // ── Baseline styles (15) ──────────────────────────────────────────────
-
     // Screen titles: "Settings" (26sp ExtraBold, -0.5 letterSpacing)
     headlineLarge = TextStyle(
         fontFamily = AppFont,
@@ -115,96 +207,5 @@ val AppTypography = Typography(
         fontWeight = FontWeight.Bold,
         fontSize = 10.sp,
         letterSpacing = 1.4.sp,
-    ),
-
-    // ── Emphasized styles (15 — M3 Expressive) ────────────────────────────
-    // Higher weight for key UI moments: Now Playing title, primary actions,
-    // selected items, headlines. Sizes/spacing/line-heights match baseline.
-
-    // Now Playing track title, screen hero titles
-    headlineLargeEmphasized = TextStyle(
-        fontFamily = AppFont,
-        fontWeight = FontWeight.Black,
-        fontSize = 26.sp,
-        letterSpacing = (-0.5).sp,
-    ),
-    headlineMediumEmphasized = TextStyle(
-        fontFamily = AppFont,
-        fontWeight = FontWeight.ExtraBold,
-        fontSize = 24.sp,
-    ),
-    headlineSmallEmphasized = TextStyle(
-        fontFamily = AppFont,
-        fontWeight = FontWeight.ExtraBold,
-        fontSize = 22.sp,
-    ),
-    // Emphasized section titles — for selected state or key sections
-    titleLargeEmphasized = TextStyle(
-        fontFamily = AppFont,
-        fontWeight = FontWeight.ExtraBold,
-        fontSize = 14.sp,
-    ),
-    // Emphasized subsection labels — selected toggle group headers
-    titleMediumEmphasized = TextStyle(
-        fontFamily = AppFont,
-        fontWeight = FontWeight.ExtraBold,
-        fontSize = 12.sp,
-    ),
-    titleSmallEmphasized = TextStyle(
-        fontFamily = AppFont,
-        fontWeight = FontWeight.Bold,
-        fontSize = 11.sp,
-    ),
-    // Emphasized body text — selected track title in lists
-    bodyLargeEmphasized = TextStyle(
-        fontFamily = AppFont,
-        fontWeight = FontWeight.Medium,
-        fontSize = 14.sp,
-    ),
-    bodyMediumEmphasized = TextStyle(
-        fontFamily = AppFont,
-        fontWeight = FontWeight.Medium,
-        fontSize = 13.sp,
-    ),
-    bodySmallEmphasized = TextStyle(
-        fontFamily = AppFont,
-        fontWeight = FontWeight.Medium,
-        fontSize = 11.sp,
-        lineHeight = 15.sp,
-    ),
-    // Emphasized labels — primary action buttons (Play, Connect)
-    labelLargeEmphasized = TextStyle(
-        fontFamily = AppFont,
-        fontWeight = FontWeight.ExtraBold,
-        fontSize = 12.sp,
-    ),
-    // Emphasized quality badge — selected state
-    labelMediumEmphasized = TextStyle(
-        fontFamily = MonoFont,
-        fontWeight = FontWeight.ExtraBold,
-        fontSize = 11.sp,
-    ),
-    // Emphasized section labels — active/selected section
-    labelSmallEmphasized = TextStyle(
-        fontFamily = AppFont,
-        fontWeight = FontWeight.ExtraBold,
-        fontSize = 10.sp,
-        letterSpacing = 1.4.sp,
-    ),
-    // Display styles — used for large hero numbers or stats
-    displayLargeEmphasized = TextStyle(
-        fontFamily = AppFont,
-        fontWeight = FontWeight.Black,
-        fontSize = 26.sp,
-    ),
-    displayMediumEmphasized = TextStyle(
-        fontFamily = AppFont,
-        fontWeight = FontWeight.Black,
-        fontSize = 22.sp,
-    ),
-    displaySmallEmphasized = TextStyle(
-        fontFamily = AppFont,
-        fontWeight = FontWeight.ExtraBold,
-        fontSize = 18.sp,
     ),
 )
