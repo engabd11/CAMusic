@@ -1,5 +1,7 @@
 package com.engabd.sendpin.ui.screens
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -19,6 +21,7 @@ import androidx.compose.runtime.*
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.SolidColor
@@ -35,6 +38,7 @@ import com.engabd.sendpin.subsonic.SavedQueue
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.library.ServerConfig
+import com.engabd.sendpin.local.LocalMediaSource
 import com.engabd.sendpin.library.ServerKind
 
 /**
@@ -276,16 +280,47 @@ internal fun ConnectForm(viewModel: LibraryViewModel, backend: Backend, activeSe
             GlassField("Server URL", url, viewModel::setMaUrl, "http://192.168.0.10:8095")
             GlassField("Username", user, viewModel::setMaUser)
             GlassField("Password", pass, viewModel::setMaPass, secret = true)
-        } else if (activeConfig?.kind == ServerKind.LOCAL) {
-            // Music on the phone has no address, sign-in or password to ask for —
-            // only a folder, which is picked in Settings → Libraries, not here. This
-            // form only appears while that library is still being (re)built (see
-            // [LibraryViewModel.connect]); the button below just retries it.
-            SectionLabel("This device")
-            Text(
-                "Reading the music on this phone.",
-                color = TextMuted, style = MaterialTheme.typography.bodyMedium,
-            )
+        } else if (activeConfig?.kind?.needsAddress == false) {
+            // Music already on the phone has no address, sign-in or password to ask
+            // for. What it *does* need is the audio permission, and until this asked
+            // for it the only way through was a form demanding a server URL for a
+            // library that has no server.
+            val context = LocalContext.current
+            var granted by remember { mutableStateOf(LocalMediaSource.hasAudioPermission(context)) }
+            val permission = rememberLauncherForActivityResult(
+                ActivityResultContracts.RequestPermission(),
+            ) { ok ->
+                granted = ok
+                if (ok) viewModel.connect()
+            }
+            SectionLabel(activeConfig.kind.label)
+            if (granted) {
+                Text(
+                    "Reading the music on this phone. The folder to read is picked in Settings → Libraries.",
+                    color = TextMuted, style = MaterialTheme.typography.bodyMedium,
+                )
+            } else {
+                Text(
+                    "Android has to allow this app to read audio files before anything can be listed. " +
+                        "Nothing leaves the phone.",
+                    color = TextMuted, style = MaterialTheme.typography.bodyMedium,
+                )
+                Spacer(Modifier.height(6.dp))
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(15.dp))
+                        .border(1.dp, accent.a(0.55f), RoundedCornerShape(15.dp))
+                        .clickable { permission.launch(LocalMediaSource.AUDIO_PERMISSION) }
+                        .padding(vertical = 16.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "Allow access", color = accent, fontFamily = AppFont,
+                        fontWeight = FontWeight.ExtraBold, fontSize = 15.sp,
+                    )
+                }
+            }
         } else {
             val url by viewModel.navUrl.collectAsStateWithLifecycle()
             val user by viewModel.navUser.collectAsStateWithLifecycle()

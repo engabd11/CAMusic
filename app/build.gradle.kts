@@ -21,8 +21,8 @@ android {
         applicationId = "com.engabd.sendpin"
         minSdk = 31
         targetSdk = 36
-        versionCode = 49
-        versionName = "0.10.4"
+        versionCode = 50
+        versionName = "0.10.5"
 
         // app/src/androidTest had no runner because it had no tests. The two below
         // are the ones Phase 0 found by hand, and neither can run on the JVM: both
@@ -51,6 +51,12 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = true
+            // Drops resources R8 proved unreachable. Only meaningful alongside
+            // isMinifyEnabled, which is why it was never worth turning on separately —
+            // and worth something now that the app carries Glance layouts, three
+            // notification channels and a Material Components dependency it uses one
+            // XML theme from.
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             // Signed with the debug key so a minified build is installable without a
             // release keystore. This is the build that should be judged for smoothness:

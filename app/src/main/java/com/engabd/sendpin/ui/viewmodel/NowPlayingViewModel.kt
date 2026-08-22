@@ -1273,6 +1273,34 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         queueAction { repo.clearQueue(it) }
     }
 
+    /**
+     * Shuffle the tracks still to come, in place — the queue sheet action, not the
+     * transport shuffle beside the play button.
+     *
+     * The two are genuinely different and both are wanted. [toggleShuffle] is a
+     * *mode*: it leaves the list alone and changes the order it is read in. This
+     * rewrites the order itself, once, and leaves the mode where it was.
+     *
+     * Music Assistant has no "shuffle now" command. What it does have is a
+     * `player_queues/shuffle` that re-rolls the order whenever it is switched on, so
+     * an off/on cycle is the server-side equivalent — and a great deal cheaper than
+     * the alternative, which is one `move_item` round-trip per track.
+     */
+    fun shuffleQueueNow() {
+        if (isLocal) { local.shuffleQueue(); loadQueue(silent = true); return }
+        val q = streamQueueId()
+        viewModelScope.launch {
+            try {
+                if (state.value.shuffle) repo.setShuffle(q, false)
+                repo.setShuffle(q, true)
+            } catch (e: Exception) {
+                _toast.tryEmit(e.message ?: "Couldn't shuffle the queue")
+                return@launch
+            }
+            loadQueue(silent = true)
+        }
+    }
+
     /** The local queue as queue rows, so one panel renders either session. */
     private fun localQueueItems(): List<MaQueueItem> =
         local.queue.value.mapIndexed { i, t ->

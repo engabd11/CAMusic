@@ -29,6 +29,11 @@ private val Context.dataStore by preferencesDataStore(name = "sendpin_settings")
  */
 class AppSettings(private val context: Context) {
     companion object {
+        /**
+         * The fixed id of the always-present Downloads library. See [withDownloads].
+         */
+        const val DOWNLOADS_SERVER_ID = "__downloads__"
+
         private val BACKEND = stringPreferencesKey("library_backend")         // "ma" | "subsonic"
         /**
          * Every configured server, as a JSON list of [ServerConfig].
@@ -39,6 +44,19 @@ class AppSettings(private val context: Context) {
          * individually rather than the blob as a whole, so a config can be read for
          * its address and label without decrypting its password.
          */
+        private val DUCK_ANNOUNCEMENTS = booleanPreferencesKey("duck_announcements")
+        private val CAPTURE_OTHER_APPS = booleanPreferencesKey("capture_other_apps")
+        private val MOTION_MODE = stringPreferencesKey("motion_mode")
+
+        /** Follow Android's own "remove animations" setting. The default. */
+        const val MOTION_SYSTEM = "system"
+
+        /** Animate regardless of the system setting. */
+        const val MOTION_FULL = "full"
+
+        /** Still, resolved states everywhere, whatever the system says. */
+        const val MOTION_REDUCED = "reduced"
+        private val LIGHT_SYNC_SPEAKER_OFFSET = stringPreferencesKey("light_sync_speaker_offset_ms")
         private val SERVERS = stringPreferencesKey("servers")
         /** Which of [SERVERS] the Library tab browses. */
         private val ACTIVE_SERVER = stringPreferencesKey("active_server_id")
@@ -281,7 +299,29 @@ class AppSettings(private val context: Context) {
      */
     private fun storedServers(
         prefs: androidx.datastore.preferences.core.Preferences,
-    ): List<ServerConfig> = prefs[SERVERS]?.let { decodeServers(it) } ?: legacyServers(prefs)
+    ): List<ServerConfig> = withDownloads(prefs[SERVERS]?.let { decodeServers(it) } ?: legacyServers(prefs))
+
+    /**
+     * Guarantee the Downloads library is in the list.
+     *
+     * Added on *read*, unconditionally, rather than written once at some upgrade
+     * point. The reason is mechanical: [resolveActiveId] drops an active id that names
+     * nothing in this list and silently falls back to a different library, so a
+     * Downloads entry that only existed in the switcher's own rendering would select
+     * the wrong library the moment it was chosen. Making it a real row means
+     * `selectServer`, `resolveActiveId`, `switchTo`, `persistActiveConfig` and
+     * `mirrorLegacyKeys` all need to know nothing about it.
+     *
+     * A fixed id rather than a generated one, so the augmentation is idempotent and
+     * the first [saveServers] that happens to write it back cannot create a second.
+     * And unconditional rather than "once something is downloaded", because a row that
+     * appears and vanishes with the last deleted file takes the active selection with
+     * it — "Nothing downloaded yet" is a better answer than a library disappearing
+     * from the switcher mid-session.
+     */
+    private fun withDownloads(list: List<ServerConfig>): List<ServerConfig> =
+        if (list.any { it.id == DOWNLOADS_SERVER_ID }) list
+        else list + ServerConfig(id = DOWNLOADS_SERVER_ID, kind = ServerKind.DOWNLOADS)
 
     /** Every configured server, oldest first. Secrets are already decrypted. */
     val servers: Flow<List<ServerConfig>> = context.dataStore.data.map { prefs ->
@@ -625,6 +665,19 @@ class AppSettings(private val context: Context) {
     val useOboeOutput: Flow<Boolean> = context.dataStore.data.map { it[SENDSPIN_OBOE] ?: false }
 
     /**
+     * Ask other apps to duck for a Home Assistant announcement, rather than taking
+     * the output from them outright.
+     *
+     * On by default, because "the announcement is audible over the video" is what
+     * anyone asking for announcements wants. Exposed at all because
+     * `USAGE_ASSISTANT` is not guaranteed to route to the media stream on every OEM
+     * build: on a device where it has its own volume curve an announcement can arrive
+     * noticeably louder or quieter than the music, and there is no way to detect that
+     * from here. Turning this off restores plain media focus.
+     */
+    val duckAnnouncements: Flow<Boolean> = context.dataStore.data.map { it[DUCK_ANNOUNCEMENTS] ?: true }
+
+    /**
      * The system AudioDeviceInfo ID to route audio to, for USB DAC support.
      * Empty string means "let the system pick" (default speaker/headset).
      * Set by [com.engabd.sendpin.service.Playback] when a USB audio device is
@@ -894,6 +947,25 @@ class AppSettings(private val context: Context) {
         context.dataStore.edit { it[SENDSPIN_OBOE] = value }
     }
 
+    /** Clamped to the range the slider offers, so a bad write cannot desync the show. */
+    suspend fun setLightSyncSpeakerOffsetMs(value: Int) {
+        context.dataStore.edit {
+            it[LIGHT_SYNC_SPEAKER_OFFSET] = value.coerceIn(-2000, 2000).toString()
+        }
+    }
+
+    suspend fun setMotionMode(value: String) {
+        context.dataStore.edit { it[MOTION_MODE] = value }
+    }
+
+    suspend fun setCaptureOtherApps(value: Boolean) {
+        context.dataStore.edit { it[CAPTURE_OTHER_APPS] = value }
+    }
+
+    suspend fun setDuckAnnouncements(value: Boolean) {
+        context.dataStore.edit { it[DUCK_ANNOUNCEMENTS] = value }
+    }
+
     /**
      * Bit-perfect, readable without a coroutine.
      *
@@ -1014,6 +1086,45 @@ class AppSettings(private val context: Context) {
         context.dataStore.data.map { it[LIGHT_SYNC_PRESCAN_WIFI] ?: true }
 
     /** Room gestures. Off unless asked for — see the key's docs. */
+    /**
+     * How far ahead of the server's playhead the lights should run, in milliseconds,
+     * for a track playing on a *remote* speaker.
+     *
+     * There is no way to measure this. The path from Music Assistant to a cast group
+     * or a networked amp has a latency this phone is never told and cannot infer, and
+     * it varies by device and by protocol — half a second is not unusual. The live
+     * path has `AudioLead`, measured from its own sink; the scan-driven path has
+     * nothing equivalent, because there is no sink here. syncoV2 has the same slider
+     * for the same reason.
+     *
+     * Positive delays the lights, matching the sign of the Home Assistant timing
+     * offset so the two controls do not mean opposite things.
+     */
+    val lightSyncSpeakerOffsetMs: Flow<Int> =
+        context.dataStore.data.map { it[LIGHT_SYNC_SPEAKER_OFFSET]?.toIntOrNull() ?: 0 }
+
+    /**
+     * Let Light Sync react to *other apps'* playback.
+     *
+     * Off by default and deliberately not a plain switch in the UI: turning it on
+     * needs a runtime `RECORD_AUDIO` grant, a system consent dialog and a foreground
+     * service, and on Android 14+ the consent dialog comes back **every time** capture
+     * starts, because the projection token is single-use. That is a platform rule and
+     * there is no way around it — see `capture/PlaybackCapture.kt`.
+     */
+    val captureOtherApps: Flow<Boolean> = context.dataStore.data.map { it[CAPTURE_OTHER_APPS] ?: false }
+
+    /**
+     * Motion: `system`, `full` or `reduced`.
+     *
+     * `LocalReducedMotion` could previously only be driven by Android's own "remove
+     * animations" developer/accessibility setting — which is all-or-nothing across
+     * every app on the phone. Someone who wants this app calmer, or who wants it
+     * animated on a device where that setting is off for other reasons, had nothing to
+     * say so with. `system` stays the default and keeps the old behaviour exactly.
+     */
+    val motionMode: Flow<String> = context.dataStore.data.map { it[MOTION_MODE] ?: MOTION_SYSTEM }
+
     val lightSyncSpatial: Flow<Boolean> =
         context.dataStore.data.map { it[LIGHT_SYNC_SPATIAL] ?: false }
 

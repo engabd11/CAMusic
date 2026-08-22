@@ -192,6 +192,34 @@ class AudioAnalysisTap(
         replaceOutputBuffer(remaining).put(inputBuffer).flip()
     }
 
+    /**
+     * Analyse [buf] without the pass-through copy, for a producer that is not
+     * ExoPlayer.
+     *
+     * The MediaProjection capture path has PCM and no render chain to put it in —
+     * there is no downstream consumer, so [queueInput]'s `replaceOutputBuffer` would
+     * copy every buffer for nobody to read. Everything else is the same code.
+     *
+     * **Single producer, singular.** The ring has one writer by contract, so a tap fed
+     * this way must never also be installed in a player. The capture path owns its own
+     * [AudioAnalysisTap] instance for exactly this reason.
+     */
+    fun analyseExternal(
+        buf: ByteBuffer,
+        sampleRate: Int,
+        channels: Int,
+        pcmEncoding: Int,
+        mediaTimeUs: Long,
+    ) {
+        val remaining = buf.remaining()
+        if (remaining == 0 || !active) return
+        sourceRate = sampleRate
+        channelCount = channels
+        encoding = pcmEncoding
+        val frames = feedRing(buf, buf.position(), remaining)
+        publishClock(mediaTimeUs, frames)
+    }
+
     override fun onFlush() {
         // Discard buffered audio so a seek doesn't feed the analyzer up to a
         // second of stale samples, and tell the analysis thread to start clean.

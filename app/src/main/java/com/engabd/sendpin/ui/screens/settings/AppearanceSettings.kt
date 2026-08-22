@@ -52,10 +52,13 @@ internal fun AppearanceSection(settings: AppSettings, accent: Color, scope: Coro
     val theme = ThemeChoice.from(themeKey)
     val accentChoice = AccentChoice.from(accentKey)
 
-    var layout by remember { mutableStateOf("tab") }
-    LaunchedEffect(Unit) { layout = settings.nowPlayingLayout.first() }
-    var seekBarStyle by remember { mutableStateOf("line") }
-    LaunchedEffect(Unit) { seekBarStyle = settings.seekBarStyle.first() }
+    // `collectAsStateWithLifecycle`, not a one-shot `first()`. These two were read once
+    // when the screen composed, so changing the seek-bar style or the layout anywhere
+    // else left this screen showing the old answer until it was rebuilt — and every
+    // other row on it was already live.
+    val layout by settings.nowPlayingLayout.collectAsStateWithLifecycle(initialValue = "tab")
+    val seekBarStyle by settings.seekBarStyle.collectAsStateWithLifecycle(initialValue = "line")
+    val motionMode by settings.motionMode.collectAsStateWithLifecycle(initialValue = AppSettings.MOTION_SYSTEM)
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         SettingsCard(title = "Theme", lead = theme.description) {
@@ -97,10 +100,10 @@ internal fun AppearanceSection(settings: AppSettings, accent: Color, scope: Coro
         ) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 ToggleChip("Tab", layout == "tab") {
-                    layout = "tab"; scope.launch { settings.setNowPlayingLayout("tab") }
+                    scope.launch { settings.setNowPlayingLayout("tab") }
                 }
                 ToggleChip("Overlay", layout == "overlay") {
-                    layout = "overlay"; scope.launch { settings.setNowPlayingLayout("overlay") }
+                    scope.launch { settings.setNowPlayingLayout("overlay") }
                 }
             }
             Note(
@@ -118,10 +121,10 @@ internal fun AppearanceSection(settings: AppSettings, accent: Color, scope: Coro
         ) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 ToggleChip("Line", seekBarStyle == "line") {
-                    seekBarStyle = "line"; scope.launch { settings.setSeekBarStyle("line") }
+                    scope.launch { settings.setSeekBarStyle("line") }
                 }
                 ToggleChip("Wave", seekBarStyle == "wave") {
-                    seekBarStyle = "wave"; scope.launch { settings.setSeekBarStyle("wave") }
+                    scope.launch { settings.setSeekBarStyle("wave") }
                 }
             }
             Note(
@@ -129,6 +132,31 @@ internal fun AppearanceSection(settings: AppSettings, accent: Color, scope: Coro
                     "The played portion wobbles gently while the track plays, like a water surface."
                 else
                     "A straight progress line.",
+            )
+        }
+
+        SettingsCard(
+            title = "Motion",
+            lead = when (motionMode) {
+                AppSettings.MOTION_FULL -> "Everything animates, whatever the system setting says."
+                AppSettings.MOTION_REDUCED -> "Still, resolved states instead of continuous motion."
+                else -> "Follows Android's own \"remove animations\" setting."
+            },
+        ) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(
+                    AppSettings.MOTION_SYSTEM to "Follow system",
+                    AppSettings.MOTION_FULL to "Full",
+                    AppSettings.MOTION_REDUCED to "Reduced",
+                ).forEach { (key, label) ->
+                    ToggleChip(label, key == motionMode) {
+                        scope.launch { settings.setMotionMode(key) }
+                    }
+                }
+            }
+            Note(
+                "Reduced does not just slow things down — spinners, shimmers and the wave " +
+                    "seek bar settle into a still state rather than freezing mid-sweep.",
             )
         }
 

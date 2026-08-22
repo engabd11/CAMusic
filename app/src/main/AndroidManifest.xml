@@ -9,6 +9,20 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
+    <!--
+      Light Sync reacting to *other apps* (Settings > Light Sync > "Other apps").
+      RECORD_AUDIO is what AudioPlaybackCapture is gated on even though no microphone
+      is ever opened: the platform has one permission for "this app can receive audio
+      it did not produce", and this is it. Nothing here records the microphone, and
+      the feature is off until it is explicitly set up.
+
+      Note this is visible on the store listing and in the app's own permission page
+      whether or not anyone turns the feature on. That is the cost of the feature
+      existing at all; see capture/PlaybackCapture.kt.
+    -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+
     <!-- Local audio files: READ_MEDIA_AUDIO is the modern permission (API 33+). -->
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
     <!--
@@ -143,6 +157,28 @@
         <service
             android:name=".service.DrivingOverlayService"
             android:exported="false" />
+
+        <!--
+          Holds the MediaProjection while Light Sync listens to other apps. The
+          `mediaProjection` type is not decoration: on API 34+ the platform refuses
+          getMediaProjection() unless a service of exactly this type is already in the
+          foreground. See PlaybackCaptureService.onStartCommand.
+        -->
+        <service
+            android:name=".capture.PlaybackCaptureService"
+            android:foregroundServiceType="mediaProjection"
+            android:exported="false" />
+
+        <!--
+          The consent dialog trampoline. A MediaProjection token can only come from an
+          Activity result, and the service that uses it outlives every Activity.
+        -->
+        <activity
+            android:name=".capture.CaptureConsentActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
         <service
             android:name=".service.SendspinConnectionService"

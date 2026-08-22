@@ -22,6 +22,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.engabd.sendpin.ui.design.Bloom
 import com.engabd.sendpin.ui.design.CircleIconButton
 import com.engabd.sendpin.ui.design.LocalAccent
+import com.engabd.sendpin.ui.design.navBarInset
 import com.engabd.sendpin.ui.design.TitleGap
 import com.engabd.sendpin.ui.screens.settings.Note
 import com.engabd.sendpin.ui.screens.settings.SettingsCard
@@ -78,7 +79,13 @@ fun StatsScreen(onBack: () -> Unit = {}, viewModel: StatsViewModel = viewModel()
 
             LazyColumn(
                 Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                // [navBarInset] like every other standalone screen. Without it the
+                // last card sat under the nav bar — and, in the overlay layout, under
+                // the mini player, which is 128.dp of it.
+                contentPadding = PaddingValues(
+                    start = 16.dp, end = 16.dp,
+                    top = 8.dp, bottom = navBarInset() + 16.dp,
+                ),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 item {

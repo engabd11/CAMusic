@@ -336,6 +336,7 @@ fun NowPlayingOverlay(
                         // Box: one surface, one movement, nothing to fall out of step.
                         // The bar's thumbnail simply cross-fades, which is what a
                         // control that is being replaced should do.
+                        flipKey = albumFlipKey(st),
                     )
                 }
 

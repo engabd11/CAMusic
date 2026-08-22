@@ -163,6 +163,15 @@ abstract class SendspinDataSource(
      * last moment short and ignoring the pause button, the pause button wins — and
      * telling the two apart is the separate piece of work the plan tracks as gapless.
      */
+    /**
+     * How many frames are still waiting to be handed to the decoder.
+     *
+     * Read by the drain in `Playback.onStreamEnd`: an announcement that has genuinely
+     * finished runs dry, and the wall-clock cap beside it is only there for the case
+     * where it does not.
+     */
+    val queuedFrames: Int get() = queue.size
+
     fun discardQueued() {
         queue.clear()
     }

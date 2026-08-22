@@ -5,6 +5,7 @@ import kotlin.math.abs
 import kotlin.math.cbrt
 import kotlin.math.ceil
 import kotlin.math.floor
+import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
@@ -33,8 +34,24 @@ import kotlin.math.roundToInt
  *   fold into the nearest by hue, so the weights always describe the whole
  *   cover. This is what `album_art_v2` (the "weighted" option) uses.
  *
- * Deterministic: the k-means centroids are seeded along sorted lightness rather
- * than randomly, so the same sleeve always yields the same palette.
+ * Deterministic: the k-means seeding is driven by a PRNG seeded from the pixels
+ * themselves ([seedOf]), so the same sleeve always yields the same palette.
+ *
+ * ## What *is* shared with the UI palette, and why
+ *
+ * The ranking and the finish stay separate for the reasons above. Three things
+ * about *how the clusters are found* are not opinions about rooms versus accents,
+ * though — they are corrections `ui/design/AlbumPalette.kt` made and this file never
+ * received, each of which turns real colours into grey before anything gets a chance
+ * to rank them:
+ *
+ * 1. **k-means++ seeding** ([kmeans]). Spreading centroids along the lightness axis
+ *    converges to brightness bands, not colours.
+ * 2. **A most-chromatic-quarter cluster representative** ([representative]). A plain
+ *    mean of a cluster averages a highlight with the shadow beside it.
+ * 3. **A cap on neutral swatches** ([MAX_NEUTRAL_SWATCHES]). Off-whites are
+ *    high-population by construction, and several of them each taking a slot is how
+ *    a pale sleeve outvotes the colour it actually contains.
  */
 
 /** Decode artwork to this size before clustering. */
@@ -45,6 +62,18 @@ private const val HUE_MIN_SEP = 0.055f
 
 /** Below this saturation a swatch is a tinted white, not a colour. */
 private const val NEUTRAL_SAT = 0.12f
+
+/**
+ * How many near-neutral swatches a palette may spend a slot on.
+ *
+ * A cover has one white, not three. Off-whites are high-population almost by
+ * definition — paper, sky, a studio backdrop — so left uncapped they take several of
+ * the `k` slots *and*, because v2 weights by population, most of the dwell time as
+ * well. The room then goes pale on a sleeve that is plainly coloured. Extra neutrals
+ * are not discarded: they fold their share into the one that was kept, so the
+ * weighting still describes the whole cover.
+ */
+private const val MAX_NEUTRAL_SWATCHES = 1
 
 /** Keep even the darkest swatch faintly visible. */
 private const val VALUE_FLOOR = 0.15f
@@ -223,20 +252,19 @@ internal fun extractAlbumColours(px: IntArray, k: Int = 4): AlbumColours? {
 
     val lab = body.map { rgbToLab(it[0], it[1], it[2]) }
     val nClusters = min(14, min(body.size, max(2 * k, 8)))
-    val labels = kmeans(lab, nClusters)
+    val labels = kmeans(lab, nClusters, seedOf(px))
+    val members = clusterMembers(labels, nClusters)
 
     // One swatch per non-empty cluster, most populous first.
     data class Swatch(var pop: Float, val h: Float, val s: Float, val rgb: Rgb)
     val swatches = ArrayList<Swatch>(nClusters)
     val total = body.size.toFloat()
     for (c in 0 until nClusters) {
-        var n = 0
-        var sr = 0f; var sg = 0f; var sb = 0f
-        for (i in body.indices) if (labels[i] == c) { n++; sr += body[i][0]; sg += body[i][1]; sb += body[i][2] }
-        if (n == 0) continue
-        val mean = floatArrayOf(sr / n, sg / n, sb / n)
+        val group = members[c]
+        if (group.isEmpty()) continue
+        val mean = representative(group, body, lab)
         val hsv = rgbToHsv(mean[0], mean[1], mean[2])
-        swatches.add(Swatch(n / total, hsv[0], hsv[1], renderSwatch(mean, hsv[0], hsv[1], hsv[2])))
+        swatches.add(Swatch(group.size / total, hsv[0], hsv[1], renderSwatch(mean, hsv[0], hsv[1], hsv[2])))
     }
     if (swatches.isEmpty()) return lowColourFallback(px)
     swatches.sortByDescending { it.pop }
@@ -245,10 +273,12 @@ internal fun extractAlbumColours(px: IntArray, k: Int = 4): AlbumColours? {
     // share; past k picks, everything else folds into its nearest pick by hue —
     // so no part of the cover is simply discarded from the weighting.
     val picked = ArrayList<Swatch>(k)
+    var neutralsPicked = 0
     for (sw in swatches) {
+        val neutral = sw.s < NEUTRAL_SAT
         var merged = false
         for (slot in picked) {
-            val sameClass = (sw.s < NEUTRAL_SAT) == (slot.s < NEUTRAL_SAT)
+            val sameClass = (slot.s < NEUTRAL_SAT) == neutral
             if (sameClass && hueDistance(sw.h, slot.h) < HUE_MIN_SEP) {
                 slot.pop += sw.pop
                 merged = true
@@ -256,8 +286,18 @@ internal fun extractAlbumColours(px: IntArray, k: Int = 4): AlbumColours? {
             }
         }
         if (merged) continue
+        // See [MAX_NEUTRAL_SWATCHES]. A second off-white does not get a slot; it
+        // gives its share to the first, which keeps the weighting honest without
+        // letting the paper outvote the ink.
+        if (neutral && neutralsPicked >= MAX_NEUTRAL_SWATCHES && picked.isNotEmpty()) {
+            val host = picked.firstOrNull { it.s < NEUTRAL_SAT }
+                ?: picked.minByOrNull { hueDistance(sw.h, it.h) }!!
+            host.pop += sw.pop
+            continue
+        }
         if (picked.size < k) {
             picked.add(sw)
+            if (neutral) neutralsPicked++
         } else {
             picked.minByOrNull { hueDistance(sw.h, it.h) }!!.pop += sw.pop
         }
@@ -357,7 +397,8 @@ internal fun extractAlbumColoursV1(px: IntArray, k: Int = 5): AlbumColours? {
 
     val lab = body.map { rgbToLab(it[0], it[1], it[2]) }
     val nClusters = min(14, min(body.size, max(2 * k, 8)))
-    val labels = kmeans(lab, nClusters)
+    val labels = kmeans(lab, nClusters, seedOf(px))
+    val members = clusterMembers(labels, nClusters)
 
     // Classify each cluster as an accent or a base.
     data class AccCandidate(val score: Float, val h: Float, val s: Float, val v: Float)
@@ -367,13 +408,11 @@ internal fun extractAlbumColoursV1(px: IntArray, k: Int = 5): AlbumColours? {
     val bases = ArrayList<BaseCandidate>()
     val total = body.size.toFloat()
     for (c in 0 until nClusters) {
-        var n = 0
-        var sr = 0f; var sg = 0f; var sb = 0f
-        for (i in body.indices) if (labels[i] == c) { n++; sr += body[i][0]; sg += body[i][1]; sb += body[i][2] }
-        if (n == 0) continue
-        val mean = floatArrayOf(sr / n, sg / n, sb / n)
+        val group = members[c]
+        if (group.isEmpty()) continue
+        val mean = representative(group, body, lab)
         val hsv = rgbToHsv(mean[0], mean[1], mean[2])
-        val pop = n / total
+        val pop = group.size / total
         if (hsv[1] >= ACCENT_SAT && hsv[2] >= ACCENT_VAL) {
             // Vividness-weighted population: a small vivid splash can outrank
             // a large dull field.
@@ -386,9 +425,15 @@ internal fun extractAlbumColoursV1(px: IntArray, k: Int = 5): AlbumColours? {
     // Theme bases first: the dominant muted/dark swatches that set the mood.
     bases.sortByDescending { it.pop }
     val baseOut = ArrayList<Rgb>()
+    var neutralBases = 0
     for (base in bases) {
         if (baseOut.size >= 2 || base.pop < BASE_MIN_POP) break
         if (base.s < NEUTRAL_SAT) {
+            // Both bases going to tinted white is the pale-room failure in its
+            // purest form — see [MAX_NEUTRAL_SWATCHES]. Skip rather than merge:
+            // v1 has no weights to preserve.
+            if (neutralBases >= MAX_NEUTRAL_SWATCHES) continue
+            neutralBases++
             baseOut.add(tintedWhite(base.mean, base.v))
         } else {
             baseOut.add(hsvToRgbTriple(base.h, base.s, max(VALUE_FLOOR, base.v)))
@@ -419,31 +464,68 @@ internal fun extractAlbumColoursV1(px: IntArray, k: Int = 5): AlbumColours? {
     return AlbumColours(out, w)
 }
 
-/** Deterministic k-means over CIELAB; centroids seeded along sorted lightness. */
-private fun kmeans(points: List<FloatArray>, kIn: Int): IntArray {
+/**
+ * Deterministic k-means over CIELAB, seeded with **k-means++**.
+ *
+ * The seeding is the fix, not a refinement. Centroids used to be spread along the
+ * sorted lightness axis, which makes k-means converge to *brightness bands* rather
+ * than colours: a sleeve's red and its blue land in the same "mid-tone" cluster whose
+ * mean is grey, and grey is what the room shows. k-means++ picks each seed with
+ * probability proportional to its squared distance from the seeds already chosen, in
+ * full L/a/b, so distinct hues get their own clusters and survive to be ranked.
+ *
+ * The same correction `ui/design/AlbumPalette.kt` made for the app's own accent, and
+ * which never reached here.
+ *
+ * Still deterministic — [seed] comes from the pixels ([seedOf]), so one sleeve always
+ * yields one palette. That determinism is the only thing the lightness spread was
+ * actually buying, and this keeps it.
+ */
+private fun kmeans(points: List<FloatArray>, kIn: Int, seed: Long): IntArray {
     val n = points.size
     val k = min(kIn, n)
     val labels = IntArray(n)
     if (k <= 0) return labels
+    val rng = kotlin.random.Random(seed)
 
-    val order = (0 until n).sortedBy { points[it][0] }
-    val centroids = Array(k) { i ->
-        val idx = if (k == 1) 0 else (i.toLong() * (n - 1) / (k - 1)).toInt()
-        points[order[idx]].copyOf()
+    // ── k-means++ seeding ────────────────────────────────────────────────
+    val centroids = ArrayList<FloatArray>(k)
+    centroids.add(points[rng.nextInt(n)].copyOf())
+    val nearest = FloatArray(n) { Float.MAX_VALUE }
+    while (centroids.size < k) {
+        var total = 0.0
+        val last = centroids.last()
+        for (i in 0 until n) {
+            val d = sqDist(points[i], last)
+            if (d < nearest[i]) nearest[i] = d
+            total += nearest[i].toDouble()
+        }
+        // Every point is already a centroid: a sleeve with fewer distinct colours
+        // than slots, which is a real case and not an error.
+        if (total <= 0.0) break
+        var target = rng.nextDouble() * total
+        var chosen = n - 1
+        for (i in 0 until n) {
+            target -= nearest[i].toDouble()
+            if (target <= 0.0) { chosen = i; break }
+        }
+        centroids.add(points[chosen].copyOf())
     }
+    val kFinal = centroids.size
 
+    // ── Lloyd iterations ─────────────────────────────────────────────────
     repeat(KMEANS_ITERS) {
         for (i in 0 until n) {
             var best = 0
             var bestD = Float.MAX_VALUE
-            for (c in 0 until k) {
+            for (c in 0 until kFinal) {
                 val d = sqDist(points[i], centroids[c])
                 if (d < bestD) { bestD = d; best = c }
             }
             labels[i] = best
         }
         var moved = false
-        for (c in 0 until k) {
+        for (c in 0 until kFinal) {
             var cnt = 0
             var a0 = 0f; var a1 = 0f; var a2 = 0f
             for (i in 0 until n) if (labels[i] == c) { cnt++; a0 += points[i][0]; a1 += points[i][1]; a2 += points[i][2] }
@@ -459,6 +541,66 @@ private fun kmeans(points: List<FloatArray>, kIn: Int): IntArray {
     }
     return labels
 }
+
+/**
+ * A stable seed from the artwork itself.
+ *
+ * k-means++ needs randomness; a palette that changed every time the same sleeve came
+ * round would be worse than one that is merely imperfect. Sampling ~256 pixels rather
+ * than all 4096 keeps this cheap and is more than enough entropy to separate two
+ * covers.
+ */
+private fun seedOf(px: IntArray): Long {
+    if (px.isEmpty()) return 0L
+    var h = 1125899906842597L
+    val step = max(1, px.size / 256)
+    var i = 0
+    while (i < px.size) { h = 31L * h + px[i]; i += step }
+    return h
+}
+
+/** Member indices per cluster, in one pass rather than one scan per cluster. */
+private fun clusterMembers(labels: IntArray, nClusters: Int): Array<MutableList<Int>> {
+    val out = Array(nClusters) { mutableListOf<Int>() }
+    for (i in labels.indices) {
+        val c = labels[i]
+        if (c in 0 until nClusters) out[c].add(i)
+    }
+    return out
+}
+
+/**
+ * The colour that stands for a cluster: the mean of its **most chromatic quarter**,
+ * not the mean of all of it.
+ *
+ * A plain mean is what washed multi-coloured sleeves out. Even after good clustering
+ * a cluster spans a range, and averaging across it pulls toward grey — average a red
+ * highlight with the shadow beside it and the answer is brown, which is then what the
+ * bulbs are asked for. Averaging only the colourful quarter keeps a cluster that
+ * *has* a colour saturated, and leaves one that genuinely is grey exactly where it
+ * was, so the neutral path below still fires when it should.
+ */
+private fun representative(
+    members: List<Int>,
+    body: List<FloatArray>,
+    lab: List<FloatArray>,
+): FloatArray {
+    var r = 0f; var g = 0f; var b = 0f
+    // Too few to have a meaningful upper quarter; the plain mean *is* the answer.
+    if (members.size <= 3) {
+        for (i in members) { r += body[i][0]; g += body[i][1]; b += body[i][2] }
+        val n = members.size.toFloat()
+        return floatArrayOf(r / n, g / n, b / n)
+    }
+    val cutoff = members.map { labChroma(lab[it]) }.sorted()[(members.size * 3) / 4]
+    val pick = members.filter { labChroma(lab[it]) >= cutoff }.ifEmpty { members }
+    for (i in pick) { r += body[i][0]; g += body[i][1]; b += body[i][2] }
+    val n = pick.size.toFloat()
+    return floatArrayOf(r / n, g / n, b / n)
+}
+
+/** CIELAB chroma: distance from the neutral axis in the a/b plane. */
+private fun labChroma(lab: FloatArray): Float = hypot(lab[1], lab[2])
 
 private fun sqDist(a: FloatArray, b: FloatArray): Float {
     val d0 = a[0] - b[0]; val d1 = a[1] - b[1]; val d2 = a[2] - b[2]

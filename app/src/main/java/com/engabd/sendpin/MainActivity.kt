@@ -21,6 +21,10 @@ import androidx.compose.material3.windowsizeclass.WindowSizeClass
 import androidx.compose.material3.windowsizeclass.calculateWindowSizeClass
 import androidx.core.content.ContextCompat
 import com.engabd.sendpin.ui.App
+import kotlinx.coroutines.launch
+import com.engabd.sendpin.SendpinApp
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.lifecycle.lifecycleScope
 
 @OptIn(ExperimentalMaterial3WindowSizeClassApi::class)
 class MainActivity : ComponentActivity() {
@@ -84,6 +88,7 @@ class MainActivity : ComponentActivity() {
             notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         com.engabd.sendpin.service.DrivingPip.registerControls(this, pipControls)
+        watchDrivingForPip()
         setContent {
             val windowSizeClass = calculateWindowSizeClass(this)
             App(windowSizeClass = windowSizeClass)
@@ -109,6 +114,28 @@ class MainActivity : ComponentActivity() {
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
         com.engabd.sendpin.service.DrivingPip.maybeEnter(this)
+    }
+
+    /**
+     * Enter the floating window the moment driving mode turns on, if the app happens
+     * to be in front.
+     *
+     * `onUserLeaveHint` alone was not enough. It fires only when the user leaves for
+     * another app *themselves* — not when the car connects while the app is open, not
+     * when something else pulls itself forward, not on screen-off. The documented flow
+     * ("open Maps, then start driving") produces none of those, which is why the
+     * floating window read as doing nothing at all. Watching [DrivingMode.active] adds
+     * the case the callback cannot see, and the activity is resumed here by
+     * construction, which is the platform's own precondition for the transition.
+     */
+    private fun watchDrivingForPip() {
+        lifecycleScope.launch {
+            lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.RESUMED) {
+                (application as SendpinApp).drivingMode.active.collect { on ->
+                    if (on) com.engabd.sendpin.service.DrivingPip.maybeEnter(this@MainActivity)
+                }
+            }
+        }
     }
 
     override fun onDestroy() {

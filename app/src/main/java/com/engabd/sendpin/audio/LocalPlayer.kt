@@ -500,6 +500,35 @@ class LocalPlayer(private val context: Context) {
         _index.value = player.currentMediaItemIndex
     }
 
+    /**
+     * Shuffle the tracks that have not played yet, in place.
+     *
+     * Deliberately not [setShuffle]. That turns on ExoPlayer shuffle *mode*, which
+     * reorders the play order behind the list and leaves the queue panel showing the
+     * order the user built — correct for a mode, useless as an answer to "shuffle
+     * this". This rewrites the list itself, so the panel shows what will actually
+     * play.
+     *
+     * Only the tail moves. Reshuffling the whole list would either interrupt the
+     * track that is playing or leave it stranded in the middle of a list it is no
+     * longer at the head of; every other player shuffles what is coming up, and so
+     * does this.
+     */
+    fun shuffleQueue() {
+        val list = _queue.value
+        val from = (_index.value + 1).coerceIn(0, list.size)
+        if (list.size - from < 2) return
+        val head = list.subList(0, from)
+        val tail = list.subList(from, list.size).shuffled()
+        _queue.value = head + tail
+        // One removal and one insertion rather than a move per track: ExoPlayer
+        // recomputes the timeline on every edit, and n moves is n timeline updates
+        // the UI would animate through.
+        player.removeMediaItems(from, list.size)
+        player.addMediaItems(from, tail.map(::mediaItem))
+        _index.value = player.currentMediaItemIndex
+    }
+
     fun clear() {
         stopTicker()
         // The session flags below are what Now Playing switches on, and they must be

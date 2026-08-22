@@ -205,14 +205,12 @@ fun ArtistDetailScreen(
                         )
                     }
 
-                    if (loading && albums.isEmpty()) {
-                        items(4, contentType = { "skeleton" }) { SkeletonTrackRow() }
-                        return@LazyColumn
-                    }
-
+                    // Nothing early-returns from here down. Each shelf gates itself
+                    // and reserves its own space, so a slow extra never holds up the
+                    // discography and a fast one never shoves it down the page — the
+                    // whole reason the view model publishes them separately.
                     if (error != null && albums.isEmpty()) {
                         item { ErrorState(error!!) { viewModel.loadArtist() } }
-                        return@LazyColumn
                     }
 
                     // Biography, when the server has one (Navidrome's getArtistInfo2).
@@ -224,6 +222,16 @@ fun ArtistDetailScreen(
                     // Before the discography, because "what should I put on" is a
                     // faster question than "what did they release". Both endpoints
                     // behind this were already written and had no callers.
+                    //
+                    // While it is still loading the shelf shows its own skeleton rows
+                    // rather than nothing: the space is claimed either way, so the
+                    // albums below never move when the tracks arrive.
+                    if (top is NowPlayingViewModel.Load.Loading || top is NowPlayingViewModel.Load.Idle) {
+                        item(key = "top_header") { Shelf("Top tracks") }
+                        items(3, key = { "top_skeleton:$it" }, contentType = { "skeleton" }) {
+                            SkeletonTrackRow()
+                        }
+                    }
                     (top as? NowPlayingViewModel.Load.Ready)?.value
                         ?.takeIf { it.isNotEmpty() }
                         ?.let { tracks ->
@@ -263,7 +271,12 @@ fun ArtistDetailScreen(
                                 onLongPress = { actionsFor = album },
                             )
                         }
-                    } else if (!loading) {
+                    } else if (loading) {
+                        item(key = "albums_header") { Shelf("Albums") }
+                        items(4, key = { "album_skeleton:$it" }, contentType = { "skeleton" }) {
+                            SkeletonTrackRow()
+                        }
+                    } else if (error == null) {
                         item { EmptyState("No albums", "This artist has no albums in your library.") }
                     }
 

@@ -154,100 +154,99 @@ class ArtistDetailViewModel(
         // Seed from the route so the header paints before the round-trip lands.
         _artist.value = ref
         viewModelScope.launch { settings.targetPlayer.collect { _targetPlayer.value = it } }
-        // Load top tracks in parallel with artist info rather than after — they're
-        // part of the initial render and shouldn't populate after entering the page.
         loadArtist()
     }
 
+    /**
+     * Load the artist, publishing each shelf the moment it lands.
+     *
+     * Deliberately *not* one landing for the whole page. The albums grid is the body
+     * of this screen and costs one round-trip; the biography, the similar artists and
+     * the top tracks are all extras that cost one more each. Holding the albums back
+     * until every one of those had answered — which is what "make the shelves appear
+     * together" turned into — meant the page waited on the slowest of four calls and
+     * took seconds to paint, while [AlbumDetailViewModel.loadAlbum] paints after one.
+     * The pop-in that was being avoided is handled where it belongs, in the screen:
+     * each shelf reserves its own space and renders its own skeleton, so nothing
+     * below it is shoved down when it fills.
+     */
     fun loadArtist() {
         viewModelScope.launch {
             _loading.value = true
             _error.value = null
+            _topTracks.value = Load.Loading
+            _similar.value = Load.Loading
             try {
-                // Load top tracks in parallel with artist metadata — both are needed
-                // for the initial render, so there's no reason to wait for one before
-                // starting the other.
+                val sc = if (isLocal) source else null
+                if (isLocal && sc == null) { _error.value = "That library isn't connected"; return@launch }
+
+                // Resolve *first*, before anything forks off [ref]. The by-name route
+                // (the album screen's artist link) arrives with a "-" placeholder id,
+                // and a top-tracks call made against that asks the server about an
+                // artist that does not exist and quietly gets an empty list back —
+                // which is why top tracks were missing on exactly that route.
+                if (!resolveRef()) return@launch
                 val topTracksDeferred = async { loadTopTracksInternal() }
 
-                // Albums are held locally and only pushed into [_albums] once the top
-                // tracks are ready too. "Top tracks" renders as its own shelf above
-                // "Albums" — assigning [_albums] the moment it resolves would draw the
-                // albums grid first and then shove it down a beat later when the top
-                // tracks shelf popped in above it, which read as the whole page
-                // refreshing after entering. Landing both in the same recomposition
-                // keeps the page looking complete on first paint.
-                val resolvedAlbums: List<MaItem>
-                if (isLocal) {
-                    val sc = source
-                    if (sc == null) { _error.value = "That library isn't connected"; return@launch }
-                    if (!resolveRef()) return@launch
+                if (sc != null) {
                     val (artistMeta, albumList) = sc.artistDetail(ref.itemId)
                     if (artistMeta != null) { ref = artistMeta; _artist.value = artistMeta }
-                    resolvedAlbums = albumList.distinctBy { it.itemId }
+                    _albums.value = albumList.distinctBy { it.itemId }
+                    _loading.value = false
                     // One call now carries the biography, the links and the similar
-                    // artists it was previously asked not to send.
-                    runCatching { sc.artistInfo(ref.itemId, similarCount = 12) }.getOrNull()?.let {
-                        _biography.value = it.biography
-                        _lastFmUrl.value = it.lastFmUrl
-                        _similar.value = Load.Ready(it.similar)
-                    } ?: run { _similar.value = Load.Ready(emptyList()) }
+                    // artists it was previously asked not to send. Its own coroutine:
+                    // an artist whose metadata times out still has a discography.
+                    val id = ref.itemId
+                    launch {
+                        runCatching { sc.artistInfo(id, similarCount = 12) }.getOrNull()?.let {
+                            _biography.value = it.biography
+                            _lastFmUrl.value = it.lastFmUrl
+                            _similar.value = Load.Ready(it.similar)
+                        } ?: run { _similar.value = Load.Ready(emptyList()) }
+                    }
                 } else {
-                    if (!resolveRef()) return@launch
                     val artistMeta = maRepo.getArtist(ref)
                     if (artistMeta != null) { ref = artistMeta; _artist.value = artistMeta }
                     // De-duplicated by id: MA answers an artist's albums per provider
                     // mapping and concatenates the results, so an artist held by two
                     // providers comes back with every album twice.
-                    resolvedAlbums = maRepo.artistAlbums(ref).distinctBy { it.itemId }
-                    // MA's own `metadata.description` first — it is the same field
-                    // the web UI shows, and it costs nothing extra.
-                    _biography.value = ref.description
-                        ?: artistMeta?.description
-                        ?: navidromeBiographyFor(ref.name)
-                    _similar.value = Load.Ready(
-                        runCatching { maRepo.similarArtists(ref).distinctBy { it.itemId } }
-                            .getOrDefault(emptyList()),
-                    )
+                    _albums.value = maRepo.artistAlbums(ref).distinctBy { it.itemId }
+                    _loading.value = false
+                    val resolvedRef = ref
+                    val ownDescription = resolvedRef.description ?: artistMeta?.description
+                    launch {
+                        // MA's own `metadata.description` first — it is the same field
+                        // the web UI shows, and it costs nothing extra.
+                        _biography.value = ownDescription ?: navidromeBiographyFor(resolvedRef.name)
+                    }
+                    launch {
+                        _similar.value = Load.Ready(
+                            runCatching { maRepo.similarArtists(resolvedRef).distinctBy { it.itemId } }
+                                .getOrDefault(emptyList()),
+                        )
+                    }
                 }
-                // Await the top tracks load — it's been running in parallel — and only
-                // then reveal albums, so the two shelves appear together.
                 _topTracks.value = topTracksDeferred.await()
-                _albums.value = resolvedAlbums
             } catch (e: Exception) {
                 _error.value = e.message ?: "Failed to load artist"
+                _topTracks.value = Load.Ready(emptyList())
+                _similar.value = Load.Ready(emptyList())
             }
             _loading.value = false
         }
     }
 
     /**
-     * Top tracks, after the albums rather than before them.
+     * Top tracks, forked off [loadArtist] once [ref] carries a real id.
      *
-     * Its own coroutine and its own load state: this is a bonus shelf, and an artist
-     * whose top tracks time out should still show a discography.
-     */
-    private fun loadTopTracks() {
-        viewModelScope.launch {
-            _topTracks.value = Load.Loading
-            val tracks = runCatching {
-                if (isLocal) {
-                    // Keyed by artist *name* rather than id — the one Subsonic
-                    // endpoint that is, and the shape the interface kept.
-                    source?.topSongs(ref.name, count = 10).orEmpty()
-                } else {
-                    maRepo.topTracks(ref).take(10)
-                }
-            }.getOrDefault(emptyList())
-            _topTracks.value = Load.Ready(tracks)
-        }
-    }
-
-    /**
-     * Internal version that returns the Load state for parallel loading.
+     * A bonus shelf with its own load state: an artist whose top tracks time out
+     * should still show a discography, so this never throws.
      */
     private suspend fun loadTopTracksInternal(): Load<List<MaItem>> {
         val tracks = runCatching {
             if (isLocal) {
+                // Keyed by artist *name* rather than id — the one Subsonic endpoint
+                // that is, and the shape the interface kept.
                 source?.topSongs(ref.name, count = 10).orEmpty()
             } else {
                 maRepo.topTracks(ref).take(10)

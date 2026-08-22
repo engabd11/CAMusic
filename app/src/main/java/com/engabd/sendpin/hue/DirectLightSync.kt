@@ -195,6 +195,13 @@ data class ActiveLightSyncSource(
     val lead: AudioLead,
     val artUrl: String?,
     val scanTrack: LocalTrack?,
+    /**
+     * Which of the four feeds this is. [tap] stays non-null for all of them — for
+     * [LightSyncFeed.SCAN_REMOTE] it is simply the local player's tap, which is
+     * receiving nothing, so wiring it is harmless and saves making every reader of
+     * this field nullable for one case.
+     */
+    val feed: LightSyncFeed = LightSyncFeed.LOCAL_PCM,
 )
 
 class DirectLightSync(
@@ -449,6 +456,17 @@ class DirectLightSync(
     /** Whether the stream is active. */
     private val _active = MutableStateFlow(false)
     val active: StateFlow<Boolean> = _active.asStateFlow()
+
+    /**
+     * Whether analysis frames are actually arriving, as [renderLoop] itself judges it.
+     *
+     * Published from inside the loop rather than recomputed by the UI, so the text on
+     * screen and the pattern in the room can never disagree — which is exactly what
+     * happened while the screen keyed on [active], a flag that only says the DTLS
+     * session is open.
+     */
+    private val _framesFresh = MutableStateFlow(false)
+    val framesFresh: StateFlow<Boolean> = _framesFresh.asStateFlow()
 
     /** Error state, surfaced to the UI. */
     private val _error = MutableStateFlow<String?>(null)
@@ -824,6 +842,36 @@ class DirectLightSync(
     }
 
     /**
+     * A frame synthesised from a [TrackScan] for a player this phone cannot hear.
+     *
+     * Deliberately **not** routed through [onAnalysisFrame]. That path feeds the
+     * causal [TempoTracker], [StructureTracker] and [GestureTracker], whose entire job
+     * is to *find* what this frame was already built from — handing them their own
+     * output would have them lock onto it and then be overridden by it. It would also
+     * ask [GestureTracker] to read a `pan` that cannot exist here.
+     *
+     * Everything downstream is unchanged: [renderLoop] sees `latestFrameAt` move, so
+     * `fresh` goes true and the ordinary render path runs.
+     */
+    internal fun onSynthFrame(frame: AnalysisFrame, grid: BeatGrid?, scan: TrackScan, posS: Float) {
+        latestGrid = grid
+        // The scan's own structure, through the very function the live path uses to
+        // enrich a causal tracker's guess — here there is no guess to enrich, so it
+        // starts from a neutral state and everything in the result comes from the
+        // scan. One implementation of "what does this section mean", not two.
+        latestStructure = enrichWithScan(StructureState(), scan, posS)
+        // No stereo field, so no gestures. See [AnalysisFrame.pan].
+        latestGesture = null
+        latestPositionS = posS
+        // What the layer chain reads for track-relative effects. Set here because the
+        // usual owner ([onTrackChanged]) follows the *local* player's track, which is
+        // not what is playing.
+        activeScan = scan
+        latestFrame = frame
+        latestFrameAt = System.nanoTime()
+    }
+
+    /**
      * Fill in the two things a causal structure tracker cannot know: which
      * section this is, and when the next one lands.
      *
@@ -936,6 +984,7 @@ class DirectLightSync(
             val fresh = (now - latestFrameAt) < FRAME_STALE_NANOS
             val frame = if (fresh) latestFrame ?: SILENCE else SILENCE
             val isIdle = !playerPlaying || !fresh
+            if (_framesFresh.value != fresh) _framesFresh.value = fresh
 
             val colours = try {
                 if (isIdle) {

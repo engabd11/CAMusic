@@ -126,6 +126,13 @@ internal fun CreatePlaylistDialog(onDismiss: () -> Unit, onCreate: (String) -> U
 internal fun LibrarySwitchOverlay(
     servers: List<com.engabd.sendpin.library.ServerConfig>,
     activeId: String?,
+    /**
+     * The second line of a row. Defaults to the kind's own label, which is all a
+     * remote server has to say — but Downloads can say how much is actually on the
+     * phone, and that one line is most of what makes it read as a real library rather
+     * than a menu entry.
+     */
+    subtitleFor: (com.engabd.sendpin.library.ServerConfig) -> String = { it.kind.label },
     onDismiss: () -> Unit,
     onSelect: (com.engabd.sendpin.library.ServerConfig) -> Unit,
 ) {
@@ -163,7 +170,14 @@ internal fun LibrarySwitchOverlay(
                             horizontalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
                             Icon(
-                                if (isActive) Icons.Default.CheckCircle else Icons.Default.Dns,
+                                when {
+                                    isActive -> Icons.Default.CheckCircle
+                                    config.kind == com.engabd.sendpin.library.ServerKind.DOWNLOADS ->
+                                        Icons.Default.DownloadDone
+                                    config.kind == com.engabd.sendpin.library.ServerKind.LOCAL ->
+                                        Icons.Default.Smartphone
+                                    else -> Icons.Default.Dns
+                                },
                                 null,
                                 tint = if (isActive) accent else TextSecondary,
                                 modifier = Modifier.size(20.dp),
@@ -175,7 +189,7 @@ internal fun LibrarySwitchOverlay(
                                     fontWeight = FontWeight.Bold, fontSize = 14.sp,
                                 )
                                 Text(
-                                    config.kind.label,
+                                    subtitleFor(config),
                                     color = TextMuted, fontFamily = AppFont,
                                     fontSize = 11.sp,
                                 )

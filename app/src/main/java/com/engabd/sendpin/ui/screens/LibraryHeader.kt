@@ -135,7 +135,7 @@ private fun RefreshButton(refreshing: Boolean, onClick: () -> Unit) {
     val spinAngle by spin.animateFloat(
         initialValue = 0f,
         targetValue = 360f,
-        animationSpec = infiniteRepeatable(tween(900, easing = LinearEasing)),
+        animationSpec = infiniteRepeatable(tween(Motion.SPINNER_PERIOD_MS, easing = LinearEasing)),
         label = "refreshAngle",
     )
     val angle = if (reducedMotion) 0f else spinAngle

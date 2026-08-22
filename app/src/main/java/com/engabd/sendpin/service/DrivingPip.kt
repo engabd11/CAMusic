@@ -56,13 +56,26 @@ object DrivingPip {
     fun maybeEnter(activity: Activity) {
         val app = activity.applicationContext as? com.engabd.sendpin.SendpinApp ?: return
         if (!app.drivingMode.active.value) return
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        // The mechanism the user actually chose. This never read the setting, so
+        // "Floating window" changed nothing at all — PiP was attempted in both modes,
+        // and in bar mode it fought the overlay for the same moment.
+        if (!wantsPip(app)) return
         if (!activity.packageManager.hasSystemFeature(
                 android.content.pm.PackageManager.FEATURE_PICTURE_IN_PICTURE,
             )
         ) return
         runCatching { activity.enterPictureInPictureMode(params(activity)) }
     }
+
+    /**
+     * Whether the floating window is the chosen mechanism.
+     *
+     * Read synchronously off the mirror `DrivingMode` keeps, because the two callers
+     * are an `onUserLeaveHint` and a lifecycle callback — neither can suspend, and the
+     * answer is needed in the same frame the transition has to happen in.
+     */
+    private fun wantsPip(app: com.engabd.sendpin.SendpinApp): Boolean =
+        app.drivingMode.mechanism == com.engabd.sendpin.data.AppSettings.DRIVING_PIP
 
     /** The window's shape and its three actions. */
     fun params(context: Context): PictureInPictureParams {

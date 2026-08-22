@@ -112,11 +112,32 @@ class ServerConfigTest {
                 ServerKind.SUBSONIC,
                 ServerKind.JELLYFIN,
                 ServerKind.LOCAL,
+                ServerKind.DOWNLOADS,
             ),
             ServerKind.available,
         )
         assertTrue(ServerKind.planned.isNotEmpty())
         assertTrue(ServerKind.planned.none { it.supported })
+    }
+
+    @Test
+    fun `downloads is a library but not one you can add`() {
+        // It exists on every install and is created by AppSettings, not by the user,
+        // so offering it in the "add a library" picker would be an action that either
+        // does nothing or produces a duplicate.
+        assertTrue(ServerKind.DOWNLOADS in ServerKind.available)
+        assertTrue(ServerKind.DOWNLOADS !in ServerKind.addable)
+        assertTrue(ServerKind.addable.all { it.supported })
+    }
+
+    @Test
+    fun `only kinds with credentials need an address`() {
+        assertTrue(ServerKind.NAVIDROME.needsAddress)
+        assertTrue(ServerKind.MUSIC_ASSISTANT.needsAddress)
+        // The two that read what is already on the phone. This is what stops the
+        // library screen demanding a server URL for a library that has no server.
+        assertFalse(ServerKind.LOCAL.needsAddress)
+        assertFalse(ServerKind.DOWNLOADS.needsAddress)
     }
 
     @Test

@@ -32,6 +32,23 @@ import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
 
 /**
+ * What identifies the album on show, for [AlbumArt]'s page-turn.
+ *
+ * Album *name* plus artist, not the artwork url and not the album name alone. The url
+ * changes between two tracks of one record wherever the server hands out per-track
+ * artwork, and flipping there turns the page onto the same sleeve. The name alone
+ * collides — every library has several "Greatest Hits". There is no third option:
+ * `NowPlayingViewModel.State` carries no album id, because Music Assistant tracks do
+ * not have one (see the album lookup in that file, which falls back to searching by
+ * name for exactly this reason).
+ *
+ * Null while the player is idle, so coming back from nothing fades rather than flips.
+ */
+internal fun albumFlipKey(st: NowPlayingViewModel.State): String? =
+    if (st.idle || (st.album.isBlank() && st.artist.isBlank())) null
+    else "${st.album}|${st.artist}"
+
+/**
  * The parts both player layouts are built from.
  *
  * There are two players — [NowPlayingScreen] as a tab, [NowPlayingOverlay] as a cover

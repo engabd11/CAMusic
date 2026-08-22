@@ -177,7 +177,12 @@ private fun sectionOf(route: String?): String? = when {
     route == null -> null
     route.startsWith("album/") || route.startsWith("artist/") || route.startsWith("playlist/") -> "library"
     // Reached from Settings, so that is the tab that stays lit while it is open.
-    route == "downloads" -> "settings"
+    // Both are *siblings* of "settings" in the flat graph, not children, so without
+    // this the Settings tab lights nothing and re-tapping it takes the navigate
+    // branch below — whose popUpTo(saveState) + restoreState puts the screen you were
+    // trying to leave straight back on top.
+    route == "downloads?from=library" -> "library"
+    route == "downloads" || route == "stats" -> "settings"
     else -> route
 }
 
@@ -226,11 +231,13 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
     val themeChoice = ThemeChoice.from(themeKey)
     val accentChoice = AccentChoice.from(accentKey)
     val fixedAccent = remember(fixedAccentHex) { parseAccent(fixedAccentHex) }
+    val motionMode by themeSettings.motionMode.collectAsState(initial = AppSettings.MOTION_SYSTEM)
 
     SendspinTheme(
         theme = themeChoice,
         accentChoice = accentChoice,
         seedAccent = fixedAccent,
+        motionMode = motionMode,
     ) {
         SystemBars()
         val playerVm: PlayerViewModel = viewModel()
@@ -528,6 +535,7 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                                 onAlbumClick = { navToDetail("album", it) },
                                 onArtistClick = { navToDetail("artist", it) },
                                 onPlaylistClick = { navToDetail("playlist", it) },
+                                onManageDownloads = { navController.navigate("downloads?from=library") },
                             )
                         }
                     }
@@ -657,7 +665,17 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                             onBack = { navController.popBackStack() },
                         )
                     }
+                    // Two ways in, and the tab that stays lit differs. Reached from
+                    // Settings it belongs to Settings; reached from the Downloads
+                    // library it belongs to Library, and lighting the wrong tab there
+                    // makes the back gesture land somewhere the user did not come from.
                     screen("downloads") {
+                        DownloadsScreen(
+                            viewModel = libraryVm,
+                            onBack = { navController.popBackStack() },
+                        )
+                    }
+                    screen("downloads?from=library") {
                         DownloadsScreen(
                             viewModel = libraryVm,
                             onBack = { navController.popBackStack() },

@@ -31,6 +31,15 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.JsonObject
+import com.engabd.sendpin.ma.MaParse
+import com.engabd.sendpin.audio.TailPlan
+import com.engabd.sendpin.audio.TailAction
+import com.engabd.sendpin.audio.StreamEndPolicy
+import com.engabd.sendpin.audio.StreamClassifier
+import android.os.SystemClock
 
 /**
  * The player connection, held at **process scope** (by [com.engabd.sendpin.SendpinApp])
@@ -157,6 +166,50 @@ class Playback(private val app: Context) {
      */
     private var idleJob: Job? = null
 
+    // --- telling a pause from an ending ------------------------------------
+    //
+    // `stream/end` is byte-identical for "the listener paused", "the track ended" and
+    // "the announcement finished", and the engine's response — throw away the tail —
+    // is right for the first and wrong for the other two. These three fields are what
+    // the discriminator in [StreamEndPolicy] reasons from; see its doc for the
+    // ordering of confidence between them.
+
+    /** When this app last asked MA to pause. Certain, when it is recent. */
+    @Volatile private var localPauseAtMs: Long? = null
+
+    /** When an MA event last said this player is not playing. Covers other controllers. */
+    @Volatile private var remotePausedAtMs: Long? = null
+
+    /** The last player state MA reported for this phone, and when. */
+    @Volatile private var lastPlayerState: Pair<String, Long>? = null
+
+    /** When the previous stream ended, so a track boundary can be recognised. */
+    @Volatile private var lastStreamEndAtMs: Long? = null
+
+    /** What kind of thing the current stream is. Set once per `stream/start`. */
+    @Volatile private var streamKind: StreamClassifier.Kind = StreamClassifier.Kind.UNKNOWN
+
+    /** Runs the drain after a `stream/end` that was judged not to be a pause. */
+    private var tailJob: Job? = null
+
+    /** Mirrors [AppSettings.duckAnnouncements]; read from the audio callbacks. */
+    @Volatile private var duckAnnouncements = true
+
+    /** Deferred teardown after a foreign app took media focus for good. */
+    private var coldEngineJob: Job? = null
+
+    /**
+     * Record that *this* app just asked Music Assistant to pause.
+     *
+     * Every transport path that pauses goes through here rather than calling
+     * `transport { it.pause(...) }` directly, which is what makes the local half of
+     * the discriminator certain rather than a guess.
+     */
+    private fun pauseRemotePlayer() {
+        localPauseAtMs = SystemClock.elapsedRealtime()
+        transport { it.pause(playerId) }
+    }
+
     // --- audio focus -------------------------------------------------------
 
     private val audioManager by lazy { app.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
@@ -206,66 +259,96 @@ class Playback(private val app: Context) {
      * rest of a group playing on. All that is left to do here is go quiet and stop
      * holding focus we are no longer using.
      *
-     * A foreign app still gets the full teardown. It is the right response there:
-     * nothing in this process is going to resume, and the engine is holding an
-     * `AudioTrack` and a decoder for a stream nobody can hear.
+     * A foreign app gets a deadline rather than a verdict. Tearing the engine down
+     * immediately was the old answer, and it is what made announcements after a
+     * YouTube session slow and sometimes silent: the next `stream/start` had to
+     * rebuild the ExoPlayer, the decoder and the AudioTrack before a three-second clip
+     * could begin, and `_maAudioSource` going null took Light Sync's tap with it. An
+     * app owning media for good is not a reason to destroy a player the next
+     * announcement will need in two seconds — but it *is* a reason not to hold an
+     * `AudioTrack` open indefinitely, hence [FOREIGN_TAKEOVER_RELEASE_MS].
      */
     private fun onPermanentFocusLoss() {
         val owner = (app.applicationContext as? SendpinApp)?.playbackOwner
+        engine?.setVolume(0f)
+        abandonAudioFocus()
         if (owner?.isInternalHandover() == true) {
             android.util.Log.i("Playback", "focus lost to this app's own local player - standing down, not releasing")
-            engine?.setVolume(0f)
-            abandonAudioFocus()
             return
         }
-        engine?.release()
-        _maAudioSource.value = null
         _isPlaying.value = false
-        abandonAudioFocus()
+        coldEngineJob?.cancel()
+        coldEngineJob = scope.launch {
+            delay(FOREIGN_TAKEOVER_RELEASE_MS)
+            if (!_isPlaying.value && !holdsFocus) {
+                engine?.release()
+                _maAudioSource.value = null
+            }
+        }
     }
 
-    private fun requestAudioFocus() {
-        if (holdsFocus) return   // already held - re-requesting would leak the old request
+    /** Whether the focus currently held was requested as a duckable announcement. */
+    @Volatile private var holdsDuckingFocus = false
+
+    /**
+     * Ask for the output, in the shape this stream actually needs.
+     *
+     * Music asks for `AUDIOFOCUS_GAIN` with `USAGE_MEDIA` — "this is the media session
+     * now" — which is right, and which is a *fight* with a video app rather than a
+     * request to share. An announcement asks for
+     * `AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK` with `USAGE_ASSISTANT` /
+     * `CONTENT_TYPE_SPEECH` instead, which is the request the platform answers by
+     * turning the other app down for a moment and letting this through. That is the
+     * whole of "the notification arrives but there is no sound over a video".
+     *
+     * The early return had to grow a condition with it: a held music focus is exactly
+     * as useless to an announcement as no focus at all, because the *shape* is what
+     * decides whether anything ducks.
+     *
+     * The pre-O branch that used to be here was dead code — minSdk is 31.
+     */
+    private fun requestAudioFocus(kind: StreamClassifier.Kind) {
+        val wantDuck = kind == StreamClassifier.Kind.ANNOUNCEMENT && duckAnnouncements
+        if (holdsFocus && wantDuck == holdsDuckingFocus) return
+        if (holdsFocus) abandonAudioFocus()
         // The platform's answer is what [holdsFocus] must track, not the mere act of
         // asking. This used to latch `true` unconditionally, so a single denial (an
         // announcement racing whatever momentarily held exclusive focus — a call, a
         // brief system sound, another app's own transient grab) left every later
         // `stream/start` believing it already held focus and skipping the request
         // entirely — silently, forever, since [holdsFocus] never went back to false.
-        // That is "the TTS notification arrives but nothing plays": the engine was
-        // never actually granted focus to begin with.
-        val granted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val attrs = AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_MEDIA)
-                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                .build()
-            val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                .setAudioAttributes(attrs)
-                .setAcceptsDelayedFocusGain(false)
-                .setOnAudioFocusChangeListener(focusListener)
-                .build()
-            audioFocusRequest = req
-            audioManager.requestAudioFocus(req) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
-        } else {
-            @Suppress("DEPRECATION")
-            audioManager.requestAudioFocus(
-                focusListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN,
-            ) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
-        }
+        val attrs = AudioAttributes.Builder()
+            .setUsage(if (wantDuck) AudioAttributes.USAGE_ASSISTANT else AudioAttributes.USAGE_MEDIA)
+            .setContentType(
+                if (wantDuck) AudioAttributes.CONTENT_TYPE_SPEECH else AudioAttributes.CONTENT_TYPE_MUSIC,
+            )
+            .build()
+        val req = AudioFocusRequest
+            .Builder(
+                if (wantDuck) AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK
+                else AudioManager.AUDIOFOCUS_GAIN,
+            )
+            .setAudioAttributes(attrs)
+            .setAcceptsDelayedFocusGain(false)
+            .setOnAudioFocusChangeListener(focusListener)
+            .build()
+        audioFocusRequest = req
+        val granted = audioManager.requestAudioFocus(req) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
         holdsFocus = granted
+        holdsDuckingFocus = granted && wantDuck
         if (!granted) audioFocusRequest = null
+        // A fresh grant does not call [focusListener], so nothing else restores the
+        // scalar a previous loss took to zero — and MA then played silently after
+        // every handover, waiting on an AUDIOFOCUS_GAIN callback that never came.
+        if (granted) engine?.setVolume(1f)
     }
 
     private fun abandonAudioFocus() {
         if (!holdsFocus) return
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
-            audioFocusRequest = null
-        } else {
-            @Suppress("DEPRECATION")
-            audioManager.abandonAudioFocus(focusListener)
-        }
+        audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
+        audioFocusRequest = null
         holdsFocus = false
+        holdsDuckingFocus = false
     }
 
     // --- becoming noisy ----------------------------------------------------
@@ -287,7 +370,7 @@ class Playback(private val app: Context) {
             if (intent?.action != AudioManager.ACTION_AUDIO_BECOMING_NOISY) return
             if (!_isPlaying.value) return
             engine?.setVolume(0f)
-            transport { it.pause(playerId) }
+            pauseRemotePlayer()
         }
     }
 
@@ -546,24 +629,51 @@ class Playback(private val app: Context) {
             override fun onAudio(frame: ByteArray) = eng.submit(frame)
 
             override fun onStreamStart(format: StreamStartPlayerInfo) {
+                // Classified before the engine is started, because the engine needs it:
+                // an announcement gets speech AudioAttributes, which have to be applied
+                // before prepare(). See [StreamClassifier].
+                val now = SystemClock.elapsedRealtime()
+                val state = lastPlayerState
+                streamKind = StreamClassifier.classify(
+                    queueState = state?.first,
+                    queueStateAgeMs = state?.let { now - it.second } ?: Long.MAX_VALUE,
+                    msSincePreviousStreamEnd = lastStreamEndAtMs?.let { now - it },
+                )
+                (eng as? SendspinExoEngine)?.speech =
+                    streamKind == StreamClassifier.Kind.ANNOUNCEMENT && duckAnnouncements
+                tailJob?.cancel(); tailJob = null
+                coldEngineJob?.cancel(); coldEngineJob = null
                 eng.start(format)
                 idleJob?.cancel(); idleJob = null
                 // A new stream is the only thing that can legitimately move the
                 // playhead backwards on the same track — Music Assistant restarts the
                 // queue to seek. Open the window that lets the next reading do it.
                 acceptRewindUntilUs = c.clock.nowUs() + REWIND_GRACE_US
+                val kind = streamKind
                 scope.launch {
-                    requestAudioFocus()
+                    requestAudioFocus(kind)
                     _isPlaying.value = true
                     SendspinService.startMedia(app)
                 }
             }
 
             override fun onStreamEnd() {
-                // Not a stop: MA ends the stream between every track. The engine keeps
-                // the tail playing and tears itself down only if nothing follows, and
-                // the notification waits the same way instead of blinking on every skip.
-                eng.endOfStream()
+                // Not a stop: MA ends the stream between every track — and for a pause,
+                // and at the end of an announcement, with the same message. What the
+                // tail is worth depends entirely on which, so ask.
+                val endedAt = SystemClock.elapsedRealtime()
+                lastStreamEndAtMs = endedAt
+                val plan = StreamEndPolicy.decide(
+                    nowMs = endedAt,
+                    localPauseAtMs = localPauseAtMs,
+                    remotePausedAtMs = remotePausedAtMs,
+                    kind = streamKind,
+                )
+                eng.endOfStream(drain = plan.action == TailAction.DRAIN)
+                tailJob?.cancel()
+                if (plan.action == TailAction.DRAIN) {
+                    tailJob = scope.launch { drainTail(eng, endedAt, plan) }
+                }
                 idleJob?.cancel()
                 idleJob = scope.launch {
                     delay(SendspinPlaybackSupport.END_LINGER_MS)
@@ -616,6 +726,25 @@ class Playback(private val app: Context) {
         // Mute while the clock is still converging, per the spec — decoding and
         // buffering carry on, only the gain goes to zero. See SyncGate.
         scope.launch { c.syncMuted.collect { eng.setSyncMuted(it) } }
+
+        // What kind of thing the next stream is, and whether a `stream/end` was a
+        // pause someone else asked for. Straight off the API socket rather than
+        // through MaNowPlaying, whose cache is sampled at 300 ms and polled at 5 s —
+        // both far too slow to still be true when `stream/end` lands.
+        scope.launch {
+            val api = (app.applicationContext as SendpinApp).maApi
+            api.events.collect { raw ->
+                val ev = MaParse.event(raw) ?: return@collect
+                if (!ev.name.startsWith("player") || ev.objectId != playerId) return@collect
+                val state = (ev.data as? JsonObject)
+                    ?.get("state")?.let { (it as? JsonPrimitive)?.contentOrNull }
+                    ?: return@collect
+                val now = SystemClock.elapsedRealtime()
+                lastPlayerState = state to now
+                if (!state.equals("playing", ignoreCase = true)) remotePausedAtMs = now
+            }
+        }
+        scope.launch { settings.duckAnnouncements.collect { duckAnnouncements = it } }
 
         // The persistent connection service keeps the process (and this WebSocket)
         // alive in the background and shows a small "connected" notification with a
@@ -878,6 +1007,38 @@ class Playback(private val app: Context) {
     // screen already does — so notification, lock screen and in-app controls all
     // drive the same queue.
 
+    /**
+     * Let the tail finish, then cut it.
+     *
+     * Three ways out, in the order they are hoped for:
+     *
+     * 1. **The queue runs dry.** What an announcement or a track that genuinely ended
+     *    does, usually within a few hundred milliseconds. The audio is complete.
+     * 2. **A pause lands inside the grace window.** A remote controller pausing at
+     *    almost the same moment; converted to a discard so it still feels immediate.
+     * 3. **The cap expires.** The safety net. Reached only when the server keeps
+     *    holding a backlog it never sends the end of.
+     *
+     * A new `stream/start` cancels this job outright, which is the gapless case: the
+     * next track supersedes the tail rather than waiting behind it.
+     */
+    private suspend fun drainTail(eng: SendspinPlaybackEngine, endedAt: Long, plan: TailPlan) {
+        val deadline = endedAt + plan.capMs
+        while (SystemClock.elapsedRealtime() < deadline) {
+            if (eng.queuedFrames == 0) break
+            val paused = remotePausedAtMs?.let { it >= endedAt } == true ||
+                localPauseAtMs?.let { it >= endedAt } == true
+            if (paused &&
+                SystemClock.elapsedRealtime() - endedAt <= StreamEndPolicy.REMOTE_PAUSE_GRACE_MS &&
+                StreamEndPolicy.revise(plan, true) == TailAction.DISCARD
+            ) {
+                break
+            }
+            delay(TAIL_POLL_MS)
+        }
+        eng.cutTail()
+    }
+
     private val maRepo by lazy { MaRepository((app.applicationContext as SendpinApp).maApi) }
 
     /** Fire-and-forget an MA player command; a disconnected client just no-ops. */
@@ -885,10 +1046,12 @@ class Playback(private val app: Context) {
         scope.launch { runCatching { block(maRepo) } }
     }
 
-    fun onPlayPause() = transport { if (_isPlaying.value) it.pause(playerId) else it.play(playerId) }
+    fun onPlayPause() {
+        if (_isPlaying.value) pauseRemotePlayer() else transport { it.play(playerId) }
+    }
 
     /** Explicit, not a toggle — for callers (auto-pause on a phone call) that must never accidentally resume. */
-    fun onMediaPause() = transport { it.pause(playerId) }
+    fun onMediaPause() = pauseRemotePlayer()
 
     /**
      * Stop this phone's Sendspin stream because the local player has taken over.
@@ -906,7 +1069,7 @@ class Playback(private val app: Context) {
      */
     fun pauseForLocalPlayback() {
         if (!_isPlaying.value) return
-        transport { it.pause(playerId) }
+        pauseRemotePlayer()
     }
 
     fun onMediaNext() = transport { it.next(playerId) }
@@ -1088,6 +1251,24 @@ class Playback(private val app: Context) {
     private companion object {
         /** How often the projected playhead is republished while playing. */
         const val POSITION_TICK_MS = 250L
+
+        /**
+         * How often [drainTail] re-checks. Fine enough that "the queue ran dry" and
+         * "a pause landed" are both noticed inside the grace window, coarse enough
+         * that a drain is a handful of wake-ups rather than a spin.
+         */
+        const val TAIL_POLL_MS = 20L
+
+        /**
+         * How long the MA engine is kept warm after a foreign app takes media focus
+         * for good.
+         *
+         * Long enough that the announcement which follows a YouTube session plays
+         * immediately rather than behind a player rebuild; short enough that an idle
+         * AudioTrack is not held for the rest of the day. A guess, and the kind that
+         * wants measuring on a battery-sensitive device.
+         */
+        const val FOREIGN_TAKEOVER_RELEASE_MS = 60_000L
 
         /**
          * How far a `server/state` timestamp may sit from now and still be believed.

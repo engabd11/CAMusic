@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import android.os.SystemClock
 
 /**
  * Driving mode: a slim, always-reachable transport for a phone in a cradle.
@@ -82,6 +83,17 @@ class DrivingMode(private val app: Context) {
 
     private val owner get() = com.engabd.sendpin.SendpinApp.instance.playbackOwner
 
+    private companion object {
+        /**
+         * How long after a car ACL connect a second one counts as the same arrival.
+         *
+         * Head units bring their profiles up one at a time and the gap between the
+         * first and last can be several seconds. Longer than that, shorter than any
+         * plausible "got out, got back in".
+         */
+        const val RECONNECT_DEBOUNCE_MS = 30_000L
+    }
+
     /**
      * Whether the driving bar should be on screen right now.
      *
@@ -145,7 +157,14 @@ class DrivingMode(private val app: Context) {
                 // not carry over and leave the bar silently missing on this trip.
                 BluetoothDevice.ACTION_ACL_CONNECTED -> {
                     carConnected.value = true
-                    dismissed.value = false
+                    // …but only a *fresh* drive. A multi-profile head unit announces
+                    // ACL connect once per profile (hands-free, then A2DP, sometimes
+                    // more), several seconds apart. Clearing the dismissal on each of
+                    // those brought the bar straight back after the X was pressed,
+                    // which is the other half of the X reading as broken.
+                    val now = SystemClock.elapsedRealtime()
+                    if (now - lastCarConnectAtMs > RECONNECT_DEBOUNCE_MS) dismissed.value = false
+                    lastCarConnectAtMs = now
                 }
                 BluetoothDevice.ACTION_ACL_DISCONNECTED -> {
                     carConnected.value = false
@@ -160,6 +179,19 @@ class DrivingMode(private val app: Context) {
     }
 
     @Volatile private var wantedCarAddress: String = ""
+
+    /** When the nominated car last announced an ACL connect. See the receiver above. */
+    @Volatile private var lastCarConnectAtMs: Long = 0L
+
+    /**
+     * The chosen mechanism, mirrored for callers that cannot suspend.
+     *
+     * [DrivingPip.maybeEnter] runs inside `onUserLeaveHint`, which has to decide in
+     * the frame it is given — there is no room there to read DataStore.
+     */
+    @Volatile
+    var mechanism: String = AppSettings.DRIVING_PIP
+        private set
 
     init {
         scope.launch {
@@ -200,8 +232,16 @@ class DrivingMode(private val app: Context) {
             }
                 .distinctUntilChanged()
                 .collect { (on, mechanism, foreground) ->
-                    if (on && mechanism == AppSettings.DRIVING_OVERLAY && !foreground) {
+                    // The window follows the *drive*; only its visibility follows the
+                    // foreground. Stopping the service when the app came forward meant
+                    // starting it again when the app went back — and that second start
+                    // is a background `startService`, which minSdk 31 refuses unless
+                    // the process happens to be exempt. That is why the bar sometimes
+                    // simply did not come back.
+                    this@DrivingMode.mechanism = mechanism
+                    if (on && mechanism == AppSettings.DRIVING_OVERLAY) {
                         DrivingOverlayService.start(app)
+                        DrivingOverlayService.setVisible(!foreground)
                     } else {
                         DrivingOverlayService.stop(app)
                     }

@@ -15,6 +15,8 @@ import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.PlayerIdentity
 import com.engabd.sendpin.download.DownloadJob
 import com.engabd.sendpin.download.DownloadedTrack
+import com.engabd.sendpin.library.AuthStyle
+import com.engabd.sendpin.library.Capability
 import com.engabd.sendpin.library.JellyfinSource
 import com.engabd.sendpin.library.MusicSource
 import com.engabd.sendpin.library.MusicSources
@@ -192,7 +194,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * form would show up asking for a server URL that doesn't apply.
      */
     val hasServer: StateFlow<Boolean> = combine(_backend, _maUrl, _navUrl, _activeServerConfig) { b, ma, nav, active ->
-        if (b == Backend.SUBSONIC) active?.kind == ServerKind.LOCAL || nav.isNotBlank() else ma.isNotBlank()
+        if (b == Backend.SUBSONIC) active?.kind?.needsAddress == false || nav.isNotBlank() else ma.isNotBlank()
     }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     private val _node = MutableStateFlow(Node("Library", emptyList())); val node: StateFlow<Node> = _node
@@ -708,7 +710,12 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         val existing = source
         val sameKindAndAddress = existing != null &&
             existing.kind == config.kind &&
-            existing.serverUrl.startsWith(config.url.trim().trimEnd('/'))
+            existing.serverUrl.startsWith(config.url.trim().trimEnd('/')) &&
+            // For a kind whose address is a constant — "This device" against an empty
+            // url — the address test above is vacuously true, so changing the picked
+            // music folder kept the old source and its already-taken lazy scan. The
+            // library simply did not change.
+            existing.let { it.kind.auth != AuthStyle.NONE || sourceOptions == localOptionsOf(config) }
         if (sameKindAndAddress) {
             existing.streamFormat = config.option(ServerConfig.OPT_STREAM_FORMAT) ?: "raw"
             return
@@ -717,8 +724,19 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         if (next != null) {
             next.streamFormat = config.option(ServerConfig.OPT_STREAM_FORMAT) ?: "raw"
             source = next
+            sourceOptions = localOptionsOf(config)
         }
     }
+
+    /**
+     * The options that define what a device-local source *reads*, so a change to them
+     * can be told from a change to nothing. Only the folder list qualifies today.
+     */
+    private fun localOptionsOf(config: ServerConfig): String? =
+        config.option(com.engabd.sendpin.local.LocalMediaSource.OPT_FOLDER_URIS)
+
+    /** What [localOptionsOf] returned for the live [source]. */
+    private var sourceOptions: String? = null
 
     fun setBackend(b: Backend) {
         if (_backend.value == b) return
@@ -867,8 +885,8 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             // URL treated "This device" as "not set up" and dropped straight to the
             // connect form, which then asked for a server URL, username and password
             // that a local library has no use for.
-            val isLocalKind = activeConfig?.kind == ServerKind.LOCAL
-            if (url.isBlank() && !isLocalKind) { source = null; _ready.value = false; return }
+            val addressless = activeConfig?.kind?.needsAddress == false
+            if (url.isBlank() && !addressless) { source = null; _ready.value = false; return }
             _connecting.value = true
             // Abandon whatever address was being tried before this one.
             navConnectJob?.cancel()
@@ -2440,16 +2458,28 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 add(category("starred", "Starred"))
                 add(category("radios", "Radio stations")); add(category("podcasts", "Podcasts"))
             }
+            // Driven by what the source says it can answer, not by a fixed list.
+            // Every self-hosted library got Playlists, Genres and Starred whatever it
+            // was — LocalMediaSource declares only SEARCH and still offered all three,
+            // each of which dead-ends in an empty screen. See [Capability]: a shelf
+            // that is always empty is worse than the feature being absent.
             else -> {
+                val src = source
                 add(category("artists", "Artists")); add(category("albums", "Albums"))
-                add(category("playlists", "Playlists")); add(category("genres", "Genres"))
-                add(category("starred", "Starred")); add(category("newest", "Recently Added"))
+                if (src == null || src.has(Capability.PLAYLIST_READ)) add(category("playlists", "Playlists"))
+                if (src == null || src.has(Capability.GENRES)) add(category("genres", "Genres"))
+                if (src == null || src.has(Capability.FAVORITES)) add(category("starred", "Starred"))
+                add(category("newest", "Recently Added"))
                 add(category("random", "Shuffle all"))
             }
         }
-        // Downloads only make sense for the Navidrome backend — MA streams
-        // everything from its providers, and there is no file to download.
-        if (_backend.value == Backend.SUBSONIC || _offline.value) {
+        // Downloads used to be grafted in here as a flat category with its own
+        // rendering branch in the library screen. It is a library of its own now
+        // ([com.engabd.sendpin.local.DownloadsSource]), reachable from the switcher
+        // like every other one, so there is nothing left to graft. The one case that
+        // still wants it inline is the automatic offline fallback, which has no
+        // categories of its own to show.
+        if (_offline.value) {
             add(category("downloads", "Downloads"))
         }
     }
@@ -2462,29 +2492,14 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * and plays — as an album rather than in whatever order the files happened to
      * land.
      */
-    private fun downloadItems(list: List<DownloadedTrack>): List<MaItem> = list
-        .sortedWith(
-            compareBy(
-                { it.album ?: "" },
-                // Disc before track: a two-disc album otherwise interleaves, playing
-                // track 1 of disc 1, track 1 of disc 2, track 2 of disc 1…
-                { it.discNumber ?: 0 },
-                { it.trackNumber ?: Int.MAX_VALUE },
-                { it.title },
-            )
-        )
-        .map { downloadItem(it) }
+    private fun downloadItems(list: List<DownloadedTrack>): List<MaItem> =
+        com.engabd.sendpin.local.DownloadsIndex.items(list)
 
-    private fun downloadItem(d: DownloadedTrack) = MaItem(
-        itemId = d.id, provider = DOWNLOAD, name = d.title, uri = d.filePath, mediaType = "track",
-        subtitle = d.artist, image = d.artUri, duration = (d.durationMs / 1000).toInt().takeIf { it > 0 },
-        album = d.album, parentId = d.albumId, trackNumber = d.trackNumber,
-        discNumber = d.discNumber,
-        // Recorded when the file was fetched, so the Downloads shelf can show what is
-        // actually on disk with the server unreachable — which is the one time it
-        // matters most.
-        audioFormat = d.format,
-    )
+    /**
+     * One mapping from a downloaded file to a library item, shared with
+     * [com.engabd.sendpin.local.DownloadsSource]. Two of them drift.
+     */
+    private fun downloadItem(d: DownloadedTrack) = com.engabd.sendpin.local.DownloadsIndex.item(d)
 
     override fun onCleared() {
         super.onCleared()

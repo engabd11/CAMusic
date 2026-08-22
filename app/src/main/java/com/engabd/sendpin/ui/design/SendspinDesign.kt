@@ -2,6 +2,7 @@ package com.engabd.sendpin.ui.design
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -45,7 +46,9 @@ import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -68,7 +71,10 @@ import coil.request.ImageRequest
 import coil.size.Scale
 import com.engabd.sendpin.ui.theme.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
@@ -201,8 +207,51 @@ fun AlbumArt(
      * thing that flies between two screens is the artwork, not the wash.
      */
     sharedArtKey: String? = null,
+    /**
+     * Identity of the *album* on show, or null to never flip.
+     *
+     * When this changes to a different non-null value the cover turns over like a
+     * page — see [FLIP_MS]. Deliberately not [url]: a server that hands out per-track
+     * artwork changes the url between two tracks of the same record, and flipping
+     * there turns the page onto the identical sleeve, which reads as a glitch rather
+     * than a transition. `album|artist` is the strongest key available — Music
+     * Assistant tracks carry no album id at all.
+     */
+    flipKey: Any? = null,
 ) {
-    val art = rememberArtRequest(url)
+    // What is actually painted. During a flip this lags [url] by half a turn: the new
+    // cover is revealed on the way back up, at the moment the old one is edge-on and
+    // neither is legible.
+    var shownUrl by remember { mutableStateOf(url) }
+    var shownKey by remember { mutableStateOf(flipKey) }
+    val turn = remember { Animatable(0f) }
+    val reduced = LocalReducedMotion.current
+
+    LaunchedEffect(flipKey, url) {
+        val flippable = flipKey != null && shownKey != null && flipKey != shownKey && !reduced
+        if (!flippable) {
+            // First cover of the session, reduced motion, or the same album next
+            // track. Coil's own crossfade covers those.
+            shownUrl = url
+            shownKey = flipKey
+            if (turn.value != 0f) turn.snapTo(0f)
+            return@LaunchedEffect
+        }
+        turn.snapTo(0f)
+        turn.animateTo(1f, tween(FLIP_MS, easing = FastOutSlowInEasing)) {
+            // Swapped edge-on, where there is nothing to see either way. Doing it any
+            // earlier shows the new sleeve mid-turn; any later, the old one.
+            if (value >= 0.5f && shownKey != flipKey) {
+                shownUrl = url
+                shownKey = flipKey
+            }
+        }
+        shownUrl = url
+        shownKey = flipKey
+        turn.snapTo(0f)
+    }
+
+    val art = rememberArtRequest(shownUrl)
     // The cover sits right on the background — no rounded corner, no border, no
     // forced square. Its aspect ratio is whatever the image itself has, so a
     // tall album cover is tall and a wide one is wide. The hue melts into the
@@ -221,6 +270,12 @@ fun AlbumArt(
                     .alpha(0.45f * glowAlpha.coerceIn(0f, 1f)),
             )
             // The actual cover — fit, not crop, so the full artwork is visible.
+            //
+            // The flip lives here rather than on the outer Box on purpose: the
+            // blurred wash behind is ambient light in the room, not part of the
+            // sleeve, and turning it over with the cover looks like the whole screen
+            // pivoting instead of a page.
+            val flipping = turn.value > 0f
             AsyncImage(
                 model = art, contentDescription = "Album art", contentScale = ContentScale.Fit,
                 modifier = Modifier
@@ -231,6 +286,22 @@ fun AlbumArt(
                     // shadow-casting render node through the transition and the
                     // interpolated bounds would include its spread.
                     .let { if (sharedArtKey != null) it.sharedArt(sharedArtKey) else it }
+                    .then(
+                        if (!flipping) Modifier else Modifier.graphicsLayer {
+                            // 0 -> 90, then -90 -> 0. Never past edge-on, so no back
+                            // face is ever shown and the new cover does not need
+                            // un-mirroring — and it reads as the next page swinging in
+                            // from the other side rather than one card spinning round.
+                            val t = turn.value
+                            rotationY = if (t <= 0.5f) t * 180f else (t - 1f) * 180f
+                            // Compose defaults to 8f, which is a heavy fisheye at 90
+                            // degrees. This is a sleeve at arm length, not a billboard.
+                            cameraDistance = FLIP_CAMERA_DISTANCE * density
+                            val dip = 1f - FLIP_SCALE_DIP * sin(t * PI).toFloat()
+                            scaleX = dip
+                            scaleY = dip
+                        },
+                    )
                     .shadow(20.dp, RoundedCornerShape(radius)),
             )
         } else if (placeholder != null) {
@@ -247,6 +318,18 @@ fun AlbumArt(
         }
     }
 }
+
+/**
+ * One page turn. Long enough to read as a deliberate motion, short enough that a
+ * skip through an album shelf does not feel like waiting on an animation.
+ */
+private const val FLIP_MS = 520
+
+/** Perspective depth, in dp, multiplied by density at the layer. */
+private const val FLIP_CAMERA_DISTANCE = 16f
+
+/** How far the page pulls back at edge-on. Small — this is depth, not a bounce. */
+private const val FLIP_SCALE_DIP = 0.04f
 
 // --- text helpers ---------------------------------------------------------
 
@@ -713,15 +796,159 @@ fun GradientAvatar(letter: String, index: Int, modifier: Modifier = Modifier, si
 // --- slider ---------------------------------------------------------------
 
 /**
+ * How long a committed value keeps the thumb, waiting for the caller to agree.
+ *
+ * Every slider in this app writes somewhere asynchronous — a DataStore edit and a
+ * file write, a 200 ms-debounced Home Assistant call, a network seek. Until that
+ * lands, the `value` handed back in is still the *pre-drag* one, and a slider that
+ * trusted it on release snapped the thumb back to where the drag started and then
+ * jumped forward a frame or two later. Holding the committed value across the gap is
+ * what makes a release look like a release.
+ *
+ * The timeout is the other half: a write can legitimately never come back with what
+ * was asked for (a clamped setting, a rejected seek), and a latch with no deadline
+ * would freeze the slider on a value nothing agrees with.
+ */
+private const val SLIDER_LATCH_MS = 1_500L
+
+/** Below a pixel on any track this app draws, so "caught up" means caught up. */
+private const val SLIDER_LATCH_EPSILON = 0.004f
+
+/**
+ * The minimum height either slider claims for touch.
+ *
+ * The drawn track is 4 dp and the knob 13 dp; the boxes around them used to be 18 dp
+ * ([HSlider]) and 26 dp ([WaveSeekBar]), which is the whole hit area there was. On a
+ * small screen that is a genuinely hard target, and it also meant switching seek-bar
+ * skins changed the row height by 8 dp. Both now claim the same 44 dp and draw
+ * centred inside it.
+ */
+private val SliderTouchHeight = 44.dp
+
+/** Drag state shared by [HSlider] and [WaveSeekBar]. See [SLIDER_LATCH_MS]. */
+@Stable
+private class SliderGesture {
+    var dragging by mutableStateOf(false)
+    var dragValue by mutableFloatStateOf(0f)
+
+    /** The last committed value, held until the incoming value catches up. */
+    var latched by mutableStateOf<Float?>(null)
+
+    /** Bumped on every commit so the release effect restarts. */
+    var latchSeq by mutableIntStateOf(0)
+
+    fun begin(f: Float) { dragging = true; dragValue = f.coerceIn(0f, 1f) }
+
+    fun move(f: Float) { dragValue = f.coerceIn(0f, 1f) }
+
+    fun finish(f: Float) {
+        dragging = false
+        latched = f.coerceIn(0f, 1f)
+        latchSeq++
+    }
+
+    /** What to paint for an incoming [value]. */
+    fun display(value: Float): Float =
+        (if (dragging) dragValue else latched ?: value).coerceIn(0f, 1f)
+}
+
+@Composable
+private fun rememberSliderGesture(value: Float): SliderGesture {
+    val gesture = remember { SliderGesture() }
+    val incoming = rememberUpdatedState(value)
+    LaunchedEffect(gesture.latchSeq) {
+        val target = gesture.latched ?: return@LaunchedEffect
+        withTimeoutOrNull(SLIDER_LATCH_MS) {
+            snapshotFlow { incoming.value }.first { abs(it - target) <= SLIDER_LATCH_EPSILON }
+        }
+        gesture.latched = null
+    }
+    return gesture
+}
+
+/**
+ * Tap and drag handling for both sliders.
+ *
+ * `onDragCancel` commits rather than discarding, which is the second half of the
+ * snap-back fix: these sliders sit inside vertically scrolling screens, a drag with
+ * any vertical component can be taken over by the scroll container, and throwing the
+ * gesture away left the Lights screen showing a brightness the user had chosen and
+ * that was never written anywhere.
+ */
+private fun Modifier.sliderInput(
+    gesture: SliderGesture,
+    width: () -> Int,
+    onChange: (Float) -> Unit,
+    commit: (Float) -> Unit,
+): Modifier = this
+    .pointerInput(Unit) {
+        detectTapGestures { o ->
+            val f = (o.x / width()).coerceIn(0f, 1f)
+            onChange(f)
+            gesture.finish(f)
+            commit(f)
+        }
+    }
+    .pointerInput(Unit) {
+        detectHorizontalDragGestures(
+            onDragStart = { o ->
+                gesture.begin(o.x / width())
+                onChange(gesture.dragValue)
+            },
+            onDragEnd = { gesture.finish(gesture.dragValue); commit(gesture.dragValue) },
+            onDragCancel = { gesture.finish(gesture.dragValue); commit(gesture.dragValue) },
+        ) { change, _ ->
+            gesture.move(change.position.x / width())
+            onChange(gesture.dragValue)
+        }
+    }
+
+/**
+ * The magnifier bubble: where a release would land, e.g. the timestamp being
+ * scrubbed to. Clamped so it stays on screen at both ends of the track.
+ *
+ * `wrapContentSize(unbounded = true)` is load-bearing. This Box parent is the
+ * slider, which hands its own height down as a maximum: the bubble was squashed, its
+ * 5.dp padding left the text a thin band, and the rounded clip cut the glyphs into
+ * stubs that read as underscores. The `offset` only moves the bubble up; it grants it
+ * no height.
+ */
+@Composable
+private fun SliderMagnifier(text: String, fraction: Float, width: Int, accent: Color) {
+    Box(
+        Modifier
+            .wrapContentSize(align = Alignment.BottomStart, unbounded = true)
+            .offset {
+                val half = BubbleWidth.toPx() / 2f
+                val x = (fraction * width - half).coerceIn(0f, (width - BubbleWidth.toPx()).coerceAtLeast(0f))
+                IntOffset(x.roundToInt(), -(BubbleLift.toPx()).roundToInt())
+            }
+            .width(BubbleWidth)
+            .clip(RoundedCornerShape(9.dp))
+            .background(Ink3)
+            .border(1.dp, accent.a(0.55f), RoundedCornerShape(9.dp))
+            .padding(horizontal = 8.dp, vertical = 5.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text, color = TextPrimary, fontFamily = MonoFont,
+            fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1,
+            textAlign = TextAlign.Center,
+        )
+    }
+}
+
+/**
  * Horizontal slider (tap or drag). [value] and [onChange] are 0f..1f. The filled
  * track glows in the accent and the knob stays white, so the scrubber reads
  * against any album colour.
  *
  * [onChange] fires continuously and should only move local UI state. [onCommit],
  * if given, fires once on release and is where a network seek belongs — sending
- * one per touch-move made the scrubber fight the server's replies and snap
+ * one per touch-move made the scrubber fight the server replies and snap
  * backwards. While a drag is in progress the knob follows the finger and ignores
- * [value] entirely, so a late poll can't yank it out from under the user.
+ * [value] entirely, and after release it holds the committed value until [value]
+ * agrees — see [SLIDER_LATCH_MS].
  *
  * [label] turns on the magnifier: a bubble above the knob showing where a release
  * would land, e.g. the timestamp being scrubbed to.
@@ -738,11 +965,9 @@ fun HSlider(
     label: ((Float) -> String)? = null,
 ) {
     val accent = LocalAccent.current
-    var width by remember { mutableStateOf(1) }
-    var dragging by remember { mutableStateOf(false) }
-    var dragValue by remember { mutableFloatStateOf(0f) }
-
-    val v = (if (dragging) dragValue else value).coerceIn(0f, 1f)
+    var width by remember { mutableIntStateOf(1) }
+    val gesture = rememberSliderGesture(value)
+    val v = gesture.display(value)
 
     fun commit(f: Float) {
         val c = f.coerceIn(0f, 1f)
@@ -752,29 +977,9 @@ fun HSlider(
     Box(
         modifier
             .fillMaxWidth()
-            .height(18.dp)
+            .height(SliderTouchHeight)
             .onSizeChanged { width = if (it.width > 0) it.width else 1 }
-            .pointerInput(Unit) {
-                detectTapGestures { o ->
-                    val f = (o.x / width).coerceIn(0f, 1f)
-                    onChange(f)
-                    commit(f)
-                }
-            }
-            .pointerInput(Unit) {
-                detectHorizontalDragGestures(
-                    onDragStart = { o ->
-                        dragging = true
-                        dragValue = (o.x / width).coerceIn(0f, 1f)
-                        onChange(dragValue)
-                    },
-                    onDragEnd = { dragging = false; commit(dragValue) },
-                    onDragCancel = { dragging = false },
-                ) { change, _ ->
-                    dragValue = (change.position.x / width).coerceIn(0f, 1f)
-                    onChange(dragValue)
-                }
-            },
+            .sliderInput(gesture, { width }, onChange, ::commit),
         contentAlignment = Alignment.CenterStart,
     ) {
         Box(Modifier.fillMaxWidth().height(trackHeight).clip(RoundedCornerShape(50)).background(inkOn(0.14f)))
@@ -793,64 +998,37 @@ fun HSlider(
                 .then(if (accented) Modifier.shadow(10.dp, CircleShape, ambientColor = accent, spotColor = accent) else Modifier)
                 // TextPrimary, not literal white: the knob has to stay visible against
                 // its own track, which inverts with the theme.
-                .size(if (dragging) knob * 1.35f else knob).clip(CircleShape).background(TextPrimary)
+                .size(if (gesture.dragging) knob * 1.35f else knob).clip(CircleShape).background(TextPrimary)
         )
 
-        // Magnifier — rides above the knob while dragging, clamped so it stays on
-        // screen at both ends of the track.
-        //
-        // `wrapContentSize(unbounded = true)` is load-bearing. This Box's parent is the
-        // slider, which is a fixed 18.dp tall, and Box hands that down as a maximum: the
-        // bubble was squashed to 18.dp, its 5.dp padding left the text an 8.dp band, and
-        // the rounded clip cut the glyphs into stubs that read as underscores. The
-        // `offset` only moves the bubble up; it grants it no height.
-        if (dragging && label != null) {
-            val text = label(v)
-            Box(
-                Modifier
-                    .wrapContentSize(align = Alignment.BottomStart, unbounded = true)
-                    .offset {
-                        val half = BubbleWidth.toPx() / 2f
-                        val x = (v * width - half).coerceIn(0f, (width - BubbleWidth.toPx()).coerceAtLeast(0f))
-                        IntOffset(x.roundToInt(), -(BubbleLift.toPx()).roundToInt())
-                    }
-                    .width(BubbleWidth)
-                    .clip(RoundedCornerShape(9.dp))
-                    .background(Ink3)
-                    .border(1.dp, accent.a(0.55f), RoundedCornerShape(9.dp))
-                    .padding(horizontal = 8.dp, vertical = 5.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    text, color = TextPrimary, fontFamily = MonoFont,
-                    fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1,
-                    textAlign = TextAlign.Center,
-                )
-            }
-        }
+        if (gesture.dragging && label != null) SliderMagnifier(label(v), v, width, accent)
     }
 }
 
 /**
- * The Now Playing seek bar's alternate skin: the played portion is a sine wave
- * instead of a straight line, wobbling gently while the track plays — like a
- * water surface rather than a ruler. Selected from Appearance settings
- * ([com.engabd.sendpin.data.AppSettings.seekBarStyle]); [HSlider] stays the
- * default and remains what every other slider in the app (volume, DSP, lyrics
- * offset) uses.
+ * The Now Playing seek bar alternate skin: the whole bar is a sine wave instead of
+ * a straight line, wobbling gently while the track plays — like a water surface
+ * rather than a ruler. Selected from Appearance settings
+ * ([com.engabd.sendpin.data.AppSettings.seekBarStyle]); [HSlider] stays the default
+ * and remains what every other slider in the app (volume, DSP, lyrics offset) uses.
  *
- * Only the *played* stretch wobbles — the unplayed remainder is the same flat,
- * muted line [HSlider] draws — so the motion reads as "water behind the boat"
- * rather than noise across a bar nothing has reached yet. The knob rides the
- * wave's own edge, so it bobs with it instead of floating above a static line.
+ * **One curve, drawn twice.** The played stretch is painted in the accent and the
+ * remainder muted, both clipped out of the same [Path]. They used to be different
+ * geometry — a wave for the played part and a flat `drawLine` across the full width
+ * behind it — which meant the grey rail sat dead still while the accent wobbled over
+ * it, and showed through wherever the sine crossed centre. Sharing the path is what
+ * makes the bar read as one moving line.
+ *
+ * The curve is sampled every [WaveSampleStep] and joined through segment midpoints
+ * with [Path.quadraticTo]. A polyline at a readable step visibly facets — and its
+ * mitred joins throw small spikes that crawl along the line as the phase advances,
+ * which is the "pixelated while moving" this replaces.
  *
  * The wobble is amplitude, not phase, that answers [playing]: the phase keeps
- * advancing regardless (cheap, and invisible at zero amplitude), and the
- * amplitude eases to flat on pause and back up on resume. Gating the *phase*
- * instead would either freeze mid-crest — a visibly different shape from the
- * straight line the paused bar is supposed to read as — or jump to it, which is
- * the opposite of "animated smoothly" the wobble was asked for in the first
- * place.
+ * advancing regardless (cheap, and invisible at zero amplitude), and the amplitude
+ * eases to flat on pause and back up on resume. Gating the *phase* instead would
+ * either freeze mid-crest — a visibly different shape from the straight line the
+ * paused bar is supposed to read as — or jump to it.
  */
 @Composable
 fun WaveSeekBar(
@@ -864,155 +1042,121 @@ fun WaveSeekBar(
     label: ((Float) -> String)? = null,
 ) {
     val accent = LocalAccent.current
-    val density = LocalDensity.current
-    var width by remember { mutableStateOf(1) }
-    var dragging by remember { mutableStateOf(false) }
-    var dragValue by remember { mutableFloatStateOf(0f) }
-
-    val v = (if (dragging) dragValue else value).coerceIn(0f, 1f)
+    var width by remember { mutableIntStateOf(1) }
+    val gesture = rememberSliderGesture(value)
+    val v = gesture.display(value)
 
     fun commit(f: Float) {
         val c = f.coerceIn(0f, 1f)
         if (onCommit != null) onCommit(c) else onChange(c)
     }
 
+    // An infinite transition is the exact case [LocalReducedMotion] exists for. The
+    // wave still is a wave with it on — it simply stops travelling, rather than
+    // freezing at whatever crest it happened to be at when the setting flipped.
+    val reduced = LocalReducedMotion.current
     val infinite = rememberInfiniteTransition(label = "waveSeekBarPhase")
-    val phase by infinite.animateFloat(
+    val travelling by infinite.animateFloat(
         initialValue = 0f,
         targetValue = (2 * PI).toFloat(),
         animationSpec = infiniteRepeatable(tween(WAVE_PERIOD_MS, easing = LinearEasing)),
         label = "phase",
     )
+    val phase = if (reduced) 0f else travelling
     val amplitudeDp by animateFloatAsState(
         targetValue = if (playing) WaveAmplitude.value else 0f,
-        animationSpec = tween(500),
+        animationSpec = tween(WAVE_AMPLITUDE_MS),
         label = "waveAmplitude",
     )
+
+    // Allocated once, not once per frame. The draw lambda runs at 60 Hz while the
+    // phase advances, and a fresh Path and Brush each time is 120 objects a second
+    // for a bar whose shape never changes.
+    val wavePath = remember { Path() }
+    val accentBrush = remember(accent) { Brush.horizontalGradient(listOf(accent.a(0.5f), accent)) }
 
     Box(
         modifier
             .fillMaxWidth()
-            .height(WaveBarHeight)
+            .height(SliderTouchHeight)
             .onSizeChanged { width = if (it.width > 0) it.width else 1 }
-            .pointerInput(Unit) {
-                detectTapGestures { o ->
-                    val f = (o.x / width).coerceIn(0f, 1f)
-                    onChange(f)
-                    commit(f)
-                }
-            }
-            .pointerInput(Unit) {
-                detectHorizontalDragGestures(
-                    onDragStart = { o ->
-                        dragging = true
-                        dragValue = (o.x / width).coerceIn(0f, 1f)
-                        onChange(dragValue)
-                    },
-                    onDragEnd = { dragging = false; commit(dragValue) },
-                    onDragCancel = { dragging = false },
-                ) { change, _ ->
-                    dragValue = (change.position.x / width).coerceIn(0f, 1f)
-                    onChange(dragValue)
-                }
-            },
+            .sliderInput(gesture, { width }, onChange, ::commit),
         contentAlignment = Alignment.CenterStart,
     ) {
         val fill = v.coerceIn(0f, 1f)
         // Resolved here, in composition, and only referenced (not called) inside
         // the Canvas draw lambda below: [inkOn] and [TextPrimary] are `@Composable`
-        // (they read the current theme via a CompositionLocal), and a `Canvas`'s
+        // (they read the current theme via a CompositionLocal), and a `Canvas`
         // draw lambda runs in `DrawScope` at draw time, not in composition — calling
-        // either one directly from in there doesn't compile.
+        // either one directly from in there does not compile.
         val trackColor = inkOn(0.14f)
         val knobColor = TextPrimary
-        Canvas(Modifier.fillMaxWidth().height(WaveBarHeight)) {
+        val dragging = gesture.dragging
+        Canvas(Modifier.matchParentSize()) {
             val centerY = size.height / 2f
             val strokePx = trackHeight.toPx()
             val fillWidthPx = size.width * fill
+            val amplitudePx = amplitudeDp.dp.toPx()
+            val wavelengthPx = WaveLength.toPx()
+            fun waveY(x: Float): Float =
+                centerY + amplitudePx * sin((2 * PI * x / wavelengthPx) + phase).toFloat()
 
-            // Unplayed remainder — flat and muted, same as HSlider's own track.
-            drawLine(
-                color = trackColor,
-                start = Offset(0f, centerY),
-                end = Offset(size.width, centerY),
-                strokeWidth = strokePx,
-                cap = StrokeCap.Round,
-            )
+            val stepPx = WaveSampleStep.toPx().coerceAtLeast(1f)
+            wavePath.reset()
+            var prevX = 0f
+            var prevY = waveY(0f)
+            wavePath.moveTo(prevX, prevY)
+            var x = stepPx
+            while (x < size.width) {
+                val y = waveY(x)
+                // Control point at the previous sample, endpoint at the midpoint
+                // between it and this one — the standard midpoint smoothing, which
+                // passes through the curve rather than cornering on it.
+                wavePath.quadraticTo(prevX, prevY, (prevX + x) / 2f, (prevY + y) / 2f)
+                prevX = x
+                prevY = y
+                x += stepPx
+            }
+            wavePath.quadraticTo(prevX, prevY, size.width, waveY(size.width))
 
-            if (fillWidthPx > 0f) {
-                val amplitudePx = with(density) { amplitudeDp.dp.toPx() }
-                val wavelengthPx = with(density) { WaveLength.toPx() }
-                fun waveY(x: Float): Float =
-                    centerY + amplitudePx * sin((2 * PI * x / wavelengthPx) + phase).toFloat()
-
-                val path = Path().apply {
-                    moveTo(0f, waveY(0f))
-                    // ~6dp per sample — smooth enough to read as a curve, cheap
-                    // enough to redraw every frame the wave animates.
-                    val stepPx = with(density) { 6.dp.toPx() }.coerceAtLeast(1f)
-                    var x = stepPx
-                    while (x < fillWidthPx) {
-                        lineTo(x, waveY(x))
-                        x += stepPx
-                    }
-                    lineTo(fillWidthPx, waveY(fillWidthPx))
+            val stroke = Stroke(width = strokePx, cap = StrokeCap.Round, join = StrokeJoin.Round)
+            val gapPx = WaveGap.toPx()
+            // Unplayed remainder, muted — the same curve, so it wobbles in lockstep.
+            if (fillWidthPx < size.width) {
+                clipRect(left = (fillWidthPx + gapPx).coerceAtMost(size.width)) {
+                    drawPath(wavePath, color = trackColor, style = stroke)
                 }
-                drawPath(
-                    path,
-                    brush = Brush.horizontalGradient(listOf(accent.a(0.5f), accent)),
-                    style = Stroke(width = strokePx, cap = StrokeCap.Round),
-                )
-
-                // The knob, bobbing on the wave's own leading edge rather than
-                // floating above it on a fixed line.
-                val knobPx = with(density) { knob.toPx() }
-                val knobCenterY = waveY(fillWidthPx)
-                drawCircle(
-                    color = knobColor,
-                    radius = (if (dragging) knobPx * 1.35f else knobPx) / 2f,
-                    center = Offset(fillWidthPx, knobCenterY),
-                )
-            } else {
-                val knobPx = with(density) { knob.toPx() }
-                drawCircle(
-                    color = knobColor,
-                    radius = (if (dragging) knobPx * 1.35f else knobPx) / 2f,
-                    center = Offset(0f, centerY),
-                )
             }
+            if (fillWidthPx > 0f) {
+                clipRect(right = fillWidthPx) {
+                    drawPath(wavePath, brush = accentBrush, style = stroke)
+                }
+            }
+
+            // The knob, bobbing on the wave leading edge rather than floating above
+            // it on a fixed line.
+            val knobPx = knob.toPx()
+            drawCircle(
+                color = knobColor,
+                radius = (if (dragging) knobPx * 1.35f else knobPx) / 2f,
+                center = Offset(fillWidthPx, waveY(fillWidthPx)),
+            )
         }
 
-        if (dragging && label != null) {
-            val text = label(v)
-            Box(
-                Modifier
-                    .wrapContentSize(align = Alignment.BottomStart, unbounded = true)
-                    .offset {
-                        val half = BubbleWidth.toPx() / 2f
-                        val x = (v * width - half).coerceIn(0f, (width - BubbleWidth.toPx()).coerceAtLeast(0f))
-                        IntOffset(x.roundToInt(), -(BubbleLift.toPx()).roundToInt())
-                    }
-                    .width(BubbleWidth)
-                    .clip(RoundedCornerShape(9.dp))
-                    .background(Ink3)
-                    .border(1.dp, accent.a(0.55f), RoundedCornerShape(9.dp))
-                    .padding(horizontal = 8.dp, vertical = 5.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    text, color = TextPrimary, fontFamily = MonoFont,
-                    fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1,
-                    textAlign = TextAlign.Center,
-                )
-            }
-        }
+        if (dragging && label != null) SliderMagnifier(label(v), v, width, accent)
     }
 }
 
-private val WaveBarHeight = 26.dp
 private val WaveLength = 34.dp
 private val WaveAmplitude = 5.dp
+
+/** ~17 samples per wavelength. Below about 8 the curve reads as a polygon. */
+private val WaveSampleStep = 2.dp
+
+/** The break between the played stretch and the remainder, as M3 own bars have. */
+private val WaveGap = 4.dp
 private const val WAVE_PERIOD_MS = 1600
+private const val WAVE_AMPLITUDE_MS = 500
 
 private val BubbleWidth = 72.dp
 private val BubbleLift = 38.dp
