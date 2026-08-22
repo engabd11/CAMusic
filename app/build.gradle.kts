@@ -44,6 +44,16 @@ android {
                 // must match the app's, or the linker sees duplicate/conflicting
                 // C++ runtime symbols at load time.
                 arguments += "-DANDROID_STL=c++_shared"
+                // 16 KB page sizes. Every 64-bit Android device shipping from 2025 uses
+                // them, Play requires support for anything targeting Android 15+, and
+                // without this the loader falls back to a compatibility mode and says so
+                // in a dialog on first launch.
+                //
+                // Only *this* library needed it. Every prebuilt dependency in the APK —
+                // oboe, datastore, androidx.graphics.path, and the STL - already ships
+                // 16 KB-aligned; the one built here did not, because NDK r27 aligns to
+                // 4 KB unless asked. (r28 makes it the default and this becomes a no-op.)
+                arguments += "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON"
             }
         }
     }
