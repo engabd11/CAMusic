@@ -918,6 +918,13 @@ fun WaveSeekBar(
         contentAlignment = Alignment.CenterStart,
     ) {
         val fill = v.coerceIn(0f, 1f)
+        // Resolved here, in composition, and only referenced (not called) inside
+        // the Canvas draw lambda below: [inkOn] and [TextPrimary] are `@Composable`
+        // (they read the current theme via a CompositionLocal), and a `Canvas`'s
+        // draw lambda runs in `DrawScope` at draw time, not in composition — calling
+        // either one directly from in there doesn't compile.
+        val trackColor = inkOn(0.14f)
+        val knobColor = TextPrimary
         Canvas(Modifier.fillMaxWidth().height(WaveBarHeight)) {
             val centerY = size.height / 2f
             val strokePx = trackHeight.toPx()
@@ -925,7 +932,7 @@ fun WaveSeekBar(
 
             // Unplayed remainder — flat and muted, same as HSlider's own track.
             drawLine(
-                color = inkOn(0.14f),
+                color = trackColor,
                 start = Offset(0f, centerY),
                 end = Offset(size.width, centerY),
                 strokeWidth = strokePx,
@@ -961,14 +968,14 @@ fun WaveSeekBar(
                 val knobPx = with(density) { knob.toPx() }
                 val knobCenterY = waveY(fillWidthPx)
                 drawCircle(
-                    color = TextPrimary,
+                    color = knobColor,
                     radius = (if (dragging) knobPx * 1.35f else knobPx) / 2f,
                     center = Offset(fillWidthPx, knobCenterY),
                 )
             } else {
                 val knobPx = with(density) { knob.toPx() }
                 drawCircle(
-                    color = TextPrimary,
+                    color = knobColor,
                     radius = (if (dragging) knobPx * 1.35f else knobPx) / 2f,
                     center = Offset(0f, centerY),
                 )
