@@ -168,14 +168,22 @@ class ArtistDetailViewModel(
                 // for the initial render, so there's no reason to wait for one before
                 // starting the other.
                 val topTracksDeferred = async { loadTopTracksInternal() }
-                
+
+                // Albums are held locally and only pushed into [_albums] once the top
+                // tracks are ready too. "Top tracks" renders as its own shelf above
+                // "Albums" — assigning [_albums] the moment it resolves would draw the
+                // albums grid first and then shove it down a beat later when the top
+                // tracks shelf popped in above it, which read as the whole page
+                // refreshing after entering. Landing both in the same recomposition
+                // keeps the page looking complete on first paint.
+                val resolvedAlbums: List<MaItem>
                 if (isLocal) {
                     val sc = source
                     if (sc == null) { _error.value = "That library isn't connected"; return@launch }
                     if (!resolveRef()) return@launch
                     val (artistMeta, albumList) = sc.artistDetail(ref.itemId)
                     if (artistMeta != null) { ref = artistMeta; _artist.value = artistMeta }
-                    _albums.value = albumList.distinctBy { it.itemId }
+                    resolvedAlbums = albumList.distinctBy { it.itemId }
                     // One call now carries the biography, the links and the similar
                     // artists it was previously asked not to send.
                     runCatching { sc.artistInfo(ref.itemId, similarCount = 12) }.getOrNull()?.let {
@@ -190,7 +198,7 @@ class ArtistDetailViewModel(
                     // De-duplicated by id: MA answers an artist's albums per provider
                     // mapping and concatenates the results, so an artist held by two
                     // providers comes back with every album twice.
-                    _albums.value = maRepo.artistAlbums(ref).distinctBy { it.itemId }
+                    resolvedAlbums = maRepo.artistAlbums(ref).distinctBy { it.itemId }
                     // MA's own `metadata.description` first — it is the same field
                     // the web UI shows, and it costs nothing extra.
                     _biography.value = ref.description
@@ -201,8 +209,10 @@ class ArtistDetailViewModel(
                             .getOrDefault(emptyList()),
                     )
                 }
-                // Await the top tracks load — it's been running in parallel.
+                // Await the top tracks load — it's been running in parallel — and only
+                // then reveal albums, so the two shelves appear together.
                 _topTracks.value = topTracksDeferred.await()
+                _albums.value = resolvedAlbums
             } catch (e: Exception) {
                 _error.value = e.message ?: "Failed to load artist"
             }

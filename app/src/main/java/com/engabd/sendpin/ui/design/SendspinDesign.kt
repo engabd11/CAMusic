@@ -9,6 +9,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -41,6 +42,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -66,7 +68,9 @@ import coil.request.ImageRequest
 import coil.size.Scale
 import com.engabd.sendpin.ui.theme.*
 import kotlinx.coroutines.launch
+import kotlin.math.PI
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
 /** The current album-derived accent, provided down the tree. */
 val LocalAccent = compositionLocalOf { DefaultAccent }
@@ -826,6 +830,189 @@ fun HSlider(
         }
     }
 }
+
+/**
+ * The Now Playing seek bar's alternate skin: the played portion is a sine wave
+ * instead of a straight line, wobbling gently while the track plays — like a
+ * water surface rather than a ruler. Selected from Appearance settings
+ * ([com.engabd.sendpin.data.AppSettings.seekBarStyle]); [HSlider] stays the
+ * default and remains what every other slider in the app (volume, DSP, lyrics
+ * offset) uses.
+ *
+ * Only the *played* stretch wobbles — the unplayed remainder is the same flat,
+ * muted line [HSlider] draws — so the motion reads as "water behind the boat"
+ * rather than noise across a bar nothing has reached yet. The knob rides the
+ * wave's own edge, so it bobs with it instead of floating above a static line.
+ *
+ * The wobble is amplitude, not phase, that answers [playing]: the phase keeps
+ * advancing regardless (cheap, and invisible at zero amplitude), and the
+ * amplitude eases to flat on pause and back up on resume. Gating the *phase*
+ * instead would either freeze mid-crest — a visibly different shape from the
+ * straight line the paused bar is supposed to read as — or jump to it, which is
+ * the opposite of "animated smoothly" the wobble was asked for in the first
+ * place.
+ */
+@Composable
+fun WaveSeekBar(
+    value: Float,
+    onChange: (Float) -> Unit,
+    playing: Boolean,
+    modifier: Modifier = Modifier,
+    trackHeight: Dp = 4.dp,
+    knob: Dp = 13.dp,
+    onCommit: ((Float) -> Unit)? = null,
+    label: ((Float) -> String)? = null,
+) {
+    val accent = LocalAccent.current
+    val density = LocalDensity.current
+    var width by remember { mutableStateOf(1) }
+    var dragging by remember { mutableStateOf(false) }
+    var dragValue by remember { mutableFloatStateOf(0f) }
+
+    val v = (if (dragging) dragValue else value).coerceIn(0f, 1f)
+
+    fun commit(f: Float) {
+        val c = f.coerceIn(0f, 1f)
+        if (onCommit != null) onCommit(c) else onChange(c)
+    }
+
+    val infinite = rememberInfiniteTransition(label = "waveSeekBarPhase")
+    val phase by infinite.animateFloat(
+        initialValue = 0f,
+        targetValue = (2 * PI).toFloat(),
+        animationSpec = infiniteRepeatable(tween(WAVE_PERIOD_MS, easing = LinearEasing)),
+        label = "phase",
+    )
+    val amplitudeDp by animateFloatAsState(
+        targetValue = if (playing) WaveAmplitude.value else 0f,
+        animationSpec = tween(500),
+        label = "waveAmplitude",
+    )
+
+    Box(
+        modifier
+            .fillMaxWidth()
+            .height(WaveBarHeight)
+            .onSizeChanged { width = if (it.width > 0) it.width else 1 }
+            .pointerInput(Unit) {
+                detectTapGestures { o ->
+                    val f = (o.x / width).coerceIn(0f, 1f)
+                    onChange(f)
+                    commit(f)
+                }
+            }
+            .pointerInput(Unit) {
+                detectHorizontalDragGestures(
+                    onDragStart = { o ->
+                        dragging = true
+                        dragValue = (o.x / width).coerceIn(0f, 1f)
+                        onChange(dragValue)
+                    },
+                    onDragEnd = { dragging = false; commit(dragValue) },
+                    onDragCancel = { dragging = false },
+                ) { change, _ ->
+                    dragValue = (change.position.x / width).coerceIn(0f, 1f)
+                    onChange(dragValue)
+                }
+            },
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        val fill = v.coerceIn(0f, 1f)
+        // Resolved here, in composition, and only referenced (not called) inside
+        // the Canvas draw lambda below: [inkOn] and [TextPrimary] are `@Composable`
+        // (they read the current theme via a CompositionLocal), and a `Canvas`'s
+        // draw lambda runs in `DrawScope` at draw time, not in composition — calling
+        // either one directly from in there doesn't compile.
+        val trackColor = inkOn(0.14f)
+        val knobColor = TextPrimary
+        Canvas(Modifier.fillMaxWidth().height(WaveBarHeight)) {
+            val centerY = size.height / 2f
+            val strokePx = trackHeight.toPx()
+            val fillWidthPx = size.width * fill
+
+            // Unplayed remainder — flat and muted, same as HSlider's own track.
+            drawLine(
+                color = trackColor,
+                start = Offset(0f, centerY),
+                end = Offset(size.width, centerY),
+                strokeWidth = strokePx,
+                cap = StrokeCap.Round,
+            )
+
+            if (fillWidthPx > 0f) {
+                val amplitudePx = with(density) { amplitudeDp.dp.toPx() }
+                val wavelengthPx = with(density) { WaveLength.toPx() }
+                fun waveY(x: Float): Float =
+                    centerY + amplitudePx * sin((2 * PI * x / wavelengthPx) + phase).toFloat()
+
+                val path = Path().apply {
+                    moveTo(0f, waveY(0f))
+                    // ~6dp per sample — smooth enough to read as a curve, cheap
+                    // enough to redraw every frame the wave animates.
+                    val stepPx = with(density) { 6.dp.toPx() }.coerceAtLeast(1f)
+                    var x = stepPx
+                    while (x < fillWidthPx) {
+                        lineTo(x, waveY(x))
+                        x += stepPx
+                    }
+                    lineTo(fillWidthPx, waveY(fillWidthPx))
+                }
+                drawPath(
+                    path,
+                    brush = Brush.horizontalGradient(listOf(accent.a(0.5f), accent)),
+                    style = Stroke(width = strokePx, cap = StrokeCap.Round),
+                )
+
+                // The knob, bobbing on the wave's own leading edge rather than
+                // floating above it on a fixed line.
+                val knobPx = with(density) { knob.toPx() }
+                val knobCenterY = waveY(fillWidthPx)
+                drawCircle(
+                    color = knobColor,
+                    radius = (if (dragging) knobPx * 1.35f else knobPx) / 2f,
+                    center = Offset(fillWidthPx, knobCenterY),
+                )
+            } else {
+                val knobPx = with(density) { knob.toPx() }
+                drawCircle(
+                    color = knobColor,
+                    radius = (if (dragging) knobPx * 1.35f else knobPx) / 2f,
+                    center = Offset(0f, centerY),
+                )
+            }
+        }
+
+        if (dragging && label != null) {
+            val text = label(v)
+            Box(
+                Modifier
+                    .wrapContentSize(align = Alignment.BottomStart, unbounded = true)
+                    .offset {
+                        val half = BubbleWidth.toPx() / 2f
+                        val x = (v * width - half).coerceIn(0f, (width - BubbleWidth.toPx()).coerceAtLeast(0f))
+                        IntOffset(x.roundToInt(), -(BubbleLift.toPx()).roundToInt())
+                    }
+                    .width(BubbleWidth)
+                    .clip(RoundedCornerShape(9.dp))
+                    .background(Ink3)
+                    .border(1.dp, accent.a(0.55f), RoundedCornerShape(9.dp))
+                    .padding(horizontal = 8.dp, vertical = 5.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text, color = TextPrimary, fontFamily = MonoFont,
+                    fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1,
+                    textAlign = TextAlign.Center,
+                )
+            }
+        }
+    }
+}
+
+private val WaveBarHeight = 26.dp
+private val WaveLength = 34.dp
+private val WaveAmplitude = 5.dp
+private const val WAVE_PERIOD_MS = 1600
 
 private val BubbleWidth = 72.dp
 private val BubbleLift = 38.dp

@@ -184,9 +184,15 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private val _navUser = MutableStateFlow(""); val navUser: StateFlow<String> = _navUser
     private val _navPass = MutableStateFlow(""); val navPass: StateFlow<String> = _navPass
 
-    /** A server address is on file, so we're connecting rather than unconfigured. */
-    val hasServer: StateFlow<Boolean> = combine(_backend, _maUrl, _navUrl) { b, ma, nav ->
-        (if (b == Backend.SUBSONIC) nav else ma).isNotBlank()
+    /**
+     * A server address is on file, so we're connecting rather than unconfigured.
+     *
+     * Local files are "on file" the moment that library is active even though there
+     * is no address to check — [_navUrl] never holds one for them — or the connect
+     * form would show up asking for a server URL that doesn't apply.
+     */
+    val hasServer: StateFlow<Boolean> = combine(_backend, _maUrl, _navUrl, _activeServerConfig) { b, ma, nav, active ->
+        if (b == Backend.SUBSONIC) active?.kind == ServerKind.LOCAL || nav.isNotBlank() else ma.isNotBlank()
     }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     private val _node = MutableStateFlow(Node("Library", emptyList())); val node: StateFlow<Node> = _node
@@ -855,7 +861,14 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             }
         } else {
             val url = _navUrl.value.trim()
-            if (url.isBlank()) { source = null; _ready.value = false; return }
+            // Local files have no server address — a folder picker, not a host, is
+            // what points this source at its music (and even that is optional; with
+            // none picked it scans all device audio). Bailing out here on a blank
+            // URL treated "This device" as "not set up" and dropped straight to the
+            // connect form, which then asked for a server URL, username and password
+            // that a local library has no use for.
+            val isLocalKind = activeConfig?.kind == ServerKind.LOCAL
+            if (url.isBlank() && !isLocalKind) { source = null; _ready.value = false; return }
             _connecting.value = true
             // Abandon whatever address was being tried before this one.
             navConnectJob?.cancel()

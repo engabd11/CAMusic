@@ -78,7 +78,6 @@ import com.engabd.sendpin.ui.screens.LightSyncScreen
 import com.engabd.sendpin.ui.screens.MiniPlayerBar
 import com.engabd.sendpin.ui.screens.NowPlayingOverlay
 import com.engabd.sendpin.ui.screens.NowPlayingScreen
-import com.engabd.sendpin.ui.screens.OnboardingScreen
 import com.engabd.sendpin.ui.screens.OnboardingWizard
 import com.engabd.sendpin.ui.screens.PlaylistDetailScreen
 import com.engabd.sendpin.ui.screens.SettingsScreen
@@ -281,13 +280,6 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                     libraryVm = viewModel(),
                     onDone = { skipped = true },
                 )
-            }
-            return@SendspinTheme
-        }
-
-        if (!hasSavedServer && !connected && !skipped) {
-            CompositionLocalProvider(LocalAccent provides accent, LocalPalette provides bootPalette) {
-                OnboardingScreen(viewModel = playerVm, onSkip = { skipped = true })
             }
             return@SendspinTheme
         }

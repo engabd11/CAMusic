@@ -113,7 +113,7 @@ class DrivingOverlayService :
                     onNext = owner::next,
                     onPrevious = owner::previous,
                     onShuffle = owner::toggleShuffle,
-                    onDismiss = { driving.setManual(false) },
+                    onDismiss = driving::dismiss,
                 )
             }
         }

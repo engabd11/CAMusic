@@ -132,6 +132,26 @@ class SendspinService : Service() {
     private val ma get() = SendpinApp.instance.maNowPlaying
 
     /**
+     * Play/pause/next/previous go through here, not through [route] below.
+     *
+     * [route] only ever chooses between this phone's own Sendspin stream and a
+     * remote MA speaker — it has no idea [com.engabd.sendpin.audio.LocalPlayer]
+     * (Navidrome/Jellyfin/downloads) exists. That was fine while this session's
+     * transport was the only way in, but the OS routes a Bluetooth headset's
+     * play/pause button to *whichever* of this app's media3 sessions it currently
+     * considers active — this one, or [LocalPlaybackService]'s — and there is no
+     * guarantee it lands on the one actually holding the paused track. When it
+     * landed here while Navidrome was the paused, active player, `pb.onPlayPause()`
+     * started the Music Assistant stream instead of resuming it — a wrong-player
+     * resume the user hears as "I paused Navidrome, pressed play again, and Music
+     * Assistant started". [PlaybackOwner] is the one place that already knows which
+     * player actually owns the session (see its own doc), so routing through it
+     * here means the *right* player resumes no matter which session the button
+     * landed on.
+     */
+    private val playbackOwner get() = SendpinApp.instance.playbackOwner
+
+    /**
      * What the shade is currently reflecting.
      *
      * Two different things are decided here, separately. **Transport routing** (and
@@ -232,9 +252,9 @@ class SendspinService : Service() {
             ACTION_IDLE_MEDIA -> armIdleTimeout()
             // Routed the same way the session callbacks are — the notification's own
             // buttons must not address a different player from the lock screen's.
-            ACTION_PLAY_PAUSE -> route({ pb.onPlayPause() }, { ma.playPause() })
-            ACTION_NEXT -> route({ pb.onMediaNext() }, { ma.next() })
-            ACTION_PREV -> route({ pb.onMediaPrevious() }, { ma.previous() })
+            ACTION_PLAY_PAUSE -> playbackOwner.playPause()
+            ACTION_NEXT -> playbackOwner.next()
+            ACTION_PREV -> playbackOwner.previous()
             ACTION_CONNECT, null, ACTION_START_MEDIA -> {
                 // Promote to foreground and start observing.
                 cancelIdleTimeout()
@@ -433,15 +453,16 @@ class SendspinService : Service() {
 
         override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
             // A toggle either way, matching the old onPlay()/onPause() - both of
-            // which routed to the exact same call regardless of which fired.
-            route({ pb.onPlayPause() }, { ma.playPause() })
+            // which routed to the exact same call regardless of which fired. Through
+            // [playbackOwner], not [route] — see that property's doc.
+            playbackOwner.playPause()
             return Futures.immediateVoidFuture()
         }
 
         override fun handleSeek(mediaItemIndex: Int, positionMs: Long, seekCommand: Int): ListenableFuture<*> {
             when (seekCommand) {
-                Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM -> route({ pb.onMediaNext() }, { ma.next() })
-                Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM -> route({ pb.onMediaPrevious() }, { ma.previous() })
+                Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM -> playbackOwner.next()
+                Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM -> playbackOwner.previous()
                 else -> route({ pb.onMediaSeek((positionMs / 1000).toInt()) }, { ma.seekTo(positionMs) })
             }
             // The real state change comes back asynchronously (server/state, or

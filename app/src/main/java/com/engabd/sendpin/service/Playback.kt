@@ -226,7 +226,15 @@ class Playback(private val app: Context) {
 
     private fun requestAudioFocus() {
         if (holdsFocus) return   // already held - re-requesting would leak the old request
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        // The platform's answer is what [holdsFocus] must track, not the mere act of
+        // asking. This used to latch `true` unconditionally, so a single denial (an
+        // announcement racing whatever momentarily held exclusive focus — a call, a
+        // brief system sound, another app's own transient grab) left every later
+        // `stream/start` believing it already held focus and skipping the request
+        // entirely — silently, forever, since [holdsFocus] never went back to false.
+        // That is "the TTS notification arrives but nothing plays": the engine was
+        // never actually granted focus to begin with.
+        val granted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val attrs = AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_MEDIA)
                 .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
@@ -237,12 +245,15 @@ class Playback(private val app: Context) {
                 .setOnAudioFocusChangeListener(focusListener)
                 .build()
             audioFocusRequest = req
-            audioManager.requestAudioFocus(req)
+            audioManager.requestAudioFocus(req) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
         } else {
             @Suppress("DEPRECATION")
-            audioManager.requestAudioFocus(focusListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN)
+            audioManager.requestAudioFocus(
+                focusListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN,
+            ) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
         }
-        holdsFocus = true
+        holdsFocus = granted
+        if (!granted) audioFocusRequest = null
     }
 
     private fun abandonAudioFocus() {

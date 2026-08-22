@@ -54,6 +54,8 @@ internal fun AppearanceSection(settings: AppSettings, accent: Color, scope: Coro
 
     var layout by remember { mutableStateOf("tab") }
     LaunchedEffect(Unit) { layout = settings.nowPlayingLayout.first() }
+    var seekBarStyle by remember { mutableStateOf("line") }
+    LaunchedEffect(Unit) { seekBarStyle = settings.seekBarStyle.first() }
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         SettingsCard(title = "Theme", lead = theme.description) {
@@ -107,6 +109,26 @@ internal fun AppearanceSection(settings: AppSettings, accent: Color, scope: Coro
                         "the tabs, so you can browse while it plays."
                 else
                     "The classic full-screen player, as its own bottom tab.",
+            )
+        }
+
+        SettingsCard(
+            title = "Seek bar",
+            lead = "How the progress line in Now Playing is drawn.",
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ToggleChip("Line", seekBarStyle == "line") {
+                    seekBarStyle = "line"; scope.launch { settings.setSeekBarStyle("line") }
+                }
+                ToggleChip("Wave", seekBarStyle == "wave") {
+                    seekBarStyle = "wave"; scope.launch { settings.setSeekBarStyle("wave") }
+                }
+            }
+            Note(
+                if (seekBarStyle == "wave")
+                    "The played portion wobbles gently while the track plays, like a water surface."
+                else
+                    "A straight progress line.",
             )
         }
 

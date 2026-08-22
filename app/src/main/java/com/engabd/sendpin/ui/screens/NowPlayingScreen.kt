@@ -269,7 +269,7 @@ fun NowPlayingScreen(
 
                 Spacer(Modifier.height(14.dp))
 
-                SeekRow(scrubber, st.durationMs)
+                SeekRow(scrubber, st.durationMs, playing = st.isPlaying)
 
                 Spacer(Modifier.height(10.dp))
 

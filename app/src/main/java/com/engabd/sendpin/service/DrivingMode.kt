@@ -66,30 +66,55 @@ class DrivingMode(private val app: Context) {
      */
     private val manualOverride = MutableStateFlow(false)
 
+    /**
+     * The bar was dismissed (the X) for the drive currently in progress.
+     *
+     * Separate from [manualOverride] on purpose. The bar's own X used to call
+     * `setManual(false)` — which does nothing while the car trigger is still true,
+     * and the car being connected is *why the bar is up* in the overwhelming
+     * majority of cases. The X read as broken because it was: turning off an
+     * override that was not what was showing the bar leaves [active] exactly where
+     * it was. This flag is what the X actually needs — "not this drive" — and it is
+     * cleared the moment the drive it was raised for ends, or a fresh one begins, so
+     * dismissing today's drive never silently swallows tomorrow's.
+     */
+    private val dismissed = MutableStateFlow(false)
+
     private val owner get() = com.engabd.sendpin.SendpinApp.instance.playbackOwner
 
     /**
      * Whether the driving bar should be on screen right now.
      *
-     * Three things have to agree: the feature is enabled at all, something is asking
-     * for it (the car, or the user), and there is something playing to control.
+     * Four things have to agree: the feature is enabled at all, something is asking
+     * for it (the car, or the user), it hasn't been dismissed for this drive, and
+     * there is something playing to control.
      */
     val active: StateFlow<Boolean> = combine(
         settings.drivingEnabled,
         carConnected,
         manualOverride,
+        dismissed,
         owner.state,
-    ) { enabled, car, manual, playback ->
+    ) { enabled, car, manual, hidden, playback ->
         // `sessionOwner`, not `soundOwner`: a paused track is still something the
         // driver wants a play button for. Getting that wrong would make the bar
         // vanish the moment it became most useful.
-        enabled && (car || manual) && playback.sessionOwner != PlaybackOwner.Who.NONE
+        enabled && (car || manual) && !hidden && playback.sessionOwner != PlaybackOwner.Who.NONE
     }.distinctUntilChanged().stateIn(scope, SharingStarted.Eagerly, false)
 
     /** Turn it on or off by hand, for the tile and the Settings switch. */
-    fun setManual(on: Boolean) { manualOverride.value = on }
+    fun setManual(on: Boolean) {
+        manualOverride.value = on
+        // A deliberate re-enable un-dismisses too, or the tile would look just as
+        // broken as the X did: tapping it back on while the car is still connected
+        // would otherwise stay hidden behind a dismissal from earlier in the drive.
+        if (on) dismissed.value = false
+    }
 
-    fun toggleManual() { manualOverride.value = !manualOverride.value }
+    fun toggleManual() { setManual(!manualOverride.value) }
+
+    /** The X on the bar itself — hide it for the rest of this drive, not turn a switch off. */
+    fun dismiss() { dismissed.value = true }
 
     /**
      * ACL connect/disconnect for the nominated car.
@@ -116,13 +141,19 @@ class DrivingMode(private val app: Context) {
                 }
             if (device?.address != wanted) return
             when (intent?.action) {
-                BluetoothDevice.ACTION_ACL_CONNECTED -> carConnected.value = true
+                // A fresh drive starts clean — a dismissal from the last one must
+                // not carry over and leave the bar silently missing on this trip.
+                BluetoothDevice.ACTION_ACL_CONNECTED -> {
+                    carConnected.value = true
+                    dismissed.value = false
+                }
                 BluetoothDevice.ACTION_ACL_DISCONNECTED -> {
                     carConnected.value = false
                     // Leaving the car ends the drive, and with it any manual
                     // override. Otherwise a tile tap on the way to the shops would
                     // leave the bar up for the rest of the day.
                     manualOverride.value = false
+                    dismissed.value = false
                 }
             }
         }
@@ -153,11 +184,23 @@ class DrivingMode(private val app: Context) {
         // Start and stop the window that actually shows the bar. Which mechanism is
         // in play is read here rather than inside the service, so switching it takes
         // effect on the next activation instead of needing the service restarted.
+        //
+        // Gated on the app itself *not* being foreground. The overlay is
+        // `TYPE_APPLICATION_OVERLAY` — it draws over every window on screen,
+        // including this app's own — and its bar is deliberately opaque (see
+        // DrivingBar's doc). Opening the app while driving mode was up used to
+        // leave that opaque bar sitting over whatever screen the user had just
+        // opened, hiding it with no way to see or reach what was underneath, for
+        // a control the in-app Now Playing screen already offers at full size the
+        // moment the app is the thing on screen.
+        val appForeground = AppLifecycleObserver.register(app).foreground
         scope.launch {
-            combine(active, settings.drivingMechanism) { on, mechanism -> on to mechanism }
+            combine(active, settings.drivingMechanism, appForeground) { on, mechanism, foreground ->
+                Triple(on, mechanism, foreground)
+            }
                 .distinctUntilChanged()
-                .collect { (on, mechanism) ->
-                    if (on && mechanism == AppSettings.DRIVING_OVERLAY) {
+                .collect { (on, mechanism, foreground) ->
+                    if (on && mechanism == AppSettings.DRIVING_OVERLAY && !foreground) {
                         DrivingOverlayService.start(app)
                     } else {
                         DrivingOverlayService.stop(app)
