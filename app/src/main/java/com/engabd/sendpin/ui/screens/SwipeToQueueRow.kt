@@ -34,6 +34,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import com.engabd.sendpin.ui.design.Motion
 import com.engabd.sendpin.ui.theme.PositiveGreen
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
@@ -103,10 +104,10 @@ fun SwipeToQueueRow(
                                         onPlayNext()
                                     }
                                 }
-                                offsetX.animateTo(0f, tween(220))
+                                offsetX.animateTo(0f, tween(Motion.SNAP_BACK_MS))
                             }
                         },
-                        onDragCancel = { scope.launch { offsetX.animateTo(0f, tween(220)) } },
+                        onDragCancel = { scope.launch { offsetX.animateTo(0f, tween(Motion.SNAP_BACK_MS)) } },
                         onHorizontalDrag = { change, dragAmount ->
                             change.consume()
                             val max = widthPx * MAX_DRAG_FRACTION

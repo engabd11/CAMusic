@@ -74,12 +74,22 @@ object MusicSources {
             },
         )
 
+        // Decoded with the same helper that encodes it. This used to `split("|")` a
+        // string the settings screen wrote as a JSON array, and `Uri.parse` never
+        // throws — so the whole array became one nonsensical uri, the folder list was
+        // never empty, and nothing on the phone was ever inside it.
         ServerKind.LOCAL -> com.engabd.sendpin.local.LocalMediaSource(
             context = context,
-            folderUris = config.option(com.engabd.sendpin.local.LocalMediaSource.OPT_FOLDER_URIS)
-                ?.split("|")
-                ?.mapNotNull { runCatching { android.net.Uri.parse(it) }.getOrNull() }
-                ?: emptyList(),
+            folderUris = com.engabd.sendpin.local.LocalFolders
+                .decode(config.option(com.engabd.sendpin.local.LocalMediaSource.OPT_FOLDER_URIS))
+                .mapNotNull { runCatching { android.net.Uri.parse(it) }.getOrNull() },
+        )
+
+        // Offline downloads, browsable like any other library. The index lives on the
+        // process-scoped DownloadManager, so this is a view onto it rather than
+        // anything with state of its own.
+        ServerKind.DOWNLOADS -> com.engabd.sendpin.local.DownloadsSource(
+            (context.applicationContext as com.engabd.sendpin.SendpinApp).downloads,
         )
 
         // Music Assistant is not a MusicSource — it owns a server-side queue and

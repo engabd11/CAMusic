@@ -123,8 +123,10 @@ class AlbumColoursTest {
 
     @Test
     fun `extraction is deterministic`() {
-        // Centroids are seeded along sorted lightness rather than randomly, so
-        // the same sleeve lights the room the same way every time it plays.
+        // Seeding is k-means++, whose PRNG is seeded from the pixels themselves, so
+        // the same sleeve lights the room the same way every time it plays. That
+        // determinism is the only thing the old lightness spread was buying — see
+        // AlbumColoursSeedingTest for what it cost.
         val px = cover(0.6f to argb(180, 60, 200), 0.4f to argb(40, 160, 190))
         val a = extractAlbumColours(px)!!
         val b = extractAlbumColours(px)!!

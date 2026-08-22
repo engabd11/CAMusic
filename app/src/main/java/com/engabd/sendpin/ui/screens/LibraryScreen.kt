@@ -73,6 +73,7 @@ import com.engabd.sendpin.subsonic.SavedQueue
 import com.engabd.sendpin.subsonic.SubsonicClient
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
+import com.engabd.sendpin.library.MusicSources
 import com.engabd.sendpin.library.ServerConfig
 import com.engabd.sendpin.library.ServerKind
 
@@ -111,6 +112,12 @@ fun LibraryScreen(
     onAlbumClick: (MaItem) -> Unit = { viewModel.open(it) },
     onArtistClick: (MaItem) -> Unit = { viewModel.open(it) },
     onPlaylistClick: (MaItem) -> Unit = { viewModel.open(it) },
+    /**
+     * Open the storage manager. Offered only while the Downloads library is the active
+     * one — bytes on disk, retries and delete-all are not things a `MusicSource` knows
+     * about, so that screen stays where it is and this is a second way into it.
+     */
+    onManageDownloads: (() -> Unit)? = null,
 ) {
     val ready by viewModel.ready.collectAsStateWithLifecycle()
     val booted by viewModel.booted.collectAsStateWithLifecycle()
@@ -130,6 +137,11 @@ fun LibraryScreen(
     val playlistChoices by viewModel.playlistChoices.collectAsStateWithLifecycle()
     val activeServerConfig by viewModel.activeServerConfig.collectAsStateWithLifecycle()
     val allServers by viewModel.allServers.collectAsStateWithLifecycle()
+    // Only for the switcher's Downloads subtitle. The set is already collected for
+    // the row badges deeper in, but that is inside [Browse] and this is not.
+    val downloadCount by viewModel.downloadedIds
+        .collectAsStateWithLifecycle()
+        .let { ids -> remember { derivedStateOf { ids.value.size } } }
     val palette = LocalPalette.current
     val snackbar = remember { SnackbarHostState() }
     // Long-press target. Hoisted to the screen so the sheet is a sibling of the
@@ -192,6 +204,7 @@ fun LibraryScreen(
                 ready -> Browse(
                     viewModel, gridCols, onAlbumClick, onArtistClick, onPlaylistClick,
                     onLongPress = { actionsFor = it },
+                    onManageDownloads = onManageDownloads,
                 )
                 booted && !connecting && (!hasServer || connError != null) -> ConnectForm(viewModel, backend, activeServerConfig)
                 else -> ConnectingState()
@@ -257,6 +270,14 @@ fun LibraryScreen(
             LibrarySwitchOverlay(
                 servers = allServers,
                 activeId = activeServerConfig?.id,
+                subtitleFor = { config ->
+                    if (config.kind == ServerKind.DOWNLOADS) {
+                        if (downloadCount == 0) "Nothing downloaded yet"
+                        else "$downloadCount ${if (downloadCount == 1) "track" else "tracks"} on this phone"
+                    } else {
+                        config.kind.label
+                    }
+                },
                 onDismiss = { showLibrarySwitch = false },
                 onSelect = { config ->
                     viewModel.selectServer(config)
@@ -313,6 +334,7 @@ private fun Browse(
     // A parameter rather than composition state: the sections below are LazyGridScope
     // extensions, which are not composable and can't read a CompositionLocal.
     onLongPress: (MaItem) -> Unit,
+    onManageDownloads: (() -> Unit)? = null,
 ) {
     val node by viewModel.node.collectAsStateWithLifecycle()
     val depth by viewModel.depth.collectAsStateWithLifecycle()
@@ -342,9 +364,14 @@ private fun Browse(
     // that lambda is a LazyGridScope receiver, not a composable, so it has no
     // `remember` — every scan written inside it is redone in full each time the grid
     // rebuilds, which is on any of this screen's state changes.
-    val isDownloads = remember(node) {
-        node.items.any { it.provider == "__dl__" } || node.title == "Downloads"
-    }
+    // The automatic offline fallback still injects a flat "Downloads" category, and
+    // that one has no artists or albums to browse. Narrowed to exactly that case:
+    // Downloads is a real library now, and its own browse nodes carry `__dl__` items
+    // too — sniffing for the provider would have forced the flat rendering on the
+    // whole of it.
+    val activeConfig by viewModel.activeServerConfig.collectAsStateWithLifecycle()
+    val isDownloads = remember(node, offline) { offline && node.title == "Downloads" }
+    val isDownloadsLibrary = activeConfig?.kind == ServerKind.DOWNLOADS
     // A shelf of albums earns cover tiles; anything else reads better as rows.
     val artful = remember(node.items) {
         val n = node.items.count { it.image != null && it.mediaType in ArtfulTypes }
@@ -353,9 +380,15 @@ private fun Browse(
     val tracks = remember(node.items) {
         node.items.filter { it.playable && it.mediaType == "track" }
     }
-    // Downloading a Navidrome album one row at a time was never a real answer, so
-    // the whole list is one tap from disk.
-    val downloadable = remember(tracks) { tracks.filter { it.provider == "subsonic" } }
+    // Downloading an album one row at a time was never a real answer, so the whole
+    // list is one tap from disk. Any library this phone plays itself qualifies —
+    // hardcoding "subsonic" hid the bar on Jellyfin, and Downloads is excluded for
+    // the obvious reason.
+    val downloadable = remember(tracks) {
+        tracks.filter {
+            MusicSources.isLocalProvider(it.provider) && it.provider != MusicSources.DOWNLOAD_PROVIDER
+        }
+    }
     // A list that holds more than one kind of thing, split into its kinds. Empty for
     // the ordinary node, which holds one — see [typedGroups].
     val groups = remember(node.items) { typedGroups(node.items) }
@@ -415,6 +448,18 @@ private fun Browse(
         if (isDownloads) {
             downloadsSection(node.items, jobs, viewModel, rows, gridCols)
             return@LazyVerticalGrid
+        }
+
+        // Files still arriving, at the top of the Downloads library where they are
+        // the one thing on screen about to change. This is all that survives of the
+        // bespoke flat rendering the library replaced.
+        if (isDownloadsLibrary) {
+            downloadJobsSection(jobs, viewModel, gridCols)
+            if (depth == 0 && onManageDownloads != null) {
+                item(key = "dl_manage", span = { full(gridCols) }, contentType = { "manage" }) {
+                    ManageDownloadsRow(onManageDownloads)
+                }
+            }
         }
 
         if (depth == 0) {
@@ -733,24 +778,63 @@ private fun androidx.compose.foundation.lazy.grid.LazyGridScope.typedSection(
     }
 }
 
+/**
+ * The way into the storage manager from the library it manages.
+ *
+ * Until now that screen was reachable only from Settings, which is a strange place to
+ * put "delete the album you are looking at".
+ */
+@Composable
+private fun ManageDownloadsRow(onClick: () -> Unit) {
+    val accent = LocalAccent.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(Glass)
+            .border(1.dp, Hairline, RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Icon(Icons.Default.Storage, null, tint = accent, modifier = Modifier.size(18.dp))
+        Text(
+            "Manage storage",
+            color = TextPrimary, fontFamily = AppFont,
+            fontWeight = FontWeight.Bold, fontSize = 13.sp,
+            modifier = Modifier.weight(1f),
+        )
+        Icon(Icons.Default.ChevronRight, null, tint = TextMuted, modifier = Modifier.size(18.dp))
+    }
+}
+
+/** Downloads still arriving, shared by the offline category and the Downloads library. */
+private fun androidx.compose.foundation.lazy.grid.LazyGridScope.downloadJobsSection(
+    jobs: List<DownloadJob>,
+    viewModel: LibraryViewModel,
+    gridCols: Int,
+) {
+    if (jobs.isEmpty()) return
+    item(key = "hdr_inprogress", span = { full(gridCols) }, contentType = { "header" }) { LibraryShelf("In progress") }
+    items(
+        jobs,
+        key = { "j_" + it.id },
+        contentType = { "job" },
+        span = { full(gridCols) },
+    ) { job ->
+        // Jobs appear and vanish as downloads finish, so this list is the one that
+        // most obviously popped without an animation.
+        Box(Modifier.animateItem()) { DownloadJobRow(job, viewModel) }
+    }
+}
+
 private fun androidx.compose.foundation.lazy.grid.LazyGridScope.downloadsSection(
     items: List<MaItem>, jobs: List<DownloadJob>, viewModel: LibraryViewModel,
     rows: RowState,
     gridCols: Int,
 ) {
-    if (jobs.isNotEmpty()) {
-        item(key = "hdr_inprogress", span = { full(gridCols) }, contentType = { "header" }) { LibraryShelf("In progress") }
-        items(
-            jobs,
-            key = { "j_" + it.id },
-            contentType = { "job" },
-            span = { full(gridCols) },
-        ) { job ->
-            // Jobs appear and vanish as downloads finish, so this list is the one that
-            // most obviously popped without an animation.
-            Box(Modifier.animateItem()) { DownloadJobRow(job, viewModel) }
-        }
-    }
+    downloadJobsSection(jobs, viewModel, gridCols)
     if (items.isEmpty() && jobs.isEmpty()) {
         item(span = { full(gridCols) }) { SearchEmptyState("Nothing downloaded", "Downloaded tracks play with the server off.") }
         return

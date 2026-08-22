@@ -67,7 +67,23 @@ class DrivingOverlayService :
         }
 
         fun stop(context: Context) {
+            instance = null
             runCatching { context.stopService(Intent(context, DrivingOverlayService::class.java)) }
+        }
+
+        /**
+         * The running service, so [DrivingMode] can hide the bar rather than stop it.
+         *
+         * A plain static reference and not a binder: this is one process, the service
+         * is a singleton by construction, and binding for a visibility flag would be
+         * two lifecycles to keep in step instead of none.
+         */
+        @Volatile
+        private var instance: DrivingOverlayService? = null
+
+        /** Hide or show the bar of a service that is already up. Does nothing if it is not. */
+        fun setVisible(visible: Boolean) {
+            instance?.setBarVisible(visible)
         }
 
         fun canDrawOverlay(context: Context): Boolean =
@@ -82,6 +98,7 @@ class DrivingOverlayService :
     override val viewModelStore: ViewModelStore = ViewModelStore()
 
     private var overlay: ComposeView? = null
+    private var overlayParams: WindowManager.LayoutParams? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -92,6 +109,7 @@ class DrivingOverlayService :
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        instance = this
         if (overlay == null) addOverlay()
         return START_NOT_STICKY
     }
@@ -114,6 +132,7 @@ class DrivingOverlayService :
                     onPrevious = owner::previous,
                     onShuffle = owner::toggleShuffle,
                     onDismiss = driving::dismiss,
+                    onEdgeChange = ::moveToEdge,
                 )
             }
         }
@@ -121,17 +140,17 @@ class DrivingOverlayService :
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-            } else {
-                @Suppress("DEPRECATION")
-                WindowManager.LayoutParams.TYPE_PHONE
-            },
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             // NOT_FOCUSABLE so the map underneath keeps the keyboard and the back
             // gesture — an overlay that stole focus would break navigation while
             // someone was navigating. Taps still reach it; only focus does not.
+            //
+            // FLAG_LAYOUT_NO_LIMITS is deliberately *not* here any more. It tells the
+            // system to lay the window out ignoring screen decorations, and with no x
+            // or y ever set that put the bar's bottom edge on the physical display
+            // bottom — underneath the navigation bar and the gesture strip, floating
+            // clear of the edge it was supposed to be sitting on.
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
                 WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
             PixelFormat.TRANSLUCENT,
         ).apply {
@@ -139,12 +158,62 @@ class DrivingOverlayService :
             // controls fall under a thumb and where a map's own chrome is thinnest.
             // The bar can be dragged to the top — see DrivingBar.
             gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            // Docked flush against the edge, above the system bars rather than under
+            // them. Without this the bar and the navigation gesture strip share the
+            // same few dozen pixels, and the strip wins.
+            fitInsetsTypes()
         }
 
         lifecycleRegistry.currentState = Lifecycle.State.RESUMED
         runCatching { wm.addView(view, params) }
-            .onSuccess { overlay = view }
-            .onFailure { stopSelf() }
+            .onSuccess { overlay = view; overlayParams = params }
+            .onFailure {
+                // Logged rather than swallowed. This is a real failure mode — an
+                // overlay grant revoked while driving mode is on — and a silent one
+                // looks exactly like "the bar just does not appear sometimes".
+                android.util.Log.w("DrivingOverlay", "could not add the driving bar", it)
+                stopSelf()
+            }
+    }
+
+    /** Insets to sit clear of, on the API this build targets. */
+    private fun WindowManager.LayoutParams.fitInsetsTypes() {
+        setFitInsetsTypes(
+            android.view.WindowInsets.Type.systemBars() or android.view.WindowInsets.Type.displayCutout(),
+        )
+    }
+
+    /**
+     * Move the bar to the other edge.
+     *
+     * The drag used to flip a `contentAlignment` inside the composable, which could
+     * not move anything: the window is `WRAP_CONTENT` tall, so the Box doing the
+     * aligning is exactly as tall as the Row it contains and there is nothing to align
+     * within. `updateViewLayout` is the only thing that actually moves an overlay, and
+     * it was never called.
+     */
+    private fun moveToEdge(atBottom: Boolean) {
+        val view = overlay ?: return
+        val params = overlayParams ?: return
+        params.gravity =
+            (if (atBottom) Gravity.BOTTOM else Gravity.TOP) or Gravity.CENTER_HORIZONTAL
+        runCatching {
+            (getSystemService(Context.WINDOW_SERVICE) as WindowManager).updateViewLayout(view, params)
+        }
+    }
+
+    /**
+     * Hide the bar without tearing the window down.
+     *
+     * The service used to be stopped and restarted on every foreground/background
+     * transition. Restarting it means `startService` from the background, which on
+     * minSdk 31 throws `BackgroundServiceStartNotAllowedException` unless the process
+     * happens to be exempt — so the bar came back sometimes and not others, which is
+     * the "it appears at random" half of the report. Keeping the window and toggling
+     * its visibility has no such failure mode.
+     */
+    fun setBarVisible(visible: Boolean) {
+        overlay?.visibility = if (visible) android.view.View.VISIBLE else android.view.View.GONE
     }
 
     override fun onDestroy() {
@@ -154,6 +223,8 @@ class DrivingOverlayService :
             }
         }
         overlay = null
+        overlayParams = null
+        if (instance === this) instance = null
         lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
         viewModelStore.clear()
         super.onDestroy()

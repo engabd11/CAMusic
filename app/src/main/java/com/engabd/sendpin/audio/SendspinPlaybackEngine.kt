@@ -15,7 +15,19 @@ import com.engabd.sendpin.protocol.StreamStartPlayerInfo
 interface SendspinPlaybackEngine {
     fun start(format: StreamStartPlayerInfo)
     fun submit(frame: ByteArray)
-    fun endOfStream()
+
+    /**
+     * `stream/end`. With [drain] true the buffered tail is allowed to play out and the
+     * caller is expected to follow with [cutTail]; with it false the tail is dropped
+     * immediately, which is what a pause needs. See [com.engabd.sendpin.audio.StreamEndPolicy].
+     */
+    fun endOfStream(drain: Boolean = false)
+
+    /** Give up on whatever tail is left and go silent. Idempotent. */
+    fun cutTail() = Unit
+
+    /** Frames still queued for the decoder, or 0 where the engine cannot say. */
+    val queuedFrames: Int get() = 0
     fun flush()
     fun setVolume(v: Float)
     fun setSyncMuted(muted: Boolean)

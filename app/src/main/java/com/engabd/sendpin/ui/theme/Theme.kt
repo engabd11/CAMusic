@@ -193,6 +193,11 @@ fun SendspinTheme(
     accentChoice: AccentChoice = AccentChoice.ALBUM,
     /** The accent for [AccentChoice.FIXED], and the seed when nothing is playing. */
     seedAccent: Color = DefaultAccent,
+    /**
+     * One of [AppSettings.MOTION_SYSTEM] / `MOTION_FULL` / `MOTION_REDUCED`. Defaulted
+     * so previews and tests need not thread it through.
+     */
+    motionMode: String = com.engabd.sendpin.data.AppSettings.MOTION_SYSTEM,
     content: @Composable () -> Unit,
 ) {
     val systemDark = isSystemInDarkTheme()
@@ -237,7 +242,10 @@ fun SendspinTheme(
         LocalSendspinColors provides colors,
         // Read here so every surface shares one answer for the frame — see
         // LocalReducedMotion for why this is a design flag and not a duration scale.
-        LocalReducedMotion provides rememberReducedMotion(),
+        LocalReducedMotion provides com.engabd.sendpin.ui.design.reducedMotionFor(
+            mode = motionMode,
+            systemSaysReduced = rememberReducedMotion(),
+        ),
     ) {
         // MaterialExpressiveTheme wraps MaterialTheme and provides the M3
         // Expressive motion scheme. 21 Material components (Switch, Slider,

@@ -167,6 +167,7 @@ private fun ColumnScope.QueuePanel(viewModel: NowPlayingViewModel, accent: Color
             color = TextFaint, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 11.sp,
             modifier = Modifier.weight(1f),
         )
+        SmallAction(Icons.Default.Shuffle, "Shuffle") { viewModel.shuffleQueueNow() }
         SmallAction(Icons.AutoMirrored.Filled.PlaylistAdd, "Save as playlist") { naming = true; playlistName = "" }
         SmallAction(Icons.Default.DeleteSweep, if (confirmClear) "Sure?" else "Clear") {
             if (confirmClear) { viewModel.clearQueue(); confirmClear = false } else confirmClear = true

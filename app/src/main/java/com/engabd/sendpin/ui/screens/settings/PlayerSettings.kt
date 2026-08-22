@@ -55,10 +55,12 @@ internal fun PlayerSection(
     var playerName by remember { mutableStateOf("") }
     var codec by remember { mutableStateOf("auto") }
     var keepAlive by remember { mutableStateOf(true) }
+    var duck by remember { mutableStateOf(true) }
     LaunchedEffect(Unit) {
         playerName = settings.playerName.first()
         codec = settings.sendspinCodec.first()
         keepAlive = settings.keepAliveForAnnouncements.first()
+        duck = settings.duckAnnouncements.first()
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -178,6 +180,13 @@ internal fun PlayerSection(
                     "connection, the wake lock and the ongoing notification all go with it.",
                 keepAlive, accent,
             ) { keepAlive = it; scope.launch { settings.setKeepAliveForAnnouncements(it) } }
+            ToggleRow(
+                "Duck other apps to be heard",
+                "Turns another app down for a moment instead of taking the output from it, " +
+                    "so an announcement is audible over a video. Turn it off if announcements " +
+                    "come out at a different volume than your music on this phone.",
+                duck, accent,
+            ) { duck = it; scope.launch { settings.setDuckAnnouncements(it) } }
             Note(
                 "Playback is unaffected either way — music started here keeps playing in the " +
                     "background, and the connection comes back when you reopen the app.",

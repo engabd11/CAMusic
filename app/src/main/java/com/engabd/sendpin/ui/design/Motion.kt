@@ -15,10 +15,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.unit.IntOffset
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import com.engabd.sendpin.data.AppSettings
 
 /**
  * The app's motion tokens.
@@ -46,9 +47,18 @@ import androidx.lifecycle.LifecycleEventObserver
  *
  * Never animate alpha on a spatial spec, or position on an effects spec.
  *
- * When material3 1.5.0 goes stable, remove the version override in build.gradle.kts
- * and custom components can switch to `MaterialTheme.motionScheme.defaultSpatialSpec()`
- * etc. The shapes of the two APIs line up deliberately.
+ * ## Why these are not `MaterialTheme.motionScheme` reads
+ *
+ * The values below are intentionally identical to the M3 Expressive scheme, and the
+ * obvious next step is to read them from it. It does not work, for a structural
+ * reason rather than a stylistic one: `MaterialTheme.motionScheme` is a
+ * `@Composable` read, and several of these specs are needed where there is no
+ * composition to read from — `Animatable.animateTo` inside a `scope.launch`
+ * (`SendspinDesign`'s sheet drag), a `suspend fun` default argument
+ * (`NowPlayingOverlay.settleTo`), a scroll call inside a coroutine (`LyricsPane`).
+ * Making them `@Composable` would force each of those to hoist a spec into
+ * composition and thread it down, which is more moving parts than the duplication
+ * costs. The theme still provides the scheme, so M3's own components use it.
  */
 object Motion {
 
@@ -71,6 +81,25 @@ object Motion {
     /** Alpha and colour, for quick state flips. */
     fun <T> effectsFast(): FiniteAnimationSpec<T> =
         spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = 3800f)
+
+    /**
+     * One full turn of a refresh spinner.
+     *
+     * Here rather than at the two call sites that had it (the library header and the
+     * speakers list), which had drifted into being the same 900 ms linear loop written
+     * out twice — a duplicated constant is a duplicated decision, and one of them
+     * eventually gets retuned alone.
+     */
+    const val SPINNER_PERIOD_MS = 900
+
+    /**
+     * A swiped row springing back to rest.
+     *
+     * The one motion in the app that is deliberately a tween rather than a spring: the
+     * row is returning to a position it never left under its own momentum, so overshoot
+     * would read as the gesture having done something.
+     */
+    const val SNAP_BACK_MS = 220
 
     /**
      * Swapping one whole screen for a sibling — a tab change.
@@ -211,6 +240,21 @@ object Motion {
  * theme still animates.
  */
 val LocalReducedMotion = compositionLocalOf { false }
+
+/**
+ * The app's own answer, layered over the system's.
+ *
+ * [AppSettings.MOTION_SYSTEM] is the default and defers to [systemSaysReduced]
+ * entirely, which is the behaviour that shipped. The other two exist because the
+ * platform setting is global: someone who finds this app in particular too busy had to
+ * quieten every app on the phone to say so, and someone who has that setting off for
+ * an unrelated reason had no way to ask for it here.
+ */
+fun reducedMotionFor(mode: String, systemSaysReduced: Boolean): Boolean = when (mode) {
+    AppSettings.MOTION_REDUCED -> true
+    AppSettings.MOTION_FULL -> false
+    else -> systemSaysReduced
+}
 
 /**
  * Reads the system "remove animations" setting, re-checked whenever the app comes back

@@ -136,16 +136,19 @@ class SendspinExoEngine(
     private var syncMuted = false
 
     /**
-     * True from [endOfStream] until the next [start]. [endOfStream] deliberately
-     * doesn't tear the player down (see its own doc - that's what keeps a real
-     * track boundary gapless), so a few hundred ms of already-buffered audio -
-     * shortened, but not eliminated, by [SendspinMediaSource]'s tighter load
-     * checks - plays out after every `stream/end`, pause included. That's an
-     * audible re-opening right after the listener just told it to stop. Muting
-     * for the tail keeps the decoder and track alive for gapless while making
-     * a pause sound like a pause.
+     * The tail has been given up on: discarded outright, or drained to its cap.
+     *
+     * This is what takes the volume to zero, and only [cutTail] sets it. `stream/end`
+     * used to do so directly, which is the whole of the "TTS gets cut off at the end"
+     * report: that message is identical for a pause, a track boundary and the end of
+     * an announcement, and muting on all three took the last words off the
+     * announcements. The caller decides which it was — see [StreamEndPolicy] — and a
+     * pause still goes silent the instant [cutTail] is called.
+     *
+     * Muting rather than stopping, still: the decoder and audio track stay alive
+     * either way, which is what keeps a real track boundary gapless.
      */
-    private var streamEnded = false
+    private var tailMuted = false
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -159,7 +162,7 @@ class SendspinExoEngine(
         if (Looper.myLooper() == Looper.getMainLooper()) action() else mainHandler.post(action)
     }
 
-    private fun effectiveVolume() = if (syncMuted || streamEnded) 0f else userVolume
+    private fun effectiveVolume() = if (syncMuted || tailMuted) 0f else userVolume
 
     /**
      * Consecutive [onPlayerError] calls since the last [Player.STATE_READY] or fresh
@@ -261,11 +264,25 @@ class SendspinExoEngine(
         else -> "state($state)"
     }
 
+    /**
+     * True while the current stream is a spoken announcement rather than music.
+     *
+     * Set by `Playback` from [StreamClassifier] before [start], and applied to the
+     * player's own [AudioAttributes] there. `USAGE_ASSISTANT` + `CONTENT_TYPE_SPEECH`
+     * is what asks the platform to duck whatever else is playing rather than fight it
+     * for the output, which is the difference between an announcement being audible
+     * over a video and being silent.
+     */
+    @Volatile
+    var speech: Boolean = false
+
+    private fun attrsFor(speech: Boolean): AudioAttributes = AudioAttributes.Builder()
+        .setUsage(if (speech) C.USAGE_ASSISTANT else C.USAGE_MEDIA)
+        .setContentType(if (speech) C.AUDIO_CONTENT_TYPE_SPEECH else C.AUDIO_CONTENT_TYPE_MUSIC)
+        .build()
+
     private fun buildPlayer(): ExoPlayer {
-        val attrs = AudioAttributes.Builder()
-            .setUsage(C.USAGE_MEDIA)
-            .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
-            .build()
+        val attrs = attrsFor(speech)
         val renderers = if (useOboe) {
             val output = SendspinNativeOutput().also { nativeOutput = it }
             val sink = OboeAudioSink(
@@ -332,8 +349,15 @@ class SendspinExoEngine(
         // the main-thread block completes moments later, so the ordering is safe
         // either way.
         currentDataSource = dataSource
-        streamEnded = false
+        tailMuted = false
+        val speechNow = speech
         runOnMain {
+            // Applied here, before prepare(), rather than baked in at build time.
+            // Changing attributes on a live player flushes and rebuilds the
+            // AudioTrack; doing it at the one moment there is no audio to interrupt
+            // costs nothing, and media3 no-ops when the value has not changed, so a
+            // run of ordinary music pays nothing at all.
+            player.setAudioAttributes(attrsFor(speechNow), /* handleAudioFocus = */ false)
             player.volume = effectiveVolume()
             player.setMediaSource(SendspinMediaSource.create(dataSource, format))
             player.prepare()
@@ -341,21 +365,45 @@ class SendspinExoEngine(
         }
     }
 
+    override val queuedFrames: Int get() = currentDataSource?.queuedFrames ?: 0
+
     override fun submit(frame: ByteArray) {
         val (serverTsUs, payload) = SendspinAudioFrame.parse(frame) ?: return
         currentDataSource?.submit(serverTsUs, payload)
     }
 
-    /** `stream/end` - a likely track boundary, not a stop; see the comment below. */
-    override fun endOfStream() {
-        // Discard *then* signal: the queue has to be empty when [awaitNextFrame] next
-        // checks, or it goes on serving the backlog it was just told to abandon.
-        // Without the discard, pausing took as long as the server's read-ahead to fall
-        // silent — measured at over 20 s on-device. See [SendspinDataSource.discardQueued].
+    /**
+     * `stream/end` — which the protocol sends identically for a pause, a track
+     * boundary and the end of an announcement. [drain] is the caller's verdict on
+     * which; see [StreamEndPolicy] for how it is reached.
+     */
+    override fun endOfStream(drain: Boolean) {
+        if (drain) {
+            // Signal only. [awaitNextFrame] goes on serving what is already queued
+            // and then reports end-of-input, so the tail is heard — which for an
+            // announcement is the last words of it.
+            currentDataSource?.signalEndOfStream()
+            return
+        }
+        cutTail()
+    }
+
+    /**
+     * Drop the tail and go silent.
+     *
+     * Discard *then* signal: the queue has to be empty when [awaitNextFrame] next
+     * checks, or it goes on serving the backlog it was just told to abandon. Without
+     * the discard, pausing took as long as the server's read-ahead to fall silent —
+     * measured at over 20 s on-device. See [SendspinDataSource.discardQueued].
+     *
+     * Muting rather than stopping, for the same reason it always was: a hard stop
+     * would take the decoder and audio track with it, and rebuilding those is what a
+     * real track boundary must not have to do.
+     */
+    override fun cutTail() {
+        if (tailMuted) return
         currentDataSource?.apply { discardQueued(); signalEndOfStream() }
-        // Mute the tail rather than silence it by tearing the player down - see
-        // [streamEnded]'s own doc for why a hard stop here isn't the answer.
-        streamEnded = true
+        tailMuted = true
         runOnMain { player.volume = effectiveVolume() }
     }
 

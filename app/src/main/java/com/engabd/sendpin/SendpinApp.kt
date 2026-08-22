@@ -152,17 +152,55 @@ class SendpinApp : Application(), ImageLoaderFactory {
     val activeLightSyncSource: StateFlow<com.engabd.sendpin.hue.ActiveLightSyncSource> by lazy {
         combine(
             localPlayer.current, playback.artworkUrl, playbackOwner.state,
-        ) { localTrack, maArtUrl, owner ->
+            scanFrameSource.driving, com.engabd.sendpin.capture.PlaybackCapture.running,
+        ) { values ->
+            @Suppress("UNCHECKED_CAST")
+            val localTrack = values[0] as com.engabd.sendpin.audio.LocalTrack?
+            val maArtUrl = values[1] as String?
+            val owner = values[2] as PlaybackOwner.State
+            val scanDriving = values[3] as Boolean
+            val captureRunning = values[4] as Boolean
             val maTap = owner.sendspinTap
-            if (owner.soundOwner == PlaybackOwner.Who.SENDSPIN && maTap != null) {
-                com.engabd.sendpin.hue.ActiveLightSyncSource(
-                    tap = maTap.first, lead = maTap.second, artUrl = maArtUrl, scanTrack = null,
-                )
-            } else {
-                com.engabd.sendpin.hue.ActiveLightSyncSource(
-                    tap = localPlayer.audioAnalysisTap, lead = localPlayer.audioLead,
-                    artUrl = localTrack?.artUrl, scanTrack = localTrack,
-                )
+            // The precedence lives in one pure function now — see
+            // [com.engabd.sendpin.hue.LightSyncFeedPicker]. It used to be an `if` here
+            // and a differently-shaped `if` in the gate below, which is how a paused MA
+            // player could drive one and not the other.
+            val feed = com.engabd.sendpin.hue.LightSyncFeedPicker.pick(
+                sendspinPlayingHere = owner.soundOwner == PlaybackOwner.Who.SENDSPIN,
+                hasSendspinTap = maTap != null,
+                localPlaying = owner.soundOwner == PlaybackOwner.Who.LOCAL,
+                captureRunning = captureRunning,
+                scanDriving = scanDriving,
+            )
+            when (feed) {
+                com.engabd.sendpin.hue.LightSyncFeed.SENDSPIN_PCM ->
+                    com.engabd.sendpin.hue.ActiveLightSyncSource(
+                        tap = maTap!!.first, lead = maTap.second, artUrl = maArtUrl,
+                        scanTrack = null, feed = feed,
+                    )
+                // Another app's audio, through MediaProjection. Its own tap instance,
+                // because the analysis ring has one writer by contract.
+                com.engabd.sendpin.hue.LightSyncFeed.CAPTURE ->
+                    com.engabd.sendpin.hue.ActiveLightSyncSource(
+                        tap = com.engabd.sendpin.capture.PlaybackCapture.tap,
+                        lead = com.engabd.sendpin.capture.PlaybackCapture.lead,
+                        // No metadata for another app's track, so the palette falls
+                        // back to whatever colour scheme is not album-derived.
+                        artUrl = null, scanTrack = null, feed = feed,
+                    )
+                // Nothing audible reaches this phone, so the tap is a placeholder and
+                // the frames come from [scanFrameSource] instead. The artwork is still
+                // MA's, because the *colours* do not need audio.
+                com.engabd.sendpin.hue.LightSyncFeed.SCAN_REMOTE ->
+                    com.engabd.sendpin.hue.ActiveLightSyncSource(
+                        tap = localPlayer.audioAnalysisTap, lead = localPlayer.audioLead,
+                        artUrl = maArtUrl, scanTrack = null, feed = feed,
+                    )
+                else ->
+                    com.engabd.sendpin.hue.ActiveLightSyncSource(
+                        tap = localPlayer.audioAnalysisTap, lead = localPlayer.audioLead,
+                        artUrl = localTrack?.artUrl, scanTrack = localTrack, feed = feed,
+                    )
             }
         }.stateIn(
             appScope, SharingStarted.Eagerly,
@@ -186,7 +224,40 @@ class SendpinApp : Application(), ImageLoaderFactory {
             this,
             activeLightSyncSource,
             trackScans,
-            isPlaying = combine(localPlayer.playing, playback.isPlaying) { l, m -> l || m },
+            // The scan-driven feed has to count as playing, or `renderLoop`'s
+            // `isIdle = !playerPlaying || !fresh` runs the idle show straight over
+            // perfectly good synthetic frames.
+            isPlaying = combine(
+                localPlayer.playing, playback.isPlaying, scanFrameSource.driving,
+                com.engabd.sendpin.capture.PlaybackCapture.running,
+            ) { local, ma, scanning, capturing -> local || ma || scanning || capturing },
+        ).also { sync -> scanFrameSink = sync::onSynthFrame }
+    }
+
+    /**
+     * Where [scanFrameSource] delivers its frames.
+     *
+     * Indirected through a var rather than passed in, because the two are mutually
+     * dependent — the source is one of the inputs to [activeLightSyncSource], which
+     * `DirectLightSync` takes in its constructor — and a `by lazy` cycle deadlocks
+     * rather than failing loudly.
+     */
+    @Volatile
+    private var scanFrameSink:
+        ((com.engabd.sendpin.audio.AnalysisFrame, com.engabd.sendpin.audio.BeatGrid?, com.engabd.sendpin.audio.TrackScan, Float) -> Unit)? = null
+
+    /**
+     * The light show for a Music Assistant queue playing somewhere this phone cannot
+     * hear. See [com.engabd.sendpin.hue.ScanFrameSource].
+     */
+    val scanFrameSource: com.engabd.sendpin.hue.ScanFrameSource by lazy {
+        com.engabd.sendpin.hue.ScanFrameSource(
+            scans = trackScans,
+            nowPlaying = maNowPlaying,
+            downloads = downloads,
+            settings = com.engabd.sendpin.data.AppSettings(this),
+            musicSource = { musicSource.value },
+            sink = { frame, grid, scan, pos -> scanFrameSink?.invoke(frame, grid, scan, pos) },
         )
     }
 
@@ -424,9 +495,18 @@ class SendpinApp : Application(), ImageLoaderFactory {
                         if (started) directLightSync.stop()
                         started = true
                         directLightSync.start()
+                        // Follows the same switch, for the same reason: what it costs
+                        // while nothing is playing remotely is one idle collector.
+                        scanFrameSource.start()
                     } else if (started) {
                         started = false
                         directLightSync.stop()
+                        scanFrameSource.stop()
+                        // Capture holds a foreground service and an ongoing
+                        // notification; leaving it running for a show that is switched
+                        // off would be a microphone-shaped permission doing nothing
+                        // visible, which is the worst possible shape for it.
+                        com.engabd.sendpin.capture.PlaybackCapture.stop(this@SendpinApp)
                     }
                 }
         }

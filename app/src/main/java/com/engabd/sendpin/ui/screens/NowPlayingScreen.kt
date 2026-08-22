@@ -199,6 +199,7 @@ fun NowPlayingScreen(
                             ),
                         glowAlpha = if (st.idle) 0.18f else 0.45f,
                         placeholder = Icons.AutoMirrored.Filled.QueueMusic,
+                        flipKey = albumFlipKey(st),
                     )
                 }
 

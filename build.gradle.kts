@@ -1,5 +1,5 @@
-// AGP 9.2 — upgraded to unlock M3 Expressive APIs (MotionScheme, MaterialExpressiveTheme,
-// 8-level Shapes, 30-param Typography). AGP 9.2 requires Gradle 9.4.1+ and supports
+// AGP 9.3 — upgraded to unlock M3 Expressive APIs (MotionScheme, MaterialExpressiveTheme,
+// 8-level Shapes, 30-param Typography). It requires Gradle 9.4.1+ and supports
 // compileSdk 37. Uses built-in Kotlin (no org.jetbrains.kotlin.android plugin needed).
 plugins {
     id("com.android.application") version "9.3.1" apply false

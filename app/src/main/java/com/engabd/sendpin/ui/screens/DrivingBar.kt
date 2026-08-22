@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -54,6 +55,14 @@ fun DrivingBar(
     onPrevious: () -> Unit,
     onShuffle: () -> Unit,
     onDismiss: () -> Unit,
+    /**
+     * The bar was dragged to the other edge — true for the bottom.
+     *
+     * A callback rather than local state because the *window* is what has to move,
+     * and only the service that added it can do that. See
+     * [com.engabd.sendpin.service.DrivingOverlayService].
+     */
+    onEdgeChange: (atBottom: Boolean) -> Unit = {},
 ) {
     val app = SendpinApp.instance
     val maNow by app.maNowPlaying.now.collectAsStateWithLifecycle()
@@ -71,19 +80,14 @@ fun DrivingBar(
     // Which edge the bar sits on. A cradle's position varies, and the bar must never
     // permanently cover the map's own controls — so a vertical drag moves it, and
     // there is somewhere else for it to go.
+    //
+    // Reported *out*, not kept here. The alignment inside this composable could never
+    // have moved anything: the window is WRAP_CONTENT tall, so this Box is exactly as
+    // tall as the Row inside it and there is nothing to align within. Only the service
+    // can move the bar, by re-laying out the window — see [onEdgeChange].
     var atBottom by remember { mutableStateOf(true) }
 
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .pointerInput(Unit) {
-                detectVerticalDragGestures { _, dy ->
-                    if (dy < -8f) atBottom = false
-                    if (dy > 8f) atBottom = true
-                }
-            },
-        contentAlignment = if (atBottom) Alignment.BottomCenter else Alignment.TopCenter,
-    ) {
+    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.BottomCenter) {
         Row(
             Modifier
                 .fillMaxWidth()
@@ -98,6 +102,31 @@ fun DrivingBar(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            // The drag handle, and the only thing that listens for a drag.
+            //
+            // It used to be the whole bar. A `detectVerticalDragGestures` spanning
+            // every control means any tap with a little finger travel — which is most
+            // taps, in a moving car — is consumed as a drag instead, and the 34dp X
+            // was the target that suffered most. That is why the X "did nothing".
+            Box(
+                Modifier
+                    .width(20.dp)
+                    .height(56.dp)
+                    .pointerInput(Unit) {
+                        detectVerticalDragGestures { _, dy ->
+                            if (dy < -8f && atBottom) { atBottom = false; onEdgeChange(false) }
+                            if (dy > 8f && !atBottom) { atBottom = true; onEdgeChange(true) }
+                        }
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Default.DragHandle,
+                    "Move the bar to the other edge",
+                    tint = TextFaint,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
             DrivingButton(Icons.Default.SkipPrevious, "Previous track", onPrevious)
             DrivingButton(
                 if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,

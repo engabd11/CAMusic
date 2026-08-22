@@ -246,8 +246,31 @@ private fun HaLightSyncScreen(onBack: () -> Unit, viewModel: LightSyncViewModel)
                 Spacer(Modifier.height(22.dp))
                 SectionLabel("Brightness ceiling")
                 Spacer(Modifier.height(10.dp))
-                val bSlider = ((a.brightnessPct - 5) / 95f).coerceIn(0f, 1f)
-                LabeledSlider(Icons.Default.BrightnessHigh, bSlider, { viewModel.setBrightness((5 + it * 95).roundToInt()) }, "${a.brightnessPct}%")
+                // Live value while dragging, stored value otherwise — the same shape
+                // the direct path uses below. Without it the trailing "%" lagged the
+                // thumb by a debounce plus a WebSocket round-trip, so the number read
+                // as stuck while the finger moved.
+                var haBrightnessDrag by remember { mutableStateOf<Int?>(null) }
+                val haBrightness = haBrightnessDrag ?: a.brightnessPct
+                val bSlider = ((haBrightness - 5) / 95f).coerceIn(0f, 1f)
+                LabeledSlider(
+                    icon = Icons.Default.BrightnessHigh,
+                    value = bSlider,
+                    onChange = {
+                        val pct = (5 + it * 95).roundToInt()
+                        haBrightnessDrag = pct
+                        // Still previewed live: the view model debounces this to 200 ms
+                        // and holds the optimistic value for three seconds, so the room
+                        // follows the finger without the poll fighting it.
+                        viewModel.setBrightness(pct)
+                    },
+                    onCommit = {
+                        val pct = (5 + it * 95).roundToInt()
+                        haBrightnessDrag = null
+                        viewModel.setBrightness(pct)
+                    },
+                    trailing = "$haBrightness%",
+                )
 
                 Spacer(Modifier.height(22.dp))
                 SectionLabel("Timing")
@@ -290,11 +313,23 @@ private fun HaLightSyncScreen(onBack: () -> Unit, viewModel: LightSyncViewModel)
                     // syncoV2's `hue_music_sync.set_options` service, and that
                     // integration has no `cohesion` option to receive — so the two
                     // lists must stay separate.
+                    var haDraft by remember { mutableStateOf<Map<String, Float>>(emptyMap()) }
                     LightSyncRepository.TUNABLE_DEFS.forEach { (key, label) ->
-                        val factor = a.tunables[key] ?: 1f
+                        val factor = haDraft[key] ?: a.tunables[key] ?: 1f
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 5.dp), horizontalArrangement = Arrangement.spacedBy(11.dp)) {
                             Text(label, color = TextSecondary, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, modifier = Modifier.width(96.dp))
-                            HSlider((factor / 2f).coerceIn(0f, 1f), { viewModel.setTunable(key, (it * 2f)) }, modifier = Modifier.weight(1f))
+                            HSlider(
+                                value = (factor / 2f).coerceIn(0f, 1f),
+                                onChange = {
+                                    haDraft = haDraft + (key to (it * 2f))
+                                    viewModel.setTunable(key, it * 2f)
+                                },
+                                onCommit = {
+                                    haDraft = haDraft - key
+                                    viewModel.setTunable(key, it * 2f)
+                                },
+                                modifier = Modifier.weight(1f),
+                            )
                             Text("${(factor * 100).roundToInt()}%", color = TextMuted, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 11.sp, modifier = Modifier.widthIn(min = 40.dp))
                         }
                         // The same explanations the direct path shows. They describe the
@@ -340,6 +375,15 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
 
     val live by direct.active.collectAsStateWithLifecycle()
     val syncError by direct.error.collectAsStateWithLifecycle()
+    // What the show is *actually* doing, rather than whether the bridge session is
+    // open. Those two used to be the same sentence, which is how a queue playing on a
+    // remote speaker — where this phone decodes nothing at all — reported "Reacting to
+    // the beat" over a room full of idle lamps.
+    val framesFresh by direct.framesFresh.collectAsStateWithLifecycle()
+    val scanState by app.scanFrameSource.state.collectAsStateWithLifecycle()
+    val feed by remember { derivedStateOf { app.activeLightSyncSource.value.feed } }
+    val maNow by app.maNowPlaying.now.collectAsStateWithLifecycle()
+    val remoteSpeaker = maNow?.takeIf { !it.isSelf }?.playerName
     val enabled by settings.lightSyncEnabled.collectAsState(initial = false)
     val intensity by settings.lightSyncIntensity.collectAsState(initial = "high")
     val effect by settings.lightSyncEffect.collectAsState(initial = "music")
@@ -355,6 +399,9 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
     val tunables by settings.lightSyncTunables.collectAsState(initial = emptyMap())
     val bridgeIp by settings.hueBridgeIp.collectAsState(initial = "")
     val configId by settings.hueEntertainmentConfigId.collectAsState(initial = "")
+    val speakerOffsetMs by settings.lightSyncSpeakerOffsetMs.collectAsState(initial = 0)
+    val captureEnabled by settings.captureOtherApps.collectAsState(initial = false)
+    val captureState by com.engabd.sendpin.capture.PlaybackCapture.state.collectAsStateWithLifecycle()
 
     // Entertainment areas, read from the process-scoped [DirectLightSync] rather than
     // fetched here. This screen is a NavHost destination, so screen-local state is
@@ -365,6 +412,15 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
     val configs by direct.entertainmentConfigs.collectAsStateWithLifecycle()
     val loadingConfigs by direct.configsLoading.collectAsStateWithLifecycle()
     val configError by direct.configsError.collectAsStateWithLifecycle()
+
+    val showStatus = com.engabd.sendpin.hue.ShowStatusRules.statusFor(
+        enabled = enabled,
+        sessionOpen = live,
+        feed = feed,
+        framesFresh = framesFresh,
+        scanState = scanState,
+        captureBlocked = captureState == com.engabd.sendpin.capture.PlaybackCapture.State.BLOCKED,
+    )
 
     Box(Modifier.fillMaxSize().background(Ink)) {
         Bloom(if (live) accent else TextFaint, 440.dp, (-40).dp, (-70).dp, if (live) 0.42f else 0.16f)
@@ -400,14 +456,7 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
                             Text("Sync lights to music", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
                             Text(
-                                when {
-                                    live -> "Reacting to the beat"
-                                    // "on this phone", not "this phone": Music Assistant
-                                    // playing to this phone counts, and the old wording
-                                    // read as though it never could.
-                                    enabled -> "Waiting for music on this phone"
-                                    else -> "Lights are steady"
-                                },
+                                showStatusText(showStatus, remoteSpeaker),
                                 color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
                             )
                         }
@@ -546,6 +595,51 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                 ColourPicker(selected = colour, showDynamic = true, songFromBeats = true) { scheme ->
                     scope.launch { settings.setLightSyncColor(scheme) }
                 }
+
+                // Only while the scan-driven show is the one running. It has no
+                // equivalent of the live path's measured [AudioLead] — there is no sink
+                // here to measure — and the latency from Music Assistant out to a cast
+                // group or a networked amp is device-specific and never reported. There
+                // is no way to work it out; there is only asking.
+                if (feed == com.engabd.sendpin.hue.LightSyncFeed.SCAN_REMOTE) {
+                    Spacer(Modifier.height(22.dp))
+                    SectionLabel("Speaker offset")
+                    Spacer(Modifier.height(10.dp))
+                    var offsetDrag by remember { mutableStateOf<Int?>(null) }
+                    val shownOffset = offsetDrag ?: speakerOffsetMs
+                    LabeledSlider(
+                        icon = Icons.Default.Speaker,
+                        value = ((shownOffset + OFFSET_RANGE_MS) / (2f * OFFSET_RANGE_MS)).coerceIn(0f, 1f),
+                        onChange = { offsetDrag = offsetFromSlider(it) },
+                        onCommit = {
+                            val ms = offsetFromSlider(it)
+                            offsetDrag = null
+                            scope.launch { settings.setLightSyncSpeakerOffsetMs(ms) }
+                        },
+                        trailing = "$shownOffset ms",
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Positive delays the lights; negative pushes them ahead of the speaker. " +
+                            "Nudge it until the beat lands with the sound in the room.",
+                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+
+                Spacer(Modifier.height(22.dp))
+                SectionLabel("Other apps")
+                Spacer(Modifier.height(10.dp))
+                CaptureCard(
+                    enabled = captureEnabled,
+                    state = captureState,
+                    accent = accent,
+                    onEnable = { on ->
+                        scope.launch { settings.setCaptureOtherApps(on) }
+                        if (on) com.engabd.sendpin.capture.PlaybackCapture.requestStart(context)
+                        else com.engabd.sendpin.capture.PlaybackCapture.stop(context)
+                    },
+                    onRetry = { com.engabd.sendpin.capture.PlaybackCapture.requestStart(context) },
+                )
 
                 Spacer(Modifier.height(22.dp))
                 SectionLabel("Brightness ceiling")
@@ -1175,4 +1269,140 @@ private fun CircleBtn(icon: ImageVector, cd: String, onClick: () -> Unit) {
     Box(Modifier.size(34.dp).clip(CircleShape).background(Glass).border(1.dp, Hairline, CircleShape).clickable(onClick = onClick), contentAlignment = Alignment.Center) {
         Icon(icon, cd, tint = TextSecondary, modifier = Modifier.size(17.dp))
     }
+}
+
+/**
+ * One line describing what the show is doing.
+ *
+ * `SCAN_DRIVEN` is the important one, and its wording is deliberate: "following the
+ * beat grid", not "reacting to the beat". The two are genuinely different things —
+ * one is a schedule read off an offline analysis, the other is a response to audio
+ * arriving right now — and claiming the second while doing the first is the bug this
+ * whole path exists to fix.
+ */
+private fun showStatusText(status: com.engabd.sendpin.hue.ShowStatus, speaker: String?): String = when (status) {
+    com.engabd.sendpin.hue.ShowStatus.OFF -> "Lights are steady"
+    // "on this phone", not "this phone": Music Assistant playing to this phone
+    // counts, and the old wording read as though it never could.
+    com.engabd.sendpin.hue.ShowStatus.WAITING -> "Waiting for music on this phone"
+    com.engabd.sendpin.hue.ShowStatus.LIVE_PCM -> "Reacting to the beat"
+    com.engabd.sendpin.hue.ShowStatus.SCAN_DRIVEN ->
+        "Following the beat grid — playing on ${speaker ?: "another speaker"}, so the show is " +
+            "scheduled from this track's analysis"
+    com.engabd.sendpin.hue.ShowStatus.SCAN_PENDING -> "Analysing this track…"
+    com.engabd.sendpin.hue.ShowStatus.NO_SCAN ->
+        "Playing on ${speaker ?: "another speaker"}, which this phone can't hear — and there is " +
+            "no analysis for this track"
+    com.engabd.sendpin.hue.ShowStatus.CAPTURE -> "Reacting to another app"
+    com.engabd.sendpin.hue.ShowStatus.CAPTURE_BLOCKED -> "That app does not allow its audio to be captured"
+}
+
+/** The speaker-offset slider's half-range, in milliseconds. */
+private const val OFFSET_RANGE_MS = 2000
+
+/** Snapped to 10 ms: finer than that is below what anyone can hear against a beat. */
+private fun offsetFromSlider(fraction: Float): Int {
+    val raw = (fraction * 2f - 1f) * OFFSET_RANGE_MS
+    return (Math.round(raw / 10f) * 10).coerceIn(-OFFSET_RANGE_MS, OFFSET_RANGE_MS)
+}
+
+
+/**
+ * Light Sync listening to whatever else is playing on the phone.
+ *
+ * Written as a set-up action rather than a plain switch because it is not one: it
+ * needs a runtime microphone grant (which is what `AudioPlaybackCapture` is gated on,
+ * even though no microphone is opened), a system consent dialog, and a foreground
+ * service — and on Android 14+ the consent dialog reappears every single time capture
+ * starts, because the projection token is single-use. Presenting that as a toggle
+ * would promise a thing the platform does not offer.
+ *
+ * The blocked message is the part that earns the feature its keep. An app that opts
+ * out of capture is delivered as bit-exact silence with no error of any kind, so
+ * without saying so plainly the only observation available to the user is "the lights
+ * do nothing", which is indistinguishable from a bug here.
+ */
+@Composable
+private fun CaptureCard(
+    enabled: Boolean,
+    state: com.engabd.sendpin.capture.PlaybackCapture.State,
+    accent: androidx.compose.ui.graphics.Color,
+    onEnable: (Boolean) -> Unit,
+    onRetry: () -> Unit,
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var granted by remember {
+        mutableStateOf(
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                context, android.Manifest.permission.RECORD_AUDIO,
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED,
+        )
+    }
+    val permission = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+    ) { ok ->
+        granted = ok
+        if (ok) onEnable(true)
+    }
+
+    GlassCard(radius = 18.dp, fill = if (enabled) accent.a(0.10f) else Glass) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+                    Text(
+                        "React to other apps",
+                        color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp,
+                    )
+                    Text(
+                        captureBlurb(enabled, state),
+                        color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
+                    )
+                }
+                AccentSwitch(enabled) { on ->
+                    if (on && !granted) permission.launch(android.Manifest.permission.RECORD_AUDIO)
+                    else onEnable(on)
+                }
+            }
+            if (state == com.engabd.sendpin.capture.PlaybackCapture.State.BLOCKED) {
+                Text(
+                    "This app does not allow its audio to be captured. YouTube, YouTube Music " +
+                        "and most DRM-protected apps opt out, and nothing here can change that. " +
+                        "Spotify, podcast apps and local players usually work.",
+                    color = WarnAmber, style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            if (state == com.engabd.sendpin.capture.PlaybackCapture.State.STOPPED_BY_SYSTEM ||
+                state == com.engabd.sendpin.capture.PlaybackCapture.State.DENIED
+            ) {
+                Text(
+                    "Android asks permission each time capture starts — the grant is single-use " +
+                        "and cannot be remembered.",
+                    color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                )
+                Box(
+                    Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .border(1.dp, accent.a(0.55f), RoundedCornerShape(12.dp))
+                        .clickable(onClick = onRetry)
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                ) {
+                    Text("Start again", color = accent, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                }
+            }
+        }
+    }
+}
+
+private fun captureBlurb(
+    enabled: Boolean,
+    state: com.engabd.sendpin.capture.PlaybackCapture.State,
+): String = when {
+    !enabled -> "Follow music from any other app on this phone."
+    state == com.engabd.sendpin.capture.PlaybackCapture.State.RUNNING -> "Listening."
+    state == com.engabd.sendpin.capture.PlaybackCapture.State.QUIET -> "Listening — nothing playing."
+    state == com.engabd.sendpin.capture.PlaybackCapture.State.BLOCKED -> "That app will not allow it."
+    state == com.engabd.sendpin.capture.PlaybackCapture.State.STARTING -> "Starting…"
+    state == com.engabd.sendpin.capture.PlaybackCapture.State.STOPPED_BY_SYSTEM -> "Capture was stopped."
+    state == com.engabd.sendpin.capture.PlaybackCapture.State.DENIED -> "Permission was not granted."
+    else -> "Not listening."
 }

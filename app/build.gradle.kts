@@ -21,8 +21,8 @@ android {
         applicationId = "com.engabd.sendpin"
         minSdk = 31
         targetSdk = 36
-        versionCode = 49
-        versionName = "0.10.4"
+        versionCode = 50
+        versionName = "0.10.5"
 
         // app/src/androidTest had no runner because it had no tests. The two below
         // are the ones Phase 0 found by hand, and neither can run on the JVM: both
@@ -44,6 +44,16 @@ android {
                 // must match the app's, or the linker sees duplicate/conflicting
                 // C++ runtime symbols at load time.
                 arguments += "-DANDROID_STL=c++_shared"
+                // 16 KB page sizes. Every 64-bit Android device shipping from 2025 uses
+                // them, Play requires support for anything targeting Android 15+, and
+                // without this the loader falls back to a compatibility mode and says so
+                // in a dialog on first launch.
+                //
+                // Only *this* library needed it. Every prebuilt dependency in the APK —
+                // oboe, datastore, androidx.graphics.path, and the STL - already ships
+                // 16 KB-aligned; the one built here did not, because NDK r27 aligns to
+                // 4 KB unless asked. (r28 makes it the default and this becomes a no-op.)
+                arguments += "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON"
             }
         }
     }
@@ -51,6 +61,12 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = true
+            // Drops resources R8 proved unreachable. Only meaningful alongside
+            // isMinifyEnabled, which is why it was never worth turning on separately —
+            // and worth something now that the app carries Glance layouts, three
+            // notification channels and a Material Components dependency it uses one
+            // XML theme from.
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             // Signed with the debug key so a minified build is installable without a
             // release keystore. This is the build that should be judged for smoothness:

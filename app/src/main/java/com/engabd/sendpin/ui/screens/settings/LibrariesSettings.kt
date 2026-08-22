@@ -25,6 +25,7 @@ import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.library.AuthStyle
 import com.engabd.sendpin.library.ServerConfig
 import com.engabd.sendpin.library.ServerKind
+import com.engabd.sendpin.local.LocalFolders
 import com.engabd.sendpin.local.LocalMediaSource
 import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ui.design.GlassCard
@@ -35,7 +36,6 @@ import com.engabd.sendpin.ui.theme.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import org.json.JSONArray
 import android.content.ContentResolver
 import android.content.Intent
 import android.net.Uri
@@ -288,7 +288,7 @@ private fun ProviderPicker(accent: Color, onPick: (ServerKind) -> Unit) {
                 "that keeps working with the network down, possible.",
         ) {}
 
-        ServerKind.available.forEach { kind ->
+        ServerKind.addable.forEach { kind ->
             NavRow(kindIcon(kind), kind.label, kind.blurb, accent) { onPick(kind) }
         }
 
@@ -362,9 +362,10 @@ private fun ServerDetail(
             username = user,
             password = pass,
             token = if (credentialsChanged && config.kind.auth != AuthStyle.TOKEN) "" else token,
-            options = config.options
-                .minus(LocalMediaSource.OPT_FOLDER_URIS)
-                .plus(ServerConfig.OPT_STREAM_FORMAT to format),
+            // The folder list stays. It used to be dropped here unconditionally, and
+            // only the picker path survived that by passing `customOptions` — so every
+            // *other* save of a local library silently wiped the chosen folder.
+            options = config.options.plus(ServerConfig.OPT_STREAM_FORMAT to format),
         )
     }
 
@@ -409,15 +410,36 @@ private fun ServerDetail(
                 else -> Unit
             }
 
-            if (config.kind == ServerKind.LOCAL) {
-                LocalFolderCard(config, accent, scope, settings) { next ->
+            if (!config.kind.needsAddress) {
+                LocalFolderCard(config, accent) { next ->
                     config = next
                     scope.launch {
                         save(makeActive = true, customOptions = next.options)
+                        if (isNew) onSaved(config.id)
+                        libraryVm.switchTo(next)
+                        libraryVm.connect()
                     }
-                    if (isNew) onSaved(config.id)
-                    libraryVm.switchTo(next)
-                    libraryVm.connect()
+                }
+                // The folder is optional, and the button is not. Picking a folder used
+                // to be the *only* path that persisted a device library — so adding
+                // "This device" and backing out without picking one wrote nothing at
+                // all, and the library never appeared in the switcher. No folder means
+                // "scan the whole phone", which is a perfectly good answer.
+                OledButton(
+                    when {
+                        connecting && isActive -> "Scanning…"
+                        isNew -> "Save & scan"
+                        else -> "Save & rescan"
+                    },
+                    enabled = !(connecting && isActive),
+                    accent = accent,
+                ) {
+                    scope.launch {
+                        save(makeActive = true)
+                        if (isNew) onSaved(config.id)
+                        libraryVm.switchTo(edited())
+                        libraryVm.connect()
+                    }
                 }
             } else {
                 OledButton(
@@ -446,7 +468,7 @@ private fun ServerDetail(
                             offline -> "Offline — playing downloads" to Health.WARN
                             ready -> "Connected" to Health.GOOD
                             connError != null -> connError!! to Health.BAD
-                            url.isBlank() -> "Not set up" to Health.IDLE
+                            url.isBlank() && config.kind.needsAddress -> "Not set up" to Health.IDLE
                             else -> "Not connected" to Health.IDLE
                         }
                         StatusLine(text, health, accent)
@@ -521,7 +543,10 @@ private fun ServerDetail(
             }
         }
 
-        if (!isNew) {
+        // Downloads is not a server anyone added and not one anyone can take away —
+        // it describes files this app itself put on the phone. Removing it would
+        // leave them playable and unreachable.
+        if (!isNew && config.kind != ServerKind.DOWNLOADS) {
             SettingsCard(
                 title = "Remove",
                 lead = "Takes this server off the list. Nothing is deleted on the server, and " +
@@ -562,25 +587,6 @@ private const val NEW_PREFIX = "__new__:"
 private fun pendingKind(detail: String): ServerKind? =
     if (detail.startsWith(NEW_PREFIX)) ServerKind.from(detail.removePrefix(NEW_PREFIX)) else null
 
-private fun folderUriKey(configId: String) = "localFolders:$configId"
-
-private fun parseFolderUris(json: String?): List<Uri> {
-    if (json.isNullOrBlank()) return emptyList()
-    val out = mutableListOf<Uri>()
-    val arr = JSONArray(json)
-    for (i in 0 until arr.length()) out += Uri.parse(arr.getString(i))
-    return out
-}
-
-private fun encodeFolderUris(uris: List<Uri>): String = JSONArray(uris.map { it.toString() }).toString()
-
-/**
- * Folder picker for local media.
- *
- * The chosen folder uri is persisted as a JSON array in the [ServerConfig] options
- * under [LocalMediaSource.OPT_FOLDER_URIS]. A persisted permission is taken so the
- * MediaStore query can read files under the tree after the picker closes.
- */
 /**
  * This phone as a player on *this* Music Assistant server.
  *
@@ -660,44 +666,100 @@ private fun JellyfinLibraryCard(
     }
 }
 
+/**
+ * Folder picker and audio permission for a device-local library.
+ *
+ * Two controls, and both are needed. The permission is the one that was missing:
+ * `READ_MEDIA_AUDIO` has been in the manifest since the beginning and was requested
+ * nowhere, and [LocalMediaSource] answers an ungranted query with an empty list — so
+ * "no permission" and "no music on this phone" were the same screen.
+ *
+ * The chosen folder is persisted as a JSON array in the [ServerConfig] options under
+ * [LocalMediaSource.OPT_FOLDER_URIS], encoded by [LocalFolders] so the reader and the
+ * writer agree. A persistable permission is taken on the tree so the choice survives
+ * a reboot, even though the *scan* goes through MediaStore rather than the tree —
+ * see [LocalFolders] for why those are two different namespaces.
+ */
 @Composable
 private fun LocalFolderCard(
     config: ServerConfig,
     accent: Color,
-    scope: CoroutineScope,
-    settings: AppSettings,
     onChange: (ServerConfig) -> Unit,
 ) {
     val context = LocalContext.current
-    val uris = remember(config.id) { parseFolderUris(config.option(LocalMediaSource.OPT_FOLDER_URIS)) }
-    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { treeUri: Uri? ->
+    val uris = remember(config.id, config.options) {
+        LocalFolders.decode(config.option(LocalMediaSource.OPT_FOLDER_URIS))
+            .mapNotNull { runCatching { Uri.parse(it) }.getOrNull() }
+    }
+    var granted by remember { mutableStateOf(LocalMediaSource.hasAudioPermission(context)) }
+    val permission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { ok -> granted = ok }
+
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { treeUri: Uri? ->
         treeUri ?: return@rememberLauncherForActivityResult
         runCatching {
             context.contentResolver.takePersistableUriPermission(treeUri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        val next = config.withOption(LocalMediaSource.OPT_FOLDER_URIS, encodeFolderUris(listOf(treeUri)))
-        onChange(next)
+        onChange(
+            config.withOption(
+                LocalMediaSource.OPT_FOLDER_URIS,
+                LocalFolders.encode(listOf(treeUri.toString())),
+            ),
+        )
+    }
+
+    if (!granted) {
+        SettingsCard(
+            title = "Access to your music",
+            lead = "Android has to allow this app to read audio files before anything can be listed.",
+        ) {
+            OledButton("Allow access", accent = accent) {
+                permission.launch(LocalMediaSource.AUDIO_PERMISSION)
+            }
+            Note("Nothing is uploaded. The files are read straight off the phone and played here.")
+        }
     }
 
     SettingsCard(
         title = "Music folder",
-        lead = if (uris.isEmpty()) "Pick the folder that holds your music." else "Using ${uris.size} folder${if (uris.size == 1) "" else "s"}.",
+        lead = if (uris.isEmpty()) {
+            "Optional. Leave this alone to use every audio file on the phone, or pick one folder to narrow it down."
+        } else {
+            "Using ${uris.size} folder${if (uris.size == 1) "" else "s"}."
+        },
     ) {
         if (uris.isNotEmpty()) {
             uris.forEach { uri ->
                 Text(
-                    uri.lastPathSegment ?: uri.toString(),
+                    // The document id reads as "primary:Music/Rock", which is the
+                    // folder as the user picked it. `lastPathSegment` is the encoded
+                    // whole of that and read as gibberish.
+                    runCatching { android.provider.DocumentsContract.getTreeDocumentId(uri) }
+                        .getOrNull()?.substringAfter(':')?.ifBlank { "Whole device" }
+                        ?: uri.toString(),
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.padding(vertical = 4.dp),
                 )
             }
         }
-        OledButton(
-            if (uris.isEmpty()) "Choose folder" else "Change folder",
-            accent = accent,
-            outline = uris.isNotEmpty(),
-        ) { launcher.launch(null) }
-        Note("Only audio files you choose are indexed. The scan happens when you activate this library.")
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Box(Modifier.weight(1f)) {
+                OledButton(
+                    if (uris.isEmpty()) "Choose folder" else "Change folder",
+                    accent = accent,
+                    outline = uris.isNotEmpty(),
+                ) { picker.launch(null) }
+            }
+            if (uris.isNotEmpty()) {
+                Box(Modifier.weight(1f)) {
+                    OledButton("Whole phone", accent = accent, outline = true) {
+                        onChange(config.withOption(LocalMediaSource.OPT_FOLDER_URIS, LocalFolders.encode(emptyList())))
+                    }
+                }
+            }
+        }
+        Note("The scan runs when you save. Music is found by its tags, so a flat folder still browses by artist and album.")
     }
 }
 
@@ -709,5 +771,6 @@ private fun kindIcon(kind: ServerKind): ImageVector = when (kind) {
     ServerKind.KODI -> Icons.Default.Tv
     ServerKind.SMB, ServerKind.WEBDAV -> Icons.Default.Folder
     ServerKind.LOCAL -> Icons.Default.Smartphone
+    ServerKind.DOWNLOADS -> Icons.Default.DownloadDone
     else -> Icons.Default.CloudQueue
 }

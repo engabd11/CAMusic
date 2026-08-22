@@ -97,14 +97,37 @@ enum class ServerKind(
         "Music already on the phone, or on an SD card.",
         supported = true,
         auth = AuthStyle.NONE,
+    ),
+    DOWNLOADS(
+        "Downloads",
+        "Everything saved for offline. Plays with every server switched off.",
+        supported = true,
+        auth = AuthStyle.NONE,
     );
 
     /** Music Assistant is the one kind the app does not play itself. See [MusicSource]. */
     val playsLocally: Boolean get() = this != MUSIC_ASSISTANT
 
+    /**
+     * Whether a setup form asking for a host has anything to ask for.
+     *
+     * Replaces the hardcoded `== ServerKind.LOCAL` tests that used to gate "does this
+     * library count as configured" and "is a blank url a reason to bail out of
+     * connecting". Both were about there being nothing to type, not about that one
+     * kind, and every kind that reads something already on the phone hits them.
+     */
+    val needsAddress: Boolean get() = auth != AuthStyle.NONE
+
     companion object {
         /** The ones a user can actually add today, in the order the picker shows them. */
         val available: List<ServerKind> get() = entries.filter { it.supported }
+
+        /**
+         * The subset a user can *add*. [DOWNLOADS] is always present and cannot be
+         * created, renamed away or removed — it describes files this app itself put on
+         * the phone, so there is nothing to configure and nothing to point elsewhere.
+         */
+        val addable: List<ServerKind> get() = available.filterNot { it == DOWNLOADS }
 
         /** The rest, so the picker can show where this is going. */
         val planned: List<ServerKind> get() = entries.filterNot { it.supported }
