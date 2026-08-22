@@ -56,7 +56,7 @@ class PlaybackCaptureService : Service() {
 
         val code = intent?.getIntExtra(EXTRA_RESULT_CODE, 0)?.takeIf { it != 0 }
             ?: PlaybackCapture.pendingResultCode
-        val data = intent?.let { IntentCompat.resultData(it) } ?: PlaybackCapture.pendingResultData
+        val data = intent?.let { resultData(it) } ?: PlaybackCapture.pendingResultData
         if (code == 0 || data == null) {
             PlaybackCapture.publish(PlaybackCapture.State.DENIED)
             stopSelf()
@@ -181,9 +181,15 @@ class PlaybackCaptureService : Service() {
         }
     }
 
-    /** `getParcelableExtra` is deprecated untyped; kept in one place. */
-    private object IntentCompat {
-        fun resultData(intent: Intent): Intent? =
-            intent.getParcelableExtra(EXTRA_RESULT_DATA, Intent::class.java)
-    }
+    /**
+     * The consent result out of the service Intent.
+     *
+     * Through `androidx.core`, not `Intent.getParcelableExtra(name, Class)` directly:
+     * the typed overload is API 33 and minSdk here is 31, so calling it straight would
+     * be a `NoSuchMethodError` on Android 12 — the untyped one is only *deprecated*
+     * there, which is exactly the shape of mistake that compiles cleanly and crashes
+     * on a third of the install base.
+     */
+    private fun resultData(intent: Intent): Intent? =
+        androidx.core.content.IntentCompat.getParcelableExtra(intent, EXTRA_RESULT_DATA, Intent::class.java)
 }

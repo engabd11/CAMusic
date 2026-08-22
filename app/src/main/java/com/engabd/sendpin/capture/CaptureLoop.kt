@@ -23,6 +23,7 @@ import java.nio.ByteOrder
  * the same reason: this runs at audio rate and a garbage collection here is an
  * audible gap in the light show.
  */
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class CaptureLoop(
     private val context: Context,
     private val projection: MediaProjection,
