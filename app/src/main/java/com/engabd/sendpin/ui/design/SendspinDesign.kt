@@ -48,7 +48,6 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -1006,18 +1005,23 @@ fun HSlider(
 }
 
 /**
- * The Now Playing seek bar alternate skin: the whole bar is a sine wave instead of
- * a straight line, wobbling gently while the track plays — like a water surface
- * rather than a ruler. Selected from Appearance settings
+ * The Now Playing seek bar alternate skin: the played stretch is a sine wave
+ * instead of a straight line, wobbling gently while the track plays — like a water
+ * surface rather than a ruler. Selected from Appearance settings
  * ([com.engabd.sendpin.data.AppSettings.seekBarStyle]); [HSlider] stays the default
  * and remains what every other slider in the app (volume, DSP, lyrics offset) uses.
  *
- * **One curve, drawn twice.** The played stretch is painted in the accent and the
- * remainder muted, both clipped out of the same [Path]. They used to be different
- * geometry — a wave for the played part and a flat `drawLine` across the full width
- * behind it — which meant the grey rail sat dead still while the accent wobbled over
- * it, and showed through wherever the sine crossed centre. Sharing the path is what
- * makes the bar read as one moving line.
+ * **The wave is only what has played.** The accent stretch behind the knob is the
+ * sine; the remainder ahead of it is a straight muted rail, and the wave grows into
+ * that rail as the knob advances. Both used to be clipped out of one full-width
+ * curve, which left the part of the track nobody had heard yet wobbling as though it
+ * had a shape of its own.
+ *
+ * The amplitude eases back to nothing across the last knob's-width before the knob,
+ * so a crest never has to step down onto the rail: the curve arrives at centre
+ * already flat and the join reads as one continuous line, while the flattening
+ * itself happens under the knob where nothing can see it. That is also why the knob
+ * no longer bobs — where the wave meets the rail is the centre line by construction.
  *
  * The curve is sampled every [WaveSampleStep] and joined through segment midpoints
  * with [Path.quadraticTo]. A polyline at a readable step visibly facets — and its
@@ -1098,48 +1102,64 @@ fun WaveSeekBar(
             val fillWidthPx = size.width * fill
             val amplitudePx = amplitudeDp.dp.toPx()
             val wavelengthPx = WaveLength.toPx()
-            fun waveY(x: Float): Float =
-                centerY + amplitudePx * sin((2 * PI * x / wavelengthPx) + phase).toFloat()
-
-            val stepPx = WaveSampleStep.toPx().coerceAtLeast(1f)
-            wavePath.reset()
-            var prevX = 0f
-            var prevY = waveY(0f)
-            wavePath.moveTo(prevX, prevY)
-            var x = stepPx
-            while (x < size.width) {
-                val y = waveY(x)
-                // Control point at the previous sample, endpoint at the midpoint
-                // between it and this one — the standard midpoint smoothing, which
-                // passes through the curve rather than cornering on it.
-                wavePath.quadraticTo(prevX, prevY, (prevX + x) / 2f, (prevY + y) / 2f)
-                prevX = x
-                prevY = y
-                x += stepPx
+            // The wave has to arrive at the rail's height rather than stepping down
+            // onto it from whatever crest it was on, and it has to do that without
+            // looking damped: the amplitude is smoothstepped to nothing across
+            // exactly the stretch the knob covers, so every part of the curve still
+            // visible either side of it is at full height.
+            val taperPx = knob.toPx().coerceAtLeast(1f)
+            fun waveY(x: Float): Float {
+                val t = ((fillWidthPx - x) / taperPx).coerceIn(0f, 1f)
+                val envelope = t * t * (3f - 2f * t)
+                return centerY + envelope * amplitudePx *
+                    sin((2 * PI * x / wavelengthPx) + phase).toFloat()
             }
-            wavePath.quadraticTo(prevX, prevY, size.width, waveY(size.width))
 
             val stroke = Stroke(width = strokePx, cap = StrokeCap.Round, join = StrokeJoin.Round)
             val gapPx = WaveGap.toPx()
-            // Unplayed remainder, muted — the same curve, so it wobbles in lockstep.
-            if (fillWidthPx < size.width) {
-                clipRect(left = (fillWidthPx + gapPx).coerceAtMost(size.width)) {
-                    drawPath(wavePath, color = trackColor, style = stroke)
-                }
-            }
+
+            // What has played: the wave, in the accent, from the start to the knob.
             if (fillWidthPx > 0f) {
-                clipRect(right = fillWidthPx) {
-                    drawPath(wavePath, brush = accentBrush, style = stroke)
+                val stepPx = WaveSampleStep.toPx().coerceAtLeast(1f)
+                wavePath.reset()
+                var prevX = 0f
+                var prevY = waveY(0f)
+                wavePath.moveTo(prevX, prevY)
+                var x = stepPx
+                while (x < fillWidthPx) {
+                    val y = waveY(x)
+                    // Control point at the previous sample, endpoint at the midpoint
+                    // between it and this one — the standard midpoint smoothing, which
+                    // passes through the curve rather than cornering on it.
+                    wavePath.quadraticTo(prevX, prevY, (prevX + x) / 2f, (prevY + y) / 2f)
+                    prevX = x
+                    prevY = y
+                    x += stepPx
                 }
+                // The envelope is zero at the knob, so this endpoint is centre.
+                wavePath.quadraticTo(prevX, prevY, fillWidthPx, waveY(fillWidthPx))
+                drawPath(wavePath, brush = accentBrush, style = stroke)
             }
 
-            // The knob, bobbing on the wave leading edge rather than floating above
-            // it on a fixed line.
+            // What has not: a straight muted rail, picking up after the gap.
+            val railStart = fillWidthPx + gapPx
+            if (railStart < size.width) {
+                drawLine(
+                    color = trackColor,
+                    start = Offset(railStart, centerY),
+                    end = Offset(size.width, centerY),
+                    strokeWidth = strokePx,
+                    cap = StrokeCap.Round,
+                )
+            }
+
+            // The knob rides the centre line: it is the seam between the two, and the
+            // wave is already flat by the time it reaches here.
             val knobPx = knob.toPx()
             drawCircle(
                 color = knobColor,
                 radius = (if (dragging) knobPx * 1.35f else knobPx) / 2f,
-                center = Offset(fillWidthPx, waveY(fillWidthPx)),
+                center = Offset(fillWidthPx, centerY),
             )
         }
 
