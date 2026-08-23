@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Declares CAMusic as a media app to Android Auto. Paired with the
+  com.google.android.gms.car.application meta-data in AndroidManifest.xml, which
+  points here. See CarMediaLibraryService for the browse/session implementation.
+-->
+<automotiveApp>
+    <uses name="media" />
+</automotiveApp>

@@ -417,11 +417,10 @@ Genuinely still open:
 - **Device verification** of everything in the audio path. Nothing in this
   document, or in the light-sync work that followed it, has been run on
   hardware — CI covers unit tests, lint and a debug build, and that is all.
-- **Android Auto.** Both media services are plain `Service`s owning a
-  `MediaSession`; a browse tree needs `MediaLibraryService`.
-- **MA-path gapless.** Detection of `stream/end` pause vs. track boundary,
-  and seam-joining in `SendspinExoEngine`. Groundwork was in `SendspinAudioEngine`
-  which is no longer the selected engine — see `docs/v0.10-plan.md`.
+- **Android Auto — built, not yet verified in a car.** A third `MediaLibraryService`
+  (`car/CarMediaLibraryService.kt`) with its own browse tree and a `ShadePlayer`-style
+  session facade, beside the two existing media services rather than replacing
+  either. Wants a Desktop Head Unit pass and a real head unit.
 - **Crash reporting throughput.** `crash/CrashReporter` stores locally and can
   post to GitHub, but only uploads the most recent crash per launch.
 - **No UI or service-lifecycle instrumented tests.** Two androidTest files pin

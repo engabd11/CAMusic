@@ -94,6 +94,18 @@ class SendpinApp : Application(), ImageLoaderFactory {
     val playbackOwner: PlaybackOwner by lazy { PlaybackOwner(localPlayer, playback) }
 
     /**
+     * What's playing right now, as one snapshot spanning [localPlayer], the Sendspin
+     * path, and a remote MA speaker — the display-side counterpart to [playbackOwner].
+     * Not read by anything shipped today ([SendspinService] and
+     * [com.engabd.sendpin.ui.screens.DrivingBar] still compute their own, see
+     * [com.engabd.sendpin.service.UnifiedNowPlaying]'s doc) — built for the next
+     * surface that needs the same answer rather than a fourth derivation of it.
+     */
+    val unifiedNowPlaying: com.engabd.sendpin.service.UnifiedNowPlaying by lazy {
+        com.engabd.sendpin.service.UnifiedNowPlaying(playback, localPlayer, playbackOwner, maNowPlaying, deviceVolume)
+    }
+
+    /**
      * Driving mode — the always-reachable transport for a phone in a cradle.
      *
      * Process-scoped and built eagerly in [onCreate] rather than on first use: its

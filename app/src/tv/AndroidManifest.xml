@@ -68,5 +68,10 @@
         <activity android:name=".capture.CaptureConsentActivity" tools:node="remove" />
         <receiver android:name=".widget.NowPlayingWidgetReceiver" tools:node="remove" />
 
+        <!-- Android Auto is a phone-projected-to-a-car concept; a TV box is never in
+             a car. -->
+        <service android:name=".car.CarMediaLibraryService" tools:node="remove" />
+        <meta-data android:name="com.google.android.gms.car.application" tools:node="remove" />
+
     </application>
 </manifest>
