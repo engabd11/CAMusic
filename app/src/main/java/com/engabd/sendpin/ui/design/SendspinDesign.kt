@@ -52,6 +52,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -344,6 +345,32 @@ private const val FLIP_WASH_DIP = 0.35f
 
 /** How much deeper the cast shadow gets at edge-on, as a fraction of its resting depth. */
 private const val FLIP_SHADOW_LIFT = 0.9f
+
+// --- layout ---------------------------------------------------------------
+
+/**
+ * Lets this content spill [horizontal] past the padding its parent imposed, on both
+ * sides.
+ *
+ * For a horizontal scroller inside a padded vertical one. A shelf that stops at the
+ * screen margin reads as having ended there, so the row wants to run edge to edge
+ * with the margin expressed as its own `contentPadding` — tiles then scroll *under*
+ * the margin rather than stopping at it. Compose has no negative padding, and the
+ * grid item has already been measured inside the parent's insets by the time it is
+ * composed, so the width has to be handed back by measuring wider and placing left.
+ */
+fun Modifier.bleed(horizontal: Dp) = layout { measurable, constraints ->
+    val extra = horizontal.roundToPx() * 2
+    val width = constraints.maxWidth + extra
+    val placeable = measurable.measure(
+        constraints.copy(minWidth = width, maxWidth = width),
+    )
+    // Reports the original width, so the parent's own layout is untouched — only the
+    // painting and the touch area extend past it.
+    layout(constraints.maxWidth, placeable.height) {
+        placeable.place(-horizontal.roundToPx(), 0)
+    }
+}
 
 // --- colour ---------------------------------------------------------------
 

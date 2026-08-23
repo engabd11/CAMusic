@@ -27,6 +27,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -168,6 +169,110 @@ internal fun CoverTile(
         }
     }
 }
+
+/**
+ * One tile in a shelf carousel.
+ *
+ * A fixed size, unlike [CoverTile], which fills whatever slot the grid hands it. The
+ * carousel is a `LazyHorizontalGrid` inside a vertically-scrolling parent, and one of
+ * those has to be given a height outright — an unbounded one throws. Deriving that
+ * height from a tile that sizes itself to its text would make the number a guess that
+ * a two-line album title could invalidate, so the tile is pinned instead and both
+ * labels are held to one line.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+internal fun ShelfTile(
+    item: MaItem,
+    circular: Boolean = false,
+    onLongPress: (() -> Unit)? = null,
+    onClick: () -> Unit,
+) {
+    val press = rememberPressScale()
+    val shape = if (circular) CircleShape else RoundedCornerShape(14.dp)
+    Column(
+        Modifier
+            .pressScale(press)
+            .width(ShelfTileWidth)
+            .height(ShelfTileHeight)
+            .then(
+                if (onLongPress != null) {
+                    Modifier.combinedClickable(
+                        interactionSource = press.interactions,
+                        indication = null,
+                        onClick = onClick,
+                        onLongClick = onLongPress,
+                    )
+                } else {
+                    Modifier.clickable(
+                        interactionSource = press.interactions,
+                        indication = null,
+                        onClick = onClick,
+                    )
+                }
+            ),
+        horizontalAlignment = if (circular) Alignment.CenterHorizontally else Alignment.Start,
+    ) {
+        Box(
+            // No elevation shadow, for the same reason CoverTile has none: a
+            // shadow-casting render node per cell, to draw something very nearly
+            // invisible against a true-black background.
+            Modifier
+                .size(ShelfTileWidth)
+                .clip(shape)
+                .background(Ink3)
+                .border(1.dp, HairlineSoft, shape),
+            contentAlignment = Alignment.Center,
+        ) {
+            val art = rememberArtRequest(item.image, pixels = 240)
+            if (art != null) {
+                AsyncImage(
+                    model = art, contentDescription = item.name, contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .sharedArt("art-${item.itemId}-${item.provider}"),
+                )
+            } else if (circular) {
+                // An artist with no picture gets initials rather than a generic
+                // silhouette — the same fallback the artist screen uses.
+                GradientAvatar(
+                    item.name.firstOrNull()?.uppercase() ?: "?",
+                    item.itemId.hashCode(),
+                    size = ShelfTileWidth,
+                )
+            } else {
+                Icon(Icons.Default.Album, null, tint = TextFaint, modifier = Modifier.size(24.dp))
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            item.name, color = TextPrimary, fontFamily = AppFont, fontWeight = FontWeight.Bold,
+            fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            textAlign = if (circular) TextAlign.Center else null,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        item.subtitle?.let {
+            Text(
+                it, color = inkOn(0.38f), fontFamily = AppFont, fontSize = 11.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                textAlign = if (circular) TextAlign.Center else null,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+}
+
+/** How wide one carousel tile is. Three and a bit fit across a phone. */
+internal val ShelfTileWidth = 116.dp
+
+/** Art, an 8dp gap, then two one-line labels. Fixed, so the carousel's height is too. */
+internal val ShelfTileHeight = 158.dp
+
+/** Between the two rows of a carousel. */
+internal val ShelfRowGap = 12.dp
+
+/** Between tiles along a carousel. */
+internal val ShelfTileGap = 12.dp
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
