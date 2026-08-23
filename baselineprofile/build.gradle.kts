@@ -13,6 +13,12 @@ android {
         minSdk = 31
         targetSdk = 36
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // :app now has a "platform" flavor dimension (mobile/tv). This module has no
+        // opinion of its own on it - LibraryScrollProfile drives phone UI journeys,
+        // so always resolve :app against the mobile flavor rather than leaving the
+        // dependency ambiguous.
+        missingDimensionStrategy("platform", "mobile")
     }
 
     compileOptions {

@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Overlay merged on top of app/src/main/AndroidManifest.xml for the "tv" flavor.
+  Everything below either adds TV-only declarations (leanback feature, banner,
+  TvMainActivity) or strips a phone-only permission/component via
+  tools:node="remove" so a TV install's permission list doesn't carry anything a
+  set-top box has no business asking for (RECORD_AUDIO for the other-apps capture
+  path, location for the speed-limit alert, phone state for call-pause, the
+  driving-mode overlay). See app/src/main/java/com/engabd/sendpin/SendpinApp.kt's
+  Platform.isTelevision guard for the runtime half of the same split.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Makes the app eligible for the Leanback/Google TV launcher row and (were
+         this ever to ship on Play) excludes touch-only devices from seeing it. -->
+    <uses-feature android:name="android.software.leanback" android:required="true" />
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+
+    <!-- Light Sync reacting to other apps (MediaProjection capture) is not part of
+         the TV release - see capture/PlaybackCaptureService below. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" tools:node="remove" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" tools:node="remove" />
+
+    <!-- Driving mode, its overlay and its Bluetooth trigger are a phone-in-a-car
+         concept with no TV equivalent. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" tools:node="remove" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" tools:node="remove" />
+
+    <!-- Pause-for-calls: a TV has no phone radio. -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" tools:node="remove" />
+
+    <!-- Speed-limit alert / speed-adaptive volume: a TV does not move. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" tools:node="remove" />
+
+    <application android:banner="@drawable/tv_banner">
+
+        <!-- The phone launcher entry is removed outright: it must not be reachable
+             on a TV (no touchscreen, no LEANBACK_LAUNCHER category), and leaving it
+             declared would let it compete with TvMainActivity for the launcher slot. -->
+        <activity android:name=".MainActivity" tools:node="remove" />
+
+        <!--
+          The TV entry point. LEANBACK_LAUNCHER, not the ordinary LAUNCHER category
+          MainActivity used - Android TV launchers query specifically for the former,
+          so this (not the banner, not the leanback <uses-feature>) is what actually
+          makes the app appear on the TV home screen.
+        -->
+        <activity
+            android:name=".tv.TvMainActivity"
+            android:exported="true"
+            android:theme="@style/Theme.Sendspin">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Phone-only components with no TV equivalent: Quick Settings tiles, the
+             driving overlay window, the MediaProjection capture path (see the
+             RECORD_AUDIO removal above), and the home-screen widget (Android TV has
+             no home-screen-widget surface at all). -->
+        <service android:name=".service.LightSyncTileService" tools:node="remove" />
+        <service android:name=".service.DrivingModeTileService" tools:node="remove" />
+        <service android:name=".service.DrivingOverlayService" tools:node="remove" />
+        <service android:name=".capture.PlaybackCaptureService" tools:node="remove" />
+        <activity android:name=".capture.CaptureConsentActivity" tools:node="remove" />
+        <receiver android:name=".widget.NowPlayingWidgetReceiver" tools:node="remove" />
+
+    </application>
+</manifest>

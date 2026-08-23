@@ -21,20 +21,31 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      # :app has a "platform" flavor dimension (mobile/tv) - run both explicitly
+      # rather than the aggregate task names, so a failure in one flavor is
+      # attributed clearly instead of hiding inside "testDebugUnitTest".
       - name: Run unit tests
-        run: ./gradlew :app:testDebugUnitTest
+        run: |
+          ./gradlew :app:testMobileDebugUnitTest
+          ./gradlew :app:testTvDebugUnitTest
 
       - name: Run lint
-        run: ./gradlew :app:lintDebug
+        run: ./gradlew :app:lintMobileDebug :app:lintTvDebug
 
-      - name: Build debug APK
-        run: ./gradlew assembleDebug
+      - name: Build debug APKs
+        run: ./gradlew assembleMobileDebug assembleTvDebug
 
-      - name: Upload APK
+      - name: Upload mobile APK
         uses: actions/upload-artifact@v4
         with:
-          name: debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: mobile-debug-apk
+          path: app/build/outputs/apk/mobile/debug/app-mobile-debug.apk
+
+      - name: Upload TV APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: tv-debug-apk
+          path: app/build/outputs/apk/tv/debug/app-tv-debug.apk
 
       - name: Upload test results
         if: always()
