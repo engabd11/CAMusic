@@ -116,6 +116,48 @@ room still keeps time.
 - `AutoIntensityPicker.update`'s `character`, `dynamics`, `lo`, `hi`, `signal`
   and `mood` — the parameters it has always accepted and nothing ever supplied.
 - `AnalysisFrame.melbankRef`, which makes `bandLoudStrength` reachable.
+- `TrackScan.key`, `beatsPerBar` and `ScanSection.label` — added after the
+  original build, and covered below.
+
+### What analyser version 3 added
+
+The scan carries four things it did not, and one it carried badly.
+
+- **`key`** — the track's musical key, from a key-profile correlation over a
+  tuning-corrected whole-track chroma (`audio/KeyDetection.kt`). Version 2 had a
+  key too, and it was close to arbitrary: it read a chroma built by assigning FFT
+  bin magnitudes to their nearest semitone, and at this analyser's 46 ms window a
+  partial's main lobe is 43 Hz wide — three and a half semitones at 200 Hz — so
+  the bottom of the range carried no usable pitch information. Version 3 reads
+  interpolated spectral peaks instead. Measured on real music it went from
+  agreeing with itself about a transposed copy of the same track 12.4 % of the
+  time to 71.1 %, against a 1-in-12 chance floor. See
+  `tools/analysis-harness/README.md`.
+- **`tuningCents`** — how far the record sits from A440, measured off the same
+  peaks. Not used by the show; kept because it is the one number that says *why*
+  a key came out the way it did, and without it a surprising key looks like a bug
+  rather than a property of the file.
+- **`beatsPerBar`** — measured rather than assumed. It was hardcoded to 4 in two
+  places (`gridAt`'s `beatInBar` and its `barPhase`), so on anything in 3 the
+  "downbeat" landed on a different beat of each bar in turn and every bar-synced
+  effect in `SyncoEngine` walked round the bar instead of sitting on its one.
+  `detectMetre` scores the 3 and 4 folds on bass onset, harmonic change and
+  section-boundary alignment, with an asymmetric margin: four is overwhelmingly
+  the prior, and calling a 4/4 track a waltz is the worse of the two errors.
+- **`ScanSection.label`** — which sections sound alike. Boundaries alone say the
+  track changed at 1:04; they cannot say that what started there is the chorus
+  again. `MusicDnaLayer` steps its anchor hue by label, so a returning chorus
+  returns to its own colour.
+- **Sub-frame beat times.** The DP can only place a beat on a frame, so every
+  beat time was quantised to the 20 ms hop — visible in a scan report as every
+  BPM being an exact multiple of `60 / (k · 0.02)`. A parabola through the onset
+  envelope either side of the chosen frame recovers the real position, clamped to
+  ±½ a frame so a beat can never cross its neighbour.
+
+The file format goes to 4, appending metre, tuning and one label byte per section
+after the format-3 key — append-only, as every previous bump has been, so a
+format-1, -2 or -3 file still loads and reads back with the defaults those scans
+were already behaving as.
 
 ## Settings
 
@@ -157,7 +199,23 @@ is not re-downloaded on every play for a result already known.
   on a backwards seek;
 - cache round-trip, an unknown format, a truncated file, a hostile length field,
   delete-one, delete-all, rescan-replaces, and keys that are not filenames;
-- the resample clock holds the true rate at 48 kHz and at 16 kHz.
+- the resample clock holds the true rate at 48 kHz and at 16 kHz;
+- metre comes from harmony when the bass is flat — the case the old bass-only
+  fold could not do at all — and ties still go to 4;
+- refined beat times stay strictly ascending and inside the analysed span, and a
+  flat envelope is left on its frame index rather than interpolated off it;
+- sections that sound alike share a label and a different one does not;
+- a synthesised harmonic tone lands on its own pitch class, the fifth its third
+  harmonic manufactures does not outvote it, a 30-cent detune is measured to
+  within a few cents, and a 40-cent-sharp tone is still the note it is rather
+  than the one above;
+- a format-3 file still loads, reading back as 4 beats to the bar with no labels.
+
+**Measured against real music** (`tools/analysis-harness`, not in CI): shift
+consistency, detune stability, and tempo against librosa. The synthetic tests
+above say each algorithm does what it claims; only the harness says whether the
+result is any good on a mix with a kick drum in it. It is what found all three of
+the key-path faults version 3 fixes.
 
 **Still needs a device.** None of the following runs on a JVM:
 

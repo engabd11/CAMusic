@@ -58,7 +58,11 @@ Each layer implements:
 ```kotlin
 interface LightShowLayer {
     val id: String
-    fun apply(base: Map<Int, Rgb>, context: LayerContext): Map<Int, Rgb>
+    fun apply(
+        base: Map<Int, Rgb>,
+        context: LayerContext,
+        out: MutableMap<Int, Rgb> = HashMap(),
+    ): Map<Int, Rgb>
     fun reset() {}
 }
 ```
@@ -69,6 +73,15 @@ interface LightShowLayer {
 - `apply` must be pure in `base` and `context` — no I/O, no blocking — because
   it runs on the 60 Hz render loop. A layer needing external state
   (`PhoneConductorLayer`'s sensors) reads a snapshot before calling in.
+- `out` is a buffer the chain owns. A layer either fills it and returns it, or
+  returns `base` when it has nothing to say; it must never write to `base`.
+  `LayerChain` keeps **two** and alternates, so a four-layer chain allocates no
+  maps per frame rather than 240 a second. That is safe because nothing
+  downstream keeps a reference past the frame — `FieldSafety` and
+  `EffectRateLimiter` each build their own map from what they are handed — and
+  `DirectLightSync` copies at the one place that does outlive the frame,
+  `lastSent`. The parameter has a default so a test can still call `apply` with
+  two arguments.
 - `reset()` drops everything carried between frames. It is called when the
   analyzer resets (a seek or a track change — the same hook that clears the
   tempo and structure trackers), when a stream starts, and when a layer is
@@ -114,34 +127,67 @@ read nothing useful.
 
 **A deterministic visual fingerprint per track.** Tempo sets a slow colour
 drift's speed, key sets its anchor hue, the intensity profile shapes a
-brightness arc, and section boundaries step the anchor as the track moves
-through its own structure. Same song, same fingerprint, every time.
+brightness arc, and the *kind* of section the playhead is in steps the anchor as
+the track moves through its own structure. Same song, same fingerprint, every
+time.
+
+"Every time" is meant literally, and as first shipped it was not true. Two
+things were wrong, both fixed in analyser version 3:
+
+- **The drift phase was integrated from `dt`**, so it depended on when playback
+  started and on whether the track had been seeked. It is now read from
+  `trackPositionS`, which is a property of the song rather than of this play of
+  it — and that deletes the state rather than adding any.
+- **The anchor stepped by section *index***, so it accumulated down the track: at
+  0.06 turn a boundary, a twelve-section track walked most of the way round the
+  wheel and wrapped onto its own opening colour, and the second chorus was a
+  different colour from the first. It now steps by `ScanSection.label`, so a
+  returning chorus returns to its own hue and the anchor stays within about a
+  quarter turn of the key's colour.
 
 ### What makes it unique
 
 No Hue app has pre-scanned track data. This needed one thing the scan did not
-yet carry — a musical key — so `audio/KeyDetection.kt` adds
-Krumhansl-Kessler major/minor profile correlation over a whole-track chroma
-vector accumulated during the offline scan, using the same `CHROMA_FMIN` /
-`CHROMA_FMAX` bounds the live analyzer uses so the two cannot silently desync.
-That is `ANALYSER_VERSION` 2 and scan file format 3; a version-1 scan simply
-has no key and is flagged for re-analysis by the version bump.
+yet carry — a musical key — so `audio/KeyDetection.kt` correlates a whole-track
+chroma against major and minor key templates.
+
+The first version of that (analyser version 2) borrowed the live analyzer's
+`chromaProjection`, on the reasoning that the two halves of the analysis should
+not silently desync. That turned out to be the wrong call, and measurably so: the
+live projection assigns each FFT bin to its nearest semitone from 80 Hz up, and
+at the analyser's 46 ms window a partial's main lobe is 43 Hz wide — three and a
+half semitones at 200 Hz — so the bottom of its range carried no usable pitch
+information at all. Measured over real music (`tools/analysis-harness`), it agreed
+with itself about a transposed copy of the same track 12.4 % of the time, against
+a 1-in-12 chance floor.
+
+Version 3 reads **interpolated spectral peaks** instead, estimates the track's
+tuning off the same peaks, and credits each peak to every fundamental it could be
+a harmonic of. That takes the same measurement to 71.1 %. The live projection is
+untouched — `SongPalette` still uses it for the per-frame dominant-pitch-class
+hue, which is a different job under a different constraint. Scan file format 4; a
+version-2 scan keeps working and is flagged for the re-read that would give it a
+key worth having.
 
 ### How it layers
 
 ```
 fingerprint (once per scan)  ←  bpm → wave rate, key → anchor hue + saturation
-per frame                    ←  section index → hue step, intensity → level
+per frame                    ←  section label → hue step, intensity → level,
+                                track position → drift phase
 output                       ←  engine hue blended toward the anchor,
                                 engine value scaled by the arc, under the ceiling
 ```
 
 - **Wave rate** — `bpm / 240`, so 120 BPM is one cycle per two seconds. It
   drives a ±0.04-turn drift *around* the anchor, not a sweep through the wheel.
+  The phase is `trackPositionS × rate`, never an accumulator.
 - **Anchor hue** — `tonic / 12`, the chromatic pitch-class wheel `SongPalette`
   already established, so adjacent semitones stay adjacent in hue.
 - **Blend weight** — interpolated by the key's own confidence, between 0.15
-  (a guess) and 0.35 (a clean read). `detectKey` measures confidence as the gap
+  (a guess) and 0.35 (a clean read). This is what makes an unresolvable key
+  harmless rather than wrong: on the harness corpus two tracks read at a
+  confidence near zero, and those two barely move the room at all. `detectKey` measures confidence as the gap
   between the best and second-best correlation, because two keys a fifth apart
   scoring alike is this method's standard failure. At zero confidence the weight
   lands exactly on the no-key weight, so an unresolvable key degrades smoothly
@@ -257,7 +303,11 @@ already carries for room gestures.
 ### How it layers
 
 Additive in RGB: a fixed per-group hue at 0.9 saturation, at a level of
-`0.12 persistent glow + sustained glow + decaying flash` (0.25 s decay).
+`0.12 persistent glow + sustained glow + decaying flash` (0.25 s decay). The
+sustained levels are computed once a frame rather than per lamp — they never
+depended on the lamp, and reading them inside the loop re-summed the same
+melbank slice, and allocated a `Pair` from `melbankWindow`, once for every
+assigned channel in the room.
 Because it is additive it has never been through the engine's brightness
 multiply, so the level is **scaled** by the ceiling and the sum clamped to it —
 otherwise at a 20 % setting the glow alone would be most of the visible field.
@@ -309,6 +359,12 @@ Two details worth keeping:
   never once rotated — would still show a static hue offset from
   `rotationPhase`'s resting zero, which is a wave sitting still rather than a
   wave that isn't there. The envelope ramps over 0.3 s and falls over 1.0 s.
+- **And the gate that drives it has hysteresis.** `rotationRateZ` is the single
+  most recent gyroscope sample, so testing it against one threshold made a wrist
+  resting near that threshold flip `spinning` every frame — and the envelope,
+  whose whole point is a 0.3 s ramp, spent its life reversing instead of reaching
+  either end. There is now a 0.12 s EMA on the rate and a lower rate to stop at
+  (0.3 rad/s) than to start at (0.5).
 - **Auto-disable is a full revert.** Once inactive, `apply` returns `base`
   untouched, including cancelling a flash mid-decay. Putting the phone down
   should read as "back to normal", not "normal, except for one more pulse".
@@ -369,6 +425,21 @@ here.
    in `DirectLightSync`'s set of enabled ids, which is what makes "reset only
    the layer that just came on" expressible. `reset()` was not in the plan at
    all; without it, a layer's smoothed state outlived the track it described.
+
+## Measuring instead of assuming
+
+The scan-derived half of these layers is only as good as the scan, and until
+v0.10.6 nothing measured it. `tools/analysis-harness/` now does: it decodes an
+album to the exact format `OfflineExtractor` consumes, runs the real scan path
+over it, and scores the result on two things that need no ground truth —
+transpose a track by three semitones and its key must move by three; detune it by
+30 cents and its key must not move at all.
+
+That is what turned "the key detector is probably fine" into three specific,
+separately-diagnosed faults, and what says the fix worked rather than merely
+looking more principled. The README there records both. It is worth reading
+before retuning any constant in `TrackAnalysis.kt` or `KeyDetection.kt` — several
+of those constants are still, honestly, starting points.
 
 ## Deliberately not built
 
