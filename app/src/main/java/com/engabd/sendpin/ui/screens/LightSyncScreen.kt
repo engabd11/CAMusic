@@ -220,10 +220,22 @@ private fun HaLightSyncScreen(onBack: () -> Unit, viewModel: LightSyncViewModel)
                         }
                     }
                     Spacer(Modifier.height(8.dp))
-                    Text(
-                        "Auto spreads these across each song's own dynamic range - the quiet parts sit on the lowest, the biggest moments reach the highest.",
-                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        Text(
+                            "Auto spreads these across the song's own range.",
+                            color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                        )
+                        InfoChip(
+                            "Auto levels",
+                            "The quiet parts sit on the lowest level you have allowed, and the " +
+                                "biggest moments reach the highest — measured against that " +
+                                "song's own dynamic range rather than an absolute loudness.",
+                            Modifier.heightIn(0.dp),
+                        )
+                    }
                 }
 
                 val effectOptions = a.effectOptions.ifEmpty { EffectFallback }
@@ -546,12 +558,21 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
 
                 if (intensity == AUTO_INTENSITY) {
                     Spacer(Modifier.height(9.dp))
-                    Text(
-                        "Follows the music's character, not just its volume. A chill track " +
-                            "tops out low however loud its chorus gets; only a genuinely " +
-                            "heavy one reaches the top of what you allow below.",
-                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        Text(
+                            "Follows the music's character, not just its volume.",
+                            color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                        )
+                        InfoChip(
+                            "Auto intensity",
+                            "A chill track tops out low however loud its chorus gets. Only a " +
+                                "genuinely heavy one reaches the top of what you allow below.",
+                            Modifier.heightIn(0.dp),
+                        )
+                    }
                     Spacer(Modifier.height(12.dp))
                     Text("Auto may use", color = TextMuted, fontSize = 12.sp)
                     Spacer(Modifier.height(8.dp))
@@ -619,11 +640,22 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                         trailing = "$shownOffset ms",
                     )
                     Spacer(Modifier.height(8.dp))
-                    Text(
-                        "Positive delays the lights; negative pushes them ahead of the speaker. " +
-                            "Nudge it until the beat lands with the sound in the room.",
-                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        Text(
+                            "Nudge until the beat lands with the sound in the room.",
+                            color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                        )
+                        InfoChip(
+                            "Speaker offset",
+                            "Positive delays the lights; negative pushes them ahead of the " +
+                                "speaker. Which way you need depends on whether the speaker " +
+                                "buffers more than the bridge does.",
+                            Modifier.heightIn(0.dp),
+                        )
+                    }
                 }
 
                 Spacer(Modifier.height(22.dp))
@@ -769,23 +801,18 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                     // looks exactly the same either way, and that is the correct
                     // behaviour rather than a fault.
                     Spacer(Modifier.height(20.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text("Room gestures", color = TextSecondary, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                            Spacer(Modifier.height(2.dp))
-                            Text(
-                                "When a sound sweeps across the stereo field, or a swell rises " +
-                                    "with no beat under it, let the light travel across the room " +
-                                    "with it — along a line of lamps, or around a room with lamps " +
-                                    "in the corners. Rooms with only a couple of lamps get a soft " +
-                                    "brightness swell instead. Most songs have neither, and stay " +
-                                    "exactly as they are.",
-                                color = TextFaint, fontSize = 11.sp, lineHeight = 15.sp,
-                                modifier = Modifier.padding(end = 12.dp),
-                            )
-                        }
-                        AccentSwitch(spatial) { on -> scope.launch { settings.setLightSyncSpatial(on) } }
-                    }
+                    FeatureRow(
+                        title = "Room gestures",
+                        gist = "Let a sweep or a swell travel across the room.",
+                        info = "When a sound sweeps across the stereo field, or a swell rises " +
+                            "with no beat under it, the light travels with it — along a line " +
+                            "of lamps, or around a room with lamps in the corners.\n\n" +
+                            "Rooms with only a couple of lamps get a soft brightness swell " +
+                            "instead.\n\n" +
+                            "Most songs have neither, and stay exactly as they are. That is " +
+                            "the correct behaviour rather than a fault.",
+                        checked = spatial,
+                    ) { on -> scope.launch { settings.setLightSyncSpatial(on) } }
                 }
 
                 // Four additive light-show layers — see `docs/creative-light-shows.md`.
@@ -801,84 +828,107 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                 )
                 Spacer(Modifier.height(12.dp))
 
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Music DNA", color = TextSecondary, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            "A visual fingerprint unique to each track — tempo, key and " +
-                                "structure shape a slow colour floor underneath the reactive " +
-                                "show. Locks in a few seconds into a track once it has been " +
-                                "analysed.",
-                            color = TextFaint, fontSize = 11.sp, lineHeight = 15.sp,
-                            modifier = Modifier.padding(end = 12.dp),
-                        )
-                    }
-                    AccentSwitch(musicDna) { on -> scope.launch { settings.setMusicDnaEnabled(on) } }
-                }
+                FeatureRow(
+                    title = "Music DNA",
+                    gist = "A visual fingerprint unique to each track.",
+                    info = "Tempo, key and structure shape a slow colour floor underneath the " +
+                        "reactive show, so two songs never light the room the same way.\n\n" +
+                        "It locks in a few seconds into a track, once that track has been " +
+                        "analysed.",
+                    checked = musicDna,
+                ) { on -> scope.launch { settings.setMusicDnaEnabled(on) } }
 
                 Spacer(Modifier.height(16.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Emotional arc", color = TextSecondary, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            "The room's colour temperature follows the song's own arc — " +
-                                "cool through the calm parts, warming into a build, hot on " +
-                                "the drop, cold on a breakdown.",
-                            color = TextFaint, fontSize = 11.sp, lineHeight = 15.sp,
-                            modifier = Modifier.padding(end = 12.dp),
-                        )
-                    }
-                    AccentSwitch(emotionalArc) { on -> scope.launch { settings.setEmotionalArcEnabled(on) } }
-                }
+                FeatureRow(
+                    title = "Emotional arc",
+                    gist = "Colour temperature follows the song's own shape.",
+                    info = "Cool through the calm parts, warming into a build, hot on the drop, " +
+                        "cold on a breakdown — so the room reads the song's arc rather than " +
+                        "just its level.",
+                    checked = emotionalArc,
+                ) { on -> scope.launch { settings.setEmotionalArcEnabled(on) } }
 
                 Spacer(Modifier.height(16.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Phantom stage", color = TextSecondary, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            "Bass, drums, guitar, vocals and synths each get a fixed spot " +
-                                "in the room for the session, glowing softly and flashing " +
-                                "when that part of the mix hits — a rough approximation " +
-                                "from frequency, not real instrument separation.",
-                            color = TextFaint, fontSize = 11.sp, lineHeight = 15.sp,
-                            modifier = Modifier.padding(end = 12.dp),
-                        )
-                    }
-                    AccentSwitch(phantomStage) { on -> scope.launch { settings.setPhantomStageEnabled(on) } }
-                }
+                FeatureRow(
+                    title = "Phantom stage",
+                    gist = "Each part of the mix gets its own lamp.",
+                    info = "Bass, drums, guitar, vocals and synths each take a fixed spot in " +
+                        "the room for the session, glowing softly and flashing when that part " +
+                        "of the mix hits.\n\n" +
+                        "It is a rough approximation from frequency, not real instrument " +
+                        "separation — a bass guitar and a kick drum share a lamp.",
+                    checked = phantomStage,
+                ) { on -> scope.launch { settings.setPhantomStageEnabled(on) } }
 
                 Spacer(Modifier.height(16.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Phone conductor", color = TextSecondary, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            "Tilt the phone to shift colour across the room, flick it for a " +
-                                "flash, or turn it slowly to spin colour around the space. " +
-                                "Turns itself off after a few seconds of no motion.",
-                            color = TextFaint, fontSize = 11.sp, lineHeight = 15.sp,
-                            modifier = Modifier.padding(end = 12.dp),
-                        )
-                    }
-                    AccentSwitch(phoneConductor) { on -> scope.launch { settings.setPhoneConductorEnabled(on) } }
-                }
+                FeatureRow(
+                    title = "Phone conductor",
+                    gist = "Conduct the room by moving the phone.",
+                    info = "Tilt to shift colour across the room, flick for a flash, or turn " +
+                        "the phone slowly to spin colour around the space.\n\n" +
+                        "It stands down after a few seconds of no motion, so the phone can sit " +
+                        "on a table without conducting anything.",
+                    checked = phoneConductor,
+                ) { on -> scope.launch { settings.setPhoneConductorEnabled(on) } }
 
                 Spacer(Modifier.height(22.dp))
-                Text(
-                    // No "…has moved to…" line here any more. The app has never been
-                    // published, so nobody reading this has a previous version to be
-                    // redirected from — it only ever told a first-time user that
-                    // something they have not seen is somewhere they were not looking.
-                    "Direct mode syncs this phone's own playback, and needs no timing " +
-                        "offset — it measures how far the audio tap runs ahead of the " +
-                        "speaker and compensates exactly.",
-                    color = TextFaint, style = MaterialTheme.typography.bodySmall,
-                )
+                // No "…has moved to…" line here any more. The app has never been
+                // published, so nobody reading this has a previous version to be
+                // redirected from — it only ever told a first-time user that
+                // something they have not seen is somewhere they were not looking.
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    Text(
+                        "Direct mode needs no timing offset.",
+                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                    )
+                    InfoChip(
+                        "Direct mode timing",
+                        "Direct mode syncs this phone's own playback, so it can measure how " +
+                            "far the audio tap runs ahead of the speaker and compensate " +
+                            "exactly. There is nothing left for you to dial in.",
+                        Modifier.heightIn(0.dp),
+                    )
+                }
             }
         }
+    }
+}
+
+/**
+ * One light-show feature: what it is called, one line on what it does, the switch,
+ * and the rest of the explanation behind a chip.
+ *
+ * These five were written out by hand five times — a weighted Column of a 13sp title
+ * over a three-or-four-line 11sp description, beside an [AccentSwitch] — which is a
+ * `ToggleRow` in everything but name. The descriptions are the good part of this
+ * screen and none of them was cut; they moved somewhere with room to be read.
+ */
+@Composable
+private fun FeatureRow(
+    title: String,
+    gist: String,
+    info: String,
+    checked: Boolean,
+    onChange: (Boolean) -> Unit,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f).padding(end = 12.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    title, color = TextSecondary, fontWeight = FontWeight.SemiBold,
+                    fontSize = 13.sp,
+                )
+                InfoChip(title, info, Modifier.heightIn(0.dp))
+            }
+            Text(gist, color = TextFaint, fontSize = 11.sp, lineHeight = 15.sp)
+        }
+        AccentSwitch(checked, onChange)
     }
 }
 
@@ -889,7 +939,8 @@ private fun NoBridgeCard() {
             Text("No bridge paired", color = TextPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 17.sp)
             Spacer(Modifier.height(6.dp))
             Text(
-                "Direct mode talks to the Hue Bridge itself. Pair one in Settings → Servers → Light Sync, then pick an entertainment area here.",
+                "Pair one in Settings → Servers → Light Sync, then pick an entertainment " +
+                    "area here.",
                 color = TextMuted, fontSize = 13.sp,
             )
         }

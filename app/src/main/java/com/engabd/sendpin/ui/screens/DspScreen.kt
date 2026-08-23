@@ -47,24 +47,11 @@ import com.engabd.sendpin.ui.viewmodel.DspViewModel
 
 @Composable
 private fun WarningBanner() {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(WarnAmber.a(0.10f))
-            .border(1.dp, WarnAmber.a(0.25f), RoundedCornerShape(12.dp))
-            .padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.Top,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        Icon(Icons.Default.Warning, null, tint = WarnAmber, modifier = Modifier.size(16.dp).padding(top = 1.dp))
-        Text(
-            "DSP is applied server-side by Music Assistant. " +
-                "Extreme gain settings may cause clipping or distortion. " +
-                "Changes take effect immediately on the selected player.",
-            color = Color(0xFFF2C574), style = MaterialTheme.typography.bodySmall,
-        )
-    }
+    InfoNote(
+        "Applied server-side, live. Extreme gain can clip.",
+        tone = WarnAmber,
+        icon = Icons.Default.Warning,
+    )
 }
 
 // ─── What the server says it is doing ────────────────────────────────────
@@ -85,8 +72,6 @@ private fun DspStateBanner(details: MaDspDetails?) {
     val state = details?.state
     if (details == null || state == null) return
     val active = details.active
-    val tint = if (active) PositiveGreen else WarnAmber
-    val text = if (active) Color(0xFF8FE0B0) else Color(0xFFF2C574)
     val message = when (state) {
         "enabled" -> {
             val n = details.filterCount
@@ -94,8 +79,7 @@ private fun DspStateBanner(details: MaDspDetails?) {
                 if (n > 0) " — $n ${if (n == 1) "filter" else "filters"} in the chain." else "."
         }
         "disabled" ->
-            "Music Assistant is not filtering this stream. The settings below are saved, " +
-                "but nothing is being applied to the audio you are hearing."
+            "Not filtering this stream. The settings below are saved but unheard."
         // Never guess at a DSPState this app hasn't seen. Showing the server's own word
         // is worth more than a friendly sentence about the wrong thing.
         else ->
@@ -103,24 +87,11 @@ private fun DspStateBanner(details: MaDspDetails?) {
                 state.replace('_', ' ') +
                 "\" for this player, so the settings below may not be reaching the audio."
     }
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(tint.a(0.10f))
-            .border(1.dp, tint.a(0.25f), RoundedCornerShape(12.dp))
-            .padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.Top,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        Icon(
-            if (active) Icons.Default.GraphicEq else Icons.Default.WarningAmber,
-            null,
-            tint = tint,
-            modifier = Modifier.size(16.dp).padding(top = 1.dp),
-        )
-        Text(message, color = text, style = MaterialTheme.typography.bodySmall)
-    }
+    InfoNote(
+        message,
+        tone = if (active) PositiveGreen else WarnAmber,
+        icon = if (active) Icons.Default.GraphicEq else Icons.Default.WarningAmber,
+    )
 }
 
 // ─── Master toggle ───────────────────────────────────────────────────────
