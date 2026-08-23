@@ -109,12 +109,26 @@ internal fun CoverTile(
     onLongPress: (() -> Unit)? = null,
     onClick: () -> Unit,
 ) {
+    val press = rememberPressScale()
     Column(
-        if (onLongPress != null) {
-            Modifier.combinedClickable(onClick = onClick, onLongClick = onLongPress)
-        } else {
-            Modifier.clickable(onClick = onClick)
-        }
+        Modifier
+            .pressScale(press)
+            .then(
+                if (onLongPress != null) {
+                    Modifier.combinedClickable(
+                        interactionSource = press.interactions,
+                        indication = null,
+                        onClick = onClick,
+                        onLongClick = onLongPress,
+                    )
+                } else {
+                    Modifier.clickable(
+                        interactionSource = press.interactions,
+                        indication = null,
+                        onClick = onClick,
+                    )
+                }
+            )
     ) {
         Box(
             // No elevation shadow. It cost a shadow-casting render node per grid cell
@@ -162,17 +176,27 @@ internal fun RowCard(
     onLongClick: (() -> Unit)? = null,
     content: @Composable RowScope.() -> Unit,
 ) {
+    val press = rememberPressScale()
     Row(
         Modifier
+            .pressScale(press)
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
             .background(inkOn(0.03f))
             .border(1.dp, HairlineSoft, RoundedCornerShape(14.dp))
             .then(
                 when {
-                    onLongClick != null ->
-                        Modifier.combinedClickable(onClick = onClick ?: {}, onLongClick = onLongClick)
-                    onClick != null -> Modifier.clickable(onClick = onClick)
+                    onLongClick != null -> Modifier.combinedClickable(
+                        interactionSource = press.interactions,
+                        indication = null,
+                        onClick = onClick ?: {},
+                        onLongClick = onLongClick,
+                    )
+                    onClick != null -> Modifier.clickable(
+                        interactionSource = press.interactions,
+                        indication = null,
+                        onClick = onClick,
+                    )
                     else -> Modifier
                 }
             )

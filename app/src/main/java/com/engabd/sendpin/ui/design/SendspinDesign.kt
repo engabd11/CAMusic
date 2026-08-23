@@ -14,6 +14,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.*
@@ -343,6 +345,76 @@ private const val FLIP_WASH_DIP = 0.35f
 /** How much deeper the cast shadow gets at edge-on, as a fraction of its resting depth. */
 private const val FLIP_SHADOW_LIFT = 0.9f
 
+// --- colour ---------------------------------------------------------------
+
+/**
+ * The album accent, eased into rather than cut to.
+ *
+ * [LocalAccent] itself is deliberately *not* animated at the provider. It is a plain
+ * `compositionLocalOf` read at several hundred sites, so handing the tree a new
+ * colour on every frame of a transition would recompose all of them for the length
+ * of it — a recomposition storm, on every change of album, to smooth a colour most
+ * of those sites only use at 12% alpha.
+ *
+ * So the easing is done by the loud consumers instead: the handful of components
+ * drawn in a solid or near-solid fill of the accent, where a jump between two album
+ * colours is a visible cut. Everything faint enough to get away with it keeps
+ * reading [LocalAccent] straight.
+ *
+ * A colour, so an `effects` spec — a spatial one overshoots the target hue on the
+ * way in and reads as a flicker. See [Motion].
+ */
+@Composable
+fun rememberAccent(): Color {
+    val target = LocalAccent.current
+    val eased by animateColorAsState(target, Motion.effects(), label = "accent")
+    return eased
+}
+
+// --- gesture feedback -----------------------------------------------------
+
+/**
+ * A surface that takes a little weight under the finger. Held together so the scale
+ * and the [interactions] driving it cannot drift apart — a caller that forgets to
+ * hand the source to its own `clickable` gets a card that never responds, which is
+ * exactly the bug this replaces.
+ */
+@Stable
+class PressScale internal constructor(
+    val interactions: MutableInteractionSource,
+    private val scale: State<Float>,
+) {
+    /** Read inside a `graphicsLayer`, never in composition. */
+    fun scale(): Float = scale.value
+}
+
+/**
+ * Gesture feedback for a tappable surface.
+ *
+ * Scale only — never alpha, which belongs on an `effects` spec (see [Motion]). One
+ * primitive rather than the same six lines in every tile: the cover tiles and the
+ * library rows had none at all while the category cards beside them responded, and
+ * the inert ones read as the parts of the grid that had not finished loading.
+ */
+@Composable
+fun rememberPressScale(down: Float = 0.97f): PressScale {
+    val interactions = remember { MutableInteractionSource() }
+    val pressed by interactions.collectIsPressedAsState()
+    val scale = animateFloatAsState(
+        targetValue = if (pressed) down else 1f,
+        animationSpec = Motion.spatialFast(),
+        label = "press",
+    )
+    return remember(interactions, scale) { PressScale(interactions, scale) }
+}
+
+/** Applies [press] to this surface. Goes first in the chain, so the whole card moves. */
+fun Modifier.pressScale(press: PressScale) = graphicsLayer {
+    val s = press.scale()
+    scaleX = s
+    scaleY = s
+}
+
 // --- text helpers ---------------------------------------------------------
 
 @Composable
@@ -535,7 +607,7 @@ fun Bloom(color: Color, size: Dp, x: Dp, y: Dp, alpha: Float = 0.5f) {
 
 @Composable
 fun Pill(text: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    val accent = LocalAccent.current
+    val accent = rememberAccent()
     Box(
         modifier
             .clip(RoundedCornerShape(100))
@@ -556,7 +628,7 @@ fun Pill(text: String, selected: Boolean, modifier: Modifier = Modifier, onClick
 
 @Composable
 fun ToggleChip(text: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    val accent = LocalAccent.current
+    val accent = rememberAccent()
     Box(
         modifier
             .clip(RoundedCornerShape(9.dp))
@@ -581,7 +653,7 @@ fun SegmentedToggle(
     modifier: Modifier = Modifier,
     onSelect: (Int) -> Unit,
 ) {
-    val accent = LocalAccent.current
+    val accent = rememberAccent()
     Row(
         modifier
             .clip(RoundedCornerShape(100))
@@ -619,7 +691,7 @@ fun IconChip(
     tint: Color? = null,
     onClick: (() -> Unit)? = null,
 ) {
-    val accent = LocalAccent.current
+    val accent = rememberAccent()
     val shape = RoundedCornerShape(11.dp)
     Box(
         modifier
@@ -698,10 +770,7 @@ fun QualityPill(
  */
 @Composable
 fun PlayButton(playing: Boolean, size: Dp = 68.dp, onClick: () -> Unit) {
-    val accent = LocalAccent.current
-    // A colour, so an effects spec — a spatial one would overshoot the target hue on
-    // the way in and read as a flicker as the album accent changes.
-    val fill by animateColorAsState(accent, Motion.effects(), label = "playFill")
+    val fill = rememberAccent()
     Box(Modifier.size(size)) {
         CastGlow(fill, CircleShape, blurRadius = 26.dp, alpha = 0.55f, offsetY = 10.dp)
         Box(
@@ -729,7 +798,7 @@ fun PlayButton(playing: Boolean, size: Dp = 68.dp, onClick: () -> Unit) {
 /** A circular determinate ring — download progress in the library. */
 @Composable
 fun RingProgress(progress: Float, modifier: Modifier = Modifier, size: Dp = 20.dp, stroke: Dp = 2.4.dp) {
-    val accent = LocalAccent.current
+    val accent = rememberAccent()
     // Read in composition: the lambda below is a DrawScope, not a composable.
     val track = inkOn(0.12f)
     Box(
@@ -976,7 +1045,7 @@ fun HSlider(
     onCommit: ((Float) -> Unit)? = null,
     label: ((Float) -> String)? = null,
 ) {
-    val accent = LocalAccent.current
+    val accent = rememberAccent()
     var width by remember { mutableIntStateOf(1) }
     val gesture = rememberSliderGesture(value)
     val v = gesture.display(value)
@@ -1058,7 +1127,7 @@ fun WaveSeekBar(
     onCommit: ((Float) -> Unit)? = null,
     label: ((Float) -> String)? = null,
 ) {
-    val accent = LocalAccent.current
+    val accent = rememberAccent()
     var width by remember { mutableIntStateOf(1) }
     val gesture = rememberSliderGesture(value)
     val v = gesture.display(value)
