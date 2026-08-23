@@ -99,7 +99,7 @@ class AlbumPaletteTest {
         val out = kmeansPalette(greys)!!
         assertTrue("a grey cover must be flagged achromatic", out.achromatic)
         assertTrue(
-            "lead saturation ${satOf(out.lead)} — a grey cover must not be given a hue",
+            "lead saturation ${satOf(out.lead)}, a grey cover must not be given a hue",
             satOf(out.lead) < 0.25f,
         )
     }

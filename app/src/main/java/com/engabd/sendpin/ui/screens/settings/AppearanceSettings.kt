@@ -95,8 +95,14 @@ internal fun AppearanceSection(settings: AppSettings, accent: Color, scope: Coro
 
         SettingsCard(
             title = "Now Playing",
-            lead = "Two ways to reach what's playing. Both show the same controls; they differ " +
-                "in how you get there and what you can see at the same time.",
+            lead = "Two ways to reach what's playing.",
+            info = "Both show the same controls. They differ in how you get there and in what you " +
+                "can see at the same time.\n\nTab replaces the screen you were on, so the " +
+                "player gets the whole display and the library is one tap away.\n\nOverlay " +
+                "slides over whatever you were doing and collapses to a bar at the bottom, so " +
+                "you can keep browsing with the player still up.\n\nTip: overlay suits browsing " +
+                "while something plays, tab suits sitting with one record. Switch freely, " +
+                "nothing is stored per layout.",
         ) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 ToggleChip("Tab", layout == "tab") {
@@ -155,38 +161,39 @@ internal fun AppearanceSection(settings: AppSettings, accent: Color, scope: Coro
                 }
             }
             Note(
-                "Reduced does not just slow things down — spinners, shimmers and the wave " +
-                    "seek bar settle into a still state rather than freezing mid-sweep.",
+                "Reduced settles motion rather than slowing it.",
+                title = "Reduced motion",
+                info = "Spinners, shimmers and the wave seek bar come to rest in a still state " +
+                    "instead of freezing wherever they happened to be. An animation that is " +
+                    "merely suspended looks broken rather than calm, which is what a plain " +
+                    "speed reduction gives you.\n\nTransitions that carry something from one " +
+                    "place to another still run, just without the flourish.\n\nTip: this " +
+                    "follows the system setting on its own. Set it here only if you want the " +
+                    "app to differ from the rest of the phone.",
             )
         }
 
         SettingsCard(
             title = "Lyrics timing",
-            lead = "Nudge synced lyrics if they run ahead of or behind the vocal. Providers " +
-                "stamp the same track differently, so this is a matter of taste rather than a " +
-                "setting with a right answer.",
+            lead = "Nudge synced lyrics against the vocal.",
+            info = "Providers stamp the same track differently, so there is no right answer here, " +
+                "only what looks in time to you. Adjustments snap to 50 ms, which is finer than " +
+                "anyone can pick out against a sung line.\n\nThe offset applies to every track " +
+                "rather than being remembered per song.\n\nTip: set it against a slow, clear " +
+                "vocal rather than a fast one. If lyrics run late on some songs and early on " +
+                "others, that is the provider disagreeing with itself and no single offset will " +
+                "fix both.",
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                HSlider(
-                    value = (offset + AppSettings.MAX_LYRICS_OFFSET_MS) /
-                        (2f * AppSettings.MAX_LYRICS_OFFSET_MS),
-                    onChange = {},
-                    onCommit = { f ->
-                        val ms = (f * 2f * AppSettings.MAX_LYRICS_OFFSET_MS -
-                            AppSettings.MAX_LYRICS_OFFSET_MS).toInt()
-                        // Snap to 50 ms — finer than that is below what anyone can
-                        // hear against a line of sung text.
-                        scope.launch { settings.setLyricsOffsetMs((ms / 50) * 50) }
-                    },
-                    accented = true,
-                    modifier = Modifier.weight(1f),
-                )
-                Text(
-                    if (offset == 0) "0 ms" else "%+d ms".format(offset),
-                    color = TextSecondary, fontFamily = MonoFont,
-                    style = MaterialTheme.typography.labelMedium,
-                )
-            }
+            SliderRow(
+                value = (offset + AppSettings.MAX_LYRICS_OFFSET_MS) /
+                    (2f * AppSettings.MAX_LYRICS_OFFSET_MS),
+                format = { if (offset == 0) "0 ms" else "%+d ms".format(offset) },
+                onChange = { f ->
+                    val ms = (f * 2f * AppSettings.MAX_LYRICS_OFFSET_MS -
+                        AppSettings.MAX_LYRICS_OFFSET_MS).toInt()
+                    scope.launch { settings.setLyricsOffsetMs((ms / 50) * 50) }
+                },
+            )
             Note("Later ← → earlier")
         }
     }
@@ -216,9 +223,12 @@ internal fun AboutSection(accent: Color, onOpenStats: () -> Unit = {}) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         SettingsCard(
             title = "CAMusic",
-            lead = "A Music Assistant player and controller for Android, with direct playback " +
-                "from self-hosted libraries, offline downloads, and Hue light sync driven by " +
-                "the music itself.",
+            lead = "A Music Assistant player and controller for Android.",
+            info = "Direct playback from self-hosted libraries: Navidrome, Subsonic, Jellyfin, or " +
+                "files on this phone. Offline downloads that keep working with no network. Hue " +
+                "light sync driven by the music itself rather than by a preset.\n\nIt is a " +
+                "Music Assistant player as well as a controller, so this phone shows up as a " +
+                "speaker in Music Assistant's own list.",
         ) {
             StatusPanel {
                 StatusRow("Version", BuildConfig.VERSION_NAME)
@@ -246,8 +256,13 @@ internal fun AboutSection(accent: Color, onOpenStats: () -> Unit = {}) {
 
         SettingsCard(
             title = "Crash reporting",
-            lead = "Crashes are stored on this device only. Share them to GitHub manually, or " +
-                "enable automatic upload with a personal access token.",
+            lead = "Crashes stay on this device unless you send them.",
+            info = "Crashes are written to this device and stay there. Share one to GitHub by " +
+                "hand, or enable automatic upload with a personal access token. Nothing leaves " +
+                "the phone until you do one of those two things.\n\nTip: a report is far more " +
+                "use with a line about what you were doing when it happened. The automatic " +
+                "upload cannot know that, so one manual share with a sentence attached beats " +
+                "ten silent ones.",
         ) {
             OledField(
                 value = repo,

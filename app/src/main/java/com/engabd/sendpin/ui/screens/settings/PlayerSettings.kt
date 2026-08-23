@@ -14,6 +14,7 @@ import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.data.rememberIsIgnoringBatteryOptimizations
 import com.engabd.sendpin.ma.MaConfigEntry
 import com.engabd.sendpin.ui.design.HSlider
+import com.engabd.sendpin.ui.design.InfoChip
 import com.engabd.sendpin.ui.theme.MonoFont
 import com.engabd.sendpin.ui.theme.TextSecondary
 import com.engabd.sendpin.ui.theme.WarnAmber
@@ -67,8 +68,13 @@ internal fun PlayerSection(
         if (!hasMaServer) {
             SettingsCard(
                 title = "No Music Assistant server",
-                lead = "This page configures the player CAMusic registers with Music Assistant. " +
-                    "Add one under Libraries and these settings start meaning something.",
+                lead = "Add one under Libraries and this page starts meaning something.",
+                info = "Everything here configures the player CAMusic registers with Music " +
+                    "Assistant: its name, the format it advertises, how it behaves between " +
+                    "tracks. With no server to register with, none of it has anywhere to " +
+                    "go.\n\nTip: add one under Libraries and come back. This phone then appears " +
+                    "in Music Assistant's own speaker list, and you can play to it from any " +
+                    "other client.",
             ) {}
         }
 
@@ -104,9 +110,16 @@ internal fun PlayerSection(
             // protocol has no rename message, so when the config edit is refused,
             // arriving as a new player is the only thing left.
             Note(
-                "Still showing the old name? Music Assistant keeps the name a player was first " +
-                    "registered under. Registering again arrives as a new player under the name " +
-                    "above — the old entry stays in Music Assistant, greyed out, for you to delete.",
+                "Still showing the old name?",
+                title = "Renaming a registered player",
+                info = "Music Assistant keeps the name a player was first registered under, and " +
+                    "the protocol has no rename message. Editing the config is the only route, " +
+                    "and that is an admin command the server can refuse.\n\nRegistering again " +
+                    "is the last resort. The phone arrives as a new player under the name " +
+                    "above, and the old entry stays in Music Assistant, greyed out, for you to " +
+                    "delete.\n\nTip: try Save name first and watch for a warning above the " +
+                    "buttons. If it was refused you are logged in as a non-admin, and fixing " +
+                    "that is easier than re-registering.",
             )
             OledButton("Register again as a new player", accent = accent, outline = true) {
                 viewModel.reregister(playerName.trim())
@@ -115,8 +128,13 @@ internal fun PlayerSection(
 
         SettingsCard(
             title = "Stream format",
-            lead = "What this phone tells Music Assistant it can decode. The server may only " +
-                "send a format the client listed, so naming one is what actually forces its hand.",
+            lead = "What this phone tells Music Assistant it can decode.",
+            info = "The server may only send a format the client has listed, so naming one here is " +
+                "what actually forces its hand. There is no way to ask for a format the phone " +
+                "has not advertised.\n\nAuto advertises all three and lets Music Assistant " +
+                "pick, which is also what makes switching format on a live connection " +
+                "possible.\n\nTip: leave it on Auto unless you are testing something. FLAC and " +
+                "PCM are both lossless, and FLAC uses roughly half the bandwidth.",
         ) {
             SegmentedToggleRow(
                 labels = CodecLabels,
@@ -128,10 +146,10 @@ internal fun PlayerSection(
             Note(
                 when (codec) {
                     "flac" -> "Lossless, about half the bandwidth of PCM. Music Assistant must " +
-                        "send FLAC — it is the only format offered."
+                        "send FLAC, it is the only format offered."
                     "pcm" -> "Lossless and uncompressed. Highest bandwidth, no decode cost."
                     "opus" -> "Compressed. Lowest bandwidth, 48 kHz only."
-                    else -> "Offer all three and let Music Assistant choose — FLAC first, then " +
+                    else -> "Offer all three and let Music Assistant choose, FLAC first, then " +
                         "PCM, then Opus."
                 },
             )
@@ -150,12 +168,21 @@ internal fun PlayerSection(
                     ) { viewModel.requestFormat(codec) }
                 }
                 Note(
-                    if (live)
-                        "This connection offered every format, so the change can be applied to " +
-                            "the running stream. It sticks for good on the next reconnect."
+                    if (live) "Can be applied to the running stream."
+                    else "Needs the player disabled and enabled again.",
+                    title = "Switching format",
+                    info = if (live)
+                        "This connection opened on Auto, so it advertised every format and " +
+                            "the server is free to switch between them on request. The change " +
+                            "sticks for good on the next reconnect.\n\nTip: switch while " +
+                            "something is playing if you want to hear the difference. The " +
+                            "stream restarts at the new format within a second or two."
                     else
-                        "A format change needs the player disabled and enabled again — it is " +
-                            "only announced when the connection opens.",
+                        "The advertised list is only sent when the connection opens, and " +
+                            "this one opened on a single format, so there is nothing to switch " +
+                            "to without reconnecting.\n\nTip: set the format to Auto and " +
+                            "re-enable the player once. After that you can change format on a " +
+                            "live stream without disconnecting again.",
                 )
             }
         }
@@ -171,26 +198,38 @@ internal fun PlayerSection(
 
         SettingsCard(
             title = "Announcements",
-            lead = "Home Assistant can speak to this phone — doorbells, timers, anything that " +
-                "announces. That needs the connection held open when the app isn't in front of you.",
+            lead = "Doorbells, timers, anything Home Assistant wants to say out loud.",
+            info = "For any of it to reach this phone, the connection has to be held open while " +
+                "the app is not in front of you. That is what the first switch below buys, and " +
+                "what it costs.\n\nPlayback is unaffected either way. Music started here keeps " +
+                "playing in the background, and the connection comes back when you reopen the " +
+                "app.\n\nTip: if announcements never arrive, check that CAMusic is set to " +
+                "Unrestricted battery in Android's own settings. Battery saver closes the " +
+                "connection while the screen is off, and no switch here can override that.",
         ) {
             ToggleRow(
-                "Stay reachable in the background",
-                "Turn it off to save battery if you never send announcements here: the " +
-                    "connection, the wake lock and the ongoing notification all go with it.",
-                keepAlive, accent,
+                title = "Stay reachable in the background",
+                subtitle = "Costs battery. Turn it off if you never announce here.",
+                checked = keepAlive,
+                accent = accent,
+                info = "Holds the Music Assistant connection open while the app is in the " +
+                    "background. Turning it off takes the connection, the wake lock and the " +
+                    "ongoing notification with it.\n\nTip: leave it off if nothing ever " +
+                    "announces to this phone. It is the largest single battery saving on this " +
+                    "page.",
             ) { keepAlive = it; scope.launch { settings.setKeepAliveForAnnouncements(it) } }
             ToggleRow(
-                "Duck other apps to be heard",
-                "Turns another app down for a moment instead of taking the output from it, " +
-                    "so an announcement is audible over a video. Turn it off if announcements " +
-                    "come out at a different volume than your music on this phone.",
-                duck, accent,
+                title = "Duck other apps to be heard",
+                subtitle = "Turn another app down rather than take the output from it",
+                checked = duck,
+                accent = accent,
+                info = "An announcement is audible over a video this way, instead of stopping " +
+                    "it.\n\nWith ducking off the announcement takes the output instead, which " +
+                    "is louder and more definite but interrupts whatever was playing.\n\nTip: " +
+                    "turn it off if announcements come out at a noticeably different volume " +
+                    "from your music, since ducking leaves the other app's own level in the " +
+                    "mix.",
             ) { duck = it; scope.launch { settings.setDuckAnnouncements(it) } }
-            Note(
-                "Playback is unaffected either way — music started here keeps playing in the " +
-                    "background, and the connection comes back when you reopen the app.",
-            )
         }
     }
 }
@@ -222,9 +261,13 @@ private fun MaPlaybackConfigCard(viewModel: PlayerViewModel, accent: Color) {
 
     SettingsCard(
         title = "Gapless and crossfade",
-        lead = "Music Assistant applies these to the stream before it reaches this phone, so " +
-            "they are its settings rather than the app's. Changed here so you don't have to " +
-            "open Music Assistant to reach them.",
+        lead = "Music Assistant's settings, reachable from here.",
+        info = "The server applies these to the stream before it reaches this phone, so they are " +
+            "its settings rather than the app's. That is also why there is no client-side " +
+            "gapless to turn on.\n\nEvery row is built from what the server declared, so a " +
+            "Music Assistant build that renames one of these, or grows a fourth mode, needs no " +
+            "update here.\n\nTip: these are per player. Changing them here changes them for " +
+            "this phone only, not for the speakers in the next room.",
     ) {
         entries.forEachIndexed { i, entry ->
             if (i > 0) CardDivider()
@@ -232,9 +275,13 @@ private fun MaPlaybackConfigCard(viewModel: PlayerViewModel, accent: Color) {
         }
         error?.let { StatusLine(it, Health.BAD, accent) }
         Note(
-            "Saving a player's config is an admin command in Music Assistant. A non-admin " +
-                "login is refused every time, and the refusal is shown above rather than " +
-                "swallowed.",
+            "Changing these needs an admin login.",
+            title = "Why a change can be refused",
+            info = "Saving a player's config is an admin command in Music Assistant, so a " +
+                "non-admin login is refused every time.\n\nThe refusal is shown above rather " +
+                "than swallowed, which is how you can tell it apart from a setting that simply " +
+                "did not take.\n\nTip: if you see one, sign in to Music Assistant with an admin " +
+                "account under Libraries. Nothing on this card will save until you do.",
         )
     }
 }
@@ -270,21 +317,19 @@ private fun MaExperimentalCard(settings: AppSettings, accent: Color, scope: Coro
         lead = "Not ready for everyday use. Turn this on only if you're specifically testing it.",
     ) {
         ToggleRow(
-            "Native Oboe output",
-            "Routes decoded audio through a native engine instead of the platform AudioTrack, " +
-                "so playback can't be interrupted by garbage collection.",
-            useOboe, accent,
+            title = "Native Oboe output",
+            subtitle = "Currently produces no sound at all",
+            checked = useOboe,
+            accent = accent,
+            info = "Routes decoded audio through a native engine instead of the platform " +
+                "AudioTrack, so playback cannot be interrupted by garbage collection.\n\nIt " +
+                "does not work yet. The audio stream opens and starts, but nothing is ever " +
+                "consumed from it, so the result is silence rather than a glitch. Three " +
+                "separate bugs have been fixed on the way to this one and none of them was " +
+                "it.\n\nTip: leave it off unless you are helping track it down. If you turned " +
+                "it on and have no sound at all, this is why, and turning it back off fixes it " +
+                "immediately.",
         ) { useOboe = it; scope.launch { settings.setUseOboeOutput(it) } }
-        // Stated plainly rather than hedged. This is not "expect rough edges" — it
-        // is a known, reproducible, currently-unsolved silence, and someone who
-        // switches it on and hears nothing should recognise what they are looking
-        // at instead of assuming their setup is broken.
-        Note(
-            "Still being worked on, and currently produces no sound at all: the audio stream " +
-                "opens and starts, but nothing is ever consumed from it. Three separate bugs " +
-                "have been fixed on the way to this one and none of them was it. Leave this off " +
-                "unless you are helping track it down.",
-        )
     }
 }
 
@@ -331,7 +376,7 @@ private fun MaPlayerStatusCard(viewModel: PlayerViewModel, settings: AppSettings
         if (!batteryGranted) {
             CardDivider()
             StatusLine(
-                "Battery optimisation is restricting this app — announcements and background " +
+                "Battery optimisation is restricting this app, so announcements and background " +
                     "playback may drop while the screen is off.",
                 health = Health.WARN,
                 accent = WarnAmber,
@@ -358,11 +403,14 @@ private fun MaPlayerStatusCard(viewModel: PlayerViewModel, settings: AppSettings
 private fun MaConfigRow(entry: MaConfigEntry, accent: Color, onChange: (JsonElement) -> Unit) {
     when {
         entry.type.equals("boolean", ignoreCase = true) ->
+            // The description here is the server's own text, of unknown length and
+            // sometimes absent — so it goes straight behind the chip rather than being
+            // summarised into a subtitle this app is in no position to write.
             ToggleRow(
-                entry.label,
-                entry.description.orEmpty(),
-                entry.boolValue == true,
-                accent,
+                title = entry.label,
+                checked = entry.boolValue == true,
+                accent = accent,
+                info = entry.description?.takeIf { it.isNotBlank() },
             ) { onChange(JsonPrimitive(it)) }
 
         entry.options.isNotEmpty() -> {
@@ -378,7 +426,9 @@ private fun MaConfigRow(entry: MaConfigEntry, accent: Color, onChange: (JsonElem
                 selectedIndex = selected,
             ) { onChange(JsonPrimitive(values[it])) }
             if (selected < 0) Note("Music Assistant hasn't set this yet.")
-            entry.description?.let { Note(it) }
+            entry.description?.takeIf { it.isNotBlank() }?.let {
+                Note("What this does", title = entry.label, info = it)
+            }
         }
 
         // A number with a stated range — crossfade duration is the one that matters.
@@ -386,33 +436,33 @@ private fun MaConfigRow(entry: MaConfigEntry, accent: Color, onChange: (JsonElem
             val min = entry.rangeMin!!
             val max = entry.rangeMax!!
             val current = entry.numberValue ?: min
-            FieldLabel(entry.label)
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                HSlider(
-                    value = if (max > min) ((current - min) / (max - min)).toFloat() else 0f,
-                    onChange = {},
-                    // Rounded only where the server said the setting is an integer.
-                    // Rounding a float entry — a gain in dB, a duration in seconds —
-                    // would make half its range unreachable.
-                    onCommit = { f ->
-                        val raw = min + f * (max - min)
-                        onChange(
-                            if (entry.type.equals("float", ignoreCase = true)) {
-                                JsonPrimitive(Math.round(raw * 10) / 10.0)
-                            } else JsonPrimitive(Math.round(raw))
-                        )
-                    },
-                    accented = true,
-                    modifier = Modifier.weight(1f),
-                )
-                Text(
-                    if (entry.type.equals("float", ignoreCase = true)) "%.1f".format(current)
-                    else "${current.toInt()}",
-                    color = TextSecondary, fontFamily = MonoFont,
-                    style = MaterialTheme.typography.labelMedium,
-                )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                FieldLabel(entry.label)
+                entry.description?.takeIf { it.isNotBlank() }?.let {
+                    InfoChip(entry.label, it, Modifier.heightIn(0.dp))
+                }
             }
-            entry.description?.let { Note(it) }
+            SliderRow(
+                value = if (max > min) ((current - min) / (max - min)).toFloat() else 0f,
+                format = {
+                    if (entry.type.equals("float", ignoreCase = true)) "%.1f".format(current)
+                    else "${current.toInt()}"
+                },
+                // Rounded only where the server said the setting is an integer.
+                // Rounding a float entry — a gain in dB, a duration in seconds —
+                // would make half its range unreachable.
+                onChange = { f ->
+                    val raw = min + f * (max - min)
+                    onChange(
+                        if (entry.type.equals("float", ignoreCase = true)) {
+                            JsonPrimitive(Math.round(raw * 10) / 10.0)
+                        } else JsonPrimitive(Math.round(raw))
+                    )
+                },
+            )
         }
 
         // A type this app has no control for. Saying what it is set to is more use

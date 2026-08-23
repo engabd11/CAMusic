@@ -84,7 +84,7 @@ class ExtremeAndFireworksTest {
         val highPeak = high.maxByOrNull { brightness(it.value) }?.key
         assertTrue(
             lowPeak != highPeak,
-            "a bass hit and a treble hit both peaked at lamp $lowPeak — no spatial separation",
+            "a bass hit and a treble hit both peaked at lamp $lowPeak, no spatial separation",
         )
     }
 
@@ -161,7 +161,7 @@ class ExtremeAndFireworksTest {
                 if (v > (peak[cid] ?: 0f)) { peak[cid] = v; peakAt[cid] = step }
             }
         }
-        assertTrue(peakAt.values.distinct().size > 1, "every lamp peaked together — the shell did not expand")
+        assertTrue(peakAt.values.distinct().size > 1, "every lamp peaked together, the shell did not expand")
     }
 
     @Test

@@ -330,7 +330,7 @@ internal fun ConnectForm(viewModel: LibraryViewModel, backend: Backend, activeSe
             val hint = kind?.urlHint ?: "http://192.168.0.10:4533"
             SectionLabel(title)
             Text(
-                "Direct mode plays on this phone and can download for offline — it works even when Music Assistant is down.",
+                "Direct mode plays on this phone and can download for offline, and it works even when Music Assistant is down.",
                 color = TextMuted, style = MaterialTheme.typography.bodyMedium,
             )
             if (kind == ServerKind.JELLYFIN) {

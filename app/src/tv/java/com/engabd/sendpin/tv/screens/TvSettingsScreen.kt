@@ -173,7 +173,7 @@ private fun TvSettingsRoot(
                 Column(Modifier.weight(1f)) {
                     Text("Hue Bridge", color = TextPrimary, fontWeight = FontWeight.SemiBold)
                     Text(
-                        if (hueIp.isBlank()) "Not paired — pair one to use the Light Sync tab"
+                        if (hueIp.isBlank()) "Not paired, pair one to use the Light Sync tab"
                         else "Paired with $hueIp",
                         color = TextMuted, style = MaterialTheme.typography.bodySmall,
                     )
@@ -203,6 +203,6 @@ private fun TvSettingsRoot(
         Spacer(Modifier.height(28.dp))
         SectionLabel("About")
         Spacer(Modifier.height(10.dp))
-        Text("CAMusic TV — v${BuildConfig.VERSION_NAME}", color = TextMuted, style = MaterialTheme.typography.bodySmall)
+        Text("CAMusic TV v${BuildConfig.VERSION_NAME}", color = TextMuted, style = MaterialTheme.typography.bodySmall)
     }
 }

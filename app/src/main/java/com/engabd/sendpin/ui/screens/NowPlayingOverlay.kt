@@ -3,6 +3,11 @@ package com.engabd.sendpin.ui.screens
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.PredictiveBackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.foundation.background
@@ -29,7 +34,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -40,6 +47,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import coil.compose.AsyncImage
 import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ui.design.*
@@ -102,6 +110,12 @@ fun NowPlayingOverlay(
     val accent = palette.accent
 
     val scrubber = rememberScrubber(viewModel)
+
+    // One holder for the sleeve and the wash behind it — see NowPlayingScreen.
+    val art = rememberSettledArt(st.artworkUrl, albumFlipKey(st))
+    val artDim = idleFade(st.idle, 0.55f)
+    val artGlow = idleFade(st.idle, 0.18f, 0.45f)
+    val washDim = idleFade(st.idle, 0.5f)
 
     // Drag-to-minimize: the overlay tracks the finger's vertical offset and snaps
     // to expanded or collapsed when released. The offset is kept in *pixels* so the
@@ -270,8 +284,9 @@ fun NowPlayingOverlay(
                 }
                 .background(Ink)
         ) {
-            // Album wash — always present, dimmed when idle.
-            MeltBackdrop(st.artworkUrl, intensity = if (st.idle) 0.5f else 1f)
+            // Album wash — always present, dimmed when idle. The settled url, so it
+            // stays in step with the cover and does not reload inside an album.
+            MeltBackdrop(art.url, intensity = washDim.value)
 
             Column(
                 Modifier
@@ -308,22 +323,24 @@ fun NowPlayingOverlay(
                 Spacer(Modifier.height(4.dp))
 
                 // Album art fills the available space.
-                if (showLyrics) {
-                    LyricsPane(
-                        viewModel = viewModel,
-                        positionMs = scrubber.positionMs,
-                        modifier = Modifier.fillMaxWidth().weight(1f),
-                    )
-                } else {
-                    AlbumArt(
-                        url = st.artworkUrl,
-                        glow = palette.swatch(0),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f)
-                            .alpha(if (st.idle) 0.55f else 1f),
-                        glowAlpha = if (st.idle) 0.18f else 0.45f,
-                        placeholder = Icons.AutoMirrored.Filled.QueueMusic,
+                // The container carries the weight so neither branch can resize the
+                // Column under the artwork — see NowPlayingScreen.
+                AnimatedContent(
+                    targetState = showLyrics,
+                    transitionSpec = {
+                        (fadeIn(Motion.fadeThroughIn()) togetherWith fadeOut(Motion.fadeThroughOut()))
+                            .using(SizeTransform(clip = false))
+                    },
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    label = "lyricsOrArt",
+                ) { lyrics ->
+                    if (lyrics) {
+                        LyricsPane(
+                            viewModel = viewModel,
+                            positionMs = scrubber.positionMs,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    } else {
                         // No shared-element flight between the mini bar and this cover,
                         // deliberately. A shared element is drawn in the transition
                         // layout's own overlay, above and outside the composable it
@@ -336,8 +353,16 @@ fun NowPlayingOverlay(
                         // Box: one surface, one movement, nothing to fall out of step.
                         // The bar's thumbnail simply cross-fades, which is what a
                         // control that is being replaced should do.
-                        flipKey = albumFlipKey(st),
-                    )
+                        AlbumArt(
+                            art = art,
+                            glow = palette.swatch(0),
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .graphicsLayer { alpha = artDim.value },
+                            glowAlpha = artGlow.value,
+                            placeholder = Icons.AutoMirrored.Filled.QueueMusic,
+                        )
+                    }
                 }
 
                 Spacer(Modifier.height(16.dp))
@@ -474,10 +499,14 @@ fun MiniPlayerBar(
                 contentAlignment = Alignment.Center,
             ) {
                 if (st.artworkUrl != null) {
-                    coil.compose.AsyncImage(
-                        model = st.artworkUrl,
+                    // Through the shared builder like every other cover in the app:
+                    // it carries the 220ms crossfade token and a size hint, where a
+                    // raw String model got the loader's 100ms default and decoded at
+                    // full resolution for a thumbnail the height of the mini bar.
+                    AsyncImage(
+                        model = rememberArtRequest(st.artworkUrl, pixels = 120),
                         contentDescription = null,
-                        contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                        contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxSize(),
                     )
                 } else {

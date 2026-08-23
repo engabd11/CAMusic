@@ -158,7 +158,7 @@ class ColourTest {
             if (c.first > 0.05f && c.second > 0.05f) mixed++
         }
         assertTrue(mixed > 0, "the weighted palette snapped between colours with no crossfade")
-        assertTrue(mixed < n / 4, "the crossfade swallowed the hold — $mixed of $n frames were mixed")
+        assertTrue(mixed < n / 4, "the crossfade swallowed the hold, $mixed of $n frames were mixed")
     }
 
     @Test

@@ -19,6 +19,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyHorizontalGrid
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.itemsIndexed
@@ -287,6 +288,15 @@ fun LibraryScreen(
         }
     }
 }
+/**
+ * The library's own left and right margin.
+ *
+ * Named because two things have to agree on it: the grid's `contentPadding`, and the
+ * distance each shelf carousel bleeds back out past that padding so its tiles scroll
+ * under the margin instead of stopping at it. See [Modifier.bleed].
+ */
+internal val LibraryEdge = 20.dp
+
 private const val DEFAULT_COLS = 6         // 6-col base: covers span 2, categories 3, rows 6
 private fun full(cols: Int = DEFAULT_COLS) = GridItemSpan(cols)
 
@@ -392,11 +402,29 @@ private fun Browse(
     // A list that holds more than one kind of thing, split into its kinds. Empty for
     // the ordinary node, which holds one — see [typedGroups].
     val groups = remember(node.items) { typedGroups(node.items) }
+    // The front page's shelves, as data. Seven near-identical calls became a list you
+    // can reorder or add to in one line, and the empty ones are filtered out here
+    // rather than by each shelf checking itself.
+    val shelfRows = remember(shelves) {
+        listOf(
+            // Favourites lead: what you chose to keep is a better front page than
+            // whatever the scanner saw last. The rest keep their old order behind them.
+            ShelfSpec("Favourite albums", shelves.favoriteAlbums),
+            ShelfSpec("Favourite artists", shelves.favoriteArtists, circular = true),
+            ShelfSpec("Continue listening", shelves.inProgress),
+            ShelfSpec("Recently added", shelves.recentlyAdded),
+            ShelfSpec("For you", shelves.recommendations),
+            ShelfSpec("Recently played", shelves.recent),
+            // Navidrome only — MA has no equivalent of getAlbumList2(frequent), so
+            // the list is empty on that backend and the shelf drops out here.
+            ShelfSpec("Played most", shelves.frequent),
+        ).filter { it.items.isNotEmpty() }
+    }
 
     LazyVerticalGrid(
         columns = GridCells.Fixed(gridCols),
         modifier = Modifier.fillMaxSize().imePadding(),
-        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 4.dp, bottom = navBarInset() + 16.dp),
+        contentPadding = PaddingValues(start = LibraryEdge, end = LibraryEdge, top = 4.dp, bottom = navBarInset() + 16.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -484,17 +512,7 @@ private fun Browse(
                     else -> viewModel.open(item)
                 }
             }
-            // Favourites lead: what you chose to keep is a better front page than
-            // whatever the scanner saw last. The rest keep their old order behind them.
-            shelf("Favourite albums", shelves.favoriteAlbums, openItem, onLongPress, gridCols)
-            shelf("Favourite artists", shelves.favoriteArtists, openItem, onLongPress, gridCols)
-            shelf("Continue listening", shelves.inProgress, openItem, onLongPress, gridCols)
-            shelf("Recently added", shelves.recentlyAdded, openItem, onLongPress, gridCols)
-            shelf("For you", shelves.recommendations, openItem, onLongPress, gridCols)
-            shelf("Recently played", shelves.recent, openItem, onLongPress, gridCols)
-            // Navidrome only — MA has no equivalent of getAlbumList2(frequent), so
-            // the list is empty on that backend and the shelf hides itself.
-            shelf("Played most", shelves.frequent, openItem, onLongPress, gridCols)
+            shelfRows.forEach { spec -> shelfCarousel(spec, openItem, onLongPress, gridCols) }
             return@LazyVerticalGrid
         }
 
@@ -604,34 +622,79 @@ internal data class RowFlags(
     val isPreviewing: Boolean,
 )
 
+/** One shelf on the library's front page: its label, its contents, its tile shape. */
+@Immutable
+internal data class ShelfSpec(
+    val title: String,
+    val items: List<MaItem>,
+    /** Artists are people, not sleeves: round tiles, centred names, initials fallback. */
+    val circular: Boolean = false,
+)
+
 /**
- * One titled row of cover tiles, hidden when the shelf has nothing in it.
+ * One shelf, as a two-row carousel that scrolls sideways.
  *
- * [title] seeds the item keys as well as labelling the shelf. The same album turns up
- * in several shelves at once — a favourite that was also added recently — and lazy
- * keys have to be unique across the whole grid, not just within one section, so the
- * shelf's own name is what separates them.
+ * Shelves used to wrap into the page's own grid, three tiles across, so a twelve-item
+ * shelf was four rows deep and two shelves filled the screen. Reading down the front
+ * page meant scrolling past everything you were not looking for. Two fixed rows that
+ * run off the right edge instead: the page scrolls between *sections*, and each
+ * section scrolls within itself.
+ *
+ * The whole carousel is a single full-span grid item. A `LazyHorizontalGrid` inside a
+ * vertically-scrolling parent has to be given a height outright — an unbounded one
+ * throws — which is why [ShelfTile] is pinned rather than sizing to its text. Compose
+ * splits the axes between the two scrollers on its own, so there is no nested-scroll
+ * glue here and no snapping: a shelf is not a pager.
+ *
+ * [ShelfSpec.title] seeds the item keys as well as labelling the shelf. Each carousel
+ * now has its own key space, so it is no longer strictly load-bearing — but the same
+ * album really does turn up in several shelves at once, and this screen has crashed
+ * on a duplicate lazy key before. See [itemKey].
  */
-private fun androidx.compose.foundation.lazy.grid.LazyGridScope.shelf(
-    title: String,
-    list: List<MaItem>,
+private fun androidx.compose.foundation.lazy.grid.LazyGridScope.shelfCarousel(
+    spec: ShelfSpec,
     onOpen: (MaItem) -> Unit,
     onLongPress: (MaItem) -> Unit,
     gridCols: Int,
 ) {
-    if (list.isEmpty()) return
-    item(key = "hdr_$title", span = { full(gridCols) }, contentType = { "header" }) { LibraryShelf(title) }
-    itemsIndexed(
-        list,
-        key = { i, entry -> itemKey(title, i, entry) },
-        contentType = { _, _ -> "cover" },
-        span = { _, _ -> GridItemSpan(2) },
-    ) { _, entry ->
-        // Shelves refill in place as the server answers — favourites arrive, then
-        // recently-added, then the rest. Keyed items make that a move rather than a
-        // redraw, and animateItem is what turns the move into something you can follow.
-        Box(Modifier.animateItem()) {
-            CoverTile(entry, onLongPress = { onLongPress(entry) }) { onOpen(entry) }
+    item(key = "shelf_${spec.title}", span = { full(gridCols) }, contentType = { "shelf" }) {
+        // One row for a shelf with a single item — a second, empty row under it is
+        // 158dp of nothing, and it reads as a shelf that failed to load.
+        val rowCount = if (spec.items.size < 2) 1 else 2
+        val tileHeight = shelfTileHeight()
+        Column(Modifier.padding(top = 12.dp)) {
+            LibraryShelf(spec.title, spec.items.size)
+            Spacer(Modifier.height(10.dp))
+            LazyHorizontalGrid(
+                rows = GridCells.Fixed(rowCount),
+                modifier = Modifier
+                    // Back out past the grid's own margin, with the margin re-applied
+                    // as content padding, so tiles scroll *under* the edge of the
+                    // screen rather than stopping short of it.
+                    .bleed(LibraryEdge)
+                    .height(tileHeight * rowCount + ShelfRowGap * (rowCount - 1)),
+                contentPadding = PaddingValues(horizontal = LibraryEdge),
+                horizontalArrangement = Arrangement.spacedBy(ShelfTileGap),
+                verticalArrangement = Arrangement.spacedBy(ShelfRowGap),
+            ) {
+                itemsIndexed(
+                    spec.items,
+                    key = { i, entry -> itemKey(spec.title, i, entry) },
+                    contentType = { _, _ -> "cover" },
+                ) { _, entry ->
+                    // Shelves refill in place as the server answers — favourites
+                    // arrive, then recently-added, then the rest. Keyed items make
+                    // that a move rather than a redraw, and animateItem is what turns
+                    // the move into something you can follow.
+                    Box(Modifier.animateItem()) {
+                        ShelfTile(
+                            entry,
+                            circular = spec.circular,
+                            onLongPress = { onLongPress(entry) },
+                        ) { onOpen(entry) }
+                    }
+                }
+            }
         }
     }
 }

@@ -461,7 +461,7 @@ class TrackScanRepository(
             it.copy(
                 failed = it.failed + 1,
                 failures = notes,
-                error = "${request.track.title} — $why",
+                error = "${request.track.title}, $why",
             )
         }
     }

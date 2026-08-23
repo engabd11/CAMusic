@@ -1,6 +1,7 @@
 package com.engabd.sendpin.ui.screens
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -44,6 +45,18 @@ import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
  *
  * Null while the player is idle, so coming back from nothing fades rather than flips.
  */
+/**
+ * A level that depends on whether the player is idle, eased rather than switched.
+ *
+ * The player dims when nothing is playing and comes back up when something does. Both
+ * ends were written as literals in the layout, so the cover, its glow and the wash
+ * behind all stepped between them in a single frame. On an `effects` spec, because
+ * every one of them is an alpha — see [Motion].
+ */
+@Composable
+internal fun idleFade(idle: Boolean, dimmed: Float, lit: Float = 1f): State<Float> =
+    animateFloatAsState(if (idle) dimmed else lit, Motion.effects(), label = "idleFade")
+
 internal fun albumFlipKey(st: NowPlayingViewModel.State): String? =
     if (st.idle || (st.album.isBlank() && st.artist.isBlank())) null
     else "${st.album}|${st.artist}"

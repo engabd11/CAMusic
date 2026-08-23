@@ -434,7 +434,7 @@ class AlbumColoursTest {
         for (p in out) {
             assertTrue(
                 abs(red(p) - want) <= 1,
-                "expected the 3-row mean ~$want, got ${red(p)} — detail was sampled past, not averaged",
+                "expected the 3-row mean ~$want, got ${red(p)}, detail was sampled past, not averaged",
             )
         }
     }

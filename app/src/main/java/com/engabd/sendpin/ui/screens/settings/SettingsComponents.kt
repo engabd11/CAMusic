@@ -32,10 +32,14 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.engabd.sendpin.audio.ReplayGain
 import com.engabd.sendpin.ui.design.GlassCard
+import com.engabd.sendpin.ui.design.HSlider
+import com.engabd.sendpin.ui.design.InfoChip
 import com.engabd.sendpin.ui.design.a
 import com.engabd.sendpin.ui.design.TitleGap
 import com.engabd.sendpin.ui.theme.*
@@ -62,16 +66,21 @@ import com.engabd.sendpin.ui.theme.*
  * [lead] is not decoration. Half of what is configurable here is invisible until it
  * goes wrong — a stream format, a gain mode, a background connection — and a title
  * alone leaves the reader to guess from the control what the control does.
+ *
+ * [info] is where the *rest* of that explanation goes. A lead that ran to four or
+ * five lines pushed the card's own controls off the screen, so the long form sits
+ * behind a chip on the title and the lead keeps one sentence. See [InfoChip].
  */
 @Composable
 internal fun SettingsCard(
     title: String,
     lead: String? = null,
+    info: String? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     GlassCard(radius = 16.dp) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text(title, color = TextPrimary, fontFamily = AppFont, style = MaterialTheme.typography.titleLarge)
+            TitleWithInfo(title, info, MaterialTheme.typography.titleLarge)
             if (lead != null) {
                 Text(lead, color = TextMuted, fontFamily = AppFont, style = MaterialTheme.typography.bodySmall)
             }
@@ -80,15 +89,69 @@ internal fun SettingsCard(
     }
 }
 
-/** The quiet explanatory line under a control. */
+/**
+ * A title, with the chip that opens its long form sitting on the same line.
+ *
+ * The chip is 30dp of touch target around a 17dp mark, which is taller than any title
+ * line in this app. `heightIn(0.dp)` lets it overhang instead of setting the row
+ * height — without it every card with an [InfoChip] stood 8dp taller than every card
+ * without one, and the settings index rippled.
+ */
 @Composable
-internal fun Note(text: String, warn: Boolean = false) {
-    Text(
-        text,
-        color = if (warn) WarnAmber else TextFaint,
-        fontFamily = AppFont,
-        style = MaterialTheme.typography.bodySmall,
-    )
+private fun TitleWithInfo(title: String, info: String?, style: TextStyle) {
+    if (info == null) {
+        Text(title, color = TextPrimary, fontFamily = AppFont, style = style)
+        return
+    }
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Text(
+            title, color = TextPrimary, fontFamily = AppFont, style = style,
+            modifier = Modifier.weight(1f, fill = false),
+        )
+        InfoChip(title, info, Modifier.heightIn(0.dp))
+    }
+}
+
+/**
+ * The quiet explanatory line under a control.
+ *
+ * [info] carries the long form, if there is one, behind a chip on the end of the
+ * line — see [InfoChip]. [title] names what the chip is about, since a note has no
+ * title of its own to borrow; it defaults to the note itself, which is right when the
+ * note is short and wrong only if you forget to pass one.
+ */
+@Composable
+internal fun Note(
+    text: String,
+    warn: Boolean = false,
+    info: String? = null,
+    title: String? = null,
+) {
+    if (info == null) {
+        Text(
+            text,
+            color = if (warn) WarnAmber else TextFaint,
+            fontFamily = AppFont,
+            style = MaterialTheme.typography.bodySmall,
+        )
+        return
+    }
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Text(
+            text,
+            color = if (warn) WarnAmber else TextFaint,
+            fontFamily = AppFont,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.weight(1f, fill = false),
+        )
+        InfoChip(title ?: text, info, Modifier.heightIn(0.dp))
+    }
 }
 
 /** A label above a control that is not the card's own title. */
@@ -368,13 +431,22 @@ internal fun DropdownPicker(
     }
 }
 
+/**
+ * A switch, what it is called, and — in as few words as it takes — what it does.
+ *
+ * [subtitle] is optional and capped at two lines. It used to be required and
+ * uncapped, drawn at a bare 11sp with no line height, so a two-hundred-character
+ * explanation beside a fixed-size switch produced a six-line row. The long form goes
+ * in [info] now, behind a chip on the title. See [InfoChip].
+ */
 @Composable
 internal fun ToggleRow(
     title: String,
-    subtitle: String,
+    subtitle: String? = null,
     checked: Boolean,
     accent: Color,
     enabled: Boolean = true,
+    info: String? = null,
     onChange: (Boolean) -> Unit,
 ) {
     Row(
@@ -385,12 +457,23 @@ internal fun ToggleRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
-            Text(
+            TitleWithInfo(
                 title,
-                color = if (enabled) TextPrimary else TextMuted,
-                style = MaterialTheme.typography.titleLarge,
+                info,
+                MaterialTheme.typography.titleLarge.copy(
+                    color = if (enabled) TextPrimary else TextMuted,
+                ),
             )
-            Text(subtitle, color = TextFaint, fontSize = 11.sp)
+            if (!subtitle.isNullOrBlank()) {
+                Text(
+                    subtitle,
+                    color = TextFaint,
+                    fontFamily = AppFont,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
         Box(
             Modifier.size(44.dp, 24.dp).clip(RoundedCornerShape(100))
@@ -399,6 +482,35 @@ internal fun ToggleRow(
                 .padding(2.dp),
             contentAlignment = if (checked) Alignment.CenterEnd else Alignment.CenterStart,
         ) { Box(Modifier.size(18.dp).clip(CircleShape).background(if (checked) Ink else TextMuted)) }
+    }
+}
+
+/**
+ * A slider with its value beside it, in the mono face the rest of the readouts use.
+ *
+ * Three files had written this same Row by hand — the crossfade length, the lyrics
+ * offset and every numeric Music Assistant config entry — identically, down to the
+ * 10dp gap. [format] is the only thing that ever differed.
+ */
+@Composable
+internal fun SliderRow(
+    value: Float,
+    format: (Float) -> String,
+    modifier: Modifier = Modifier,
+    onChange: (Float) -> Unit,
+) {
+    Row(
+        modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        HSlider(value, onChange, accented = true, modifier = Modifier.weight(1f))
+        Text(
+            format(value),
+            color = TextSecondary,
+            fontFamily = MonoFont,
+            style = MaterialTheme.typography.labelMedium,
+        )
     }
 }
 

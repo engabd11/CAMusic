@@ -2,7 +2,6 @@ package com.engabd.sendpin.ui.design
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -15,6 +14,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.*
@@ -51,12 +52,14 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
@@ -180,14 +183,12 @@ fun BoxScope.CastGlow(color: Color, shape: Shape, blurRadius: Dp, alpha: Float, 
 }
 
 /**
- * The cover itself. Non-square art is letterboxed against a blurred, saturated
- * copy of itself rather than dead black, so the tile always reads as one object,
- * and a diagonal gloss sells it as glass under a light.
+ * The cover, following [url], turning the page whenever [flipKey] changes album.
  *
- * Sized to the largest square that fits the slot it is given, measuring *both*
- * axes. `aspectRatio()` alone only satisfies one of them: given a weighted row in
- * a Column it takes the full width and returns a height to match, which silently
- * overflows the slot and paints over whatever sits above it.
+ * The convenience form: it owns its own [SettledArt] and nothing else can see it.
+ * Fine for anywhere the cover is the only thing painted from the artwork. Now
+ * Playing paints it twice — the sleeve and the wash behind it — so it hoists the
+ * state and calls the overload below.
  */
 @Composable
 fun AlbumArt(
@@ -217,56 +218,66 @@ fun AlbumArt(
      * Assistant tracks carry no album id at all.
      */
     flipKey: Any? = null,
+) = AlbumArt(
+    art = rememberSettledArt(url, flipKey),
+    glow = glow,
+    modifier = modifier,
+    radius = radius,
+    glowAlpha = glowAlpha,
+    placeholder = placeholder,
+    sharedArtKey = sharedArtKey,
+)
+
+/**
+ * The cover itself. Non-square art is letterboxed against a blurred, saturated
+ * copy of itself rather than dead black, so the tile always reads as one object.
+ *
+ * Sized to the largest square that fits the slot it is given, measuring *both*
+ * axes. `aspectRatio()` alone only satisfies one of them: given a weighted row in
+ * a Column it takes the full width and returns a height to match, which silently
+ * overflows the slot and paints over whatever sits above it.
+ *
+ * Takes its [art] hoisted, so a caller that paints the same picture somewhere else
+ * — the full-bleed wash behind Now Playing — can stay in step with the half-turn
+ * reveal instead of changing a quarter of a second early. Callers with nothing to
+ * keep in step use the [url]/[flipKey] overload above.
+ */
+@Composable
+fun AlbumArt(
+    art: SettledArt,
+    glow: Color,
+    modifier: Modifier = Modifier,
+    radius: Dp = 0.dp,
+    glowAlpha: Float = 0.45f,
+    placeholder: ImageVector? = null,
+    sharedArtKey: String? = null,
 ) {
-    // What is actually painted. During a flip this lags [url] by half a turn: the new
-    // cover is revealed on the way back up, at the moment the old one is edge-on and
-    // neither is legible.
-    var shownUrl by remember { mutableStateOf(url) }
-    var shownKey by remember { mutableStateOf(flipKey) }
-    val turn = remember { Animatable(0f) }
-    val reduced = LocalReducedMotion.current
-
-    LaunchedEffect(flipKey, url) {
-        val flippable = flipKey != null && shownKey != null && flipKey != shownKey && !reduced
-        if (!flippable) {
-            // First cover of the session, reduced motion, or the same album next
-            // track. Coil's own crossfade covers those.
-            shownUrl = url
-            shownKey = flipKey
-            if (turn.value != 0f) turn.snapTo(0f)
-            return@LaunchedEffect
-        }
-        turn.snapTo(0f)
-        turn.animateTo(1f, tween(FLIP_MS, easing = FastOutSlowInEasing)) {
-            // Swapped edge-on, where there is nothing to see either way. Doing it any
-            // earlier shows the new sleeve mid-turn; any later, the old one.
-            if (value >= 0.5f && shownKey != flipKey) {
-                shownUrl = url
-                shownKey = flipKey
-            }
-        }
-        shownUrl = url
-        shownKey = flipKey
-        turn.snapTo(0f)
-    }
-
-    val art = rememberArtRequest(shownUrl)
+    val request = rememberArtRequest(art.url)
+    val shape = remember(radius) { RoundedCornerShape(radius) }
     // The cover sits right on the background — no rounded corner, no border, no
     // forced square. Its aspect ratio is whatever the image itself has, so a
     // tall album cover is tall and a wide one is wide. The hue melts into the
     // backdrop without an outer frame.
     Box(modifier, contentAlignment = Alignment.Center) {
-        if (art != null) {
+        if (request != null) {
             // The blurred wash behind the art — fills the available space and
             // bleeds past the art's edges so the colour melts into the background.
+            //
+            // Its alpha rides the turn: the room dims as the page passes edge-on and
+            // comes back up as the new sleeve lands. Set inside a graphicsLayer rather
+            // than via Modifier.alpha, so reading the progress recomposes nothing.
             AsyncImage(
-                model = art, contentDescription = null, contentScale = ContentScale.Crop,
+                model = request, contentDescription = null, contentScale = ContentScale.Crop,
                 colorFilter = saturate(1.7f),
                 modifier = Modifier
                     .matchParentSize()
                     .scale(1.3f)
                     .blur(64.dp, BlurredEdgeTreatment.Unbounded)
-                    .alpha(0.45f * glowAlpha.coerceIn(0f, 1f)),
+                    .graphicsLayer {
+                        val t = art.turn()
+                        alpha = 0.45f * glowAlpha.coerceIn(0f, 1f) *
+                            (1f - FLIP_WASH_DIP * sin(t * PI).toFloat())
+                    },
             )
             // The actual cover — fit, not crop, so the full artwork is visible.
             //
@@ -274,41 +285,53 @@ fun AlbumArt(
             // blurred wash behind is ambient light in the room, not part of the
             // sleeve, and turning it over with the cover looks like the whole screen
             // pivoting instead of a page.
-            val flipping = turn.value > 0f
             AsyncImage(
-                model = art, contentDescription = "Album art", contentScale = ContentScale.Fit,
+                model = request, contentDescription = "Album art", contentScale = ContentScale.Fit,
                 modifier = Modifier
                     .fillMaxWidth()
                     .fillMaxHeight()
-                    // Before the shadow, so the flight animates the artwork's own
-                    // bounds. After it, the shared element would carry a 20dp
+                    // Before the layer, so the flight animates the artwork's own
+                    // bounds. After it, the shared element would carry a
                     // shadow-casting render node through the transition and the
                     // interpolated bounds would include its spread.
                     .let { if (sharedArtKey != null) it.sharedArt(sharedArtKey) else it }
-                    .then(
-                        if (!flipping) Modifier else Modifier.graphicsLayer {
-                            // 0 -> 90, then -90 -> 0. Never past edge-on, so no back
-                            // face is ever shown and the new cover does not need
-                            // un-mirroring — and it reads as the next page swinging in
-                            // from the other side rather than one card spinning round.
-                            val t = turn.value
-                            rotationY = if (t <= 0.5f) t * 180f else (t - 1f) * 180f
-                            // Compose defaults to 8f, which is a heavy fisheye at 90
-                            // degrees. This is a sleeve at arm length, not a billboard.
-                            cameraDistance = FLIP_CAMERA_DISTANCE * density
-                            val dip = 1f - FLIP_SCALE_DIP * sin(t * PI).toFloat()
-                            scaleX = dip
-                            scaleY = dip
-                        },
-                    )
-                    .shadow(20.dp, RoundedCornerShape(radius)),
+                    // Attached unconditionally, even at rest. Added and removed around
+                    // each turn, it was a structural change to the modifier chain at
+                    // the two moments the cover could least afford one.
+                    .graphicsLayer {
+                        // 0 -> 90, then -90 -> 0. Never past edge-on, so no back
+                        // face is ever shown and the new cover does not need
+                        // un-mirroring — and it reads as the next page swinging in
+                        // from the other side rather than one card spinning round.
+                        val t = art.turn()
+                        rotationY = if (t <= 0.5f) t * 180f else (t - 1f) * 180f
+                        // A page hinged along an edge rolls as it comes over. Under two
+                        // degrees: enough to take the rigidity out, not enough to read
+                        // as a motion of its own.
+                        rotationZ = FLIP_TILT * sin(t * 2 * PI).toFloat()
+                        // Compose defaults to 8f, which is a heavy fisheye at 90
+                        // degrees. This is a sleeve at arm length, not a billboard.
+                        cameraDistance = FLIP_CAMERA_DISTANCE * density
+                        val dip = 1f - FLIP_SCALE_DIP * sin(t * PI).toFloat()
+                        scaleX = dip
+                        scaleY = dip
+                        // The shadow the sleeve casts, swelling as the page lifts and
+                        // settling as it lands. Here rather than in a Modifier.shadow
+                        // because that allocates a second render node and rebuilds it
+                        // whenever the elevation changes — which, for something that
+                        // moves every frame, is every frame.
+                        shadowElevation = FLIP_SHADOW_DP * density *
+                            (1f + FLIP_SHADOW_LIFT * sin(t * PI).toFloat())
+                        this.shape = shape
+                        clip = radius > 0.dp
+                    },
             )
         } else if (placeholder != null) {
             Box(
                 Modifier
                     .fillMaxWidth()
                     .fillMaxHeight()
-                    .clip(RoundedCornerShape(radius))
+                    .clip(shape)
                     .background(Ink2),
                 contentAlignment = Alignment.Center,
             ) {
@@ -318,17 +341,109 @@ fun AlbumArt(
     }
 }
 
+/** How far the ambient wash dims as the page passes edge-on. */
+private const val FLIP_WASH_DIP = 0.35f
+
+/** How much deeper the cast shadow gets at edge-on, as a fraction of its resting depth. */
+private const val FLIP_SHADOW_LIFT = 0.9f
+
+// --- layout ---------------------------------------------------------------
+
 /**
- * One page turn. Long enough to read as a deliberate motion, short enough that a
- * skip through an album shelf does not feel like waiting on an animation.
+ * Lets this content spill [horizontal] past the padding its parent imposed, on both
+ * sides.
+ *
+ * For a horizontal scroller inside a padded vertical one. A shelf that stops at the
+ * screen margin reads as having ended there, so the row wants to run edge to edge
+ * with the margin expressed as its own `contentPadding` — tiles then scroll *under*
+ * the margin rather than stopping at it. Compose has no negative padding, and the
+ * grid item has already been measured inside the parent's insets by the time it is
+ * composed, so the width has to be handed back by measuring wider and placing left.
  */
-private const val FLIP_MS = 520
+fun Modifier.bleed(horizontal: Dp) = layout { measurable, constraints ->
+    // Nothing to bleed back out of. An unbounded parent never imposed a margin, and
+    // widening infinity is not a width — it is a crash a few frames later.
+    if (constraints.maxWidth == Constraints.Infinity) {
+        val placeable = measurable.measure(constraints)
+        return@layout layout(placeable.width, placeable.height) { placeable.place(0, 0) }
+    }
+    val inset = horizontal.roundToPx()
+    val width = constraints.maxWidth + inset * 2
+    val placeable = measurable.measure(constraints.copy(minWidth = width, maxWidth = width))
+    // Reports the original width, so the parent's own layout is untouched — only the
+    // painting and the touch area extend past it.
+    layout(constraints.maxWidth, placeable.height) { placeable.place(-inset, 0) }
+}
 
-/** Perspective depth, in dp, multiplied by density at the layer. */
-private const val FLIP_CAMERA_DISTANCE = 16f
+// --- colour ---------------------------------------------------------------
 
-/** How far the page pulls back at edge-on. Small — this is depth, not a bounce. */
-private const val FLIP_SCALE_DIP = 0.04f
+/**
+ * The album accent, eased into rather than cut to.
+ *
+ * [LocalAccent] itself is deliberately *not* animated at the provider. It is a plain
+ * `compositionLocalOf` read at several hundred sites, so handing the tree a new
+ * colour on every frame of a transition would recompose all of them for the length
+ * of it — a recomposition storm, on every change of album, to smooth a colour most
+ * of those sites only use at 12% alpha.
+ *
+ * So the easing is done by the loud consumers instead: the handful of components
+ * drawn in a solid or near-solid fill of the accent, where a jump between two album
+ * colours is a visible cut. Everything faint enough to get away with it keeps
+ * reading [LocalAccent] straight.
+ *
+ * A colour, so an `effects` spec — a spatial one overshoots the target hue on the
+ * way in and reads as a flicker. See [Motion].
+ */
+@Composable
+fun rememberAccent(): Color {
+    val target = LocalAccent.current
+    val eased by animateColorAsState(target, Motion.effects(), label = "accent")
+    return eased
+}
+
+// --- gesture feedback -----------------------------------------------------
+
+/**
+ * A surface that takes a little weight under the finger. Held together so the scale
+ * and the [interactions] driving it cannot drift apart — a caller that forgets to
+ * hand the source to its own `clickable` gets a card that never responds, which is
+ * exactly the bug this replaces.
+ */
+@Stable
+class PressScale internal constructor(
+    val interactions: MutableInteractionSource,
+    private val scale: State<Float>,
+) {
+    /** Read inside a `graphicsLayer`, never in composition. */
+    fun scale(): Float = scale.value
+}
+
+/**
+ * Gesture feedback for a tappable surface.
+ *
+ * Scale only — never alpha, which belongs on an `effects` spec (see [Motion]). One
+ * primitive rather than the same six lines in every tile: the cover tiles and the
+ * library rows had none at all while the category cards beside them responded, and
+ * the inert ones read as the parts of the grid that had not finished loading.
+ */
+@Composable
+fun rememberPressScale(down: Float = 0.97f): PressScale {
+    val interactions = remember { MutableInteractionSource() }
+    val pressed by interactions.collectIsPressedAsState()
+    val scale = animateFloatAsState(
+        targetValue = if (pressed) down else 1f,
+        animationSpec = Motion.spatialFast(),
+        label = "press",
+    )
+    return remember(interactions, scale) { PressScale(interactions, scale) }
+}
+
+/** Applies [press] to this surface. Goes first in the chain, so the whole card moves. */
+fun Modifier.pressScale(press: PressScale) = graphicsLayer {
+    val s = press.scale()
+    scaleX = s
+    scaleY = s
+}
 
 // --- text helpers ---------------------------------------------------------
 
@@ -522,7 +637,7 @@ fun Bloom(color: Color, size: Dp, x: Dp, y: Dp, alpha: Float = 0.5f) {
 
 @Composable
 fun Pill(text: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    val accent = LocalAccent.current
+    val accent = rememberAccent()
     Box(
         modifier
             .clip(RoundedCornerShape(100))
@@ -543,7 +658,7 @@ fun Pill(text: String, selected: Boolean, modifier: Modifier = Modifier, onClick
 
 @Composable
 fun ToggleChip(text: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    val accent = LocalAccent.current
+    val accent = rememberAccent()
     Box(
         modifier
             .clip(RoundedCornerShape(9.dp))
@@ -568,7 +683,7 @@ fun SegmentedToggle(
     modifier: Modifier = Modifier,
     onSelect: (Int) -> Unit,
 ) {
-    val accent = LocalAccent.current
+    val accent = rememberAccent()
     Row(
         modifier
             .clip(RoundedCornerShape(100))
@@ -606,7 +721,7 @@ fun IconChip(
     tint: Color? = null,
     onClick: (() -> Unit)? = null,
 ) {
-    val accent = LocalAccent.current
+    val accent = rememberAccent()
     val shape = RoundedCornerShape(11.dp)
     Box(
         modifier
@@ -685,10 +800,7 @@ fun QualityPill(
  */
 @Composable
 fun PlayButton(playing: Boolean, size: Dp = 68.dp, onClick: () -> Unit) {
-    val accent = LocalAccent.current
-    // A colour, so an effects spec — a spatial one would overshoot the target hue on
-    // the way in and read as a flicker as the album accent changes.
-    val fill by animateColorAsState(accent, Motion.effects(), label = "playFill")
+    val fill = rememberAccent()
     Box(Modifier.size(size)) {
         CastGlow(fill, CircleShape, blurRadius = 26.dp, alpha = 0.55f, offsetY = 10.dp)
         Box(
@@ -716,7 +828,7 @@ fun PlayButton(playing: Boolean, size: Dp = 68.dp, onClick: () -> Unit) {
 /** A circular determinate ring — download progress in the library. */
 @Composable
 fun RingProgress(progress: Float, modifier: Modifier = Modifier, size: Dp = 20.dp, stroke: Dp = 2.4.dp) {
-    val accent = LocalAccent.current
+    val accent = rememberAccent()
     // Read in composition: the lambda below is a DrawScope, not a composable.
     val track = inkOn(0.12f)
     Box(
@@ -963,7 +1075,7 @@ fun HSlider(
     onCommit: ((Float) -> Unit)? = null,
     label: ((Float) -> String)? = null,
 ) {
-    val accent = LocalAccent.current
+    val accent = rememberAccent()
     var width by remember { mutableIntStateOf(1) }
     val gesture = rememberSliderGesture(value)
     val v = gesture.display(value)
@@ -1045,7 +1157,7 @@ fun WaveSeekBar(
     onCommit: ((Float) -> Unit)? = null,
     label: ((Float) -> String)? = null,
 ) {
-    val accent = LocalAccent.current
+    val accent = rememberAccent()
     var width by remember { mutableIntStateOf(1) }
     val gesture = rememberSliderGesture(value)
     val v = gesture.display(value)

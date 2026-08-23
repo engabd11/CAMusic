@@ -121,16 +121,25 @@ private fun ServerList(
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         SettingsCard(
             title = "Your libraries",
-            lead = "Pick the one the Library tab browses. The others stay set up and keep their " +
-                "logins, and downloads play whichever server they came from either way.",
+            lead = "Pick the one the Library tab browses.",
+            info = "Switching does not remove anything. The others stay set up and keep their " +
+                "logins, ready to switch back to in one tap.\n\nDownloads play from whichever " +
+                "server they came from either way, so nothing on disk stops working when you " +
+                "switch.\n\nTip: keep Music Assistant and a direct library both set up if you " +
+                "have them. Switch to the direct one when you leave the house, since it works " +
+                "offline and Music Assistant does not.",
         ) {}
 
         if (servers.isEmpty()) {
             SettingsCard(
                 title = "Nothing set up yet",
-                lead = "Add Music Assistant to play to speakers around the house, or a " +
-                    "Navidrome, Subsonic or Jellyfin server to browse and play on this phone — " +
-                    "with downloads that keep working with no network at all.",
+                lead = "Add a server and the Library tab has something to browse.",
+                info = "Music Assistant plays to speakers around the house and keeps one queue " +
+                    "across them. Navidrome, Subsonic and Jellyfin play on this phone, which is " +
+                    "what makes downloads possible and what keeps music working with no network " +
+                    "at all.\n\nYou can add several and switch between them later.\n\nTip: you " +
+                    "need the server's address on your network and a login. If you reach it " +
+                    "from a browser at home, that address is the one to use here.",
             ) {}
         }
 
@@ -152,13 +161,26 @@ private fun ServerList(
             // what it is for in the lead.
             SettingsCard(
                 title = "What ${active.displayName} means for the rest of the app",
-                lead = if (active.kind.playsLocally)
-                    "${active.displayName} plays on this phone. Speaker grouping is a Music " +
-                        "Assistant feature, so that tab is off. Light Sync still works, over " +
-                        "the Hue Bridge directly."
+                lead = if (active.kind.playsLocally) "${active.displayName} plays on this phone."
+                else "Music Assistant plays anywhere on the network.",
+                info = if (active.kind.playsLocally)
+                    "Speaker grouping is a Music Assistant feature, so that tab is off " +
+                        "while this library is the active one.\n\nLight Sync still works. It " +
+                        "drives the Hue Bridge directly over the LAN, following this phone's " +
+                        "own playback rather than a server's, and it is the lower-latency route " +
+                        "of the two.\n\nDownloads and offline playback are available here and " +
+                        "nowhere else, since only a library this phone plays can hand over the " +
+                        "original file.\n\nTip: add Music Assistant as a second library if you " +
+                        "also want speakers. Switching takes one tap and neither loses its " +
+                        "setup."
                 else
-                    "Music Assistant browses the whole library, plays to any speaker on the " +
-                        "network, and keeps grouping and Light Sync available.",
+                    "It browses the whole library and plays to any speaker on the network, " +
+                        "so grouping and Light Sync are both available. Light Sync follows " +
+                        "whichever player Music Assistant is driving, which is not necessarily " +
+                        "this phone.\n\nThe trade is that it needs the server reachable. There " +
+                        "are no downloads on this path, because the file never arrives " +
+                        "whole.\n\nTip: add a direct library as well if you want music on a " +
+                        "plane or in a dead spot.",
             ) {}
         }
     }
@@ -283,9 +305,13 @@ private fun ProviderPicker(accent: Color, onPick: (ServerKind) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         SettingsCard(
             title = "Add a server",
-            lead = "Music Assistant plays to speakers around the house. Everything else is a " +
-                "library this phone plays itself — which is what makes downloads, and music " +
-                "that keeps working with the network down, possible.",
+            lead = "Music Assistant plays to the house; the rest play here.",
+            info = "Music Assistant drives speakers around the house and keeps a shared queue " +
+                "across them, with this phone as one more speaker on the list.\n\nEverything " +
+                "else is a library this phone plays itself, which is what makes downloads " +
+                "possible, and music that keeps working with the network down.\n\nTip: these " +
+                "are not exclusive. Add both if you have both, and switch depending on where " +
+                "you are.",
         ) {}
 
         ServerKind.addable.forEach { kind ->
@@ -295,7 +321,7 @@ private fun ProviderPicker(accent: Color, onPick: (ServerKind) -> Unit) {
         Spacer(Modifier.height(4.dp))
         FieldLabel("Not yet supported")
         Note(
-            "Planned adapters rather than maybes — the endpoints and sign-in each one needs " +
+            "Planned adapters rather than maybes. The endpoints and sign-in each one needs " +
                 "are written up in docs/providers.md.",
         )
         ServerKind.planned.forEach { kind ->
@@ -393,7 +419,7 @@ private fun ServerDetail(
                     "The address of the server. Credentials only if yours asks for them."
                 AuthStyle.TOKEN -> "The address, and a token generated in the server's own settings."
                 AuthStyle.LINKED_ACCOUNT -> "Signing in happens on the provider's own page."
-                AuthStyle.NONE -> "Nothing to connect to — this reads music already on the phone."
+                AuthStyle.NONE -> "Nothing to connect to, this reads music already on the phone."
                 AuthStyle.USER_PASSWORD -> "The address of the server, and the login you use for it."
             },
         ) {
@@ -465,7 +491,7 @@ private fun ServerDetail(
                     isActive -> {
                         val (text, health) = when {
                             connecting -> "Connecting…" to Health.WORKING
-                            offline -> "Offline — playing downloads" to Health.WARN
+                            offline -> "Offline, playing downloads" to Health.WARN
                             ready -> "Connected" to Health.GOOD
                             connError != null -> connError!! to Health.BAD
                             url.isBlank() && config.kind.needsAddress -> "Not set up" to Health.IDLE
@@ -632,8 +658,8 @@ private fun JellyfinLibraryCard(
 
     SettingsCard(
         title = "Music library",
-        lead = "Which of this server's libraries to browse. The rest of the server — films, " +
-            "television — is left alone.",
+        lead = "Which of this server's libraries to browse. The rest of the server, films " +
+            "and television, is left alone.",
     ) {
         list.forEach { lib ->
             val selected = lib.itemId == selectedId

@@ -41,8 +41,26 @@ import com.engabd.sendpin.ui.theme.*
  * mean editing a screen this refactor otherwise does not touch.
  */
 @Composable
-internal fun LibraryShelf(text: String) {
-    Box(Modifier.padding(top = 12.dp, bottom = 2.dp)) { SectionLabel(text) }
+internal fun LibraryShelf(text: String, count: Int = 0) {
+    Row(
+        Modifier.fillMaxWidth().padding(bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        SectionLabel(text)
+        if (count > 0) {
+            Text(
+                count.toString(),
+                color = TextFaint,
+                fontFamily = MonoFont,
+                style = MaterialTheme.typography.labelSmall,
+            )
+        }
+        // A rule out to the margin, so a shelf reads as a band across the page rather
+        // than a label floating above some tiles. It is what tells you the row below
+        // scrolls sideways and the next one is a different thing.
+        Box(Modifier.weight(1f).height(1.dp).background(HairlineSoft))
+    }
 }
 
 /** The "New playlist" affordance at the top of the Playlists list. */

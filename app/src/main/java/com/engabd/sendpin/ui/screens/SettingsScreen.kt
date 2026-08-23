@@ -16,6 +16,12 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -31,6 +37,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ui.design.LocalAccent
+import com.engabd.sendpin.ui.design.LocalPalette
+import com.engabd.sendpin.ui.design.Motion
 import com.engabd.sendpin.ui.design.navBarInset
 import com.engabd.sendpin.ui.screens.settings.*
 import com.engabd.sendpin.ui.theme.*
@@ -216,11 +224,17 @@ fun SettingsScreen(
                     // knows what "Downloads" means; what they do not know is whether
                     // theirs are taking a gigabyte or whether the bridge ever paired.
                     items(SettingsSection.entries, key = { it.name }, contentType = { "category" }) { s ->
+                        // Each row takes its own swatch from the album palette, the same
+                        // way the library's category tiles do — so eight rows read as a
+                        // set of places rather than eight repetitions of one accent, and
+                        // both screens are visibly tinted by the record on the player.
+                        val hue = LocalPalette.current.swatch(s.ordinal)
+                        val tint by animateColorAsState(hue, Motion.effects(), label = "sectionHue")
                         // Stats opens its own full-screen view rather than a settings sub-page.
                         if (s == SettingsSection.STATS) {
-                            NavRow(s.icon, s.title, state.subtitleFor(s) ?: s.subtitle, accent, onClick = onOpenStats)
+                            NavRow(s.icon, s.title, state.subtitleFor(s) ?: s.subtitle, tint, onClick = onOpenStats)
                         } else {
-                            NavRow(s.icon, s.title, state.subtitleFor(s) ?: s.subtitle, accent) {
+                            NavRow(s.icon, s.title, state.subtitleFor(s) ?: s.subtitle, tint) {
                                 onSection(s); onDetail(null)
                             }
                         }
@@ -228,7 +242,18 @@ fun SettingsScreen(
                 } else {
                     // One item per section: each is a page of cards, and a page is not
                     // a list worth recycling. The index above is, and gets `items`.
-                    item(key = section.name) {
+                    // Keyed on the section, not on `section.name`, so drilling from one
+                    // section into another — which the Libraries page can do — is a
+                    // transition rather than a redraw of a slot that never changed.
+                    item(key = "section") {
+                        AnimatedContent(
+                            targetState = section,
+                            transitionSpec = {
+                                fadeIn(Motion.fadeThroughIn()) togetherWith
+                                    fadeOut(Motion.fadeThroughOut()) using SizeTransform(clip = false)
+                            },
+                            label = "settingsSection",
+                        ) { section ->
                         when (section) {
                             SettingsSection.LIBRARIES -> LibrariesSection(
                                 settings = settings,
@@ -256,16 +281,18 @@ fun SettingsScreen(
                                 onHaToken = { haToken = it },
                             )
 
-                            SettingsSection.STATS -> {
-                                // STATS is handled via onOpenStats callback in the index view
-                                // This branch should never be reached
-                            }
+                            // No STATS branch. It is intercepted in the index above and
+                            // opens its own full-screen view, so it never arrives here —
+                            // the branch that used to sit here said so in a comment and
+                            // was otherwise empty.
+                            SettingsSection.STATS -> Unit
 
                             SettingsSection.BACKUP -> BackupSection(settings, accent, scope)
 
                             SettingsSection.APPEARANCE -> AppearanceSection(settings, accent, scope)
 
                             SettingsSection.ABOUT -> AboutSection(accent, onOpenStats)
+                        }
                         }
                     }
                 }
@@ -296,7 +323,7 @@ private data class SettingsOverview(
     /** The live line for [section], or null to fall back to its written description. */
     fun subtitleFor(section: SettingsSection): String? = when (section) {
         SettingsSection.LIBRARIES -> when {
-            servers == 0 -> "No music library yet — start here"
+            servers == 0 -> "No music library yet, start here"
             else -> listOfNotNull(activeLibrary, libraryStatus).joinToString(" · ")
                 .takeIf { it.isNotBlank() }
         }
@@ -345,7 +372,7 @@ private fun rememberSettingsOverview(
         libraryStatus = when {
             active == null -> null
             connecting -> "Connecting…"
-            offline -> "Offline — playing downloads"
+            offline -> "Offline, playing downloads"
             ready -> "Connected"
             else -> "Not connected"
         },
@@ -371,9 +398,14 @@ private fun rememberSettingsOverview(
 private fun GetStartedCard(accent: androidx.compose.ui.graphics.Color, onAddLibrary: () -> Unit) {
     SettingsCard(
         title = "Start here",
-        lead = "CAMusic plays your own library — Music Assistant for speakers around the " +
-            "house, or Navidrome, Subsonic or Jellyfin to play on this phone with downloads " +
-            "that work with no network at all. Add one and the rest of the app comes alive.",
+        lead = "Add a library and the rest of the app comes alive.",
+        info = "CAMusic plays your own music, from your own server. Music Assistant drives " +
+            "speakers around the house and keeps one queue across them. Navidrome, Subsonic and " +
+            "Jellyfin play on this phone, with downloads that work with no network at " +
+            "all.\n\nYou can add more than one and switch between them. Nothing gets thrown " +
+            "away when you do.\n\nTip: if you are not sure which you have, start with the " +
+            "server you already sign in to from a browser. Music Assistant is the one with a " +
+            "speakers page.",
     ) {
         OledButton("Add a music library", accent = accent, onClick = onAddLibrary)
     }
@@ -440,9 +472,13 @@ private fun BackupSection(settings: AppSettings, accent: Color, scope: Coroutine
 
     SettingsCard(
         title = "Backup & restore",
-        lead = "Export every setting — including saved servers — to an encrypted file, or " +
-            "restore one on a new install. The password is yours alone: there is no way to " +
-            "recover a backup without it.",
+        lead = "Every setting, including saved servers, to an encrypted file.",
+        info = "Export every setting, saved servers and their logins included, to a single " +
+            "encrypted file. Restore it on a new install and the app comes back exactly as it " +
+            "was.\n\nThe password is yours alone. It is not stored anywhere, not in the file " +
+            "and not on this phone, so there is no way to recover a backup without it.\n\nTip: " +
+            "take one before changing servers or reinstalling. It is the only copy of your Hue " +
+            "pairing, which otherwise means pressing the button on the bridge again.",
     ) {
         OledButton(text = "Export settings", accent = accent, outline = true) { exportPrompt = true }
         Spacer(Modifier.height(8.dp))
@@ -455,7 +491,7 @@ private fun BackupSection(settings: AppSettings, accent: Color, scope: Coroutine
     if (exportPrompt) {
         PasswordPromptDialog(
             title = "Export settings",
-            note = "This password encrypts the file. Choose one you'll remember — it can't be reset.",
+            note = "This password encrypts the file. Choose one you'll remember, it can't be reset.",
             confirmLabel = "Export",
             onDismiss = { exportPrompt = false },
             onConfirm = { password ->
@@ -482,7 +518,7 @@ private fun BackupSection(settings: AppSettings, accent: Color, scope: Coroutine
                         if (text == null) {
                             "Import failed: couldn't read that file"
                         } else if (settings.importSettings(text, password)) {
-                            "Imported — restart the app for everything to take effect"
+                            "Imported, restart the app for everything to take effect"
                         } else {
                             "Import failed: wrong password, or not a CAMusic backup"
                         }

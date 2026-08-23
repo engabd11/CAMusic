@@ -62,10 +62,13 @@ internal fun DrivingCard(settings: AppSettings, accent: Color, scope: CoroutineS
 
     SettingsCard(
         title = "Driving",
-        lead = "A lot of cars have no Android Auto. The phone sits in a cradle running the map, " +
-            "and skipping a track means leaving it, finding this app, hitting a small target and " +
-            "going back — while driving. This puts three very large controls over whatever is on " +
-            "screen instead.",
+        lead = "Three very large controls, over whatever is on screen.",
+        info = "A lot of cars have no Android Auto. The phone sits in a cradle running the map, " +
+            "and skipping a track means leaving the map, finding this app, hitting a small " +
+            "target and going back, while driving.\n\nThis puts the transport on top of the map " +
+            "instead, at a size you can hit without looking.\n\nTip: set your car below as " +
+            "well. Without it the controls have no way to know you have got in, and you will be " +
+            "turning them on by hand every trip.",
     ) {
         ToggleRow(
             "Driving controls",
@@ -86,9 +89,14 @@ internal fun DrivingCard(settings: AppSettings, accent: Color, scope: CoroutineS
         FieldLabel("Your car")
         if (!btGranted) {
             Note(
-                "Needs permission to see which Bluetooth device you have connected. Nothing is " +
-                    "sent anywhere — the app only checks whether the one you pick below is the " +
-                    "one that just connected.",
+                "Needs permission to see which Bluetooth device is connected.",
+                title = "Bluetooth permission",
+                info = "Nothing is sent anywhere. The app compares the device that just connected " +
+                    "against the one you pick below, on this phone, to work out whether you " +
+                    "have got into the car.\n\nAndroid asks for the permission because the list " +
+                    "of paired devices can identify you. The app never reads it for anything " +
+                    "else.\n\nTip: if the list below is empty after you allow this, pair the " +
+                    "phone with your car stereo first and then come back.",
             )
             OledButton("Allow Bluetooth", accent = accent, outline = true) {
                 askBluetooth.launch(Manifest.permission.BLUETOOTH_CONNECT)
@@ -124,7 +132,7 @@ internal fun DrivingCard(settings: AppSettings, accent: Color, scope: CoroutineS
                 scope.launch { settings.setDrivingCar(address, name) }
             }
             if (carName.isBlank()) {
-                Note("Nothing picked yet — the Quick Settings tile still works in the meantime.")
+                Note("Nothing picked yet, the Quick Settings tile still works in the meantime.")
             }
             Note("${bonded.size} paired ${if (bonded.size == 1) "device" else "devices"}.")
         }
@@ -142,15 +150,21 @@ internal fun DrivingCard(settings: AppSettings, accent: Color, scope: CoroutineS
             scope.launch { settings.setDrivingMechanism(next) }
         }
         Note(
-            if (mechanism == AppSettings.DRIVING_OVERLAY) {
-                "A full-width bar along the edge of the screen, with the largest targets. Needs " +
-                    "permission to draw over other apps, and can be dragged to the other edge so " +
-                    "it never sits over the map's own controls."
+            if (mechanism == AppSettings.DRIVING_OVERLAY) "A full-width bar. Largest targets."
+            else "A small floating window. No permission needed.",
+            title = "How the controls appear",
+            info = if (mechanism == AppSettings.DRIVING_OVERLAY) {
+                "A bar along the edge of the screen, as wide as the screen is, with the " +
+                    "largest targets of the two. It needs permission to draw over other " +
+                    "apps.\n\nIt can be dragged to the opposite edge, so it never has to sit " +
+                    "over the map's own controls.\n\nTip: drag it to whichever edge your map " +
+                    "keeps its buttons away from. The position is remembered."
             } else {
-                "A small floating window, the same one video apps use. Needs no permission at " +
-                    "all, but the system decides its size — so the buttons are smaller than the " +
-                    "full-width bar's, and it only appears if you open this app before starting " +
-                    "the map."
+                "Picture-in-picture, the same floating window video apps use, so it needs " +
+                    "no permission at all.\n\nThe system decides its size, which makes the " +
+                    "buttons smaller than the full-width bar's, and it only appears if you open " +
+                    "this app before starting the map.\n\nTip: if it never shows up, that last " +
+                    "point is usually why. Open CAMusic, start playing, then switch to the map."
             },
         )
 
@@ -172,10 +186,7 @@ internal fun DrivingCard(settings: AppSettings, accent: Color, scope: CoroutineS
             }
         }
 
-        Note(
-            "However it is turned on, the controls never appear with nothing playing — a " +
-                "transport with nothing to transport is just clutter over a map.",
-        )
+        Note("Either way, the controls never appear with nothing playing.")
     }
 }
 
@@ -208,7 +219,7 @@ private fun PauseForCallsRow(settings: AppSettings, accent: Color, scope: Corout
 
     ToggleRow(
         "Pause for calls",
-        "Pauses playback when the phone rings or you answer — never resumes on its own.",
+        "Pauses playback when the phone rings or you answer, and never resumes on its own.",
         enabled && granted, accent,
     ) { on ->
         if (on && !granted) {
@@ -281,7 +292,7 @@ private fun SpeedFeaturesRow(settings: AppSettings, accent: Color, scope: Corout
     ) { on -> requestThenSet(on) { settings.setSpeedAdaptiveVolume(on) } }
 
     if ((alertEnabled || adaptiveEnabled) && !granted) {
-        Note("Needs location permission — GPS speed only, nothing is stored or sent anywhere.")
+        Note("Needs location permission. GPS speed only, and nothing is stored or sent anywhere.")
         OledButton("Allow location", accent = accent, outline = true) {
             askLocation.launch(Manifest.permission.ACCESS_FINE_LOCATION)
         }

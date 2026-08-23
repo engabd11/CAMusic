@@ -283,7 +283,7 @@ class SyncoEngine(
                 "How hard a beat hits. Up for sharper, punchier flashes on drums; " +
                     "down when the room feels twitchy or the flashes arrive as strobing.",
             "glow" to
-                "The steady light under the show — how bright the room stays between " +
+                "The steady light under the show, how bright the room stays between " +
                     "beats. Up to keep the space usable and lit; down for a darker room " +
                     "where only the peaks show.",
             "movement" to

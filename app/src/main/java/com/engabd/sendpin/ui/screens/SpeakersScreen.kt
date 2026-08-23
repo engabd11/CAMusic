@@ -248,7 +248,7 @@ private fun JoinedCard(p: SpeakerUi, onSelect: () -> Unit, onUnjoin: () -> Unit,
                     }
                 } else {
                     Text(
-                        "No sync offset for this speaker — Music Assistant doesn't expose one.",
+                        "No sync offset for this speaker, Music Assistant doesn't expose one.",
                         color = TextFaint, fontWeight = FontWeight.SemiBold, fontSize = 11.sp,
                     )
                 }
@@ -326,18 +326,14 @@ private fun GroupSwitch(checked: Boolean, enabled: Boolean, onCheckedChange: (Bo
     )
 }
 
-/** A quiet inline explanation — not an error, just why a control isn't there. */
+/**
+ * A quiet inline explanation — not an error, just why a control isn't there.
+ *
+ * Kept as a name rather than replaced at each of its call sites: this file reads
+ * better for having the local word, and it is now one line over the shared shape.
+ */
 @Composable
-private fun NoteRow(msg: String) {
-    Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Glass)
-            .border(1.dp, HairlineSoft, RoundedCornerShape(12.dp)).padding(13.dp),
-        horizontalArrangement = Arrangement.spacedBy(9.dp),
-    ) {
-        Icon(Icons.Outlined.Info, null, tint = TextFaint, modifier = Modifier.size(15.dp))
-        Text(msg, color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, lineHeight = 15.sp)
-    }
-}
+private fun NoteRow(msg: String) = InfoNote(msg)
 
 @Composable
 private fun PlayerIcon(isSelf: Boolean, joined: Boolean) {

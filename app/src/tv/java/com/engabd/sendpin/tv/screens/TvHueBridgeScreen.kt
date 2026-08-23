@@ -207,7 +207,7 @@ fun TvHueBridgeScreen(onBack: () -> Unit) {
         if (!scanning && discovered.isEmpty() && tried) {
             Spacer(Modifier.height(16.dp))
             Text(
-                "No bridge found. Some networks block the discovery protocol — enter the bridge's " +
+                "No bridge found. Some networks block the discovery protocol, so enter the bridge's " +
                     "address instead. It is on the Hue app's Settings → My Hue System screen, or in " +
                     "your router's device list.",
                 color = TextMuted, style = MaterialTheme.typography.bodySmall,

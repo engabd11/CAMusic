@@ -266,7 +266,7 @@ class JellyfinClient(
     private fun explain(code: Int): String = when (code) {
         401 -> "Jellyfin rejected the username or password"
         403 -> "That account isn't allowed to browse this library"
-        404 -> "Not found on the server — it may have been removed"
+        404 -> "Not found on the server, it may have been removed"
         else -> "Jellyfin returned HTTP $code"
     }
 

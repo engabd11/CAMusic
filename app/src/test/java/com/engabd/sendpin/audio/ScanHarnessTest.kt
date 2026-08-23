@@ -46,7 +46,7 @@ class ScanHarnessTest {
             ?.sortedBy { it.name }
             .orEmpty()
         if (files.isEmpty()) {
-            println("[harness] no *$SUFFIX in $dir — run tools/analysis-harness/decode.sh first")
+            println("[harness] no *$SUFFIX in $dir, run tools/analysis-harness/decode.sh first")
             return
         }
         val limit = System.getProperty(LIMIT_PROPERTY)?.toIntOrNull() ?: files.size

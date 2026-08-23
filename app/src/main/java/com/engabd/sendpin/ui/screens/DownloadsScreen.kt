@@ -308,7 +308,7 @@ private fun NothingDownloaded() {
             )
             Text(
                 "Long-press a track, album or playlist in the library and choose " +
-                    "Download — or tap the download chip on the player while " +
+                    "Download, or tap the download chip on the player while " +
                     "something is playing. Downloads are the original files, so " +
                     "they play at full quality with no network at all.",
                 color = TextFaint, style = MaterialTheme.typography.bodySmall,
