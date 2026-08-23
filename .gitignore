@@ -8,6 +8,10 @@
 .externalNativeBuild
 .cxx
 local.properties
+# Kotlin 2.x's own build-state dir (session files, incremental caches). Created by
+# any gradle invocation and never checked in.
+.kotlin/
+
 # Every module's build dir, not just the app's — /app/build alone let the
 # baselineprofile module's intermediates into a commit.
 build/

@@ -30,7 +30,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -44,7 +43,6 @@ import com.engabd.sendpin.ui.theme.TextMuted
 import com.engabd.sendpin.ui.theme.TextPrimary
 import com.engabd.sendpin.ui.theme.TextSecondary
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
-import kotlin.math.roundToLong
 
 /**
  * Reuses [NowPlayingViewModel] exactly as the phone's `NowPlayingScreen.kt` does —

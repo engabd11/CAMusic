@@ -28,12 +28,19 @@ import com.engabd.sendpin.ui.theme.TextPrimary
 /**
  * The D-pad focus affordance layer for the tv flavor: thin wrappers over
  * `androidx.tv.material3`'s Card/Button (the component library adds the
- * focused-item scale/glow TV UX expects, tuned out of the box — see the TV
- * plan's design-approach section) bound to this app's own [SendspinTheme]
+ * focused-item scale/glow TV UX expects, tuned out of the box) bound to this
+ * app's own [SendspinTheme]
  * tokens rather than tv-material's separate colour-scheme concept, so a TV
  * screen still reads as CAMusic and not as a stock tv-material sample. Only
  * the components are borrowed here; theming stays the app's own throughout.
  */
+
+/**
+ * The one red the TV screens report failures in. Not from the theme: SendspinTheme
+ * has no error role of its own — the phone screens each inline this same literal —
+ * and inventing one for three call sites would be a bigger change than the problem.
+ */
+val TvError = Color(0xFFE05B5B)
 
 /** A focusable tile — the library grid, queue rows, the nav rail. */
 @Composable

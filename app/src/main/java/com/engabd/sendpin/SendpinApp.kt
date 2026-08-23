@@ -15,6 +15,7 @@ import com.engabd.sendpin.ma.MaApiClient
 import com.engabd.sendpin.service.AppLifecycleObserver
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.data.Http
+import com.engabd.sendpin.data.Platform
 import com.engabd.sendpin.service.LocalPlaybackService
 import com.engabd.sendpin.service.MaNowPlaying
 import com.engabd.sendpin.service.Playback
@@ -320,7 +321,7 @@ class SendpinApp : Application(), ImageLoaderFactory {
         // SecurityException rather than a graceful no-op. All four are `by lazy`,
         // so skipping them here means never constructing them, not just leaving
         // them idle.
-        if (!com.engabd.sendpin.data.Platform.isTelevision(this)) {
+        if (!Platform.isTelevision(this)) {
             // Touched here so its Bluetooth receiver is registered from process start.
             // Lazily built, it would only begin watching once something asked — and the
             // thing it is watching for is the car connecting, which happens before any

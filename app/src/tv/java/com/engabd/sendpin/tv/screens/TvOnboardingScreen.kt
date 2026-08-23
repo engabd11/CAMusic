@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -17,7 +16,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -26,26 +24,21 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.library.ServerKind
 import com.engabd.sendpin.ma.LibraryViewModel
-import com.engabd.sendpin.tv.design.TvTile
 import com.engabd.sendpin.ui.theme.TextMuted
 import com.engabd.sendpin.ui.theme.TextPrimary
 import kotlinx.coroutines.launch
 
-private val OnboardingKinds = listOf(
-    ServerKind.MUSIC_ASSISTANT to "A Music Assistant server on your network",
-    ServerKind.NAVIDROME to "A Navidrome (or OpenSubsonic) server",
-    ServerKind.JELLYFIN to "A Jellyfin server",
-    ServerKind.LOCAL to "Music files on this device",
-)
-
 /**
  * First-run setup. Same four sources the phone's `OnboardingWizard.kt` opens
- * with (Music Assistant / Navidrome / Jellyfin / local files) — Subsonic and
- * multi-server management stay in Settings, matching the phone. No Light Sync
- * or speaker-registration steps here: those are real screens of their own
- * (`TvLightSyncScreen`, Settings) reachable once the app is open, so this
- * wizard only has to answer the one question nothing else can substitute for
- * — which library to play from.
+ * with (Music Assistant / Navidrome / Jellyfin / local files, via the shared
+ * [TvLibraryKindTiles]) — Subsonic and multi-server management stay in Settings,
+ * matching the phone. No Light Sync or speaker-registration steps here: those
+ * are real screens of their own (`TvLightSyncScreen`, `TvSettingsScreen`)
+ * reachable once the app is open, so this wizard only has to answer the one
+ * question nothing else can substitute for — which library to play from.
+ *
+ * "Skip for now" is a genuine skip, not a dead end: Settings → Libraries can add
+ * a source later through the same [TvServerSetupScreen] this screen uses.
  */
 @Composable
 fun TvOnboardingScreen(onDone: () -> Unit, libraryViewModel: LibraryViewModel = viewModel()) {
@@ -70,16 +63,7 @@ fun TvOnboardingScreen(onDone: () -> Unit, libraryViewModel: LibraryViewModel = 
                 Spacer(Modifier.height(8.dp))
                 Text("What should CAMusic play from?", color = TextMuted, style = MaterialTheme.typography.bodyLarge)
                 Spacer(Modifier.height(28.dp))
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    OnboardingKinds.forEach { (k, description) ->
-                        TvTile(onClick = { chosenKind = k }, modifier = Modifier.width(560.dp)) {
-                            Column(Modifier.padding(18.dp)) {
-                                Text(k.label, color = TextPrimary, fontWeight = FontWeight.Bold)
-                                Text(description, color = TextMuted, style = MaterialTheme.typography.bodySmall)
-                            }
-                        }
-                    }
-                }
+                TvLibraryKindTiles(onPick = { chosenKind = it })
                 Spacer(Modifier.height(20.dp))
                 com.engabd.sendpin.tv.design.TvButton(onClick = { finish(skipped = true) }) {
                     Text("Skip for now")
@@ -87,6 +71,9 @@ fun TvOnboardingScreen(onDone: () -> Unit, libraryViewModel: LibraryViewModel = 
             }
         }
     } else {
+        // No BackHandler on this branch: TvServerSetupScreen registers its own,
+        // pointing at the same onBack. Two enabled handlers would only mean the
+        // inner one wins anyway.
         TvServerSetupScreen(
             kind = kind,
             libraryViewModel = libraryViewModel,

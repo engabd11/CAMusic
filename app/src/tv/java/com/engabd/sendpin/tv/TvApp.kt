@@ -1,5 +1,6 @@
 package com.engabd.sendpin.tv
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -13,10 +14,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.QueueMusic
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -50,7 +51,7 @@ import com.engabd.sendpin.ui.theme.TextPrimary
 private enum class TvTab(val label: String, val icon: ImageVector) {
     NOW_PLAYING("Now Playing", Icons.Default.PlayArrow),
     LIBRARY("Library", Icons.Default.LibraryMusic),
-    QUEUE("Queue", Icons.Default.QueueMusic),
+    QUEUE("Queue", Icons.AutoMirrored.Filled.QueueMusic),
     LIGHT_SYNC("Light Sync", Icons.Default.Lightbulb),
     SETTINGS("Settings", Icons.Default.Settings),
 }
@@ -76,6 +77,16 @@ fun TvApp() {
     }
 
     var tab by rememberSaveable { mutableStateOf(TvTab.NOW_PLAYING) }
+
+    // Back returns to the app's home tab before it leaves the app, which is what a
+    // TV remote's Back key is expected to do — dropping the user onto the launcher
+    // from four levels in is the phone's "up" behaviour, not a TV's.
+    //
+    // Registered before the content below on purpose: the OnBackPressedDispatcher
+    // gives the most recently added *enabled* callback the event, so a screen with
+    // its own handler (TvLibraryScreen inside a browse stack, the Settings
+    // sub-screens) still wins, and this only fires once none of them wants it.
+    BackHandler(enabled = tab != TvTab.NOW_PLAYING) { tab = TvTab.NOW_PLAYING }
 
     Row(Modifier.fillMaxSize().background(Ink)) {
         TvRail(selected = tab, onSelect = { tab = it })

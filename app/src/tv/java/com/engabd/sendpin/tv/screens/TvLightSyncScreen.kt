@@ -26,6 +26,7 @@ import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.hue.INTENSITY_AUTO
 import com.engabd.sendpin.hue.SyncMode
 import com.engabd.sendpin.tv.design.TvTile
+import com.engabd.sendpin.tv.design.TvError
 import com.engabd.sendpin.ui.design.LocalAccent
 import com.engabd.sendpin.ui.design.SectionLabel
 import com.engabd.sendpin.ui.theme.TextMuted
@@ -39,8 +40,8 @@ import kotlinx.coroutines.launch
  * needed, since every control there is a plain settings write the engine
  * watches. The Home Assistant transport (`LightSyncViewModel`, an entirely
  * separate WebSocket-based path) is deliberately not ported to TV: HA is a
- * companion-app concept, and "own playback, own bridge" is what the TV plan
- * scoped for v1.
+ * companion-app concept, and "own playback, own bridge" is the whole of what
+ * this first TV release claims to do.
  *
  * MVP subset: enable, entertainment area, intensity. Colour scheme, effect,
  * spatial and the creative layers stay phone-only for now — real controls but
@@ -81,13 +82,18 @@ fun TvLightSyncScreen() {
                     Text("Sync lights to music", color = TextPrimary, fontWeight = FontWeight.Bold)
                     Text(if (live) "Reacting to the beat" else if (enabled) "Waiting for something to play" else "Off", color = TextMuted, style = MaterialTheme.typography.bodySmall)
                 }
-                Switch(checked = enabled, onCheckedChange = { scope.launch { settings.setLightSyncEnabled(it) } })
+                // A read-only indicator: `onCheckedChange = null` on purpose. A Switch
+                // that takes the callback is focusable in its own right, which on a
+                // D-pad means this one row costs two presses to walk past and has two
+                // places the centre key does the same thing. The tile around it owns
+                // the interaction instead.
+                Switch(checked = enabled, onCheckedChange = null)
             }
         }
 
         syncError?.let {
             androidx.compose.foundation.layout.Spacer(Modifier.height(10.dp))
-            Text(it, color = androidx.compose.ui.graphics.Color(0xFFE05B5B), style = MaterialTheme.typography.bodySmall)
+            Text(it, color = TvError, style = MaterialTheme.typography.bodySmall)
         }
 
         androidx.compose.foundation.layout.Spacer(Modifier.height(24.dp))

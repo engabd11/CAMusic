@@ -28,10 +28,7 @@ import com.engabd.sendpin.ui.theme.pageColorFor
  * PiP wiring, window-size-class calculation for a form factor that only ever
  * has one size).
  *
- * Content is a placeholder until the TV nav/screens land (see the plan's phased
- * steps) — this step exists to prove the flavor/manifest plumbing actually gets
- * the app onto a TV launcher's home screen via LEANBACK_LAUNCHER, which is a
- * different, narrower claim than "the Activity runs when started directly."
+ * Content is [TvApp], which owns the rail and every screen behind it.
  */
 class TvMainActivity : ComponentActivity() {
 
