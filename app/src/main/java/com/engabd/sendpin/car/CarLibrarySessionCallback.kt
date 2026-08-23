@@ -15,6 +15,7 @@ import com.google.common.util.concurrent.SettableFuture
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
 /**
@@ -27,6 +28,17 @@ class CarLibrarySessionCallback(private val bridge: CarLibraryBridge) : MediaLib
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
+    /**
+     * How many rows the browser can show at the root, from its own root hints — see
+     * [onGetLibraryRoot], which is the only call that carries them.
+     */
+    private var rootChildrenLimit = DEFAULT_ROOT_CHILDREN_LIMIT
+
+    /** Stop the in-flight callbacks when the session goes away. */
+    fun release() {
+        scope.cancel()
+    }
+
     override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult =
         MediaSession.ConnectionResult.accept(
             MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS,
@@ -38,6 +50,18 @@ class CarLibrarySessionCallback(private val bridge: CarLibraryBridge) : MediaLib
         browser: MediaSession.ControllerInfo,
         params: LibraryParams?,
     ): ListenableFuture<LibraryResult<MediaItem>> = future {
+        // The one call that carries it. A legacy browser - which is what Android Auto
+        // is - sends its root hints to `MediaBrowserServiceCompat.onGetRoot` and
+        // nothing else, so media3 has a `LibraryParams` to hand here and passes
+        // `null` to `onGetChildren` for an ordinary `subscribe()`. Read there, the
+        // hint was never anything but the default.
+        params?.extras
+            ?.getInt(MediaConstants.EXTRAS_KEY_ROOT_CHILDREN_LIMIT, DEFAULT_ROOT_CHILDREN_LIMIT)
+            ?.takeIf { it > 0 }
+            ?.let { rootChildrenLimit = it }
+        // Not awaited: the root itself is answered from settings alone, and the
+        // browser is kept waiting for that answer before it can ask for anything else.
+        scope.launch { runCatching { bridge.warmUp() } }
         LibraryResult.ofItem(bridge.rootItem(), null)
     }
 
@@ -49,8 +73,8 @@ class CarLibrarySessionCallback(private val bridge: CarLibraryBridge) : MediaLib
         pageSize: Int,
         params: LibraryParams?,
     ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> = future {
-        val children = bridge.children(parentId, rootChildrenLimit(params))
-        LibraryResult.ofItemList(children, null)
+        val children = bridge.children(parentId, rootChildrenLimit)
+        LibraryResult.ofItemList(children.page(page, pageSize), null)
     }
 
     override fun onGetItem(
@@ -70,7 +94,7 @@ class CarLibrarySessionCallback(private val bridge: CarLibraryBridge) : MediaLib
         pageSize: Int,
         params: LibraryParams?,
     ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> = future {
-        LibraryResult.ofItemList(bridge.search(query), null)
+        LibraryResult.ofItemList(bridge.search(query).page(page, pageSize), null)
     }
 
     override fun onSearch(
@@ -86,9 +110,13 @@ class CarLibrarySessionCallback(private val bridge: CarLibraryBridge) : MediaLib
 
     /**
      * Where a tap (or "Hey Google, play X in CAMusic") actually starts playback.
-     * The browser always resends the exact [MediaItem] (and so its `mediaId`) it
-     * was given by [onGetChildren]/[onGetSearchResult] — [CarLibraryBridge.play]
-     * resolves purely from that id, never from the accompanying metadata.
+     *
+     * Two shapes arrive here. A **tap** resends the exact [MediaItem] — and so the
+     * exact `mediaId` — it was given by [onGetChildren]/[onGetSearchResult], and
+     * [CarLibraryBridge.play] resolves purely from that id, never from the
+     * accompanying metadata. A **spoken** request has no id to resend: media3 builds
+     * an item with `MediaItem.DEFAULT_MEDIA_ID` and the words in
+     * `requestMetadata.searchQuery`, which has to be searched for first.
      */
     override fun onSetMediaItems(
         mediaSession: MediaSession,
@@ -98,13 +126,28 @@ class CarLibrarySessionCallback(private val bridge: CarLibraryBridge) : MediaLib
         startPositionMs: Long,
     ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> = future {
         val requested = mediaItems.getOrNull(startIndex) ?: mediaItems.firstOrNull()
-        requested?.mediaId?.let { bridge.play(it) }
+        val query = requested?.requestMetadata?.searchQuery
+        when {
+            !query.isNullOrBlank() -> bridge.playSearch(query)
+            requested != null -> bridge.play(requested.mediaId)
+        }
         MediaSession.MediaItemsWithStartPosition(mediaItems, startIndex, startPositionMs)
     }
 
-    private fun rootChildrenLimit(params: LibraryParams?): Int =
-        params?.extras?.getInt(MediaConstants.EXTRAS_KEY_ROOT_CHILDREN_LIMIT, DEFAULT_ROOT_CHILDREN_LIMIT)
-            ?: DEFAULT_ROOT_CHILDREN_LIMIT
+    /**
+     * The slice of this list that `page`/`pageSize` asked for.
+     *
+     * A `MediaBrowserCompat.subscribe` that carries pagination options is answered
+     * here; one that does not reaches media3 as `page = 0, pageSize = MAX_VALUE`, so
+     * the whole list is the page. Returning everything regardless meant a paginated
+     * browser was handed page 0 again for every page it asked for.
+     */
+    private fun <T> List<T>.page(page: Int, pageSize: Int): List<T> {
+        if (page <= 0 && pageSize >= size) return this
+        val from = page.toLong() * pageSize
+        if (from >= size) return emptyList()
+        return subList(from.toInt(), minOf(from + pageSize, size.toLong()).toInt())
+    }
 
     /** Bridges a suspend call onto the [ListenableFuture] media3's callbacks expect. */
     private fun <T> future(block: suspend () -> T): ListenableFuture<T> {

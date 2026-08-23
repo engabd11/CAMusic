@@ -62,6 +62,20 @@ class CarSessionPlayer(looper: Looper, private val scope: CoroutineScope) : Simp
             Player.COMMAND_GET_TIMELINE,
             Player.COMMAND_GET_METADATA,
             Player.COMMAND_SET_SHUFFLE_MODE,
+            // Without these two, *nothing in the browse tree plays*, and nothing in
+            // `CarLibraryBridge` ever runs to say so.
+            //
+            // A tap in Android Auto arrives as `MediaSessionCompat.Callback
+            // .onPlayFromMediaId`, which media3 handles in
+            // `MediaSessionLegacyStub.handleMediaRequest` — and that dispatches under
+            // COMMAND_SET_MEDIA_ITEM. `ConnectedControllersManager
+            // .isPlayerCommandAvailable` requires the command in the *player's* own
+            // `getAvailableCommands()` as well as in the controller's granted set, so
+            // a facade that omits it has its media requests dropped before
+            // `MediaLibrarySession.Callback.onSetMediaItems` is ever consulted.
+            // COMMAND_PREPARE for the `prepareIfCommandAvailable()` on the same path.
+            Player.COMMAND_SET_MEDIA_ITEM,
+            Player.COMMAND_PREPARE,
         )
         .build()
 
@@ -134,14 +148,42 @@ class CarSessionPlayer(looper: Looper, private val scope: CoroutineScope) : Simp
         .setIsSeekable(true)
         .build()
 
+    /**
+     * The requested state, not a toggle.
+     *
+     * Which player it reaches is still [PlaybackOwner][com.engabd.sendpin.service.PlaybackOwner]'s
+     * decision — same as every other surface outside the two services' own
+     * notifications — but *what to ask it for* has to follow the argument here.
+     * media3 calls `play()` unconditionally at the end of `handleMediaRequest`,
+     * straight after [CarLibraryBridge.play] has already started the track, and
+     * `SimpleBasePlayer.setPlayWhenReady` does not filter a redundant value: a
+     * blind toggle paused every track the moment it was tapped.
+     */
     override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
-        // A toggle either way — matches the transport buttons on every other
-        // surface, all of which route through PlaybackOwner rather than a direct
-        // play()/pause() so the *right* player resumes regardless of which one
-        // the OS decided to address.
-        playbackOwner.playPause()
+        when {
+            // Explicit, never a toggle — a race must not turn a pause into a resume.
+            // Same reasoning as PlaybackOwner.pause()'s own doc.
+            !playWhenReady -> playbackOwner.pause()
+            !unifiedNowPlaying.state.value.isPlaying -> playbackOwner.playPause()
+        }
         return Futures.immediateVoidFuture()
     }
+
+    /**
+     * A no-op, deliberately: [CarLibrarySessionCallback.onSetMediaItems] has already
+     * started the real playback by the time media3 forwards the item list here, and
+     * this facade has no playlist of its own to put it in ([getState] always reports
+     * the same three-entry placeholder timeline). Declared only because
+     * `COMMAND_SET_MEDIA_ITEM` has to be available for the tap to arrive at all.
+     */
+    override fun handleSetMediaItems(
+        mediaItems: MutableList<MediaItem>,
+        startIndex: Int,
+        startPositionMs: Long,
+    ): ListenableFuture<*> = Futures.immediateVoidFuture()
+
+    /** Likewise: there is no decoder here to prepare. */
+    override fun handlePrepare(): ListenableFuture<*> = Futures.immediateVoidFuture()
 
     override fun handleSeek(mediaItemIndex: Int, positionMs: Long, seekCommand: Int): ListenableFuture<*> {
         when (seekCommand) {

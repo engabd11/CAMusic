@@ -709,8 +709,10 @@ later phase again.
       and a session facade (`CarSessionPlayer`, in the same spirit as `SendspinService`'s
       `ShadePlayer`) sit beside the two existing media services rather than replacing either.
       Browses every configured library server; a track tapped in the car always plays on *this
-      phone*, never a remote MA speaker, whichever one the Speakers screen has selected. Untested
-      beyond compilation — wants a Desktop Head Unit pass and, ideally, a real head unit.
+      phone*, never a remote MA speaker, whichever one the Speakers screen has selected — and for a
+      Music Assistant track it moves the Speakers selection here too, so the car's own now-playing
+      and transport buttons address the player it just started rather than the one in the kitchen.
+      Untested beyond compilation — wants a Desktop Head Unit pass and, ideally, a real head unit.
 - [ ] **The Oboe silence** — [PR #59](https://github.com/engabd11/CAMusic/pull/59), closed
       unresolved. Blocks nothing; the path is opt-in and off.
 - [ ] **How often a room gesture actually fires.** The detector shipped in v0.9.1 and is

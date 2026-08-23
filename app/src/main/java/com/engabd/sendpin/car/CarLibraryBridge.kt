@@ -1,6 +1,7 @@
 package com.engabd.sendpin.car
 
 import android.os.Bundle
+import android.os.SystemClock
 import androidx.annotation.OptIn
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -14,6 +15,7 @@ import com.engabd.sendpin.library.MusicSource
 import com.engabd.sendpin.library.MusicSources
 import com.engabd.sendpin.library.ServerConfig
 import com.engabd.sendpin.library.ServerKind
+import com.engabd.sendpin.ma.MaApiClient
 import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ma.MaRepository
 import com.engabd.sendpin.ma.MaSearchResults
@@ -62,13 +64,48 @@ class CarLibraryBridge(private val app: SendpinApp) {
         }
     }
 
+    /**
+     * One node, resolved from its id alone.
+     *
+     * Every node the tree hands out has to be answerable here, not just the two that
+     * were — a browser is free to resolve any id it holds without having browsed to it,
+     * and an unanswered one comes back as an error rather than as a row.
+     */
     suspend fun item(mediaId: String): MediaItem? {
         if (mediaId == CarMediaId.ROOT) return rootItem()
+        if (mediaId == CarMediaId.MORE) return moreFolderItem()
         return when (val id = CarMediaId.parse(mediaId)) {
             is CarMediaId.Server -> configFor(id.serverId)?.let { serverTabItem(it) }
-            is CarMediaId.Item -> id.toPlaceholderItem().toMediaItem(id.serverId)
-            else -> null
+            is CarMediaId.Shelf -> shelfItem(id)
+            is CarMediaId.Item -> resolve(id).toMediaItem(id.serverId)
+            null -> null
         }
+    }
+
+    private suspend fun shelfItem(id: CarMediaId.Shelf): MediaItem? {
+        val config = configFor(id.serverId) ?: return null
+        val source = if (config.kind == ServerKind.MUSIC_ASSISTANT) null else sourceFor(id.serverId)
+        val spec = shelfSpecs(config, source).firstOrNull { it.key == id.key } ?: return null
+        return browsableItem(CarMediaId.Shelf(id.serverId, spec.key).encode(), spec.title, grid = spec.grid)
+    }
+
+    /**
+     * The library item behind an id, with its metadata — as opposed to
+     * [toPlaceholderItem], which is only ever enough to *address* it.
+     *
+     * The placeholder cannot stand in for the real thing here. It has no name, and its
+     * `uri` is null for a local-source item by construction (that is the whole point of
+     * [CarMediaId.Item.uri]), which makes [MaItem.playable] read false for a track that
+     * plainly is — so a browser resolving a track this way was told it could not play
+     * it. A track is re-read; a container falls back to the placeholder with its uri
+     * restored, which is all [MaItem.playable] and [MaItem.browsable] need.
+     */
+    private suspend fun resolve(id: CarMediaId.Item): MaItem {
+        val placeholder = id.toPlaceholderItem()
+        if (id.mediaType == "track" && MusicSources.isLocalProvider(id.provider)) {
+            sourceFor(id.serverId)?.song(id.itemId)?.let { return it }
+        }
+        return if (placeholder.uri != null) placeholder else placeholder.copy(uri = id.itemId)
     }
 
     fun rootItem(): MediaItem = MediaItem.Builder()
@@ -127,6 +164,7 @@ class CarLibraryBridge(private val app: SendpinApp) {
     private suspend fun shelfItems(id: CarMediaId.Shelf): List<MaItem> = runCatching {
         val config = configFor(id.serverId) ?: return@runCatching emptyList()
         if (config.kind == ServerKind.MUSIC_ASSISTANT) {
+            if (!maReady(config)) return@runCatching emptyList()
             when (id.key) {
                 "recentlyAdded" -> maRepo.recentlyAdded(SHELF_LIMIT)
                 "recentlyPlayed" -> maRepo.recentlyPlayed(SHELF_LIMIT)
@@ -157,14 +195,37 @@ class CarLibraryBridge(private val app: SendpinApp) {
         if (MusicSources.isLocalProvider(id.provider)) {
             sourceFor(id.serverId)?.children(placeholder) ?: emptyList()
         } else {
+            val config = configFor(id.serverId) ?: return@runCatching emptyList()
+            if (!maReady(config)) return@runCatching emptyList()
             maRepo.children(placeholder)
         }
     }.getOrDefault(emptyList())
 
     // ── Search ───────────────────────────────────────────────────────────────
 
-    suspend fun search(query: String): List<MediaItem> = coroutineScope {
-        if (query.isBlank()) return@coroutineScope emptyList()
+    /**
+     * Every configured library, in parallel.
+     *
+     * The last answer is kept because media3's legacy browse path asks for it twice:
+     * `MediaBrowserCompat.search` lands in `onSearch`, whose `notifySearchResultChanged`
+     * is what makes the browser come back through `onGetSearchResult` for the items
+     * themselves. Without this, one spoken query fanned out to every server on the
+     * network twice — up to [SEARCH_TIMEOUT_MS] of it, in a car, before anything
+     * appeared.
+     */
+    suspend fun search(query: String): List<MediaItem> {
+        if (query.isBlank()) return emptyList()
+        cachedSearch?.let { cached ->
+            if (cached.query == query && SystemClock.elapsedRealtime() - cached.atMs < SEARCH_CACHE_MS) {
+                return cached.results
+            }
+        }
+        val results = searchAll(query)
+        cachedSearch = CachedSearch(query, results, SystemClock.elapsedRealtime())
+        return results
+    }
+
+    private suspend fun searchAll(query: String): List<MediaItem> = coroutineScope {
         val servers = settings.servers.first()
         servers.map { config ->
             async {
@@ -177,6 +238,7 @@ class CarLibraryBridge(private val app: SendpinApp) {
 
     private suspend fun searchOne(config: ServerConfig, query: String): List<MediaItem> {
         val results: MaSearchResults = if (config.kind == ServerKind.MUSIC_ASSISTANT) {
+            if (!maReady(config)) return emptyList()
             maRepo.search(query, SEARCH_PER_SOURCE_LIMIT)
         } else {
             val source = sourceFor(config.id) ?: return emptyList()
@@ -202,23 +264,109 @@ class CarLibraryBridge(private val app: SendpinApp) {
         }
     }
 
+    /**
+     * "Hey Google, play X in CAMusic".
+     *
+     * The voice path never carries a `mediaId` — media3 turns `onPlayFromSearch` into
+     * a [MediaItem] whose id is `MediaItem.DEFAULT_MEDIA_ID` and whose only content is
+     * `requestMetadata.searchQuery` — so it cannot go through [play] at all. The first
+     * playable hit is what the same query would have put at the top of the search
+     * screen: [searchOne] already orders tracks ahead of albums, artists and playlists.
+     */
+    suspend fun playSearch(query: String): Boolean {
+        val hit = search(query).firstOrNull { it.mediaMetadata.isPlayable == true } ?: return false
+        play(hit.mediaId)
+        return true
+    }
+
     private suspend fun playLocal(id: CarMediaId.Item) {
         val source = sourceFor(id.serverId) ?: return
         val placeholder = id.toPlaceholderItem()
-        val items = if (id.mediaType == "track") listOf(placeholder) else source.tracksUnder(placeholder)
+        // A single track is re-read from the server rather than played as the
+        // placeholder, which carries an id and nothing else: `toLocalTrack` reads
+        // `name`/`subtitle`/`image`/`duration` off the item it is given, so playing the
+        // placeholder put an untitled, artless, zero-length track in the car's now
+        // playing *and* in this phone's own media notification. The album and playlist
+        // branches never had the problem - `tracksUnder` returns real items.
+        val items = if (id.mediaType == "track") {
+            listOf(source.song(id.itemId) ?: placeholder)
+        } else {
+            source.tracksUnder(placeholder)
+        }
         if (items.isEmpty()) return
         val tracks = items.map { app.downloads.toLocalTrack(it, streamUrl = source.streamUrl(it.itemId)) }
-        runCatching { maRepo.stop(PlayerIdentity.getPlayerId(app)) }
+        // Only worth sending when there is a socket to send it on. `sendCommand` waits
+        // five seconds for a connection that a car-launched process has never opened
+        // before answering null - five seconds of silence between the tap and the
+        // music, for a stop that had nothing to stop.
+        if (app.maApi.state.value == MaApiClient.State.CONNECTED) {
+            runCatching { maRepo.stop(PlayerIdentity.getPlayerId(app)) }
+        }
         app.localPlayer.setQueue(tracks, 0)
     }
 
     private suspend fun playMusicAssistant(id: CarMediaId.Item) {
         val uri = id.uri ?: return
+        val config = configFor(id.serverId) ?: return
+        if (!maReady(config)) return
+        val me = PlayerIdentity.getPlayerId(app)
         app.localPlayer.stop()
-        runCatching { maRepo.playOn(PlayerIdentity.getPlayerId(app), listOf(uri), "replace", radioMode = false) }
+        // Point the *app* at this phone, not just this one command.
+        //
+        // Playing to `me` while `OPT_TARGET_PLAYER` still names a speaker in the
+        // kitchen only moves half the problem: `MaNowPlaying` keys everything it
+        // publishes off the stored target, so the car would show the kitchen's track,
+        // and its transport buttons - routed through `PlaybackOwner` like every other
+        // surface - would pause the kitchen. Tapping a song in the car is as clear a
+        // statement of "play it *here*" as the Speakers screen is of the opposite.
+        settings.setTargetPlayer(me)
+        runCatching { maRepo.playOn(me, listOf(uri), "replace", radioMode = false) }
     }
 
     // ── Shared lookups ───────────────────────────────────────────────────────
+
+    /**
+     * Open the shared Music Assistant socket if nothing has yet, and wait for it.
+     *
+     * `MaApiClient.connect` is called from exactly one place in the app — the
+     * Activity-scoped `LibraryViewModel`. Android Auto binds `CarMediaLibraryService`
+     * directly, so on a phone whose app has not been opened since boot every Music
+     * Assistant call here reached a client that had never been given a URL: with no
+     * address to dial `reconnectNow()` is a no-op, `sendCommand` waits out its
+     * five-second "wait for CONNECTED" and answers null, and every MA shelf, search
+     * and tap rendered empty — slowly, one shelf at a time.
+     *
+     * One socket per process, so this connects the *shared* client rather than opening
+     * a second: a phone with two MA servers configured browses whichever one is
+     * already connected, exactly as the phone's own Library tab does.
+     */
+    private suspend fun maReady(config: ServerConfig): Boolean {
+        val api = app.maApi
+        if (api.state.value == MaApiClient.State.CONNECTED) return true
+        // A client that already has an address reconnects itself from inside
+        // `sendCommand`; only one that has never had one needs telling.
+        if (api.serverUrl == null && config.url.isNotBlank()) {
+            api.connect(
+                config.url,
+                token = null,
+                username = config.username.ifBlank { null },
+                password = config.password.ifBlank { null },
+            )
+        }
+        return withTimeoutOrNull(MA_CONNECT_TIMEOUT_MS) {
+            api.state.first { it == MaApiClient.State.CONNECTED }
+        } != null
+    }
+
+    /**
+     * Start connecting before anything asks. Called off the root request, whose own
+     * answer needs no server at all, so the socket is usually up by the time the first
+     * shelf is opened rather than costing that shelf the handshake.
+     */
+    suspend fun warmUp() {
+        val config = settings.servers.first().firstOrNull { it.kind == ServerKind.MUSIC_ASSISTANT } ?: return
+        runCatching { maReady(config) }
+    }
 
     private suspend fun configFor(serverId: String): ServerConfig? =
         settings.servers.first().firstOrNull { it.id == serverId }
@@ -298,12 +446,23 @@ class CarLibraryBridge(private val app: SendpinApp) {
         }
     }
 
+    /** The last query and what it returned — see [search]. */
+    private class CachedSearch(val query: String, val results: List<MediaItem>, val atMs: Long)
+
+    private var cachedSearch: CachedSearch? = null
+
     private companion object {
+        const val MA_CONNECT_TIMEOUT_MS = 6_000L
         const val SHELF_LIMIT = 50
         const val TRACK_SHELF_LIMIT = 100
         const val SEARCH_PER_SOURCE_LIMIT = 15
         const val SEARCH_RESULT_CAP = 50
         const val SEARCH_TIMEOUT_MS = 7_000L
+        /**
+         * Long enough to cover the two calls one query makes, short enough that a
+         * library which has changed since is not answered from it — see [search].
+         */
+        const val SEARCH_CACHE_MS = 30_000L
         val GRID_CHILD_TYPES = setOf("artist", "album", "playlist", "genre")
     }
 }

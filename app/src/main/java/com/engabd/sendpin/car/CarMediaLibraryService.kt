@@ -29,16 +29,15 @@ class CarMediaLibraryService : MediaLibraryService() {
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var mediaLibrarySession: MediaLibrarySession? = null
     private var carPlayer: CarSessionPlayer? = null
+    private var callback: CarLibrarySessionCallback? = null
 
     override fun onCreate() {
         super.onCreate()
         val player = CarSessionPlayer(Looper.getMainLooper(), scope).also { it.start() }
         carPlayer = player
-        mediaLibrarySession = MediaLibrarySession.Builder(
-            this,
-            player,
-            CarLibrarySessionCallback(CarLibraryBridge(SendpinApp.instance)),
-        )
+        val sessionCallback = CarLibrarySessionCallback(CarLibraryBridge(SendpinApp.instance))
+        callback = sessionCallback
+        mediaLibrarySession = MediaLibrarySession.Builder(this, player, sessionCallback)
             // Must differ from LocalPlaybackService's "local" and SendspinService's
             // "sendspin" - a media3 MediaSession id has to be unique per process.
             .setId("auto")
@@ -62,6 +61,8 @@ class CarMediaLibraryService : MediaLibraryService() {
         carPlayer = null
         mediaLibrarySession?.release()
         mediaLibrarySession = null
+        callback?.release()
+        callback = null
         scope.cancel()
         super.onDestroy()
     }
