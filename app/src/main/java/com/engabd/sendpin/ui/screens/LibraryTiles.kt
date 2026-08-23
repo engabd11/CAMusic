@@ -1,5 +1,6 @@
 package com.engabd.sendpin.ui.screens
 
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -23,6 +24,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -52,43 +57,125 @@ import com.engabd.sendpin.ui.theme.*
 /**
  * A root-level browse category — Artists, Albums, Radio stations, Podcasts.
  *
+ * These are the only things on the front page with no artwork of their own, and as
+ * plain bordered rows with a chevron they were the dullest thing on a screen made of
+ * album covers. So each one is given a colour and a picture instead: a hue drawn from
+ * the palette of whatever is playing, a wash across the tile, and its own glyph blown
+ * up and ghosted into the bottom corner where the chevron used to be.
+ *
+ * The hue is [categoryHue] — fixed per category, so Albums is always the same
+ * *position* in the palette and the grid does not reshuffle its colours as you
+ * browse — but taken from the current album, so the whole row belongs to the record
+ * on the player. It eases rather than cutting when that record changes.
+ *
+ * A gradient and a border, and nothing else. No shadow, no bloom, no blur: this is a
+ * grid cell, and every render effect here is paid for once per category on every
+ * pass. The cover tiles gave up their elevation for the same reason.
+ *
  * The press-scale is the same gesture feedback the cover tiles give, on the same
- * `spatialFast` token: these sit in the same grid as the artwork, and a card that
- * stayed inert while its neighbours responded read as the one that had not loaded.
- * Scale only — never alpha, which belongs on an `effects` spec (see [Motion]).
+ * `spatialFast` token. Scale only — never alpha, which belongs on an `effects` spec
+ * (see [Motion]).
  */
 @Composable
 internal fun CategoryCard(item: MaItem, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    val accent = LocalAccent.current
-    val interactions = remember { MutableInteractionSource() }
-    val pressed by interactions.collectIsPressedAsState()
-    val scale by animateFloatAsState(
-        targetValue = if (pressed) 0.97f else 1f,
-        animationSpec = Motion.spatialFast(),
-        label = "categoryPress",
-    )
-    Row(
+    val hue = rememberCategoryHue(item.itemId)
+    val light = LocalSendspinColors.current.isLight
+    // An album swatch is lifted to sit on black. On the off-white page the same colour
+    // at the same alpha is a tint with nothing behind it, so the wash and the edges
+    // firm up — and the glyph, which has to be legible rather than atmospheric, comes
+    // down towards the ink instead.
+    val wash = if (light) 0.30f else 0.20f
+    val fade = if (light) 0.10f else 0.05f
+    val edge = if (light) 0.34f else 0.22f
+    val ghost = if (light) 0.14f else 0.10f
+    val mark = if (light) lerp(hue, Color.Black, 0.45f) else hue
+    val press = rememberPressScale()
+    val shape = RoundedCornerShape(18.dp)
+    val glyph = categoryIcon(item.itemId)
+    Box(
         modifier
-            .graphicsLayer { scaleX = scale; scaleY = scale }
-            .clip(RoundedCornerShape(15.dp))
-            .background(inkOn(0.035f))
-            .border(1.dp, HairlineSoft, RoundedCornerShape(15.dp))
-            .clickable(interactionSource = interactions, indication = null, onClick = onClick)
-            .padding(14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+            .pressScale(press)
+            .height(CategoryTileHeight)
+            .clip(shape)
+            .background(
+                Brush.linearGradient(
+                    listOf(hue.a(wash), hue.a(fade)),
+                    start = Offset.Zero,
+                    end = Offset.Infinite,
+                )
+            )
+            .border(1.dp, hue.a(edge), shape)
+            .clickable(
+                interactionSource = press.interactions,
+                indication = null,
+                onClick = onClick,
+            ),
     ) {
-        Box(
-            Modifier.size(34.dp).clip(RoundedCornerShape(11.dp)).background(accent.a(0.12f))
-                .border(1.dp, accent.a(0.22f), RoundedCornerShape(11.dp)),
-            contentAlignment = Alignment.Center,
-        ) { Icon(categoryIcon(item.itemId), null, tint = accent, modifier = Modifier.size(18.dp)) }
-        Text(
-            item.name, color = TextPrimary, fontFamily = AppFont, fontWeight = FontWeight.Bold,
-            fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
+        // The category's own glyph, oversized and pushed off the corner. Offset, not
+        // padding, so it costs the layout nothing; the Box's clip is what cuts it.
+        Icon(
+            glyph, null,
+            tint = hue.a(ghost),
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .offset(x = 16.dp, y = 16.dp)
+                .size(84.dp),
         )
-        Icon(Icons.Default.ChevronRight, null, tint = TextFaint, modifier = Modifier.size(16.dp))
+        Column(
+            Modifier.fillMaxSize().padding(14.dp),
+            verticalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Box(
+                Modifier.size(30.dp).clip(RoundedCornerShape(10.dp)).background(hue.a(wash))
+                    .border(1.dp, hue.a(edge + 0.08f), RoundedCornerShape(10.dp)),
+                contentAlignment = Alignment.Center,
+            ) { Icon(glyph, null, tint = mark, modifier = Modifier.size(16.dp)) }
+            Text(
+                item.name, color = TextPrimary, fontFamily = AppFont, fontWeight = FontWeight.Bold,
+                fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
+}
+
+/** Tall enough for a glyph chip, a name, and the ghost glyph to have somewhere to go. */
+internal val CategoryTileHeight = 96.dp
+
+/**
+ * The colour this category wears, eased as the album under it changes.
+ *
+ * Read here rather than passed in, so the whole row of tiles animates together on one
+ * spec. A colour, so `effects` — see [rememberAccent], which makes the same argument
+ * at more length about why this is not done at the provider.
+ */
+@Composable
+private fun rememberCategoryHue(id: String): Color {
+    val target = LocalPalette.current.swatch(categoryHue(id))
+    val eased by animateColorAsState(target, Motion.effects(), label = "categoryHue")
+    return eased
+}
+
+/**
+ * Which palette swatch a category takes, by hand rather than by hashing the id.
+ *
+ * A hash would be stable too, but it would put Artists and Albums — always adjacent,
+ * always the first thing seen — on whatever two colours it happened to pick, and
+ * often on neighbouring ones. Spacing them by hand is three lines and it is the
+ * difference between a set and a coincidence.
+ */
+private fun categoryHue(id: String): Int = when (id) {
+    "artists" -> 0
+    "albums" -> 2
+    "tracks" -> 4
+    "playlists" -> 1
+    "starred" -> 3
+    "genres" -> 0
+    "newest" -> 2
+    "random" -> 4
+    "radios" -> 1
+    "podcasts" -> 3
+    "downloads" -> 2
+    else -> 0
 }
 
 private fun categoryIcon(id: String): ImageVector = when (id) {
@@ -100,6 +187,11 @@ private fun categoryIcon(id: String): ImageVector = when (id) {
     "podcasts" -> Icons.Default.Podcasts
     "downloads" -> Icons.Default.Download
     "newest" -> Icons.Default.Schedule
+    // These three reached the QueueMusic fallback, so on a Subsonic library three of
+    // the seven categories wore the same generic glyph.
+    "genres" -> Icons.Default.Category
+    "starred" -> Icons.Default.Star
+    "random" -> Icons.Default.Shuffle
     else -> Icons.AutoMirrored.Filled.QueueMusic
 }
 
