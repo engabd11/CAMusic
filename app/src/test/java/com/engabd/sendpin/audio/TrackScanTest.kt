@@ -170,9 +170,15 @@ class TrackScanTest {
 
     // ── Key detection versioning ───────────────────────────────────────────
 
+    /**
+     * A deliberate speed bump. The number itself does not matter; being made to
+     * come here and change it does, because bumping it is what re-reads a whole
+     * library and not bumping it is what leaves an improvement unreachable by
+     * every scan already on disk.
+     */
     @Test
-    fun `the analyser version reflects key detection`() {
-        assertEquals(2, TrackScan.ANALYSER_VERSION)
+    fun `the analyser version is pinned so a bump is a decision`() {
+        assertEquals(3, TrackScan.ANALYSER_VERSION)
     }
 
     @Test

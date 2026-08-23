@@ -82,15 +82,24 @@ class TrackScanStoreTest {
         assertEquals(0.81f, loaded.key.confidence, 1f / 255f)
     }
 
+    /**
+     * Bytes the format-4 tail writes after the key: metre, tuning, and one label
+     * per section. The key used to be the end of the file and the tests that bend
+     * it counted back from there; naming the offset is what stops the next tail
+     * from silently making them bend the wrong byte and pass for the wrong reason.
+     */
+    private val tailAfterKey = 2 + 2  // beatsPerBar + tuning + two sections' labels
+
     @Test
     fun `a corrupt key byte costs the key, not the whole scan`() {
         TrackScanStore(dir).save("bent", scan(key = MusicalKey(4, MusicalMode.MAJOR, 0.9f)))
 
-        // The key is the last three bytes of the file — tonic, mode, confidence
-        // — so this bends the mode into a value no two-element enum has.
+        // The key is three bytes — tonic, mode, confidence — sitting just before
+        // the format-4 tail. This bends the mode into a value no two-element
+        // enum has.
         val file = dir.listFiles()!!.single { it.name.endsWith(".scan") }
         val bytes = file.readBytes()
-        bytes[bytes.size - 2] = 0x7F
+        bytes[bytes.size - tailAfterKey - 2] = 0x7F
         file.writeBytes(bytes)
 
         val loaded = TrackScanStore(dir).load("bent")
@@ -107,7 +116,7 @@ class TrackScanStoreTest {
 
         val file = dir.listFiles()!!.single { it.name.endsWith(".scan") }
         val bytes = file.readBytes()
-        bytes[bytes.size - 3] = 99 // no pitch class 99
+        bytes[bytes.size - tailAfterKey - 3] = 99 // no pitch class 99
         file.writeBytes(bytes)
 
         val loaded = TrackScanStore(dir).load("bent-tonic")
