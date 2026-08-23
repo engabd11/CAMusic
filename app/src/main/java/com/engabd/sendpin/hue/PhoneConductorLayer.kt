@@ -33,8 +33,11 @@ class PhoneConductorLayer(context: Context) : LightShowLayer {
 
     override fun reset() = renderer.reset()
 
-    override fun apply(base: Map<Int, Rgb>, context: LayerContext): Map<Int, Rgb> =
-        renderer.apply(base, context, motion.snapshot())
+    override fun apply(
+        base: Map<Int, Rgb>,
+        context: LayerContext,
+        out: MutableMap<Int, Rgb>,
+    ): Map<Int, Rgb> = renderer.apply(base, context, motion.snapshot(), out)
 }
 
 /**
@@ -45,6 +48,24 @@ class PhoneConductorLayer(context: Context) : LightShowLayer {
 internal class ConductorRenderer {
     private var cachedPositions: Map<Int, Vec3>? = null
     private var ring: Ring? = null
+
+    /**
+     * Per-lamp colour-axis projection and ring azimuth, cached alongside the
+     * positions they were derived from.
+     *
+     * Both are pure functions of a lamp position, and positions change identity
+     * once per stream — so computing them inside the per-lamp loop was repeating
+     * the same trigonometry sixty times a second for an answer that had not
+     * moved since the area was opened.
+     */
+    private var axisOf: Map<Int, Float> = emptyMap()
+    private var azimuthOf: Map<Int, Float> = emptyMap()
+
+    /** Smoothed yaw rate, and whether the phone currently counts as spinning. */
+    private var smoothedRate = 0f
+    private var spinning = false
+
+    private val hsv = FloatArray(3)
 
     /** Accumulated hue-rotation phase from sustained gyroscope rotation. */
     private var rotationPhase = 0f
@@ -72,16 +93,28 @@ internal class ConductorRenderer {
         rotationPhase = 0f
         spinEnvelope = 0f
         flashLevel = 0f
+        smoothedRate = 0f
+        spinning = false
     }
 
-    fun apply(base: Map<Int, Rgb>, context: LayerContext, state: DeviceMotionState): Map<Int, Rgb> {
+    fun apply(
+        base: Map<Int, Rgb>,
+        context: LayerContext,
+        state: DeviceMotionState,
+        out: MutableMap<Int, Rgb> = HashMap(),
+    ): Map<Int, Rgb> {
         if (context.positions !== cachedPositions) {
             cachedPositions = context.positions
-            ring = if (context.topology == RoomTopology.RING) {
+            val fitted = if (context.topology == RoomTopology.RING) {
                 fitRing(context.positions.values.toList())
             } else {
                 null
             }
+            ring = fitted
+            axisOf = context.positions.mapValues { (_, pos) -> colourAxisProjection(pos) }
+            azimuthOf = fitted?.let { r ->
+                context.positions.mapValues { (_, pos) -> azimuthOf(pos, r) }
+            } ?: emptyMap()
         }
 
         flashLevel *= exp(-context.dt / FLASH_DECAY_S)
@@ -96,7 +129,14 @@ internal class ConductorRenderer {
 
         if (state.flick) flashLevel = 1f
 
-        val spinning = abs(state.rotationRateZ) > ROTATION_THRESHOLD_RAD_S
+        // Smoothed, and with separate start and stop thresholds. The raw value
+        // is the single most recent gyroscope sample, so a hand-held phone
+        // sitting near one threshold used to flip `spinning` frame to frame and
+        // the envelope below stuttered between rising and falling instead of
+        // doing either. A wrist is never that decisive.
+        smoothedRate += (state.rotationRateZ - smoothedRate) * alpha(ROTATION_TAU_S, context.dt)
+        val rate = abs(smoothedRate)
+        spinning = if (spinning) rate > ROTATION_STOP_RAD_S else rate > ROTATION_START_RAD_S
         spinEnvelope = if (spinning) {
             (spinEnvelope + context.dt / SPIN_ENVELOPE_RISE_S).coerceAtMost(1f)
         } else {
@@ -104,7 +144,7 @@ internal class ConductorRenderer {
         }
         if (spinEnvelope < 0.01f) spinEnvelope = 0f
         if (spinning) {
-            rotationPhase = wrap1(rotationPhase + state.rotationRateZ * context.dt * ROTATION_HUE_SPEED)
+            rotationPhase = wrap1(rotationPhase + smoothedRate * context.dt * ROTATION_HUE_SPEED)
         }
 
         val brightnessMul = (1f + state.tiltY.coerceIn(-1f, 1f) * TILT_BRIGHTNESS_RANGE)
@@ -116,13 +156,12 @@ internal class ConductorRenderer {
         // ceiling on any given frame, so there is room to brighten into.
         val ceiling = context.brightness.coerceIn(0f, 1f)
 
-        return base.mapValues { (id, rgb) ->
-            val pos = context.positions[id]
-            val (h0, s, v0) = rgbToHsv(rgb)
-            var h = h0
+        for ((id, rgb) in base) {
+            rgbToHsvInto(rgb, hsv)
+            var h = hsv[0]
+            val axis = axisOf[id]
 
-            if (pos != null) {
-                val axis = colourAxisProjection(pos)
+            if (axis != null) {
                 // Tilt left/right: colour shifts through the spatial field —
                 // the same 3-axis colour projection the engine already uses
                 // for room-wide hue drift, fed from the phone instead.
@@ -134,17 +173,21 @@ internal class ConductorRenderer {
                     // anywhere else it means along the same colour axis
                     // tilt already uses, so "spin" still means something on
                     // a line or a scattered room.
-                    val coord = ring?.let { azimuthOf(pos, it) } ?: axis
+                    val coord = azimuthOf[id] ?: axis
                     val wave = sin((coord - rotationPhase) * 2f * PI.toFloat())
                     h = wrap1(h + wave * ROTATION_HUE_AMPLITUDE * spinEnvelope)
                 }
             }
 
-            val v = (v0 * brightnessMul + flashLevel * FLASH_BRIGHTNESS_GAIN * ceiling)
+            val v = (hsv[2] * brightnessMul + flashLevel * FLASH_BRIGHTNESS_GAIN * ceiling)
                 .coerceIn(0f, ceiling)
-            hsvToRgb(h, s, v)
+            out[id] = hsvToRgb(h, hsv[1], v)
         }
+        return out
     }
+
+    /** EMA smoothing factor for a time constant, the idiom the other layers use. */
+    private fun alpha(tauS: Float, dt: Float): Float = 1f - exp(-dt / tauS)
 
     private companion object {
         private const val TILT_HUE_GAIN = 0.25f
@@ -152,7 +195,17 @@ internal class ConductorRenderer {
         /** "up to 1.5x .. down to 0.5x", per spec. */
         private const val TILT_BRIGHTNESS_RANGE = 0.5f
 
-        private const val ROTATION_THRESHOLD_RAD_S = 0.5f
+        /**
+         * Yaw rate at which a spin starts and stops being read as one, rad/s,
+         * and the smoothing applied before either is tested.
+         *
+         * Two thresholds rather than one because this is a gate on a noisy
+         * sensor: a single threshold on the raw sample chatters for as long as
+         * the hand holding the phone hovers near it.
+         */
+        private const val ROTATION_START_RAD_S = 0.5f
+        private const val ROTATION_STOP_RAD_S = 0.3f
+        private const val ROTATION_TAU_S = 0.12f
         private const val ROTATION_HUE_SPEED = 0.15f
         private const val ROTATION_HUE_AMPLITUDE = 0.08f
         private const val SPIN_ENVELOPE_RISE_S = 0.3f

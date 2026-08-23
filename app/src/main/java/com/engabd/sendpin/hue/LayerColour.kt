@@ -30,6 +30,34 @@ internal fun blendHue(current: Float, target: Float, weight: Float): Float {
     return wrap1(current + diff * weight)
 }
 
+/**
+ * [Rgb] to hue/saturation/value, each 0..1, into a caller-owned buffer.
+ *
+ * The allocating [rgbToHsv] below reads better and every test uses it, but a
+ * layer calls this once per lamp per frame — so at 60 Hz with four layers on,
+ * the version that returns a fresh `FloatArray(3)` is a couple of thousand
+ * short-lived arrays a second on the render thread. Each layer keeps one buffer
+ * for its own lifetime instead.
+ */
+internal fun rgbToHsvInto(rgb: Rgb, out: FloatArray) {
+    val (r, g, b) = rgb
+    val mx = maxOf(r, g, b)
+    val mn = minOf(r, g, b)
+    val d = mx - mn
+    out[1] = if (mx > 1e-6f) d / mx else 0f
+    out[2] = mx
+    var h = 0f
+    if (d > 1e-9f) {
+        h = when (mx) {
+            r -> ((g - b) / d) % 6f
+            g -> (b - r) / d + 2f
+            else -> (r - g) / d + 4f
+        } / 6f
+        if (h < 0f) h += 1f
+    }
+    out[0] = h
+}
+
 /** [Rgb] to hue/saturation/value, each 0..1. Value is the max channel. */
 internal fun rgbToHsv(rgb: Rgb): FloatArray {
     val (r, g, b) = rgb

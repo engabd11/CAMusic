@@ -138,4 +138,75 @@ class PhoneConductorLayerTest {
         repeat(20) { last = renderer.apply(base, ctx, jitter) }
         assertEquals(base, last, "sub-threshold gyroscope noise should not read as a conducting gesture")
     }
+
+    // ── Spin gating ────────────────────────────────────────────────────────
+
+    /**
+     * A yaw rate hovering at the threshold must not switch the wave on and off
+     * frame by frame.
+     *
+     * [DeviceMotionState.rotationRateZ] is the single most recent gyroscope
+     * sample, and a hand holding a phone produces a noisy one. Tested against
+     * one threshold directly, a wrist resting near it flipped `spinning` every
+     * frame, and the spin envelope — which ramps over 0.3 s and falls over
+     * 1.0 s — spent its whole life reversing instead of reaching either end. So
+     * this drives the renderer with a rate dithering either side of the start
+     * threshold and asserts the hue settles into a smooth advance rather than
+     * jumping as the wave appears and disappears.
+     */
+    @Test
+    fun `a yaw rate dithering at the threshold does not chatter`() {
+        val renderer = ConductorRenderer()
+        val ctx = contextOf(onePosition, RoomTopology.FIELD, dt = 1f / 60f)
+        val hues = ArrayList<Float>()
+        // 0.55 and 0.45 rad/s alternating: either side of the 0.5 start
+        // threshold, with a mean comfortably above the 0.3 stop threshold.
+        repeat(150) { i ->
+            val rate = if (i % 2 == 0) 0.55f else 0.45f
+            val out = renderer.apply(
+                base, ctx, DeviceMotionState(active = true, rotationRateZ = rate),
+            )
+            hues += rgbToHsv(out.getValue(1))[0]
+        }
+        val settled = hues.takeLast(50)
+        val worst = settled.zipWithNext { a, b -> kotlin.math.abs(shortestHueGap(a, b)) }.max()
+        assertTrue(worst < 0.02f, "hue jumped $worst between frames; the spin gate is chattering")
+    }
+
+    /** Below the stop threshold the wave does go away, so the gate is not simply stuck on. */
+    @Test
+    fun `a spin that genuinely stops releases the wave`() {
+        val renderer = ConductorRenderer()
+        val ctx = contextOf(onePosition, RoomTopology.FIELD, dt = 1f / 60f)
+        val baseHue = rgbToHsv(base.getValue(1))[0]
+
+        repeat(60) { renderer.apply(base, ctx, DeviceMotionState(active = true, rotationRateZ = 2f)) }
+        val spinning = rgbToHsv(
+            renderer.apply(base, ctx, DeviceMotionState(active = true, rotationRateZ = 2f))
+                .getValue(1),
+        )[0]
+
+        // Long enough for the EMA to fall well under the stop threshold and for
+        // the envelope's one-second release to run out.
+        repeat(240) { renderer.apply(base, ctx, DeviceMotionState(active = true, rotationRateZ = 0f)) }
+        val stopped = rgbToHsv(
+            renderer.apply(base, ctx, DeviceMotionState(active = true, rotationRateZ = 0f))
+                .getValue(1),
+        )[0]
+
+        assertTrue(
+            kotlin.math.abs(shortestHueGap(stopped, baseHue)) <=
+                kotlin.math.abs(shortestHueGap(spinning, baseHue)) + 1e-6f,
+            "a stopped phone should sit closer to the untouched hue " +
+                "(spinning $spinning, stopped $stopped, base $baseHue)",
+        )
+    }
+
+    /** Signed distance between two hues, the short way round the wheel. */
+    private fun shortestHueGap(a: Float, b: Float): Float {
+        var d = (b - a) % 1f
+        if (d > 0.5f) d -= 1f
+        if (d < -0.5f) d += 1f
+        return d
+    }
 }

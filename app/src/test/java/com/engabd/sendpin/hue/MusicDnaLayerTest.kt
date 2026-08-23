@@ -90,15 +90,106 @@ class MusicDnaLayerTest {
     }
 
     @Test
-    fun `crossing a section boundary changes the applied colour`() {
-        val scan = scanOf()
+    fun `crossing into a different kind of section changes the applied colour`() {
+        // Two sections that do not sound alike, so the scan gave them different
+        // labels. At 120 BPM the drift wave is one cycle per two seconds, so
+        // both sample positions sit ten seconds — five whole cycles — apart and
+        // the drift is identical at each: the label is the only thing that moves.
+        val scan = scanOf(
+            sections = listOf(
+                ScanSection(0f, 10f, 0.5f, label = 0),
+                ScanSection(10f, 20f, 0.5f, label = 1),
+            ),
+        )
         val layer = MusicDnaLayer()
-        // Same layer instance (so the fingerprint cache carries over), same
-        // scan, dt = 0 so the tempo-driven drift can't be what moves it —
-        // only the section index changes between the two calls.
         val before = layer.apply(redBase, contextOf(scan, posS = 5f))
         val after = layer.apply(redBase, contextOf(scan, posS = 15f))
         assertNotEquals(before.getValue(1), after.getValue(1))
+    }
+
+    /**
+     * The whole promise of the feature, as a test.
+     *
+     * A chorus that comes round again is the same *kind* of section, so it must
+     * come back to the same colour. Before sections carried labels this stepped
+     * by section *index* and every section was a new hue — so the second chorus
+     * looked like something the track had not played yet, and on a long track
+     * the anchor wrapped right round the wheel and stopped meaning anything.
+     */
+    @Test
+    fun `a returning section returns to its own colour`() {
+        val scan = scanOf(
+            sections = listOf(
+                ScanSection(0f, 10f, 0.5f, label = 0),   // verse
+                ScanSection(10f, 20f, 0.5f, label = 1),  // chorus
+                ScanSection(20f, 30f, 0.5f, label = 0),  // verse again
+                ScanSection(30f, 40f, 0.5f, label = 1),  // and the chorus again
+            ),
+        )
+        val layer = MusicDnaLayer()
+        val firstChorus = layer.apply(redBase, contextOf(scan, posS = 14f))
+        val secondChorus = layer.apply(redBase, contextOf(scan, posS = 34f))
+        assertSameColour(firstChorus.getValue(1), secondChorus.getValue(1))
+    }
+
+    /**
+     * The fingerprint is a property of the song, not of this play of it.
+     *
+     * The drift phase used to be integrated from `dt`, so the colour at a given
+     * second depended on how the playhead got there — a seek, a pause, or simply
+     * starting from a different point produced a different room. That
+     * contradicts the one thing the feature claims, which is that the same song
+     * looks the same every time.
+     */
+    @Test
+    fun `the same track position gives the same colour however it was reached`() {
+        val scan = scanOf()
+
+        // Played straight through, a frame at a time.
+        val streamed = MusicDnaLayer()
+        var t = 0f
+        var last = redBase
+        while (t < 7f) {
+            t += 1f / 60f
+            last = streamed.apply(redBase, contextOf(scan, posS = t, dt = 1f / 60f))
+        }
+
+        // And jumped straight to the same position on a fresh layer, as a seek does.
+        val seeked = MusicDnaLayer().apply(redBase, contextOf(scan, posS = t, dt = 1f / 60f))
+
+        assertSameColour(seeked.getValue(1), last.getValue(1))
+    }
+
+    /** Seeking backwards finds the earlier section, not the cursor it left behind. */
+    @Test
+    fun `seeking backwards re-reads the earlier section`() {
+        val scan = scanOf(
+            sections = listOf(
+                ScanSection(0f, 10f, 0.5f, label = 0),
+                ScanSection(10f, 20f, 0.5f, label = 1),
+            ),
+        )
+        val layer = MusicDnaLayer()
+        val early = layer.apply(redBase, contextOf(scan, posS = 5f))
+        layer.apply(redBase, contextOf(scan, posS = 15f))
+        val backAgain = layer.apply(redBase, contextOf(scan, posS = 5f))
+        assertSameColour(early.getValue(1), backAgain.getValue(1))
+    }
+
+    /**
+     * Two colours the eye would call the same.
+     *
+     * Not exact equality: the drift is `sin(position × rate)`, and two positions
+     * a whole number of cycles apart differ in the last bits of a float sine of
+     * a large multiple of pi. That is a rounding difference of about 1e-6 in
+     * hue, some four orders of magnitude below what a bulb can show, and
+     * demanding bit equality of it would be testing the FPU rather than the
+     * layer.
+     */
+    private fun assertSameColour(a: Rgb, b: Rgb) {
+        assertEquals(a.first, b.first, 1e-4f, "red")
+        assertEquals(a.second, b.second, 1e-4f, "green")
+        assertEquals(a.third, b.third, 1e-4f, "blue")
     }
 
     @Test

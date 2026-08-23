@@ -52,7 +52,13 @@ class EmotionalArcLayer : LightShowLayer {
         structureSeen = false
     }
 
-    override fun apply(base: Map<Int, Rgb>, context: LayerContext): Map<Int, Rgb> {
+    private val hsv = FloatArray(3)
+
+    override fun apply(
+        base: Map<Int, Rgb>,
+        context: LayerContext,
+        out: MutableMap<Int, Rgb>,
+    ): Map<Int, Rgb> {
         val target = targetTemperature(context)
         val tau = if (target > temperature) TAU_RISE_S else TAU_FALL_S
         temperature += alpha(tau, context.dt) * (target - temperature)
@@ -64,11 +70,12 @@ class EmotionalArcLayer : LightShowLayer {
         val blendWeight = abs(t) * MAX_HUE_BLEND
         val saturationMul = (1f + t * SATURATION_TEMP_COEFF).coerceIn(0f, 2f)
 
-        return base.mapValues { (_, rgb) ->
-            val (h, s, v) = rgbToHsv(rgb)
-            val hue = blendHue(h, anchorHue, blendWeight)
-            hsvToRgb(hue, (s * saturationMul).coerceIn(0f, 1f), v)
+        for ((id, rgb) in base) {
+            rgbToHsvInto(rgb, hsv)
+            val hue = blendHue(hsv[0], anchorHue, blendWeight)
+            out[id] = hsvToRgb(hue, (hsv[1] * saturationMul).coerceIn(0f, 1f), hsv[2])
         }
+        return out
     }
 
     private fun targetTemperature(context: LayerContext): Float {

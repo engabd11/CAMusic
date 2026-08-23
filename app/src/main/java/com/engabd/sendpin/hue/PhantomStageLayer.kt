@@ -23,16 +23,32 @@ class PhantomStageLayer : LightShowLayer {
 
     private var cachedPositions: Map<Int, Vec3>? = null
     private var channelInstrument: Map<Int, StageInstrument> = emptyMap()
-    private val flash = HashMap<StageInstrument, Float>()
+
+    /**
+     * Decaying flash level per instrument, indexed by [StageInstrument.ordinal].
+     *
+     * A `FloatArray` and not a map: the decay pass touches all five every frame,
+     * and a `HashMap<StageInstrument, Float>` boxes a `Float` on each of those
+     * writes — three hundred boxed floats a second to store five numbers whose
+     * identities are known at compile time.
+     */
+    private val flash = FloatArray(StageInstrument.entries.size)
+
+    /** This frame's sustained levels, likewise by ordinal. See [updateSustained]. */
+    private val sustained = FloatArray(StageInstrument.entries.size)
 
     override fun reset() {
         // Decaying flashes only. The stage layout deliberately survives: it is
         // fixed for the *session*, not the track — the bassist stays in the same
         // corner all night, which is the whole point of a phantom stage.
-        flash.clear()
+        flash.fill(0f)
     }
 
-    override fun apply(base: Map<Int, Rgb>, context: LayerContext): Map<Int, Rgb> {
+    override fun apply(
+        base: Map<Int, Rgb>,
+        context: LayerContext,
+        out: MutableMap<Int, Rgb>,
+    ): Map<Int, Rgb> {
         // A cluster has no meaningful spatial layout to fix positions
         // against — same precedent [RoomTopology.CLUSTER] already carries
         // for room gestures: two lamps on a shelf cannot be "the bassist's
@@ -47,6 +63,7 @@ class PhantomStageLayer : LightShowLayer {
 
         decayFlashes(context.dt)
         triggerFlashes(context.frame)
+        updateSustained(context.frame)
 
         // This layer's glow is *additive*, so unlike the engine's own output it
         // has never been through [SyncoEngine.brightness]. Scaling the level by
@@ -55,21 +72,23 @@ class PhantomStageLayer : LightShowLayer {
         // 0.12 base glow is most of the visible field on its own.
         val ceiling = context.brightness.coerceIn(0f, 1f)
 
-        return base.mapValues { (id, rgb) ->
-            val inst = channelInstrument[id] ?: return@mapValues rgb
-            val level = (
-                PERSISTENT_GLOW +
-                    sustainedGlow(inst, context.frame) +
-                    (flash[inst] ?: 0f)
-                ).coerceIn(0f, 1f) * ceiling
+        for ((id, rgb) in base) {
+            val inst = channelInstrument[id]
+            if (inst == null) {
+                out[id] = rgb
+                continue
+            }
+            val level = (PERSISTENT_GLOW + sustained[inst.ordinal] + flash[inst.ordinal])
+                .coerceIn(0f, 1f) * ceiling
             val (addR, addG, addB) = hsvToRgb(HUE.getValue(inst), GLOW_SATURATION, level)
             val (r, g, b) = rgb
-            Triple(
+            out[id] = Triple(
                 (r + addR).coerceIn(0f, ceiling),
                 (g + addG).coerceIn(0f, ceiling),
                 (b + addB).coerceIn(0f, ceiling),
             )
         }
+        return out
     }
 
     /**
@@ -109,22 +128,30 @@ class PhantomStageLayer : LightShowLayer {
 
     private fun bump(inst: StageInstrument, strength: Float) {
         val level = (strength / FLASH_STRENGTH_NORM).coerceIn(0f, 1f)
-        flash[inst] = maxOf(flash[inst] ?: 0f, level)
+        flash[inst.ordinal] = maxOf(flash[inst.ordinal], level)
     }
 
     private fun decayFlashes(dt: Float) {
         val decay = exp(-dt / FLASH_DECAY_S)
-        for (inst in StageInstrument.entries) {
-            val level = (flash[inst] ?: 0f) * decay
-            flash[inst] = if (level < 0.01f) 0f else level
+        for (i in flash.indices) {
+            val level = flash[i] * decay
+            flash[i] = if (level < 0.01f) 0f else level
         }
     }
 
-    /** Held rather than onset-gated: [VOCALS] and [SYNTHS] have no onset boolean of their own. */
-    private fun sustainedGlow(inst: StageInstrument, frame: AnalysisFrame): Float = when (inst) {
-        StageInstrument.VOCALS -> (frame.bands["mid"] ?: 0f) * VOCALS_GLOW_GAIN
-        StageInstrument.SYNTHS -> topMelbankLevel(frame) * SYNTHS_GLOW_GAIN
-        else -> 0f
+    /**
+     * This frame's held levels for the two groups that have no onset of their
+     * own — computed **once**, before the per-lamp loop.
+     *
+     * They never depended on the lamp. Reading them inside the loop meant
+     * re-summing the same slice of the same melbank for every assigned channel
+     * in the room, and allocating a `Pair` from `melbankWindow` each time round,
+     * to arrive at the same two numbers.
+     */
+    private fun updateSustained(frame: AnalysisFrame) {
+        sustained.fill(0f)
+        sustained[StageInstrument.VOCALS.ordinal] = (frame.bands["mid"] ?: 0f) * VOCALS_GLOW_GAIN
+        sustained[StageInstrument.SYNTHS.ordinal] = topMelbankLevel(frame) * SYNTHS_GLOW_GAIN
     }
 
     private fun topMelbankLevel(frame: AnalysisFrame): Float {
