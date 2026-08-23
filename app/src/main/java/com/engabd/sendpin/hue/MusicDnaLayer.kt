@@ -9,9 +9,18 @@ import kotlin.math.sin
  * Layer 1 — Music DNA: a deterministic visual fingerprint per track.
  *
  * Tempo sets a slow colour drift's speed, key sets its anchor hue, the
- * intensity profile shapes a brightness floor, and section boundaries step
- * the anchor as the track moves through its own structure. Same fingerprint,
- * every time the song plays — see `docs/creative-light-shows.md`.
+ * intensity profile shapes a brightness floor, and the *kind* of section the
+ * playhead is in steps the anchor as the track moves through its own
+ * structure. Same fingerprint, every time the song plays — see
+ * `docs/creative-light-shows.md`.
+ *
+ * "Every time" is meant literally, and used not to be true. The drift phase was
+ * integrated from `dt`, so it depended on when playback started and on whether
+ * the track had been seeked; and the anchor stepped by section *index*, so it
+ * accumulated down the track — a twelve-section track walked most of the way
+ * round the wheel and wrapped onto its own opening colour. Both are now read
+ * from the track position and the section's [ScanSection.label], which are
+ * properties of the song rather than of this particular play of it.
  *
  * A no-op until [LayerContext.scan] exists: the whole premise is a *known*
  * fingerprint, and approximating one from a track still being learned live
@@ -25,34 +34,57 @@ class MusicDnaLayer : LightShowLayer {
 
     private var cachedScan: TrackScan? = null
     private var fingerprint: Fingerprint? = null
-    private var wavePhase = 0f
+
+    /**
+     * Where the playhead was last frame, so the section lookup can usually step
+     * rather than search. Sections are in ascending order and the playhead
+     * nearly always moves forward by a frame, so the answer is nearly always
+     * "the same section" or "the next one".
+     */
+    private var sectionCursor = 0
+    private var cursorPosS = -1f
+
+    private val hsv = FloatArray(3)
 
     override fun reset() {
         // The fingerprint goes with the scan it was computed from: on a track
-        // change the next `apply` will be handed a different scan anyway, and on
-        // a seek the wave phase should restart rather than carry the old
-        // position's drift into the new one.
+        // change the next `apply` will be handed a different scan anyway. The
+        // drift phase is no longer state at all — it is a function of the track
+        // position — which is exactly what makes a seek land where the song says
+        // rather than where this object happened to have got to.
         cachedScan = null
         fingerprint = null
-        wavePhase = 0f
+        sectionCursor = 0
+        cursorPosS = -1f
     }
 
-    override fun apply(base: Map<Int, Rgb>, context: LayerContext): Map<Int, Rgb> {
+    override fun apply(
+        base: Map<Int, Rgb>,
+        context: LayerContext,
+        out: MutableMap<Int, Rgb>,
+    ): Map<Int, Rgb> {
         val scan = context.scan ?: return base
         if (scan !== cachedScan) {
             cachedScan = scan
             fingerprint = fingerprintOf(scan)
-            wavePhase = 0f
+            sectionCursor = 0
+            cursorPosS = -1f
         }
         val fp = fingerprint ?: return base
 
-        wavePhase = (wavePhase + context.dt * fp.waveHz) % 1f
-        val drift = sin(wavePhase * 2f * PI.toFloat()) * WAVE_HUE_AMPLITUDE
+        // Phase from the playhead, not from accumulated dt. Two plays of the
+        // same second of the same song are then the same colour, which is what
+        // "fingerprint" has to mean to be worth the name.
+        val posS = context.trackPositionS
+        val drift = if (posS >= 0f) {
+            sin(posS * fp.waveHz * 2f * PI.toFloat()) * WAVE_HUE_AMPLITUDE
+        } else {
+            0f
+        }
 
-        val sectionIndex = sectionIndexAt(scan, context.trackPositionS)
-        val hue = wrap1(fp.baseHue + sectionIndex * HUE_STEP_PER_SECTION + drift)
+        val hue = wrap1(fp.baseHue + sectionLabelAt(scan, posS) * HUE_STEP_PER_SECTION + drift)
 
-        val arc = scan.intensitySignalAt(context.trackPositionS) ?: 0.7f
+        val arc = scan.intensitySignalAt(posS) ?: 0.7f
         val level = BRIGHTNESS_MIN + (BRIGHTNESS_MAX - BRIGHTNESS_MIN) * arc.coerceIn(0f, 1f)
 
         // The arc's top end lifts above 1.0 deliberately — a loud chorus should
@@ -61,17 +93,40 @@ class MusicDnaLayer : LightShowLayer {
         // left off, so that is the clamp, not 1f.
         val ceiling = context.brightness.coerceIn(0f, 1f)
 
-        return base.mapValues { (_, rgb) ->
-            val (h, s, v) = rgbToHsv(rgb)
-            val blendedHue = blendHue(h, hue, fp.hueBlendWeight)
-            val sat = (s * fp.saturationMul).coerceIn(0f, 1f)
-            hsvToRgb(blendedHue, sat, (v * level).coerceIn(0f, ceiling))
+        for ((id, rgb) in base) {
+            rgbToHsvInto(rgb, hsv)
+            val blendedHue = blendHue(hsv[0], hue, fp.hueBlendWeight)
+            val sat = (hsv[1] * fp.saturationMul).coerceIn(0f, 1f)
+            out[id] = hsvToRgb(blendedHue, sat, (hsv[2] * level).coerceIn(0f, ceiling))
         }
+        return out
     }
 
-    private fun sectionIndexAt(scan: TrackScan, posS: Float): Int {
-        if (posS < 0f || scan.sections.isEmpty()) return 0
-        return scan.sections.indexOfLast { it.startS <= posS }.coerceAtLeast(0)
+    /**
+     * The *label* of the section at [posS] — which kind of section it is, not
+     * how many have gone by.
+     *
+     * Stepping by label is what makes a returning chorus return to its own
+     * colour. Stepping by index, which is what this did before sections carried
+     * labels, made every section a new hue and walked `HUE_STEP_PER_SECTION` per
+     * boundary until it wrapped: on a twelve-section track the outro landed
+     * within a few degrees of the intro, having gone the long way round, so the
+     * anchor stopped meaning anything about half way through.
+     *
+     * A scan written before labelling has 0 for every section, which correctly
+     * reads as "no repetition found" and leaves the anchor where the key put it.
+     */
+    private fun sectionLabelAt(scan: TrackScan, posS: Float): Int {
+        val sections = scan.sections
+        if (posS < 0f || sections.isEmpty()) return 0
+        // Walk from wherever the last frame ended up. Backwards only happens on
+        // a seek, and starting over then costs one scan of a list of about ten.
+        if (posS < cursorPosS) sectionCursor = 0
+        cursorPosS = posS
+        while (sectionCursor + 1 < sections.size && sections[sectionCursor + 1].startS <= posS) {
+            sectionCursor++
+        }
+        return sections[sectionCursor].label
     }
 
     internal data class Fingerprint(
@@ -143,7 +198,14 @@ class MusicDnaLayer : LightShowLayer {
 
         private const val MINOR_SATURATION_MUL = 0.85f
 
-        /** Hue step per section boundary crossed, turns. ~22 degrees. */
+        /**
+         * Hue step per section *kind*, turns. ~22 degrees.
+         *
+         * Bounded in practice by how many kinds of section a track has, which is
+         * three or four on the corpus this was measured against — so the anchor
+         * moves within about a quarter turn of the key's hue and stays
+         * recognisably that key's colour, instead of touring the wheel.
+         */
         private const val HUE_STEP_PER_SECTION = 0.06f
 
         /** Bound on the tempo-driven drift around the anchor hue, turns. */

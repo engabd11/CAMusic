@@ -219,7 +219,25 @@ class TrackScanStore(private val dir: File) {
             out.writeByte(key.mode.ordinal)
             out.writeByte(quantise(key.confidence))
         }
+
+        // -- Format 4 tail ------------------------------------------------
+        // Same append-only reasoning again. A format-3 file predates the metre
+        // detector and the section labels; both have defaults that are exactly
+        // what those files were already doing, so an old scan reads back
+        // unchanged rather than wrong.
+        out.writeByte(scan.beatsPerBar)
+        // Tuning as a signed byte of half-cents: the value lives in +/-60 cents
+        // and nothing reads it to better than a cent, so a float would be three
+        // bytes of padding on every scan in the library.
+        out.writeByte(halfCents(scan.tuningCents))
+        // Labels are written as their own run rather than interleaved with the
+        // sections above, because those were laid down by format 1 and moving
+        // them would break every reader that already handles that layout.
+        for (s in scan.sections) out.writeByte(s.label.coerceIn(0, 255))
     }
+
+    /** Tuning in signed half-cents, clamped to what one byte can carry. */
+    private fun halfCents(cents: Float): Int = (cents * 2f).toInt().coerceIn(-128, 127)
 
     private fun read(file: File): TrackScan? = DataInputStream(file.inputStream().buffered()).use { input ->
         try {
@@ -298,6 +316,31 @@ class TrackScanStore(private val dir: File) {
                 null
             }
 
+            // A format-3 file has no metre and no labels. Four beats to the bar
+            // is both the right guess and precisely what those scans were doing
+            // when they were written, and every section carrying label 0 reads
+            // as "no repetition was found" — see [ScanSection.label].
+            //
+            // Read defensively for the reason the key read above is: the caller
+            // treats any throw from here as "this file will never parse" and
+            // deletes it, so a few bad bytes at the tail would cost a whole
+            // scan — a track's worth of decoding to get back — when the beat
+            // grid above them is perfectly good.
+            var beatsPerBar = 4
+            var tuningCents = 0f
+            var labels = IntArray(0)
+            if (format >= 4) {
+                val bar = input.readByte().toInt() and 0xFF
+                if (bar in 2..16) beatsPerBar = bar
+                tuningCents = input.readByte().toInt() / 2f
+                labels = IntArray(sections.size) { input.readByte().toInt() and 0xFF }
+            }
+            val labelled = if (labels.size == sections.size) {
+                List(sections.size) { sections[it].copy(label = labels[it]) }
+            } else {
+                sections
+            }
+
             TrackScan(
                 durationS = durationS,
                 bpm = bpm,
@@ -305,12 +348,14 @@ class TrackScanStore(private val dir: File) {
                 beats = beats,
                 accents = accents,
                 downbeat = downbeat,
-                sections = sections,
+                sections = labelled,
                 intensity = profile,
                 melbankRef = melbankRef,
                 analyserVersion = analyserVersion,
                 analysedS = analysedS,
                 key = key,
+                beatsPerBar = beatsPerBar,
+                tuningCents = tuningCents,
             )
         } catch (e: EOFException) {
             null  // truncated: treat as absent and rescan
@@ -339,8 +384,8 @@ class TrackScanStore(private val dir: File) {
         /** "CAMS" — enough to reject a file that is not one of ours at all. */
         private const val MAGIC = 0x43414D53
 
-        private const val FORMAT = 3
-        private val COMPATIBLE_FORMATS = setOf(1, 2, 3)
+        private const val FORMAT = 4
+        private val COMPATIBLE_FORMATS = setOf(1, 2, 3, 4)
 
         private const val SUFFIX = ".scan"
 

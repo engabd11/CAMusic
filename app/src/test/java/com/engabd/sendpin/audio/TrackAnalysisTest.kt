@@ -169,8 +169,92 @@ class TrackAnalysisTest {
         val beatFrames = IntArray(32) { it * 10 }
         val bass = DoubleArray(400)
         for (k in beatFrames.indices) if (k % 4 == 2) bass[beatFrames[k]] = 1.0
-        assertEquals(2, findDownbeat(bass, beatFrames))
+        val (metre, downbeat) = detectMetre(bass, flatChroma, beatFrames, emptyList())
+        assertEquals(4, metre)
+        assertEquals(2, downbeat)
     }
+
+    /**
+     * A bass line that says nothing, and a chord change every third beat.
+     *
+     * This is the case the old bass-only fold could not do at all: with the low
+     * end level, its four candidate phases scored identically and it returned
+     * the first one, in 4, whatever the music was. The harmonic term is the only
+     * evidence here, and it is enough.
+     */
+    @Test
+    fun `metre comes from harmony when the bass is flat`() {
+        val beatFrames = IntArray(36) { it * 10 }
+        val bass = DoubleArray(400) { 0.5 }
+        // Chroma holds still and then jumps, every third beat starting at 1.
+        val chroma = { frame: Int, pc: Int ->
+            val beat = frame / 10
+            val chord = (beat - 1).floorDiv(3)
+            if (pc == Math.floorMod(chord * 5, 12)) 1f else 0f
+        }
+        val (metre, downbeat) = detectMetre(bass, chroma, beatFrames, emptyList())
+        assertEquals(3, metre, "three beats to the bar")
+        assertEquals(1, downbeat)
+    }
+
+    /** Four wins ties, because four is what almost everything is. */
+    @Test
+    fun `metre defaults to four on evidence that fits both`() {
+        val beatFrames = IntArray(48) { it * 10 }
+        val bass = DoubleArray(500)
+        // Bass on every twelfth beat — consistent with a downbeat in either 3 or 4.
+        for (k in beatFrames.indices) if (k % 12 == 0) bass[beatFrames[k]] = 1.0
+        val (metre, _) = detectMetre(bass, flatChroma, beatFrames, emptyList())
+        assertEquals(4, metre)
+    }
+
+    /**
+     * Sub-frame refinement moves a beat toward the envelope's real peak without
+     * ever letting it pass its neighbour.
+     */
+    @Test
+    fun `beat refinement interpolates the peak and stays ordered`() {
+        val env = DoubleArray(100)
+        // A peak whose true position is a third of a frame past index 20:
+        // asymmetric neighbours are exactly what the parabola reads.
+        env[19] = 0.5; env[20] = 1.0; env[21] = 0.8
+        env[39] = 0.8; env[40] = 1.0; env[41] = 0.5
+        val refined = refineBeats(env, intArrayOf(20, 40))
+        assertTrue(refined[0] > 20 * FRAME_PERIOD, "a peak leaning right moves right")
+        assertTrue(refined[0] < 20.5f * FRAME_PERIOD, "and never by more than half a frame")
+        assertTrue(refined[1] < 40 * FRAME_PERIOD, "a peak leaning left moves left")
+        assertTrue(refined[1] > refined[0], "still ascending")
+    }
+
+    /** A flat envelope has no peak to interpolate; the frame index stands. */
+    @Test
+    fun `beat refinement leaves a flat envelope alone`() {
+        val env = DoubleArray(100) { 1.0 }
+        val refined = refineBeats(env, intArrayOf(20, 40))
+        assertEquals(20 * FRAME_PERIOD, refined[0], 1e-6f)
+        assertEquals(40 * FRAME_PERIOD, refined[1], 1e-6f)
+    }
+
+    /** Sections that sound alike get the same label; a new sound gets a new one. */
+    @Test
+    fun `repeated sections share a label`() {
+        fun profile(vararg v: Double) = DoubleArray(8) { i -> v.getOrElse(i) { 0.0 } }
+            .also { a ->
+                val n = kotlin.math.sqrt(a.sumOf { it * it })
+                if (n > 0) for (i in a.indices) a[i] /= n
+            }
+        val verse = profile(1.0, 0.2, 0.1)
+        val chorus = profile(0.1, 0.3, 1.0)
+        val labels = labelSections(
+            listOf(verse, chorus, profile(0.98, 0.22, 0.12), profile(0.12, 0.31, 0.97)),
+        )
+        assertEquals(labels[0], labels[2], "the second verse is the verse")
+        assertEquals(labels[1], labels[3], "the second chorus is the chorus")
+        assertTrue(labels[0] != labels[1], "and a verse is not a chorus")
+    }
+
+    /** A chroma that is the same everywhere, for tests about the other terms. */
+    private val flatChroma = { _: Int, pc: Int -> if (pc == 0) 1f else 0f }
 
     // ── Sections ───────────────────────────────────────────────────────────
 

@@ -38,6 +38,17 @@ data class BeatGrid(
     /** Which beat of the bar just started; 0 is the downbeat. */
     val beatInBar: Int = 0,
     /**
+     * How many beats there are to a bar.
+     *
+     * Only an offline scan ever measures this — see [TrackScan.beatsPerBar].
+     * The causal tracker has no metre estimate and leaves the default, which is
+     * the right guess when guessing is all there is; the field exists so the
+     * engine can tell "measured as 4" from "assumed 4" without asking a second
+     * object, and so a waltz's bar weighting is not a 4/4 table with a beat
+     * lopped off.
+     */
+    val beatsPerBar: Int = 4,
+    /**
      * How hard scheduled pulses may drive the show, 0..1. Ramped with lock
      * confidence so a marginal — possibly wrong — lock pulses modestly rather
      * than confidently.

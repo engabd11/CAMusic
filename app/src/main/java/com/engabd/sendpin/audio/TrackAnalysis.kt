@@ -65,6 +65,30 @@ private const val BLOCK_S = 0.75f
 private const val KERNEL_BLOCKS = 8       // checkerboard half-size, ~6 s of context
 private const val MIN_SECTION_S = 8.0f
 
+/**
+ * Cosine similarity between two sections' band profiles above which they are the
+ * same *kind* of section — the chorus again, rather than something new.
+ *
+ * The profiles being compared are log-compressed and L2-normalised, so this is
+ * about spectral *shape* and not loudness: a chorus and a louder reprise of the
+ * same chorus land in the same group, which is the intent.
+ *
+ * It has to be this high because normalised log band profiles of two sections of
+ * the *same track* are similar almost by construction — the same instruments,
+ * the same mix, the same mastering. Swept over the harness corpus, 0.90 put every
+ * section of most tracks into one group, which tells the show exactly as little
+ * as the old behaviour of giving every section its own label did. 0.99 puts a
+ * typical eight-section track into two to five groups; above about 0.995 the
+ * groups start fragmenting back toward one-per-section.
+ *
+ * Chosen on one album, which is not enough to call it calibrated — the same
+ * caveat `SyncoModes`' presets and `GestureTracker`'s thresholds carry. Both
+ * failure modes are graceful, which is what makes that acceptable: every section
+ * sharing a label leaves the anchor hue on the key, and every section distinct is
+ * what the feature did before labels existed.
+ */
+private const val SECTION_SAME_COSINE = 0.99
+
 /** Under this many frames (~4 s) there is nothing worth analysing. */
 internal const val MIN_ANALYSIS_FRAMES = 200
 
@@ -147,16 +171,35 @@ internal class OfflineExtractor(sampleRate: Int = ANALYSIS_SAMPLE_RATE) {
     private val namedBins = namedBandBins(freqs)
 
     /**
-     * Whole-track chroma, for key detection. Same projection matrix and same
-     * per-frame accumulation the live analyzer uses (`AudioAnalyzer.push`'s
-     * "Live chroma" block) — summed across the whole track instead of reset
-     * every frame, since a key is a property of the song, not the instant.
+     * Whole-track chroma, for key detection.
+     *
+     * Deliberately **not** the live analyzer's [chromaProjection]. Everything
+     * else in this class shares the tap's geometry because a scanned frame has
+     * to be interchangeable with a live one — but the chroma is never replayed
+     * as a frame feature. It is accumulated over the whole track and read once,
+     * so it is free to be built for the job it actually does, and [KeyChroma]
+     * explains at length why the live projection is the wrong tool for it.
      */
-    private val chromaProj: FloatArray = chromaProjection(freqs, CHROMA_FMIN, CHROMA_FMAX)
-    private val chromaAccum = FloatArray(12)
+    private val keyChroma = KeyChroma(freqs)
 
-    /** Accumulated 12-bin pitch-class energy (0=C .. 11=B) over every frame seen. */
-    val chroma: FloatArray get() = chromaAccum.copyOf()
+    /** Tuning-corrected 12-bin pitch-class energy (0=C .. 11=B) for the whole track. */
+    val chroma: FloatArray get() = keyChroma.fold()
+
+    /** The track's measured tuning offset from A440, in cents. */
+    val tuningCents: Float get() = keyChroma.tuningCents
+
+    /**
+     * Per-frame 12-bin chroma, row-major, for beat-synchronous harmonic change.
+     *
+     * The metre detector needs to know where the chords change, and a chord
+     * change is a change in this vector; nothing else the extractor keeps can
+     * see one. Twelve floats a frame is proportionate — [melRows] already keeps
+     * sixteen and [bandRows] thirty-six — and it is transient, thrown away with
+     * the extractor once [finishScan] has read it.
+     */
+    private val chromaRows = FloatList()
+
+    fun chromaAt(frame: Int, pitchClass: Int): Float = chromaRows[frame * 12 + pitchClass]
 
     /** Sliding window over the input, with the newest samples at the end. */
     private val buf = FloatArray(window)
@@ -238,20 +281,6 @@ internal class OfflineExtractor(sampleRate: Int = ANALYSIS_SAMPLE_RATE) {
         // place to get linear magnitude and everything downstream assumes it.
         for (i in mag.indices) mag[i] = sqrt(mag[i])
 
-        // Chroma: fold this frame's magnitude spectrum into pitch classes and
-        // add it to the running total. Same shape as the live analyzer's own
-        // per-frame fold, just summed rather than replaced.
-        if (chromaProj.isNotEmpty()) {
-            for (i in mag.indices) {
-                val m = mag[i]
-                if (m <= 0f) continue
-                val base = i * 12
-                for (p in 0 until 12) {
-                    chromaAccum[p] += m * chromaProj[base + p]
-                }
-            }
-        }
-
         var sq = 0f
         for (v in buf) sq += v * v
         rms.add(sqrt(sq / window))
@@ -282,7 +311,15 @@ internal class OfflineExtractor(sampleRate: Int = ANALYSIS_SAMPLE_RATE) {
         env.add(flux)
         bassEnv.add(bass)
         midEnv.add(mid)
-        width.add(if (s2 > 1e-12f) (s1 * s1) / (cur.size * s2) else 0f)
+        val onsetWidth = if (s2 > 1e-12f) (s1 * s1) / (cur.size * s2) else 0f
+        width.add(onsetWidth)
+
+        // Chroma, after the flux block rather than before it, because the fold
+        // is gated on this frame's own onset broadbandness — a percussive frame
+        // has no pitch class to contribute and, being loud and spectrally flat,
+        // used to contribute to all twelve of them equally. See [KeyChroma].
+        keyChroma.push(mag, onsetWidth)
+        for (v in keyChroma.frameChroma(mag)) chromaRows.add(v)
 
         // Linear-domain shares, leakage-proof, as in the live detector. Without
         // this gate the offline mid stream fires on every kick's attack splash
@@ -762,21 +799,176 @@ internal fun rollingAccents(raw: DoubleArray, halfWindow: Int = 8): FloatArray {
     return out
 }
 
-/** Which of the four beat positions bars start on: the strongest bass fold. */
-internal fun findDownbeat(bassEnv: DoubleArray, beatFrames: IntArray): Int {
-    if (beatFrames.size < 8) return 0
-    var best = 0
-    var bestSum = Double.NEGATIVE_INFINITY
-    for (k in 0 until 4) {
-        var sum = 0.0
-        var i = k
-        while (i < beatFrames.size) {
-            sum += bassEnv[min(beatFrames[i], bassEnv.size - 1)]
-            i += 4
-        }
-        if (sum > bestSum) { bestSum = sum; best = k }
+/** How many beats a bar may have, in the order ties are broken. */
+private val METRE_CANDIDATES = intArrayOf(4, 3)
+
+/**
+ * Weight on the harmonic-change term relative to the bass term, and on the
+ * section-boundary term relative to both.
+ *
+ * All three are normalised to a 0..1 mean before they are combined, so these are
+ * genuinely relative importances rather than unit conversions. Bass leads
+ * because it is the most reliable of the three on the dance material this app is
+ * mostly used with; harmony is the one that rescues everything else, since a
+ * track can have a level bass line and still change chord once a bar.
+ */
+private const val METRE_HARMONY_W = 0.8
+private const val METRE_BOUNDARY_W = 0.5
+
+/**
+ * How much better a 3 has to score than a 4 before it is believed.
+ *
+ * Asymmetric on purpose. Four is overwhelmingly the prior — most music, and all
+ * of the dance material the show is tuned for — and the cost of the two errors
+ * is not symmetric either: calling a 4/4 track a waltz puts the downbeat pulse
+ * on a different beat of every bar, which is worse than missing a genuine 3 and
+ * merely landing on its one every third bar.
+ */
+private const val METRE_THREE_MARGIN = 1.15
+
+/**
+ * How many beats there are to a bar, and which beat position bars start on.
+ *
+ * Three independent pieces of evidence, because the bass fold on its own — which
+ * is all this used to be — ties far too often. A four-to-the-floor kick puts the
+ * same energy on every beat and leaves the fold flat; a backbeat-heavy mix can
+ * make beat 3 outscore beat 1.
+ *
+ *  - **Bass onset** at the fold. What it always did, and still the most reliable
+ *    single term on the material this app is mostly pointed at.
+ *  - **Harmonic change** — how far the chroma moves between the beat before and
+ *    the beat at each candidate position. Chords change on the downbeat far more
+ *    often than anywhere else, and this term sees that even when the drums say
+ *    nothing.
+ *  - **Section boundaries.** A section change is nearly always a downbeat, so
+ *    the phase that puts the most boundaries on beat one is very likely the
+ *    right one. Free — the sections have already been segmented.
+ *
+ * Returns `(beatsPerBar, downbeat)`.
+ */
+internal fun detectMetre(
+    bassEnv: DoubleArray,
+    chromaAt: (Int, Int) -> Float,
+    beatFrames: IntArray,
+    sections: List<ScanSection>,
+): Pair<Int, Int> {
+    if (beatFrames.size < 8) return 4 to 0
+
+    // Per-beat evidence, computed once and folded at each candidate metre
+    // rather than recomputed per (metre, phase) pair.
+    val n = beatFrames.size
+    val bass = DoubleArray(n) { bassEnv[min(beatFrames[it], bassEnv.size - 1)] }
+    val harmony = DoubleArray(n)
+    for (i in 1 until n) {
+        // Cosine distance between the two beats' chroma. Both are already
+        // L2-normalised, so the dot product is the cosine and 1 - it is the
+        // distance, with no normalisation to redo here.
+        var dot = 0.0
+        for (p in 0 until 12) dot += chromaAt(beatFrames[i], p) * chromaAt(beatFrames[i - 1], p).toDouble()
+        harmony[i] = (1.0 - dot).coerceIn(0.0, 1.0)
     }
-    return best
+    val boundary = DoubleArray(n)
+    if (sections.size > 1) {
+        // A boundary lands on whichever beat is nearest to it. Beat times are
+        // needed for that and the frames are what we have, so convert once.
+        for (s in 1 until sections.size) {
+            val t = sections[s].startS
+            var nearest = 0
+            var bestGap = Float.MAX_VALUE
+            for (i in 0 until n) {
+                val gap = abs(beatFrames[i] * FRAME_PERIOD - t)
+                if (gap < bestGap) { bestGap = gap; nearest = i }
+            }
+            // Only if it actually lands on a beat — a boundary half a bar away
+            // from any beat is evidence about the segmentation, not the metre.
+            if (bestGap < 0.25f) boundary[nearest] = 1.0
+        }
+    }
+
+    normaliseToMean(bass)
+    normaliseToMean(harmony)
+
+    var bestMetre = 4
+    var bestPhase = 0
+    var bestScore = Double.NEGATIVE_INFINITY
+    for (metre in METRE_CANDIDATES) {
+        var metreBest = Double.NEGATIVE_INFINITY
+        var metrePhase = 0
+        for (k in 0 until metre) {
+            var sum = 0.0
+            var count = 0
+            var i = k
+            while (i < n) {
+                sum += bass[i] + METRE_HARMONY_W * harmony[i] + METRE_BOUNDARY_W * boundary[i]
+                count++
+                i += metre
+            }
+            // Per-beat mean, not a total: a fold at metre 3 visits more beats
+            // than one at metre 4 and would otherwise win on arithmetic alone.
+            val score = if (count > 0) sum / count else 0.0
+            if (score > metreBest) { metreBest = score; metrePhase = k }
+        }
+        // The margin is applied to the challenger rather than the incumbent, so
+        // that the comparison reads in the direction the prior actually runs.
+        val adjusted = if (metre == 4) metreBest else metreBest / METRE_THREE_MARGIN
+        if (adjusted > bestScore) {
+            bestScore = adjusted
+            bestMetre = metre
+            bestPhase = metrePhase
+        }
+    }
+    return bestMetre to bestPhase
+}
+
+/** Scale in place so the mean is 1, leaving an all-zero array alone. */
+private fun normaliseToMean(x: DoubleArray) {
+    var sum = 0.0
+    for (v in x) sum += v
+    if (sum <= 1e-12) return
+    val inv = x.size / sum
+    for (i in x.indices) x[i] *= inv
+}
+
+/**
+ * Beat frames refined to sub-frame positions against the onset envelope.
+ *
+ * The DP can only place a beat on a frame, so every beat time it returns is
+ * quantised to the 20 ms hop — visible in a scan report as every BPM being an
+ * exact multiple of `60 / (k · 0.02)`, and worth up to half a hop of error on
+ * each individual beat. A quadratic through the envelope either side of the
+ * chosen frame recovers the peak's real position, which is standard peak
+ * interpolation and costs three multiplies a beat.
+ *
+ * The offset is clamped to ±½ a frame. Beyond that the parabola is describing
+ * a different peak than the one the DP chose, and following it would let a beat
+ * cross its neighbour — which [TrackScan.gridAt]'s binary search assumes cannot
+ * happen.
+ */
+internal fun refineBeats(env: DoubleArray, beatFrames: IntArray): FloatArray {
+    val out = FloatArray(beatFrames.size)
+    for (i in beatFrames.indices) {
+        val f = beatFrames[i]
+        var offset = 0.0
+        if (f > 0 && f < env.size - 1) {
+            val a = env[f - 1]
+            val b = env[f]
+            val c = env[f + 1]
+            val denom = a - 2.0 * b + c
+            // A non-negative denominator means this frame is not a local
+            // maximum at all — the DP took it for its regularity rather than
+            // its peak — and interpolating a minimum would move the beat the
+            // wrong way.
+            if (denom < -1e-12) offset = (0.5 * (a - c) / denom).coerceIn(-0.5, 0.5)
+        }
+        out[i] = ((f + offset) * FRAME_PERIOD).toFloat()
+    }
+    // Ascending by construction — the offsets are within ±½ a frame and the
+    // frames are strictly increasing — but asserted cheaply rather than
+    // assumed, because the cost of being wrong lands in a binary search.
+    for (i in 1 until out.size) {
+        if (out[i] <= out[i - 1]) out[i] = out[i - 1] + 1e-4f
+    }
+    return out
 }
 
 // ── Sections ───────────────────────────────────────────────────────────────
@@ -866,6 +1058,11 @@ internal fun segmentSections(ex: OfflineExtractor, durationS: Float): List<ScanS
 
     val peak = percentile(rmsBlocks, 95.0).takeIf { it > 1e-9 } ?: 1.0
     val out = ArrayList<ScanSection>(edges.size - 1)
+    // Each emitted section's mean block profile, parallel to [out], for the
+    // labelling pass below. Built here rather than recomputed from `feat`
+    // afterwards because the block range each section covers is worked out here
+    // anyway, and short sections are dropped in this same loop.
+    val profiles = ArrayList<DoubleArray>(edges.size - 1)
     for (i in 0 until edges.size - 1) {
         val a = edges[i]
         val b = edges[i + 1]
@@ -874,9 +1071,79 @@ internal fun segmentSections(ex: OfflineExtractor, durationS: Float): List<ScanS
         val i1 = max(i0 + 1, min(nBlocks, (b / BLOCK_S).toInt()))
         var s = 0.0
         for (j in i0 until i1) s += rmsBlocks[j]
+        val mean = DoubleArray(nBands)
+        for (j in i0 until i1) {
+            val row = feat[j]
+            for (c in 0 until nBands) mean[c] += row[c]
+        }
+        l2Normalise(mean)
+        profiles.add(mean)
         out.add(ScanSection(a, b, unitD(s / (i1 - i0) / peak).toFloat()))
     }
-    return out.ifEmpty { listOf(ScanSection(0f, durationS, 1f)) }
+    if (out.isEmpty()) return listOf(ScanSection(0f, durationS, 1f))
+    val labels = labelSections(profiles)
+    return List(out.size) { out[it].copy(label = labels[it]) }
+}
+
+/**
+ * Group sections that sound alike, so a returning chorus can be recognised as
+ * the same thing rather than as the next thing.
+ *
+ * Greedy single-pass agglomeration against each label's running centroid:
+ * a section joins the first label whose centroid it is close enough to, and
+ * starts a new one otherwise. Greedy rather than a proper clustering because
+ * the input is a handful of vectors in first-appearance order and the ordering
+ * carries real information — a verse is much more likely to match the previous
+ * verse than an arbitrary partition would allow — and because a full clustering
+ * would need a K nobody can supply. `feat` rows are already L2-normalised log
+ * band profiles, so the dot product is the cosine similarity directly.
+ *
+ * The threshold is the one number that decides whether a track reads as
+ * repetitive or through-composed. Too low and the whole track becomes one
+ * label, which tells the show nothing; too high and every chorus is new, which
+ * is where this started. [SECTION_SAME_COSINE] was chosen against the harness
+ * corpus, where it puts a typical eight-section track into three or four groups.
+ */
+internal fun labelSections(profiles: List<DoubleArray>): IntArray {
+    val labels = IntArray(profiles.size)
+    if (profiles.isEmpty()) return labels
+    val centroids = ArrayList<DoubleArray>()
+    val counts = ArrayList<Int>()
+    for (i in profiles.indices) {
+        val p = profiles[i]
+        var best = -1
+        var bestSim = SECTION_SAME_COSINE
+        for (c in centroids.indices) {
+            var dot = 0.0
+            val centroid = centroids[c]
+            for (j in p.indices) dot += p[j] * centroid[j]
+            if (dot > bestSim) { bestSim = dot; best = c }
+        }
+        if (best < 0) {
+            labels[i] = centroids.size
+            centroids.add(p.copyOf())
+            counts.add(1)
+        } else {
+            labels[i] = best
+            // Running mean, re-normalised so the centroid stays a unit vector
+            // and the cosine stays a cosine as the group grows.
+            val centroid = centroids[best]
+            val n = counts[best]
+            for (j in centroid.indices) centroid[j] = (centroid[j] * n + p[j]) / (n + 1)
+            l2Normalise(centroid)
+            counts[best] = n + 1
+        }
+    }
+    return labels
+}
+
+/** Scale in place to unit L2 norm, leaving an all-zero vector alone. */
+private fun l2Normalise(x: DoubleArray) {
+    var sq = 0.0
+    for (v in x) sq += v * v
+    if (sq <= 1e-18) return
+    val inv = 1.0 / sqrt(sq)
+    for (i in x.indices) x[i] *= inv
 }
 
 // ── Intensity profile ──────────────────────────────────────────────────────
@@ -1147,8 +1414,15 @@ internal fun finishScan(ex: OfflineExtractor, fullDurationS: Float = 0f): ScanRe
         )[0]
     }
 
+    // Sectioned before the metre is decided, because a section boundary is one of
+    // the three things that decides it — a track changes section on a downbeat far
+    // more often than anywhere else. Independent of the grid, so this is safe even
+    // where the beats are not.
+    val sections = segmentSections(ex, durationS)
+
     var accents = FloatArray(0)
     var downbeat = 0
+    var beatsPerBar = 4
     var beatTimes = FloatArray(0)
     if (beatFrames.size >= 4) {
         val rawAccents = DoubleArray(beatFrames.size) { env[min(beatFrames[it], env.size - 1)] }
@@ -1161,17 +1435,24 @@ internal fun finishScan(ex: OfflineExtractor, fullDurationS: Float = 0f): ScanRe
             for (i in rawAccents.indices) rawAccents[i] *= 0.5 + 0.5 * unitD(bassAt[i] / bassRef)
         }
         accents = rollingAccents(rawAccents)
-        downbeat = findDownbeat(bassEnvD, beatFrames)
-        // Refine the BPM from the tracked beats, which is more honest than the lag.
-        val intervals = DoubleArray(beats.size - 1) { beats[it + 1] - beats[it] }
+        val metre = detectMetre(bassEnvD, ex::chromaAt, beatFrames, sections)
+        beatsPerBar = metre.first
+        downbeat = metre.second
+        // Sub-frame beat positions, so a beat time is not quantised to the 20 ms
+        // hop the DP had to choose among. Everything downstream measures against
+        // these rather than the frame indices, including the BPM — which was
+        // previously forced onto the same grid and could only ever report
+        // `60 / (k · FRAME_PERIOD)`.
+        beatTimes = refineBeats(env, beatFrames)
+        val intervals = DoubleArray(beatTimes.size - 1) {
+            (beatTimes[it + 1] - beatTimes[it]).toDouble()
+        }
         if (intervals.isNotEmpty()) bpm = 60.0 / percentile(intervals, 50.0)
-        beatTimes = FloatArray(beats.size) { beats[it].toFloat() }
     } else {
         beats = DoubleArray(0)
     }
 
     val gridOk = confidence >= TrackScan.MIN_GRID_CONFIDENCE && beats.size >= 8
-    val sections = segmentSections(ex, durationS)
     // Without a trustworthy grid the profile's percussiveness term has no honest
     // event set, so it falls back to the flux-only blend rather than a grid we
     // have just rejected.
@@ -1194,6 +1475,8 @@ internal fun finishScan(ex: OfflineExtractor, fullDurationS: Float = 0f): ScanRe
             intensity = profile,
             melbankRef = melbankReference(ex),
             key = key,
+            beatsPerBar = beatsPerBar,
+            tuningCents = ex.tuningCents,
         )
     )
 }

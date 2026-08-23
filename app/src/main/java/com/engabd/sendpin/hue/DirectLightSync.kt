@@ -1085,7 +1085,20 @@ class DirectLightSync(
             // it before the send would let a failed write count as displayed, and
             // the next identical frame would then be skipped as a duplicate of
             // something the bulbs never received.
-            lastSent = due
+            //
+            // Copied when it is the layer chain's own buffer. [LayerChain] hands
+            // back a map it reuses between frames, which is safe for everything
+            // that reads it within the frame — [FieldSafety] and
+            // [EffectRateLimiter] each build their own — but `lastSent` outlives
+            // the frame, and both of those stages pass their input straight
+            // through when the field is empty. A reference here would therefore
+            // become, on the next frame, a comparison of the new field against
+            // itself: [isUnchanged] would always say yes and nothing would go out
+            // until the keepalive. An empty field means no channels and so cannot
+            // happen while a stream is up, which makes this a guard against the
+            // next stage that learns to pass its input through rather than a live
+            // bug — and it costs one map copy on frames that actually differ.
+            lastSent = if (due === layered) HashMap(due) else due
         }
     }
 

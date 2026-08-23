@@ -121,6 +121,23 @@ android {
     }
 }
 
+// The offline-analysis harness (`ScanHarnessTest`) reads a directory of decoded
+// audio that only exists on a developer's machine, so it is switched on by a
+// system property and skips itself otherwise. Gradle forks the test JVM, which
+// does not inherit the daemon's `-D` flags, so the two the harness reads have to
+// be forwarded explicitly — without this the property is simply absent in the
+// test and the harness silently skips however it is invoked.
+//
+//   ./gradlew :app:testDebugUnitTest --tests '*ScanHarnessTest*'
+//       -Dcamusic.audio.dir=... -Dcamusic.harness.out=...
+//
+// See tools/analysis-harness/README.md.
+tasks.withType<Test>().configureEach {
+    for (key in listOf("camusic.audio.dir", "camusic.harness.out", "camusic.harness.limit")) {
+        System.getProperty(key)?.let { systemProperty(key, it) }
+    }
+}
+
 // Compose stability/skippability reports, off by default because writing them costs
 // build time on every compile:
 //

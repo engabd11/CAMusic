@@ -22,7 +22,28 @@ import com.engabd.sendpin.audio.TrackScan
  */
 interface LightShowLayer {
     val id: String
-    fun apply(base: Map<Int, Rgb>, context: LayerContext): Map<Int, Rgb>
+
+    /**
+     * Nudge [base] and return the result.
+     *
+     * A layer either fills [out] and returns it, or returns [base] unchanged
+     * when it has nothing to say this frame. It must not write to [base]: the
+     * chain hands the same buffer back and forth, so writing to the input is
+     * writing to the previous layer's output while it is still being read.
+     *
+     * [out] exists so the chain can supply a buffer it already owns. Every layer
+     * used to end in `base.mapValues { … }`, which allocates a fresh
+     * `LinkedHashMap` per layer per frame — with four layers on and ten channels
+     * that is 240 maps a second on the one thread in this app with a hard
+     * deadline, before counting what the bodies allocate inside them. It has a
+     * default so that a test, which cares about one layer and not about
+     * allocation, can still call this with two arguments.
+     */
+    fun apply(
+        base: Map<Int, Rgb>,
+        context: LayerContext,
+        out: MutableMap<Int, Rgb> = HashMap(),
+    ): Map<Int, Rgb>
 
     /**
      * Drop everything carried between frames — smoothed levels, decaying
@@ -94,10 +115,40 @@ data class LayerContext(
  *
  * A separate class rather than a bare `fold` at the call site so ordering
  * and composition are testable independent of any one layer's own logic.
+ *
+ * It owns **two** output maps and alternates between them, so a four-layer chain
+ * running at 60 Hz allocates nothing per frame rather than 240 maps a second.
+ * That is safe because nothing downstream keeps a reference past the frame:
+ * [FieldSafety.process] and [EffectRateLimiter.process] each build their own
+ * `HashMap(colors.size)` from what they are given, so by the time the next frame
+ * overwrites a buffer, everything that was going to read it has copied out of
+ * it. A layer that has nothing to say returns `base` and the chain simply does
+ * not swap, which is why the buffers are cleared on write rather than reused
+ * in place.
+ *
+ * **Not thread-safe**, and the render loop is the only caller.
  */
 class LayerChain(private val layers: List<LightShowLayer>) {
-    fun apply(base: Map<Int, Rgb>, context: LayerContext): Map<Int, Rgb> =
-        layers.fold(base) { acc, layer -> layer.apply(acc, context) }
+
+    private val bufferA = HashMap<Int, Rgb>()
+    private val bufferB = HashMap<Int, Rgb>()
+    private var useA = true
+
+    fun apply(base: Map<Int, Rgb>, context: LayerContext): Map<Int, Rgb> {
+        var current = base
+        for (layer in layers) {
+            val out = if (useA) bufferA else bufferB
+            out.clear()
+            val result = layer.apply(current, context, out)
+            // Only take the buffer out of rotation if the layer actually used
+            // it. A pass-through hands `base` straight back, and swapping then
+            // would leave the next layer writing into the map the one after it
+            // is about to read.
+            if (result === out) useA = !useA
+            current = result
+        }
+        return current
+    }
 
     /** [LightShowLayer.reset] every layer in the chain. */
     fun reset() = layers.forEach { it.reset() }

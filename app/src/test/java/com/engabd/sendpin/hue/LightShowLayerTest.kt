@@ -3,6 +3,7 @@ package com.engabd.sendpin.hue
 import com.engabd.sendpin.audio.AnalysisFrame
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertSame
 
 /**
  * Does the chain compose the way its callers assume — in order, and as a
@@ -27,13 +28,21 @@ class LightShowLayerTest {
 
         override fun reset() { resets++ }
 
-        override fun apply(base: Map<Int, Rgb>, context: LayerContext): Map<Int, Rgb> =
-            base.mapValues { (_, rgb) -> rgb.copy(first = (rgb.first + delta).coerceAtMost(1f)) }
+        override fun apply(
+            base: Map<Int, Rgb>,
+            context: LayerContext,
+            out: MutableMap<Int, Rgb>,
+        ): Map<Int, Rgb> {
+            for ((id, rgb) in base) {
+                out[id] = rgb.copy(first = (rgb.first + delta).coerceAtMost(1f))
+            }
+            return out
+        }
     }
 
     /** A layer that doesn't override [LightShowLayer.reset], to prove it need not. */
     private class Untouched(override val id: String) : LightShowLayer {
-        override fun apply(base: Map<Int, Rgb>, context: LayerContext) = base
+        override fun apply(base: Map<Int, Rgb>, context: LayerContext, out: MutableMap<Int, Rgb>) = base
     }
 
     @Test
@@ -82,5 +91,64 @@ class LightShowLayerTest {
         val chain = LayerChain(listOf(AddRed("a", 0.3f), AddRed("b", 0.3f)))
         val out = chain.apply(base, contextOf())
         assertEquals(1f, out.getValue(1).first, 1e-5f)
+    }
+
+    // ── Buffer reuse ───────────────────────────────────────────────────────
+
+    /**
+     * The chain must not allocate a map per layer per frame.
+     *
+     * It runs at 60 Hz on the one thread in this app with a hard deadline, and
+     * every layer used to end in `base.mapValues { … }` — a fresh
+     * `LinkedHashMap` each, four times a frame, 240 times a second. The
+     * observable form of the fix is that the map handed back on one frame is the
+     * same object as on a later frame, so this asserts identity and not equality.
+     */
+    @Test
+    fun `the chain reuses its output buffers across frames`() {
+        val base = mapOf(1 to Triple(0f, 0f, 0f), 2 to Triple(0f, 0f, 0f))
+        val chain = LayerChain(listOf(AddRed("a", 0.1f), AddRed("b", 0.1f)))
+
+        val first = chain.apply(base, contextOf())
+        val firstCopy = HashMap(first)
+        val second = chain.apply(base, contextOf())
+
+        assertSame(first, second, "a second frame should land in the same buffer")
+        assertEquals(firstCopy, HashMap(second), "and produce the same answer")
+    }
+
+    /**
+     * A layer writes into the buffer it was given, never into its input.
+     *
+     * With two buffers alternating, writing to `base` would be writing to the
+     * previous layer's output while this one is still reading it — so the guard
+     * is that a two-layer chain still composes correctly when both layers are
+     * doing real work, over enough frames for the buffers to have swapped
+     * several times.
+     */
+    @Test
+    fun `alternating buffers do not corrupt the fold`() {
+        val base = mapOf(1 to Triple(0f, 0f, 0f))
+        val chain = LayerChain(listOf(AddRed("a", 0.2f), AddRed("b", 0.3f)))
+        repeat(5) {
+            val out = chain.apply(base, contextOf())
+            assertEquals(0.5f, out.getValue(1).first, 1e-5f)
+        }
+        assertEquals(0f, base.getValue(1).first, "the caller's map must come back untouched")
+    }
+
+    /**
+     * A pass-through layer hands `base` back, and the chain must not then treat
+     * the buffer it offered as spent — otherwise the next layer writes into the
+     * map the one after it is about to read.
+     */
+    @Test
+    fun `a pass-through layer between two working ones composes correctly`() {
+        val base = mapOf(1 to Triple(0f, 0f, 0f))
+        val chain = LayerChain(listOf(AddRed("a", 0.2f), Untouched("skip"), AddRed("b", 0.3f)))
+        repeat(3) {
+            val out = chain.apply(base, contextOf())
+            assertEquals(0.5f, out.getValue(1).first, 1e-5f)
+        }
     }
 }

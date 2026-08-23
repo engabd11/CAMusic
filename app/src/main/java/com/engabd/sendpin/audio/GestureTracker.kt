@@ -278,15 +278,21 @@ class GestureTracker(private val framePeriod: Float) {
                 }
                 eMin = min(eMin, melHist[slot(w) * MELBANK_BINS + i])
 
-                if (crossings(i, 0.5f * (relOld + relNew)) > MAX_CROSSINGS) continue
-
                 val mono = if (tot > 1e-6f) exc / tot else 0f
                 val score = gate(EXC_MIN, EXC_FULL, exc) *
                     gate(ABS_EXC_MIN, ABS_EXC_FULL, absExc) *
                     gate(MONO_MIN, MONO_FULL, mono) *
                     gate(ENERGY_MIN, ENERGY_FULL, eMin) *
                     stereoGate
-                if (score > binScore[i]) {
+                // The did-it-come-back test is checked last rather than first,
+                // and only for a candidate that would otherwise win. It walks
+                // the whole stored history, so at four windows across sixteen
+                // bins it was the most expensive thing in this pass by some way
+                // — and the great majority of the candidates it was run for had
+                // already lost to a better window of the same bin. Testing it
+                // here cannot change the outcome: a candidate that fails simply
+                // does not update the bin, which is what `continue` did.
+                if (score > binScore[i] && crossings(i, 0.5f * (relOld + relNew)) <= MAX_CROSSINGS) {
                     binScore[i] = score
                     binWindow[i] = w
                     binFrom[i] = panHist[slot(w) * MELBANK_BINS + i]

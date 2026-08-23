@@ -31,7 +31,7 @@ data class TrackScan(
     val beats: FloatArray,
     /** Onset strength at each beat, 0..1, parallel to [beats]. */
     val accents: FloatArray,
-    /** Index into [beats] of the first bar start, 0..3. */
+    /** Index into [beats] of the first bar start, `0 until beatsPerBar`. */
     val downbeat: Int,
     val sections: List<ScanSection>,
     val intensity: IntensityProfile?,
@@ -61,12 +61,38 @@ data class TrackScan(
      */
     val analysedS: Float = durationS,
     /**
-     * The track's musical key, from a Krumhansl-Kessler correlation over the
-     * whole-track chroma accumulated during the scan. Null on a scan from
-     * before key detection existed (analyser version 1) — [outdated] is what
-     * flags those for re-analysis, not a guess here.
+     * The track's musical key, from a key-profile correlation over the
+     * tuning-corrected whole-track chroma accumulated during the scan. See
+     * [KeyDetection]. Null on a scan from before key detection existed
+     * (analyser version 1) — [outdated] is what flags those for re-analysis,
+     * not a guess here, and it flags version-2 scans too: their key came from a
+     * chroma that could not resolve a semitone across its own bottom octave.
      */
     val key: MusicalKey? = null,
+    /**
+     * How many beats there are to a bar — 4 for almost everything, 3 for a waltz.
+     *
+     * Was an assumption rather than a measurement until analyser version 3. The
+     * cost of assuming was not subtle: [downbeat] is a phase within this number,
+     * so on anything in 3 the "downbeat" landed on a different beat of each bar
+     * in turn, and every bar-synced effect in [SyncoEngine] — the phrase counter,
+     * the downbeat pulse — walked round the bar instead of sitting on its one.
+     *
+     * Defaults to 4 for a scan written before it was measured, which is both the
+     * right guess and what those scans were already doing.
+     */
+    val beatsPerBar: Int = 4,
+    /**
+     * The track's tuning offset from A440, in cents, as measured during the scan.
+     *
+     * Not used by the show — [key] already has the correction applied — but kept
+     * because it is the one number that says *why* a key read came out the way it
+     * did. A rip transferred at the wrong speed, a 432 Hz master or a live
+     * recording of a piano nobody tuned all land here as a non-zero value, and
+     * without it a surprising key looks like a bug in the detector rather than a
+     * property of the file.
+     */
+    val tuningCents: Float = 0f,
 ) {
     /** The scan covers the whole track, rather than stopping at the analysis cap. */
     val complete: Boolean get() = analysedS >= durationS - 1f
@@ -120,7 +146,8 @@ data class TrackScan(
         val period = max(1e-3f, nextB - prevB)
         val phase = ((posS - prevB) / period).coerceIn(0f, 1f)
         val crossed = prevPosS != null && prevPosS < posS && upperBound(beats, prevPosS) != i
-        val beatInBar = Math.floorMod(idxPrev - downbeat, 4)
+        val bar = beatsPerBar.coerceAtLeast(1)
+        val beatInBar = Math.floorMod(idxPrev - downbeat, bar)
         // The accent of the beat about to land (anticipatory waves rise into it)
         // and of the one that just did (at-beat flashes size to it). Exact per
         // beat, which is the whole point of having seen the track already.
@@ -134,11 +161,12 @@ data class TrackScan(
             phase = phase,
             timeToNextBeat = max(0f, nextB - posS),
             nextBeatT = nextB,
-            barPhase = (beatInBar + phase) / 4f,
+            barPhase = (beatInBar + phase) / bar,
             predictedBeat = crossed,
             accent = accentNext,
             accentNow = accentNow,
             beatInBar = beatInBar,
+            beatsPerBar = bar,
             // An offline grid is authoritative, so scheduled pulses drive at
             // full strength. The causal tracker ramps this with its lock quality
             // precisely because it might be wrong; this one is not guessing.
@@ -177,7 +205,8 @@ data class TrackScan(
             sections == other.sections && intensity == other.intensity &&
             melbankRef.contentEquals(other.melbankRef) &&
             analyserVersion == other.analyserVersion && analysedS == other.analysedS &&
-            key == other.key
+            key == other.key && beatsPerBar == other.beatsPerBar &&
+            tuningCents == other.tuningCents
     }
 
     override fun hashCode(): Int {
@@ -193,6 +222,8 @@ data class TrackScan(
         result = 31 * result + analyserVersion
         result = 31 * result + analysedS.hashCode()
         result = 31 * result + (key?.hashCode() ?: 0)
+        result = 31 * result + beatsPerBar
+        result = 31 * result + tuningCents.hashCode()
         return result
     }
 
@@ -213,8 +244,16 @@ data class TrackScan(
          * 2 — adds [key], a Krumhansl-Kessler musical key read off the whole-track
          * chroma. A version-1 scan simply has no key; this is what flags it for
          * the re-analysis that would give it one.
+         *
+         * 3 — a rebuilt key path, a measured [beatsPerBar], labelled sections and
+         * sub-frame beat times. The key is the big one: version 2 read its chroma
+         * off a projection that could not resolve a semitone below ~186 Hz and
+         * assumed A440, and measured over real music it agreed with itself on a
+         * transposed copy of the same track only 12 % of the time — against a
+         * 1-in-12 chance floor. A version-2 scan's key is therefore not merely
+         * older, it is close to arbitrary, and re-reading is worth it.
          */
-        const val ANALYSER_VERSION = 2
+        const val ANALYSER_VERSION = 3
 
         /**
          * Below this the grid is not served. Matches syncoV2's
@@ -249,7 +288,27 @@ data class TrackScan(
  * [energy] is what lets the show save its range for the chorus instead of
  * spending it on the first loud bar of the intro.
  */
-data class ScanSection(val startS: Float, val endS: Float, val energy: Float)
+data class ScanSection(
+    val startS: Float,
+    val endS: Float,
+    val energy: Float,
+    /**
+     * Which *kind* of section this is: sections sharing a label sound alike.
+     *
+     * Boundaries alone say a track changed at 1:04; they cannot say that what
+     * started there is the chorus again. That difference is the whole gap
+     * between a show that reacts and a show that recognises — see
+     * [MusicDnaLayer], which steps its anchor hue by label precisely so a
+     * returning chorus returns to its own colour instead of being handed the
+     * next hue along.
+     *
+     * Assigned in first-appearance order, so 0 is whatever the track opens
+     * with. Every section carrying its own label means no repetition was
+     * found, which is the honest answer for a through-composed track and is
+     * what a scan from before labelling existed reads back as.
+     */
+    val label: Int = 0,
+)
 
 /**
  * Per-song Auto-intensity shaping.

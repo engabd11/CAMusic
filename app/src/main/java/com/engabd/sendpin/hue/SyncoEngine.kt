@@ -95,11 +95,25 @@ private const val RISE_FOR_VERTICAL = 0.25f
 private val PHRASE_JUMP = floatArrayOf(1.0f, 0.85f, 1.15f, 0.95f)
 
 /**
- * Relative weight of each beat in a 4/4 bar: the downbeat hits hardest, beats 2
- * and 4 land softer. This is the difference between a pulse that feels musical
- * and one that feels like a metronome.
+ * Relative weight of each beat in a bar: the downbeat hits hardest, the beats
+ * between land softer. This is the difference between a pulse that feels
+ * musical and one that feels like a metronome.
+ *
+ * A table per metre, because the four-beat one is not a waltz's shape with a
+ * beat lopped off. In 4/4 the third beat is a secondary strong beat, which is
+ * why it sits above beats 2 and 4; in 3/4 there is no secondary strong beat at
+ * all and both weak beats are equal. Indexing the 4/4 table with a bar of three
+ * would have given beat 3 an accent no waltz has.
+ *
+ * A scan reports its own [TrackScan.beatsPerBar]; the causal tracker has no
+ * metre estimate and always says 4, which is the right guess when guessing is
+ * all there is.
  */
-private val BAR_WEIGHT = floatArrayOf(1.0f, 0.72f, 0.86f, 0.72f)
+private val BAR_WEIGHT_4 = floatArrayOf(1.0f, 0.72f, 0.86f, 0.72f)
+private val BAR_WEIGHT_3 = floatArrayOf(1.0f, 0.72f, 0.72f)
+
+/** The bar-weight table for a bar of [beats], falling back to 4/4. */
+private fun barWeights(beats: Int): FloatArray = if (beats == 3) BAR_WEIGHT_3 else BAR_WEIGHT_4
 
 /** Floor on a highlighted beat's pulse weight. */
 private const val HIGHLIGHT_MIN = 0.55f
@@ -1054,7 +1068,13 @@ class SyncoEngine(
      * response *within* highlights, and [ModeParams.downbeatPulse] guarantees the
      * bar's "one" lands either way, so the room never loses the pulse.
      */
-    private fun pulseWeight(p: ModeParams, accent: Float, beatInBar: Int, highlight: Boolean): Float {
+    private fun pulseWeight(
+        p: ModeParams,
+        accent: Float,
+        beatInBar: Int,
+        highlight: Boolean,
+        beatsPerBar: Int = 4,
+    ): Float {
         var w: Float
         if (highlight) {
             var a = (accent - p.accentFloor) / max(1e-6f, 1f - p.accentFloor)
@@ -1065,7 +1085,8 @@ class SyncoEngine(
             w = p.weakPulse
         }
         if (beatInBar == 0) w = max(w, p.downbeatPulse)
-        return w * BAR_WEIGHT[beatInBar.mod(BAR_WEIGHT.size)]
+        val weights = barWeights(beatsPerBar)
+        return w * weights[beatInBar.mod(weights.size)]
     }
 
     private fun kickFlash(visStrength: Float, visBass: Float): Float {
@@ -1265,7 +1286,9 @@ class SyncoEngine(
         // grid can only ever add to the show, never subtract from it.
         val scheduled = if (locked && beatgrid!!.predictedBeat) {
             p.beatGain *
-                pulseWeight(p, beatgrid.accentNow, beatgrid.beatInBar, highlight) *
+                pulseWeight(
+                    p, beatgrid.accentNow, beatgrid.beatInBar, highlight, beatgrid.beatsPerBar,
+                ) *
                 (0.6f + 0.4f * visBass) *
                 beatgrid.scheduleStrength
         } else 0f
