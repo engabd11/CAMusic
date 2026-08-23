@@ -31,6 +31,10 @@ class SendspinDirectDataSource(
 
     override fun awaitNextFrame(): ByteArray? {
         while (true) {
+            // Checked before the poll, not only when it comes back empty: a discard
+            // means the tail is not to be played, and a queue that refilled behind it
+            // is still that tail.
+            if (isAbandoned()) return null
             val frame = queue.poll(QUEUE_POLL_MS, TimeUnit.MILLISECONDS)
             if (frame != null) {
                 armPresentationAnchor(MonotonicClock.nowUs())

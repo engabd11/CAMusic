@@ -64,7 +64,20 @@ abstract class SendspinDataSource(
 
     protected val queue = LinkedBlockingQueue<Frame>(QUEUE_CAPACITY)
 
+    /** `stream/end` seen: no more frames are coming, but what is queued is still owed. */
     @Volatile private var endSignalled = false
+
+    /**
+     * The queued tail has been given up on: nothing more is served, from anywhere.
+     *
+     * Kept apart from [endSignalled] because the two say opposite things about the
+     * frames already in hand. "The input is complete" is an instruction to *finish*;
+     * "the tail is abandoned" is an instruction to stop. Conflating them is what made
+     * [SendspinExoEngine.endOfStream]'s drain destroy the very audio it exists to
+     * save on a grouped stream - see [SendspinSyncDataSource.waitUntilDue].
+     */
+    @Volatile private var abandoned = false
+
     @Volatile private var opened = false
 
     private var opusMuxer: OggOpusPacketizer? = null
@@ -124,12 +137,15 @@ abstract class SendspinDataSource(
      */
     protected abstract fun awaitNextFrame(): ByteArray?
 
-    /** `stream/end` seen and drained: no more frames coming. */
+    /** `stream/end` seen: no more frames are coming. What is queued is still owed. */
     protected fun isEndOfStreamSignalled() = endSignalled
+
+    /** [discardQueued] has been called: whatever is left is not to be played at all. */
+    protected fun isAbandoned() = abandoned
 
     /** A binary audio frame off the wire, header already stripped by the caller. */
     fun submit(serverTsUs: Long, payload: ByteArray) {
-        if (endSignalled) return
+        if (endSignalled || abandoned) return
         val frame = Frame(serverTsUs, payload)
         if (queue.offer(frame)) return
         // Full: the oldest frame is the most stale, so it's the one to sacrifice.
@@ -163,16 +179,10 @@ abstract class SendspinDataSource(
      * last moment short and ignoring the pause button, the pause button wins — and
      * telling the two apart is the separate piece of work the plan tracks as gapless.
      */
-    /**
-     * How many frames are still waiting to be handed to the decoder.
-     *
-     * Read by the drain in `Playback.onStreamEnd`: an announcement that has genuinely
-     * finished runs dry, and the wall-clock cap beside it is only there for the case
-     * where it does not.
-     */
-    val queuedFrames: Int get() = queue.size
-
     fun discardQueued() {
+        // Set before the clear, and read before every poll: a frame submitted between
+        // the two lines would otherwise be served by a reader that had already looked.
+        abandoned = true
         queue.clear()
     }
 

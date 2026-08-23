@@ -15,6 +15,7 @@ import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import com.engabd.sendpin.protocol.ClockSync
 import com.engabd.sendpin.protocol.StreamStartPlayerInfo
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * ExoPlayer-based Sendspin (MA) playback engine - see `docs/exoplayer-upgrade-plan.md`.
@@ -131,9 +132,40 @@ class SendspinExoEngine(
         }
 
     private var preferredOutputDevice: AudioDeviceInfo? = null
-    private var currentDataSource: SendspinDataSource? = null
+
+    /**
+     * Volatile because the tail drain reaches [cutTail] from a `Dispatchers.Default`
+     * worker while [start] publishes from the Sendspin client's ingest coroutine -
+     * two threads with no happens-before edge between them.
+     */
+    @Volatile private var currentDataSource: SendspinDataSource? = null
     private var userVolume = 1f
     private var syncMuted = false
+
+    /**
+     * Which stream is loaded, and which one the player has finished playing.
+     *
+     * A tail outlives its stream. The drain `stream/end` starts is still counting when
+     * the next `stream/start` arrives, and with no id to check itself against, its
+     * [cutTail] lands on whatever is playing *by then*. That is not a hypothetical
+     * race: Music Assistant plays an announcement by ending the music stream and
+     * starting the announcement a few hundred milliseconds later - squarely inside the
+     * music tail's own cap - so the music's drain discarded and muted the announcement
+     * a moment after its pre-announcement tone, which is the whole of "the TTS now
+     * stops right before the sentence".
+     */
+    private val streamIds = AtomicLong(0)
+    @Volatile private var playedOutStreamId = 0L
+
+    /**
+     * Main-thread mirror of the id [player] is actually loaded with.
+     *
+     * `Player.Listener` callbacks arrive on the main thread and [start]'s player work
+     * is posted to it, so reading and writing this there - and nowhere else - keeps
+     * the two ordered: an ENDED for the stream that just finished cannot be credited
+     * to the one starting behind it.
+     */
+    private var loadedStreamId = 0L
 
     /**
      * The tail has been given up on: discarded outright, or drained to its cap.
@@ -148,7 +180,7 @@ class SendspinExoEngine(
      * Muting rather than stopping, still: the decoder and audio track stay alive
      * either way, which is what keeps a real track boundary gapless.
      */
-    private var tailMuted = false
+    @Volatile private var tailMuted = false
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -208,6 +240,12 @@ class SendspinExoEngine(
 
         override fun onPlaybackStateChanged(state: Int) {
             if (state == Player.STATE_READY) consecutiveErrors = 0
+            // The tail is only out once the decoder and the audio track are: media3
+            // reaches ENDED when the sink reports that every frame written to it has
+            // been played, which is precisely the question a drain is asking. Counting
+            // the frames still queued for the decoder - what the drain used to read -
+            // answers a different one, and answers it up to a second early.
+            if (state == Player.STATE_ENDED) playedOutStreamId = loadedStreamId
             // A stream that produces no sound leaves a distinctive trail here and
             // nowhere else: BUFFERING for ever means the data source is not feeding
             // ExoPlayer, IDLE means nothing was ever prepared, READY means the
@@ -350,8 +388,10 @@ class SendspinExoEngine(
         // either way.
         currentDataSource = dataSource
         tailMuted = false
+        val id = streamIds.incrementAndGet()
         val speechNow = speech
         runOnMain {
+            loadedStreamId = id
             // Applied here, before prepare(), rather than baked in at build time.
             // Changing attributes on a live player flushes and rebuilds the
             // AudioTrack; doing it at the one moment there is no audio to interrupt
@@ -365,7 +405,11 @@ class SendspinExoEngine(
         }
     }
 
-    override val queuedFrames: Int get() = currentDataSource?.queuedFrames ?: 0
+    override val currentStreamId: Long get() = streamIds.get()
+
+    override fun isCurrentStream(streamId: Long) = streamId == streamIds.get()
+
+    override fun hasPlayedOut(streamId: Long) = streamId != 0L && playedOutStreamId == streamId
 
     override fun submit(frame: ByteArray) {
         val (serverTsUs, payload) = SendspinAudioFrame.parse(frame) ?: return
@@ -379,13 +423,14 @@ class SendspinExoEngine(
      */
     override fun endOfStream(drain: Boolean) {
         if (drain) {
-            // Signal only. [awaitNextFrame] goes on serving what is already queued
-            // and then reports end-of-input, so the tail is heard — which for an
-            // announcement is the last words of it.
+            // Signal only, and pointedly not [SendspinDataSource.discardQueued]:
+            // [awaitNextFrame] goes on serving what is already queued and then reports
+            // end-of-input, so the tail is heard — which for an announcement is the
+            // last words of it.
             currentDataSource?.signalEndOfStream()
             return
         }
-        cutTail()
+        cutTail(currentStreamId)
     }
 
     /**
@@ -400,7 +445,10 @@ class SendspinExoEngine(
      * would take the decoder and audio track with it, and rebuilding those is what a
      * real track boundary must not have to do.
      */
-    override fun cutTail() {
+    override fun cutTail(streamId: Long) {
+        // A drain that has outlived its own stream has nothing left to cut. Whatever
+        // is playing now started after it and is not its to silence.
+        if (streamId != streamIds.get()) return
         if (tailMuted) return
         currentDataSource?.apply { discardQueued(); signalEndOfStream() }
         tailMuted = true
@@ -409,7 +457,10 @@ class SendspinExoEngine(
 
     /** `stream/clear` - a seek or track jump: the current source is now wrong. */
     override fun flush() {
-        currentDataSource?.signalEndOfStream()
+        // Discarded, not merely ended: what is queued belongs to a position the
+        // listener has left, and on its own `signalEndOfStream` now means "play it
+        // out" rather than "throw it away".
+        currentDataSource?.apply { discardQueued(); signalEndOfStream() }
         currentDataSource = null
         runOnMain { player.stop() }
     }
@@ -432,7 +483,7 @@ class SendspinExoEngine(
     }
 
     override fun release() {
-        currentDataSource?.signalEndOfStream()
+        currentDataSource?.apply { discardQueued(); signalEndOfStream() }
         currentDataSource = null
         runOnMain {
             // Released *and cleared*, so the next start() builds a fresh one rather than

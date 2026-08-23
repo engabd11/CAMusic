@@ -21,6 +21,19 @@ package com.engabd.sendpin.audio
  * is why roughly two in five of them lost their last words while music never
  * noticeably did.
  *
+ * ## Why the first attempt at this made it worse
+ *
+ * Nothing here worked, because none of it ran. The `player_updated` collector that
+ * feeds every field below read `state` from the event, and a serialised MA player
+ * carries `playback_state` — so no reading was ever taken, no stream was ever
+ * classified as anything, and every `stream/end` fell through to the default. What
+ * *did* change was that a `stream/end` now started a drain coroutine, and a drain
+ * outlives the stream that started it: MA begins an announcement a few hundred
+ * milliseconds after ending the music, inside the music tail's own 400 ms cap, so the
+ * music's drain reached the announcement and silenced it a moment after its
+ * pre-announcement tone. Fixing the key is what makes the rest of this file real; the
+ * stream id on every tail operation is what makes the drain safe either way.
+ *
  * ## The discriminator
  *
  * The protocol cannot tell them apart, so this reasons from what the app knows
@@ -30,7 +43,9 @@ package com.engabd.sendpin.audio
  *    one call in `Playback`, which stamps the time.
  * 2. **An MA `player_updated` event saying this player is not playing.** Fast and
  *    reliable, and it covers a pause from another controller — the MA web UI, the
- *    Home Assistant app — which this app is not otherwise told about.
+ *    Home Assistant app — which this app is not otherwise told about. It does *not*
+ *    count against an announcement: MA pauses the queue to make room for the clip,
+ *    so the very event that identifies an announcement used to condemn its tail.
  * 3. **Nothing at all.** Treated as music, which is the conservative side: a
  *    misjudged announcement is truncated a little late rather than a little early,
  *    while a misjudged pause plays music the listener asked to stop.
@@ -49,9 +64,17 @@ enum class TailAction {
 /**
  * [capMs] bounds a [TailAction.DRAIN]: however long the tail turns out to be, the
  * output is cut after this. It is a safety net, not the mechanism — the drain
- * normally ends when the queue runs dry, which is sooner.
+ * normally ends when the player reports it has played everything, which is sooner.
+ *
+ * [kind] rides along because the drain has to make the same judgement [decide] just
+ * made, about a pause that lands a moment later: for an announcement a remote "not
+ * playing" is the announcement's own queue pause and must not cut it short.
  */
-data class TailPlan(val action: TailAction, val capMs: Long)
+data class TailPlan(
+    val action: TailAction,
+    val capMs: Long,
+    val kind: StreamClassifier.Kind = StreamClassifier.Kind.UNKNOWN,
+)
 
 object StreamEndPolicy {
 
@@ -106,10 +129,19 @@ object StreamEndPolicy {
         kind: StreamClassifier.Kind,
     ): TailPlan {
         val locallyPaused = localPauseAtMs != null && nowMs - localPauseAtMs in 0..LOCAL_PAUSE_WINDOW_MS
-        val remotelyPaused = remotePausedAtMs != null && nowMs - remotePausedAtMs in 0..LOCAL_PAUSE_WINDOW_MS
-        if (locallyPaused || remotelyPaused) return TailPlan(TailAction.DISCARD, 0L)
+        // A remote "not playing" is how Music Assistant *announces*: it pauses the
+        // queue to make room for the clip. Reading that as a pause meant the
+        // announcement's tail was thrown away precisely because it was an
+        // announcement — one event both classified the stream and condemned it. There
+        // is nothing to lose by ignoring it here, for the same reason
+        // [ANNOUNCEMENT_CAP_MS] can be generous: MA offers no pause button for a TTS
+        // clip, so a drain here cannot be a mis-read pause. A *local* pause still
+        // wins, because that one is the listener rather than the server.
+        val remotelyPaused = kind != StreamClassifier.Kind.ANNOUNCEMENT &&
+            remotePausedAtMs != null && nowMs - remotePausedAtMs in 0..LOCAL_PAUSE_WINDOW_MS
+        if (locallyPaused || remotelyPaused) return TailPlan(TailAction.DISCARD, 0L, kind)
         val cap = if (kind == StreamClassifier.Kind.ANNOUNCEMENT) ANNOUNCEMENT_CAP_MS else MUSIC_CAP_MS
-        return TailPlan(TailAction.DRAIN, cap)
+        return TailPlan(TailAction.DRAIN, cap, kind)
     }
 
     /**
@@ -120,16 +152,80 @@ object StreamEndPolicy {
      */
     fun revise(plan: TailPlan, pausedSinceEnd: Boolean): TailAction =
         if (pausedSinceEnd) TailAction.DISCARD else plan.action
+
+    /** What a running drain should do, re-evaluated on every poll. */
+    enum class DrainStep {
+        /** Keep waiting: there is still audio to be heard and nothing has overtaken it. */
+        WAIT,
+
+        /** The player has played everything it was given. Cut, so a pause after this is instant. */
+        PLAYED_OUT,
+
+        /** [capMs] is up and the player never finished. Cut: the safety net. */
+        EXPIRED,
+
+        /** A pause landed inside the grace window. Cut, so it still feels immediate. */
+        PAUSED,
+
+        /**
+         * A newer stream is playing. Stop **without** cutting.
+         *
+         * The one outcome that is not a cut, and the reason this is a function rather
+         * than an inline condition. A tail outlives its stream, so a drain can still
+         * be counting when the next `stream/start` lands — and Music Assistant starts
+         * an announcement a few hundred milliseconds after ending the music, which is
+         * inside the music tail's own cap. Cutting there silences the announcement
+         * instead of the music, a moment after its pre-announcement tone.
+         */
+        SUPERSEDED,
+    }
+
+    /**
+     * [hasPlayedOut] is the engine's own end-of-playback for the stream this drain
+     * belongs to — not "the frame queue is empty", which is true up to a second before
+     * the audio has actually been heard, since the rest of it is in the decoder and
+     * the audio track by then.
+     *
+     * The two pause flags are kept apart for the reason [decide] keeps them apart: a
+     * remote one is how Music Assistant announces, and cutting an announcement on it
+     * is cutting it because of what it is.
+     */
+    fun drainStep(
+        nowMs: Long,
+        endedAt: Long,
+        plan: TailPlan,
+        isCurrentStream: Boolean,
+        hasPlayedOut: Boolean,
+        localPausedSinceEnd: Boolean,
+        remotePausedSinceEnd: Boolean,
+    ): DrainStep {
+        val paused = localPausedSinceEnd ||
+            (remotePausedSinceEnd && plan.kind != StreamClassifier.Kind.ANNOUNCEMENT)
+        return when {
+            !isCurrentStream -> DrainStep.SUPERSEDED
+            hasPlayedOut -> DrainStep.PLAYED_OUT
+            paused && nowMs - endedAt <= REMOTE_PAUSE_GRACE_MS &&
+                revise(plan, pausedSinceEnd = true) == TailAction.DISCARD -> DrainStep.PAUSED
+            nowMs - endedAt >= plan.capMs -> DrainStep.EXPIRED
+            else -> DrainStep.WAIT
+        }
+    }
 }
 
 /**
  * What kind of thing a `stream/start` is beginning.
  *
- * Music Assistant plays an announcement by pausing whatever queue is running and
- * streaming the clip, so "audio arrived while this player's queue is not playing" is
- * what an announcement looks like from here. It is a heuristic and it fails safe:
- * [Kind.UNKNOWN] is treated as [Kind.MUSIC] everywhere, which is the behaviour that
- * shipped before any of this existed.
+ * Music Assistant answers this itself, on any build that sends
+ * `announcement_in_progress`, and that answer is taken over everything below it.
+ *
+ * The fallback is the inference, for servers that do not: MA plays an announcement by
+ * pausing whatever queue is running and streaming the clip, so "audio arrived while
+ * this player's queue is not playing" is what an announcement looks like from here.
+ * It is a heuristic and it fails safe — [Kind.UNKNOWN] is treated as [Kind.MUSIC]
+ * everywhere, which is the behaviour that shipped before any of this existed — but it
+ * is also weak in exactly the case it exists for, which is why the flag is read first:
+ * the announcement's `stream/start` follows the music's `stream/end` immediately, and
+ * so does the next track's.
  */
 object StreamClassifier {
 
@@ -145,20 +241,41 @@ object StreamClassifier {
     const val MAX_STATE_AGE_MS = 4_000L
 
     /**
-     * [queueState] is Music Assistant's own `MaPlayer.state` for *this* phone
-     * (`playing` / `paused` / `idle`), or null if none has been seen.
-     * [msSincePreviousStreamEnd] is how long ago the previous stream ended, or null if
-     * none has.
+     * [announcementInProgress] is Music Assistant's own `announcement_in_progress` for
+     * this player, or null on a build that does not send it.
+     * [queueState] is MA's `playback_state` for *this* phone (`playing` / `paused` /
+     * `idle`), or null if none has been seen. [msSincePreviousStreamEnd] is how long
+     * ago the previous stream ended, or null if none has.
      */
     fun classify(
+        announcementInProgress: Boolean?,
+        announcementFlagAgeMs: Long,
         queueState: String?,
         queueStateAgeMs: Long,
         msSincePreviousStreamEnd: Long?,
         endLingerMs: Long = SendspinPlaybackSupport.END_LINGER_MS,
     ): Kind {
-        // A stream that starts moments after one ended is the next track, whatever
-        // the queue state says — MA has not necessarily republished it yet.
-        if (msSincePreviousStreamEnd != null && msSincePreviousStreamEnd <= endLingerMs) return Kind.MUSIC
+        // Being told beats every inference below it, and the inference is wrong in
+        // exactly the case that matters most — see the track-boundary rule. Only
+        // `true` is acted on: MA sets the flag before it plays and clears it after, so
+        // a fresh `true` is definitive, while a `false` may simply not have caught up.
+        if (announcementInProgress == true && announcementFlagAgeMs <= MAX_STATE_AGE_MS) {
+            return Kind.ANNOUNCEMENT
+        }
+        // A stream that starts moments after one ended is usually the next track,
+        // whatever the queue state says — MA has not necessarily republished it yet.
+        //
+        // "Not necessarily" is the whole of the rule, so it only holds while the
+        // reading really is older than the boundary. An announcement looks identical
+        // from here — MA ends the music stream and starts the clip immediately after —
+        // and applying this unconditionally called every announcement the next track,
+        // which is how the classifier came to answer MUSIC for all of them.
+        val sinceBoundary = msSincePreviousStreamEnd
+        if (sinceBoundary != null && sinceBoundary <= endLingerMs &&
+            (queueState == null || queueStateAgeMs >= sinceBoundary)
+        ) {
+            return Kind.MUSIC
+        }
         if (queueState == null || queueStateAgeMs > MAX_STATE_AGE_MS) return Kind.UNKNOWN
         return if (queueState.equals("playing", ignoreCase = true)) Kind.MUSIC else Kind.ANNOUNCEMENT
     }

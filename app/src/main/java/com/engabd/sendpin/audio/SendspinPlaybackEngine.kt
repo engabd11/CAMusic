@@ -23,11 +23,35 @@ interface SendspinPlaybackEngine {
      */
     fun endOfStream(drain: Boolean = false)
 
-    /** Give up on whatever tail is left and go silent. Idempotent. */
-    fun cutTail() = Unit
+    /**
+     * Identifies the stream [start] most recently loaded; 0 before the first one.
+     *
+     * Everything to do with a tail is stamped with this, because a tail outlives the
+     * stream that produced it. The drain `stream/end` begins is still counting when
+     * the *next* `stream/start` arrives, and "the current stream" has moved on by the
+     * time it fires.
+     */
+    val currentStreamId: Long get() = 0L
 
-    /** Frames still queued for the decoder, or 0 where the engine cannot say. */
-    val queuedFrames: Int get() = 0
+    /** Whether [streamId] is still the stream the engine is playing. */
+    fun isCurrentStream(streamId: Long): Boolean = false
+
+    /**
+     * Whether the player has played out everything it was given for [streamId].
+     *
+     * The only honest answer to "has the tail been heard yet". What is left to hear
+     * once the last frame has been handed over lives in the decoder and the audio
+     * track, not in any queue this app can count, so nothing shallower than the
+     * player's own end of playback can tell.
+     */
+    fun hasPlayedOut(streamId: Long): Boolean = false
+
+    /**
+     * Give up on [streamId]'s tail and go silent. Idempotent, and a no-op once a newer
+     * stream has started: a late drain must never silence the stream that replaced it.
+     */
+    fun cutTail(streamId: Long) = Unit
+
     fun flush()
     fun setVolume(v: Float)
     fun setSyncMuted(muted: Boolean)
