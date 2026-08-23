@@ -31,9 +31,11 @@ import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -286,7 +288,7 @@ internal fun ShelfTile(
         Modifier
             .pressScale(press)
             .width(ShelfTileWidth)
-            .height(ShelfTileHeight)
+            .height(shelfTileHeight())
             .then(
                 if (onLongPress != null) {
                     Modifier.combinedClickable(
@@ -357,8 +359,20 @@ internal fun ShelfTile(
 /** How wide one carousel tile is. Three and a bit fit across a phone. */
 internal val ShelfTileWidth = 116.dp
 
-/** Art, an 8dp gap, then two one-line labels. Fixed, so the carousel's height is too. */
-internal val ShelfTileHeight = 158.dp
+/**
+ * Square art, an 8dp gap, then two one-line labels.
+ *
+ * Fixed for a given font scale, because the carousel is a `LazyHorizontalGrid` and one
+ * of those has to be told its height outright. Not a constant, though: the labels are
+ * in sp and the art is in dp, so at the largest accessibility font scale a hardcoded
+ * number is a tile whose second line is cut in half. The label block is what grows.
+ */
+@Composable
+internal fun shelfTileHeight(): Dp =
+    ShelfTileWidth + 8.dp + ShelfLabelHeight * LocalDensity.current.fontScale.coerceIn(1f, 2f)
+
+/** Two lines at 13sp and 11sp, at the default font scale. */
+private val ShelfLabelHeight = 34.dp
 
 /** Between the two rows of a carousel. */
 internal val ShelfRowGap = 12.dp

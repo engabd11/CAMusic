@@ -661,6 +661,7 @@ private fun androidx.compose.foundation.lazy.grid.LazyGridScope.shelfCarousel(
         // One row for a shelf with a single item — a second, empty row under it is
         // 158dp of nothing, and it reads as a shelf that failed to load.
         val rowCount = if (spec.items.size < 2) 1 else 2
+        val tileHeight = shelfTileHeight()
         Column(Modifier.padding(top = 12.dp)) {
             LibraryShelf(spec.title, spec.items.size)
             Spacer(Modifier.height(10.dp))
@@ -671,7 +672,7 @@ private fun androidx.compose.foundation.lazy.grid.LazyGridScope.shelfCarousel(
                     // as content padding, so tiles scroll *under* the edge of the
                     // screen rather than stopping short of it.
                     .bleed(LibraryEdge)
-                    .height(ShelfTileHeight * rowCount + ShelfRowGap * (rowCount - 1)),
+                    .height(tileHeight * rowCount + ShelfRowGap * (rowCount - 1)),
                 contentPadding = PaddingValues(horizontal = LibraryEdge),
                 horizontalArrangement = Arrangement.spacedBy(ShelfTileGap),
                 verticalArrangement = Arrangement.spacedBy(ShelfRowGap),
