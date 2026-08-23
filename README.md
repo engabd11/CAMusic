@@ -697,21 +697,22 @@ later phase again.
 - [ ] **On-device verification of the newest work.** The playback chain is confirmed on hardware.
       What is not: the driving bar's window behaviour, the MediaProjection consent and
       foreground-service ordering (which has no compile-time signal if it is wrong), the
-      announcement drain caps, and the remote-speaker show's timing against a real cast group.
-      Several of these can only be judged by eye, one only in a car, and the speed alert only on a
-      road.
+      announcement drain caps, the remote-speaker show's timing against a real cast group, and
+      Android Auto end to end (browse tree, search, and — the one that matters most — that a track
+      tapped in the car never starts playing on a speaker in another room). Several of these can
+      only be judged by eye, one only in a car, and the speed alert only on a road.
 - [ ] **True overlapping crossfade** on the standalone path — a second ExoPlayer ping-ponged with
       volume ramps, moving queue ownership and touching ReplayGain, the notification, and the
       analysis tap. The shipped smooth transitions and beat-matched crossfade are the first two
       halves; this is the third.
-- [ ] **Android Auto** — media3-session is already a dependency and the `MediaSession` exists.
-      Both media services are plain `Service`s though, so the work is a `MediaLibraryService` and a
-      browse tree, not just a manifest line. It overlaps driving mode in purpose but not in reach:
-      Auto only helps cars that have it, which is exactly the case driving mode exists to cover.
+- [ ] **Android Auto — built, not yet verified in a car.** A `CarMediaLibraryService` browse tree
+      and a session facade (`CarSessionPlayer`, in the same spirit as `SendspinService`'s
+      `ShadePlayer`) sit beside the two existing media services rather than replacing either.
+      Browses every configured library server; a track tapped in the car always plays on *this
+      phone*, never a remote MA speaker, whichever one the Speakers screen has selected. Untested
+      beyond compilation — wants a Desktop Head Unit pass and, ideally, a real head unit.
 - [ ] **The Oboe silence** — [PR #59](https://github.com/engabd11/CAMusic/pull/59), closed
       unresolved. Blocks nothing; the path is opt-in and off.
-- [ ] **Music Assistant gapless** — MA treats gapless as crossfade, so there is no server switch to
-      ask for: joining two streams without a seam is client-side work here.
 - [ ] **How often a room gesture actually fires.** The detector shipped in v0.9.1 and is
       deliberately strict; what is unmeasured is how much real music contains a traversal it should
       find. Every detection is logged whether or not the lights move, so an album and

@@ -75,6 +75,16 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
     <!--
+      Android Auto. Not required for Auto to bind to CarMediaLibraryService (Auto
+      queries this app, not the other way round) - only for this app's own code to
+      be able to ask PackageManager whether Gearhead is installed, under Android
+      11+ package-visibility rules, should that ever be useful.
+    -->
+    <queries>
+        <package android:name="com.google.android.projection.gearhead" />
+    </queries>
+
+    <!--
       Predictive back: targetSdk 36 expects an app to have opted in, and the M3
       motion work below relies on the back gesture being animated rather than
       cutting straight to the previous screen.
@@ -199,6 +209,32 @@
             android:name=".service.LocalPlaybackService"
             android:foregroundServiceType="mediaPlayback"
             android:exported="false">
+        </service>
+
+        <!--
+          Android Auto's browse tree and session, distinct from the two services
+          above: those come and go with playback, but Auto needs something bound
+          and queryable (browse, search) whether or not anything is currently
+          playing. Decodes nothing itself - see CarMediaLibraryService's own doc.
+          Exported because that is how Auto's MediaBrowserService binder reaches it.
+        -->
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+
+        <service
+            android:name=".car.CarMediaLibraryService"
+            android:foregroundServiceType="mediaPlayback"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="androidx.media3.session.MediaLibraryService" />
+                <action android:name="android.media.browse.MediaBrowserService" />
+            </intent-filter>
+            <!-- "Hey Google, play X in CAMusic" - routes through the same
+                 onSetMediaItems/CarLibraryBridge.play() path as a browse tap. -->
+            <intent-filter>
+                <action android:name="android.media.action.MEDIA_PLAY_FROM_SEARCH" />
+            </intent-filter>
         </service>
 
         <!--
