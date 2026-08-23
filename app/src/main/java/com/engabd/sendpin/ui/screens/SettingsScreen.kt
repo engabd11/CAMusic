@@ -16,6 +16,12 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -31,6 +37,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ui.design.LocalAccent
+import com.engabd.sendpin.ui.design.LocalPalette
+import com.engabd.sendpin.ui.design.Motion
 import com.engabd.sendpin.ui.design.navBarInset
 import com.engabd.sendpin.ui.screens.settings.*
 import com.engabd.sendpin.ui.theme.*
@@ -216,11 +224,17 @@ fun SettingsScreen(
                     // knows what "Downloads" means; what they do not know is whether
                     // theirs are taking a gigabyte or whether the bridge ever paired.
                     items(SettingsSection.entries, key = { it.name }, contentType = { "category" }) { s ->
+                        // Each row takes its own swatch from the album palette, the same
+                        // way the library's category tiles do — so eight rows read as a
+                        // set of places rather than eight repetitions of one accent, and
+                        // both screens are visibly tinted by the record on the player.
+                        val hue = LocalPalette.current.swatch(s.ordinal)
+                        val tint by animateColorAsState(hue, Motion.effects(), label = "sectionHue")
                         // Stats opens its own full-screen view rather than a settings sub-page.
                         if (s == SettingsSection.STATS) {
-                            NavRow(s.icon, s.title, state.subtitleFor(s) ?: s.subtitle, accent, onClick = onOpenStats)
+                            NavRow(s.icon, s.title, state.subtitleFor(s) ?: s.subtitle, tint, onClick = onOpenStats)
                         } else {
-                            NavRow(s.icon, s.title, state.subtitleFor(s) ?: s.subtitle, accent) {
+                            NavRow(s.icon, s.title, state.subtitleFor(s) ?: s.subtitle, tint) {
                                 onSection(s); onDetail(null)
                             }
                         }
@@ -228,7 +242,18 @@ fun SettingsScreen(
                 } else {
                     // One item per section: each is a page of cards, and a page is not
                     // a list worth recycling. The index above is, and gets `items`.
-                    item(key = section.name) {
+                    // Keyed on the section, not on `section.name`, so drilling from one
+                    // section into another — which the Libraries page can do — is a
+                    // transition rather than a redraw of a slot that never changed.
+                    item(key = "section") {
+                        AnimatedContent(
+                            targetState = section,
+                            transitionSpec = {
+                                fadeIn(Motion.fadeThroughIn()) togetherWith
+                                    fadeOut(Motion.fadeThroughOut()) using SizeTransform(clip = false)
+                            },
+                            label = "settingsSection",
+                        ) { section ->
                         when (section) {
                             SettingsSection.LIBRARIES -> LibrariesSection(
                                 settings = settings,
@@ -256,16 +281,18 @@ fun SettingsScreen(
                                 onHaToken = { haToken = it },
                             )
 
-                            SettingsSection.STATS -> {
-                                // STATS is handled via onOpenStats callback in the index view
-                                // This branch should never be reached
-                            }
+                            // No STATS branch. It is intercepted in the index above and
+                            // opens its own full-screen view, so it never arrives here —
+                            // the branch that used to sit here said so in a comment and
+                            // was otherwise empty.
+                            SettingsSection.STATS -> Unit
 
                             SettingsSection.BACKUP -> BackupSection(settings, accent, scope)
 
                             SettingsSection.APPEARANCE -> AppearanceSection(settings, accent, scope)
 
                             SettingsSection.ABOUT -> AboutSection(accent, onOpenStats)
+                        }
                         }
                     }
                 }

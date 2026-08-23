@@ -59,6 +59,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
@@ -360,16 +361,18 @@ private const val FLIP_SHADOW_LIFT = 0.9f
  * composed, so the width has to be handed back by measuring wider and placing left.
  */
 fun Modifier.bleed(horizontal: Dp) = layout { measurable, constraints ->
-    val extra = horizontal.roundToPx() * 2
-    val width = constraints.maxWidth + extra
-    val placeable = measurable.measure(
-        constraints.copy(minWidth = width, maxWidth = width),
-    )
+    // Nothing to bleed back out of. An unbounded parent never imposed a margin, and
+    // widening infinity is not a width — it is a crash a few frames later.
+    if (constraints.maxWidth == Constraints.Infinity) {
+        val placeable = measurable.measure(constraints)
+        return@layout layout(placeable.width, placeable.height) { placeable.place(0, 0) }
+    }
+    val inset = horizontal.roundToPx()
+    val width = constraints.maxWidth + inset * 2
+    val placeable = measurable.measure(constraints.copy(minWidth = width, maxWidth = width))
     // Reports the original width, so the parent's own layout is untouched — only the
     // painting and the touch area extend past it.
-    layout(constraints.maxWidth, placeable.height) {
-        placeable.place(-horizontal.roundToPx(), 0)
-    }
+    layout(constraints.maxWidth, placeable.height) { placeable.place(-inset, 0) }
 }
 
 // --- colour ---------------------------------------------------------------
