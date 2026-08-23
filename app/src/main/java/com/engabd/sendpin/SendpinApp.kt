@@ -15,6 +15,7 @@ import com.engabd.sendpin.ma.MaApiClient
 import com.engabd.sendpin.service.AppLifecycleObserver
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.data.Http
+import com.engabd.sendpin.data.Platform
 import com.engabd.sendpin.service.LocalPlaybackService
 import com.engabd.sendpin.service.MaNowPlaying
 import com.engabd.sendpin.service.Playback
@@ -313,18 +314,27 @@ class SendpinApp : Application(), ImageLoaderFactory {
         // Register the process lifecycle observer for warm reconnect and
         // toggleable background connection (TTS battery saver).
         AppLifecycleObserver.register(this)
-        // Touched here so its Bluetooth receiver is registered from process start.
-        // Lazily built, it would only begin watching once something asked — and the
-        // thing it is watching for is the car connecting, which happens before any
-        // screen opens.
-        drivingMode
-        usbDacMonitor.start()
-        // Opt-in, unlike the two above: only starts if a previous run already had
-        // both the setting on and the permission granted. `CallPauseObserver.start`
-        // itself no-ops without the permission, so this is safe to call blind — and
-        // it runs off the main thread rather than blocking onCreate on a DataStore read.
-        appScope.launch { if (AppSettings(this@SendpinApp).pauseForCalls.first()) callPauseObserver.start() }
-        speedMonitor.start()
+        // Driving mode, the USB DAC toast, call-pause and the speed alert are all
+        // phone-in-your-pocket-or-car concepts with no TV equivalent — and the "tv"
+        // flavor's manifest no longer declares the Bluetooth/phone-state/location
+        // permissions two of them assume, so touching these on TV risks a
+        // SecurityException rather than a graceful no-op. All four are `by lazy`,
+        // so skipping them here means never constructing them, not just leaving
+        // them idle.
+        if (!Platform.isTelevision(this)) {
+            // Touched here so its Bluetooth receiver is registered from process start.
+            // Lazily built, it would only begin watching once something asked — and the
+            // thing it is watching for is the car connecting, which happens before any
+            // screen opens.
+            drivingMode
+            usbDacMonitor.start()
+            // Opt-in, unlike the two above: only starts if a previous run already had
+            // both the setting on and the permission granted. `CallPauseObserver.start`
+            // itself no-ops without the permission, so this is safe to call blind — and
+            // it runs off the main thread rather than blocking onCreate on a DataStore read.
+            appScope.launch { if (AppSettings(this@SendpinApp).pauseForCalls.first()) callPauseObserver.start() }
+            speedMonitor.start()
+        }
         // The storage cap evicts oldest-first, and the one file it must never take is
         // the one being listened to. Published here rather than looked up inside the
         // download manager, which has no business holding a reference to the player.

@@ -58,6 +58,27 @@ android {
         }
     }
 
+    // Two installable apps from one source tree. "mobile" is everything that exists
+    // today — its own AndroidManifest.xml is app/src/main's, unchanged. "tv" adds an
+    // app/src/tv source set (its own manifest overlay, its own Activity/Compose
+    // screens) while compiling the exact same app/src/main business logic — every
+    // ViewModel, the whole audio-tap/Hue-sync pipeline, all of it. See
+    // SendpinApp.kt's Platform.isTelevision guard for the few phone-only features
+    // (driving mode, USB DAC toasts) that opt out at runtime instead of being split
+    // into a separate source set.
+    flavorDimensions += "platform"
+    productFlavors {
+        create("mobile") {
+            dimension = "platform"
+            // Lets Studio/AGP pick a buildable variant without prompting - this is
+            // the flavor every existing release has shipped as.
+            isDefault = true
+        }
+        create("tv") {
+            dimension = "platform"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -237,6 +258,16 @@ dependencies {
     implementation("androidx.room:room-runtime:$roomVersion")
     implementation("androidx.room:room-ktx:$roomVersion")
     ksp("androidx.room:room-compiler:$roomVersion")
+
+    // D-pad focus affordance (scale/glow on the focused item) for the "tv" flavor's
+    // screens. Stock Compose Foundation's LazyRow/LazyColumn/LazyVerticalGrid (used
+    // throughout the phone UI already, e.g. LibraryScreen.kt) already handle D-pad
+    // scroll/focus traversal - what they don't give components built for touch (see
+    // ui/design/SendspinDesign.kt) is the focused-item visual feedback TV UX expects,
+    // which is what this library's Card/Button ship tuned out of the box. Only the
+    // *components* are used from it - theming stays SendspinTheme's, via
+    // tv/design/TvDesign.kt's wrappers, so TV screens still read as this app.
+    "tvImplementation"("androidx.tv:tv-material:1.1.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")

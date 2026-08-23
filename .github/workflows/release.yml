@@ -14,11 +14,15 @@ name: Build APK
 #
 # Releases are therefore cut locally, where the keystore is stable:
 #
-#     ./gradlew assembleDebug
+#     ./gradlew assembleMobileRelease assembleTvRelease
 #     gh release create vX.Y.Z --prerelease \
 #       --title "$(head -n1 docs/release-notes/vX.Y.Z.md)" \
 #       --notes-file <(tail -n +2 docs/release-notes/vX.Y.Z.md) \
-#       app/build/outputs/apk/debug/app-debug.apk
+#       app/build/outputs/apk/mobile/release/app-mobile-release.apk#camusic-vX.Y.Z-mobile.apk \
+#       app/build/outputs/apk/tv/release/app-tv-release.apk#camusic-vX.Y.Z-tv.apk
+#
+# (the #label suffix renames the uploaded asset - both release APKs are otherwise
+# named app-*-release.apk and easy to grab the wrong one of when sideloading.)
 #
 # To publish from CI instead, commit a dedicated keystore to GitHub Actions secrets
 # and add a signingConfig that uses it, so every build — local and CI — shares one
@@ -49,21 +53,24 @@ jobs:
       # assembleDebug never touches the test sources, so a branch could go green
       # with tests that don't even compile. Run them here too.
       - name: Run unit tests
-        run: ./gradlew :app:testDebugUnitTest
+        run: |
+          ./gradlew :app:testMobileDebugUnitTest
+          ./gradlew :app:testTvDebugUnitTest
 
-      - name: Build debug APK
-        run: ./gradlew assembleDebug
+      - name: Build debug APKs
+        run: ./gradlew assembleMobileDebug assembleTvDebug
 
-      - name: Name the APK
+      - name: Name the APKs
         id: name
         run: |
           set -euo pipefail
           version=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts)
           mkdir -p dist
-          cp app/build/outputs/apk/debug/app-debug.apk "dist/sendspin-${version}-debug.apk"
+          cp app/build/outputs/apk/mobile/debug/app-mobile-debug.apk "dist/sendspin-${version}-mobile-debug.apk"
+          cp app/build/outputs/apk/tv/debug/app-tv-debug.apk "dist/sendspin-${version}-tv-debug.apk"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
-      - name: Upload APK artifact
+      - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
         with:
           name: sendspin-${{ steps.name.outputs.version }}-debug-${{ github.sha }}

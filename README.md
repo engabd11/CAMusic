@@ -427,7 +427,10 @@ Only notifications is asked for by an install that uses nothing optional.
 
 ## Setup
 
-1. Install the APK from [Releases](https://github.com/engabd11/CAMusic/releases).
+1. Install the APK from [Releases](https://github.com/engabd11/CAMusic/releases). Each release
+   carries two: `camusic-vX.Y.Z-mobile.apk` for phones and tablets, and `camusic-vX.Y.Z-tv.apk`
+   for Android TV / Google TV. Sideload the TV one with `adb install`; it appears in the TV
+   launcher's apps row.
 2. The **onboarding wizard** asks where your music lives: Music Assistant, Navidrome, Jellyfin,
    or local files on the device. Credentials are encrypted at rest with the Android Keystore.
 3. Optional steps in the same wizard: set up Philips Hue light sync (direct to bridge and/or through
@@ -441,6 +444,19 @@ Only notifications is asked for by an install that uses nothing optional.
 5. Optional, and worth two minutes if you drive: **Settings → Playback & audio → Driving**. Turn it
    on, pick your car from the phone's paired devices, and the transport appears over the map
    whenever you connect to it and something is playing.
+
+### On Android TV
+
+The TV build is the same app behind D-pad screens: Now Playing, Library, Queue, Light Sync and
+Settings, with its own first-run wizard. It plays from the same four sources and drives the same
+direct-to-bridge Hue light show from CAMusic's own playback, and both a library and a Hue bridge
+can be set up entirely from the remote under **Settings**.
+
+What is not on TV: lighting up to **other apps'** audio (the `MediaProjection` capture path is not
+part of the TV build, and the permission behind it is stripped from its manifest), Home Assistant
+as a light-sync transport, and the Downloads, DSP, Stats and Speakers screens. Driving mode, the
+call-pause and the speed alert are absent for the obvious reason — a television does not move,
+take calls, or ride in a car — so the TV install asks for none of the permissions those need.
 
 ---
 
@@ -803,18 +819,28 @@ are required** — the native Oboe output engine in `app/src/main/cpp/` is part 
 though the path it feeds is off by default. (The README said "no NDK needed" for several releases
 after that stopped being true.)
 
+`:app` has a **`platform` flavor dimension** — `mobile` (phone/tablet) and `tv` (Android TV).
+Both compile the same `app/src/main`; `app/src/tv` adds a manifest overlay and its own Compose
+screens. Task names carry the flavor, so `lintDebug` and `installRelease` no longer exist on
+their own — use `lintMobileDebug`, `installMobileRelease`, and so on. `mobile` is the default
+variant, and it is what every release up to and including v0.10.6 shipped as.
+
 ```bash
-./gradlew assembleRelease        # app/build/outputs/apk/release/app-release.apk
-./gradlew :app:testDebugUnitTest # 810 unit tests
-./gradlew :app:lintDebug
+./gradlew assembleMobileRelease  # app/build/outputs/apk/mobile/release/app-mobile-release.apk
+./gradlew assembleTvRelease      # app/build/outputs/apk/tv/release/app-tv-release.apk
+./gradlew :app:testMobileDebugUnitTest # 810 unit tests
+./gradlew :app:testTvDebugUnitTest     # the same tests, compiled against the tv variant
+./gradlew :app:lintMobileDebug :app:lintTvDebug
 ```
 
-CI runs exactly `:app:testDebugUnitTest`, `:app:lintDebug` and `assembleDebug` — run that set
+CI runs exactly those four tasks plus `assembleMobileDebug assembleTvDebug` — run that set
 before pushing rather than a superset. `assembleRelease` looks stricter and is not:
-its `lintVital` only reports issues marked fatal, so it will happily pass a `lintDebug` error.
+its `lintVital` only reports issues marked fatal, so it will happily pass a `lintMobileDebug`
+error. The two `test…UnitTest` tasks run the same `app/src/test` sources against each variant;
+running only one lets a flavor-specific compile break through.
 
 ```bash
-./gradlew :app:connectedDebugAndroidTest   # instrumented tests; needs a device
+./gradlew :app:connectedMobileDebugAndroidTest   # instrumented tests; needs a device
 ```
 
 Judge anything about how the app *feels* on a release build. A debug build carries Compose
@@ -822,10 +848,16 @@ composition tracing, skips R8, and runs `debuggable`, which suppresses most of A
 — scroll performance measured on one is measuring the build, not the app.
 
 ```bash
-./gradlew :app:installRelease -PsideBySide   # installs alongside, own empty data
-./gradlew :app:generateBaselineProfile       # needs a device; WIPES app data
-./gradlew :app:compileReleaseKotlin -PcomposeMetrics   # skippability reports
+./gradlew :app:installMobileRelease -PsideBySide   # installs alongside, own empty data
+./gradlew :app:installTvRelease                    # sideload the TV build onto a box/emulator
+./gradlew :app:generateMobileBaselineProfile       # needs a device; WIPES app data
+./gradlew :app:compileMobileReleaseKotlin -PcomposeMetrics   # skippability reports
 ```
+
+The baseline profile is generated against `mobile` on purpose: `baselineprofile/`'s
+`LibraryScrollProfile` drives phone UI journeys, and the checked-in profile lives in the
+`release` **build-type** source set (`app/src/release/generated/`), so both flavors' release
+builds already consume it.
 
 Releases are cut locally. See the header of
 `.github/workflows/release.yml`.

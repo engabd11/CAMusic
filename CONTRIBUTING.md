@@ -96,11 +96,12 @@ app/src/main/
 - **Unit tests:** `app/src/test/` (JUnit + MockK) — 538 tests across 69 classes
 - **Instrumented tests:** `app/src/androidTest/` (AndroidX Test)
 - **NDK and CMake are required** — the native Oboe output engine in `app/src/main/cpp/` is part of the build
-- **Run:** `./gradlew :app:testDebugUnitTest` or `./gradlew :app:connectedDebugAndroidTest`
+- **Run:** `./gradlew :app:testMobileDebugUnitTest` or `./gradlew :app:connectedMobileDebugAndroidTest`
+- **Flavors:** `:app` builds `mobile` and `tv`. CI runs the unit tests against both — `./gradlew :app:testTvDebugUnitTest` as well, before pushing
 
 ## Pull Requests
 
-1. Ensure your code compiles: `./gradlew assembleDebug`
+1. Ensure your code compiles: `./gradlew assembleMobileDebug assembleTvDebug`
 2. Add tests for new functionality
 3. Update documentation if needed
 4. Open a PR against the `master` branch
