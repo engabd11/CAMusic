@@ -59,6 +59,7 @@ class SendspinSyncDataSource(
 
     override fun awaitNextFrame(): ByteArray? {
         while (true) {
+            if (isAbandoned()) return null
             if (!decided) {
                 when (headGateDecide()) {
                     HeadGateDecision.HOLD -> {
@@ -115,26 +116,32 @@ class SendspinSyncDataSource(
 
     /**
      * Block until [targetLocalUs] is due. False if it's already too late to be worth
-     * playing, or if the stream was ended out from under this wait.
+     * playing, or if the tail was *abandoned* out from under this wait.
      *
-     * That second case is what a pause or a seek looks like from in here: both
-     * arrive as `stream/end`/`stream/clear` on [SendspinExoEngine]'s ingest
-     * coroutine, which calls [SendspinDataSource.discardQueued] and
-     * [SendspinDataSource.signalEndOfStream] on a *different* thread than this one.
-     * `discardQueued` only reaches frames still sitting in the queue - it does
-     * nothing for the one already popped out and being waited on right here, and
-     * without this check the wait ran to completion regardless: a frame scheduled
+     * That second case is what a pause or a seek looks like from in here: both reach
+     * [SendspinDataSource.discardQueued] on [SendspinExoEngine]'s ingest coroutine, a
+     * *different* thread than this one. `discardQueued` only empties the queue - it
+     * does nothing for the frame already popped out and being waited on right here,
+     * and without this check the wait ran to completion regardless: a frame scheduled
      * [MAX_LEAD_US] out held pause silent for that long, no matter how loudly the
      * queue behind it had already been told to stop. Checked once per sleep slice
-     * (~20ms), so an end signal is noticed almost immediately instead of at the
-     * frame's original, now-irrelevant schedule.
+     * (~20ms), so a discard is noticed almost immediately instead of at the frame's
+     * original, now-irrelevant schedule.
+     *
+     * It tested [isEndOfStreamSignalled] until 0.10.6, which is a different question
+     * and the wrong one. `stream/end` also arrives at a track boundary and at the end
+     * of an announcement, where the tail is exactly what the listener still wants -
+     * and it aborted the schedule of every frame behind it, so the caller's `continue`
+     * walked the whole tail dropping it a frame at a time. The "let it play out" path
+     * 0.10.5 added could therefore never play anything out on a grouped stream: it
+     * signalled the end, and the signal itself threw the audio away.
      */
     private fun waitUntilDue(targetLocalUs: Long): Boolean {
         var waitUs = targetLocalUs - clock.nowUs()
         if (waitUs < -LATE_TOLERANCE_US) return false
         if (waitUs > MAX_LEAD_US) return true // implausible: don't stall on it
         while (waitUs > 0) {
-            if (isEndOfStreamSignalled()) return false
+            if (isAbandoned()) return false
             val slice = waitUs.coerceAtMost(20_000L)
             try {
                 Thread.sleep(slice / 1_000L, ((slice % 1_000L) * 1_000L).toInt())

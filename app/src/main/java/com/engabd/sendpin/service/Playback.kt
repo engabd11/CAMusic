@@ -31,6 +31,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.JsonObject
@@ -182,6 +183,16 @@ class Playback(private val app: Context) {
 
     /** The last player state MA reported for this phone, and when. */
     @Volatile private var lastPlayerState: Pair<String, Long>? = null
+
+    /**
+     * The last `announcement_in_progress` MA reported for this phone, and when.
+     *
+     * Music Assistant's own answer to the question [StreamClassifier] otherwise has to
+     * infer, and the only one that is right in the case that matters: MA ends the
+     * music stream and starts the announcement immediately after, which is
+     * indistinguishable from a track boundary by timing alone.
+     */
+    @Volatile private var lastAnnouncement: Pair<Boolean, Long>? = null
 
     /** When the previous stream ended, so a track boundary can be recognised. */
     @Volatile private var lastStreamEndAtMs: Long? = null
@@ -634,7 +645,10 @@ class Playback(private val app: Context) {
                 // before prepare(). See [StreamClassifier].
                 val now = SystemClock.elapsedRealtime()
                 val state = lastPlayerState
+                val announcing = lastAnnouncement
                 streamKind = StreamClassifier.classify(
+                    announcementInProgress = announcing?.first,
+                    announcementFlagAgeMs = announcing?.let { now - it.second } ?: Long.MAX_VALUE,
                     queueState = state?.first,
                     queueStateAgeMs = state?.let { now - it.second } ?: Long.MAX_VALUE,
                     msSincePreviousStreamEnd = lastStreamEndAtMs?.let { now - it },
@@ -663,6 +677,10 @@ class Playback(private val app: Context) {
                 // tail is worth depends entirely on which, so ask.
                 val endedAt = SystemClock.elapsedRealtime()
                 lastStreamEndAtMs = endedAt
+                // Stamped now, while it is still unambiguous which stream ended. By
+                // the time the drain finishes, the engine may be playing a different
+                // one — see [SendspinPlaybackEngine.currentStreamId].
+                val endedStreamId = eng.currentStreamId
                 val plan = StreamEndPolicy.decide(
                     nowMs = endedAt,
                     localPauseAtMs = localPauseAtMs,
@@ -672,7 +690,7 @@ class Playback(private val app: Context) {
                 eng.endOfStream(drain = plan.action == TailAction.DRAIN)
                 tailJob?.cancel()
                 if (plan.action == TailAction.DRAIN) {
-                    tailJob = scope.launch { drainTail(eng, endedAt, plan) }
+                    tailJob = scope.launch { drainTail(eng, endedAt, plan, endedStreamId) }
                 }
                 idleJob?.cancel()
                 idleJob = scope.launch {
@@ -736,12 +754,31 @@ class Playback(private val app: Context) {
             api.events.collect { raw ->
                 val ev = MaParse.event(raw) ?: return@collect
                 if (!ev.name.startsWith("player") || ev.objectId != playerId) return@collect
-                val state = (ev.data as? JsonObject)
-                    ?.get("state")?.let { (it as? JsonPrimitive)?.contentOrNull }
-                    ?: return@collect
+                val data = ev.data as? JsonObject ?: return@collect
                 val now = SystemClock.elapsedRealtime()
+                val announcing = (data["announcement_in_progress"] as? JsonPrimitive)?.booleanOrNull
+                if (announcing != null) lastAnnouncement = announcing to now
+                // `playback_state` is the key a serialised MA player carries — the same
+                // one `MaParse.players` has always read. This collector was written
+                // against `state`, which no current build sends, so every event fell
+                // out at the elvis below and none of the three fields under "telling a
+                // pause from an ending" was ever written: no stream was ever
+                // classified as an announcement, no pause from another controller was
+                // ever noticed, and every `stream/end` took the not-a-pause branch by
+                // default. `state` stays as a fallback for older servers.
+                val state = (data["playback_state"] ?: data["state"])
+                    ?.let { (it as? JsonPrimitive)?.contentOrNull }
+                    ?: return@collect
                 lastPlayerState = state to now
-                if (!state.equals("playing", ignoreCase = true)) remotePausedAtMs = now
+                // Not while announcing. MA pauses the queue to make room for the clip,
+                // so this is the announcement's own pause rather than the listener's,
+                // and counting it discarded the announcement's tail. See
+                // [StreamEndPolicy.decide], which ignores it a second time for the
+                // same reason — belt and braces, because the flag is not on every
+                // build and the state is.
+                if (!state.equals("playing", ignoreCase = true) && announcing != true) {
+                    remotePausedAtMs = now
+                }
             }
         }
         scope.launch { settings.duckAnnouncements.collect { duckAnnouncements = it } }
@@ -1010,33 +1047,43 @@ class Playback(private val app: Context) {
     /**
      * Let the tail finish, then cut it.
      *
-     * Three ways out, in the order they are hoped for:
+     * Four ways out — see [StreamEndPolicy.DrainStep], which holds the decision so the
+     * whole table can be exercised without a device. The one that is not a cut is
+     * [StreamEndPolicy.DrainStep.SUPERSEDED], and it is the important one: a tail
+     * outlives its own stream, so by the time this fires the engine may be playing
+     * something else. Cancelling the job on `stream/start` is not enough on its own —
+     * `cancel()` is only observed at a suspension point, and there is none between the
+     * last check and the cut — so the cut names the stream it belongs to and the
+     * engine drops it if that stream is gone.
      *
-     * 1. **The queue runs dry.** What an announcement or a track that genuinely ended
-     *    does, usually within a few hundred milliseconds. The audio is complete.
-     * 2. **A pause lands inside the grace window.** A remote controller pausing at
-     *    almost the same moment; converted to a discard so it still feels immediate.
-     * 3. **The cap expires.** The safety net. Reached only when the server keeps
-     *    holding a backlog it never sends the end of.
-     *
-     * A new `stream/start` cancels this job outright, which is the gapless case: the
-     * next track supersedes the tail rather than waiting behind it.
+     * What it waits *for* is the engine's own end of playback rather than an empty
+     * frame queue. The queue running dry means the bytes have been handed to
+     * ExoPlayer, not that they have been heard: up to a second of decoded audio is
+     * still in the sink at that moment, and muting on it took roughly that much off
+     * the end of every announcement — the bug the drain was written to fix, still
+     * there afterwards because the drain was reading the wrong signal.
      */
-    private suspend fun drainTail(eng: SendspinPlaybackEngine, endedAt: Long, plan: TailPlan) {
-        val deadline = endedAt + plan.capMs
-        while (SystemClock.elapsedRealtime() < deadline) {
-            if (eng.queuedFrames == 0) break
-            val paused = remotePausedAtMs?.let { it >= endedAt } == true ||
-                localPauseAtMs?.let { it >= endedAt } == true
-            if (paused &&
-                SystemClock.elapsedRealtime() - endedAt <= StreamEndPolicy.REMOTE_PAUSE_GRACE_MS &&
-                StreamEndPolicy.revise(plan, true) == TailAction.DISCARD
-            ) {
-                break
-            }
+    private suspend fun drainTail(
+        eng: SendspinPlaybackEngine,
+        endedAt: Long,
+        plan: TailPlan,
+        streamId: Long,
+    ) {
+        while (true) {
+            val step = StreamEndPolicy.drainStep(
+                nowMs = SystemClock.elapsedRealtime(),
+                endedAt = endedAt,
+                plan = plan,
+                isCurrentStream = eng.isCurrentStream(streamId),
+                hasPlayedOut = eng.hasPlayedOut(streamId),
+                localPausedSinceEnd = localPauseAtMs?.let { it >= endedAt } == true,
+                remotePausedSinceEnd = remotePausedAtMs?.let { it >= endedAt } == true,
+            )
+            if (step == StreamEndPolicy.DrainStep.SUPERSEDED) return
+            if (step != StreamEndPolicy.DrainStep.WAIT) break
             delay(TAIL_POLL_MS)
         }
-        eng.cutTail()
+        eng.cutTail(streamId)
     }
 
     private val maRepo by lazy { MaRepository((app.applicationContext as SendpinApp).maApi) }
