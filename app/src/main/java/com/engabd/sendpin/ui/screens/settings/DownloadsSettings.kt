@@ -47,7 +47,7 @@ internal fun DownloadsSection(
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         SettingsCard(
             title = "On this phone",
-            lead = "Original files, not transcodes — a downloaded track plays at the quality it " +
+            lead = "Original files, not transcodes, so a downloaded track plays at the quality it " +
                 "was stored at, with or without a network.",
         ) {
             StatusPanel {
@@ -100,10 +100,10 @@ internal fun DownloadsSection(
             }
             Note(
                 if (capMb > 0)
-                    "The oldest downloads are deleted once the total goes past the limit — never " +
+                    "The oldest downloads are deleted once the total goes past the limit, never " +
                         "the one currently playing."
                 else
-                    "No limit — downloads are only removed when you delete them.",
+                    "No limit, downloads are only removed when you delete them.",
             )
         }
 

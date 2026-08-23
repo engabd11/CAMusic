@@ -323,7 +323,7 @@ private data class SettingsOverview(
     /** The live line for [section], or null to fall back to its written description. */
     fun subtitleFor(section: SettingsSection): String? = when (section) {
         SettingsSection.LIBRARIES -> when {
-            servers == 0 -> "No music library yet — start here"
+            servers == 0 -> "No music library yet, start here"
             else -> listOfNotNull(activeLibrary, libraryStatus).joinToString(" · ")
                 .takeIf { it.isNotBlank() }
         }
@@ -372,7 +372,7 @@ private fun rememberSettingsOverview(
         libraryStatus = when {
             active == null -> null
             connecting -> "Connecting…"
-            offline -> "Offline — playing downloads"
+            offline -> "Offline, playing downloads"
             ready -> "Connected"
             else -> "Not connected"
         },
@@ -400,8 +400,12 @@ private fun GetStartedCard(accent: androidx.compose.ui.graphics.Color, onAddLibr
         title = "Start here",
         lead = "Add a library and the rest of the app comes alive.",
         info = "CAMusic plays your own music, from your own server. Music Assistant drives " +
-            "speakers around the house; Navidrome, Subsonic or Jellyfin play on this phone, " +
-            "with downloads that work with no network at all.",
+            "speakers around the house and keeps one queue across them. Navidrome, Subsonic and " +
+            "Jellyfin play on this phone, with downloads that work with no network at " +
+            "all.\n\nYou can add more than one and switch between them. Nothing gets thrown " +
+            "away when you do.\n\nTip: if you are not sure which you have, start with the " +
+            "server you already sign in to from a browser. Music Assistant is the one with a " +
+            "speakers page.",
     ) {
         OledButton("Add a music library", accent = accent, onClick = onAddLibrary)
     }
@@ -469,8 +473,12 @@ private fun BackupSection(settings: AppSettings, accent: Color, scope: Coroutine
     SettingsCard(
         title = "Backup & restore",
         lead = "Every setting, including saved servers, to an encrypted file.",
-        info = "Export one here and restore it on a new install. The password is yours alone " +
-            "— it is not stored anywhere and there is no way to recover a backup without it.",
+        info = "Export every setting, saved servers and their logins included, to a single " +
+            "encrypted file. Restore it on a new install and the app comes back exactly as it " +
+            "was.\n\nThe password is yours alone. It is not stored anywhere, not in the file " +
+            "and not on this phone, so there is no way to recover a backup without it.\n\nTip: " +
+            "take one before changing servers or reinstalling. It is the only copy of your Hue " +
+            "pairing, which otherwise means pressing the button on the bridge again.",
     ) {
         OledButton(text = "Export settings", accent = accent, outline = true) { exportPrompt = true }
         Spacer(Modifier.height(8.dp))
@@ -483,7 +491,7 @@ private fun BackupSection(settings: AppSettings, accent: Color, scope: Coroutine
     if (exportPrompt) {
         PasswordPromptDialog(
             title = "Export settings",
-            note = "This password encrypts the file. Choose one you'll remember — it can't be reset.",
+            note = "This password encrypts the file. Choose one you'll remember, it can't be reset.",
             confirmLabel = "Export",
             onDismiss = { exportPrompt = false },
             onConfirm = { password ->
@@ -510,7 +518,7 @@ private fun BackupSection(settings: AppSettings, accent: Color, scope: Coroutine
                         if (text == null) {
                             "Import failed: couldn't read that file"
                         } else if (settings.importSettings(text, password)) {
-                            "Imported — restart the app for everything to take effect"
+                            "Imported, restart the app for everything to take effect"
                         } else {
                             "Import failed: wrong password, or not a CAMusic backup"
                         }

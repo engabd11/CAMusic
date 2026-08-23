@@ -82,9 +82,10 @@ internal fun LightSyncSection(
         SettingsCard(
             title = "How the lights hear the music",
             lead = "Two ways to drive them. Which is right follows where the audio comes out.",
-            info = "This page is only about the route between the music and the bulbs.\n\n" +
-                "The show itself — which room, how hard it reacts, the effect, the colours — " +
-                "lives on the Lights tab.",
+            info = "This page is only about the route between the music and the bulbs.\n\nThe show " +
+                "itself, meaning which room, how hard it reacts, the effect and the colours, " +
+                "lives on the Lights tab.\n\nTip: get the route working here first. Nothing on " +
+                "the Lights tab will do anything until this page reports a connection.",
         ) {
             SegmentedToggle(
                 options = listOf("Home Assistant", "Hue Bridge"),
@@ -105,23 +106,30 @@ internal fun LightSyncSection(
                 title = "The two routes",
                 info = if (direct)
                     "The app talks to the Hue Bridge directly over the LAN, with no Home " +
-                        "Assistant in the path at all. It follows this phone's own playback, " +
-                        "so it works with Navidrome and it works offline.\n\n" +
-                        "The trade is that the phone is the only speaker it can follow."
+                        "Assistant in the path at all. It follows this phone's own playback, so " +
+                        "it works with Navidrome and it works offline.\n\nTiming is measured " +
+                        "rather than guessed, so there is no offset to dial in.\n\nThe trade is " +
+                        "that the phone is the only speaker it can follow.\n\nTip: this is the " +
+                        "lower-latency route by a clear margin. Prefer it whenever the music is " +
+                        "coming out of this phone."
                 else
                     "Drives the Hue Synco integration in Home Assistant over its WebSocket " +
-                        "API.\n\n" +
-                        "That can follow any Music Assistant player rather than just this one, " +
-                        "so it works with multi-room grouping — the lights follow the group.",
+                        "API.\n\nThat can follow any Music Assistant player rather than just " +
+                        "this one, so it works with multi-room grouping and the lights follow " +
+                        "the group.\n\nTip: there is more delay on this route, since every " +
+                        "frame goes through Home Assistant. The speaker offset below is how you " +
+                        "take it out.",
             )
             if (auto) {
                 Note(
                     "Chosen automatically from your library.",
                     title = "Following the library",
-                    info = "A library this phone plays uses the bridge directly, because the " +
-                        "audio is here. Music Assistant — which can play anywhere — goes " +
-                        "through Home Assistant, because the audio may not be.\n\n" +
-                        "Picking one above pins it and overrides this.",
+                    info = "A library this phone plays uses the bridge directly, because the audio " +
+                        "is here. Music Assistant, which can play anywhere, goes through Home " +
+                        "Assistant, because the audio may not be.\n\nPicking one above pins it " +
+                        "and stops the library moving it.\n\nTip: leave this on unless you have " +
+                        "a reason not to. It is right in almost every case, and it follows you " +
+                        "when you switch library.",
                 )
             } else {
                 Text(
@@ -167,9 +175,12 @@ private fun HomeAssistantCard(
     SettingsCard(
         title = "Home Assistant",
         lead = "Drives the Hue Synco light-sync integration.",
-        info = "Needs a long-lived access token, which Home Assistant issues under your " +
-            "profile → Security. The token is stored on this phone and sent only to the " +
-            "address above.",
+        info = "Needs a long-lived access token, which Home Assistant issues under your profile, " +
+            "Security, at the bottom of the page.\n\nThe token is stored on this phone and sent " +
+            "only to the address above. It is included in an encrypted settings backup.\n\nTip: " +
+            "the address is the one you use in a browser, port included, for example " +
+            "http://192.168.0.10:8123. If Home Assistant sits behind a reverse proxy, use the " +
+            "internal address rather than the public one.",
     ) {
         OledField(haUrl, { onHaUrl(it); saved = false }, "Home Assistant address", "http://192.168.0.10:8123", accent)
         if (locked) {
@@ -284,10 +295,13 @@ private fun DirectBridgeSetup(settings: AppSettings, scope: CoroutineScope, acce
                     "No bridge found. You can enter its address instead.",
                     warn = true,
                     title = "No bridge found",
-                    info = "Some networks block the discovery protocol this uses, so a bridge " +
-                        "that is working perfectly well can still be invisible here.\n\n" +
-                        "Its address is on the Hue app's Settings → My Hue System screen, or " +
-                        "in your router's list of connected devices.",
+                    info = "Some networks block the discovery protocol this uses, so a bridge that " +
+                        "is working perfectly well can still be invisible here. Guest networks, " +
+                        "and networks with client isolation switched on, are the usual " +
+                        "culprits.\n\nThe bridge's address is on the Hue app's Settings, My Hue " +
+                        "System screen, or in your router's list of connected devices.\n\nTip: " +
+                        "check the phone is on the same network as the bridge and not on a " +
+                        "guest SSID. That is the cause more often than anything else.",
                 )
             }
 
@@ -431,11 +445,12 @@ private fun TrackAnalysisCard(settings: AppSettings, accent: Color) {
     SettingsCard(
         title = "Track analysis",
         lead = "A song that has been read is exact from its first bar.",
-        info = "Reading a track ahead means the beat grid is known rather than found, drops " +
-            "are counted down to instead of noticed a moment late, and Auto can size the room " +
-            "to how hard the song actually goes.\n\n" +
-            "Songs that have not been read still work. They are just learnt as they play, so " +
-            "the first chorus is where the lights catch up.",
+        info = "Reading a track ahead means the beat grid is known rather than found, drops are " +
+            "counted down to instead of noticed a moment late, and Auto can size the room to " +
+            "how hard the song actually goes.\n\nSongs that have not been read still work. They " +
+            "are simply learnt as they play, so the first chorus is where the lights catch " +
+            "up.\n\nTip: run one sweep, on Wi-Fi and on charge. It is the single biggest " +
+            "improvement to the show, and the results are cached, so it is a one-off.",
     ) {
         ToggleRow(
             "Read tracks ahead",
@@ -519,10 +534,11 @@ private fun TrackAnalysisCard(settings: AppSettings, accent: Color) {
         Note(
             "Covers downloads and the library this phone plays.",
             title = "What the sweep covers",
-            info = "Those are the only tracks the direct path ever sees, so they are the only " +
-                "ones worth reading ahead.\n\n" +
-                "It skips anything already analysed, which means stopping it and starting it " +
-                "again picks up where it left off rather than starting over.",
+            info = "Downloads and the library this phone plays. Those are the only tracks the " +
+                "direct path ever sees, so they are the only ones worth reading ahead.\n\nIt " +
+                "skips anything already analysed, so stopping it and starting it again picks up " +
+                "where it left off rather than beginning over.\n\nTip: it is safe to leave " +
+                "running and safe to interrupt. Nothing is lost by stopping it partway.",
         )
     }
 }
@@ -540,11 +556,11 @@ private fun TrackAnalysisCard(settings: AppSettings, accent: Color) {
 @Composable
 private fun PlayingTrackScan(title: String, scan: TrackScan?, accent: Color) {
     val (text, health) = when {
-        scan == null -> "Not analysed yet — the show is working this one out as it plays" to Health.IDLE
-        !scan.gridUsable -> "Analysed, but the beat is unclear — the show tracks it live" to Health.WARN
+        scan == null -> "Not analysed yet, the show is working this one out as it plays" to Health.IDLE
+        !scan.gridUsable -> "Analysed, but the beat is unclear, so the show tracks it live" to Health.WARN
         !scan.complete ->
             "Analysed for the first ${(scan.analysedS / 60f).toInt()} min; the rest is worked out live" to Health.WARN
-        else -> "Analysed — ${scan.bpm.toInt()} BPM, beat grid known from the first bar" to Health.GOOD
+        else -> "Analysed at ${scan.bpm.toInt()} BPM, beat grid known from the first bar" to Health.GOOD
     }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         FieldLabel("Playing now")
@@ -577,7 +593,7 @@ private fun SweepProgress(progress: ScanProgress, accent: Color) {
         }
         if (progress.parked > 0) {
             StatusLine(
-                "${progress.parked} waiting for Wi-Fi — they resume when you are back on one",
+                "${progress.parked} waiting for Wi-Fi, they resume when you are back on one",
                 Health.WARN, accent,
             )
         }
@@ -602,7 +618,7 @@ private fun FailureList(
     val retryable = failures.count { it.retryable }
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(
-            "${failures.size} could not be analysed" + if (expanded) "" else " — tap to see them",
+            "${failures.size} could not be analysed" + if (expanded) "" else ", tap to see them",
             color = WarnAmber, fontFamily = AppFont, fontSize = 12.sp,
             modifier = Modifier.clickable(onClick = onToggle),
         )

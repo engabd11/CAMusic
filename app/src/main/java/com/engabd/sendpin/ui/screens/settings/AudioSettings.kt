@@ -104,7 +104,7 @@ private fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSco
             }
             Note(
                 if (pinned.isBlank())
-                    "Android picks the route — normally the last thing you plugged in."
+                    "Android picks the route, normally the last thing you plugged in."
                 else
                     "Pinned to this output. Unplug it and Android routes normally again.",
             )
@@ -124,14 +124,17 @@ private fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSco
             subtitle = "Ask for 24-bit instead of 16",
             checked = bitPerfect,
             accent = accent,
-            info = "Renders whatever depth the decoder reports rather than flattening to 16. " +
-                "It costs bandwidth, and a phone whose mixer runs at 16-bit gains nothing from " +
-                "it — leave it off unless you are on a USB DAC.\n\n" +
-                "On a library this phone plays, it also turns on float output, so a 24-bit file " +
-                "isn't requantised to 16 on its way to the sink. That is fixed when the player " +
-                "is built, so it applies next time the app starts. It is off by default because " +
-                "float output is experimental and has been heard to distort 44.1 kHz material " +
-                "on phones whose mixer runs at 48 — if that happens, turn it back off.",
+            info = "Renders whatever depth the decoder reports instead of flattening everything to " +
+                "16 bits. It costs bandwidth, and a phone whose mixer runs at 16-bit gains " +
+                "nothing at all from it.\n\nOn a library this phone plays, it also turns on " +
+                "float output, so a 24-bit file is not requantised to 16 on its way to the " +
+                "sink. That is fixed when the player is built, so it applies the next time the " +
+                "app starts rather than straight away.\n\nIt is off by default because float " +
+                "output is still experimental. It has been heard to distort 44.1 kHz material " +
+                "on phones whose mixer runs at 48.\n\nTip: check the panel above first. If your " +
+                "output says it accepts 16-bit, there is nothing here for you. This is really " +
+                "for a USB DAC, and if you turn it on and hear distortion, turning it back off " +
+                "fixes it immediately.",
         ) { bitPerfect = it; scope.launch { settings.setBitPerfect24Bit(it) } }
     }
 }
@@ -161,9 +164,12 @@ internal fun StreamingCard(settings: AppSettings, accent: Color, scope: Coroutin
     SettingsCard(
         title = "What to ask Music Assistant for",
         lead = "What this phone is willing to be sent.",
-        info = "Music Assistant may only send a format this phone has advertised, so these " +
-            "decide what it is allowed to choose. 44.1 and 48 kHz are always offered " +
-            "whatever you set here, so CD-rate files stream untouched.",
+        info = "Music Assistant may only send a format this phone has advertised, so these decide " +
+            "what it is allowed to choose. Nothing here asks for a format, it widens or narrows " +
+            "what is on the table.\n\n44.1 and 48 kHz are always offered whatever you set, so " +
+            "CD-rate files stream untouched either way.\n\nTip: a change here only takes effect " +
+            "on the next connection. Disable and re-enable the player under Libraries if you " +
+            "want it now.",
     ) {
         ToggleRow(
             "Offer hi-res rates",
@@ -172,7 +178,7 @@ internal fun StreamingCard(settings: AppSettings, accent: Color, scope: Coroutin
         ) { preferHiRes = it; scope.launch { settings.setPreferHiRes(it) } }
         ToggleRow(
             "Prefer FLAC over PCM",
-            "Lossless either way — FLAC uses about half the bandwidth",
+            "Lossless either way, FLAC uses about half the bandwidth",
             preferFlac, accent,
         ) { preferFlac = it; scope.launch { settings.setPreferFlac(it) } }
         ToggleRow(
@@ -181,13 +187,15 @@ internal fun StreamingCard(settings: AppSettings, accent: Color, scope: Coroutin
             checked = preferOriginal,
             accent = accent,
             info = "When Music Assistant would have to resample a file, the app streams it " +
-                "straight from Navidrome instead, exactly as it is stored.\n\n" +
-                "The trade is that it plays on this phone only: going direct means going " +
-                "around the server, so there is no queue on it and no speaker grouping while " +
-                "a track is playing this way.",
+                "straight from Navidrome instead, exactly as it is stored.\n\nThe trade is that " +
+                "it plays on this phone only. Going direct means going around the server, so " +
+                "there is no shared queue and no speaker grouping while a track is playing this " +
+                "way.\n\nTip: turn it on if you have hi-res files and one listening spot. Leave " +
+                "it off if you group speakers, because a track that goes direct drops out of " +
+                "the group.",
         ) { preferOriginal = it; scope.launch { settings.setPreferOriginal(it) } }
         Note(
-            "Output is ${if (bitPerfect) "up to 24-bit" else "16-bit"} — see Output above. " +
+            "Output is ${if (bitPerfect) "up to 24-bit" else "16-bit"}, see Output above. " +
                 "Reconnect to apply a change here.",
         )
     }
@@ -221,10 +229,13 @@ private fun LoudnessCard(settings: AppSettings, accent: Color, scope: CoroutineS
         Note(
             "Applies to the library this phone plays, and to downloads.",
             title = "ReplayGain",
-            info = "Not to anything Music Assistant streams: it does its own gain server-side, " +
-                "so applying this as well would double it.\n\n" +
-                "Boosts are capped at +${ReplayGain.MAX_BOOST_DB.toInt()} dB, which is where " +
-                "raising a quiet master far enough starts to clip.",
+            info = "This covers the library this phone plays and your downloads. It is not applied " +
+                "to anything Music Assistant streams, because the server does its own gain, and " +
+                "doing it here as well would double it.\n\nBoosts are capped at " +
+                "+${ReplayGain.MAX_BOOST_DB.toInt()} dB, which is roughly where raising a quiet " +
+                "master starts to clip.\n\nTip: Album keeps the loud and quiet tracks of one " +
+                "record in the relationship the engineer intended, which is what you want for " +
+                "albums. Track levels everything flat, which suits a shuffled queue of singles.",
         )
     }
 }
@@ -247,12 +258,13 @@ private fun ContinuousPlayCard(settings: AppSettings, accent: Color, scope: Coro
             FieldLabel("Smooth transitions")
             InfoChip(
                 "Smooth transitions",
-                "Fades one track out and the next in, on the player this phone runs.\n\n" +
-                    "Off is gapless, which is what an album wants — so this is suppressed " +
-                    "automatically while the queue is a single record, however it is set " +
-                    "here.\n\n" +
-                    "It is not a crossfade: the two tracks do not overlap, because one player " +
-                    "has one output.",
+                "Fades one track out and the next in, on the player this phone runs.\n\nOff " +
+                    "is gapless, which is what an album wants. This is suppressed automatically " +
+                    "while the queue is a single record, however it is set here, so you do not " +
+                    "have to keep turning it off and on.\n\nIt is not a crossfade: the two " +
+                    "tracks do not overlap, because one player has one output.\n\nTip: two to " +
+                    "four seconds suits a shuffled queue. Much longer and a short track starts " +
+                    "fading before its last chorus has finished.",
                 Modifier.heightIn(0.dp),
             )
         }
@@ -272,17 +284,21 @@ private fun ContinuousPlayCard(settings: AppSettings, accent: Color, scope: Coro
             Note(
                 "Needs the track already scanned this session.",
                 title = "Beat-matched fade",
-                info = "The same analysis Light Sync uses. Where it has not run for the track " +
-                    "coming up, the fade falls back to the fixed length above without saying " +
-                    "so — a fade that waited for a scan would be a gap.",
+                info = "Times the fade to end on a beat rather than partway through a bar, using " +
+                    "the same analysis Light Sync uses.\n\nWhere that analysis has not run for " +
+                    "the track coming up, the fade quietly falls back to the fixed length " +
+                    "above. A fade that waited for a scan would be a gap.\n\nTip: run a sweep " +
+                    "under Settings, Light Sync, Track analysis and this will apply to far more " +
+                    "of your queue.",
             )
         }
         Note(
             "What happens when the queue runs out is on Now Playing.",
             title = "End of the queue",
-            info = "It is a player setting rather than an app one, so it lives with the player " +
-                "— the options chip under the artwork on Now Playing, next to the queue it " +
-                "governs.",
+            info = "It is a player setting rather than an app one, so it lives with the player: " +
+                "the options chip under the artwork on Now Playing, next to the queue it " +
+                "governs.\n\nThat is also where you choose whether the player carries on with " +
+                "similar tracks when the queue empties, or simply stops.",
         )
     }
 }

@@ -76,7 +76,7 @@ private fun DspStateBanner(details: MaDspDetails?) {
         "enabled" -> {
             val n = details.filterCount
             "Music Assistant is filtering this stream" +
-                if (n > 0) " — $n ${if (n == 1) "filter" else "filters"} in the chain." else "."
+                if (n > 0) ", $n ${if (n == 1) "filter" else "filters"} in the chain." else "."
         }
         "disabled" ->
             "Not filtering this stream. The settings below are saved but unheard."

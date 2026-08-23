@@ -278,7 +278,7 @@ private fun SourceStep(
         SourceRow(
             icon = Icons.Default.Storage,
             label = "Navidrome",
-            blurb = "Self-hosted Subsonic server — fast, with synced lyrics and ReplayGain.",
+            blurb = "A fast self-hosted Subsonic server, with synced lyrics and ReplayGain.",
             accent = accent,
         ) { onPick(ServerKind.NAVIDROME) }
 
@@ -595,7 +595,7 @@ private fun PermissionsStep(
             icon = Icons.Default.BatteryAlert,
             title = "Unrestricted battery",
             body = "Android's battery saver closes the connection to Music Assistant while the " +
-                "screen is off — on some phones within minutes. Find CAMusic in the list and " +
+                "screen is off, on some phones within minutes. Find CAMusic in the list and " +
                 "set it to Unrestricted.",
             done = batteryGranted,
             accent = accent,

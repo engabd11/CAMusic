@@ -339,7 +339,7 @@ fun NowPlayingScreen(
                         onShare = {
                             val text = listOf(item.name, st.artist, st.album)
                                 .filter { it.isNotBlank() }
-                                .joinToString(" — ")
+                                .joinToString(", ")
                             val send = Intent(Intent.ACTION_SEND).apply {
                                 type = "text/plain"
                                 putExtra(Intent.EXTRA_TEXT, text)

@@ -79,7 +79,7 @@ class FrameDelayQueueTest {
         val t0 = 1_000_000_000L
         q.offer(42, t0)
 
-        assertNull(q.poll(t0), "released immediately — the light would lead the audio")
+        assertNull(q.poll(t0), "released immediately, the light would lead the audio")
         assertNull(q.poll(t0 + 199 * ms), "released early")
         assertEquals(42, q.poll(t0 + 200 * ms), "not released once due")
     }
@@ -122,7 +122,7 @@ class FrameDelayQueueTest {
         // evicted it long ago and has nothing due.
         assertNull(
             q.poll(t0 + 5_000 * ms),
-            "the oldest frame was still queued after 1000 offers — the deque is unbounded",
+            "the oldest frame was still queued after 1000 offers, the deque is unbounded",
         )
         // The recent tail is still there, so eviction took the old end, not everything.
         assertNotNull(q.poll(t0 + 1_000_000 * ms), "eviction dropped frames it should have kept")

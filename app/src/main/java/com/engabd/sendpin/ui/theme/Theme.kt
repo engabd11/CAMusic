@@ -44,7 +44,7 @@ enum class ThemeChoice(val key: String, val label: String, val description: Stri
 /** Where the accent colour comes from. */
 enum class AccentChoice(val key: String, val label: String, val description: String) {
     ALBUM("album", "Album art", "The accent is drawn from whatever is playing."),
-    DYNAMIC("dynamic", "Wallpaper", "Material You — one accent, taken from your wallpaper."),
+    DYNAMIC("dynamic", "Wallpaper", "Material You, one accent taken from your wallpaper."),
     FIXED("fixed", "Fixed colour", "One accent you pick, that never changes.");
 
     /**

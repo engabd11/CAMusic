@@ -96,9 +96,13 @@ internal fun AppearanceSection(settings: AppSettings, accent: Color, scope: Coro
         SettingsCard(
             title = "Now Playing",
             lead = "Two ways to reach what's playing.",
-            info = "Both show the same controls. They differ in how you get there and in what " +
-                "you can see at the same time — a tab replaces the screen you were on, an " +
-                "overlay slides over it and collapses to a bar you can leave up.",
+            info = "Both show the same controls. They differ in how you get there and in what you " +
+                "can see at the same time.\n\nTab replaces the screen you were on, so the " +
+                "player gets the whole display and the library is one tap away.\n\nOverlay " +
+                "slides over whatever you were doing and collapses to a bar at the bottom, so " +
+                "you can keep browsing with the player still up.\n\nTip: overlay suits browsing " +
+                "while something plays, tab suits sitting with one record. Switch freely, " +
+                "nothing is stored per layout.",
         ) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 ToggleChip("Tab", layout == "tab") {
@@ -160,17 +164,25 @@ internal fun AppearanceSection(settings: AppSettings, accent: Color, scope: Coro
                 "Reduced settles motion rather than slowing it.",
                 title = "Reduced motion",
                 info = "Spinners, shimmers and the wave seek bar come to rest in a still state " +
-                    "instead of freezing wherever they happened to be — an infinite animation " +
-                    "that is merely suspended looks broken rather than calm.",
+                    "instead of freezing wherever they happened to be. An animation that is " +
+                    "merely suspended looks broken rather than calm, which is what a plain " +
+                    "speed reduction gives you.\n\nTransitions that carry something from one " +
+                    "place to another still run, just without the flourish.\n\nTip: this " +
+                    "follows the system setting on its own. Set it here only if you want the " +
+                    "app to differ from the rest of the phone.",
             )
         }
 
         SettingsCard(
             title = "Lyrics timing",
             lead = "Nudge synced lyrics against the vocal.",
-            info = "Providers stamp the same track differently, so there is no right answer " +
-                "here — only what looks in time to you. Adjustments snap to 50ms, which is " +
-                "finer than anyone can pick out against a sung line.",
+            info = "Providers stamp the same track differently, so there is no right answer here, " +
+                "only what looks in time to you. Adjustments snap to 50 ms, which is finer than " +
+                "anyone can pick out against a sung line.\n\nThe offset applies to every track " +
+                "rather than being remembered per song.\n\nTip: set it against a slow, clear " +
+                "vocal rather than a fast one. If lyrics run late on some songs and early on " +
+                "others, that is the provider disagreeing with itself and no single offset will " +
+                "fix both.",
         ) {
             SliderRow(
                 value = (offset + AppSettings.MAX_LYRICS_OFFSET_MS) /
@@ -212,9 +224,11 @@ internal fun AboutSection(accent: Color, onOpenStats: () -> Unit = {}) {
         SettingsCard(
             title = "CAMusic",
             lead = "A Music Assistant player and controller for Android.",
-            info = "Direct playback from self-hosted libraries — Navidrome, Subsonic, " +
-                "Jellyfin, or files on this phone — offline downloads, and Hue light sync " +
-                "driven by the music itself rather than by a preset.",
+            info = "Direct playback from self-hosted libraries: Navidrome, Subsonic, Jellyfin, or " +
+                "files on this phone. Offline downloads that keep working with no network. Hue " +
+                "light sync driven by the music itself rather than by a preset.\n\nIt is a " +
+                "Music Assistant player as well as a controller, so this phone shows up as a " +
+                "speaker in Music Assistant's own list.",
         ) {
             StatusPanel {
                 StatusRow("Version", BuildConfig.VERSION_NAME)
@@ -243,8 +257,12 @@ internal fun AboutSection(accent: Color, onOpenStats: () -> Unit = {}) {
         SettingsCard(
             title = "Crash reporting",
             lead = "Crashes stay on this device unless you send them.",
-            info = "Share one to GitHub by hand, or enable automatic upload with a personal " +
-                "access token. Nothing leaves the phone until you do one of those two things.",
+            info = "Crashes are written to this device and stay there. Share one to GitHub by " +
+                "hand, or enable automatic upload with a personal access token. Nothing leaves " +
+                "the phone until you do one of those two things.\n\nTip: a report is far more " +
+                "use with a line about what you were doing when it happened. The automatic " +
+                "upload cannot know that, so one manual share with a sentence attached beats " +
+                "ten silent ones.",
         ) {
             OledField(
                 value = repo,

@@ -230,9 +230,15 @@ private fun HaLightSyncScreen(onBack: () -> Unit, viewModel: LightSyncViewModel)
                         )
                         InfoChip(
                             "Auto levels",
-                            "The quiet parts sit on the lowest level you have allowed, and the " +
-                                "biggest moments reach the highest — measured against that " +
-                                "song's own dynamic range rather than an absolute loudness.",
+                            "The quiet parts of a song sit on the lowest level you have " +
+                                "allowed, and its biggest moments reach the highest. It is " +
+                                "measured against that song's own dynamic range rather than an " +
+                                "absolute loudness, so a quiet acoustic record still gets a " +
+                                "full show instead of sitting at the bottom of the range all " +
+                                "evening.\n\nTip: pick two or three neighbouring levels rather " +
+                                "than all of them. Allowing the whole range means every song " +
+                                "uses the whole range, which flattens the difference between " +
+                                "them.",
                             Modifier.heightIn(0.dp),
                         )
                     }
@@ -303,7 +309,13 @@ private fun HaLightSyncScreen(onBack: () -> Unit, viewModel: LightSyncViewModel)
                         OffsetStep("+") { viewModel.changeTiming(5) }
                     }
                     Text(
-                        "Positive delays the lights; negative pushes them ahead of the audio.",
+                        "Positive delays the lights, negative pushes them ahead of the " +
+                            "speaker. Which way you need depends on whether your speaker " +
+                            "buffers more audio than the bridge does, and there is no way to " +
+                            "know that without trying it.\n\nTip: play something with a hard, " +
+                            "obvious kick and sit where you normally listen. Move in 20 ms " +
+                            "steps until the flash and the thump stop arriving separately. Most " +
+                            "setups land somewhere between 0 and 150 ms.",
                         color = TextFaint, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp),
                     )
                 }
@@ -568,8 +580,12 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                         )
                         InfoChip(
                             "Auto intensity",
-                            "A chill track tops out low however loud its chorus gets. Only a " +
-                                "genuinely heavy one reaches the top of what you allow below.",
+                            "A chill track tops out low however loud its chorus gets. Only " +
+                                "a genuinely heavy one reaches the top of what you allow below, " +
+                                "so the lights tell you something about the music rather than " +
+                                "tracking the volume knob.\n\nTip: if everything feels too " +
+                                "tame, raise the ceiling below instead of turning Auto off. " +
+                                "Auto still picks the level, it just has further to go.",
                             Modifier.heightIn(0.dp),
                         )
                     }
@@ -804,13 +820,16 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                     FeatureRow(
                         title = "Room gestures",
                         gist = "Let a sweep or a swell travel across the room.",
-                        info = "When a sound sweeps across the stereo field, or a swell rises " +
-                            "with no beat under it, the light travels with it — along a line " +
-                            "of lamps, or around a room with lamps in the corners.\n\n" +
-                            "Rooms with only a couple of lamps get a soft brightness swell " +
-                            "instead.\n\n" +
-                            "Most songs have neither, and stay exactly as they are. That is " +
-                            "the correct behaviour rather than a fault.",
+                        info = "When a sound sweeps across the stereo field, or a swell rises with " +
+                            "no beat under it, the light travels with it: along a line of " +
+                            "lamps, or around a room with lamps in the corners.\n\nRooms with " +
+                            "only a couple of lamps get a soft brightness swell instead, since " +
+                            "there is nowhere for the light to travel to.\n\nMost songs have " +
+                            "neither a sweep nor a swell in them and stay exactly as they are. " +
+                            "That is the correct behaviour rather than a fault.\n\nTip: it " +
+                            "shows itself best on ambient, film scores and anything with a long " +
+                            "build. On a four-to-the-floor dance track you will barely notice " +
+                            "it.",
                         checked = spatial,
                     ) { on -> scope.launch { settings.setLightSyncSpatial(on) } }
                 }
@@ -823,7 +842,7 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                 SectionLabel("Light show layers")
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    "Extra, off by default. Each one layers on top of the show above — never a replacement for it.",
+                    "Extra, off by default. Each one layers on top of the show above, never a replacement for it.",
                     color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 11.sp,
                 )
                 Spacer(Modifier.height(12.dp))
@@ -832,9 +851,13 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                     title = "Music DNA",
                     gist = "A visual fingerprint unique to each track.",
                     info = "Tempo, key and structure shape a slow colour floor underneath the " +
-                        "reactive show, so two songs never light the room the same way.\n\n" +
-                        "It locks in a few seconds into a track, once that track has been " +
-                        "analysed.",
+                        "reactive show, so two songs never light the room the same way. The " +
+                        "same track lights it the same way every time, which is the point: the " +
+                        "room starts to feel familiar before you have placed the song.\n\nIt " +
+                        "locks in a few seconds into a track, once that track has been " +
+                        "analysed.\n\nTip: run a sweep under Settings, Light Sync, Track " +
+                        "analysis first. Until a track has been read its fingerprint is being " +
+                        "guessed at from what has played so far.",
                     checked = musicDna,
                 ) { on -> scope.launch { settings.setMusicDnaEnabled(on) } }
 
@@ -843,8 +866,12 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                     title = "Emotional arc",
                     gist = "Colour temperature follows the song's own shape.",
                     info = "Cool through the calm parts, warming into a build, hot on the drop, " +
-                        "cold on a breakdown — so the room reads the song's arc rather than " +
-                        "just its level.",
+                        "cold on a breakdown. The room reads the song's shape rather than just " +
+                        "its level, so a loud passage that is not going anywhere stays " +
+                        "cool.\n\nTip: it layers under everything else rather than replacing " +
+                        "it, so it is worth leaving on alongside Music DNA and Phantom stage. " +
+                        "If the room ends up too warm overall, that is the colour setting on " +
+                        "the Lights tab and not this.",
                     checked = emotionalArc,
                 ) { on -> scope.launch { settings.setEmotionalArcEnabled(on) } }
 
@@ -852,11 +879,14 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                 FeatureRow(
                     title = "Phantom stage",
                     gist = "Each part of the mix gets its own lamp.",
-                    info = "Bass, drums, guitar, vocals and synths each take a fixed spot in " +
-                        "the room for the session, glowing softly and flashing when that part " +
-                        "of the mix hits.\n\n" +
-                        "It is a rough approximation from frequency, not real instrument " +
-                        "separation — a bass guitar and a kick drum share a lamp.",
+                    info = "Bass, drums, guitar, vocals and synths each take a fixed spot in the " +
+                        "room for the session, glowing softly and flashing when that part of " +
+                        "the mix hits.\n\nIt is a rough approximation from frequency, not real " +
+                        "instrument separation. A bass guitar and a kick drum share a lamp, and " +
+                        "a synth playing in the vocal range lands on the vocal one.\n\nTip: it " +
+                        "needs four or more lamps, spread out, to read as a stage. In a room " +
+                        "with two, everything piles onto both and it looks like a brighter " +
+                        "version of the normal show.",
                     checked = phantomStage,
                 ) { on -> scope.launch { settings.setPhantomStageEnabled(on) } }
 
@@ -864,10 +894,12 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                 FeatureRow(
                     title = "Phone conductor",
                     gist = "Conduct the room by moving the phone.",
-                    info = "Tilt to shift colour across the room, flick for a flash, or turn " +
-                        "the phone slowly to spin colour around the space.\n\n" +
-                        "It stands down after a few seconds of no motion, so the phone can sit " +
-                        "on a table without conducting anything.",
+                    info = "Tilt to shift colour across the room, flick for a flash, or turn the " +
+                        "phone slowly to spin colour around the space.\n\nIt stands down after " +
+                        "a few seconds of no motion, so the phone can sit on a table without " +
+                        "conducting anything.\n\nTip: it overrides the show while you are " +
+                        "moving, so it is a party trick rather than something to leave running. " +
+                        "Hand someone the phone and let them find it.",
                     checked = phoneConductor,
                 ) { on -> scope.launch { settings.setPhoneConductorEnabled(on) } }
 
@@ -888,7 +920,11 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                         "Direct mode timing",
                         "Direct mode syncs this phone's own playback, so it can measure how " +
                             "far the audio tap runs ahead of the speaker and compensate " +
-                            "exactly. There is nothing left for you to dial in.",
+                            "exactly. There is nothing left for you to dial in, which is why " +
+                            "the offset slider is not shown on this route.\n\nTip: if the " +
+                            "lights still feel late here, it is the bridge or the network " +
+                            "rather than the timing. Check that nothing else is driving the " +
+                            "same entertainment area.",
                         Modifier.heightIn(0.dp),
                     )
                 }
@@ -1338,11 +1374,11 @@ private fun showStatusText(status: com.engabd.sendpin.hue.ShowStatus, speaker: S
     com.engabd.sendpin.hue.ShowStatus.WAITING -> "Waiting for music on this phone"
     com.engabd.sendpin.hue.ShowStatus.LIVE_PCM -> "Reacting to the beat"
     com.engabd.sendpin.hue.ShowStatus.SCAN_DRIVEN ->
-        "Following the beat grid — playing on ${speaker ?: "another speaker"}, so the show is " +
+        "Following the beat grid, playing on ${speaker ?: "another speaker"}, so the show is " +
             "scheduled from this track's analysis"
     com.engabd.sendpin.hue.ShowStatus.SCAN_PENDING -> "Analysing this track…"
     com.engabd.sendpin.hue.ShowStatus.NO_SCAN ->
-        "Playing on ${speaker ?: "another speaker"}, which this phone can't hear — and there is " +
+        "Playing on ${speaker ?: "another speaker"}, which this phone can't hear, and there is " +
             "no analysis for this track"
     com.engabd.sendpin.hue.ShowStatus.CAPTURE -> "Reacting to another app"
     com.engabd.sendpin.hue.ShowStatus.CAPTURE_BLOCKED -> "That app does not allow its audio to be captured"
@@ -1426,7 +1462,7 @@ private fun CaptureCard(
                 state == com.engabd.sendpin.capture.PlaybackCapture.State.DENIED
             ) {
                 Text(
-                    "Android asks permission each time capture starts — the grant is single-use " +
+                    "Android asks permission each time capture starts, the grant is single-use " +
                         "and cannot be remembered.",
                     color = TextFaint, style = MaterialTheme.typography.bodySmall,
                 )
@@ -1450,7 +1486,7 @@ private fun captureBlurb(
 ): String = when {
     !enabled -> "Follow music from any other app on this phone."
     state == com.engabd.sendpin.capture.PlaybackCapture.State.RUNNING -> "Listening."
-    state == com.engabd.sendpin.capture.PlaybackCapture.State.QUIET -> "Listening — nothing playing."
+    state == com.engabd.sendpin.capture.PlaybackCapture.State.QUIET -> "Listening, nothing playing."
     state == com.engabd.sendpin.capture.PlaybackCapture.State.BLOCKED -> "That app will not allow it."
     state == com.engabd.sendpin.capture.PlaybackCapture.State.STARTING -> "Starting…"
     state == com.engabd.sendpin.capture.PlaybackCapture.State.STOPPED_BY_SYSTEM -> "Capture was stopped."

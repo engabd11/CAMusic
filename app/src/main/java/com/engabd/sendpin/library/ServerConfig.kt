@@ -38,7 +38,7 @@ enum class ServerKind(
     ),
     NAVIDROME(
         "Navidrome",
-        "A fast self-hosted server with the OpenSubsonic extensions — lyrics, ReplayGain, exact formats.",
+        "A fast self-hosted server with the OpenSubsonic extensions, so lyrics, ReplayGain and exact formats.",
         supported = true,
         urlHint = "http://192.168.0.10:4533",
     ),
@@ -58,7 +58,7 @@ enum class ServerKind(
     // ── Planned. Listed so the roadmap is visible where it is asked about. ──
     EMBY(
         "Emby",
-        "Jellyfin's ancestor — near-identical API, needs its own auth header.",
+        "Jellyfin's ancestor, with a near-identical API and its own auth header.",
         urlHint = "http://192.168.0.10:8096",
     ),
     PLEX(
@@ -84,7 +84,7 @@ enum class ServerKind(
     ),
     WEBDAV(
         "WebDAV",
-        "A folder over HTTP. Same shape as SMB — the app indexes and tags it.",
+        "A folder over HTTP. Same shape as SMB, and the app indexes and tags it.",
         urlHint = "https://dav.example.com/music",
     ),
     GOOGLE_DRIVE("Google Drive", "Sign in and index a folder of music.", auth = AuthStyle.LINKED_ACCOUNT),

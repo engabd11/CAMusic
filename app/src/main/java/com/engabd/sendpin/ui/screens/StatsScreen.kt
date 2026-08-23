@@ -130,7 +130,7 @@ fun StatsScreen(onBack: () -> Unit = {}, viewModel: StatsViewModel = viewModel()
                     }
                 }
 
-                item { Note("Counts a track once it's roughly half played, or after four minutes — same rule the scrobbler uses, so a skip doesn't count.") }
+                item { Note("Counts a track once it's roughly half played, or after four minutes. That is the same rule the scrobbler uses, so a skip doesn't count.") }
             }
         }
     }

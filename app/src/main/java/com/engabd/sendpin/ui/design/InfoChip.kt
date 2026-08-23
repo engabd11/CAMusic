@@ -21,6 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Lightbulb
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -166,16 +167,26 @@ private fun InfoOverlay(title: String, text: String, onDismiss: () -> Unit) {
                     title, color = TextPrimary, fontFamily = AppFont,
                     fontWeight = FontWeight.ExtraBold, fontSize = 16.sp,
                 )
-                // Scrolls, because the longest of these runs to some four hundred
+                // Scrolls, because the longest of these runs past six hundred
                 // characters and a phone in landscape has nothing like the room.
-                Text(
-                    text,
-                    color = TextSecondary,
-                    fontFamily = AppFont,
-                    fontSize = 13.sp,
-                    lineHeight = 19.sp,
-                    modifier = Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()),
-                )
+                Column(
+                    Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    text.split(PARAGRAPH).forEach { para ->
+                        if (para.startsWith(TIP_PREFIX)) {
+                            TipBlock(para.removePrefix(TIP_PREFIX).trim())
+                        } else {
+                            Text(
+                                para,
+                                color = TextSecondary,
+                                fontFamily = AppFont,
+                                fontSize = 13.sp,
+                                lineHeight = 19.sp,
+                            )
+                        }
+                    }
+                }
                 Box(
                     Modifier
                         .fillMaxWidth()
@@ -195,6 +206,42 @@ private fun InfoOverlay(title: String, text: String, onDismiss: () -> Unit) {
         }
     }
 }
+
+/**
+ * The one paragraph in a description that tells you what to actually do.
+ *
+ * Written into the text as a "Tip:" paragraph rather than passed as its own parameter,
+ * so that a description and its tip stay one string at the call site and cannot drift
+ * apart, and so that adding one to an existing description is an edit to the sentence
+ * rather than to the signature.
+ */
+@Composable
+private fun TipBlock(text: String) {
+    val accent = LocalAccent.current
+    Row(
+        Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(accent.a(0.10f))
+            .border(1.dp, accent.a(0.22f), RoundedCornerShape(12.dp))
+            .padding(12.dp),
+        horizontalArrangement = Arrangement.spacedBy(9.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Icon(
+            Icons.Outlined.Lightbulb,
+            contentDescription = "Tip",
+            tint = accent,
+            modifier = Modifier.size(15.dp),
+        )
+        Text(text, color = TextSecondary, fontFamily = AppFont, fontSize = 12.sp, lineHeight = 18.sp)
+    }
+}
+
+/** How a tip is marked in a description. See [TipBlock]. */
+private const val TIP_PREFIX = "Tip:"
+
+/** What separates one paragraph of a description from the next. */
+private const val PARAGRAPH = "\n\n"
 
 /**
  * A quiet inline explanation with an icon beside it — not an error, just something

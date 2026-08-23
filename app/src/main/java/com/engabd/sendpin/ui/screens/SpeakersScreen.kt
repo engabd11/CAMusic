@@ -248,7 +248,7 @@ private fun JoinedCard(p: SpeakerUi, onSelect: () -> Unit, onUnjoin: () -> Unit,
                     }
                 } else {
                     Text(
-                        "No sync offset for this speaker — Music Assistant doesn't expose one.",
+                        "No sync offset for this speaker, Music Assistant doesn't expose one.",
                         color = TextFaint, fontWeight = FontWeight.SemiBold, fontSize = 11.sp,
                     )
                 }

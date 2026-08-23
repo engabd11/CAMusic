@@ -115,7 +115,7 @@ class SyncoEngineGridTest {
                 if (v > (peak[cid] ?: 0f)) { peak[cid] = v; peakAt[cid] = step }
             }
         }
-        assertTrue(peakAt.values.distinct().size > 1, "every lamp peaked on the same frame — no sweep")
+        assertTrue(peakAt.values.distinct().size > 1, "every lamp peaked on the same frame, no sweep")
     }
 
     @Test
@@ -316,7 +316,7 @@ class SyncoEngineGridTest {
 
         assertTrue(
             lowBrightest != highBrightest,
-            "a low and a high transient both peaked at lamp $lowBrightest — no spectral pop",
+            "a low and a high transient both peaked at lamp $lowBrightest, no spectral pop",
         )
     }
 
