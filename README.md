@@ -4,11 +4,11 @@
 
 <h1 align="center">CAMusic</h1>
 
-<p align="center"><strong>One app. Your music. Your Phillips hue lights. Your music assistant speakers.</strong></p>
+<p align="center"><strong>One app. Your music. Your Philips Hue lights. Your Music Assistant speakers.</strong></p>
 
 <p align="center">
-  Play your library, sync your hue lights, group your music assistant speakers, and control it all from one place <br>
-  all local and in one place.
+  Play your library, sync your Hue lights, group your Music Assistant speakers —<br>
+  all local, all in one place.
 </p>
 
 <p align="center">
@@ -45,6 +45,8 @@ engine, with no feature locked behind a paywall:
 | USB DAC detection | ✅ | ❌ | ❌ |
 | Settings export / import (encrypted) | ✅ | ❌ | ❌ |
 | Home-screen widget | ✅ | ✅ (some) | ❌ |
+| Offline downloads as a browsable library | ✅ | ❌ | ❌ |
+| Lights follow *other* apps' audio | ✅ (see limits) | ❌ | ✅ (some) |
 | One app, no subscription | ✅ | — | — |
 
 ---
@@ -71,7 +73,8 @@ credentials, status and stream quality; one tap sets it active.
 | **Navidrome** | Username + password | The reference — OpenSubsonic extensions give synced lyrics, ReplayGain, and exact per-track format metadata |
 | **Subsonic / OpenSubsonic** | Username + password | Gonic, Airsonic, Astista, Ampache's Subsonic API — anything speaking the protocol |
 | **Jellyfin** | Username + password | Original file streaming with per-track codec, bitrate, depth and channels |
-| **This device** | Runtime permission | Music already on the phone or SD card — works entirely offline |
+| **This device** | Audio permission | Music already on the phone or SD card, whole-device or one picked folder — works entirely offline |
+| **Downloads** | None | Everything saved for offline, browsable like any other library — always present |
 | **Music Assistant** | mDNS or URL | Not just a library — a full player ecosystem (see below) |
 
 Capabilities are probed, not assumed. A plain Subsonic server is never offered a lyrics pane it
@@ -86,8 +89,8 @@ When a Music Assistant server is in the picture, CAMusic becomes more than a pla
   search-as-you-type with debounced results.
 - **Play to any MA speaker** — the phone, a grouped set, or any other player on the network.
   Now Playing reflects and controls whichever speaker you select.
-- **Queue management** — view, jump, reorder, remove, clear, save as playlist, or transfer the
-  queue and playhead to another speaker mid-track.
+- **Queue management** — view, jump, reorder, remove, clear, shuffle what is still to come,
+  save as playlist, or transfer the queue and playhead to another speaker mid-track.
 - **Album and artist screens** — about section, related albums, top tracks, similar artists.
 - **Version picker** — every copy of a track across every provider. The 16/44 stream, the 24/96
   purchase and the CD rip are a choice, not whatever the row came from.
@@ -97,7 +100,8 @@ When a Music Assistant server is in the picture, CAMusic becomes more than a pla
 - **Server-side gapless and crossfade** — the app reads MA's config entries and renders whatever
   it finds, so a new MA build needs no update here.
 - **Speaker grouping** around a leader, with per-player and group volume.
-- **Home Assistant TTS announcements** arrive like any other MA player.
+- **Home Assistant TTS announcements** arrive like any other MA player, and ask other apps to
+  duck rather than taking the output from them, so an announcement is audible over a video.
 
 ### As a Sendspin player on Music Assistant
 
@@ -122,12 +126,13 @@ audio at all on the test device, and this one does. A switch whose off position 
 safety measure, so it is gone.
 
 > **On Oboe:** there is a native output engine in `app/src/main/cpp/`, reachable from
-> **Settings → Music Assistant server → Experimental**, and it is **off by default and currently
+> **Settings → Music Assistant server → Experimental**, and it is **off by default and still
 > produces no sound**. The AAudio stream opens and starts, and then nothing is ever consumed from
 > it. Three genuine defects have been found and fixed on the way to that one without being it. The
 > evidence, the mechanism and the one measurement that would settle it are in
-> [PR #59](https://github.com/engabd11/CAMusic/pull/59). It is opt-in, it blocks nothing, and
-> the README used to claim audio flowed through it — it does not.
+> [PR #59](https://github.com/engabd11/CAMusic/pull/59), which was closed unresolved rather than
+> merged. It is opt-in, it blocks nothing, and the README used to claim audio flowed through it —
+> it does not.
 
 Routing the stream through ExoPlayer is also what put MA playback inside the light-sync analysis
 tap, so the direct Hue path drives both players rather than only local files.
@@ -139,9 +144,9 @@ Music Assistant's own level are one number, not three.
 ### Philips Hue Entertainment Sync - Direct or through home asssitant
 
 CAMusic drives Philips Hue lights in time with the music using the Hue Entertainment API
-(DTLS 1.2, 60 Hz). Two transports, picked in **Settings → Light Sync**
-it follows the library backend automatically unless you pin it by hand. A **Quick Settings tile**
-toggles the direct path from the notification shade.
+(DTLS 1.2, 60 Hz). Two transports, picked in **Settings → Light Sync** — it follows the library
+backend automatically unless you pin it by hand. A **Quick Settings tile** toggles the direct path
+from the notification shade.
 
 #### Direct to the Hue Bridge
 
@@ -216,10 +221,10 @@ not look alike, and the whole layer is additive and capped at a third of full sc
 flash.
 
 > **Scope:** the tap sits in the ExoPlayer render chain, and since v0.8.8 Music Assistant playback
-> flows through ExoPlayer too — so direct mode drives the show for **both** this phone's local
-> playback (Navidrome, Jellyfin, downloads, local files) and MA playback to this phone. Music
-> playing on a *remote* MA speaker still needs the Home Assistant path, since this phone never
-> decodes that audio.
+> flows through ExoPlayer too — so direct mode drives the show from real audio for **both** this
+> phone's local playback (Navidrome, Jellyfin, downloads, local files) and MA playback to this
+> phone. Music playing on a *remote* MA speaker is never decoded here, and since v0.10.5 that case
+> is covered by a **scheduled** show instead — see below.
 
 #### Through Home Assistant (Philips Hue via syncoV2)
 
@@ -254,19 +259,43 @@ and before `FieldSafety`. Direct-to-bridge only (the HA path has no analysis tap
 
 See [docs/creative-light-shows.md](docs/creative-light-shows.md) for the full design.
 
+#### When this phone cannot hear the music
+
+The analysis tap reads PCM out of this phone's own render chain, so anything playing anywhere else
+is silent to it. Two sources cover that, and neither pretends to be the real thing:
+
+- **A Music Assistant queue on a remote speaker** is driven from the track's own offline analysis
+  instead — the beat grid, the section boundaries and the intensity curve, scheduled against MA's
+  reported playhead. This is what syncoV2 does, and it is a **beat-and-structure show, not a
+  spectrum show**: the per-band detail is modelled from the track's average balance rather than
+  heard, and stereo gestures are absent because there is no stereo field to read. The status line
+  says "following the beat grid" rather than "reacting to the beat", because those are different
+  things. A **speaker offset** slider covers the latency out to a cast group, which nothing on this
+  phone can measure.
+- **Another app on this phone** — Spotify, a podcast player, anything — through
+  `MediaProjection` audio capture, off by default and set up explicitly under **Lights → Other
+  apps**. Apps may forbid capture, and YouTube and YouTube Music do; the app detects that and says
+  so, because the platform delivers a blocked app as digital silence with no error at all.
+
 ### Offline Playback and Library — download and go
 
 Download a track, album or playlist for offline use — audio and cover art — with a storage cap and
-a Wi-Fi-only option. A dedicated **Downloads screen** searches, sorts, retries failures, shows the
-format each file actually is, and breaks storage down by album so the thing worth deleting is
-findable. The storage cap never evicts the track you're listening to.
+a Wi-Fi-only option. The storage cap never evicts the track you're listening to.
 
-With the server unreachable the library drops to **Offline** and runs on what's on the phone. Stars
-and play counts write back to the library the track came from when you're back online.
+**Downloads is a library of its own**, sitting in the same switcher as every server, with the same
+artists, albums, tiles and search as any of them — it is the one library guaranteed to work with
+everything switched off, so it gets the same views rather than a flat list. It is always present
+and cannot be removed. A separate **Downloads screen** handles what a library has no concept of:
+bytes on disk, failed jobs worth retrying, and a per-album storage breakdown so the thing worth
+deleting is findable. It is reachable from Settings and from the library itself.
+
+With the server unreachable the library also drops to **Offline** automatically and runs on what's
+on the phone. Stars and play counts write back to the library the track came from when you're back
+online.
 
 ### Audiophile-grade playback
 
-|| Feature | Music Assistant path | Standalone path |
+| Feature | Music Assistant path | Standalone path |
 |---|:---:|:---:|
 | Hi-res (88.2 / 96 kHz) | ✅ | ✅ |
 | 24-bit float output | ✅ (bit-perfect mode) | ✅ (bit-perfect mode) |
@@ -281,7 +310,7 @@ and play counts write back to the library the track came from when you're back o
 
 When a USB DAC is plugged in, CAMusic detects it through an `AudioDeviceCallback`
 and posts a low-priority notification showing what the DAC can do — sample rates,
-bit depths — and points to **Settings → Audio** to pin the output to it. It does
+bit depths — and points to **Settings → Playback & audio** to pin the output to it. It does
 not change routing on its own: if you already chose a Bluetooth headset, plugging
 in a DAC doesn't yank the audio away. It just tells you the option is there.
 
@@ -299,11 +328,15 @@ Two window mechanisms, chosen in **Settings → Playback & audio → Driving**:
 |---|---|---|
 | Permission | **None** | Draw over other apps |
 | Targets | System-sized | 76dp, against the platform's 48dp minimum |
-| Position | System decides | Either edge, draggable |
-| Starts from | The app must be open first | Anywhere |
+| Position | System decides | Docked to either edge, draggable by its handle |
+| Starts from | The app must be in front | Anywhere |
 
 The default costs no permission at all, which for something you set up once in a car park is worth
-more than the larger buttons. The full-width bar is there when it isn't.
+more than the larger buttons. What it costs instead is reach: the platform only allows the
+transition while this app's own activity is in front, so the floating window appears either as you
+leave for the map or the moment driving mode turns on with the app already open. The full-width bar
+has no such constraint — and hides itself whenever CAMusic is the thing on screen, since the in-app
+player is right there at full size.
 
 **What turns it on is the car's Bluetooth**, not Google Maps being in front. That framing is the
 expensive one: reading the foreground app needs either `PACKAGE_USAGE_STATS` or an
@@ -353,6 +386,12 @@ speaker you're actually listening to, not always the phone.
 - **Settings export / import** — every server config, credential, and preference exported as a
   password-encrypted portable blob. Import re-encrypts credentials under the new device's Keystore,
   so the file's password-derived encryption never reaches disk.
+- **Appearance** — OLED black, dark or light; accent from the album art, your wallpaper
+  (Material You) or a fixed colour; Now Playing as a tab or as an overlay that slides over the app;
+  a straight or a wave seek bar; and a **Motion** setting, so the app can be calmed down without
+  turning off animations for the whole phone.
+- **The cover turns like a page** when the album changes — and only then, never between two tracks
+  of the same record.
 - **Favourites, preview, playback speed, sleep timer.**
 
 ---
@@ -371,9 +410,20 @@ speaker you're actually listening to, not always the phone.
 Everything is optional except Android 12+. Start with one server or just local files and add more
 as you go.
 
-Two permissions are asked for only if you use the feature that needs them: **Bluetooth** (to notice
-your car connecting) and **draw over other apps** (only for driving mode's full-width bar — the
-default floating window needs neither).
+Permissions are asked for at the moment a feature needs them rather than up front, and every one
+past the first belongs to something optional:
+
+| Permission | Asked for by | Needed because |
+|---|---|---|
+| Notifications | Onboarding | The media notification and the foreground services |
+| Audio files | Adding "This device" | Reading music off the phone through MediaStore |
+| Bluetooth | Driving mode | Noticing your nominated car connect |
+| Location | Speed limit alert | GPS speed; nothing is sent anywhere |
+| Phone state | Auto-pause on calls | Knowing a call is ringing |
+| Microphone | Lights → Other apps | What `AudioPlaybackCapture` is gated on. **No microphone is ever opened** — the platform has one permission for "may receive audio it did not produce", and this is it |
+| Draw over other apps | Driving mode's full-width bar | The overlay window; the default floating window needs none |
+
+Only notifications is asked for by an install that uses nothing optional.
 
 ## Setup
 
@@ -414,9 +464,15 @@ Jetpack Compose UI  ·  Material 3  ·  OLED design system (true black, album ac
         |
         +-- Jellyfin -----------  JellyfinClient · JellyfinSource
         |
+        +-- Downloads ----------  DownloadManager · DownloadsSource · DownloadsIndex
+        |   (offline copies, as a library)
+        |
         +-- Hue Bridge ---------  HueBridgeClient · HueDtlsClient · SyncoEngine
         |   (Philips Hue Entertainment      AudioAnalysisTap · TrackScanner · AlbumColours
-        |    direct to bridge)
+        |    direct to bridge)              LightSyncFeedPicker picks one of four feeds:
+        |                                     local PCM · Sendspin PCM ·
+        |                                     ScanFrameSource (remote speaker) ·
+        |                                     PlaybackCapture (another app)
         |
         +-- Home Assistant -----  HaClient · LightSyncRepository
             (Philips Hue via syncoV2)
@@ -454,6 +510,12 @@ WebSocket binary frame                   HTTP (static/original) or local file
     and currently silent)                             |
         |                                            |
         +--------- AudioAnalysisTap ------------------+
+                          |
+                          |   ScanFrameSource ......  a remote MA speaker: no PCM,
+                          |   (TrackScan + playhead)  frames built from the analysis
+                          |
+                          |   PlaybackCapture ......  another app, via MediaProjection
+                          |   (AudioRecord)           (its own tap; excludes our own uid)
                           |
                    Philips Hue Entertainment
 ```
@@ -573,13 +635,55 @@ later phase again.
       (colour temperature follows song structure), Phantom Stage (instruments mapped to physical
       positions), Phone as Conductor (motion-driven lighting). PR #71
 
+**v0.10.5** (PR #89 — fifteen items):
+
+- [x] **Announcements that finish, and that can be heard over a video** — `stream/end` is
+      byte-identical for "paused", "track ended" and "announcement finished", and the engine
+      discarded the tail for all three. A discriminator tells them apart from a locally-issued
+      pause and MA's own player events; announcements now request ducking focus with speech
+      attributes rather than fighting for the output
+- [x] **Downloads as a first-class library** — artists, albums and tiles in the same switcher as
+      every server, replacing a flat list with its own rendering branch
+- [x] **Local device files actually work** — six separate defects, any one of which emptied the
+      library, including a folder list written as JSON and read as pipe-separated, and a
+      reachability test comparing SAF tree URIs against MediaStore URIs
+- [x] **A light show for a remote Music Assistant speaker** — scheduled from the track's offline
+      analysis, with an honest status line and a speaker-offset control
+- [x] **Lights from other apps** — `MediaProjection` capture, with detection of apps that forbid it
+- [x] **Album colours for the room** — k-means++ seeding, a most-chromatic-quarter cluster
+      representative and a neutral-swatch cap backported from the UI palette, which had them and
+      the light-sync extraction did not
+- [x] Artist pages paint on the first round-trip again; the wave seek bar's track moves with the
+      wave; sliders stop snapping back on release and claim a 44dp touch target; the driving bar
+      docks to the edge, its drag and its close button work, and the floating window reads the
+      setting that selects it; in-place queue shuffle; the cover turns like a page on an album
+      change; a Motion setting; and the stats screen clears the mini player
+- [x] **16 KB page alignment** — the one native library this project builds was 4 KB-aligned, so
+      Android loaded the app in a compatibility mode and said so on first launch
+
+**v0.10.6** (PR #90):
+
+- [x] **Analyser v3 — a key detector that can actually hear.** `TrackScan.key` is where the Music
+      DNA layer takes its entire anchor hue from, and measured against real music the old one
+      agreed with itself on a transposed copy of the same track **12.4 %** of the time, against a
+      1-in-12 chance floor. Three faults, each found by measuring rather than reading: a chroma
+      that could not resolve a semitone below ~186 Hz, an assumption of A440 against a corpus
+      sitting 4–7 cents sharp, and third harmonics being heard as tonics. Now **71.1 %** shift
+      consistency and **90.9 %** detune stability
+- [x] **An analysis harness** (`tools/analysis-harness/`) that runs the real scan path over real
+      music and scores it on two measures needing no ground truth — transpose invariance and
+      detune stability. Not in CI; the corpus is somebody's music library
+- [x] **The light-show layers stop littering** — roughly 240 maps and 2,400 short-lived arrays a
+      second removed from the one thread in the app with a hard deadline
+
 ### Next up
 
-- [ ] **On-device verification of v0.9 and v0.10.** The playback chain is confirmed; the driving bar,
-      the widget, the shared-element flight, the palette rework, the file split, the stats screen,
-      swipe-to-queue, USB DAC detection, and the driving enhancements (speed alert, auto-pause,
-      adaptive volume) are not. Several can only be judged by eye, one only in a car, and the speed
-      alert only on a road.
+- [ ] **On-device verification of the newest work.** The playback chain is confirmed on hardware.
+      What is not: the driving bar's window behaviour, the MediaProjection consent and
+      foreground-service ordering (which has no compile-time signal if it is wrong), the
+      announcement drain caps, and the remote-speaker show's timing against a real cast group.
+      Several of these can only be judged by eye, one only in a car, and the speed alert only on a
+      road.
 - [ ] **True overlapping crossfade** on the standalone path — a second ExoPlayer ping-ponged with
       volume ramps, moving queue ownership and touching ReplayGain, the notification, and the
       analysis tap. The shipped smooth transitions and beat-matched crossfade are the first two
@@ -588,13 +692,14 @@ later phase again.
       Both media services are plain `Service`s though, so the work is a `MediaLibraryService` and a
       browse tree, not just a manifest line. It overlaps driving mode in purpose but not in reach:
       Auto only helps cars that have it, which is exactly the case driving mode exists to cover.
-- [ ] **The Oboe silence** — [PR #59](https://github.com/engabd11/CAMusic/pull/59). Blocks
-      nothing; the path is opt-in and off.
+- [ ] **The Oboe silence** — [PR #59](https://github.com/engabd11/CAMusic/pull/59), closed
+      unresolved. Blocks nothing; the path is opt-in and off.
 - [ ] **Music Assistant gapless** — MA treats gapless as crossfade, so there is no server switch to
       ask for: joining two streams without a seam is client-side work here.
-- [ ] **Room gestures** shipped in v0.9.1 (see the shipped list above). The spatial swell detector
-      and rendering are built; the remaining work is device verification of detection frequency
-      against real music.
+- [ ] **How often a room gesture actually fires.** The detector shipped in v0.9.1 and is
+      deliberately strict; what is unmeasured is how much real music contains a traversal it should
+      find. Every detection is logged whether or not the lights move, so an album and
+      `adb logcat -s DirectLightSync` is what answers it.
 
 ### Planned
 
@@ -610,11 +715,13 @@ later phase again.
 - [ ] **Bit-perfect exclusive-mode output** — the native AAudio I24 path is written and
       deliberately not compiled. `flac_decode()` is still a skeleton and the ring buffer is
       byte-level rather than frame-level. The largest single audio item on the roadmap.
-- [ ] **Wider instrumented coverage** — 727 unit tests cover protocol, clock, DSP, parsing, the
+- [ ] **Wider instrumented coverage** — 810 unit tests cover protocol, clock, DSP, parsing, the
       server list, the Philips Hue Entertainment sync engine, speed alert logic, beat-matched
-      crossfade, and the creative light-show layers, and two instrumented tests now pin
-      the two regressions that each cost a release. Nothing yet covers the audio path end to end,
-      the service lifecycle, or the UI.
+      crossfade, the creative light-show layers, the announcement drain policy, the downloads index
+      and the SAF-to-MediaStore folder mapping; two instrumented test classes pin the two
+      regressions that each cost a release. Nothing yet covers the audio path end to end, the
+      service lifecycle, or the UI — and nothing can cover the MediaProjection consent sequence
+      without a device and a human tapping a dialog.
 - [ ] **A hosted crash backend** — crashes are stored locally and, with a token configured, filed
       automatically as a GitHub issue. What is missing is somewhere to send them that isn't a
       repository, and reporting more than the most recent one per launch.
@@ -630,12 +737,13 @@ later phase again.
 
 Written down because the alternative is discovering them by ear:
 
-- **The playback chain is confirmed on hardware; most of what came after it is not.** A release
-  build ran on a Galaxy S23 and Music Assistant playback produced audio — which cleared the whole
-  of the stabilisation work in one run, and turned up five further bugs in the same session, all
-  fixed. What has *not* been on a device is everything shipped since: the driving bar, the widget,
-  the shared-element flight, the palette rework and the file split. Two of those can only be judged
-  by eye and one only in a car. This is the honest gap between "the tests pass" and "it works".
+- **The playback chain is confirmed on hardware; the newest features are not.** A release build
+  ran on a Galaxy S23 and Music Assistant playback produced audio, which cleared the whole of the
+  stabilisation work in one run and turned up five further bugs in the same session, all fixed.
+  What shipped in v0.10.5 went out without an equivalent pass: the driving bar's window
+  behaviour, the MediaProjection consent sequence, the announcement drain caps and the
+  remote-speaker show's timing all want a device. This is the honest gap between "the tests pass"
+  and "it works".
 - **Driving mode's Picture-in-Picture path has not been tried against Google Maps in navigation
   mode.** Android 12+ lets an app call `setHideOverlayWindows(true)` to suppress non-system
   overlays over itself. Whether Maps does is assumed *not*. If it does, the full-width overlay
@@ -643,10 +751,26 @@ Written down because the alternative is discovering them by ear:
   which mechanism leads.
 - **The native Oboe output path is silent.** Off by default, opt-in, and clearly labelled as such
   in Settings. See [PR #59](https://github.com/engabd11/CAMusic/pull/59).
-- **Direct Philips Hue light sync cannot follow a remote speaker.** It taps this phone's own render
-  chain, which now covers both local playback *and* Music Assistant playing to this phone. Music
-  playing on a different speaker never reaches this phone's decoder, so that case still needs the
-  Home Assistant path.
+- **A remote speaker gets a scheduled show, not a reactive one.** The tap reads this phone's own
+  render chain, which covers local playback *and* Music Assistant playing to this phone. Audio on
+  another speaker never reaches this decoder, so since v0.10.5 that case is driven from the track's
+  offline analysis instead: beats and structure are real, per-band detail is modelled from the
+  track's average balance, and stereo gestures are absent entirely. It also needs the track to be
+  matchable in a library this phone can read, and its timing is only as good as MA's reported
+  playhead — which for a remote speaker the server often does not recompute between polls. Expect
+  to use the speaker-offset slider. The Home Assistant path remains the alternative.
+- **Most video apps forbid audio capture, and the big ones do.** YouTube and YouTube Music set
+  `allowAudioPlaybackCapture="false"`, and an app that has is delivered to the capture as
+  bit-exact silence with no error of any kind. CAMusic detects that and says so rather than
+  looking broken, but it cannot work around it. Spotify, podcast apps and local players generally
+  do allow it.
+- **Capture consent cannot be remembered.** On Android 14+ a `MediaProjection` grant is single-use,
+  so the system dialog appears every time capture starts. That is a platform rule, not an
+  oversight.
+- **An announcement's tail is a judgement, not a fact.** The protocol sends the same message for
+  "paused", "track ended" and "announcement finished". The discriminator is right in the cases it
+  can see; where it cannot, it assumes music, and the fallback caps (400 ms for a track boundary,
+  5 s for an announcement) are reasoned rather than measured.
 - **Cleartext is allowed to LAN addresses only.** A server reached over plain HTTP on a public
   hostname is refused rather than sent credentials in the clear — use HTTPS for anything off
   the local network.
@@ -674,13 +798,14 @@ Written down because the alternative is discovering them by ear:
 
 ## Building
 
-JDK 17 and the Android SDK (compileSdk 36). The **NDK and CMake are required** — the native Oboe
-output engine in `app/src/main/cpp/` is part of the build even though the path it feeds is off by
-default. (The README said "no NDK needed" for several releases after that stopped being true.)
+JDK 17 or newer and the Android SDK (compileSdk 37, targetSdk 36, minSdk 31). The **NDK and CMake
+are required** — the native Oboe output engine in `app/src/main/cpp/` is part of the build even
+though the path it feeds is off by default. (The README said "no NDK needed" for several releases
+after that stopped being true.)
 
 ```bash
 ./gradlew assembleRelease        # app/build/outputs/apk/release/app-release.apk
-./gradlew :app:testDebugUnitTest # 727 unit tests
+./gradlew :app:testDebugUnitTest # 810 unit tests
 ./gradlew :app:lintDebug
 ```
 
@@ -707,9 +832,12 @@ Releases are cut locally. See the header of
 
 ## Documentation
 
-- [Release notes](docs/release-notes/) — what changed in each release, and why
-- [v0.10 plan](docs/v0.10-plan.md) — the current plan: correctness fixes, new features, and
-  driving enhancements
+- [Release notes](docs/release-notes/) — what changed in each release, and why (through v0.9.3)
+- [v0.10.6](docs/v0.10.6.md) — the most recent work: what was wrong with the key detector, how it
+  was measured, and the two attempts that were wrong before the one that worked
+- [Analysis harness](tools/analysis-harness/README.md) — measuring the offline analyser against
+  real music on two scores that need no ground truth. Not in CI
+- [v0.10 plan](docs/v0.10-plan.md) — correctness fixes, new features, and driving enhancements
 - [Creative light shows](docs/creative-light-shows.md) — the four additive Hue layers: music DNA,
   emotional arc, phantom stage, and phone-as-conductor
 - [v0.9 plan](docs/v0.9-plan.md) and [what's left of it](docs/v0.9-remaining.md) — the previous
@@ -717,9 +845,9 @@ Releases are cut locally. See the header of
   for the parts that turned out **wrong**: it opens with five load-bearing premises of the plan
   that did not survive being checked, and later records three of its own that did not survive
   being built.
-- Oboe investigation ([PR #59](https://github.com/engabd11/CAMusic/pull/59), not yet merged) — why
-  the native output path is silent, what has been ruled out, and the one measurement that would
-  settle it
+- Oboe investigation ([PR #59](https://github.com/engabd11/CAMusic/pull/59), closed unresolved) —
+  why the native output path is silent, what has been ruled out, and the one measurement that
+  would settle it
 - [Spatial swell design](docs/spatial-swell-plan.md) and
   [implementation](docs/spatial-swell-implementation.md) — lights that move when the sound does.
   The first is the case for the feature; the second is how it was built, and both are worth reading
@@ -739,7 +867,8 @@ Releases are cut locally. See the header of
 - [Protocol alignment](docs/protocol-alignment.md) — what MA's Sendspin provider actually speaks
 - [Architecture decision](docs/architecture-decision.md)
 - [Design brief](docs/design-brief.md)
-- [Track prescan](docs/track-prescan.md)
+- [Track prescan](docs/track-prescan.md) — what an offline scan knows about a track, and what the
+  show does with it
 
 ## Contributing
 
