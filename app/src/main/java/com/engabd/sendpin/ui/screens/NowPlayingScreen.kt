@@ -5,7 +5,10 @@ import android.content.Intent
 import android.media.AudioManager
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -36,6 +39,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -119,6 +123,15 @@ fun NowPlayingScreen(
 
     val scrubber = rememberScrubber(viewModel)
 
+    // Hoisted, because the artwork is painted twice on this screen: as the sleeve and
+    // as the wash behind it. Sharing one holder is what keeps the two on the same
+    // clock through a page turn, and what stops either of them reloading when two
+    // tracks of one record arrive with different urls for the same picture.
+    val art = rememberSettledArt(st.artworkUrl, albumFlipKey(st))
+    val artDim = idleFade(st.idle, 0.55f)
+    val artGlow = idleFade(st.idle, 0.18f, 0.45f)
+    val washDim = idleFade(st.idle, 0.5f)
+
     // How far up a swipe has to travel before it means "show me the queue".
     val queueRevealPx = with(LocalDensity.current) { 56.dp.toPx() }
 
@@ -144,7 +157,9 @@ fun NowPlayingScreen(
             // The screen keeps its shape whether or not anything is playing: an
             // idle player shows the last track it had (dimmed, with a notice)
             // rather than swapping the whole screen for an empty state.
-            MeltBackdrop(st.artworkUrl, intensity = if (st.idle) 0.5f else 1f)
+            // Fed the *settled* url rather than the raw one, so it neither reloads
+            // within an album nor changes a quarter of a second before the cover does.
+            MeltBackdrop(art.url, intensity = washDim.value)
 
             Column(
                 Modifier
@@ -171,36 +186,51 @@ fun NowPlayingScreen(
 
                 // Album art fills the available space, shrinking on small screens
                 // and growing on large ones — no scroll needed.
-                if (showLyrics) {
-                    LyricsPane(
-                        viewModel = viewModel,
-                        positionMs = scrubber.positionMs,
-                        modifier = Modifier.fillMaxWidth().weight(1f),
-                    )
-                } else {
-                    AlbumArt(
-                        url = st.artworkUrl,
-                        glow = palette.swatch(0),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f)
-                            .alpha(if (st.idle) 0.55f else 1f)
-                            // Long-press → quick actions (go to album/artist, share).
-                            // No ripple: a tap here has never done anything, and
-                            // adding one now would read as a new, absent affordance.
-                            // Nothing to act on with an empty player.
-                            .combinedClickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null,
-                                onClick = {},
-                                onLongClick = if (favouritable != null) {
-                                    { sheets.actions = true }
-                                } else null,
-                            ),
-                        glowAlpha = if (st.idle) 0.18f else 0.45f,
-                        placeholder = Icons.AutoMirrored.Filled.QueueMusic,
-                        flipKey = albumFlipKey(st),
-                    )
+                // The weight lives on the container, not on either branch, so the
+                // two can never disagree about how tall this slot is. The cover is the
+                // only flexible child of this Column and anything that grows beside it
+                // takes the difference out of the artwork.
+                AnimatedContent(
+                    targetState = showLyrics,
+                    transitionSpec = {
+                        (fadeIn(Motion.fadeThroughIn()) togetherWith fadeOut(Motion.fadeThroughOut()))
+                            .using(SizeTransform(clip = false))
+                    },
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    label = "lyricsOrArt",
+                ) { lyrics ->
+                    if (lyrics) {
+                        LyricsPane(
+                            viewModel = viewModel,
+                            positionMs = scrubber.positionMs,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    } else {
+                        AlbumArt(
+                            art = art,
+                            glow = palette.swatch(0),
+                            modifier = Modifier
+                                .fillMaxSize()
+                                // graphicsLayer rather than Modifier.alpha: the State is
+                                // read in the layer block, so easing the dim costs no
+                                // recomposition for the length of the transition.
+                                .graphicsLayer { alpha = artDim.value }
+                                // Long-press → quick actions (go to album/artist, share).
+                                // No ripple: a tap here has never done anything, and
+                                // adding one now would read as a new, absent affordance.
+                                // Nothing to act on with an empty player.
+                                .combinedClickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                    onClick = {},
+                                    onLongClick = if (favouritable != null) {
+                                        { sheets.actions = true }
+                                    } else null,
+                                ),
+                            glowAlpha = artGlow.value,
+                            placeholder = Icons.AutoMirrored.Filled.QueueMusic,
+                        )
+                    }
                 }
 
                 Spacer(Modifier.height(4.dp))

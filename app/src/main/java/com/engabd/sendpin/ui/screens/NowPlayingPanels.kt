@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.zIndex
+import androidx.compose.ui.layout.ContentScale
 import coil.compose.AsyncImage
 import com.engabd.sendpin.ma.MaLyrics
 import com.engabd.sendpin.ma.MaQueueItem
@@ -330,7 +331,15 @@ private fun QueueRow(
     ) {
         Box(Modifier.size(40.dp).clip(RoundedCornerShape(9.dp)).background(Glass), contentAlignment = Alignment.Center) {
             if (item.image != null) {
-                AsyncImage(model = item.image, contentDescription = null, modifier = Modifier.matchParentSize())
+                // Through the shared request builder, and cropped like every other
+                // thumbnail in the app — a bare model here defaulted to Fit, which
+                // letterboxed a non-square cover inside a 40dp square.
+                AsyncImage(
+                    model = rememberArtRequest(item.image, pixels = 120),
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.matchParentSize(),
+                )
             } else {
                 Icon(Icons.Default.MusicNote, null, tint = TextFaint, modifier = Modifier.size(16.dp))
             }
