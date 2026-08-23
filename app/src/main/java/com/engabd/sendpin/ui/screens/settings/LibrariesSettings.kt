@@ -121,16 +121,19 @@ private fun ServerList(
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         SettingsCard(
             title = "Your libraries",
-            lead = "Pick the one the Library tab browses. The others stay set up and keep their " +
-                "logins, and downloads play whichever server they came from either way.",
+            lead = "Pick the one the Library tab browses.",
+            info = "Switching does not remove anything: the others stay set up and keep their " +
+                "logins, ready to switch back to. Downloads play from whichever server they " +
+                "came from either way, so nothing on disk stops working.",
         ) {}
 
         if (servers.isEmpty()) {
             SettingsCard(
                 title = "Nothing set up yet",
-                lead = "Add Music Assistant to play to speakers around the house, or a " +
-                    "Navidrome, Subsonic or Jellyfin server to browse and play on this phone — " +
-                    "with downloads that keep working with no network at all.",
+                lead = "Add a server and the Library tab has something to browse.",
+                info = "Music Assistant plays to speakers around the house. Navidrome, " +
+                    "Subsonic and Jellyfin play on this phone — which is what makes downloads " +
+                    "possible, and what keeps music working with no network at all.",
             ) {}
         }
 
@@ -152,13 +155,17 @@ private fun ServerList(
             // what it is for in the lead.
             SettingsCard(
                 title = "What ${active.displayName} means for the rest of the app",
-                lead = if (active.kind.playsLocally)
-                    "${active.displayName} plays on this phone. Speaker grouping is a Music " +
-                        "Assistant feature, so that tab is off. Light Sync still works, over " +
-                        "the Hue Bridge directly."
+                lead = if (active.kind.playsLocally) "${active.displayName} plays on this phone."
+                else "Music Assistant plays anywhere on the network.",
+                info = if (active.kind.playsLocally)
+                    "Speaker grouping is a Music Assistant feature, so that tab is off while " +
+                        "this library is the active one.\n\n" +
+                        "Light Sync still works: it drives the Hue Bridge directly over the " +
+                        "LAN, following this phone's own playback."
                 else
-                    "Music Assistant browses the whole library, plays to any speaker on the " +
-                        "network, and keeps grouping and Light Sync available.",
+                    "It browses the whole library and plays to any speaker on the network, so " +
+                        "grouping and Light Sync are both available — Light Sync following " +
+                        "whichever player Music Assistant is driving.",
             ) {}
         }
     }
@@ -283,9 +290,11 @@ private fun ProviderPicker(accent: Color, onPick: (ServerKind) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         SettingsCard(
             title = "Add a server",
-            lead = "Music Assistant plays to speakers around the house. Everything else is a " +
-                "library this phone plays itself — which is what makes downloads, and music " +
-                "that keeps working with the network down, possible.",
+            lead = "Music Assistant plays to the house; the rest play here.",
+            info = "Music Assistant drives speakers around the house and keeps a shared queue " +
+                "across them.\n\n" +
+                "Everything else is a library this phone plays itself — which is what makes " +
+                "downloads possible, and music that keeps working with the network down.",
         ) {}
 
         ServerKind.addable.forEach { kind ->

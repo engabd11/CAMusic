@@ -371,9 +371,10 @@ private fun rememberSettingsOverview(
 private fun GetStartedCard(accent: androidx.compose.ui.graphics.Color, onAddLibrary: () -> Unit) {
     SettingsCard(
         title = "Start here",
-        lead = "CAMusic plays your own library — Music Assistant for speakers around the " +
-            "house, or Navidrome, Subsonic or Jellyfin to play on this phone with downloads " +
-            "that work with no network at all. Add one and the rest of the app comes alive.",
+        lead = "Add a library and the rest of the app comes alive.",
+        info = "CAMusic plays your own music, from your own server. Music Assistant drives " +
+            "speakers around the house; Navidrome, Subsonic or Jellyfin play on this phone, " +
+            "with downloads that work with no network at all.",
     ) {
         OledButton("Add a music library", accent = accent, onClick = onAddLibrary)
     }
@@ -440,9 +441,9 @@ private fun BackupSection(settings: AppSettings, accent: Color, scope: Coroutine
 
     SettingsCard(
         title = "Backup & restore",
-        lead = "Export every setting — including saved servers — to an encrypted file, or " +
-            "restore one on a new install. The password is yours alone: there is no way to " +
-            "recover a backup without it.",
+        lead = "Every setting, including saved servers, to an encrypted file.",
+        info = "Export one here and restore it on a new install. The password is yours alone " +
+            "— it is not stored anywhere and there is no way to recover a backup without it.",
     ) {
         OledButton(text = "Export settings", accent = accent, outline = true) { exportPrompt = true }
         Spacer(Modifier.height(8.dp))

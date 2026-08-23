@@ -81,9 +81,10 @@ internal fun LightSyncSection(
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         SettingsCard(
             title = "How the lights hear the music",
-            lead = "Two ways to drive them, and which one is right follows where the audio " +
-                "actually comes out. The show itself — which room, how hard it reacts, the " +
-                "effect, the colours — lives on the Lights tab.",
+            lead = "Two ways to drive them. Which is right follows where the audio comes out.",
+            info = "This page is only about the route between the music and the bulbs.\n\n" +
+                "The show itself — which room, how hard it reacts, the effect, the colours — " +
+                "lives on the Lights tab.",
         ) {
             SegmentedToggle(
                 options = listOf("Home Assistant", "Hue Bridge"),
@@ -99,20 +100,28 @@ internal fun LightSyncSection(
                 }
             }
             Note(
-                if (direct)
-                    "The app talks to the Hue Bridge directly over the LAN — no Home Assistant " +
-                        "needed. It follows this phone's own playback, so it works with Navidrome " +
-                        "and offline. The phone is the only speaker."
+                if (direct) "Straight to the bridge over the LAN. This phone is the speaker."
+                else "Through Home Assistant. Follows any Music Assistant player.",
+                title = "The two routes",
+                info = if (direct)
+                    "The app talks to the Hue Bridge directly over the LAN, with no Home " +
+                        "Assistant in the path at all. It follows this phone's own playback, " +
+                        "so it works with Navidrome and it works offline.\n\n" +
+                        "The trade is that the phone is the only speaker it can follow."
                 else
-                    "Drives the Hue Synco integration in Home Assistant over its WebSocket API. " +
-                        "It can follow any Music Assistant player, so it works with multi-room " +
-                        "grouping.",
+                    "Drives the Hue Synco integration in Home Assistant over its WebSocket " +
+                        "API.\n\n" +
+                        "That can follow any Music Assistant player rather than just this one, " +
+                        "so it works with multi-room grouping — the lights follow the group.",
             )
             if (auto) {
                 Note(
-                    "Chosen automatically from your library: a library this phone plays uses the " +
-                        "bridge directly, and Music Assistant — which can play anywhere — goes " +
-                        "through Home Assistant. Picking one above overrides that.",
+                    "Chosen automatically from your library.",
+                    title = "Following the library",
+                    info = "A library this phone plays uses the bridge directly, because the " +
+                        "audio is here. Music Assistant — which can play anywhere — goes " +
+                        "through Home Assistant, because the audio may not be.\n\n" +
+                        "Picking one above pins it and overrides this.",
                 )
             } else {
                 Text(
@@ -157,8 +166,10 @@ private fun HomeAssistantCard(
 
     SettingsCard(
         title = "Home Assistant",
-        lead = "Drives the Hue Synco light-sync integration. Needs a long-lived access token — " +
-            "Home Assistant → your profile → Security.",
+        lead = "Drives the Hue Synco light-sync integration.",
+        info = "Needs a long-lived access token, which Home Assistant issues under your " +
+            "profile → Security. The token is stored on this phone and sent only to the " +
+            "address above.",
     ) {
         OledField(haUrl, { onHaUrl(it); saved = false }, "Home Assistant address", "http://192.168.0.10:8123", accent)
         if (locked) {
@@ -270,10 +281,13 @@ private fun DirectBridgeSetup(settings: AppSettings, scope: CoroutineScope, acce
 
             if (!discovering && discovered.isEmpty() && tried) {
                 Note(
-                    "No bridge found. Some networks block the discovery protocol — you can enter " +
-                        "the bridge's address instead. It is on the Hue app's Settings → My Hue " +
-                        "System screen, or in your router's device list.",
+                    "No bridge found. You can enter its address instead.",
                     warn = true,
+                    title = "No bridge found",
+                    info = "Some networks block the discovery protocol this uses, so a bridge " +
+                        "that is working perfectly well can still be invisible here.\n\n" +
+                        "Its address is on the Hue app's Settings → My Hue System screen, or " +
+                        "in your router's list of connected devices.",
                 )
             }
 
@@ -416,10 +430,12 @@ private fun TrackAnalysisCard(settings: AppSettings, accent: Color) {
 
     SettingsCard(
         title = "Track analysis",
-        lead = "A song that has been read is exact from its first bar: the beat grid is known " +
-            "rather than found, drops are counted down to instead of noticed, and Auto sizes " +
-            "the room to how hard the song actually goes. Songs that haven't been read still " +
-            "work — they are just learnt as they play.",
+        lead = "A song that has been read is exact from its first bar.",
+        info = "Reading a track ahead means the beat grid is known rather than found, drops " +
+            "are counted down to instead of noticed a moment late, and Auto can size the room " +
+            "to how hard the song actually goes.\n\n" +
+            "Songs that have not been read still work. They are just learnt as they play, so " +
+            "the first chorus is where the lights catch up.",
     ) {
         ToggleRow(
             "Read tracks ahead",
@@ -501,9 +517,12 @@ private fun TrackAnalysisCard(settings: AppSettings, accent: Color) {
         }
 
         Note(
-            "The sweep covers downloads and the library this phone plays — the only tracks the " +
-                "direct path ever sees. It skips anything already analysed, so stopping and " +
-                "starting it again picks up where it left off.",
+            "Covers downloads and the library this phone plays.",
+            title = "What the sweep covers",
+            info = "Those are the only tracks the direct path ever sees, so they are the only " +
+                "ones worth reading ahead.\n\n" +
+                "It skips anything already analysed, which means stopping it and starting it " +
+                "again picks up where it left off rather than starting over.",
         )
     }
 }

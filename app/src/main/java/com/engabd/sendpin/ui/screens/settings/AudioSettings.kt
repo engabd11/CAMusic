@@ -21,6 +21,7 @@ import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.data.rememberIsIgnoringBatteryOptimizations
 import com.engabd.sendpin.ui.design.HSlider
+import com.engabd.sendpin.ui.design.InfoChip
 import com.engabd.sendpin.ui.theme.MonoFont
 import com.engabd.sendpin.ui.theme.TextSecondary
 import com.engabd.sendpin.ui.theme.WarnAmber
@@ -105,8 +106,7 @@ private fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSco
                 if (pinned.isBlank())
                     "Android picks the route — normally the last thing you plugged in."
                 else
-                    "Playback is pinned to this output. If it's unplugged, Android routes " +
-                        "normally again until it's back.",
+                    "Pinned to this output. Unplug it and Android routes normally again.",
             )
         }
 
@@ -120,19 +120,19 @@ private fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSco
 
         CardDivider()
         ToggleRow(
-            "Bit-perfect (24-bit)",
-            "Ask for 24-bit instead of 16 and render whatever depth the decoder reports. " +
-                "Costs bandwidth, and a phone whose mixer runs at 16-bit gains nothing — " +
-                "leave it off unless you're on a USB DAC.",
-            bitPerfect, accent,
-        ) { bitPerfect = it; scope.launch { settings.setBitPerfect24Bit(it) } }
-        Note(
-            "On a library this phone plays, this also turns on float output, so a 24-bit file " +
+            title = "Bit-perfect (24-bit)",
+            subtitle = "Ask for 24-bit instead of 16",
+            checked = bitPerfect,
+            accent = accent,
+            info = "Renders whatever depth the decoder reports rather than flattening to 16. " +
+                "It costs bandwidth, and a phone whose mixer runs at 16-bit gains nothing from " +
+                "it — leave it off unless you are on a USB DAC.\n\n" +
+                "On a library this phone plays, it also turns on float output, so a 24-bit file " +
                 "isn't requantised to 16 on its way to the sink. That is fixed when the player " +
                 "is built, so it applies next time the app starts. It is off by default because " +
-                "float output is experimental and has been heard to distort 44.1 kHz material on " +
-                "phones whose mixer runs at 48 — if that happens, turn it back off.",
-        )
+                "float output is experimental and has been heard to distort 44.1 kHz material " +
+                "on phones whose mixer runs at 48 — if that happens, turn it back off.",
+        ) { bitPerfect = it; scope.launch { settings.setBitPerfect24Bit(it) } }
     }
 }
 
@@ -160,9 +160,10 @@ internal fun StreamingCard(settings: AppSettings, accent: Color, scope: Coroutin
 
     SettingsCard(
         title = "What to ask Music Assistant for",
-        lead = "Music Assistant may only send a format this phone has advertised, so these " +
-            "decide what it is allowed to choose. 44.1 and 48 kHz are always offered, so " +
-            "CD-rate files stream untouched.",
+        lead = "What this phone is willing to be sent.",
+        info = "Music Assistant may only send a format this phone has advertised, so these " +
+            "decide what it is allowed to choose. 44.1 and 48 kHz are always offered " +
+            "whatever you set here, so CD-rate files stream untouched.",
     ) {
         ToggleRow(
             "Offer hi-res rates",
@@ -175,10 +176,15 @@ internal fun StreamingCard(settings: AppSettings, accent: Color, scope: Coroutin
             preferFlac, accent,
         ) { preferFlac = it; scope.launch { settings.setPreferFlac(it) } }
         ToggleRow(
-            "Play at original quality",
-            "When Music Assistant would have to resample, stream straight from Navidrome " +
-                "instead. Plays on this phone only — no queue, no grouping.",
-            preferOriginal, accent,
+            title = "Play at original quality",
+            subtitle = "Bypass Music Assistant rather than let it resample",
+            checked = preferOriginal,
+            accent = accent,
+            info = "When Music Assistant would have to resample a file, the app streams it " +
+                "straight from Navidrome instead, exactly as it is stored.\n\n" +
+                "The trade is that it plays on this phone only: going direct means going " +
+                "around the server, so there is no queue on it and no speaker grouping while " +
+                "a track is playing this way.",
         ) { preferOriginal = it; scope.launch { settings.setPreferOriginal(it) } }
         Note(
             "Output is ${if (bitPerfect) "up to 24-bit" else "16-bit"} — see Output above. " +
@@ -213,9 +219,12 @@ private fun LoudnessCard(settings: AppSettings, accent: Color, scope: CoroutineS
             },
         )
         Note(
-            "Applies to the library this phone plays, and to downloads. Music Assistant does " +
-                "its own gain server-side, so this would double it there. Boosts are capped at " +
-                "+${ReplayGain.MAX_BOOST_DB.toInt()} dB to avoid clipping.",
+            "Applies to the library this phone plays, and to downloads.",
+            title = "ReplayGain",
+            info = "Not to anything Music Assistant streams: it does its own gain server-side, " +
+                "so applying this as well would double it.\n\n" +
+                "Boosts are capped at +${ReplayGain.MAX_BOOST_DB.toInt()} dB, which is where " +
+                "raising a quiet master far enough starts to clip.",
         )
     }
 }
@@ -231,26 +240,26 @@ private fun ContinuousPlayCard(settings: AppSettings, accent: Color, scope: Coro
         title = "Between tracks",
         lead = "What happens in the gap between one track and the next.",
     ) {
-        FieldLabel("Smooth transitions")
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            HSlider(
-                value = fade / 12f,
-                onChange = {},
-                onCommit = { f -> scope.launch { settings.setNavFadeSeconds(Math.round(f * 12f)) } },
-                accented = true,
-                modifier = Modifier.weight(1f),
-            )
-            Text(
-                if (fade == 0) "Off" else "${fade}s",
-                color = TextSecondary, fontFamily = MonoFont,
-                style = MaterialTheme.typography.labelMedium,
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            FieldLabel("Smooth transitions")
+            InfoChip(
+                "Smooth transitions",
+                "Fades one track out and the next in, on the player this phone runs.\n\n" +
+                    "Off is gapless, which is what an album wants — so this is suppressed " +
+                    "automatically while the queue is a single record, however it is set " +
+                    "here.\n\n" +
+                    "It is not a crossfade: the two tracks do not overlap, because one player " +
+                    "has one output.",
+                Modifier.heightIn(0.dp),
             )
         }
-        Note(
-            "Fades one track out and the next in, on the player this phone runs. Off is " +
-                "gapless, which is what an album wants — so this is suppressed automatically " +
-                "while the queue is a single record, however it is set. It is not a crossfade: " +
-                "the two tracks don't overlap, because one player has one output.",
+        SliderRow(
+            value = fade / 12f,
+            format = { if (fade == 0) "Off" else "${fade}s" },
+            onChange = { f -> scope.launch { settings.setNavFadeSeconds(Math.round(f * 12f)) } },
         )
         if (fade > 0) {
             Spacer(Modifier.height(4.dp))
@@ -261,13 +270,19 @@ private fun ContinuousPlayCard(settings: AppSettings, accent: Color, scope: Coro
                 accent = accent,
             ) { on -> scope.launch { settings.setBeatMatchedCrossfade(on) } }
             Note(
-                "Needs a scan of the track — the same analysis Light Sync uses — already loaded " +
-                    "this session. Silently uses the fixed fade above otherwise.",
+                "Needs the track already scanned this session.",
+                title = "Beat-matched fade",
+                info = "The same analysis Light Sync uses. Where it has not run for the track " +
+                    "coming up, the fade falls back to the fixed length above without saying " +
+                    "so — a fade that waited for a scan would be a gap.",
             )
         }
         Note(
-            "What happens when the queue runs out altogether is a player setting — the " +
-                "options chip under the artwork on Now Playing, next to the queue it governs.",
+            "What happens when the queue runs out is on Now Playing.",
+            title = "End of the queue",
+            info = "It is a player setting rather than an app one, so it lives with the player " +
+                "— the options chip under the artwork on Now Playing, next to the queue it " +
+                "governs.",
         )
     }
 }
