@@ -62,6 +62,7 @@ internal fun AppearanceSection(settings: AppSettings, accent: Color, scope: Coro
     val showVisualizer by settings.showVisualizer.collectAsStateWithLifecycle(initialValue = false)
     val showMusicMap by settings.showMusicMap.collectAsStateWithLifecycle(initialValue = false)
     val djMode by settings.djMode.collectAsStateWithLifecycle(initialValue = false)
+    val sensorGestures by settings.sensorGestures.collectAsStateWithLifecycle(initialValue = false)
     val motionMode by settings.motionMode.collectAsStateWithLifecycle(initialValue = AppSettings.MOTION_SYSTEM)
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -198,6 +199,27 @@ internal fun AppearanceSection(settings: AppSettings, accent: Color, scope: Coro
                 checked = djMode,
                 accent = accent,
             ) { scope.launch { settings.setDjMode(it) } }
+        }
+
+        SettingsCard(
+            title = "Sensor gestures",
+            lead = "Shake to skip, flip face-down to pause, double-tap the body to play/pause.",
+            info = "Shake: a sharp jerk skips to the next track. Flip face-down (with the " +
+                "proximity sensor covered, the way it would be lying screen-down on a " +
+                "table): pauses. Double-tap the phone's body: play/pause.\n\nAll three read " +
+                "the accelerometer and proximity sensor only while this is on — nothing is " +
+                "sent anywhere.",
+        ) {
+            ToggleRow(
+                title = "Sensor gestures",
+                subtitle = "Shake, flip, or double-tap to control playback",
+                checked = sensorGestures,
+                accent = accent,
+            ) { on ->
+                scope.launch { settings.setSensorGestures(on) }
+                if (on) com.engabd.sendpin.SendpinApp.instance.playbackGestureMonitor.start()
+                else com.engabd.sendpin.SendpinApp.instance.playbackGestureMonitor.stop()
+            }
         }
 
         SettingsCard(

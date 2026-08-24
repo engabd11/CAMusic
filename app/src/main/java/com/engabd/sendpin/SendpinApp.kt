@@ -133,6 +133,16 @@ class SendpinApp : Application(), ImageLoaderFactory {
     val callPauseObserver: CallPauseObserver by lazy { CallPauseObserver(this) }
 
     /**
+     * Shake to skip, flip face-down to pause, double-tap the body to play/pause.
+     * Opt-in like [callPauseObserver] — see `AppSettings.sensorGestures` — started
+     * the same way: the settings collector in [onCreate] replays it from a prior
+     * run, and the Settings row starts/stops it directly on toggle.
+     */
+    val playbackGestureMonitor: com.engabd.sendpin.gesture.PlaybackGestureMonitor by lazy {
+        com.engabd.sendpin.gesture.PlaybackGestureMonitor(this)
+    }
+
+    /**
      * GPS speed for the speed-limit alert and speed-adaptive volume. Its own
      * `start()` gates location updates on driving-mode being active and at least
      * one of the two features being on, so — unlike [callPauseObserver] — this is
@@ -346,6 +356,7 @@ class SendpinApp : Application(), ImageLoaderFactory {
             // it runs off the main thread rather than blocking onCreate on a DataStore read.
             appScope.launch { if (AppSettings(this@SendpinApp).pauseForCalls.first()) callPauseObserver.start() }
             speedMonitor.start()
+            appScope.launch { if (AppSettings(this@SendpinApp).sensorGestures.first()) playbackGestureMonitor.start() }
         }
         // The storage cap evicts oldest-first, and the one file it must never take is
         // the one being listened to. Published here rather than looked up inside the
