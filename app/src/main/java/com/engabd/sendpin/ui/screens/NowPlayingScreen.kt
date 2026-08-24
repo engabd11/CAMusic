@@ -18,6 +18,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
@@ -134,6 +135,14 @@ fun NowPlayingScreen(
 
     // How far up a swipe has to travel before it means "show me the queue".
     val queueRevealPx = with(LocalDensity.current) { 56.dp.toPx() }
+    // How far sideways a swipe has to travel before it means "skip". Same settings
+    // instance SeekRow already builds locally for the seek-bar style read.
+    val settings = remember(context) { AppSettings(context) }
+    val swipeToSkip by settings.swipeToSkip.collectAsStateWithLifecycle(initialValue = false)
+    val skipThresholdPx = with(LocalDensity.current) { 64.dp.toPx() }
+    val showVisualizer by settings.showVisualizer.collectAsStateWithLifecycle(initialValue = false)
+    val showMusicMap by settings.showMusicMap.collectAsStateWithLifecycle(initialValue = false)
+    val currentScan by viewModel.currentScan.collectAsStateWithLifecycle()
 
     CompositionLocalProvider(LocalAccent provides accent, LocalPalette provides palette) {
         Box(
@@ -151,6 +160,24 @@ fun NowPlayingScreen(
                         onDragCancel = { travelled = 0f },
                         onDragEnd = { if (travelled < -queueRevealPx) sheets.panel = Panel.QUEUE },
                         onVerticalDrag = { _, amount -> travelled += amount },
+                    )
+                }
+                // Swipe right/left to skip, gated behind its own Appearance setting.
+                // A second, independent pointerInput rather than folding into the
+                // vertical one above — Compose arbitrates which axis wins a drag via
+                // each detector's own oriented touch-slop, so this coexists with the
+                // queue-reveal gesture without either fighting the other.
+                .pointerInput(swipeToSkip, sheets.sheetOpen) {
+                    if (!swipeToSkip || sheets.sheetOpen) return@pointerInput
+                    var dx = 0f
+                    detectHorizontalDragGestures(
+                        onDragStart = { dx = 0f },
+                        onDragCancel = { dx = 0f },
+                        onDragEnd = {
+                            if (dx < -skipThresholdPx) viewModel.next()
+                            else if (dx > skipThresholdPx) viewModel.previous()
+                        },
+                        onHorizontalDrag = { change, amount -> change.consume(); dx += amount },
                     )
                 }
         ) {
@@ -206,30 +233,41 @@ fun NowPlayingScreen(
                             modifier = Modifier.fillMaxSize(),
                         )
                     } else {
-                        AlbumArt(
-                            art = art,
-                            glow = palette.swatch(0),
-                            modifier = Modifier
-                                .fillMaxSize()
-                                // graphicsLayer rather than Modifier.alpha: the State is
-                                // read in the layer block, so easing the dim costs no
-                                // recomposition for the length of the transition.
-                                .graphicsLayer { alpha = artDim.value }
-                                // Long-press → quick actions (go to album/artist, share).
-                                // No ripple: a tap here has never done anything, and
-                                // adding one now would read as a new, absent affordance.
-                                // Nothing to act on with an empty player.
-                                .combinedClickable(
-                                    interactionSource = remember { MutableInteractionSource() },
-                                    indication = null,
-                                    onClick = {},
-                                    onLongClick = if (favouritable != null) {
-                                        { sheets.actions = true }
-                                    } else null,
-                                ),
-                            glowAlpha = artGlow.value,
-                            placeholder = Icons.AutoMirrored.Filled.QueueMusic,
-                        )
+                        Box(Modifier.fillMaxSize()) {
+                            AlbumArt(
+                                art = art,
+                                glow = palette.swatch(0),
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    // graphicsLayer rather than Modifier.alpha: the State is
+                                    // read in the layer block, so easing the dim costs no
+                                    // recomposition for the length of the transition.
+                                    .graphicsLayer { alpha = artDim.value }
+                                    // Long-press → quick actions (go to album/artist, share).
+                                    // No ripple: a tap here has never done anything, and
+                                    // adding one now would read as a new, absent affordance.
+                                    // Nothing to act on with an empty player.
+                                    .combinedClickable(
+                                        interactionSource = remember { MutableInteractionSource() },
+                                        indication = null,
+                                        onClick = {},
+                                        onLongClick = if (favouritable != null) {
+                                            { sheets.actions = true }
+                                        } else null,
+                                    ),
+                                glowAlpha = artGlow.value,
+                                placeholder = Icons.AutoMirrored.Filled.QueueMusic,
+                            )
+                            if (showVisualizer) {
+                                AudioVisualizer(
+                                    modifier = Modifier
+                                        .align(Alignment.BottomCenter)
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 10.dp)
+                                        .height(48.dp),
+                                )
+                            }
+                        }
                     }
                 }
 
@@ -301,6 +339,15 @@ fun NowPlayingScreen(
                 Spacer(Modifier.height(14.dp))
 
                 SeekRow(scrubber, st.durationMs, playing = st.isPlaying)
+
+                if (showMusicMap && currentScan != null) {
+                    Spacer(Modifier.height(8.dp))
+                    MusicMapTimeline(
+                        scan = currentScan!!,
+                        positionMs = scrubber.positionMs,
+                        onSeek = { viewModel.seekTo(it) },
+                    )
+                }
 
                 Spacer(Modifier.height(10.dp))
 

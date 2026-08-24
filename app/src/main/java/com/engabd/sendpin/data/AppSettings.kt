@@ -196,6 +196,15 @@ class AppSettings(private val context: Context) {
         // app shows the wizard instead of the main UI on launch.
         private val ONBOARDING_COMPLETED = booleanPreferencesKey("onboarding_completed")
         private val ONBOARDING_SKIPPED = booleanPreferencesKey("onboarding_skipped")
+        // Creative features and UI fixes plan (PR #96) — each off by default until a
+        // user turns it on, per the plan's own design principle.
+        private val SWIPE_TO_SKIP = booleanPreferencesKey("swipe_to_skip")
+        private val SHOW_VISUALIZER = booleanPreferencesKey("show_visualizer")
+        private val SHOW_MUSIC_MAP = booleanPreferencesKey("show_music_map")
+        private val DJ_MODE = booleanPreferencesKey("dj_mode")
+        private val SENSOR_GESTURES = booleanPreferencesKey("sensor_gestures")
+        private val LISTENING_DNA = booleanPreferencesKey("listening_dna")
+        private val STEM_SEPARATION = booleanPreferencesKey("stem_separation")
         // There is deliberately no light_sync_timing key. The Home Assistant path
         // exposes an offset because syncoV2 can only estimate where the speakers
         // are; the direct path measures the tap's lead over the AudioTrack exactly
@@ -598,6 +607,20 @@ class AppSettings(private val context: Context) {
     val nowPlayingLayout: Flow<String> = context.dataStore.data.map { it[NOW_PLAYING_LAYOUT] ?: "tab" }
     /** How the Now Playing seek bar is drawn — a straight line, or a wobbling wave. */
     val seekBarStyle: Flow<String> = context.dataStore.data.map { it[SEEK_BAR_STYLE] ?: "line" }
+    /** Swipe right/left on Now Playing to skip forward/back. Off by default. */
+    val swipeToSkip: Flow<Boolean> = context.dataStore.data.map { it[SWIPE_TO_SKIP] ?: false }
+    /** A live frequency-bar visualizer on Now Playing. Off by default. */
+    val showVisualizer: Flow<Boolean> = context.dataStore.data.map { it[SHOW_VISUALIZER] ?: false }
+    /** The song-structure timeline below the seek bar. Off by default. */
+    val showMusicMap: Flow<Boolean> = context.dataStore.data.map { it[SHOW_MUSIC_MAP] ?: false }
+    /** Auto-queues by BPM/key compatibility instead of genre/artist alone. Off by default. */
+    val djMode: Flow<Boolean> = context.dataStore.data.map { it[DJ_MODE] ?: false }
+    /** Shake to skip, flip face-down to pause, double-tap to play/pause. Off by default. */
+    val sensorGestures: Flow<Boolean> = context.dataStore.data.map { it[SENSOR_GESTURES] ?: false }
+    /** Captures bpm/key/energy per play for the Stats screen's DNA section. Off by default. */
+    val listeningDna: Flow<Boolean> = context.dataStore.data.map { it[LISTENING_DNA] ?: false }
+    /** Phantom Stage uses real per-section stem energy instead of frequency-band proxies. Off by default. */
+    val stemSeparation: Flow<Boolean> = context.dataStore.data.map { it[STEM_SEPARATION] ?: false }
     val onboardingCompleted: Flow<Boolean> = context.dataStore.data.map { it[ONBOARDING_COMPLETED] ?: false }
     val theme: Flow<String> = context.dataStore.data.map { it[THEME] ?: "oled" }
     val accentSource: Flow<String> = context.dataStore.data.map { it[ACCENT_SOURCE] ?: "album" }
@@ -868,6 +891,34 @@ class AppSettings(private val context: Context) {
 
     suspend fun setSeekBarStyle(style: String) {
         context.dataStore.edit { it[SEEK_BAR_STYLE] = style }
+    }
+
+    suspend fun setSwipeToSkip(on: Boolean) {
+        context.dataStore.edit { it[SWIPE_TO_SKIP] = on }
+    }
+
+    suspend fun setShowVisualizer(on: Boolean) {
+        context.dataStore.edit { it[SHOW_VISUALIZER] = on }
+    }
+
+    suspend fun setShowMusicMap(on: Boolean) {
+        context.dataStore.edit { it[SHOW_MUSIC_MAP] = on }
+    }
+
+    suspend fun setDjMode(on: Boolean) {
+        context.dataStore.edit { it[DJ_MODE] = on }
+    }
+
+    suspend fun setSensorGestures(on: Boolean) {
+        context.dataStore.edit { it[SENSOR_GESTURES] = on }
+    }
+
+    suspend fun setListeningDna(on: Boolean) {
+        context.dataStore.edit { it[LISTENING_DNA] = on }
+    }
+
+    suspend fun setStemSeparation(on: Boolean) {
+        context.dataStore.edit { it[STEM_SEPARATION] = on }
     }
 
     suspend fun setOnboardingCompleted(completed: Boolean) {

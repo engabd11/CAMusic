@@ -130,7 +130,31 @@ fun StatsScreen(onBack: () -> Unit = {}, viewModel: StatsViewModel = viewModel()
                     }
                 }
 
+                if (state.dominantKeys.isNotEmpty()) {
+                    item {
+                        SettingsCard(title = "Dominant keys") {
+                            RankedBars(items = state.dominantKeys, accent = accent)
+                        }
+                    }
+                }
+
+                if (state.bpmHistogram.isNotEmpty()) {
+                    item {
+                        SettingsCard(title = "BPM sweet spot") {
+                            RankedBars(items = state.bpmHistogram, accent = accent)
+                        }
+                    }
+                }
+
                 item { Note("Counts a track once it's roughly half played, or after four minutes. That is the same rule the scrobbler uses, so a skip doesn't count.") }
+                if (state.dominantKeys.isEmpty() && state.bpmHistogram.isEmpty()) {
+                    item {
+                        Note(
+                            "Key and tempo stats need Listening DNA turned on in Appearance " +
+                                "settings, and tracks that have been scanned.",
+                        )
+                    }
+                }
             }
         }
     }

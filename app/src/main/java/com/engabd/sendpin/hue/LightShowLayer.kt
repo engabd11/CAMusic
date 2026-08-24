@@ -1,6 +1,7 @@
 package com.engabd.sendpin.hue
 
 import com.engabd.sendpin.audio.AnalysisFrame
+import com.engabd.sendpin.audio.SectionStems
 import com.engabd.sendpin.audio.StructureState
 import com.engabd.sendpin.audio.TrackScan
 
@@ -84,6 +85,13 @@ data class LayerContext(
     val structure: StructureState?,
     /** The adopted pre-scan for the current track, or null before one lands. */
     val scan: TrackScan?,
+    /**
+     * The current section's stem energy from [scan], or null when there is no
+     * scan, the scan predates stem separation, the source was never genuinely
+     * stereo, or the setting is off. [PhantomStageLayer] is the only reader —
+     * see its own doc for the fallback this null enables.
+     */
+    val stems: SectionStems? = null,
     /** Normalised room-cube position of every channel. Empty on a bare area. */
     val positions: Map<Int, Vec3>,
     /** What shape the lamps are in — see [RoomTopology]. */

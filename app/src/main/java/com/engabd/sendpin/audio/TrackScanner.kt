@@ -13,6 +13,7 @@ import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.coroutines.coroutineContext
+import kotlin.math.sqrt
 
 /**
  * Decodes a track and hands the result to [finishScan].
@@ -177,6 +178,21 @@ object TrackScanner {
         private var accCount = 0
         private var last = 0f
 
+        // (L-R)/2 — the side signal, accumulated in lockstep with the mono
+        // downmix above (same resampler clock, same per-output-sample average),
+        // for the offline stem-energy estimate. Zero throughout for anything that
+        // is not genuine two-channel audio — see [OfflineExtractor.hadStereoInput],
+        // which is what actually decides whether a stem profile gets built from it.
+        private var accSumSide = 0f
+        private var lastSide = 0f
+
+        // A hop's worth of side-sample energy, flushed to the extractor at exactly
+        // ANALYSIS_HOP output samples — the same count [OfflineExtractor.push]'s
+        // own sliding window fires a frame on, so hop N here is frame N there,
+        // without either side needing to know about the other's internal state.
+        private var hopSumSq = 0f
+        private var hopCount = 0
+
         private val out = FloatArray(OUT_CHUNK)
         private var outCount = 0
 
@@ -189,6 +205,7 @@ object TrackScanner {
                 resampler = BoxResampleClock(sampleRate.toFloat() / ANALYSIS_SAMPLE_RATE)
             }
             channels = channelCount
+            ex.noteChannelCount(channels)
             pcmEncoding = AudioFormatEncoding.of(format)
 
             buffer.order(ByteOrder.nativeOrder())
@@ -200,25 +217,41 @@ object TrackScanner {
 
             for (f in 0 until frames) {
                 // (L+R)/2 — the mid downmix, which is exactly what the live tap
-                // analyses. The side channels only ever fed stereo pan, and pan
-                // comes from the tap live, so there is nothing to keep here.
+                // analyses. The side channels only ever fed stereo pan before —
+                // pan comes from the tap live — but now also feed the offline
+                // stem estimate below, genuine stereo only.
                 var sum = 0f
                 for (c in 0 until channels) {
                     sum += pcmEncoding.read(buffer, offset + c * bytesPerSample)
                 }
                 val mono = sum / channels
+                val side = if (channels == 2) {
+                    (pcmEncoding.read(buffer, offset) - pcmEncoding.read(buffer, offset + bytesPerSample)) * 0.5f
+                } else {
+                    0f
+                }
                 offset += frameBytes
 
                 accSum += mono
                 accCount++
+                accSumSide += side
                 var due = resampler.advance()
                 while (due-- > 0) {
                     if (accCount > 0) {
                         last = accSum / accCount
+                        lastSide = accSumSide / accCount
                         accSum = 0f
+                        accSumSide = 0f
                         accCount = 0
                     }
                     out[outCount++] = last
+                    hopSumSq += lastSide * lastSide
+                    hopCount++
+                    if (hopCount == ANALYSIS_HOP) {
+                        ex.pushSideHop(sqrt(hopSumSq / hopCount))
+                        hopSumSq = 0f
+                        hopCount = 0
+                    }
                     if (outCount == out.size) {
                         ex.push(out, outCount)
                         outCount = 0

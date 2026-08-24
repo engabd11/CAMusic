@@ -178,7 +178,7 @@ class TrackScanTest {
      */
     @Test
     fun `the analyser version is pinned so a bump is a decision`() {
-        assertEquals(3, TrackScan.ANALYSER_VERSION)
+        assertEquals(4, TrackScan.ANALYSER_VERSION)
     }
 
     @Test

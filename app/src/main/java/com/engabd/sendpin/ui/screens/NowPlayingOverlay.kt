@@ -13,6 +13,7 @@ import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
@@ -49,6 +50,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.engabd.sendpin.audio.StreamQuality
+import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
@@ -153,6 +155,14 @@ fun NowPlayingOverlay(
     // Read through a snapshot so the gesture detector doesn't have to be re-created
     // when a sheet opens — tearing it down mid-gesture loses the release event.
     val gestureBlocked by rememberUpdatedState(!expanded || sheets.sheetOpen)
+
+    // Swipe right/left to skip, gated behind its own Appearance setting.
+    val settings = remember(context) { AppSettings(context) }
+    val swipeToSkip by settings.swipeToSkip.collectAsStateWithLifecycle(initialValue = false)
+    val skipThresholdPx = with(LocalDensity.current) { 64.dp.toPx() }
+    val showVisualizer by settings.showVisualizer.collectAsStateWithLifecycle(initialValue = false)
+    val showMusicMap by settings.showMusicMap.collectAsStateWithLifecycle(initialValue = false)
+    val currentScan by viewModel.currentScan.collectAsStateWithLifecycle()
 
     // Motion.spatialOffsetPx(), not spatial(): this settles a ~2000px drag, and the
     // generic Float spring's default 0.01px visibility threshold made the coroutine
@@ -282,6 +292,23 @@ fun NowPlayingOverlay(
                         },
                     )
                 }
+                // A second, independent pointerInput for the horizontal skip gesture —
+                // Compose arbitrates which axis wins a drag via each detector's own
+                // oriented touch-slop, so this coexists with the vertical
+                // minimize/queue-reveal gesture above without either fighting the other.
+                .pointerInput(swipeToSkip, gestureBlocked) {
+                    if (!swipeToSkip || gestureBlocked) return@pointerInput
+                    var dx = 0f
+                    detectHorizontalDragGestures(
+                        onDragStart = { dx = 0f },
+                        onDragCancel = { dx = 0f },
+                        onDragEnd = {
+                            if (dx < -skipThresholdPx) viewModel.next()
+                            else if (dx > skipThresholdPx) viewModel.previous()
+                        },
+                        onHorizontalDrag = { change, amount -> change.consume(); dx += amount },
+                    )
+                }
                 .background(Ink)
         ) {
             // Album wash — always present, dimmed when idle. The settled url, so it
@@ -353,15 +380,26 @@ fun NowPlayingOverlay(
                         // Box: one surface, one movement, nothing to fall out of step.
                         // The bar's thumbnail simply cross-fades, which is what a
                         // control that is being replaced should do.
-                        AlbumArt(
-                            art = art,
-                            glow = palette.swatch(0),
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .graphicsLayer { alpha = artDim.value },
-                            glowAlpha = artGlow.value,
-                            placeholder = Icons.AutoMirrored.Filled.QueueMusic,
-                        )
+                        Box(Modifier.fillMaxSize()) {
+                            AlbumArt(
+                                art = art,
+                                glow = palette.swatch(0),
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .graphicsLayer { alpha = artDim.value },
+                                glowAlpha = artGlow.value,
+                                placeholder = Icons.AutoMirrored.Filled.QueueMusic,
+                            )
+                            if (showVisualizer) {
+                                AudioVisualizer(
+                                    modifier = Modifier
+                                        .align(Alignment.BottomCenter)
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 10.dp)
+                                        .height(48.dp),
+                                )
+                            }
+                        }
                     }
                 }
 
@@ -427,6 +465,15 @@ fun NowPlayingOverlay(
                 Spacer(Modifier.height(16.dp))
 
                 SeekRow(scrubber, st.durationMs, playing = st.isPlaying)
+
+                if (showMusicMap && currentScan != null) {
+                    Spacer(Modifier.height(8.dp))
+                    MusicMapTimeline(
+                        scan = currentScan!!,
+                        positionMs = scrubber.positionMs,
+                        onSeek = { viewModel.seekTo(it) },
+                    )
+                }
 
                 Spacer(Modifier.height(14.dp))
 

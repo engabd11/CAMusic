@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.engabd.sendpin.local.db.ArtistPlayCount
 import com.engabd.sendpin.local.db.FormatPlayCount
+import com.engabd.sendpin.local.db.KeyPlayCount
 import com.engabd.sendpin.local.db.LocalMediaDatabase
 import com.engabd.sendpin.local.db.ProviderPlayCount
 import com.engabd.sendpin.local.db.TrackPlayCount
@@ -26,6 +27,9 @@ class StatsViewModel(app: Application) : AndroidViewModel(app) {
         val mostPlayed: TrackPlayCount? = null,
         val formats: List<FormatPlayCount> = emptyList(),
         val providers: List<ProviderPlayCount> = emptyList(),
+        /** Listening DNA — empty unless `AppSettings.listeningDna` has been on for some plays. */
+        val dominantKeys: List<Pair<String, Int>> = emptyList(),
+        val bpmHistogram: List<Pair<String, Int>> = emptyList(),
     )
 
     private val _state = MutableStateFlow(State())
@@ -46,6 +50,8 @@ class StatsViewModel(app: Application) : AndroidViewModel(app) {
                 mostPlayed = dao.mostPlayedTrack(since),
                 formats = dao.formatBreakdown(since),
                 providers = dao.providerBreakdown(since),
+                dominantKeys = dao.keyDistribution(since).map { it.label() to it.plays },
+                bpmHistogram = bpmHistogram(dao.bpmSamples(since)),
             )
         }
     }
@@ -67,3 +73,17 @@ fun FormatPlayCount.label(): String {
     val khzLabel = if (khz == khz.toInt().toFloat()) khz.toInt().toString() else "%.1f".format(khz)
     return "$name $khzLabel/$bitDepth"
 }
+
+private val NOTE_NAMES = arrayOf("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
+
+/** "D minor", "C major" — the label Listening DNA's dominant-keys bar uses. */
+fun KeyPlayCount.label(): String {
+    val note = NOTE_NAMES.getOrNull(keyTonic) ?: return "Unknown"
+    return "$note ${if (keyMode == "MAJOR") "major" else "minor"}"
+}
+
+/** 10 BPM bins, sorted by how many plays landed in each, for RankedBars. */
+private fun bpmHistogram(samples: List<Float>): List<Pair<String, Int>> =
+    samples.groupingBy { (it / 10f).toInt() * 10 }.eachCount()
+        .entries.sortedByDescending { it.value }
+        .map { (bin, count) -> "$bin-${bin + 9}" to count }

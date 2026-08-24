@@ -419,6 +419,7 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
     val musicDna by settings.musicDnaEnabled.collectAsState(initial = false)
     val emotionalArc by settings.emotionalArcEnabled.collectAsState(initial = false)
     val phantomStage by settings.phantomStageEnabled.collectAsState(initial = false)
+    val stemSeparation by settings.stemSeparation.collectAsState(initial = false)
     val phoneConductor by settings.phoneConductorEnabled.collectAsState(initial = false)
     val tunables by settings.lightSyncTunables.collectAsState(initial = emptyMap())
     val bridgeIp by settings.hueBridgeIp.collectAsState(initial = "")
@@ -889,6 +890,24 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                         "version of the normal show.",
                     checked = phantomStage,
                 ) { on -> scope.launch { settings.setPhantomStageEnabled(on) } }
+
+                if (phantomStage) {
+                    Spacer(Modifier.height(16.dp))
+                    FeatureRow(
+                        title = "Real instrument separation",
+                        gist = "Use actual stem energy instead of frequency bands, where a scan has it.",
+                        info = "Separates vocals, a stereo-width signal (synths, wide guitars) and " +
+                            "bass from the mix during the offline track scan — a mid-side " +
+                            "decomposition, not a machine-learning model, run on this phone with " +
+                            "nothing sent anywhere.\n\nOff: Phantom Stage uses frequency bands as a " +
+                            "proxy for instruments, as above. On: it uses the real stem energy for " +
+                            "tracks that have been scanned since this shipped.\n\nTracks that have " +
+                            "not been scanned, or were scanned before this existed, fall back to " +
+                            "the frequency-band proxy automatically — re-read them under Track " +
+                            "analysis to fill them in.",
+                        checked = stemSeparation,
+                    ) { on -> scope.launch { settings.setStemSeparation(on) } }
+                }
 
                 Spacer(Modifier.height(16.dp))
                 FeatureRow(

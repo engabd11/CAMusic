@@ -28,9 +28,12 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 
 /**
  * What identifies the album on show, for [AlbumArt]'s page-turn.
@@ -125,6 +128,17 @@ fun rememberScrubber(viewModel: NowPlayingViewModel): Scrubber {
     val scrubber = remember(viewModel) { Scrubber(viewModel::seekTo) }
     val live by viewModel.positionMs.collectAsStateWithLifecycle()
     scrubber.livePos = live
+
+    // A new track invalidates any seek hold left over from the track that just ended —
+    // the hold exists to survive a seek's round trip, not a boundary that starts a
+    // fresh track at 0. Without this, skipping right after a seek (before the server
+    // confirms) pins the bar at the old position for the whole next track.
+    val trackIdFlow = remember(viewModel) {
+        viewModel.state.map { it.currentQueueItemId }.distinctUntilChanged()
+    }
+    val trackId by trackIdFlow.collectAsStateWithLifecycle(initialValue = null)
+    LaunchedEffect(trackId) { scrubber.seekTarget = -1L }
+
     // Release the hold once the server position catches up within two seconds.
     LaunchedEffect(live, scrubber.seekTarget) {
         if (scrubber.seekTarget >= 0 && !scrubber.scrubbing &&
@@ -192,19 +206,29 @@ fun TransportRow(
     ) {
         TransportIcon(Icons.Default.Shuffle, "Shuffle", 20.dp, state.shuffle) { viewModel.toggleShuffle() }
         TransportIcon(Icons.Default.SkipPrevious, "Previous", 26.dp) { viewModel.previous() }
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            TappableQualityChip(playing = state.quality, onClick = onShowQuality)
-
-            PlayButton(state.isPlaying) { viewModel.playPause() }
-        }
+        PlayCluster(state.quality, onShowQuality, state.isPlaying) { viewModel.playPause() }
         TransportIcon(Icons.Default.SkipNext, "Next", 26.dp) { viewModel.next() }
         TransportIcon(
             if (state.repeatMode == "one") Icons.Default.RepeatOne else Icons.Default.Repeat,
             "Repeat", 20.dp, state.repeatMode != "off",
         ) { viewModel.cycleRepeat() }
+    }
+}
+
+/** The quality badge and the play button, stacked — the transport row's center slot. */
+@Composable
+private fun PlayCluster(
+    quality: StreamQuality?,
+    onShowQuality: () -> Unit,
+    isPlaying: Boolean,
+    onPlayPause: () -> Unit,
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        TappableQualityChip(playing = quality, onClick = onShowQuality)
+        PlayButton(isPlaying, onClick = onPlayPause)
     }
 }
 
@@ -355,7 +379,9 @@ internal fun TransportIcon(
 ) {
     val accent = LocalAccent.current
     Box(
-        Modifier.clip(CircleShape).clickable(onClick = onClick).padding(6.dp),
+        // Fixed footprint so Bloom's larger radius (only present when active) can't
+        // change this icon's measured size and reflow its SpaceBetween siblings.
+        Modifier.size(size + 12.dp).clip(CircleShape).clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         if (active) Bloom(accent, size * 1.8f, 0.dp, 0.dp, 0.5f)

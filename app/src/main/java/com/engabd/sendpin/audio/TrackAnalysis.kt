@@ -226,6 +226,28 @@ internal class OfflineExtractor(sampleRate: Int = ANALYSIS_SAMPLE_RATE) {
     private val namedRows = FloatList()  // 5 per frame, row-major
     private val melRows = FloatList()    // MELBANK_BINS per frame, row-major
 
+    /**
+     * Per-hop side-channel ((L-R)/2) RMS, one value per frame — see
+     * [TrackScanner.Pump]'s parallel accumulation, which keeps this in lockstep
+     * with [rms] (the mid/mono signal every other feature here is built from) by
+     * construction: both count the same resampled sample stream in the same
+     * [ANALYSIS_HOP]-sized groups, so frame `i` here is frame `i` everywhere else.
+     * Stays at a constant zero for anything that was never genuinely stereo — see
+     * [hadStereoInput], which is what actually gates whether a stem profile gets
+     * built from it.
+     */
+    val sideEnv = FloatList()
+
+    /** Whether the source ever had exactly two channels. See [sideEnv]. */
+    var hadStereoInput = false
+        private set
+
+    fun pushSideHop(rms: Float) = sideEnv.add(rms)
+
+    fun noteChannelCount(count: Int) {
+        if (count == 2) hadStereoInput = true
+    }
+
     /** Per-frame linear-domain mid dominance, the live detector's own gate. */
     val midDominant = BooleanList()
 
@@ -1419,6 +1441,7 @@ internal fun finishScan(ex: OfflineExtractor, fullDurationS: Float = 0f): ScanRe
     // more often than anywhere else. Independent of the grid, so this is safe even
     // where the beats are not.
     val sections = segmentSections(ex, durationS)
+    val stems = buildStemProfile(ex, sections)
 
     var accents = FloatArray(0)
     var downbeat = 0
@@ -1477,8 +1500,63 @@ internal fun finishScan(ex: OfflineExtractor, fullDurationS: Float = 0f): ScanRe
             key = key,
             beatsPerBar = beatsPerBar,
             tuningCents = ex.tuningCents,
+            stems = stems,
         )
     )
+}
+
+/**
+ * Per-section stem energy — a mid/side decomposition, not true source separation.
+ * Mid ((L+R)/2) is exactly the mono signal every other feature above is built
+ * from, so "vocals" reuses [OfflineExtractor.rms] rather than a new signal — a
+ * centred voice is the dominant reason the mono downmix gets louder without the
+ * side signal following it. Side ((L-R)/2) is [OfflineExtractor.sideEnv], the one
+ * genuinely new accumulation, computed in [TrackScanner.Pump] in lockstep with
+ * the mono signal so the two are frame-aligned by construction. Bass reuses
+ * [OfflineExtractor.bassEnv], the same low-band onset envelope the beat grid
+ * already needed — an onset measure rather than a sustained level, so a long held
+ * bass note will under-read compared to a bassline that keeps attacking, which is
+ * an accepted trade for adding zero new spectral analysis.
+ *
+ * All three are normalised against their own 95th-percentile across the whole
+ * track, the same "own reference, not a fixed constant" idiom [buildIntensityProfile]
+ * and the beat-accent weighting above already use — an energy signal has no
+ * natural 0..1 scale otherwise, and a track's own dynamic range is what a lamp
+ * reacting to it should be measured against.
+ *
+ * Null when the source was never genuinely two-channel: there is no side signal
+ * to decompose, and [com.engabd.sendpin.hue.PhantomStageLayer]'s existing
+ * frequency-band proxy is the honest answer for it, same as for an unscanned
+ * track.
+ */
+internal fun buildStemProfile(ex: OfflineExtractor, sections: List<ScanSection>): StemProfile? {
+    val n = min(ex.frames, ex.sideEnv.size)
+    if (!ex.hadStereoInput || n == 0) return null
+
+    val midRef = percentile(ex.rms.toDoubleArray(), 95.0).toFloat().coerceAtLeast(1e-6f)
+    val sideRef = percentile(ex.sideEnv.toDoubleArray(), 95.0).toFloat().coerceAtLeast(1e-6f)
+    val bassRef = percentile(ex.bassEnv.toDoubleArray(), 95.0).toFloat().coerceAtLeast(1e-6f)
+
+    val perSection = sections.map { section ->
+        val start = (section.startS / FRAME_PERIOD).toInt().coerceIn(0, n)
+        val end = (section.endS / FRAME_PERIOD).toInt().coerceIn(start, n)
+        if (end <= start) return@map SectionStems(0f, 0f, 0f)
+        var midSum = 0f
+        var sideSum = 0f
+        var bassSum = 0f
+        for (i in start until end) {
+            midSum += ex.rms[i]
+            sideSum += ex.sideEnv[i]
+            bassSum += ex.bassEnv[i]
+        }
+        val count = (end - start).toFloat()
+        SectionStems(
+            vocals = unitF(midSum / count / midRef),
+            stereoWidth = unitF(sideSum / count / sideRef),
+            bass = unitF(bassSum / count / bassRef),
+        )
+    }
+    return StemProfile(perSection)
 }
 
 /** numpy's `interp`: piecewise-linear resample of [y] at `0 until n`. */

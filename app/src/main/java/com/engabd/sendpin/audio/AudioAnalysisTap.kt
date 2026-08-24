@@ -5,6 +5,9 @@ import androidx.media3.common.C
 import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.common.audio.BaseAudioProcessor
 import androidx.media3.common.util.UnstableApi
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.nio.ByteBuffer
 import java.util.concurrent.locks.LockSupport
 
@@ -59,6 +62,22 @@ class AudioAnalysisTap(
      */
     @Volatile
     var onFrame: ((AnalysisFrame) -> Unit)? = null
+
+    private val _frames = MutableStateFlow<AnalysisFrame?>(null)
+
+    /**
+     * Fan-out for consumers that don't need to claim the single [onFrame] slot — a
+     * Compose visualizer, for instance, alongside whatever (if anything) has claimed
+     * [onFrame] for Light Sync. Updated on the analysis thread; safe to collect from
+     * anywhere, `StateFlow` handles the cross-thread publish.
+     *
+     * The frame published here is **not** the one handed to [onFrame]: its melbank
+     * is a copy. [AnalysisFrame.melbank] is the analyzer's own live envelope array,
+     * rewritten in place every hop, which is safe only for a consumer that reads it
+     * synchronously on the analysis thread the way [onFrame] does. A `StateFlow`
+     * value is by definition read later and elsewhere, so it has to own its data.
+     */
+    val frames: StateFlow<AnalysisFrame?> = _frames.asStateFlow()
 
     /**
      * Track position of the frame just delivered to [onFrame], in seconds, or
@@ -392,6 +411,7 @@ class AudioAnalysisTap(
                 seenClear = clear
                 ring.dropAll()
                 analyzer.reset()
+                _frames.value = null
                 onAnalysisReset?.invoke()
                 continue
             }
@@ -407,6 +427,8 @@ class AudioAnalysisTap(
             framePositionS = readClock()
             // pushStereo copies out of both buffers immediately, so they are reused.
             val frame = analyzer.pushStereo(hopL, hopR)
+            // Detached copy for the flow, live array for the callback — see [frames].
+            _frames.value = frame.copy(melbank = frame.melbank.copyOf())
             onFrame?.invoke(frame)
         }
     }

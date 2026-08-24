@@ -28,4 +28,19 @@ data class PlayHistoryEntity(
     val sampleRate: Int = 0,
     val bitDepth: Int = 0,
     val durationPlayedMs: Long = 0,
+    /**
+     * Snapshot of the track's offline scan at play time, for the Stats screen's
+     * Listening DNA section — opt-in via `AppSettings.listeningDna`, null when off
+     * or when the track had no scan at the time. Snapshotted rather than joined at
+     * query time: `trackId` here is an MA-queue-scoped id, not the id space
+     * `TrackScanRepository` keys scans by, so there is no reliable way to look a
+     * scan back up from a stored history row after the fact.
+     */
+    val bpm: Float? = null,
+    /** [com.engabd.sendpin.audio.MusicalKey.tonic], 0-11. */
+    val keyTonic: Int? = null,
+    /** [com.engabd.sendpin.audio.MusicalMode] name, "MAJOR" or "MINOR". */
+    val keyMode: String? = null,
+    /** [com.engabd.sendpin.audio.IntensityProfile.character], 0..1. */
+    val energy: Float? = null,
 )

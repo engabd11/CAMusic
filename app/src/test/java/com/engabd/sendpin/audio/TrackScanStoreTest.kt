@@ -83,12 +83,15 @@ class TrackScanStoreTest {
     }
 
     /**
-     * Bytes the format-4 tail writes after the key: metre, tuning, and one label
-     * per section. The key used to be the end of the file and the tests that bend
-     * it counted back from there; naming the offset is what stops the next tail
-     * from silently making them bend the wrong byte and pass for the wrong reason.
+     * Bytes written after the key: the format-4 tail (metre, tuning, one label
+     * per section) plus the format-5 tail's leading "has stems" flag, which is
+     * the only byte format-5 contributes here since [scan] never sets [stems] —
+     * the `if (stems != null)` block writes nothing more when it's false. The key
+     * used to be the end of the file and the tests that bend it counted back from
+     * there; naming the offset is what stops the next tail from silently making
+     * them bend the wrong byte and pass for the wrong reason.
      */
-    private val tailAfterKey = 2 + 2  // beatsPerBar + tuning + two sections' labels
+    private val tailAfterKey = 2 + 2 + 1  // beatsPerBar + tuning + two sections' labels + no-stems flag
 
     @Test
     fun `a corrupt key byte costs the key, not the whole scan`() {
@@ -130,6 +133,89 @@ class TrackScanStoreTest {
         val loaded = TrackScanStore(dir).load("no-key")
         assertNotNull(loaded)
         assertEquals(null, loaded.key)
+    }
+
+    @Test
+    fun `a scan's stem profile survives the trip to disk and back`() {
+        val stems = StemProfile(
+            listOf(
+                SectionStems(vocals = 0.8f, stereoWidth = 0.2f, bass = 0.5f),
+                SectionStems(vocals = 0.1f, stereoWidth = 0.9f, bass = 0.3f),
+            ),
+        )
+        TrackScanStore(dir).save("stemmed", scan().copy(stems = stems))
+
+        val loaded = TrackScanStore(dir).load("stemmed")
+
+        assertNotNull(loaded)
+        assertNotNull(loaded.stems)
+        assertEquals(2, loaded.stems.sections.size)
+        assertEquals(0.8f, loaded.stems.sections[0].vocals, 1f / 255f)
+        assertEquals(0.2f, loaded.stems.sections[0].stereoWidth, 1f / 255f)
+        assertEquals(0.5f, loaded.stems.sections[0].bass, 1f / 255f)
+        assertEquals(0.9f, loaded.stems.sections[1].stereoWidth, 1f / 255f)
+    }
+
+    @Test
+    fun `a scan with no stem profile round-trips as null`() {
+        TrackScanStore(dir).save("no-stems", scan())
+        val loaded = TrackScanStore(dir).load("no-stems")
+        assertNotNull(loaded)
+        assertEquals(null, loaded.stems)
+    }
+
+    @Test
+    fun `a truncated stems tail costs the stems, not the whole scan`() {
+        val stems = StemProfile(List(3) { SectionStems(0.5f, 0.5f, 0.5f) })
+        TrackScanStore(dir).save("cut", scan().copy(stems = stems))
+
+        // Chop the file mid-way through the stems tail — the shape of a write
+        // that lost power, or a file the storage cap truncated. Everything up to
+        // and including the beat grid is still on disk and still good.
+        val file = dir.listFiles()!!.single { it.name.endsWith(".scan") }
+        val bytes = file.readBytes()
+        file.writeBytes(bytes.copyOf(bytes.size - 4))
+
+        val loaded = TrackScanStore(dir).load("cut")
+
+        assertNotNull(loaded, "a short stems tail must not take the beat grid down with it")
+        assertEquals(null, loaded.stems, "an unreadable tail should read as no stems")
+        assertEquals(128f, loaded.bpm, "everything before the stems tail should be intact")
+        assertTrue(file.exists(), "the file must survive: deleting it costs hours of re-decoding")
+    }
+
+    @Test
+    fun `an implausible stems count costs the stems, not the whole scan`() {
+        TrackScanStore(dir).save("huge", scan().copy(stems = StemProfile(List(2) { SectionStems(0.5f, 0.5f, 0.5f) })))
+
+        // Bend the stems count into something no track has. readIntBounded
+        // refuses it; the scan above it must still come back.
+        val file = dir.listFiles()!!.single { it.name.endsWith(".scan") }
+        val bytes = file.readBytes()
+        val count = bytes.size - 2 * 3 - 4  // two sections of three bytes, then the four-byte count
+        bytes[count] = 0x7F; bytes[count + 1] = 0x7F
+        file.writeBytes(bytes)
+
+        val loaded = TrackScanStore(dir).load("huge")
+
+        assertNotNull(loaded, "a nonsense stems count must not take the beat grid down with it")
+        assertEquals(null, loaded.stems)
+        assertEquals(128f, loaded.bpm)
+    }
+
+    @Test
+    fun `a format-4 file written before stem separation still loads, with no stems`() {
+        writeFormat4(File(dir.apply { mkdirs() }, fileNameFor("pre-stems")))
+
+        val loaded = TrackScanStore(dir).load("pre-stems")
+
+        assertNotNull(loaded)
+        assertEquals(200f, loaded.durationS)
+        assertEquals(null, loaded.stems)
+        // Reads back exactly as any pre-format-5 scan does: outdated only by
+        // ANALYSER_VERSION, which is a separate, unaffected concept from the
+        // file format — see TrackScan.ANALYSER_VERSION's own doc.
+        assertTrue(loaded.outdated)
     }
 
     @Test
@@ -203,6 +289,40 @@ class TrackScanStoreTest {
             out.writeBoolean(false)    // no intensity profile
             out.writeInt(0)            // no melbank reference
             // and nothing after it: the two format-2 fields did not exist.
+        }
+    }
+
+    /** A hand-written format-4 file — the shape every scan on a phone had before stems. */
+    private fun writeFormat4(file: File) {
+        DataOutputStream(file.outputStream().buffered()).use { out ->
+            out.writeInt(0x43414D53)   // "CAMS"
+            out.writeInt(4)            // format
+
+            out.writeFloat(200f)       // durationS
+            out.writeFloat(128f)       // bpm
+            out.writeFloat(0.75f)      // confidence
+            out.writeInt(2)            // downbeat
+
+            out.writeInt(2)            // beats
+            out.writeFloat(0f); out.writeFloat(0.46875f)
+            out.writeInt(2)            // accents
+            out.writeByte(255); out.writeByte(255)
+
+            out.writeInt(1)            // sections
+            out.writeFloat(0f); out.writeFloat(200f); out.writeByte(255)
+
+            out.writeBoolean(false)    // no intensity profile
+            out.writeInt(0)            // no melbank reference
+
+            out.writeInt(3)            // analyserVersion — pre-stems
+            out.writeFloat(200f)       // analysedS
+
+            out.writeBoolean(false)    // no key
+
+            out.writeByte(4)           // beatsPerBar
+            out.writeByte(0)           // tuning, half-cents
+            out.writeByte(0)           // one section's label
+            // and nothing after it: format 4 predates the stems tail entirely.
         }
     }
 
