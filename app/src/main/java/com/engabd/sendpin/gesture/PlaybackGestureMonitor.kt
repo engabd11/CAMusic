@@ -53,8 +53,17 @@ class PlaybackGestureMonitor(context: Context) : SensorEventListener {
         if (!running) return
         sensorManager?.unregisterListener(this)
         running = false
+        // Every reading goes back to its at-rest value, not just the derived
+        // gesture state. A stale `gz` and `proximityNear` from whatever position
+        // the phone was in when this was switched off would otherwise still be
+        // sitting there next time it comes on, and a proximity event arriving
+        // before the first accelerometer sample would read them as a fresh
+        // face-down and pause the music on nothing.
         faceDown = false
         pendingTap = false
+        proximityNear = false
+        gz = 0f
+        lastMagnitude = SensorManager.GRAVITY_EARTH
     }
 
     override fun onSensorChanged(event: SensorEvent) {
