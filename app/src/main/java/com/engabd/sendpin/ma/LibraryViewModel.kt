@@ -12,6 +12,7 @@ import com.engabd.sendpin.audio.LocalTrack
 import com.engabd.sendpin.audio.JellyfinRadioSource
 import com.engabd.sendpin.audio.RadioSource
 import com.engabd.sendpin.audio.SubsonicRadioSource
+import com.engabd.sendpin.audio.TrackScan
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.PlayerIdentity
 import com.engabd.sendpin.download.DownloadJob
@@ -1958,25 +1959,16 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             // only ever has data for files on this phone, and there's no server round
             // trip that could carry BPM/key compatibility. `radio.next`'s server-backed
             // rungs below stay untouched.
-            val djEnabled = settings.djMode.first()
+            //
+            // The seed's scan is looked up once, out here: `bonus` is a sort selector,
+            // which Kotlin re-invokes on every comparison rather than once per element,
+            // and what is playing does not change between two of them. A null seed scan
+            // means there is nothing to be compatible *with*, so the whole bonus drops
+            // out and the ranking is the plain genre/artist one.
+            val seedScan = if (settings.djMode.first()) playing?.let { trackScans.peek(it) } else null
             radio.offline(
                 downloads.value.map { downloadItem(it) }, seed, RADIO_BATCH, exclude,
-                bonus = if (!djEnabled) ({ 0 }) else { item ->
-                    // store.peek(), not the suspending cached() — this runs inside a
-                    // sortedByDescending comparator, so a disk read isn't an option.
-                    // A candidate with no memory-resident scan just contributes 0 and
-                    // falls back to the existing genre/artist ranking above.
-                    val candidateScan = trackScans.store.peek(item.itemId)
-                    val seedScan = playing?.let { trackScans.peek(it) }
-                    var s = 0
-                    if (seedScan?.key != null && candidateScan?.key != null &&
-                        Camelot.compatible(seedScan.key, candidateScan.key)
-                    ) s += 2
-                    if (seedScan != null && candidateScan != null &&
-                        Camelot.bpmMatch(seedScan.bpm, candidateScan.bpm)
-                    ) s += 1
-                    s
-                },
+                bonus = if (seedScan == null) ({ 0 }) else djBonus(seedScan),
             )
         } else {
             radio.next(generator, seed, RADIO_BATCH, exclude)
@@ -1984,6 +1976,30 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         if (picked.isEmpty()) return
         rememberSeeds(picked)
         localPlayer.addToQueue(picked.map { localTrack(it) })
+    }
+
+    /**
+     * Harmonic DJ mode's ranking bonus for one candidate, against the scan of what
+     * is playing — key compatibility on the Camelot wheel is worth two, a matching
+     * (or half/double) tempo one, on top of [LocalRadio.offline]'s own genre and
+     * artist scores.
+     *
+     * `store.peek`, not the suspending `cached()`: this is a sort selector, called
+     * on every comparison, so a disk read is not an option. A candidate with no
+     * memory-resident scan contributes nothing and keeps its genre/artist ranking.
+     * Keyed by `itemId` because that is what [TrackScanRepository.keyFor] resolves
+     * a downloaded track to — `DownloadsIndex.item` sets `itemId` from the
+     * download's id and `toLocalTrack` carries the same value into `LocalTrack.id`,
+     * which `keyFor` prefers over every other field.
+     */
+    private fun djBonus(seedScan: TrackScan): (MaItem) -> Int = { item ->
+        val candidateScan = trackScans.store.peek(item.itemId)
+        val seedKey = seedScan.key
+        val candidateKey = candidateScan?.key
+        var s = 0
+        if (seedKey != null && candidateKey != null && Camelot.compatible(seedKey, candidateKey)) s += 2
+        if (candidateScan != null && Camelot.bpmMatch(seedScan.bpm, candidateScan.bpm)) s += 1
+        s
     }
 
     /**
