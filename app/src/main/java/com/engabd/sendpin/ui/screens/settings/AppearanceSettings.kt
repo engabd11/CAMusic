@@ -58,6 +58,7 @@ internal fun AppearanceSection(settings: AppSettings, accent: Color, scope: Coro
     // other row on it was already live.
     val layout by settings.nowPlayingLayout.collectAsStateWithLifecycle(initialValue = "tab")
     val seekBarStyle by settings.seekBarStyle.collectAsStateWithLifecycle(initialValue = "line")
+    val swipeToSkip by settings.swipeToSkip.collectAsStateWithLifecycle(initialValue = false)
     val motionMode by settings.motionMode.collectAsStateWithLifecycle(initialValue = AppSettings.MOTION_SYSTEM)
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -139,6 +140,18 @@ internal fun AppearanceSection(settings: AppSettings, accent: Color, scope: Coro
                 else
                     "A straight progress line.",
             )
+        }
+
+        SettingsCard(
+            title = "Swipe to skip",
+            lead = "Swipe right or left on Now Playing to skip forward or backward.",
+        ) {
+            ToggleRow(
+                title = "Swipe to skip",
+                subtitle = "Swipe right → next, left → previous",
+                checked = swipeToSkip,
+                accent = accent,
+            ) { scope.launch { settings.setSwipeToSkip(it) } }
         }
 
         SettingsCard(

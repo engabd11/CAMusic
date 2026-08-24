@@ -13,6 +13,7 @@ import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
@@ -49,6 +50,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.engabd.sendpin.audio.StreamQuality
+import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
@@ -153,6 +155,11 @@ fun NowPlayingOverlay(
     // Read through a snapshot so the gesture detector doesn't have to be re-created
     // when a sheet opens — tearing it down mid-gesture loses the release event.
     val gestureBlocked by rememberUpdatedState(!expanded || sheets.sheetOpen)
+
+    // Swipe right/left to skip, gated behind its own Appearance setting.
+    val settings = remember(context) { AppSettings(context) }
+    val swipeToSkip by settings.swipeToSkip.collectAsStateWithLifecycle(initialValue = false)
+    val skipThresholdPx = with(LocalDensity.current) { 64.dp.toPx() }
 
     // Motion.spatialOffsetPx(), not spatial(): this settles a ~2000px drag, and the
     // generic Float spring's default 0.01px visibility threshold made the coroutine
@@ -280,6 +287,23 @@ fun NowPlayingOverlay(
                             upTravel = (upTravel + dragAmount).coerceAtMost(0f)
                             dragPx = (dragPx + dragAmount).coerceAtLeast(0f)
                         },
+                    )
+                }
+                // A second, independent pointerInput for the horizontal skip gesture —
+                // Compose arbitrates which axis wins a drag via each detector's own
+                // oriented touch-slop, so this coexists with the vertical
+                // minimize/queue-reveal gesture above without either fighting the other.
+                .pointerInput(swipeToSkip, gestureBlocked) {
+                    if (!swipeToSkip || gestureBlocked) return@pointerInput
+                    var dx = 0f
+                    detectHorizontalDragGestures(
+                        onDragStart = { dx = 0f },
+                        onDragCancel = { dx = 0f },
+                        onDragEnd = {
+                            if (dx < -skipThresholdPx) viewModel.next()
+                            else if (dx > skipThresholdPx) viewModel.previous()
+                        },
+                        onHorizontalDrag = { change, amount -> change.consume(); dx += amount },
                     )
                 }
                 .background(Ink)

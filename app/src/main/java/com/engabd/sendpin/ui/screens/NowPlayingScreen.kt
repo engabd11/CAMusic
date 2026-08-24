@@ -18,6 +18,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
@@ -134,6 +135,11 @@ fun NowPlayingScreen(
 
     // How far up a swipe has to travel before it means "show me the queue".
     val queueRevealPx = with(LocalDensity.current) { 56.dp.toPx() }
+    // How far sideways a swipe has to travel before it means "skip". Same settings
+    // instance SeekRow already builds locally for the seek-bar style read.
+    val settings = remember(context) { AppSettings(context) }
+    val swipeToSkip by settings.swipeToSkip.collectAsStateWithLifecycle(initialValue = false)
+    val skipThresholdPx = with(LocalDensity.current) { 64.dp.toPx() }
 
     CompositionLocalProvider(LocalAccent provides accent, LocalPalette provides palette) {
         Box(
@@ -151,6 +157,24 @@ fun NowPlayingScreen(
                         onDragCancel = { travelled = 0f },
                         onDragEnd = { if (travelled < -queueRevealPx) sheets.panel = Panel.QUEUE },
                         onVerticalDrag = { _, amount -> travelled += amount },
+                    )
+                }
+                // Swipe right/left to skip, gated behind its own Appearance setting.
+                // A second, independent pointerInput rather than folding into the
+                // vertical one above — Compose arbitrates which axis wins a drag via
+                // each detector's own oriented touch-slop, so this coexists with the
+                // queue-reveal gesture without either fighting the other.
+                .pointerInput(swipeToSkip, sheets.sheetOpen) {
+                    if (!swipeToSkip || sheets.sheetOpen) return@pointerInput
+                    var dx = 0f
+                    detectHorizontalDragGestures(
+                        onDragStart = { dx = 0f },
+                        onDragCancel = { dx = 0f },
+                        onDragEnd = {
+                            if (dx < -skipThresholdPx) viewModel.next()
+                            else if (dx > skipThresholdPx) viewModel.previous()
+                        },
+                        onHorizontalDrag = { change, amount -> change.consume(); dx += amount },
                     )
                 }
         ) {
