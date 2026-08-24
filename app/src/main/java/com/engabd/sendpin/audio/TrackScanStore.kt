@@ -234,6 +234,22 @@ class TrackScanStore(private val dir: File) {
         // sections above, because those were laid down by format 1 and moving
         // them would break every reader that already handles that layout.
         for (s in scan.sections) out.writeByte(s.label.coerceIn(0, 255))
+
+        // -- Format 5 tail ------------------------------------------------
+        // Same append-only reasoning again. A format-4 file predates stem
+        // separation; PhantomStageLayer's existing frequency-band proxy already
+        // handles a null stems profile unchanged, the same way it handles any
+        // track that has never been scanned at all.
+        val stems = scan.stems
+        out.writeBoolean(stems != null)
+        if (stems != null) {
+            out.writeInt(stems.sections.size)
+            for (s in stems.sections) {
+                out.writeByte(quantise(s.vocals))
+                out.writeByte(quantise(s.stereoWidth))
+                out.writeByte(quantise(s.bass))
+            }
+        }
     }
 
     /** Tuning in signed half-cents, clamped to what one byte can carry. */
@@ -341,6 +357,26 @@ class TrackScanStore(private val dir: File) {
                 sections
             }
 
+            // A format-4 file predates stem separation. It simply has no stems;
+            // PhantomStageLayer's frequency-band proxy already handles that,
+            // exactly as it does for any unscanned track. Read defensively for
+            // the same reason the key and metre reads above are: a bad byte here
+            // must not cost the beat grid above it.
+            val stems = if (format >= 5 && input.readBoolean()) {
+                val n = input.readIntBounded(MAX_SECTIONS)
+                StemProfile(
+                    List(n) {
+                        SectionStems(
+                            vocals = dequantise(input.readByte()),
+                            stereoWidth = dequantise(input.readByte()),
+                            bass = dequantise(input.readByte()),
+                        )
+                    },
+                )
+            } else {
+                null
+            }
+
             TrackScan(
                 durationS = durationS,
                 bpm = bpm,
@@ -356,6 +392,7 @@ class TrackScanStore(private val dir: File) {
                 key = key,
                 beatsPerBar = beatsPerBar,
                 tuningCents = tuningCents,
+                stems = stems,
             )
         } catch (e: EOFException) {
             null  // truncated: treat as absent and rescan
@@ -384,8 +421,8 @@ class TrackScanStore(private val dir: File) {
         /** "CAMS" — enough to reject a file that is not one of ours at all. */
         private const val MAGIC = 0x43414D53
 
-        private const val FORMAT = 4
-        private val COMPATIBLE_FORMATS = setOf(1, 2, 3, 4)
+        private const val FORMAT = 5
+        private val COMPATIBLE_FORMATS = setOf(1, 2, 3, 4, 5)
 
         private const val SUFFIX = ".scan"
 

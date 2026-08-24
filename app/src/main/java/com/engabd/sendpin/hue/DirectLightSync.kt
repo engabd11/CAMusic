@@ -328,6 +328,9 @@ class DirectLightSync(
     private var spatialEnabled = false
     private var reducedMotion = false
 
+    /** Whether [PhantomStageLayer] may read real stem energy off the scan. See [LayerContext.stems]. */
+    private var stemSeparationEnabled = false
+
     // ── Light show layers ──────────────────────────────────────────────────
     //
     // Four additive, off-by-default post-processing layers — see
@@ -1028,6 +1031,7 @@ class DirectLightSync(
                         trackPositionS = latestPositionS,
                         dt = dt,
                         brightness = layerBrightness,
+                        stems = if (stemSeparationEnabled) currentSectionStems(activeScan, latestPositionS) else null,
                     ),
                 )
             }
@@ -1587,6 +1591,7 @@ class DirectLightSync(
         scope.launch { settings.musicDnaEnabled.collect { setLayerEnabled(musicDnaLayer, it) } }
         scope.launch { settings.emotionalArcEnabled.collect { setLayerEnabled(emotionalArcLayer, it) } }
         scope.launch { settings.phantomStageEnabled.collect { setLayerEnabled(phantomStageLayer, it) } }
+        scope.launch { settings.stemSeparation.collect { stemSeparationEnabled = it } }
         scope.launch {
             settings.phoneConductorEnabled.collect { on ->
                 setLayerEnabled(phoneConductorLayer, on)
@@ -1675,6 +1680,19 @@ class DirectLightSync(
         if (scan == null) return
         activeScan = scan
         activeProfile = scan.intensity
+    }
+
+    /**
+     * The stem energy for whichever [TrackScan.sections] entry [posS] falls in,
+     * or null when the scan has no stems (unscanned, pre-stem-separation, or a
+     * non-stereo source). [TrackScan.stems] is parallel to [TrackScan.sections]
+     * by construction — see [com.engabd.sendpin.audio.buildStemProfile] — so the
+     * same section search [TrackScan.sectionAt] does is enough to find the index.
+     */
+    private fun currentSectionStems(scan: TrackScan?, posS: Float): com.engabd.sendpin.audio.SectionStems? {
+        val stems = scan?.stems ?: return null
+        val index = scan.sections.indexOfFirst { posS >= it.startS && posS < it.endS }
+        return stems.sections.getOrNull(index)
     }
 
     /**

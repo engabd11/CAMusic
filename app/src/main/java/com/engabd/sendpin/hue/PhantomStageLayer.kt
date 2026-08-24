@@ -1,20 +1,33 @@
 package com.engabd.sendpin.hue
 
 import com.engabd.sendpin.audio.AnalysisFrame
+import com.engabd.sendpin.audio.SectionStems
 import kotlin.math.exp
 
 /**
  * Layer 3 — Phantom Stage: instrument groups at fixed physical positions in
  * the room for the session. See `docs/creative-light-shows.md`.
  *
- * There is no instrument-separation signal anywhere in the analyser — no
- * "this is a guitar" boolean exists or could exist from a single mixed-down
- * stream. The five groups below are a frequency-band proxy, the same idea
- * [SpatialWaves.HEIGHT_BANDS] already uses: bass energy maps to [BASS],
- * broadband transients to [DRUMS], mid-band transients to [GUITAR], sustained
- * mid-band level to [VOCALS], and sustained top-melbank level to [SYNTHS].
- * "Vocals" in practice means "midrange energy that holds rather than
+ * Without a scan, or with one that predates stem separation or came from a
+ * non-stereo source, there is no instrument-separation signal anywhere in the
+ * analyser — no "this is a guitar" boolean exists or could exist from a single
+ * mixed-down stream. The five groups then fall back to a frequency-band proxy,
+ * the same idea [SpatialWaves.HEIGHT_BANDS] already uses: bass energy maps to
+ * [BASS], broadband transients to [DRUMS], mid-band transients to [GUITAR],
+ * sustained mid-band level to [VOCALS], and sustained top-melbank level to
+ * [SYNTHS]. "Vocals" in practice means "midrange energy that holds rather than
  * attacks," which includes vocals but is not exclusive to them.
+ *
+ * With [LayerContext.stems] available, [VOCALS] and [BASS] read real
+ * mid-channel and bass-band presence instead of a proxy, and [GUITAR]/[SYNTHS]
+ * share the side-channel (stereo-width) energy — the same pairing the frequency
+ * proxy already made, now backed by something that actually measures stereo
+ * spread rather than guessing it from where energy sits in the spectrum. There
+ * is still no [DRUMS] stem in this model (see [com.engabd.sendpin.audio
+ * .SectionStems]'s own doc: mid, side and bass, not a fourth isolate) — nor
+ * would a section-level average carry attack timing if there were one — so
+ * [DRUMS], and every group's *flash* (as opposed to held level), keep reading
+ * the onset detectors below regardless of whether stems are available.
  */
 enum class StageInstrument { BASS, DRUMS, GUITAR, VOCALS, SYNTHS }
 
@@ -63,7 +76,7 @@ class PhantomStageLayer : LightShowLayer {
 
         decayFlashes(context.dt)
         triggerFlashes(context.frame)
-        updateSustained(context.frame)
+        updateSustained(context.frame, context.stems)
 
         // This layer's glow is *additive*, so unlike the engine's own output it
         // has never been through [SyncoEngine.brightness]. Scaling the level by
@@ -140,18 +153,32 @@ class PhantomStageLayer : LightShowLayer {
     }
 
     /**
-     * This frame's held levels for the two groups that have no onset of their
-     * own — computed **once**, before the per-lamp loop.
+     * This frame's held levels — computed **once**, before the per-lamp loop.
      *
      * They never depended on the lamp. Reading them inside the loop meant
      * re-summing the same slice of the same melbank for every assigned channel
      * in the room, and allocating a `Pair` from `melbankWindow` each time round,
-     * to arrive at the same two numbers.
+     * to arrive at the same numbers.
+     *
+     * With [stems] (real, section-level energy) this fills all four groups that
+     * have no onset of their own; without it, only [VOCALS] and [SYNTHS] get a
+     * held level from the frequency-band proxy, exactly as before — [BASS] and
+     * [GUITAR] stay flash-only in that case, since the proxy never gave them a
+     * sustained signal either.
      */
-    private fun updateSustained(frame: AnalysisFrame) {
+    private fun updateSustained(frame: AnalysisFrame, stems: SectionStems?) {
         sustained.fill(0f)
-        sustained[StageInstrument.VOCALS.ordinal] = (frame.bands["mid"] ?: 0f) * VOCALS_GLOW_GAIN
-        sustained[StageInstrument.SYNTHS.ordinal] = topMelbankLevel(frame) * SYNTHS_GLOW_GAIN
+        if (stems != null) {
+            sustained[StageInstrument.VOCALS.ordinal] = stems.vocals * VOCALS_GLOW_GAIN
+            sustained[StageInstrument.BASS.ordinal] = stems.bass * BASS_GLOW_GAIN
+            // Side-channel (stereo-width) energy, shared between the two wide-panned
+            // groups the frequency proxy already conflated — see this layer's own doc.
+            sustained[StageInstrument.GUITAR.ordinal] = stems.stereoWidth * STEREO_GLOW_GAIN
+            sustained[StageInstrument.SYNTHS.ordinal] = stems.stereoWidth * STEREO_GLOW_GAIN
+        } else {
+            sustained[StageInstrument.VOCALS.ordinal] = (frame.bands["mid"] ?: 0f) * VOCALS_GLOW_GAIN
+            sustained[StageInstrument.SYNTHS.ordinal] = topMelbankLevel(frame) * SYNTHS_GLOW_GAIN
+        }
     }
 
     private fun topMelbankLevel(frame: AnalysisFrame): Float {
@@ -191,6 +218,10 @@ class PhantomStageLayer : LightShowLayer {
         private const val PERSISTENT_GLOW = 0.12f
         private const val VOCALS_GLOW_GAIN = 0.35f
         private const val SYNTHS_GLOW_GAIN = 0.35f
+        /** Real-stems-only: [StageInstrument.BASS]'s held level from [SectionStems.bass]. */
+        private const val BASS_GLOW_GAIN = 0.35f
+        /** Real-stems-only: shared by [StageInstrument.GUITAR] and [StageInstrument.SYNTHS]. */
+        private const val STEREO_GLOW_GAIN = 0.35f
         private const val FLASH_STRENGTH_NORM = 1.5f
         private const val FLASH_DECAY_S = 0.25f
     }

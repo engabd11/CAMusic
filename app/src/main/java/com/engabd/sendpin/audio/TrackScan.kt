@@ -93,6 +93,14 @@ data class TrackScan(
      * property of the file.
      */
     val tuningCents: Float = 0f,
+    /**
+     * Per-section mid/side stem energy, for [com.engabd.sendpin.hue.PhantomStageLayer]
+     * to drive lamp groups from real instrument presence instead of frequency-band
+     * proxies. Null on a scan from before stem separation existed (analyser version
+     * &lt; 4) or from a non-stereo source — the layer's existing proxy path handles a
+     * null [stems] unchanged either way. See [StemProfile].
+     */
+    val stems: StemProfile? = null,
 ) {
     /** The scan covers the whole track, rather than stopping at the analysis cap. */
     val complete: Boolean get() = analysedS >= durationS - 1f
@@ -206,7 +214,7 @@ data class TrackScan(
             melbankRef.contentEquals(other.melbankRef) &&
             analyserVersion == other.analyserVersion && analysedS == other.analysedS &&
             key == other.key && beatsPerBar == other.beatsPerBar &&
-            tuningCents == other.tuningCents
+            tuningCents == other.tuningCents && stems == other.stems
     }
 
     override fun hashCode(): Int {
@@ -224,6 +232,7 @@ data class TrackScan(
         result = 31 * result + (key?.hashCode() ?: 0)
         result = 31 * result + beatsPerBar
         result = 31 * result + tuningCents.hashCode()
+        result = 31 * result + (stems?.hashCode() ?: 0)
         return result
     }
 
@@ -252,8 +261,14 @@ data class TrackScan(
          * transposed copy of the same track only 12 % of the time — against a
          * 1-in-12 chance floor. A version-2 scan's key is therefore not merely
          * older, it is close to arbitrary, and re-reading is worth it.
+         *
+         * 4 — adds [stems], a per-section mid/side energy split for stem-aware
+         * Phantom Stage lighting. A version-3 scan simply has no stems; the layer's
+         * frequency-band proxy already handles that unchanged, so this is a "would
+         * be nice to have" bump rather than the correctness fixes above — the
+         * analysis card's re-read offer is what actually gets it filled in.
          */
-        const val ANALYSER_VERSION = 3
+        const val ANALYSER_VERSION = 4
 
         /**
          * Below this the grid is not served. Matches syncoV2's
@@ -308,6 +323,31 @@ data class ScanSection(
      * what a scan from before labelling existed reads back as.
      */
     val label: Int = 0,
+)
+
+/**
+ * Per-section mid/side stem energy — a mid-side decomposition (mid = L+R, isolating
+ * centred content; side = L-R, isolating stereo-panned content) computed during the
+ * offline scan, one entry per [TrackScan.sections] entry.
+ *
+ * Not true source separation — there is no model, no per-instrument classifier —
+ * but it is a materially better proxy than frequency bands alone for
+ * [com.engabd.sendpin.hue.PhantomStageLayer]'s purposes: vocals are usually mixed
+ * dead-centre, so mid energy correlates with "is a voice singing" in a way a
+ * frequency band never can, and side energy likewise correlates with the
+ * stereo-spread instruments (synths, wide guitars) a frequency band conflates with
+ * everything else in the same range.
+ */
+data class StemProfile(val sections: List<SectionStems>)
+
+/** One section's average stem energy, parallel to the [TrackScan.sections] entry it covers. */
+data class SectionStems(
+    /** Mid-channel energy, 0..1 — a centred-vocal proxy. */
+    val vocals: Float,
+    /** Side-channel energy, 0..1 — a stereo-width proxy (synths, wide guitars). */
+    val stereoWidth: Float,
+    /** Low-band energy, 0..1 — reuses the same band energy the mono grid already computes. */
+    val bass: Float,
 )
 
 /**

@@ -1,6 +1,7 @@
 package com.engabd.sendpin.hue
 
 import com.engabd.sendpin.audio.AnalysisFrame
+import com.engabd.sendpin.audio.SectionStems
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -17,6 +18,7 @@ class PhantomStageLayerTest {
         topology: RoomTopology,
         frame: AnalysisFrame = AnalysisFrame(),
         brightness: Float = 1f,
+        stems: SectionStems? = null,
     ) = LayerContext(
         frame = frame,
         structure = null,
@@ -26,6 +28,7 @@ class PhantomStageLayerTest {
         trackPositionS = -1f,
         dt = 0.02f,
         brightness = brightness,
+        stems = stems,
     )
 
     private val black: Rgb = Triple(0f, 0f, 0f)
@@ -123,5 +126,75 @@ class PhantomStageLayerTest {
             contextOf(positions, RoomTopology.FIELD, AnalysisFrame(bassBeat = true, bassStrength = 1.5f), 0f),
         )
         assertEquals(black, out.getValue(1), "at a zero ceiling the layer must add no light at all")
+    }
+
+    // ── Real stems ────────────────────────────────────────────────────────
+
+    private fun brightness(rgb: Rgb) = maxOf(rgb.first, rgb.second, rgb.third)
+
+    @Test
+    fun `real vocal stem energy brightens the vocals lamp without a mid-band frame signal`() {
+        // Two lamps, exactly at BASS's and VOCALS' own target regions — with
+        // only one lamp, BASS (first in ASSIGNMENT_ORDER) would claim it
+        // regardless of distance, same as the "lone quiet channel" test above,
+        // so this needs a second lamp to actually pin channel 2 to VOCALS.
+        val positions = mapOf(
+            1 to Vec3(0.10f, 0.5f, 0.10f), // BASS
+            2 to Vec3(0.5f, 0.3f, 0.5f), // VOCALS
+        )
+        val base = mapOf(1 to black, 2 to black)
+        val layer = PhantomStageLayer()
+
+        // The frame carries no "mid" band at all, so the frequency-band proxy
+        // this would otherwise fall back to reads as silent. Real stems must be
+        // what is actually driving the lamp here, not a coincidence.
+        val noStems = layer.apply(base, contextOf(positions, RoomTopology.FIELD))
+        val withStems = layer.apply(
+            base,
+            contextOf(positions, RoomTopology.FIELD, stems = SectionStems(vocals = 1f, stereoWidth = 0f, bass = 0f)),
+        )
+
+        assertTrue(
+            brightness(withStems.getValue(2)) > brightness(noStems.getValue(2)),
+            "real vocal stem energy should brighten the vocals lamp: " +
+                "${noStems.getValue(2)} -> ${withStems.getValue(2)}",
+        )
+    }
+
+    @Test
+    fun `real bass stem energy gives the bass lamp a held level, not just onset flashes`() {
+        // No bass onset this frame — the existing flash mechanism has nothing to
+        // say. A held stem level is the only thing that could brighten this lamp.
+        val positions = mapOf(1 to Vec3(0.10f, 0.5f, 0.10f)) // BASS's own target region
+        val base = mapOf(1 to black)
+        val layer = PhantomStageLayer()
+
+        val noStems = layer.apply(base, contextOf(positions, RoomTopology.FIELD, AnalysisFrame(bassBeat = false)))
+        val withStems = layer.apply(
+            base,
+            contextOf(
+                positions, RoomTopology.FIELD, AnalysisFrame(bassBeat = false),
+                stems = SectionStems(vocals = 0f, stereoWidth = 0f, bass = 1f),
+            ),
+        )
+
+        assertTrue(
+            brightness(withStems.getValue(1)) > brightness(noStems.getValue(1)),
+            "a held bass stem level should brighten the bass lamp even with no onset this frame",
+        )
+    }
+
+    @Test
+    fun `with no stems the layer behaves exactly as the frequency-band proxy always did`() {
+        // A regression guard: LayerContext.stems defaulting to null (an
+        // unscanned track, or the setting off) must reproduce today's proxy
+        // behaviour byte for byte, not something merely similar to it.
+        val positions = mapOf(1 to Vec3(0.5f, 0.3f, 0.5f))
+        val base = mapOf(1 to black)
+        val frame = AnalysisFrame(bands = mapOf("mid" to 0.6f))
+
+        val explicitNull = PhantomStageLayer().apply(base, contextOf(positions, RoomTopology.FIELD, frame, stems = null))
+        val defaulted = PhantomStageLayer().apply(base, contextOf(positions, RoomTopology.FIELD, frame))
+        assertEquals(defaulted, explicitNull)
     }
 }

@@ -473,4 +473,56 @@ class TrackAnalysisTest {
             "$message: expected $expected ± $tolerance, was $actual",
         )
     }
+
+    // ── Stem profile ─────────────────────────────────────────────────────────
+
+    @Test
+    fun `a hard-panned section reads wider than a dead-centre one`() {
+        val ex = analyse(clicks(bpm = 120f, seconds = 8f))
+        ex.noteChannelCount(2)
+        // Frame-aligned in the test the same way TrackScanner.Pump keeps them
+        // aligned for real: one pushSideHop per frame ex.push produced.
+        val half = ex.frames / 2
+        repeat(half) { ex.pushSideHop(0.8f) }
+        repeat(ex.frames - half) { ex.pushSideHop(0f) }
+
+        val durationS = ex.frames * FRAME_PERIOD
+        val sections = listOf(
+            ScanSection(0f, half * FRAME_PERIOD, 1f),
+            ScanSection(half * FRAME_PERIOD, durationS, 1f),
+        )
+        val stems = buildStemProfile(ex, sections)
+
+        assertNotNull(stems)
+        assertEquals(2, stems.sections.size)
+        assertTrue(
+            stems.sections[0].stereoWidth > stems.sections[1].stereoWidth,
+            "panned section (${stems.sections[0].stereoWidth}) should read wider " +
+                "than the centred one (${stems.sections[1].stereoWidth})",
+        )
+        assertEquals(0f, stems.sections[1].stereoWidth, 1e-4f)
+    }
+
+    @Test
+    fun `a mono source produces no stem profile`() {
+        val ex = analyse(clicks(bpm = 120f, seconds = 4f))
+        // noteChannelCount is never called — exactly what a real mono decode does.
+        val stems = buildStemProfile(ex, listOf(ScanSection(0f, ex.frames * FRAME_PERIOD, 1f)))
+        assertNull(stems)
+    }
+
+    @Test
+    fun `an empty section between two others reads as silent, not a crash`() {
+        val ex = analyse(clicks(bpm = 120f, seconds = 4f))
+        ex.noteChannelCount(2)
+        repeat(ex.frames) { ex.pushSideHop(0.3f) }
+        // A zero-length section — startS == endS — shows up in real scans when a
+        // boundary lands exactly on a frame edge.
+        val t = ex.frames * FRAME_PERIOD
+        val stems = buildStemProfile(ex, listOf(ScanSection(0f, 0f, 1f), ScanSection(0f, t, 1f)))
+        assertNotNull(stems)
+        assertEquals(0f, stems.sections[0].vocals)
+        assertEquals(0f, stems.sections[0].stereoWidth)
+        assertEquals(0f, stems.sections[0].bass)
+    }
 }
