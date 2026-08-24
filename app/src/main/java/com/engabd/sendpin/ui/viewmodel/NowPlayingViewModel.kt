@@ -1938,6 +1938,15 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         if (played != true) return
         val s = state.value
         try {
+            // Listening DNA snapshot — opt-in, and only ever available for a local
+            // session (TrackScanRepository has no data for an MA-streamed track).
+            // peek(), not cached(): by the time a track has played this long it has
+            // very likely already been adopted into the memory cache by whatever
+            // warmed it (Light Sync, the Music Map timeline) if it was going to be;
+            // a miss here just means a null snapshot for this one play.
+            val scan = if (settings.listeningDna.first() && s.isLocalSession) {
+                local.current.value?.let { trackScans.peek(it) }
+            } else null
             val dao = LocalMediaDatabase.get(getApplication()).playHistoryDao()
             dao.insert(
                 PlayHistoryEntity(
@@ -1951,6 +1960,10 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                     sampleRate = s.sourceQuality?.sampleRateHz ?: 0,
                     bitDepth = s.sourceQuality?.bitDepth ?: 0,
                     durationPlayedMs = s.positionMs,
+                    bpm = scan?.bpm,
+                    keyTonic = scan?.key?.tonic,
+                    keyMode = scan?.key?.mode?.name,
+                    energy = scan?.intensity?.character,
                 ),
             )
             dao.trimTo()

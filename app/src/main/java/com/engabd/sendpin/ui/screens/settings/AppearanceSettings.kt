@@ -63,6 +63,7 @@ internal fun AppearanceSection(settings: AppSettings, accent: Color, scope: Coro
     val showMusicMap by settings.showMusicMap.collectAsStateWithLifecycle(initialValue = false)
     val djMode by settings.djMode.collectAsStateWithLifecycle(initialValue = false)
     val sensorGestures by settings.sensorGestures.collectAsStateWithLifecycle(initialValue = false)
+    val listeningDna by settings.listeningDna.collectAsStateWithLifecycle(initialValue = false)
     val motionMode by settings.motionMode.collectAsStateWithLifecycle(initialValue = AppSettings.MOTION_SYSTEM)
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -220,6 +221,22 @@ internal fun AppearanceSection(settings: AppSettings, accent: Color, scope: Coro
                 if (on) com.engabd.sendpin.SendpinApp.instance.playbackGestureMonitor.start()
                 else com.engabd.sendpin.SendpinApp.instance.playbackGestureMonitor.stop()
             }
+        }
+
+        SettingsCard(
+            title = "Listening DNA",
+            lead = "Adds dominant keys and a BPM sweet spot to the Stats screen.",
+            info = "A snapshot of each played track's bpm and key is kept alongside the " +
+                "usual listening history, for tracks that have been scanned. Off by default: " +
+                "nothing extra is stored until this is turned on, and turning it off again " +
+                "stops new snapshots without deleting the ones already logged.",
+        ) {
+            ToggleRow(
+                title = "Listening DNA",
+                subtitle = "Needs tracks to be scanned",
+                checked = listeningDna,
+                accent = accent,
+            ) { scope.launch { settings.setListeningDna(it) } }
         }
 
         SettingsCard(

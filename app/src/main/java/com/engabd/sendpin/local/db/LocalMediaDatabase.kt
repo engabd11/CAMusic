@@ -12,12 +12,13 @@ import androidx.sqlite.db.SupportSQLiteDatabase
  * media indexing.
  *
  * Version 2 adds a downloaded track's disc number. Version 3 adds [PlayHistoryEntity]
- * for the Stats screen. Migrated rather than rebuilt: the rows are the index of files
- * already on the phone, and dropping the table would strand every one of them —
- * gigabytes on disk that the app would no longer know it had, and no way back but
- * downloading the lot again.
+ * for the Stats screen. Version 4 adds a bpm/key/energy snapshot to it, for the Stats
+ * screen's Listening DNA section. Migrated rather than rebuilt: the rows are the index
+ * of files already on the phone, and dropping the table would strand every one of
+ * them — gigabytes on disk that the app would no longer know it had, and no way back
+ * but downloading the lot again.
  */
-@Database(entities = [DownloadedTrackEntity::class, PlayHistoryEntity::class], version = 3)
+@Database(entities = [DownloadedTrackEntity::class, PlayHistoryEntity::class], version = 4)
 abstract class LocalMediaDatabase : RoomDatabase() {
     abstract fun downloadDao(): DownloadDao
     abstract fun playHistoryDao(): PlayHistoryDao
@@ -62,13 +63,29 @@ abstract class LocalMediaDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v3 → v4: `bpm`/`keyTonic`/`keyMode`/`energy`, all nullable.
+         *
+         * Null for every row logged before this — Listening DNA simply has nothing
+         * to say about plays from before it existed, the same way the format
+         * breakdown has nothing to say about a codec nobody recorded.
+         */
+        internal val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE play_history ADD COLUMN bpm REAL")
+                db.execSQL("ALTER TABLE play_history ADD COLUMN keyTonic INTEGER")
+                db.execSQL("ALTER TABLE play_history ADD COLUMN keyMode TEXT")
+                db.execSQL("ALTER TABLE play_history ADD COLUMN energy REAL")
+            }
+        }
+
         fun get(context: Context): LocalMediaDatabase =
             instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
                     context.applicationContext,
                     LocalMediaDatabase::class.java,
                     "local_media.db",
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build().also { instance = it }
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build().also { instance = it }
             }
     }
 }

@@ -16,6 +16,9 @@ data class FormatPlayCount(val codec: String?, val sampleRate: Int, val bitDepth
 /** One provider's play count — the server-breakdown bar. */
 data class ProviderPlayCount(val provider: String, val plays: Int)
 
+/** One key's play count within a window — Listening DNA's dominant-keys bar. */
+data class KeyPlayCount(val keyTonic: Int, val keyMode: String, val plays: Int)
+
 @Dao
 interface PlayHistoryDao {
 
@@ -60,6 +63,19 @@ interface PlayHistoryDao {
         """,
     )
     suspend fun providerBreakdown(since: Long): List<ProviderPlayCount>
+
+    @Query(
+        """
+        SELECT keyTonic, keyMode, COUNT(*) as plays FROM play_history
+        WHERE timestamp >= :since AND keyTonic IS NOT NULL AND keyMode IS NOT NULL
+        GROUP BY keyTonic, keyMode ORDER BY plays DESC
+        """,
+    )
+    suspend fun keyDistribution(since: Long): List<KeyPlayCount>
+
+    /** Every non-null bpm in the window — bucketed into bins in Kotlin, not SQL. */
+    @Query("SELECT bpm FROM play_history WHERE timestamp >= :since AND bpm IS NOT NULL")
+    suspend fun bpmSamples(since: Long): List<Float>
 
     /** Storage cap: this table only ever grows otherwise. Called after every insert. */
     @Query("DELETE FROM play_history WHERE id NOT IN (SELECT id FROM play_history ORDER BY timestamp DESC LIMIT :keep)")
