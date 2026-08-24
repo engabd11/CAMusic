@@ -70,6 +70,12 @@ class AudioAnalysisTap(
      * Compose visualizer, for instance, alongside whatever (if anything) has claimed
      * [onFrame] for Light Sync. Updated on the analysis thread; safe to collect from
      * anywhere, `StateFlow` handles the cross-thread publish.
+     *
+     * The frame published here is **not** the one handed to [onFrame]: its melbank
+     * is a copy. [AnalysisFrame.melbank] is the analyzer's own live envelope array,
+     * rewritten in place every hop, which is safe only for a consumer that reads it
+     * synchronously on the analysis thread the way [onFrame] does. A `StateFlow`
+     * value is by definition read later and elsewhere, so it has to own its data.
      */
     val frames: StateFlow<AnalysisFrame?> = _frames.asStateFlow()
 
@@ -421,7 +427,8 @@ class AudioAnalysisTap(
             framePositionS = readClock()
             // pushStereo copies out of both buffers immediately, so they are reused.
             val frame = analyzer.pushStereo(hopL, hopR)
-            _frames.value = frame
+            // Detached copy for the flow, live array for the callback — see [frames].
+            _frames.value = frame.copy(melbank = frame.melbank.copyOf())
             onFrame?.invoke(frame)
         }
     }
