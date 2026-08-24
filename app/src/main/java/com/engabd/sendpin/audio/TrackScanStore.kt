@@ -5,6 +5,7 @@ import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.EOFException
 import java.io.File
+import java.io.IOException
 import java.security.MessageDigest
 
 /**
@@ -359,21 +360,30 @@ class TrackScanStore(private val dir: File) {
 
             // A format-4 file predates stem separation. It simply has no stems;
             // PhantomStageLayer's frequency-band proxy already handles that,
-            // exactly as it does for any unscanned track. Read defensively for
-            // the same reason the key and metre reads above are: a bad byte here
-            // must not cost the beat grid above it.
-            val stems = if (format >= 5 && input.readBoolean()) {
-                val n = input.readIntBounded(MAX_SECTIONS)
-                StemProfile(
-                    List(n) {
-                        SectionStems(
-                            vocals = dequantise(input.readByte()),
-                            stereoWidth = dequantise(input.readByte()),
-                            bass = dequantise(input.readByte()),
-                        )
-                    },
-                )
-            } else {
+            // exactly as it does for any unscanned track.
+            //
+            // Read defensively for the reason the key and metre reads above are:
+            // the outer catch treats a short read as "rescan this track", which
+            // is a whole track's worth of decoding to get back, and the beat grid
+            // above here is already parsed and perfectly good. Nothing is read
+            // after the stems, so abandoning the stream mid-tail costs only the
+            // stems — which is exactly what a pre-format-5 file gives up anyway.
+            val stems = try {
+                if (format >= 5 && input.readBoolean()) {
+                    val n = input.readIntBounded(MAX_SECTIONS)
+                    StemProfile(
+                        List(n) {
+                            SectionStems(
+                                vocals = dequantise(input.readByte()),
+                                stereoWidth = dequantise(input.readByte()),
+                                bass = dequantise(input.readByte()),
+                            )
+                        },
+                    )
+                } else {
+                    null
+                }
+            } catch (e: IOException) {
                 null
             }
 

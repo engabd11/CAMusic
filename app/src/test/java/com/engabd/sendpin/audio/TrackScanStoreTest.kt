@@ -165,6 +165,45 @@ class TrackScanStoreTest {
     }
 
     @Test
+    fun `a truncated stems tail costs the stems, not the whole scan`() {
+        val stems = StemProfile(List(3) { SectionStems(0.5f, 0.5f, 0.5f) })
+        TrackScanStore(dir).save("cut", scan().copy(stems = stems))
+
+        // Chop the file mid-way through the stems tail — the shape of a write
+        // that lost power, or a file the storage cap truncated. Everything up to
+        // and including the beat grid is still on disk and still good.
+        val file = dir.listFiles()!!.single { it.name.endsWith(".scan") }
+        val bytes = file.readBytes()
+        file.writeBytes(bytes.copyOf(bytes.size - 4))
+
+        val loaded = TrackScanStore(dir).load("cut")
+
+        assertNotNull(loaded, "a short stems tail must not take the beat grid down with it")
+        assertEquals(null, loaded.stems, "an unreadable tail should read as no stems")
+        assertEquals(128f, loaded.bpm, "everything before the stems tail should be intact")
+        assertTrue(file.exists(), "the file must survive: deleting it costs hours of re-decoding")
+    }
+
+    @Test
+    fun `an implausible stems count costs the stems, not the whole scan`() {
+        TrackScanStore(dir).save("huge", scan().copy(stems = StemProfile(List(2) { SectionStems(0.5f, 0.5f, 0.5f) })))
+
+        // Bend the stems count into something no track has. readIntBounded
+        // refuses it; the scan above it must still come back.
+        val file = dir.listFiles()!!.single { it.name.endsWith(".scan") }
+        val bytes = file.readBytes()
+        val count = bytes.size - 2 * 3 - 4  // two sections of three bytes, then the four-byte count
+        bytes[count] = 0x7F; bytes[count + 1] = 0x7F
+        file.writeBytes(bytes)
+
+        val loaded = TrackScanStore(dir).load("huge")
+
+        assertNotNull(loaded, "a nonsense stems count must not take the beat grid down with it")
+        assertEquals(null, loaded.stems)
+        assertEquals(128f, loaded.bpm)
+    }
+
+    @Test
     fun `a format-4 file written before stem separation still loads, with no stems`() {
         writeFormat4(File(dir.apply { mkdirs() }, fileNameFor("pre-stems")))
 
