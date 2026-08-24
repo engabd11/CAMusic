@@ -141,6 +141,8 @@ fun NowPlayingScreen(
     val swipeToSkip by settings.swipeToSkip.collectAsStateWithLifecycle(initialValue = false)
     val skipThresholdPx = with(LocalDensity.current) { 64.dp.toPx() }
     val showVisualizer by settings.showVisualizer.collectAsStateWithLifecycle(initialValue = false)
+    val showMusicMap by settings.showMusicMap.collectAsStateWithLifecycle(initialValue = false)
+    val currentScan by viewModel.currentScan.collectAsStateWithLifecycle()
 
     CompositionLocalProvider(LocalAccent provides accent, LocalPalette provides palette) {
         Box(
@@ -337,6 +339,15 @@ fun NowPlayingScreen(
                 Spacer(Modifier.height(14.dp))
 
                 SeekRow(scrubber, st.durationMs, playing = st.isPlaying)
+
+                if (showMusicMap && currentScan != null) {
+                    Spacer(Modifier.height(8.dp))
+                    MusicMapTimeline(
+                        scan = currentScan!!,
+                        positionMs = scrubber.positionMs,
+                        onSeek = { viewModel.seekTo(it) },
+                    )
+                }
 
                 Spacer(Modifier.height(10.dp))
 

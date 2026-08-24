@@ -60,6 +60,7 @@ internal fun AppearanceSection(settings: AppSettings, accent: Color, scope: Coro
     val seekBarStyle by settings.seekBarStyle.collectAsStateWithLifecycle(initialValue = "line")
     val swipeToSkip by settings.swipeToSkip.collectAsStateWithLifecycle(initialValue = false)
     val showVisualizer by settings.showVisualizer.collectAsStateWithLifecycle(initialValue = false)
+    val showMusicMap by settings.showMusicMap.collectAsStateWithLifecycle(initialValue = false)
     val motionMode by settings.motionMode.collectAsStateWithLifecycle(initialValue = AppSettings.MOTION_SYSTEM)
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -165,6 +166,18 @@ internal fun AppearanceSection(settings: AppSettings, accent: Color, scope: Coro
                 checked = showVisualizer,
                 accent = accent,
             ) { scope.launch { settings.setShowVisualizer(it) } }
+        }
+
+        SettingsCard(
+            title = "Music map",
+            lead = "A structure timeline below the seek bar, for tracks that have been scanned.",
+        ) {
+            ToggleRow(
+                title = "Music map",
+                subtitle = "Sections and a tap-to-seek timeline",
+                checked = showMusicMap,
+                accent = accent,
+            ) { scope.launch { settings.setShowMusicMap(it) } }
         }
 
         SettingsCard(

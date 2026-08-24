@@ -161,6 +161,8 @@ fun NowPlayingOverlay(
     val swipeToSkip by settings.swipeToSkip.collectAsStateWithLifecycle(initialValue = false)
     val skipThresholdPx = with(LocalDensity.current) { 64.dp.toPx() }
     val showVisualizer by settings.showVisualizer.collectAsStateWithLifecycle(initialValue = false)
+    val showMusicMap by settings.showMusicMap.collectAsStateWithLifecycle(initialValue = false)
+    val currentScan by viewModel.currentScan.collectAsStateWithLifecycle()
 
     // Motion.spatialOffsetPx(), not spatial(): this settles a ~2000px drag, and the
     // generic Float spring's default 0.01px visibility threshold made the coroutine
@@ -463,6 +465,15 @@ fun NowPlayingOverlay(
                 Spacer(Modifier.height(16.dp))
 
                 SeekRow(scrubber, st.durationMs, playing = st.isPlaying)
+
+                if (showMusicMap && currentScan != null) {
+                    Spacer(Modifier.height(8.dp))
+                    MusicMapTimeline(
+                        scan = currentScan!!,
+                        positionMs = scrubber.positionMs,
+                        onSeek = { viewModel.seekTo(it) },
+                    )
+                }
 
                 Spacer(Modifier.height(14.dp))
 
