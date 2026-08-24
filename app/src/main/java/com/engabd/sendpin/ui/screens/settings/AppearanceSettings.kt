@@ -61,6 +61,7 @@ internal fun AppearanceSection(settings: AppSettings, accent: Color, scope: Coro
     val swipeToSkip by settings.swipeToSkip.collectAsStateWithLifecycle(initialValue = false)
     val showVisualizer by settings.showVisualizer.collectAsStateWithLifecycle(initialValue = false)
     val showMusicMap by settings.showMusicMap.collectAsStateWithLifecycle(initialValue = false)
+    val djMode by settings.djMode.collectAsStateWithLifecycle(initialValue = false)
     val motionMode by settings.motionMode.collectAsStateWithLifecycle(initialValue = AppSettings.MOTION_SYSTEM)
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -178,6 +179,25 @@ internal fun AppearanceSection(settings: AppSettings, accent: Color, scope: Coro
                 checked = showMusicMap,
                 accent = accent,
             ) { scope.launch { settings.setShowMusicMap(it) } }
+        }
+
+        SettingsCard(
+            title = "Harmonic DJ mode",
+            lead = "Auto-queued tracks lean toward compatible key and tempo, not just genre and artist.",
+            info = "\"Keep the music going\" already picks the next few tracks by genre and " +
+                "artist when there's no server to ask for something more like this. DJ mode " +
+                "adds a bonus for tracks whose key sits well against what's playing on the " +
+                "Camelot wheel (the same one/relative key, or one step around it) and whose " +
+                "tempo is close (or exactly half or double time).\n\nOnly applies to the " +
+                "offline, on-this-phone picker, and only for tracks that have been scanned — " +
+                "an unscanned track simply keeps its genre/artist ranking.",
+        ) {
+            ToggleRow(
+                title = "Harmonic DJ mode",
+                subtitle = "Needs offline scans; works with Radio mode",
+                checked = djMode,
+                accent = accent,
+            ) { scope.launch { settings.setDjMode(it) } }
         }
 
         SettingsCard(

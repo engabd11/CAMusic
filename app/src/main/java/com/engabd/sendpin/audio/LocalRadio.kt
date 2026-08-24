@@ -161,8 +161,19 @@ class LocalRadio(private val historyLimit: Int = 200) {
      * Deliberately not the same code path — with no server there is no similarity to
      * ask about, and pretending otherwise would just be a shuffle with extra steps.
      * Matching on genre and artist is the most that can honestly be done locally.
+     *
+     * [bonus] is an extra ranking signal a caller can layer on — Harmonic DJ mode's
+     * key/tempo compatibility score, for instance — without this method having to
+     * know what it means. The default contributes nothing, so every existing caller
+     * is unaffected.
      */
-    fun offline(downloads: List<MaItem>, seed: MaItem?, count: Int = 10, exclude: Set<String> = emptySet()): List<MaItem> {
+    fun offline(
+        downloads: List<MaItem>,
+        seed: MaItem?,
+        count: Int = 10,
+        exclude: Set<String> = emptySet(),
+        bonus: (MaItem) -> Int = { 0 },
+    ): List<MaItem> {
         val pool = downloads.filterNot { it.itemId in exclude || it.itemId in history }
         if (pool.isEmpty()) return emptyList()
         val genre = seed?.genres?.firstOrNull()
@@ -171,7 +182,7 @@ class LocalRadio(private val historyLimit: Int = 200) {
             var score = 0
             if (genre != null && track.genres.contains(genre)) score += 2
             if (artist != null && track.subtitle == artist) score += 1
-            score
+            score + bonus(track)
         }
         // Take from the best-matching half, then shuffle, so a genre match leads
         // without the same five songs every time.

@@ -5,6 +5,7 @@ import androidx.compose.runtime.Immutable
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.engabd.sendpin.SendpinApp
+import com.engabd.sendpin.audio.Camelot
 import com.engabd.sendpin.audio.FormatNegotiator
 import com.engabd.sendpin.audio.LocalRadio
 import com.engabd.sendpin.audio.LocalTrack
@@ -164,6 +165,8 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     /** Process-scoped, so Now Playing and the media notification see the same player. */
     val localPlayer = (app as SendpinApp).localPlayer
     val downloadManager = (app as SendpinApp).downloads
+    /** Offline per-track analysis (bpm, key) — for Harmonic DJ mode's ranking bonus. */
+    private val trackScans = (app as SendpinApp).trackScans
     val downloads: StateFlow<List<DownloadedTrack>> get() = downloadManager.downloads
 
     private val _backend = MutableStateFlow(Backend.MA); val backend: StateFlow<Backend> = _backend
@@ -1951,7 +1954,30 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             else -> null
         }
         val picked = if (_offline.value || generator == null) {
-            radio.offline(downloads.value.map { downloadItem(it) }, seed, RADIO_BATCH, exclude)
+            // Harmonic DJ mode only applies here: it needs TrackScanRepository, which
+            // only ever has data for files on this phone, and there's no server round
+            // trip that could carry BPM/key compatibility. `radio.next`'s server-backed
+            // rungs below stay untouched.
+            val djEnabled = settings.djMode.first()
+            radio.offline(
+                downloads.value.map { downloadItem(it) }, seed, RADIO_BATCH, exclude,
+                bonus = if (!djEnabled) ({ 0 }) else { item ->
+                    // store.peek(), not the suspending cached() — this runs inside a
+                    // sortedByDescending comparator, so a disk read isn't an option.
+                    // A candidate with no memory-resident scan just contributes 0 and
+                    // falls back to the existing genre/artist ranking above.
+                    val candidateScan = trackScans.store.peek(item.itemId)
+                    val seedScan = playing?.let { trackScans.peek(it) }
+                    var s = 0
+                    if (seedScan?.key != null && candidateScan?.key != null &&
+                        Camelot.compatible(seedScan.key, candidateScan.key)
+                    ) s += 2
+                    if (seedScan != null && candidateScan != null &&
+                        Camelot.bpmMatch(seedScan.bpm, candidateScan.bpm)
+                    ) s += 1
+                    s
+                },
+            )
         } else {
             radio.next(generator, seed, RADIO_BATCH, exclude)
         }
