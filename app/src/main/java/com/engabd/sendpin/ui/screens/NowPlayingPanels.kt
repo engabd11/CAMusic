@@ -404,12 +404,14 @@ private fun QueueRow(
 // --- sleep timer ----------------------------------------------------------
 
 /**
- * The sleep-timer control: the chip, a live countdown beside it, and the picker.
+ * The sleep-timer control: the chip and the picker.
  *
  * The chip used to cycle silently through 15/30/45/60 with nothing on screen to
  * show for it, so a running timer and a dead button looked exactly alike — which
- * is why the timer read as doing nothing. It now says what it set and how long is
- * left, and can be called off again.
+ * is why the timer read as doing nothing. It now says what it set (active tint,
+ * and the time left in its content description) and can be called off again. The
+ * countdown used to also render as a visible Text beside the chip, but that widened
+ * the chip row whenever the timer started and shifted every chip after it.
  */
 @Composable
 fun SleepTimerChip(viewModel: NowPlayingViewModel) {
@@ -419,22 +421,14 @@ fun SleepTimerChip(viewModel: NowPlayingViewModel) {
     var picking by remember { mutableStateOf(false) }
     val running = minutes > 0
 
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        IconChip(
-            Icons.Default.Bedtime,
-            if (running) "Sleep timer, ${countdown(remainingMs)} left" else "Sleep timer",
-            active = running,
-        ) { picking = true }
-        if (running) {
-            Text(
-                countdown(remainingMs), color = accent, fontFamily = MonoFont,
-                fontWeight = FontWeight.Bold, fontSize = 11.sp,
-            )
-        }
-    }
+    // The countdown lives in the content description only — a visible Text here used
+    // to widen this chip's Row whenever the timer started, shifting every chip after
+    // it. The active tint already signals "running"; screen readers still get the time.
+    IconChip(
+        Icons.Default.Bedtime,
+        if (running) "Sleep timer, ${countdown(remainingMs)} left" else "Sleep timer",
+        active = running,
+    ) { picking = true }
 
     if (picking) {
         // Not focusable. A focusable popup takes window focus, which puts the activity
