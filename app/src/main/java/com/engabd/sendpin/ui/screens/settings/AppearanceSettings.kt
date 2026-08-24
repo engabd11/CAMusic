@@ -59,6 +59,7 @@ internal fun AppearanceSection(settings: AppSettings, accent: Color, scope: Coro
     val layout by settings.nowPlayingLayout.collectAsStateWithLifecycle(initialValue = "tab")
     val seekBarStyle by settings.seekBarStyle.collectAsStateWithLifecycle(initialValue = "line")
     val swipeToSkip by settings.swipeToSkip.collectAsStateWithLifecycle(initialValue = false)
+    val showVisualizer by settings.showVisualizer.collectAsStateWithLifecycle(initialValue = false)
     val motionMode by settings.motionMode.collectAsStateWithLifecycle(initialValue = AppSettings.MOTION_SYSTEM)
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -152,6 +153,18 @@ internal fun AppearanceSection(settings: AppSettings, accent: Color, scope: Coro
                 checked = swipeToSkip,
                 accent = accent,
             ) { scope.launch { settings.setSwipeToSkip(it) } }
+        }
+
+        SettingsCard(
+            title = "Live visualizer",
+            lead = "A frequency-bar animation on Now Playing, driven by the music.",
+        ) {
+            ToggleRow(
+                title = "Live visualizer",
+                subtitle = "Reuses the same analysis Light Sync already runs",
+                checked = showVisualizer,
+                accent = accent,
+            ) { scope.launch { settings.setShowVisualizer(it) } }
         }
 
         SettingsCard(

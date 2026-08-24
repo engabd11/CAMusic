@@ -5,6 +5,9 @@ import androidx.media3.common.C
 import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.common.audio.BaseAudioProcessor
 import androidx.media3.common.util.UnstableApi
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.nio.ByteBuffer
 import java.util.concurrent.locks.LockSupport
 
@@ -59,6 +62,16 @@ class AudioAnalysisTap(
      */
     @Volatile
     var onFrame: ((AnalysisFrame) -> Unit)? = null
+
+    private val _frames = MutableStateFlow<AnalysisFrame?>(null)
+
+    /**
+     * Fan-out for consumers that don't need to claim the single [onFrame] slot — a
+     * Compose visualizer, for instance, alongside whatever (if anything) has claimed
+     * [onFrame] for Light Sync. Updated on the analysis thread; safe to collect from
+     * anywhere, `StateFlow` handles the cross-thread publish.
+     */
+    val frames: StateFlow<AnalysisFrame?> = _frames.asStateFlow()
 
     /**
      * Track position of the frame just delivered to [onFrame], in seconds, or
@@ -392,6 +405,7 @@ class AudioAnalysisTap(
                 seenClear = clear
                 ring.dropAll()
                 analyzer.reset()
+                _frames.value = null
                 onAnalysisReset?.invoke()
                 continue
             }
@@ -407,6 +421,7 @@ class AudioAnalysisTap(
             framePositionS = readClock()
             // pushStereo copies out of both buffers immediately, so they are reused.
             val frame = analyzer.pushStereo(hopL, hopR)
+            _frames.value = frame
             onFrame?.invoke(frame)
         }
     }

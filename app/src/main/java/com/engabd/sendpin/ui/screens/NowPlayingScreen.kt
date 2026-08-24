@@ -140,6 +140,7 @@ fun NowPlayingScreen(
     val settings = remember(context) { AppSettings(context) }
     val swipeToSkip by settings.swipeToSkip.collectAsStateWithLifecycle(initialValue = false)
     val skipThresholdPx = with(LocalDensity.current) { 64.dp.toPx() }
+    val showVisualizer by settings.showVisualizer.collectAsStateWithLifecycle(initialValue = false)
 
     CompositionLocalProvider(LocalAccent provides accent, LocalPalette provides palette) {
         Box(
@@ -230,30 +231,41 @@ fun NowPlayingScreen(
                             modifier = Modifier.fillMaxSize(),
                         )
                     } else {
-                        AlbumArt(
-                            art = art,
-                            glow = palette.swatch(0),
-                            modifier = Modifier
-                                .fillMaxSize()
-                                // graphicsLayer rather than Modifier.alpha: the State is
-                                // read in the layer block, so easing the dim costs no
-                                // recomposition for the length of the transition.
-                                .graphicsLayer { alpha = artDim.value }
-                                // Long-press → quick actions (go to album/artist, share).
-                                // No ripple: a tap here has never done anything, and
-                                // adding one now would read as a new, absent affordance.
-                                // Nothing to act on with an empty player.
-                                .combinedClickable(
-                                    interactionSource = remember { MutableInteractionSource() },
-                                    indication = null,
-                                    onClick = {},
-                                    onLongClick = if (favouritable != null) {
-                                        { sheets.actions = true }
-                                    } else null,
-                                ),
-                            glowAlpha = artGlow.value,
-                            placeholder = Icons.AutoMirrored.Filled.QueueMusic,
-                        )
+                        Box(Modifier.fillMaxSize()) {
+                            AlbumArt(
+                                art = art,
+                                glow = palette.swatch(0),
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    // graphicsLayer rather than Modifier.alpha: the State is
+                                    // read in the layer block, so easing the dim costs no
+                                    // recomposition for the length of the transition.
+                                    .graphicsLayer { alpha = artDim.value }
+                                    // Long-press → quick actions (go to album/artist, share).
+                                    // No ripple: a tap here has never done anything, and
+                                    // adding one now would read as a new, absent affordance.
+                                    // Nothing to act on with an empty player.
+                                    .combinedClickable(
+                                        interactionSource = remember { MutableInteractionSource() },
+                                        indication = null,
+                                        onClick = {},
+                                        onLongClick = if (favouritable != null) {
+                                            { sheets.actions = true }
+                                        } else null,
+                                    ),
+                                glowAlpha = artGlow.value,
+                                placeholder = Icons.AutoMirrored.Filled.QueueMusic,
+                            )
+                            if (showVisualizer) {
+                                AudioVisualizer(
+                                    modifier = Modifier
+                                        .align(Alignment.BottomCenter)
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 10.dp)
+                                        .height(48.dp),
+                                )
+                            }
+                        }
                     }
                 }
 

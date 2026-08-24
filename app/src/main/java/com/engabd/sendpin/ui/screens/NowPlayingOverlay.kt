@@ -160,6 +160,7 @@ fun NowPlayingOverlay(
     val settings = remember(context) { AppSettings(context) }
     val swipeToSkip by settings.swipeToSkip.collectAsStateWithLifecycle(initialValue = false)
     val skipThresholdPx = with(LocalDensity.current) { 64.dp.toPx() }
+    val showVisualizer by settings.showVisualizer.collectAsStateWithLifecycle(initialValue = false)
 
     // Motion.spatialOffsetPx(), not spatial(): this settles a ~2000px drag, and the
     // generic Float spring's default 0.01px visibility threshold made the coroutine
@@ -377,15 +378,26 @@ fun NowPlayingOverlay(
                         // Box: one surface, one movement, nothing to fall out of step.
                         // The bar's thumbnail simply cross-fades, which is what a
                         // control that is being replaced should do.
-                        AlbumArt(
-                            art = art,
-                            glow = palette.swatch(0),
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .graphicsLayer { alpha = artDim.value },
-                            glowAlpha = artGlow.value,
-                            placeholder = Icons.AutoMirrored.Filled.QueueMusic,
-                        )
+                        Box(Modifier.fillMaxSize()) {
+                            AlbumArt(
+                                art = art,
+                                glow = palette.swatch(0),
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .graphicsLayer { alpha = artDim.value },
+                                glowAlpha = artGlow.value,
+                                placeholder = Icons.AutoMirrored.Filled.QueueMusic,
+                            )
+                            if (showVisualizer) {
+                                AudioVisualizer(
+                                    modifier = Modifier
+                                        .align(Alignment.BottomCenter)
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 10.dp)
+                                        .height(48.dp),
+                                )
+                            }
+                        }
                     }
                 }
 
