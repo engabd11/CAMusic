@@ -133,11 +133,18 @@ Three behaviour changes are worth knowing:
   `MaRepository.describePlayFailure` re-probes `music/item_by_uri` so the app can tell the two
   apart instead of blaming the library.
 
-### Known gap (not yet fixed)
+### `preferred_sendspin_format`
 
-`MaRepository.setPreferredSendspinFormat` matches the server's `preferred_sendspin_format`
-options as `"<codec>_<rate>_<depth>"`. Music Assistant writes them as
+`MaRepository.setPreferredSendspinFormat` used to match the server's options as
+`"<codec>_<rate>_<depth>"`. Music Assistant writes them as
 `"<codec>:<rate>:<depth>:<channels>"` (`sendspin/player.py: format_to_option_value`, unchanged
-between 2.9 and 2.10), so nothing but `"automatic"` has ever matched and the save is a silent
-no-op. Harmless — the advertised format list already decides what the client receives — but the
-codec preference in Settings does not reach the server.
+between 2.9 and 2.10), so nothing but `"automatic"` ever matched and a codec preference never
+left the phone. Fixed: `MaRepository.matchFormatOption` matches on the codec segment and takes
+the **first** option carrying it.
+
+First, not highest: the entry writes a whole fixed format override, and with none set
+aiosendspin already plays `compatible[0]` — the client's first advertised format
+(`_ensure_preferred_format`). So the first option for a codec is the one already in use, and
+writing it only makes the choice explicit and sticky across reconnects. The options themselves
+are built from the client's live `supported_formats`, so a player whose Sendspin role isn't
+connected has no options to match and the save is correctly skipped.

@@ -83,6 +83,31 @@ class MaRepository(
                 "for the provider that holds the file"
 
         /**
+         * The `preferred_sendspin_format` option that stands for [wanted], or null.
+         *
+         * [wanted] is a bare codec (`flac`, `pcm`, `opus`) or MA's `automatic`. The
+         * options are `codec:rate:depth:channels`, built by mapping the client's **own
+         * advertised `supported_formats`, in the order it advertised them**.
+         *
+         * **First** match, not the highest rate the server happens to list. The
+         * override this writes is a whole fixed format, not a codec: with none set the
+         * server plays the client's first compatible format (aiosendspin
+         * `_ensure_preferred_format`, `compatible[0]`), so the first option for the
+         * codec is the one already in use — writing it changes nothing about what
+         * streams and only makes the choice explicit and sticky across reconnects.
+         * Pinning `flac:96000:24:2` instead would have Music Assistant hand every
+         * 44.1/48 kHz source over at 96 kHz, which is bandwidth spent to arrive at the
+         * same audio. `FormatNegotiator` puts 48 kHz first for that reason (and for
+         * grouped-sync compatibility); this keeps the two agreeing.
+         *
+         * The exact-match pass first, so `automatic` — and any server that does list
+         * bare codec names — still resolves.
+         */
+        fun matchFormatOption(options: List<String>, wanted: String): String? =
+            options.firstOrNull { it == wanted }
+                ?: options.firstOrNull { it.substringBefore(':') == wanted }
+
+        /**
          * The error a failed play should actually carry, given whether the item it
          * named still resolves on the server. See [describePlayFailure] for why.
          *
@@ -859,35 +884,32 @@ class MaRepository(
     }
 
     /**
-     * MA's own per-player preference for what Sendspin should stream. Kept in step
-     * with the codec this client advertises so the two can't disagree; `"automatic"`
-     * is MA's wording for "no preference".
-     *
-     * Best-effort: servers without the key ignore the save, which is why nothing
-     * depends on the result.
-     */
-    /**
      * Point MA's own per-player format preference at [codec] (`"automatic"` for none).
      *
+     * MA's own per-player preference for what Sendspin should stream, kept in step
+     * with the codec this client advertises so the two can't disagree. Best-effort:
+     * the caller doesn't depend on the result, because the advertised format list
+     * already decides what actually arrives.
+     *
      * The value is **not** a bare codec name. `preferred_sendspin_format` is a
-     * `ConfigEntry` whose `options` the server declares, and they carry the rate and
-     * depth too (`flac_48000_16`, …) — which is why massdroid reads the options list
-     * and matches by prefix rather than sending `"flac"`. Sending a value that isn't
-     * one of the declared options is rejected, so the whole save is a no-op.
+     * `ConfigEntry` whose `options` the server declares, so a value that isn't one of
+     * them is rejected and the whole save is a silent no-op — which is exactly what
+     * this did for every codec, because it matched them as `flac_48000_16`. Music
+     * Assistant writes them as `codec:rate:depth:channels` (`flac:48000:24:2`), and
+     * has for as long as the key has existed, so nothing but `"automatic"` ever
+     * matched and the codec setting never reached the server. See
+     * [matchFormatOption], which is where the shape is now decided.
      *
      * Returns the option actually written, or null when the server has no such key
-     * (older builds) or offers nothing matching.
+     * (older builds, or a player whose Sendspin role isn't connected — the options are
+     * built from the client's *live* advertised formats) or offers nothing matching.
      */
     suspend fun setPreferredSendspinFormat(playerId: String, codec: String): String? {
         val entry = playerConfigEntry(playerId, "preferred_sendspin_format") ?: return null
         val options = (entry["options"] as? JsonArray)
             ?.mapNotNull { (it as? JsonObject)?.get("value")?.jsonPrimitive?.contentOrNull }
             .orEmpty()
-        val wanted = if (codec == "auto") "automatic" else codec
-        // Exact match first (a server that does use bare names), then the prefixed
-        // form, preferring the highest rate/depth the server lists for that codec.
-        val chosen = options.firstOrNull { it == wanted }
-            ?: options.filter { it.startsWith("${wanted}_") }.maxByOrNull { it.length }
+        val chosen = matchFormatOption(options, if (codec == "auto") "automatic" else codec)
             ?: return null
         api.sendCommand("config/players/save", buildJsonObject {
             put("player_id", playerId)
