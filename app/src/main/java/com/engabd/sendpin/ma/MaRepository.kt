@@ -69,6 +69,59 @@ class MaRepository(
          */
         fun distinctItems(items: List<MaItem>): List<MaItem> =
             items.distinctBy { "${it.provider}|${it.mediaType}|${it.itemId}" }
+
+        /**
+         * `MediaNotFoundError.error_code` — the code Music Assistant puts on the wire
+         * beside the (localised, from 2.10) message. Matched on rather than on the
+         * text, which is whatever language the connection asked for.
+         */
+        const val ERR_MEDIA_NOT_FOUND = 2
+
+        /** What [describePlayFailure] says when the item is demonstrably there. */
+        const val UNPLAYABLE_MESSAGE =
+            "Music Assistant found this track but couldn't play it — check the server log " +
+                "for the provider that holds the file"
+
+        /**
+         * The `preferred_sendspin_format` option that stands for [wanted], or null.
+         *
+         * [wanted] is a bare codec (`flac`, `pcm`, `opus`) or MA's `automatic`. The
+         * options are `codec:rate:depth:channels`, built by mapping the client's **own
+         * advertised `supported_formats`, in the order it advertised them**.
+         *
+         * **First** match, not the highest rate the server happens to list. The
+         * override this writes is a whole fixed format, not a codec: with none set the
+         * server plays the client's first compatible format (aiosendspin
+         * `_ensure_preferred_format`, `compatible[0]`), so the first option for the
+         * codec is the one already in use — writing it changes nothing about what
+         * streams and only makes the choice explicit and sticky across reconnects.
+         * Pinning `flac:96000:24:2` instead would have Music Assistant hand every
+         * 44.1/48 kHz source over at 96 kHz, which is bandwidth spent to arrive at the
+         * same audio. `FormatNegotiator` puts 48 kHz first for that reason (and for
+         * grouped-sync compatibility); this keeps the two agreeing.
+         *
+         * The exact-match pass first, so `automatic` — and any server that does list
+         * bare codec names — still resolves.
+         */
+        fun matchFormatOption(options: List<String>, wanted: String): String? =
+            options.firstOrNull { it == wanted }
+                ?: options.firstOrNull { it.substringBefore(':') == wanted }
+
+        /**
+         * The error a failed play should actually carry, given whether the item it
+         * named still resolves on the server. See [describePlayFailure] for why.
+         *
+         * Separated from the probe so the decision can be exercised without a socket:
+         * [itemFound] is false both for an item the server really doesn't have and for
+         * a probe that couldn't be made, and in neither case do we have grounds to
+         * contradict the server's own message.
+         */
+        fun playFailure(e: MaApiException, itemFound: Boolean): Exception =
+            if (e.code == ERR_MEDIA_NOT_FOUND && !e.isTransport && itemFound) {
+                MaApiException(UNPLAYABLE_MESSAGE, e.code)
+            } else {
+                e
+            }
     }
 
     suspend fun artists(offset: Int = 0, limit: Int = PAGE_SIZE) =
@@ -470,12 +523,50 @@ class MaRepository(
         // whenever the retry timer happens to fire. Non-blocking, and a no-op while
         // the socket is up, which is the usual case.
         onPlaybackRequested()
-        api.sendCommand("player_queues/play_media", buildJsonObject {
-            put("media", JsonArray(uris.map { JsonPrimitive(it) }))
-            put("option", option)
-            put("radio_mode", radioMode)
-            put("queue_id", playerId)
-        })
+        try {
+            api.sendCommand("player_queues/play_media", buildJsonObject {
+                put("media", JsonArray(uris.map { JsonPrimitive(it) }))
+                put("option", option)
+                put("radio_mode", radioMode)
+                put("queue_id", playerId)
+            })
+        } catch (e: MaApiException) {
+            throw describePlayFailure(e, uris)
+        }
+    }
+
+    /**
+     * Say which of Music Assistant's two "media not found" failures this was.
+     *
+     * From 2.10 the server localises its errors, and `player_queues/play_media`
+     * answers the same `MediaNotFoundError` — "The requested media item could not be
+     * found." — for two failures that have nothing to do with each other:
+     *
+     *  - a uri it could not resolve, which is ours to fix; and
+     *  - a track it resolved perfectly well and then could not get audio for. The
+     *    resolve loop swallows a bad uri and ends with "there is nothing to play
+     *    here", so this is in fact the *only* one of the two that reaches a client
+     *    under the generic wording — `play_index` catches the load error, throws
+     *    `MediaNotFoundError` with a message of its own, and the translation layer
+     *    then replaces that message with the generic one. The real reason (the
+     *    provider refused, the file has gone, ffmpeg failed) is left in the server
+     *    log and nowhere else.
+     *
+     * Repeating "could not be found" to someone looking at the track in the app is
+     * worse than useless — it points them at the library, which is the one thing that
+     * is fine. So ask: `music/item_by_uri` is the same lookup `play_media` starts
+     * with. If the item comes back, the uri was never the problem.
+     *
+     * Anything we can't establish leaves the server's own message alone: a probe that
+     * fails because the socket went away must not be read as "the item is missing".
+     */
+    private suspend fun describePlayFailure(e: MaApiException, uris: List<String>): Exception {
+        if (e.code != ERR_MEDIA_NOT_FOUND || e.isTransport) return e
+        val uri = uris.firstOrNull() ?: return e
+        val found = runCatching {
+            api.sendCommand("music/item_by_uri", buildJsonObject { put("uri", uri) }, timeoutMs = 10_000)
+        }.getOrNull() != null
+        return playFailure(e, found)
     }
 
     suspend fun play(playerId: String) = cmd("play", playerId)
@@ -793,35 +884,32 @@ class MaRepository(
     }
 
     /**
-     * MA's own per-player preference for what Sendspin should stream. Kept in step
-     * with the codec this client advertises so the two can't disagree; `"automatic"`
-     * is MA's wording for "no preference".
-     *
-     * Best-effort: servers without the key ignore the save, which is why nothing
-     * depends on the result.
-     */
-    /**
      * Point MA's own per-player format preference at [codec] (`"automatic"` for none).
      *
+     * MA's own per-player preference for what Sendspin should stream, kept in step
+     * with the codec this client advertises so the two can't disagree. Best-effort:
+     * the caller doesn't depend on the result, because the advertised format list
+     * already decides what actually arrives.
+     *
      * The value is **not** a bare codec name. `preferred_sendspin_format` is a
-     * `ConfigEntry` whose `options` the server declares, and they carry the rate and
-     * depth too (`flac_48000_16`, …) — which is why massdroid reads the options list
-     * and matches by prefix rather than sending `"flac"`. Sending a value that isn't
-     * one of the declared options is rejected, so the whole save is a no-op.
+     * `ConfigEntry` whose `options` the server declares, so a value that isn't one of
+     * them is rejected and the whole save is a silent no-op — which is exactly what
+     * this did for every codec, because it matched them as `flac_48000_16`. Music
+     * Assistant writes them as `codec:rate:depth:channels` (`flac:48000:24:2`), and
+     * has for as long as the key has existed, so nothing but `"automatic"` ever
+     * matched and the codec setting never reached the server. See
+     * [matchFormatOption], which is where the shape is now decided.
      *
      * Returns the option actually written, or null when the server has no such key
-     * (older builds) or offers nothing matching.
+     * (older builds, or a player whose Sendspin role isn't connected — the options are
+     * built from the client's *live* advertised formats) or offers nothing matching.
      */
     suspend fun setPreferredSendspinFormat(playerId: String, codec: String): String? {
         val entry = playerConfigEntry(playerId, "preferred_sendspin_format") ?: return null
         val options = (entry["options"] as? JsonArray)
             ?.mapNotNull { (it as? JsonObject)?.get("value")?.jsonPrimitive?.contentOrNull }
             .orEmpty()
-        val wanted = if (codec == "auto") "automatic" else codec
-        // Exact match first (a server that does use bare names), then the prefixed
-        // form, preferring the highest rate/depth the server lists for that codec.
-        val chosen = options.firstOrNull { it == wanted }
-            ?: options.filter { it.startsWith("${wanted}_") }.maxByOrNull { it.length }
+        val chosen = matchFormatOption(options, if (codec == "auto") "automatic" else codec)
             ?: return null
         api.sendCommand("config/players/save", buildJsonObject {
             put("player_id", playerId)

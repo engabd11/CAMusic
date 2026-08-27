@@ -101,3 +101,50 @@ samples, error ≤ ~5 ms). `ClockKalmanFilter.kt` implements this (pure Kotlin, 
 | `service/SendspinService.kt`, `ui/viewmodel/PlayerViewModel.kt` | orchestrate the above |
 
 References ported/adapted with attribution: massdroid (MIT), MA mobile-app (Apache 2.0), sendspin-js.
+
+## Music Assistant 2.10 — what changed for a client (verified against tags `2.9.13` and `2.10.0`)
+
+The API surface the app uses is **unchanged**: every command it sends
+(`music/*/library_items`, `music/*/get`, `music/search`, `player_queues/play_media`,
+`player_queues/get_active_queue`, `config/players/*`, …) still exists with the same argument
+names, and `player_queues/play_media` still takes `queue_id` / `media` / `option` / `radio_mode`.
+Three behaviour changes are worth knowing:
+
+- **Library listings are "summary" items now.** `music/<type>/library_items` gained
+  `summary: bool = True`, so a listing returns the slim `*Summary` model rather than a fully
+  hydrated one. It still carries `item_id`, `provider`, `media_type`, `uri` and the provider
+  mappings, so browse and playback are unaffected — but `None` fields are omitted from the
+  wire payload, so never treat an absent key as a meaningful value.
+
+- **Errors are localised on the wire.** `ErrorResultMessage` resolves a `translation_key` into
+  `details` for the connection's locale, and drops the key. `error_code` is therefore the only
+  stable thing to branch on (`MediaNotFoundError` = 2) — the message text is whatever language
+  the connection asked for.
+
+- **"The requested media item could not be found." is not about the uri.** A uri
+  `play_media` cannot resolve is *swallowed* (`queue_loader.py`, `except MusicAssistantError:
+  "Skipping %s: %s"`), and a request where nothing resolved ends with the distinct
+  `no_playable_items` — "There is nothing to play here." The generic `media_not_found` wording
+  reaches a client from `play_index` → `_load_item` instead: the item resolved, and then the
+  *stream* could not be obtained (provider refused, file gone, ffmpeg failed) or the audio
+  buffer could not be prepared. `player_queues/controller.py` re-raises those as
+  `MediaNotFoundError`, and the translation layer then replaces the actionable message with the
+  generic one — the real reason is left in the **server log** and nowhere else.
+  `MaRepository.describePlayFailure` re-probes `music/item_by_uri` so the app can tell the two
+  apart instead of blaming the library.
+
+### `preferred_sendspin_format`
+
+`MaRepository.setPreferredSendspinFormat` used to match the server's options as
+`"<codec>_<rate>_<depth>"`. Music Assistant writes them as
+`"<codec>:<rate>:<depth>:<channels>"` (`sendspin/player.py: format_to_option_value`, unchanged
+between 2.9 and 2.10), so nothing but `"automatic"` ever matched and a codec preference never
+left the phone. Fixed: `MaRepository.matchFormatOption` matches on the codec segment and takes
+the **first** option carrying it.
+
+First, not highest: the entry writes a whole fixed format override, and with none set
+aiosendspin already plays `compatible[0]` — the client's first advertised format
+(`_ensure_preferred_format`). So the first option for a codec is the one already in use, and
+writing it only makes the choice explicit and sticky across reconnects. The options themselves
+are built from the client's live `supported_formats`, so a player whose Sendspin role isn't
+connected has no options to match and the save is correctly skipped.
