@@ -69,6 +69,34 @@ class MaRepository(
          */
         fun distinctItems(items: List<MaItem>): List<MaItem> =
             items.distinctBy { "${it.provider}|${it.mediaType}|${it.itemId}" }
+
+        /**
+         * `MediaNotFoundError.error_code` — the code Music Assistant puts on the wire
+         * beside the (localised, from 2.10) message. Matched on rather than on the
+         * text, which is whatever language the connection asked for.
+         */
+        const val ERR_MEDIA_NOT_FOUND = 2
+
+        /** What [describePlayFailure] says when the item is demonstrably there. */
+        const val UNPLAYABLE_MESSAGE =
+            "Music Assistant found this track but couldn't play it — check the server log " +
+                "for the provider that holds the file"
+
+        /**
+         * The error a failed play should actually carry, given whether the item it
+         * named still resolves on the server. See [describePlayFailure] for why.
+         *
+         * Separated from the probe so the decision can be exercised without a socket:
+         * [itemFound] is false both for an item the server really doesn't have and for
+         * a probe that couldn't be made, and in neither case do we have grounds to
+         * contradict the server's own message.
+         */
+        fun playFailure(e: MaApiException, itemFound: Boolean): Exception =
+            if (e.code == ERR_MEDIA_NOT_FOUND && !e.isTransport && itemFound) {
+                MaApiException(UNPLAYABLE_MESSAGE, e.code)
+            } else {
+                e
+            }
     }
 
     suspend fun artists(offset: Int = 0, limit: Int = PAGE_SIZE) =
@@ -470,12 +498,50 @@ class MaRepository(
         // whenever the retry timer happens to fire. Non-blocking, and a no-op while
         // the socket is up, which is the usual case.
         onPlaybackRequested()
-        api.sendCommand("player_queues/play_media", buildJsonObject {
-            put("media", JsonArray(uris.map { JsonPrimitive(it) }))
-            put("option", option)
-            put("radio_mode", radioMode)
-            put("queue_id", playerId)
-        })
+        try {
+            api.sendCommand("player_queues/play_media", buildJsonObject {
+                put("media", JsonArray(uris.map { JsonPrimitive(it) }))
+                put("option", option)
+                put("radio_mode", radioMode)
+                put("queue_id", playerId)
+            })
+        } catch (e: MaApiException) {
+            throw describePlayFailure(e, uris)
+        }
+    }
+
+    /**
+     * Say which of Music Assistant's two "media not found" failures this was.
+     *
+     * From 2.10 the server localises its errors, and `player_queues/play_media`
+     * answers the same `MediaNotFoundError` — "The requested media item could not be
+     * found." — for two failures that have nothing to do with each other:
+     *
+     *  - a uri it could not resolve, which is ours to fix; and
+     *  - a track it resolved perfectly well and then could not get audio for. The
+     *    resolve loop swallows a bad uri and ends with "there is nothing to play
+     *    here", so this is in fact the *only* one of the two that reaches a client
+     *    under the generic wording — `play_index` catches the load error, throws
+     *    `MediaNotFoundError` with a message of its own, and the translation layer
+     *    then replaces that message with the generic one. The real reason (the
+     *    provider refused, the file has gone, ffmpeg failed) is left in the server
+     *    log and nowhere else.
+     *
+     * Repeating "could not be found" to someone looking at the track in the app is
+     * worse than useless — it points them at the library, which is the one thing that
+     * is fine. So ask: `music/item_by_uri` is the same lookup `play_media` starts
+     * with. If the item comes back, the uri was never the problem.
+     *
+     * Anything we can't establish leaves the server's own message alone: a probe that
+     * fails because the socket went away must not be read as "the item is missing".
+     */
+    private suspend fun describePlayFailure(e: MaApiException, uris: List<String>): Exception {
+        if (e.code != ERR_MEDIA_NOT_FOUND || e.isTransport) return e
+        val uri = uris.firstOrNull() ?: return e
+        val found = runCatching {
+            api.sendCommand("music/item_by_uri", buildJsonObject { put("uri", uri) }, timeoutMs = 10_000)
+        }.getOrNull() != null
+        return playFailure(e, found)
     }
 
     suspend fun play(playerId: String) = cmd("play", playerId)
