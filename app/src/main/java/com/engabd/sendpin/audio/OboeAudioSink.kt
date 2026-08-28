@@ -115,8 +115,9 @@ class OboeAudioSink(
     override fun getCurrentPositionUs(sourceEnded: Boolean): Long {
         // Approximate: frames handed to the native ring, minus what's still
         // buffered there. Good enough for ExoPlayer's own bookkeeping - this
-        // app's actual Now Playing position comes from server/state + ClockSync
-        // (see Playback.anchorProgress), not from the player's reported position.
+        // app's actual Now Playing position comes from MA's elapsed_time /
+        // elapsed_time_last_updated via PlayerPositionTracker, not from the
+        // player's reported position.
         if (sampleRate <= 0) return 0L
         val played = (framesWrittenTotal - nativeOutput.bufferedFrames()).coerceAtLeast(0)
         return played * 1_000_000L / sampleRate

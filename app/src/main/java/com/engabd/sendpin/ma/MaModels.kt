@@ -214,6 +214,18 @@ data class MaPlayer(
     val canGroupWith: List<String> = emptyList(), // player_ids this can be grouped with
     val supportedFeatures: List<String> = emptyList(),
     val icon: String? = null,
+    /**
+     * The protocol client this player is currently rendering through, if any.
+     *
+     * From Music Assistant 2.10 a Sendspin client is not a transport-side player in
+     * its own right: MA registers the protocol client under the client's own id and
+     * then creates a `universal_player` (`up…`) around it, and it is that wrapper the
+     * queues address and the app targets. The two ids are never equal, so "is this
+     * phone the thing actually playing?" cannot be answered by comparing them.
+     * `active_output_protocol` is the link - it names the protocol player currently
+     * carrying the audio. See [isSelfOrActiveOutput].
+     */
+    val activeOutputProtocol: String? = null,
     val nowPlaying: MaNowPlaying? = null,
 ) {
     val isPlaying get() = state == "playing"
@@ -225,6 +237,14 @@ data class MaPlayer(
 
     /** The server lets us add/remove members with this player as target. */
     val canSetMembers get() = "set_members" in supportedFeatures
+
+    /**
+     * Is [id] this player, or the protocol client it is currently rendering through?
+     *
+     * The direct comparison first, so a server that still targets the protocol client
+     * itself - or any player that is not wrapped - keeps working unchanged.
+     */
+    fun isSelfOrActiveOutput(id: String) = playerId == id || activeOutputProtocol == id
 }
 
 /** A player's Sendspin sync-delay config value + the (variable) key it lives under. */
@@ -689,6 +709,7 @@ object MaParse {
                 canGroupWith = strList(o["can_group_with"]),
                 supportedFeatures = strList(o["supported_features"]),
                 icon = o["icon"]?.jsonPrimitive?.contentOrNull,
+                activeOutputProtocol = o["active_output_protocol"]?.jsonPrimitive?.contentOrNull,
                 nowPlaying = nowPlaying(o["current_media"], o["elapsed_time"], serverUrl),
             )
         }
