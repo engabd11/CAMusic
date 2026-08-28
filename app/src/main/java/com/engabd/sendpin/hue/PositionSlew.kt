@@ -14,11 +14,11 @@ import kotlin.math.abs
  *
  * ## Why the corrections are coarse in the first place
  *
- * `MaNowPlaying`'s own anchor logic says it outright: a repeated
- * `elapsed_time_last_updated` means the server has not recomputed the playhead, and
- * "for a remote speaker that is most polls". So the position free-runs between
- * updates that land seconds apart, and each one arrives with whatever drift has
- * accumulated. This absorbs that.
+ * [com.engabd.sendpin.ui.viewmodel.PlayerPositionTracker.setAnchor] says it outright:
+ * a repeated `elapsed_time_last_updated` means the server has not recomputed the
+ * playhead, and for a remote speaker that is most polls. So the position free-runs
+ * between updates that land seconds apart, and each one arrives with whatever drift
+ * has accumulated. This absorbs that.
  *
  * Above [snapErrorS] the correction is taken as a seek rather than drift and applied
  * at once — which also gives track-change and skip detection for free, since both

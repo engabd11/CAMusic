@@ -90,9 +90,11 @@ class UnifiedNowPlaying(
                 album = remote.album,
                 artworkUrl = remote.artworkUrl,
                 durationMs = remote.durationMs,
-                // The Sendspin path's own finer, locally-projected position for this
-                // phone; MA's polled figure only for a genuinely different speaker.
-                positionMs = if (isSelf) playback.positionMs.value else maNowPlaying.positionMs.value,
+                // Position always comes from MA's `elapsed_time` /
+                // `elapsed_time_last_updated` via the tracker in [MaNowPlaying],
+                // whether this phone is the player or a remote speaker is. The
+                // Sendspin path no longer sources position independently.
+                positionMs = maNowPlaying.positionMs.value,
                 isPlaying = if (isSelf) playback.isPlaying.value else remote.isPlaying,
                 shuffleOn = maNowPlaying.shuffleActive.value,
                 playerName = if (isSelf) null else remote.playerName,
@@ -110,7 +112,7 @@ class UnifiedNowPlaying(
             album = playback.album.value,
             artworkUrl = playback.artworkUrl.value,
             durationMs = playback.durationMs.value,
-            positionMs = playback.positionMs.value,
+            positionMs = maNowPlaying.positionMs.value,
             isPlaying = playback.isPlaying.value,
             shuffleOn = maNowPlaying.shuffleActive.value,
             playerName = null,
@@ -126,7 +128,7 @@ class UnifiedNowPlaying(
             localPlayer.current, localPlayer.playing, localPlayer.shuffle,
             localPlayer.positionMs, localPlayer.durationMs,
             playback.trackTitle, playback.artist, playback.album, playback.artworkUrl,
-            playback.durationMs, playback.positionMs, playback.isPlaying,
+            playback.durationMs, playback.isPlaying,
             maNowPlaying.now, maNowPlaying.shuffleActive, maNowPlaying.positionMs,
             deviceVolume.level,
         )

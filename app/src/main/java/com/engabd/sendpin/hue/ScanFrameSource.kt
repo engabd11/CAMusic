@@ -44,10 +44,11 @@ import kotlinx.coroutines.launch
  *
  * ## What it costs
  *
- * The timing is only as good as MA's playhead. `MaNowPlaying.anchor` says outright
- * that a repeated `elapsed_time_last_updated` means the server has not recomputed it,
- * and "for a remote speaker that is most polls" — so corrections land seconds apart
- * and carry accumulated drift. [PositionSlew] absorbs them without ever jumping. What
+ * The timing is only as good as MA's playhead, which
+ * [com.engabd.sendpin.ui.viewmodel.PlayerPositionTracker] interpolates between server
+ * readings: a repeated `elapsed_time_last_updated` means the server has not recomputed
+ * it, and for a remote speaker that is most polls — so corrections land seconds
+ * apart and carry accumulated drift. [PositionSlew] absorbs them without ever jumping. What
  * it cannot absorb is the speaker's own latency, which is device-specific and
  * unknowable from here (a cast group can be half a second), hence the user-tunable
  * offset in [AppSettings.lightSyncSpeakerOffsetMs]. syncoV2 has the same slider for

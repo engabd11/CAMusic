@@ -19,7 +19,6 @@ import com.engabd.sendpin.discovery.PlayerIdentity
 import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.ma.MaApiClient
 import com.engabd.sendpin.ma.MaRepository
-import com.engabd.sendpin.protocol.ProgressProjection
 import com.engabd.sendpin.protocol.SendspinClient
 import com.engabd.sendpin.protocol.SendspinIncoming
 import com.engabd.sendpin.protocol.StreamStartPlayerInfo
@@ -104,11 +103,11 @@ class Playback(private val app: Context) {
     private val _groupUpdates = MutableSharedFlow<SendspinIncoming.GroupUpdate>(extraBufferCapacity = 16)
     val groupUpdates: SharedFlow<SendspinIncoming.GroupUpdate> = _groupUpdates.asSharedFlow()
     private val _connectionLog = MutableStateFlow<List<String>>(emptyList()); val connectionLog: StateFlow<List<String>> = _connectionLog
-    // Exposed as flows so the media notification's seek bar tracks the track instead
-    // of only refreshing when play/pause flips.
-    private val _positionMs = MutableStateFlow(0L); val positionMs: StateFlow<Long> = _positionMs
+    // Exposed as a flow so the media notification's duration tracks the track instead
+    // of only refreshing when play/pause flips. There is deliberately no position here:
+    // it comes from MA's `elapsed_time` / `elapsed_time_last_updated` via
+    // [com.engabd.sendpin.ui.viewmodel.PlayerPositionTracker] on every path.
     private val _durationMs = MutableStateFlow(0L); val durationMs: StateFlow<Long> = _durationMs
-    val playbackPositionMs: Long get() = _positionMs.value
     val playbackDurationMs: Long get() = _durationMs.value
 
     val savedUsername: Flow<String> get() = settings.maUsername
@@ -464,26 +463,6 @@ class Playback(private val app: Context) {
                 }
             }
         }
-        // Project the playhead between `server/state` messages, so the bar moves
-        // smoothly instead of stepping whenever the server happens to speak.
-        //
-        // Deliberately here and not in [startSendspin]: this watches `_isPlaying`,
-        // which belongs to *this* object rather than to any one client, so launching
-        // it per connection would stack a fresh collector — and a fresh ticker — on
-        // every reconnect, each overwriting the single [positionTicker] handle and
-        // leaking the one before it.
-        scope.launch {
-            _isPlaying.collect { playing ->
-                positionTicker?.cancel()
-                republishPosition()
-                positionTicker = if (!playing) null else scope.launch {
-                    while (true) {
-                        delay(POSITION_TICK_MS)
-                        republishPosition()
-                    }
-                }
-            }
-        }
     }
 
     // --- discovery --------------------------------------------------------
@@ -568,6 +547,10 @@ class Playback(private val app: Context) {
             // MaRepository.playMedia uses, and its own status text already
             // surfaces through the c.statusText collector below.
             onFatalError = { c.reconnectNow() },
+            // Audio is out. Signal the edge so the UI's optimistic freeze releases —
+            // the outgoing track was still audible for over a second after a skip, so a
+            // level check cannot express "the stream I am waiting for has started".
+            onAudible = { _audibleSeq.value += 1 },
         ).also {
             // Read once, at connect time: switching mid-connection would orphan
             // whatever the old output was doing mid-stream.
@@ -589,7 +572,6 @@ class Playback(private val app: Context) {
                 _album.value = np?.album ?: ""
                 _artworkUrl.value = np?.artworkUrl
                 _durationMs.value = np?.durationMs ?: 0
-                anchorProgress(c, np)
             }
         }
         scope.launch {
@@ -659,10 +641,6 @@ class Playback(private val app: Context) {
                 coldEngineJob?.cancel(); coldEngineJob = null
                 eng.start(format)
                 idleJob?.cancel(); idleJob = null
-                // A new stream is the only thing that can legitimately move the
-                // playhead backwards on the same track — Music Assistant restarts the
-                // queue to seek. Open the window that lets the next reading do it.
-                acceptRewindUntilUs = c.clock.nowUs() + REWIND_GRACE_US
                 val kind = streamKind
                 scope.launch {
                     requestAudioFocus(kind)
@@ -821,155 +799,25 @@ class Playback(private val app: Context) {
         }
     }
 
-    // --- playhead ----------------------------------------------------------
+    // --- audible edge -------------------------------------------------------
     //
-    // The Sendspin server pushes `server/state` on every change and stamps it with the
-    // server-clock instant it was true at. That is a far better basis for the position
-    // bar than Music Assistant's five-second poll: it needs no polling, it arrives the
-    // moment anything happens, and — because the timestamp shares the audio frames'
-    // time domain — the clock filter can say exactly how old the reading is instead of
-    // the app assuming it describes the moment it was parsed.
-    //
-    // Assuming that is what made the bar jitter: a reading a second old was rendered as
-    // "now", so the bar ran ahead, and the next message pulled it back.
-
-    @Volatile private var progressAnchor: ProgressProjection.Anchor? = null
-    private var positionTicker: Job? = null
+    // The playhead itself is not here. It lives in `PlayerPositionTracker`, off Music
+    // Assistant's `elapsed_time` / `elapsed_time_last_updated`, on every path. What
+    // this side still owns is the one thing MA cannot see: the instant *this phone's*
+    // stream actually starts making a sound. `stream/start` precedes that by over
+    // 1.6 s (decoder and audio-track warm-up, measured on-device), and for that second
+    // the outgoing track is still coming out of the speaker.
 
     /**
-     * `title|artist` of the track [progressAnchor] currently describes. What
-     * [anchorProgress] uses to notice a track boundary — see its own note on why that
-     * needs handling here specifically, distinct from [MAX_ANCHOR_AGE_US]'s staleness
-     * gate.
+     * Counts streams that have actually been heard.
+     *
+     * A level ("is it playing?") cannot answer "has the stream I am waiting for
+     * started?", because the outgoing track is still coming out of the speaker for
+     * more than a second after a skip is asked for. The UI's optimistic freeze needs
+     * the *edge*, so it samples this when it freezes and releases when it moves.
      */
-    @Volatile private var anchoredTrackKey: String? = null
-
-    /** [ClockSync.nowUs] before which a same-track reading is held rather than applied. */
-    @Volatile private var trackSettleUntilUs: Long = 0L
-
-    /**
-     * [ClockSync.nowUs] until which a *backwards* progress reading is believed.
-     *
-     * Armed by `stream/start`, because that is what a seek looks like from here.
-     * Music Assistant resolves `players/cmd/seek` into `play_index(seek_position=)`,
-     * which restarts the queue — so every genuine seek, whether this app asked for
-     * it or another controller did, arrives with a fresh stream. Outside that window
-     * a same-track reading that would move the playhead backwards is a re-statement
-     * of something already projected past, not news. See [anchorProgress].
-     */
-    @Volatile private var acceptRewindUntilUs: Long = 0L
-
-    /**
-     * Take a `server/state` progress reading, dated by the server's own clock.
-     *
-     * `metadata.timestamp` is in server time, so [ClockSync.serverTimeToLocal] converts
-     * it to the instant on *this* phone's clock that the reading described. Sanity
-     * checked before it is trusted: a server that sends a timestamp from a different
-     * epoch (or one that arrives before the filter has anything useful to say) would
-     * otherwise anchor the bar somewhere absurd. Falling back to "now" is what the app
-     * did unconditionally before, so the fallback is no worse than the old behaviour.
-     *
-     * A track boundary gets a second kind of protection on top of that, because it is
-     * not a stale-timestamp problem: a `server/state` describing the *outgoing* track
-     * can arrive a beat after the one announcing the new one (or vice versa), each with
-     * a perfectly plausible, perfectly current timestamp. `NowPlayingViewModel`'s
-     * `PlayerPositionTracker` already freezes the bar around *user-initiated* seeks and
-     * skips (see its `freezeForSeek`/`freezeForTrackChange`) — this covers the gap that
-     * leaves open: a track ending and the next one starting on its own, which nothing
-     * in the UI ever asked for and so nothing there can freeze in advance. The first
-     * reading naming a new `title|artist` is trusted immediately; anything still
-     * naming that same track within [TRACK_TRANSITION_SETTLE_US] afterward is held —
-     * it is far more likely to be the old track's state machine catching up than new
-     * information — which is what turns "goes to a second, then back to 00:00" into a
-     * single clean jump.
-     */
-    private fun anchorProgress(c: SendspinClient, np: com.engabd.sendpin.protocol.NowPlaying?) {
-        val nowUs = c.clock.nowUs()
-        val trackKey = np?.let { "${it.title}|${it.artist}" }
-        if (trackKey != anchoredTrackKey) {
-            anchoredTrackKey = trackKey
-            trackSettleUntilUs = nowUs + TRACK_TRANSITION_SETTLE_US
-        } else if (nowUs < trackSettleUntilUs) {
-            return
-        }
-        val position = np?.progressMs
-        if (position == null) {
-            progressAnchor = null
-            _positionMs.value = 0
-            return
-        }
-        val stampedLocalUs = np.progressAtServerUs
-            ?.takeIf { it > 0L && c.clock.isSynced() }
-            ?.let { c.clock.serverTimeToLocal(it) }
-            ?.takeIf { kotlin.math.abs(nowUs - it) <= MAX_ANCHOR_AGE_US }
-        val candidate = ProgressProjection.Anchor(
-            positionMs = position,
-            atLocalUs = stampedLocalUs ?: nowUs,
-            speedMilli = np.speedMilli,
-            durationMs = np.durationMs ?: 0L,
-        )
-        if (isStaleRewind(candidate, nowUs)) return
-        progressAnchor = candidate
-        republishPosition()
-    }
-
-    /**
-     * Is this reading the server repeating itself rather than telling us something?
-     *
-     * The bar used to saw: seek to 0:53, watch it climb to 0:57, snap back to 0:53,
-     * climb again. The projection was never wrong — the anchor under it was being
-     * rebuilt from a reading that had not moved.
-     *
-     * `metadata.timestamp` is documented as the instant `track_progress` was true at,
-     * and the spec's own formula depends on that. Music Assistant stamps the
-     * *message*. Its queue's elapsed time advances on MA's own cadence, so any
-     * `server/state` sent between two of those updates carries a progress figure that
-     * is seconds old wearing a timestamp that says "now" — and anchoring on it drags
-     * the playhead back to wherever MA last recomputed it. `NowPlayingViewModel` has
-     * guarded against exactly this since it was written, using MA's
-     * `elapsed_time_last_updated`; the Sendspin path had no equivalent because the
-     * protocol offers none.
-     *
-     * So the discriminator is the stream rather than the clock. Music Assistant
-     * resolves `players/cmd/seek` into `play_index(..., seek_position=)`, which
-     * restarts the queue — every genuine seek therefore arrives with a `stream/start`,
-     * whether this app asked for it or another controller did. Inside that window a
-     * rewind is believed. Outside it, on the same track, while playing, a reading that
-     * would move the playhead backwards is discarded and the existing projection
-     * carries on.
-     *
-     * [UNAMBIGUOUS_REWIND_MS] is the escape hatch, and it is deliberately generous. If
-     * some Music Assistant build ever seeks without restarting the stream, a big jump
-     * still lands; only the small ones — which are the stale ones — are held. Rejections
-     * are logged, because a bar that quietly refuses to move backwards is worse to
-     * diagnose than one that says why.
-     */
-    private fun isStaleRewind(candidate: ProgressProjection.Anchor, nowUs: Long): Boolean {
-        if (!_isPlaying.value) return false
-        if (nowUs <= acceptRewindUntilUs) return false
-        val current = progressAnchor ?: return false
-        val currentNow = ProgressProjection.project(current, nowUs, playing = true)
-        val candidateNow = ProgressProjection.project(candidate, nowUs, playing = true)
-        val rewindMs = currentNow - candidateNow
-        if (rewindMs <= 0L || rewindMs >= UNAMBIGUOUS_REWIND_MS) return false
-        android.util.Log.d(
-            "Playback",
-            "ignoring restated progress: ${candidateNow}ms is ${rewindMs}ms behind the projection",
-        )
-        return true
-    }
-
-    /** Publish the anchor projected to now — see [ProgressProjection]. */
-    private fun republishPosition() {
-        val a = progressAnchor
-        _positionMs.value =
-            if (a == null) 0L else ProgressProjection.project(a, clockNowUs(), _isPlaying.value)
-    }
-
-    // The same clock base the sync filter runs on, so the fallback and the real
-    // thing measure the same seconds — see MonotonicClock.
-    private fun clockNowUs(): Long =
-        client?.clock?.nowUs() ?: com.engabd.sendpin.protocol.MonotonicClock.nowUs()
+    private val _audibleSeq = MutableStateFlow(0L)
+    val audibleSeq: StateFlow<Long> = _audibleSeq.asStateFlow()
 
     /**
      * Bring the player socket back now if it is down — see
@@ -1274,14 +1122,11 @@ class Playback(private val app: Context) {
         _maAudioSource.value = null
         client?.close(reason); client = null
         idleJob?.cancel(); idleJob = null
-        positionTicker?.cancel(); positionTicker = null
-        progressAnchor = null
         _connected.value = false
         _connectionStatus.value = "Disconnected"
         _currentFormat.value = "-"
         _streamQuality.value = null
         _isPlaying.value = false
-        _positionMs.value = 0
         _durationMs.value = 0
         if (stopService) {
             SendspinService.stopMedia(app)
@@ -1296,9 +1141,6 @@ class Playback(private val app: Context) {
     }
 
     private companion object {
-        /** How often the projected playhead is republished while playing. */
-        const val POSITION_TICK_MS = 250L
-
         /**
          * How often [drainTail] re-checks. Fine enough that "the queue ran dry" and
          * "a pause landed" are both noticed inside the grace window, coarse enough
@@ -1316,36 +1158,6 @@ class Playback(private val app: Context) {
          * wants measuring on a battery-sensitive device.
          */
         const val FOREIGN_TAKEOVER_RELEASE_MS = 60_000L
-
-        /**
-         * How far a `server/state` timestamp may sit from now and still be believed.
-         * Beyond this the server is not speaking the clock we think it is, and the
-         * arrival time is the safer anchor.
-         */
-        const val MAX_ANCHOR_AGE_US = 30_000_000L
-
-        /** How long a same-track reading is held after a detected track boundary. */
-        const val TRACK_TRANSITION_SETTLE_US = 600_000L
-
-        /**
-         * How long after a `stream/start` a backwards progress reading is believed.
-         *
-         * Long enough for the server to get round to describing the stream it has
-         * just started — the first `server/state` after a seek is not instant — and
-         * short enough that it has closed again well before the reading that
-         * [isStaleRewind] exists to reject.
-         */
-        const val REWIND_GRACE_US = 4_000_000L
-
-        /**
-         * A backwards jump this large is taken as real however it arrived.
-         *
-         * Above Music Assistant's own five-second progress cadence, so a restated
-         * reading cannot reach it, and far below any rewind a person would make on
-         * purpose. The safety valve for a server that ever seeks without restarting
-         * the stream.
-         */
-        const val UNAMBIGUOUS_REWIND_MS = 10_000L
     }
 
     private fun httpBase(url: String): String {

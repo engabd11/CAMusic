@@ -124,7 +124,7 @@ class MaNowPlaying(private val app: Context) {
                 artworkUrl = np.imageUrl,
                 durationMs = np.durationMs ?: 0L,
                 isPlaying = p.isPlaying,
-                isSelf = id == myPlayerId,
+                isSelf = p.isSelfOrActiveOutput(myPlayerId),
                 volumeLevel = p.volumeLevel,
                 // MA does not surface a separate mute flag on the player; volume 0 is
                 // what the session needs to render a muted icon, and unmuting is a
@@ -254,18 +254,53 @@ class MaNowPlaying(private val app: Context) {
         scope.launch {
             now.map { it?.playerId }.distinctUntilChanged().collectLatest { id ->
                 if (id == null) { _positionMs.value = 0L; return@collectLatest }
-                positions.observe(id).collect { _positionMs.value = it }
+                var lastEndPoll = 0L
+                positions.observe(id).collect { ms ->
+                    _positionMs.value = ms
+                    // The projection has run out the track and no fresh anchor arrived,
+                    // so the server has almost certainly moved on. Ask, rather than
+                    // leaving the shade pinned at the duration until the 5 s poll floor
+                    // comes round. Rate-limited: the ticker keeps emitting while pinned.
+                    // Mirrors `NowPlayingViewModel.followPosition`.
+                    if (positions.isAtEnd(id)) {
+                        val t = android.os.SystemClock.elapsedRealtime()
+                        if (t - lastEndPoll > END_REPOLL_MIN_MS) { lastEndPoll = t; refresh() }
+                    }
+                }
             }
         }
         // When this phone is the player, audio starting to flow on it is the strongest
         // confirmation available that a seek or skip actually landed — better than any
         // inference from polled state, and it arrives sooner.
+        //
+        // The *edge*, not the level: `isPlaying` is already true when a skip is asked
+        // for, because the outgoing track keeps coming out of the speaker for over a
+        // second afterwards. Releasing on that hands the bar straight back to the old
+        // track's playhead. Mirrors `NowPlayingViewModel`, which drives the on-screen
+        // bar from the same signal.
         scope.launch {
-            SendpinApp.instance.playback.isPlaying.collect { playing ->
+            SendpinApp.instance.playback.audibleSeq.collect { seq ->
+                val armedAt = freezeAtAudibleSeq
+                if (armedAt < 0 || seq <= armedAt) return@collect
+                if (!targetIsThisPhone()) return@collect
                 val id = targetId()
-                if (playing && id == myPlayerId && positions.isFrozen(id)) releaseFreeze(id)
+                if (positions.isFrozen(id)) releaseFreeze(id)
             }
         }
+    }
+
+    /**
+     * Is the selected player this phone?
+     *
+     * Not a plain id comparison since Music Assistant 2.10: the target is the
+     * `universal_player` wrapper (`up…`) and [myPlayerId] is the protocol client it
+     * renders through, so the two are never equal. See [MaPlayer.isSelfOrActiveOutput].
+     */
+    private fun targetIsThisPhone(): Boolean {
+        val id = targetId()
+        if (id == myPlayerId) return true
+        return _players.value.firstOrNull { it.playerId == id }
+            ?.isSelfOrActiveOutput(myPlayerId) == true
     }
 
     // ── Optimistic freeze bookkeeping ────────────────────────────────────────
@@ -284,15 +319,36 @@ class MaNowPlaying(private val app: Context) {
      */
     @Volatile private var pendingSkip = false
     @Volatile private var pendingSkipFromTrack: String? = null
-    /** Identity of the track last seen, for spotting a skip landing. */
+    /**
+     * Identity of the track last seen, and the queue it belongs to.
+     *
+     * The pair, not the id alone. massdroid's `hasCurrentItemChanged` answers **false**
+     * when there is no previous item to compare against (`previous?.currentItem ?:
+     * return false`), and it gets a fresh start on a player switch because deselecting
+     * clears the queue snapshot. Keying the id by queue buys both here: no previous
+     * reading for this queue means no track change, so the first poll after a cold
+     * start - or after switching to another speaker - anchors the server's real
+     * position instead of slamming the bar to 0:00 and letting the next poll drag it
+     * back up. "I have never seen this queue" is not "the track just changed".
+     *
+     * Also what a pending skip is measured against - see [freezeForTrackChange].
+     */
     @Volatile private var lastTrackId: String? = null
-    /** Last `elapsed_time_last_updated` accepted, per queue — the staleness gate. */
-    private val lastStamp = mutableMapOf<String, Double>()
+    @Volatile private var lastTrackKey: String? = null
+
+    /**
+     * [Playback.audibleSeq] as it was when the current freeze was armed.
+     *
+     * The freeze may only be released by a stream that became audible *after* it —
+     * see the collector in `init` for why a level cannot express that.
+     */
+    @Volatile private var freezeAtAudibleSeq: Long = -1L
 
     private fun freezeForSeek(playerId: String, target: Long) {
         pendingSeekMs = target
         pendingSkip = false
         pendingSkipFromTrack = null
+        freezeAtAudibleSeq = SendpinApp.instance.playback.audibleSeq.value
         positions.setOptimisticSeek(playerId, target, now.value?.durationMs)
         armFreezeWatchdog(playerId)
     }
@@ -301,6 +357,7 @@ class MaNowPlaying(private val app: Context) {
         pendingSeekMs = null
         pendingSkip = true
         pendingSkipFromTrack = lastTrackId
+        freezeAtAudibleSeq = SendpinApp.instance.playback.audibleSeq.value
         positions.setOptimisticTrackChange(playerId)
         armFreezeWatchdog(playerId)
     }
@@ -317,6 +374,7 @@ class MaNowPlaying(private val app: Context) {
         pendingSeekMs = null
         pendingSkip = false
         pendingSkipFromTrack = null
+        freezeAtAudibleSeq = -1L
         freezeWatchdog?.cancel(); freezeWatchdog = null
         positions.confirmPlaying(playerId)
     }
@@ -347,8 +405,9 @@ class MaNowPlaying(private val app: Context) {
         // what an `?: return` on the elapsed reading did — meant [lastTrackId] could
         // stay behind, leaving a skip with nothing to confirm it but the watchdog.
         val trackId = trackIdOf(player, queue)
-        val trackChanged = trackId != null && trackId != lastTrackId
-        if (trackId != null) lastTrackId = trackId
+        val knownTrack = lastTrackId.takeIf { lastTrackKey == playerId }
+        val trackChanged = trackId != null && knownTrack != null && trackId != knownTrack
+        if (trackId != null) { lastTrackId = trackId; lastTrackKey = playerId }
 
         val elapsed = queue?.elapsedMs ?: np?.elapsedMs
 
@@ -371,12 +430,21 @@ class MaNowPlaying(private val app: Context) {
 
         if (elapsed == null) return
 
+        // The server's own capture timestamp (`elapsed_time_last_updated`, a Unix
+        // epoch in seconds) as local wall-clock ms, handed over raw: the tracker
+        // decides whether it is fresh enough to project from, and null means the
+        // server said nothing. Only taken when `elapsed` came from the queue too —
+        // the stamp describes the queue's reading, so pairing it with the player's
+        // fallback would anchor one number on another's timestamp.
+        val capturedAtMs = queue?.elapsedTimeLastUpdated
+            ?.takeIf { queue.elapsedMs != null }
+            ?.let { (it * 1000).toLong() }
+
         if (trackChanged) {
-            lastStamp.remove(playerId)
-            queue?.elapsedTimeLastUpdated?.let { lastStamp[playerId] = it }
             positions.setAnchor(
                 queueId = playerId,
                 elapsedMs = 0L,
+                capturedAtMs = null,
                 isPlaying = player.isPlaying,
                 durationMs = np?.durationMs,
                 speed = queue?.playbackSpeed,
@@ -384,27 +452,14 @@ class MaNowPlaying(private val app: Context) {
             return
         }
 
-        // Staleness gate. A repeated `elapsed_time_last_updated` means the server has
-        // not recomputed the playhead — for a remote speaker that is most polls — so
-        // re-anchoring on it would keep re-applying however stale that reading was,
-        // dragging the shade's bar backwards every time. Let the projection carry on;
-        // a play/pause is still news, and [setPlaying] snapshots the projection rather
-        // than trusting the stale number.
-        val stamp = queue?.elapsedTimeLastUpdated
-        if (stamp != null && lastStamp[playerId]?.let { stamp <= it } == true) {
-            positions.setPlaying(playerId, player.isPlaying)
-            return
-        }
-        if (stamp != null) lastStamp[playerId] = stamp
-
         positions.setAnchor(
             queueId = playerId,
             elapsedMs = elapsed,
+            capturedAtMs = capturedAtMs,
             isPlaying = player.isPlaying,
             durationMs = np?.durationMs,
             speed = queue?.playbackSpeed,
         )
-        positions.setPlaying(playerId, player.isPlaying)
     }
 
     // --- refresh ----------------------------------------------------------
@@ -506,6 +561,9 @@ class MaNowPlaying(private val app: Context) {
 
     private companion object {
         const val POLL_MS = 5_000L
+
+        /** Floor between end-of-track re-polls, so a pinned bar cannot spin the socket. */
+        const val END_REPOLL_MIN_MS = 1_000L
 
         /** How near the server's clock has to land for a seek to count as landed. */
         const val SEEK_CONFIRM_MS = 3_000L

@@ -512,11 +512,11 @@ class SendspinService : Service() {
             shade.collect { updateNotification(it) }
         }
         scope.launch {
-            // Position comes from whichever side owns the shade: the Sendspin stream's
-            // own playhead, or the projected position of the selected MA player.
-            combine(shade, pb.positionMs, ma.positionMs) { s, localPos, remotePos ->
-                if (s.local) localPos else remotePos
-            }.collect { pos ->
+            // Position always comes from MA's `elapsed_time` /
+            // `elapsed_time_last_updated` via the tracker in [MaNowPlaying],
+            // whether this phone is the player or a remote speaker is.
+            // The Sendspin path no longer sources position independently.
+            ma.positionMs.collect { pos ->
                 shadePlayer?.let { it.latestPositionMs = pos; it.refresh() }
             }
         }

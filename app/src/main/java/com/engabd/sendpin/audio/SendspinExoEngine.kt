@@ -69,9 +69,28 @@ class SendspinExoEngine(
      * `stream/start`.
      */
     private val onFatalError: () -> Unit = {},
+    /**
+     * Fired the moment this engine actually starts producing audio.
+     *
+     * The transition `stream/start` cannot report: it precedes decoder and audio-track
+     * warm-up by over a second, measured on-device. [com.engabd.sendpin.service.Playback]
+     * holds the playhead until this fires.
+     */
+    private val onAudible: () -> Unit = {},
 ) : SendspinPlaybackEngine {
 
     val audioLead = AudioLead()
+
+    /**
+     * Has the *current* stream produced audio yet?
+     *
+     * Reset by [start] rather than tracked as a level, because the question the UI's
+     * optimistic freeze asks is per-stream: at the instant `stream/start` arrives the
+     * previous track is still coming out of the speaker (measured: `isPlaying` only
+     * goes false two milliseconds later), so a level would say "audible" for the very
+     * transition it exists to catch.
+     */
+    @Volatile private var streamAudible = false
     val audioAnalysisTap = AudioAnalysisTap(audioLead)
 
     /**
@@ -256,6 +275,11 @@ class SendspinExoEngine(
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             Log.i("SendspinExoEngine", "isPlaying = $isPlaying (volume=${effectiveVolume()})")
+            // The first sound out of *this* stream is what the playhead waits for.
+            if (isPlaying && !streamAudible) {
+                streamAudible = true
+                onAudible()
+            }
         }
     }
 
@@ -376,6 +400,9 @@ class SendspinExoEngine(
         // A fresh stream/start is a clean slate - errors from whatever track just
         // ended (or a since-fixed connection) should not count against this one.
         consecutiveErrors = 0
+        // Before anything else, and synchronously: this stream has made no sound yet,
+        // whatever the previous one is still doing.
+        streamAudible = false
         val dataSource: SendspinDataSource = if (grouped) {
             SendspinSyncDataSource(format, clock).also { it.staticDelayMs = staticDelayMs }
         } else {
