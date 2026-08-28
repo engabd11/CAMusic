@@ -37,8 +37,13 @@ class GeohashTest {
         val melbourne = Geohash.encode(-37.81, 144.96, precision = 7)
         val sydney = Geohash.encode(-33.87, 151.21, precision = 7)
         assertTrue(melbourne != sydney)
-        // First character should differ
-        assertTrue(melbourne.first() != sydney.first())
+        // Melbourne and Sydney are ~700km apart — they share the first geohash
+        // character (both in the 'r' cell covering SE Australia) but diverge
+        // by the third character.
+        assertTrue(
+            melbourne.take(3) != sydney.take(3),
+            "Cities 700km apart should differ by 3rd geohash char: $melbourne vs $sydney",
+        )
     }
 }
 
