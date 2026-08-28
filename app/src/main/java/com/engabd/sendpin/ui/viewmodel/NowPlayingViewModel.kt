@@ -711,15 +711,20 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
 
         // Translate the server-side capture timestamp (`elapsed_time_last_updated`,
         // a Unix epoch in seconds) to local wall-clock ms — the same clock domain the
-        // tracker uses. Falls back to "now" when the server omits the field.
-        val capturedAtMs = q?.elapsedTimeLastUpdated?.let { (it * 1000).toLong() }
-            ?: System.currentTimeMillis()
+        // tracker uses. Falls back to "now" when the server omits the field. Clamped
+        // to "now" when ahead (a server clock slightly ahead of the phone would
+        // otherwise produce a negative projection delta, freezing the bar).
+        val nowMs = System.currentTimeMillis()
+        val capturedAtMs = q?.elapsedTimeLastUpdated
+            ?.let { (it * 1000).toLong() }
+            ?.let { if (it > nowMs) nowMs else it }
+            ?: nowMs
 
         // A track change is news no matter what the clock says: anchor at zero.
         if (trackChanged) {
             positions.setAnchor(
                 key, 0L,
-                capturedAtMs = System.currentTimeMillis(),
+                capturedAtMs = nowMs,
                 isPlaying = isPlaying, durationMs = duration, speed = speed,
             )
             return
