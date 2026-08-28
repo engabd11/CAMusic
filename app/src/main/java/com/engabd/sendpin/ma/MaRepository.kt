@@ -316,10 +316,17 @@ class MaRepository(
     /**
      * The chapters of an audiobook.
      *
-     * The command name follows the pattern the podcast and album equivalents use, but
-     * unlike those it has not been checked against a live server. An unknown command
-     * comes back null, which parses to an empty list — so the worst case is an audiobook
-     * that opens empty, not a crash.
+     * `music/audiobooks/audiobook_chapters` is not in the MA 2.10.0 API command
+     * reference — neither the full (188-page) nor the partial (50-page) docs list it.
+     * The closest command that does exist is `music/audiobooks/audiobook_versions`,
+     * which returns alternative *copies* of the audiobook across providers, not
+     * chapters — a different thing entirely. It is possible that chapters are only
+     * available as part of the full audiobook object from `music/audiobooks/get`, or
+     * that the command has not yet been exposed via the WebSocket API.
+     *
+     * An unknown command comes back null, which parses to an empty list — so the
+     * worst case is an audiobook that opens empty, not a crash. Left as-is until a
+     * live server confirms what the right call is.
      */
     suspend fun audiobookChapters(item: MaItem) =
         MaParse.items(api.sendCommand("music/audiobooks/audiobook_chapters", itemRef(item)), serverUrl)
@@ -404,6 +411,28 @@ class MaRepository(
         api.sendCommand("music/playlists/remove_playlist_tracks", buildJsonObject {
             put("db_playlist_id", playlist.itemId)
             put("positions_to_remove", JsonArray(positions.map { JsonPrimitive(it) }))
+        })
+    }
+
+    /**
+     * Update a playlist's metadata (name, etc.) via `music/playlists/update`.
+     *
+     * The API takes `item_id` (the library playlist id) and `update` (a Playlist
+     * object with the fields to change). It is an **ADMIN-only** command server-side
+     * — a non-admin login is refused. Only the fields the caller sets are included in
+     * the `update` object; everything else is left for the server to keep as-is.
+     *
+     * [name] is the common case — rename a playlist. The `update` object is built
+     * minimally rather than sending a full Playlist, because the server treats absent
+     * fields as "keep" and the app doesn't always have every field fresh.
+     */
+    suspend fun updatePlaylist(playlist: MaItem, name: String? = null) {
+        val update = buildJsonObject {
+            name?.let { put("name", it) }
+        }
+        api.sendCommand("music/playlists/update", buildJsonObject {
+            put("item_id", playlist.itemId)
+            put("update", update)
         })
     }
 
@@ -544,19 +573,36 @@ class MaRepository(
      * Play [uris] on whatever queue [playerId] is actually using.
      *
      * The entry point every screen should use. [playMedia] takes a raw `queue_id` and
-     * is left exposed only for callers that already hold one.
+     * is left exposed only for callers that already hold one. The optional parameters
+     * below are passed straight through to [playMedia] — see its KDoc for what each
+     * does and why they are nullable.
      */
     suspend fun playOn(
         playerId: String,
         uris: List<String>,
         option: String = "replace",
         radioMode: Boolean = false,
+        startItem: String? = null,
+        sortBy: String? = null,
+        shuffle: Boolean? = null,
+        startFromBeginning: Boolean? = null,
+        user: String? = null,
     ) {
         // Ahead of the queue lookup, not just inside [playMedia]: that lookup is
         // itself a round trip, so a socket left to its backoff would be waited on
         // before the wake ever happened.
         onPlaybackRequested()
-        playMedia(activeQueueId(playerId), uris, option, radioMode)
+        playMedia(
+            activeQueueId(playerId),
+            uris,
+            option,
+            radioMode,
+            startItem = startItem,
+            sortBy = sortBy,
+            shuffle = shuffle,
+            startFromBeginning = startFromBeginning,
+            user = user,
+        )
     }
 
     /**
@@ -568,13 +614,39 @@ class MaRepository(
      * and on a queue that already had items the added tracks were discarded in favour
      * of its generated ones — which is exactly the reported behaviour, that "add" only
      * worked when the queue was empty. It is a defaulted parameter server-side, so
-     * omitting it looked harmless; it isn't.
+     * omitting it looked harmless; it isn't. The flag is deprecated in 2.10 —
+     * translated to a `radio_playlist://` dynamic playlist — but it still works and
+     * existing callers depend on it, so it stays.
+     *
+     * The optional parameters below are MA 2.10.0 additions. All default to null so
+     * they are omitted from the JSON unless a caller sets them — existing call sites
+     * send exactly what they sent before.
+     *
+     * - [startItem] — "Optional item to start the playlist or album from." A URI
+     *   string. This is the clean way to play an album from track N: send every track
+     *   as `media` with `option = "replace"` and `start_item = <track N uri>`. Before
+     *   this the app played the tapped track alone, appended the rest in a second
+     *   `play_media` with `option = "add"`, then called `play` — three commands for
+     *   what the API was designed to do in one.
+     * - [sortBy] — "Optional sort key to order tracks before applying start_item."
+     * - [shuffle] — "Play the media shuffled (or explicitly in order). Only applies to
+     *   the options that start playing right away (play/replace), and never to a
+     *   dynamic source." Omit to follow the queue's own shuffle setting.
+     * - [startFromBeginning] — "Start a podcast episode at position 0, ignoring any
+     *   saved resume position." The stored progress itself is left untouched.
+     * - [user] — "Optional user_id or username of the user to execute this command on
+     *   behalf of. Requires the users.impersonate scope when targeting another user."
      */
     suspend fun playMedia(
         playerId: String,
         uris: List<String>,
         option: String = "replace",
         radioMode: Boolean = false,
+        startItem: String? = null,
+        sortBy: String? = null,
+        shuffle: Boolean? = null,
+        startFromBeginning: Boolean? = null,
+        user: String? = null,
     ) {
         // Every "play this" in the app funnels through here, which makes it the one
         // place worth telling this phone's player socket that music is wanted. Both
@@ -590,6 +662,11 @@ class MaRepository(
                 put("option", option)
                 put("radio_mode", radioMode)
                 put("queue_id", playerId)
+                startItem?.let { put("start_item", it) }
+                sortBy?.let { put("sort_by", it) }
+                shuffle?.let { put("shuffle", it) }
+                startFromBeginning?.let { put("start_from_beginning", it) }
+                user?.let { put("user", it) }
             })
         } catch (e: MaApiException) {
             throw describePlayFailure(e, uris)
@@ -635,6 +712,21 @@ class MaRepository(
     suspend fun stop(playerId: String) = cmd("stop", playerId)
     suspend fun next(playerId: String) = cmd("next", playerId)
     suspend fun previous(playerId: String) = cmd("previous", playerId)
+
+    /**
+     * Toggle play/pause on a queue — the single `player_queues/play_pause` command.
+     *
+     * Music Assistant has a dedicated toggle that reads the queue's current state and
+     * does the opposite, which is cheaper and less race-prone than the app checking
+     * state and then sending `play` or `pause` — by the time the check comes back the
+     * state can have moved (another client paused it, a notification action fired) and
+     * the command built from the stale state does the wrong thing. [play] and [pause]
+     * remain for callers that need a specific direction rather than a toggle.
+     */
+    suspend fun playPause(playerId: String) =
+        api.sendCommand("player_queues/play_pause", buildJsonObject {
+            put("queue_id", playerId)
+        })
 
     suspend fun seek(playerId: String, positionSec: Int) =
         api.sendCommand("players/cmd/seek", buildJsonObject {
@@ -754,6 +846,63 @@ class MaRepository(
         api.sendCommand("music/favorites/remove_item", buildJsonObject {
             put("media_type", item.mediaType); put("library_item_id", item.itemId)
         })
+
+    // --- play status (playlog) ---------------------------------------------
+
+    /**
+     * Mark a media item as played in the server's playlog via `music/mark_played`.
+     *
+     * The API takes `media_item` as a full media-item object (Artist, Album, Track,
+     * etc.) or — per the Swagger schema — a bare URI string. The URI is what the app
+     * can always produce, so it is used here for the same reason as [addFavorite]:
+     * the server resolves it back to the item itself.
+     *
+     * All parameters except [item] are optional and only sent when non-null:
+     * - [fullyPlayed] — "If True, mark the item as fully played."
+     * - [secondsPlayed] — "The number of seconds played."
+     * - [isPlaying] — "If True, the item is currently playing."
+     * - [userid] — "The user ID to mark the item as played for (instead of the
+     *   current user)."
+     * - [queueId] — "The queue ID where the item was played."
+     * - [userInitiated] — "If True, the playback was initiated by the user (e.g.
+     *   enqueued)."
+     */
+    suspend fun markPlayed(
+        item: MaItem,
+        fullyPlayed: Boolean? = null,
+        secondsPlayed: Int? = null,
+        isPlaying: Boolean? = null,
+        userid: String? = null,
+        queueId: String? = null,
+        userInitiated: Boolean? = null,
+    ) {
+        val uri = item.uri ?: "${item.mediaType}://${item.provider}/${item.itemId}"
+        api.sendCommand("music/mark_played", buildJsonObject {
+            put("media_item", uri)
+            fullyPlayed?.let { put("fully_played", it) }
+            secondsPlayed?.let { put("seconds_played", it) }
+            isPlaying?.let { put("is_playing", it) }
+            userid?.let { put("userid", it) }
+            queueId?.let { put("queue_id", it) }
+            userInitiated?.let { put("user_initiated", it) }
+        })
+    }
+
+    /**
+     * Mark a media item as unplayed in the server's playlog via
+     * `music/mark_unplayed`.
+     *
+     * The API takes `media_item` (same shape as [markPlayed]) and an optional
+     * `userid` to act on behalf of a different user. The URI form is used for the
+     * same reason as [markPlayed] and [addFavorite].
+     */
+    suspend fun markUnplayed(item: MaItem, userid: String? = null) {
+        val uri = item.uri ?: "${item.mediaType}://${item.provider}/${item.itemId}"
+        api.sendCommand("music/mark_unplayed", buildJsonObject {
+            put("media_item", uri)
+            userid?.let { put("userid", it) }
+        })
+    }
 
     // --- sonic similarity --------------------------------------------------
 
@@ -1102,6 +1251,21 @@ class MaRepository(
      * whole categories back and sift them on the phone. [orderBy] is left unsent by
      * default: a value an older server doesn't recognise fails the whole command,
      * and these reads are best-effort.
+     *
+     * The parameters below are MA 2.10.0 additions, all nullable and omitted from
+     * the JSON unless set — existing callers send exactly what they sent before:
+     * - [provider] — "Filter by provider instance ID (single string or list)."
+     * - [genre] — "Filter by genre id(s)."
+     * - [playedOnly] — "Filter to only played tracks."
+     * - [explicit] — "Filter by explicit content (True=only explicit, False=no
+     *   explicit, None=all)."
+     * - [summary] — "When True (default), return slim summary items containing only
+     *   the fields needed for a list view. Set to False to get fully hydrated items."
+     * - [reachableVia] — "Restrict results to items with a provider mapping
+     *   reachable through one of these provider instance ids (OR semantics)."
+     * - [user] — "Optional user_id or username of the user to execute this command
+     *   on behalf of. Requires the users.impersonate scope when targeting another
+     *   user."
      */
     private fun libraryArgs(
         offset: Int,
@@ -1109,11 +1273,25 @@ class MaRepository(
         favorite: Boolean? = null,
         orderBy: String? = null,
         search: String? = null,
+        provider: String? = null,
+        genre: Int? = null,
+        playedOnly: Boolean? = null,
+        explicit: Boolean? = null,
+        summary: Boolean? = null,
+        reachableVia: List<String>? = null,
+        user: String? = null,
     ) = buildJsonObject {
         put("limit", limit); put("offset", offset)
         favorite?.let { put("favorite", it) }
         orderBy?.let { put("order_by", it) }
         search?.let { put("search", it) }
+        provider?.let { put("provider", it) }
+        genre?.let { put("genre", it) }
+        playedOnly?.let { put("played_only", it) }
+        explicit?.let { put("explicit", it) }
+        summary?.let { put("summary", it) }
+        reachableVia?.let { put("reachable_via", JsonArray(it.map { JsonPrimitive(it) })) }
+        user?.let { put("user", it) }
     }
 
     private fun itemRef(item: MaItem) = buildJsonObject {
