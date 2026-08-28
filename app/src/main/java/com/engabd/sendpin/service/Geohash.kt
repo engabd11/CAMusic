@@ -1,11 +1,7 @@
 package com.engabd.sendpin.service
 
-import kotlin.math.abs
-import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
-import kotlin.math.sin
-import kotlin.math.sqrt
 
 /**
  * Geohash encoding/decoding for spatial caching.
@@ -23,9 +19,6 @@ import kotlin.math.sqrt
 object Geohash {
 
     private const val BASE32 = "0123456789bcdefghjkmnpqrstuvwxyz"
-    private val DECODE_MAP = buildMap {
-        BASE32.forEachIndexed { i, c -> put(c, i) }
-    }
 
     /**
      * Encode a coordinate to a geohash string of [precision] characters.
@@ -113,26 +106,6 @@ class SpeedLimitCache(private val maxSize: Int = 64) {
         /** Key is cached. [value] is the speed limit, or null for "queried but no data". */
         data class Cached(val value: Int?) : Result()
     }
-}
-
-/**
- * Great-circle distance between two lat/lon points in metres.
- *
- * Used by [OfflineSpeedLimitProvider] to pick the nearest road segment when
- * the R-tree returns multiple candidates — the R-tree narrows the search
- * to a ~50m box, but if two zones overlap at the query point, the nearest
- * one wins.
- */
-fun haversineMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
-    val r = 6_371_000.0 // Earth radius in metres
-    val phi1 = Math.toRadians(lat1)
-    val phi2 = Math.toRadians(lat2)
-    val dPhi = Math.toRadians(lat2 - lat1)
-    val dLambda = Math.toRadians(lon2 - lon1)
-    val a = sin(dPhi / 2).let { it * it } +
-        cos(phi1) * cos(phi2) * sin(dLambda / 2).let { it * it }
-    val c = 2 * atan2(sqrt(a), sqrt(1 - a))
-    return r * c
 }
 
 /**

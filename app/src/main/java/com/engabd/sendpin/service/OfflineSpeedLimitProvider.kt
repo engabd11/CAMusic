@@ -34,8 +34,10 @@ class OfflineSpeedLimitProvider(
     override val ready: StateFlow<Boolean> = database.ready
 
     init {
-        // Try to open on construction — if it's already downloaded from a
-        // previous session, this makes it immediately available.
+        // Open the database if already downloaded from a previous session.
+        // SQLiteDatabase.openDatabase on an existing file is fast (~1ms), and
+        // this runs once when SpeedMonitor first starts listening — not on
+        // every GPS reading. If the file doesn't exist, it returns immediately.
         database.open()
     }
 

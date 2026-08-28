@@ -31,7 +31,6 @@ import java.io.File
 class SpeedLimitDatabase(context: Context) {
 
     private val dbFile: File = File(context.filesDir, DB_FILENAME)
-    private val tmpFile: File = File(context.filesDir, DB_FILENAME_TMP)
 
     private val _ready = MutableStateFlow(false)
     val ready: StateFlow<Boolean> = _ready.asStateFlow()
@@ -142,6 +141,29 @@ class SpeedLimitDatabase(context: Context) {
 
         if (candidates.isEmpty()) return@withContext null
 
+        // Batch-fetch all segment coordinates for all candidate zones in one query,
+        // rather than N+1 individual queries. The IN clause is built from the
+        // candidate IDs — safe because they come from our own R-tree, not user input.
+        val candidateIds = candidates.map { it.first }
+        val placeholders = candidateIds.joinToString(",") { "?" }
+        val allSegmentsByZone: Map<Int, List<List<Pair<Double, Double>>>> = try {
+            database.rawQuery(
+                "SELECT zone_id, coords FROM segment_coords WHERE zone_id IN ($placeholders) ORDER BY zone_id, segment_idx",
+                candidateIds.map { it.toString() }.toTypedArray(),
+            ).use { cursor ->
+                val segsByZone = mutableMapOf<Int, MutableList<List<Pair<Double, Double>>>>()
+                while (cursor.moveToNext()) {
+                    val zoneId = cursor.getInt(0)
+                    val coordsJson = cursor.getString(1)
+                    segsByZone.getOrPut(zoneId) { mutableListOf() }
+                        .add(parseCoords(coordsJson))
+                }
+                segsByZone
+            }
+        } catch (e: Exception) {
+            return@withContext null
+        }
+
         // For each candidate zone, find the minimum distance from the GPS point
         // to any of its segments, then pick the zone with the overall minimum.
         var bestSpeedLimit: Int? = null
@@ -150,23 +172,7 @@ class SpeedLimitDatabase(context: Context) {
         for (candidate in candidates) {
             val zoneId = candidate.first
             val speedLimit = candidate.second
-
-            // Fetch all segment coordinates for this zone
-            val segments = try {
-                database.rawQuery(
-                    "SELECT coords FROM segment_coords WHERE zone_id = ? ORDER BY segment_idx",
-                    arrayOf(zoneId.toString()),
-                ).use { cursor ->
-                    val segs = mutableListOf<List<Pair<Double, Double>>>()
-                    while (cursor.moveToNext()) {
-                        val coordsJson = cursor.getString(0)
-                        segs.add(parseCoords(coordsJson))
-                    }
-                    segs
-                }
-            } catch (e: Exception) {
-                continue
-            }
+            val segments = allSegmentsByZone[zoneId] ?: continue
 
             // Compute min distance from point to any segment in this zone
             for (segment in segments) {
@@ -204,7 +210,6 @@ class SpeedLimitDatabase(context: Context) {
 
     companion object {
         private const val DB_FILENAME = "speed_zones.sqlite3"
-        private const val DB_FILENAME_TMP = "speed_zones.sqlite3.tmp"
     }
 }
 
