@@ -194,7 +194,6 @@ internal fun PlayerSection(
         // taken meant leaving the page that changed it. Every row of it is about one
         // phone's registration with one Music Assistant server, which is this page.
         MaPlayerStatusCard(viewModel, settings)
-        MaExperimentalCard(settings, accent, scope)
 
         SettingsCard(
             title = "Announcements",
@@ -284,23 +283,6 @@ private fun MaPlaybackConfigCard(viewModel: PlayerViewModel, accent: Color) {
                 "account under Libraries. Nothing on this card will save until you do.",
         )
     }
-}
-
-/**
- * Player-internals switches not ready for general use.
- *
- * The ExoPlayer engine and the Oboe output toggle have both been removed:
- * the native Oboe engine ([SendspinNativeEngine]) is now the only MA engine,
- * replacing the ExoPlayer-based path that lost server timestamps and starved
- * the native ring. There is no longer an experimental toggle to show here.
- *
- * This composable is kept as a placeholder for future experimental switches;
- * it renders nothing for now.
- */
-@Composable
-private fun MaExperimentalCard(settings: AppSettings, accent: Color, scope: CoroutineScope) {
-    // The native Oboe engine is always on — no toggle needed.
-    // Future experimental switches can go here.
 }
 
 /**
