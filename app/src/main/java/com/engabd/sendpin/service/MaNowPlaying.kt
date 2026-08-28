@@ -319,8 +319,22 @@ class MaNowPlaying(private val app: Context) {
      */
     @Volatile private var pendingSkip = false
     @Volatile private var pendingSkipFromTrack: String? = null
-    /** Identity of the track last seen, for spotting a skip landing. */
+    /**
+     * Identity of the track last seen, and the queue it belongs to.
+     *
+     * The pair, not the id alone. massdroid's `hasCurrentItemChanged` answers **false**
+     * when there is no previous item to compare against (`previous?.currentItem ?:
+     * return false`), and it gets a fresh start on a player switch because deselecting
+     * clears the queue snapshot. Keying the id by queue buys both here: no previous
+     * reading for this queue means no track change, so the first poll after a cold
+     * start - or after switching to another speaker - anchors the server's real
+     * position instead of slamming the bar to 0:00 and letting the next poll drag it
+     * back up. "I have never seen this queue" is not "the track just changed".
+     *
+     * Also what a pending skip is measured against - see [freezeForTrackChange].
+     */
     @Volatile private var lastTrackId: String? = null
+    @Volatile private var lastTrackKey: String? = null
 
     /**
      * [Playback.audibleSeq] as it was when the current freeze was armed.
@@ -391,8 +405,9 @@ class MaNowPlaying(private val app: Context) {
         // what an `?: return` on the elapsed reading did — meant [lastTrackId] could
         // stay behind, leaving a skip with nothing to confirm it but the watchdog.
         val trackId = trackIdOf(player, queue)
-        val trackChanged = trackId != null && trackId != lastTrackId
-        if (trackId != null) lastTrackId = trackId
+        val knownTrack = lastTrackId.takeIf { lastTrackKey == playerId }
+        val trackChanged = trackId != null && knownTrack != null && trackId != knownTrack
+        if (trackId != null) { lastTrackId = trackId; lastTrackKey = playerId }
 
         val elapsed = queue?.elapsedMs ?: np?.elapsedMs
 

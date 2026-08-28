@@ -325,8 +325,20 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             ?.isSelfOrActiveOutput(myPlayerId) == true
     }
 
-    /** Identity of the current track, for detecting a change between polls. */
+    /**
+     * Identity of the track last seen, and the queue it belongs to.
+     *
+     * The pair, not the id alone. massdroid's `hasCurrentItemChanged` answers **false**
+     * when there is no previous item to compare against (`previous?.currentItem ?:
+     * return false`), and it gets a fresh start on a player switch because deselecting
+     * clears the queue snapshot. Keying the id by queue buys both here: no previous
+     * reading for this queue means no track change, so the first poll after a cold
+     * start - or after switching to another speaker - anchors the server's real
+     * position instead of slamming the bar to 0:00 and letting the next poll drag it
+     * back up. "I have never seen this queue" is not "the track just changed".
+     */
     @Volatile private var lastTrackId: String? = null
+    @Volatile private var lastTrackKey: String? = null
 
     private val _positionMs = MutableStateFlow(0L)
 
@@ -671,8 +683,9 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         val elapsed = q?.elapsedMs ?: live?.elapsedMs
 
         val trackId = currentTrackId()
-        val trackChanged = trackId != null && trackId != lastTrackId
-        if (trackId != null) lastTrackId = trackId
+        val knownTrack = lastTrackId.takeIf { lastTrackKey == key }
+        val trackChanged = trackId != null && knownTrack != null && trackId != knownTrack
+        if (trackId != null) { lastTrackId = trackId; lastTrackKey = key }
 
         // Release an optimistic freeze once the server corroborates it.
         if (positions.isFrozen(key)) {
