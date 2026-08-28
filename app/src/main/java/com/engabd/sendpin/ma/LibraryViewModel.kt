@@ -1113,13 +1113,6 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * server going away mid-album.
      */
     fun play(item: MaItem, option: String = "replace") {
-        // Temporary diagnostic: log what play() receives so the wrong-song bug
-        // can be traced on-device. The server API is verified correct — the URI
-        // sent to play_media always plays the right track — so the mismatch is
-        // between the item on screen and the item that arrives here.
-        android.util.Log.d("CAMusic/Play", "play(item=${item.name}, uri=${item.uri}, " +
-            "provider=${item.provider}, itemId=${item.itemId}, mediaType=${item.mediaType}, " +
-            "option=$option, backend=${_backend.value}, target=${playTarget()})")
         viewModelScope.launch {
             try {
                 when {
