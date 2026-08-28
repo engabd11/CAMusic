@@ -4,6 +4,7 @@ import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import kotlin.math.cos
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -109,13 +110,15 @@ class SpeedLimitDatabase(context: Context) {
         // Convert the search radius to a degree-based bounding box.
         // 1 degree lat ≈ 111.32 km; scale lon by cos(lat).
         val latDeg = maxDistanceMeters / 111_320.0
-        val lonDeg = maxDistanceMeters / (111_320.0 * cos(Math.toRadians(lat)))
+        val cosLat = cos(Math.toRadians(lat))
+        val lonDeg = if (cosLat < 1e-6) 0.0
+            else maxDistanceMeters / (111_320.0 * cosLat)
 
         // R-tree query: find all zones whose bounding box intersects our search box
         val candidates = try {
             database.rawQuery(
                 """
-                SELECT sz.id, sz.speed_limit, sz.direction
+                SELECT sz.id, sz.speed_limit
                 FROM speed_zones_rtree r
                 JOIN speed_zones sz ON sz.id = r.id
                 WHERE r.min_lon <= ? AND r.max_lon >= ?
@@ -245,6 +248,7 @@ class SpeedLimitDownloadManager(
     ): Boolean = withContext(Dispatchers.IO) {
         val targetFile = File(context.filesDir, "speed_zones.sqlite3")
         val tmpFile = File(context.filesDir, "speed_zones.sqlite3.tmp")
+        val backupFile = File(context.filesDir, "speed_zones.sqlite3.bak")
 
         try {
             val client = okhttp3.OkHttpClient.Builder()
@@ -254,29 +258,44 @@ class SpeedLimitDownloadManager(
             val request = okhttp3.Request.Builder().url(url).build()
             val response = client.newCall(request).execute()
 
-            if (!response.isSuccessful) return@withContext false
+            // Use response.use { } to guarantee the response (and its connection)
+            // is closed on all paths — success, failure, and exception.
+            response.use { resp ->
+                if (!resp.isSuccessful) return@withContext false
 
-            val body = response.body ?: return@withContext false
-            val totalBytes = body.contentLength()
+                val body = resp.body ?: return@withContext false
+                val totalBytes = body.contentLength()
 
-            tmpFile.parentFile?.mkdirs()
-            body.byteStream().use { input ->
-                java.io.FileOutputStream(tmpFile).use { output ->
-                    val buffer = ByteArray(8192)
-                    var downloaded = 0L
-                    while (true) {
-                        val read = input.read(buffer)
-                        if (read == -1) break
-                        output.write(buffer, 0, read)
-                        downloaded += read
-                        onProgress(downloaded, totalBytes)
+                tmpFile.parentFile?.mkdirs()
+                body.byteStream().use { input ->
+                    java.io.FileOutputStream(tmpFile).use { output ->
+                        val buffer = ByteArray(8192)
+                        var downloaded = 0L
+                        while (true) {
+                            ensureActive() // cancel the download if the coroutine is cancelled
+                            val read = input.read(buffer)
+                            if (read == -1) break
+                            output.write(buffer, 0, read)
+                            downloaded += read
+                            onProgress(downloaded, totalBytes)
+                        }
                     }
                 }
             }
 
-            // Atomic rename
-            if (targetFile.exists()) targetFile.delete()
-            if (!tmpFile.renameTo(targetFile)) return@withContext false
+            // Safe rename: back up the existing file, then move the new one into
+            // place. If the rename fails, restore the backup — so a failed
+            // download never leaves the user without their existing database.
+            if (targetFile.exists()) {
+                if (backupFile.exists()) backupFile.delete()
+                targetFile.renameTo(backupFile)
+            }
+            if (!tmpFile.renameTo(targetFile)) {
+                // Restore the previous database
+                if (backupFile.exists()) backupFile.renameTo(targetFile)
+                return@withContext false
+            }
+            backupFile.delete()
 
             // Verify the file is a valid SQLite database
             database.close()

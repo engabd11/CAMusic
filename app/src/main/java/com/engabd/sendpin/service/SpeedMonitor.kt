@@ -53,7 +53,7 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
     private var listening = false
 
     /** The offline speed-limit provider. Null until first needed. */
-    private var speedLimitProvider: OfflineSpeedLimitProvider? = null
+    private var speedLimitProvider: SpeedLimitProvider? = null
 
     private val _speedKmh = MutableStateFlow(0f)
     val speedKmh: StateFlow<Float> = _speedKmh.asStateFlow()
@@ -115,6 +115,11 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
         if (!listening) return
         listening = false
         runCatching { locationManager.removeUpdates(locationListener) }
+        // Close the speed-limit provider to release the SQLite file handle. It
+        // will be re-opened lazily when location updates resume. Keeping it open
+        // while driving mode is off wastes a file descriptor for no purpose.
+        speedLimitProvider?.close()
+        speedLimitProvider = null
         _speedKmh.value = 0f
         _detectedLimitKmh.value = null
         _activeLimitKmh.value = null

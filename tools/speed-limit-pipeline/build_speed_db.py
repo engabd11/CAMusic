@@ -145,11 +145,23 @@ def stream_features(
             depth = 0
             feature_start = -1
 
-        # Now scan for individual feature objects
+        # Now scan for individual feature objects. We track whether we're
+        # inside a string literal so that { or } characters inside string
+        # values (e.g. road names containing braces) don't corrupt the
+        # depth counter. Backslash escapes are also handled so that an
+        # escaped quote inside a string doesn't terminate it prematurely.
         i = 0
+        in_string = False
         while i < len(buffer):
             c = buffer[i]
-            if c == "{":
+            if in_string:
+                if c == "\\":
+                    i += 1  # skip the next char (it's escaped)
+                elif c == '"':
+                    in_string = False
+            elif c == '"':
+                in_string = True
+            elif c == "{":
                 if depth == 0:
                     feature_start = i
                 depth += 1

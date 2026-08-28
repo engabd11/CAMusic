@@ -41,4 +41,10 @@ interface SpeedLimitProvider {
      * "Victoria speed zones (July 2026)" or "Not downloaded yet".
      */
     fun statusDescription(): String
+
+    /**
+     * Release any resources (database handles, etc.). Called by [SpeedMonitor]
+     * when location updates stop. Safe to call multiple times.
+     */
+    fun close()
 }

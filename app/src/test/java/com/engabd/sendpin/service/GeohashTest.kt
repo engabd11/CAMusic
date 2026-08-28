@@ -25,7 +25,6 @@ class GeohashTest {
         val hash1 = Geohash.encode(-37.8182, 144.9631, precision = 7)
         val hash2 = Geohash.encode(-37.8183, 144.9632, precision = 7)
         // Points ~10m apart should share at least 6 of 7 characters
-        val shared = hash1.takeWhile { hash1.indexOf(it) == hash2.indexOf(it) }
         assertTrue(
             hash1.take(6) == hash2.take(6),
             "Points 10m apart should share 6+ geohash chars: $hash1 vs $hash2",

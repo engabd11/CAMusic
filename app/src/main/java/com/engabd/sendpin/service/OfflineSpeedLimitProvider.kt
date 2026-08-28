@@ -82,7 +82,10 @@ class OfflineSpeedLimitProvider(
         cache.clear()
     }
 
-    fun getDatabase(): SpeedLimitDatabase = database
+    override fun close() {
+        database.close()
+        cache.clear()
+    }
 
     companion object {
         /**

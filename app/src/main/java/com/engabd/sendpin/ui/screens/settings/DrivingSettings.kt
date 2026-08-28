@@ -303,9 +303,10 @@ private fun SpeedFeaturesRow(settings: AppSettings, accent: Color, scope: Corout
 
         if (autoDetect) {
             // Show detected limit and database status
+            val detected = detectedLimit
             Note(
-                if (detectedLimit != null) {
-                    "Detected: ${detectedLimit} km/h on this road. Falls back to manual if no data."
+                if (detected != null) {
+                    "Detected: $detected km/h on this road. Falls back to manual if no data."
                 } else {
                     "Looking up speed limits from local data. Falls back to manual limit if the area isn't covered."
                 },
