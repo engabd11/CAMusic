@@ -664,8 +664,11 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         val isPlaying = live != null && p.isPlaying
         val duration = live?.durationMs ?: 0L
         // The queue's own playhead is the better reading — the player object can lag
-        // it — but not every server fills it in.
-        val elapsed = q?.elapsedMs ?: live?.elapsedMs ?: 0L
+        // it — but not every server fills it in. Nullable, and deliberately not
+        // defaulted to zero: MA sends `"title": null` metadata around a queue restart,
+        // and a poll carrying no reading at all used to anchor the bar at 0:00 and drop
+        // it to the start of the track. Absent is not "at the beginning".
+        val elapsed = q?.elapsedMs ?: live?.elapsedMs
 
         val trackId = currentTrackId()
         val trackChanged = trackId != null && trackId != lastTrackId
@@ -681,7 +684,10 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                 // A seek is confirmed when the server's clock lands near the target.
                 // Deliberately not gated on isPlaying: a seek while paused stays
                 // paused (see [seekOnServer]) and still has to release.
-                seekTarget != null -> kotlin.math.abs(elapsed - seekTarget) < SEEK_CONFIRM_MS
+                // A poll with no reading cannot corroborate anything; the watchdog
+                // still bounds the freeze.
+                seekTarget != null ->
+                    elapsed != null && kotlin.math.abs(elapsed - seekTarget) < SEEK_CONFIRM_MS
                 else -> true
             }
             if (!confirmed) return
@@ -702,6 +708,8 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             // The next poll re-anchors normally; this one stops here.
             return
         }
+
+        if (elapsed == null) return
 
         val speed = q?.playbackSpeed ?: 1f
 
