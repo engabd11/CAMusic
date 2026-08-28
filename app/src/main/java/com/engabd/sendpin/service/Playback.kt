@@ -549,7 +549,7 @@ class Playback(private val app: Context) {
             _maAudioSource.value = it.audioAnalysisTap to it.audioLead
         }
         engine = eng
-        android.util.Log.i("Playback", "sendspin engine = SendspinNativeEngine (obbo=always)")
+        android.util.Log.i("Playback", "sendspin engine = SendspinNativeEngine (oboe=always)")
 
         // Seed the clock filter from the persisted offset so a reconnect can
         // skip cold-start convergence. No-op if there is no persisted value.
@@ -968,12 +968,12 @@ class Playback(private val app: Context) {
         pauseRemotePlayer()
     }
 
-    fun onMediaNext() = transport { it.next(playerId) }
+    fun onMediaNext() = transport { it.next(playerId); engine?.expectDiscontinuity("next") }
 
-    fun onMediaPrevious() = transport { it.previous(playerId) }
+    fun onMediaPrevious() = transport { it.previous(playerId); engine?.expectDiscontinuity("previous") }
 
     /** [positionSec] — seconds from the start of the current item, per `players/cmd/seek`. */
-    fun onMediaSeek(positionSec: Int) = transport { it.seek(playerId, positionSec) }
+    fun onMediaSeek(positionSec: Int) = transport { it.seek(playerId, positionSec); engine?.expectDiscontinuity("seek") }
 
     /**
      * The user moved the volume.

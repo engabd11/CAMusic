@@ -241,6 +241,9 @@ class SendspinNativeEngine(
     // A held frame from a previous iteration (codec input was full).
     private var pendingFrame: EncodedFrame? = null
 
+    // Media-time anchor for AudioAnalysisTap (0 = first sample of this stream).
+    @Volatile private var mediaAnchorUs = 0L
+
     // Pending frames for the fresh-stream gate timeout.
     @Volatile private var routedDeviceType = -1
     @Volatile private var routedProductName: String? = null
@@ -292,6 +295,8 @@ class SendspinNativeEngine(
         streamAudible = false
         drainSignalled = false
         endOfStreamSignalled = false
+        tailCut = false
+        mediaAnchorUs = 0L
         val id = streamIds.incrementAndGet()
 
         val sameFormat = configured &&
@@ -351,6 +356,9 @@ class SendspinNativeEngine(
 
         if (outputPausedForIdle) mainHandler.post { ensureOutputRunning() }
 
+        // Cancel any pending idle stop — audio is flowing again.
+        cancelIdleStop()
+
         // Overflow backstop
         if (frameQueueBytes.get() > MAX_ENCODED_BUFFER_BYTES) {
             Log.w(TAG, "Encoded buffer ceiling hit (${frameQueueBytes.get()}B) — dropping incoming frame")
@@ -373,15 +381,19 @@ class SendspinNativeEngine(
         if (drain) {
             endOfStreamSignalled = true
             drainSignalled = true
-            // Let the playback loop drain the queue and decoder naturally.
+            // Schedule idle stop for when the drain completes — the playback
+            // loop will call scheduleIdleStop itself once the queue empties.
             return
         }
         cutTail(currentStreamId)
     }
 
+    @Volatile private var tailCut = false
+
     override fun cutTail(streamId: Long) {
         if (streamId != streamIds.get()) return
-        if (syncMuted && userMuted) return // already cut
+        if (tailCut) return // already cut for this stream
+        tailCut = true
         flushQueuesAndDecoder()
         playbackStarted = false
         syncMuted = true
@@ -563,7 +575,9 @@ class SendspinNativeEngine(
         val local = computeLocalPlan(serverTimestampUs, outputLatencyUs)
         // Acoustic correction and unreported HAL gap exist ONLY for SYNC
         // (group timeline alignment). DIRECT is pure FIFO.
-        val staticDelayUs = if (isSync) 0L else 0L  // routeAcousticExtraUs not configured in CAMusic
+        // routeAcousticExtraUs is not configured in CAMusic (no acoustic
+        // calibration), so staticDelayUs is always 0 for now.
+        val staticDelayUs = 0L
         val unreportedLatencyUs = if (isSync) {
             (halOutputLatencyUs - outputLatencyUs).coerceAtLeast(0L)
         } else {
@@ -684,7 +698,15 @@ class SendspinNativeEngine(
                     frameQueue.poll(10, TimeUnit.MILLISECONDS)
                 } catch (_: InterruptedException) {
                     break
-                } ?: continue
+                } ?: run {
+                    // Queue empty. If the stream has ended, schedule idle stop
+                    // so the Oboe callback and producer thread exit after the
+                    // grace period, saving power while connected but not playing.
+                    if (endOfStreamSignalled && decoderMarks.isEmpty()) {
+                        scheduleIdleStop()
+                    }
+                    continue
+                }
                 frameQueueBytes.addAndGet(-polled.length.toLong())
                 frame = polled
             }
@@ -837,8 +859,11 @@ class SendspinNativeEngine(
 
         // Feed the AudioAnalysisTap for Hue Light Sync. analyseExternal checks
         // internally whether the tap is active, so no guard is needed here.
+        // mediaTimeUs is media-relative (0 = first sample of this stream), which
+        // is what the tap's internal clock expects. Tracked from the first write.
         val frames = writeLength / (activeChannels * 2).coerceAtLeast(1)
-        val mediaTimeUs = plan.presentationUs - (plan.presentationUs - nowUs())
+        if (mediaAnchorUs == 0L) mediaAnchorUs = plan.presentationUs
+        val mediaTimeUs = plan.presentationUs - mediaAnchorUs
         val buf = ByteBuffer.wrap(writePcm, writeOffset, writeLength)
         audioAnalysisTap.analyseExternal(
             buf,
@@ -984,6 +1009,8 @@ class SendspinNativeEngine(
 
     private fun stopOutputForIdle() {
         if (playbackStarted || outputPausedForIdle) return
+        if (frameQueue.isNotEmpty()) return // still have encoded frames to decode
+        if (nativeOutput.bufferedFrames() > 0) return // still have PCM in the ring
         Log.d(TAG, "Idle ${IDLE_OUTPUT_STOP_GRACE_MS}ms: stopping native output + producer (power save)")
         outputPausedForIdle = true
         playbackActive = false
@@ -1193,7 +1220,9 @@ class SendspinNativeEngine(
     private fun createFlacDecoder(sampleRate: Int, channels: Int, bitDepth: Int, codecHeader: String?): MediaCodec {
         val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_FLAC, sampleRate, channels)
         format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, FLAC_MAX_INPUT_SIZE)
-        format.setInteger("bit-depth", bitDepth)
+        // The bit depth is encoded in the FLAC STREAMINFO header (csd-0), so
+        // the decoder recovers it from there. Setting a non-standard "bit-depth"
+        // key is ignored by the platform decoder and can cause confusion.
         codecHeader?.let {
             try { format.setByteBuffer("csd-0", ByteBuffer.wrap(Base64.decode(it, Base64.DEFAULT))) } catch (_: Exception) {}
         }

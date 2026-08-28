@@ -176,11 +176,19 @@ class SendspinClient(
      * `client/time` ↔ `server/time` round-trips have arrived. Called by
      * [Playback] after the client is constructed but before [connect].
      *
+     * The persisted value is server-minus-wall (reboot-safe). We reconstruct
+     * the BOOTTIME-domain offset the filter needs from the current
+     * wall-to-boottime delta — the same approach MassDroid uses.
+     *
      * If real samples have already been processed, this is a no-op: the live
      * filter is always preferred over a stale persisted value.
      */
     fun seedClockOffset(serverMinusWallUs: Long) {
-        clock.filter.seedOffset(serverMinusWallUs)
+        if (serverMinusWallUs == 0L) return
+        val bootUs = MonotonicClock.nowUs()
+        val wallUs = System.currentTimeMillis() * 1000L
+        val bootOffsetUs = serverMinusWallUs - bootUs + wallUs
+        clock.filter.seedOffset(bootOffsetUs)
     }
 
     /**
@@ -501,9 +509,17 @@ class SendspinClient(
                     // Persist the clock offset every ~100 samples when error < 2 ms,
                     // so a reconnect can seed the filter and skip cold-start convergence.
                     // Matches MassDroid's ClockSynchronizer persistence policy.
+                    //
+                    // Store as server-minus-wall (reboot-safe): the BOOTTIME offset
+                    // is only valid within the same boot session, but wall clock
+                    // survives reboots. On restore, reconstruct the BOOTTIME offset
+                    // from the current wall-to-boottime delta.
                     val sc = clock.filter.sampleCount
                     if (sc > 0 && sc % 100 == 0 && clock.errorUs() < 2_000L) {
-                        onClockOffsetPersist?.invoke(clock.currentOffsetUs())
+                        val bootUs = MonotonicClock.nowUs()
+                        val wallUs = System.currentTimeMillis() * 1000L
+                        val serverMinusWall = clock.currentOffsetUs() + bootUs - wallUs
+                        onClockOffsetPersist?.invoke(serverMinusWall)
                     }
                 }
             }
