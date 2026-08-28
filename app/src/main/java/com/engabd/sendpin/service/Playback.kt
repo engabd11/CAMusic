@@ -577,7 +577,8 @@ class Playback(private val app: Context) {
                 // now a whole warm-up in the past, so projecting from it unchanged
                 // would jump the bar forward by exactly the gap the hold just hid.
                 _audibleSeq.value += 1
-                progressAnchor = progressAnchor?.copy(atLocalUs = clockNowUs())
+                progressAnchor = (heldReading ?: progressAnchor)?.copy(atLocalUs = clockNowUs())
+                heldReading = null
                 republishPosition()
             },
         ).also {
@@ -679,6 +680,7 @@ class Playback(private val app: Context) {
                 // always passes through BUFFERING before it is heard. Cleared by the
                 // engine's onAudible the moment this stream makes a sound.
                 awaitingAudibleSinceUs = c.clock.nowUs()
+                heldReading = null
                 // Publish the hold immediately rather than waiting for the next tick:
                 // the UI releases its own optimistic freeze on this, and 250 ms of
                 // "running" is long enough to let the outgoing track's position through.
@@ -895,6 +897,14 @@ class Playback(private val app: Context) {
     @Volatile private var awaitingAudibleSinceUs: Long = 0L
 
     /**
+     * The most recent progress reading that arrived while the playhead was held.
+     *
+     * Adopted by the engine's `onAudible`, re-stamped to that instant, so the bar picks
+     * up from what the server actually says about the stream now being heard.
+     */
+    @Volatile private var heldReading: ProgressProjection.Anchor? = null
+
+    /**
      * Is a stream started but not yet audible?
      *
      * Bounded by [SendspinPlaybackSupport.PlayheadGate.AUDIBLE_WAIT_BUDGET_US] so an
@@ -956,37 +966,24 @@ class Playback(private val app: Context) {
      */
     private fun anchorProgress(c: SendspinClient, np: com.engabd.sendpin.protocol.NowPlaying?) {
         val nowUs = c.clock.nowUs()
+        // A message carrying no track identity says nothing about *which* track is
+        // playing. Music Assistant sends `"title": null` around a queue restart - and a
+        // seek is a queue restart - so reading one as a track change zeroed the
+        // playhead mid-seek: the bar restarted from the beginning while the audio
+        // carried on from the seek target.
         val trackKey = np?.let { "${it.title}|${it.artist}" }
-        val newTrack = trackKey != anchoredTrackKey
+        val newTrack = trackKey != null && trackKey != anchoredTrackKey
         if (newTrack) {
             anchoredTrackKey = trackKey
             trackSettleUntilUs = nowUs + TRACK_TRANSITION_SETTLE_US
         } else if (nowUs < trackSettleUntilUs) {
             return
         }
-        if (awaitingAudible(nowUs)) {
-            // A new track with no audio out yet is at its start, whatever the server's
-            // queue clock has already run up to - and showing that beats showing the
-            // outgoing track's position until the first frame lands.
-            //
-            // Anchored at zero rather than left without an anchor: the bar has to have
-            // something to run from the instant audio arrives, and the next
-            // `server/state` can be seconds behind it. Dropping the anchor here left
-            // the bar sitting at 0:00 after the music had started, which is a worse lie
-            // than the jump this whole gate exists to remove.
-            if (newTrack) {
-                progressAnchor = ProgressProjection.Anchor(
-                    positionMs = 0L,
-                    atLocalUs = nowUs,
-                    speedMilli = np?.speedMilli ?: ProgressProjection.NORMAL_SPEED_MILLI,
-                    durationMs = np?.durationMs ?: 0L,
-                )
-                _positionMs.value = 0
-            }
-            return
-        }
         val position = np?.progressMs
         if (position == null) {
+            // Nothing to hold and nothing to anchor; leave a stream that is still
+            // warming up alone rather than blanking the bar under it.
+            if (awaitingAudible(nowUs)) return
             progressAnchor = null
             _positionMs.value = 0
             return
@@ -1017,6 +1014,16 @@ class Playback(private val app: Context) {
             speedMilli = np.speedMilli,
             durationMs = np.durationMs ?: 0L,
         )
+        if (awaitingAudible(nowUs)) {
+            // The server's latest word about the stream we are still waiting to hear.
+            // Kept rather than applied: projecting from it now would run the bar across
+            // our own warm-up. [onAudible] adopts it, re-stamped, the moment there is
+            // sound - which is what makes a seek land on its target, a new track start
+            // near zero, and a resume pick up where it stopped, without any of the
+            // three needing a special case here.
+            heldReading = candidate
+            return
+        }
         if (isStaleRewind(candidate, nowUs)) return
         progressAnchor = candidate
         republishPosition()
