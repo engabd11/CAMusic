@@ -1,0 +1,18 @@
+{
+    "id": "com.abdullah.camusic.hueservice",
+    "description": "Hue Entertainment UDP streaming service for CAMusic",
+    "engine": "node",
+    "main": "hueservice.js",
+    "type": "regular",
+    "allowedNames": ["com.abdullah.camusic.hueservice"],
+    "permissions": [
+        {
+            "service": {
+                "name": "com.abdullah.camusic.hueservice"
+            },
+            "operations": {
+                "method": ["connect", "startSync", "stopSync", "disconnect", "getLightCount", "updateLights"]
+            }
+        }
+    ]
+}

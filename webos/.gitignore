@@ -1,0 +1,5 @@
+# webOS build artifacts
+dist/
+*.ipk
+node_modules/
+.DS_Store

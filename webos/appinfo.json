@@ -1,0 +1,22 @@
+{
+  "id": "com.abdullah.camusic",
+  "version": "0.0.1",
+  "vendor": "Abdullah Alanesi",
+  "type": "web",
+  "main": "index.html",
+  "title": "CAMusic",
+  "appDescription": "Music streaming with Hue light sync",
+  "icon": "assets/icon80.png",
+  "largeIcon": "assets/icon520.png",
+  "splashBackground": "assets/splash.png",
+  "bgImage": "assets/splash.png",
+  "resolution": "1920x1080",
+  "disableBackHistoryAPI": true,
+  "handlesRelaunch": true,
+  "requiredPermissions": [
+    "time.operate",
+    "settings.read",
+    "externalconnection.access"
+  ],
+  "supportWebReplay": true
+}

@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=1920, height=1080, initial-scale=1.0">
+    <title>CAMusic</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Header -->
+        <header id="header">
+            <div class="header-left">
+                <span class="app-title">CAMusic</span>
+            </div>
+            <div class="header-center">
+                <div class="nav-tabs" id="navTabs">
+                    <button class="nav-tab spotlight" data-tab="library" data-focused="true">Library</button>
+                    <button class="nav-tab spotlight" data-tab="search">Search</button>
+                    <button class="nav-tab spotlight" data-tab="hue">Hue Sync</button>
+                    <button class="nav-tab spotlight" data-tab="settings">Settings</button>
+                </div>
+            </div>
+            <div class="header-right">
+                <span id="serverIndicator" class="server-indicator">Not connected</span>
+            </div>
+        </header>
+
+        <!-- Main content area -->
+        <main id="content">
+            <!-- Library view -->
+            <div id="view-library" class="view active">
+                <div class="library-content">
+                    <div class="shelf" id="recentlyAdded">
+                        <h2 class="shelf-title">Recently Added</h2>
+                        <div class="shelf-items" id="recentlyAddedItems"></div>
+                    </div>
+                    <div class="shelf" id="recentlyPlayed">
+                        <h2 class="shelf-title">Recently Played</h2>
+                        <div class="shelf-items" id="recentlyPlayedItems"></div>
+                    </div>
+                    <div class="shelf" id="allAlbums">
+                        <h2 class="shelf-title">All Albums</h2>
+                        <div class="shelf-items" id="allAlbumsItems"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Search view -->
+            <div id="view-search" class="view">
+                <div class="search-container">
+                    <input type="text" id="searchInput" class="search-input spotlight"
+                           placeholder="Search for music..." data-focused="true">
+                    <div id="searchResults" class="search-results"></div>
+                </div>
+            </div>
+
+            <!-- Hue Sync view -->
+            <div id="view-hue" class="view">
+                <div class="hue-container">
+                    <h2 class="section-title">Hue Entertainment Sync</h2>
+                    <div class="hue-status" id="hueStatus">
+                        <p>Hue bridge connection status: <span id="hueBridgeStatus">Disconnected</span></p>
+                        <p>Light sync: <span id="hueSyncStatus">Off</span></p>
+                        <p>Connected lights: <span id="hueLightCount">0</span></p>
+                    </div>
+                    <div class="hue-controls">
+                        <button class="hue-button spotlight" id="hueConnectBtn">Connect to Bridge</button>
+                        <button class="hue-button spotlight" id="hueToggleBtn">Toggle Light Sync</button>
+                        <button class="hue-button spotlight" id="hueGroupBtn">Select Entertainment Group</button>
+                    </div>
+                    <div class="hue-settings">
+                        <label class="setting-row">
+                            <span class="setting-label">Bridge IP</span>
+                            <input type="text" id="hueBridgeIp" class="setting-input spotlight"
+                                   placeholder="192.168.0.x" value="">
+                        </label>
+                        <label class="setting-row">
+                            <span class="setting-label">Username</span>
+                            <input type="text" id="hueUsername" class="setting-input spotlight"
+                                   placeholder="hue-username-token" value="">
+                        </label>
+                        <label class="setting-row">
+                            <span class="setting-label">Entertainment Group ID</span>
+                            <input type="text" id="hueGroupId" class="setting-input spotlight"
+                                   placeholder="group-id" value="">
+                        </label>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Settings view -->
+            <div id="view-settings" class="view">
+                <div class="settings-container">
+                    <h2 class="section-title">Server Settings</h2>
+                    <div id="serverList" class="server-list"></div>
+                    <div class="settings-controls">
+                        <button class="settings-button spotlight" id="addServerBtn">Add Server</button>
+                        <button class="settings-button spotlight" id="removeServerBtn">Remove Server</button>
+                    </div>
+                    <div class="server-form" id="serverForm">
+                        <h3 id="serverFormTitle">Add Server</h3>
+                        <label class="setting-row">
+                            <span class="setting-label">Type</span>
+                            <select id="serverType" class="setting-input spotlight">
+                                <option value="navidrome">Navidrome</option>
+                                <option value="subsonic">Subsonic</option>
+                                <option value="jellyfin">Jellyfin</option>
+                                <option value="music_assistant">Music Assistant</option>
+                            </select>
+                        </label>
+                        <label class="setting-row">
+                            <span class="setting-label">Name</span>
+                            <input type="text" id="serverName" class="setting-input spotlight"
+                                   placeholder="My Music Server">
+                        </label>
+                        <label class="setting-row">
+                            <span class="setting-label">URL</span>
+                            <input type="text" id="serverUrl" class="setting-input spotlight"
+                                   placeholder="http://192.168.0.210:4533">
+                        </label>
+                        <label class="setting-row">
+                            <span class="setting-label">Username</span>
+                            <input type="text" id="serverUsername" class="setting-input spotlight"
+                                   placeholder="username">
+                        </label>
+                        <label class="setting-row">
+                            <span class="setting-label">Password</span>
+                            <input type="password" id="serverPassword" class="setting-input spotlight"
+                                   placeholder="password">
+                        </label>
+                        <div class="form-buttons">
+                            <button class="form-button spotlight" id="saveServerBtn">Save</button>
+                            <button class="form-button spotlight" id="cancelServerBtn">Cancel</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Now Playing bar (bottom) -->
+        <footer id="nowPlaying" class="now-playing hidden">
+            <div class="np-art">
+                <img id="npArt" src="" alt="" class="np-art-img">
+            </div>
+            <div class="np-info">
+                <div class="np-title" id="npTitle">No track</div>
+                <div class="np-artist" id="npArtist">No artist</div>
+                <div class="np-progress">
+                    <span id="npCurrentTime">0:00</span>
+                    <div class="np-seekbar">
+                        <div class="np-seekbar-fill" id="npSeekbarFill"></div>
+                    </div>
+                    <span id="npDuration">0:00</span>
+                </div>
+            </div>
+            <div class="np-controls">
+                <button class="np-btn spotlight" id="npPrevBtn" data-focused="true">&#x23EE;</button>
+                <button class="np-btn spotlight" id="npPlayBtn">&#x23F8;</button>
+                <button class="np-btn spotlight" id="npNextBtn">&#x23ED;</button>
+            </div>
+        </footer>
+    </div>
+
+    <script src="webOSTV.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
