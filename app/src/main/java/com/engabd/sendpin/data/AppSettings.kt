@@ -111,6 +111,13 @@ class AppSettings(private val context: Context) {
         private val DRIVING_SPEED_TOLERANCE_PCT = stringPreferencesKey("driving_speed_tolerance_pct")
         private val SPEED_ADAPTIVE_VOLUME = booleanPreferencesKey("speed_adaptive_volume")
 
+        // Dynamic speed-limit detection — when true, the speed-limit alert uses GPS
+        // location to look up the posted limit from a local offline database, instead
+        // of the manually-typed [DRIVING_SPEED_LIMIT_KMH]. The manual value remains as
+        // a fallback for areas where the database has no data. See [SpeedMonitor].
+        private val SPEED_LIMIT_AUTO_DETECT = booleanPreferencesKey("speed_limit_auto_detect")
+        private val SPEED_LIMIT_DB_VERSION = stringPreferencesKey("speed_limit_db_version") // last downloaded DB version
+
         // Self-hosted crash reporting
         private val CRASH_GITHUB_REPO = stringPreferencesKey("crash_github_repo") // owner/repo, e.g. engabd11/CAMusic
         private val CRASH_GITHUB_TOKEN = stringPreferencesKey("crash_github_token") // encrypted PAT for auto-submit
@@ -1294,6 +1301,17 @@ class AppSettings(private val context: Context) {
     /** Speed-adaptive volume boost. Off by default; shares [SpeedMonitor] with the alert above. */
     val speedAdaptiveVolume: Flow<Boolean> = context.dataStore.data.map { it[SPEED_ADAPTIVE_VOLUME] ?: false }
 
+    /**
+     * Dynamic speed-limit detection. When true, [SpeedMonitor] looks up the
+     * posted limit from a local offline database using GPS coordinates, instead
+     * of using [drivingSpeedLimitKmh]. The manual limit serves as fallback.
+     * Off by default — the user opts in after downloading the speed-limit data.
+     */
+    val speedLimitAutoDetect: Flow<Boolean> = context.dataStore.data.map { it[SPEED_LIMIT_AUTO_DETECT] ?: false }
+
+    /** Version string of the last downloaded speed-limit database (e.g. "july_2026"). */
+    val speedLimitDbVersion: Flow<String?> = context.dataStore.data.map { it[SPEED_LIMIT_DB_VERSION] }
+
     suspend fun setSpeedLimitAlertEnabled(on: Boolean) = context.dataStore.edit { it[SPEED_LIMIT_ALERT_ENABLED] = on }
 
     suspend fun setDrivingSpeedLimitKmh(value: Int) = context.dataStore.edit {
@@ -1305,6 +1323,10 @@ class AppSettings(private val context: Context) {
     }
 
     suspend fun setSpeedAdaptiveVolume(on: Boolean) = context.dataStore.edit { it[SPEED_ADAPTIVE_VOLUME] = on }
+
+    suspend fun setSpeedLimitAutoDetect(on: Boolean) = context.dataStore.edit { it[SPEED_LIMIT_AUTO_DETECT] = on }
+
+    suspend fun setSpeedLimitDbVersion(version: String) = context.dataStore.edit { it[SPEED_LIMIT_DB_VERSION] = version }
 
     suspend fun setDrivingEnabled(on: Boolean) {
         context.dataStore.edit { it[DRIVING_ENABLED] = on }
