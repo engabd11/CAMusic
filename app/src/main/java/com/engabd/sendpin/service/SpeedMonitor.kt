@@ -19,6 +19,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
@@ -33,6 +34,13 @@ import kotlinx.coroutines.launch
  * features is turned on — nothing here asks for a location fix, or even keeps its
  * `ACCESS_FINE_LOCATION` permission live in any meaningful sense, for someone who
  * has both switched off.
+ *
+ * Speed-limit source: when [AppSettings.speedLimitAutoDetect] is enabled, the
+ * alert uses [OfflineSpeedLimitProvider] to look up the posted limit from GPS
+ * coordinates against a local SQLite database — no internet, no tracking. When
+ * auto-detect is off, or the database has no data for the current location, it
+ * falls back to the manually-set limit ([AppSettings.drivingSpeedLimitKmh]).
+ * The last detected limit is exposed as [detectedLimitKmh] for the UI to display.
  */
 class SpeedMonitor(private val context: Context, private val drivingMode: DrivingMode) {
 
@@ -44,8 +52,19 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
     private var gateJob: Job? = null
     private var listening = false
 
+    /** The offline speed-limit provider. Null until first needed. */
+    private var speedLimitProvider: SpeedLimitProvider? = null
+
     private val _speedKmh = MutableStateFlow(0f)
-    val speedKmh: StateFlow<Float> = _speedKmh
+    val speedKmh: StateFlow<Float> = _speedKmh.asStateFlow()
+
+    /** The last speed limit detected from GPS location, or null if auto-detect is off or no data. */
+    private val _detectedLimitKmh = MutableStateFlow<Int?>(null)
+    val detectedLimitKmh: StateFlow<Int?> = _detectedLimitKmh.asStateFlow()
+
+    /** The speed limit currently in effect — detected, or manual if auto-detect is off. */
+    private val _activeLimitKmh = MutableStateFlow<Int?>(null)
+    val activeLimitKmh: StateFlow<Int?> = _activeLimitKmh.asStateFlow()
 
     private val locationListener = LocationListener { location -> onLocation(location) }
 
@@ -76,6 +95,11 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
         }
         listening = true
         alertTracker.reset()
+        // Lazily initialise the speed-limit provider. It opens the database if present;
+        // if not, it just returns null for all queries until the user downloads the data.
+        if (speedLimitProvider == null) {
+            speedLimitProvider = OfflineSpeedLimitProvider(context)
+        }
         runCatching {
             locationManager.requestLocationUpdates(
                 LocationManager.GPS_PROVIDER,
@@ -91,7 +115,14 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
         if (!listening) return
         listening = false
         runCatching { locationManager.removeUpdates(locationListener) }
+        // Close the speed-limit provider to release the SQLite file handle. It
+        // will be re-opened lazily when location updates resume. Keeping it open
+        // while driving mode is off wastes a file descriptor for no purpose.
+        speedLimitProvider?.close()
+        speedLimitProvider = null
         _speedKmh.value = 0f
+        _detectedLimitKmh.value = null
+        _activeLimitKmh.value = null
         alertTracker.reset()
         SendpinApp.instance.localPlayer.speedGainTarget = 1f
     }
@@ -104,14 +135,44 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
             if (settings.speedAdaptiveVolume.first()) {
                 SendpinApp.instance.localPlayer.speedGainTarget = SpeedAdaptiveGain.gainFactor(kmh)
             }
-            if (settings.speedLimitAlertEnabled.first()) checkAlert(kmh)
+            if (settings.speedLimitAlertEnabled.first()) checkAlert(kmh, location)
         }
     }
 
-    private suspend fun checkAlert(kmh: Float) {
-        val limit = settings.drivingSpeedLimitKmh.first()
-        if (limit <= 0) return
+    /**
+     * Decide whether to beep for the current reading.
+     *
+     * The limit comes from one of two sources, in priority order:
+     * 1. If auto-detect is on and the database has data: the detected limit
+     * 2. The manually-set limit (the original behaviour, preserved as fallback)
+     *
+     * The detected limit is also exposed via [detectedLimitKmh] / [activeLimitKmh]
+     * so the UI can show "Detected: 60 km/h" in real time.
+     */
+    private suspend fun checkAlert(kmh: Float, location: Location) {
+        val autoDetect = settings.speedLimitAutoDetect.first()
+        val manualLimit = settings.drivingSpeedLimitKmh.first()
         val tolerance = settings.drivingSpeedTolerancePct.first()
+
+        var limit: Int? = null
+        var detected: Int? = null
+
+        if (autoDetect) {
+            val provider = speedLimitProvider
+            if (provider != null && provider.ready.value) {
+                detected = provider.getSpeedLimit(location.latitude, location.longitude)
+                _detectedLimitKmh.value = detected
+            }
+            // Use detected if available, otherwise fall back to manual
+            limit = detected ?: manualLimit.takeIf { it > 0 }
+        } else {
+            _detectedLimitKmh.value = null
+            limit = manualLimit.takeIf { it > 0 }
+        }
+
+        _activeLimitKmh.value = limit
+
+        if (limit == null || limit <= 0) return
         val trigger = SpeedAlert.triggerSpeedKmh(limit, tolerance)
         if (alertTracker.onReading(kmh, trigger, System.currentTimeMillis())) beep()
     }

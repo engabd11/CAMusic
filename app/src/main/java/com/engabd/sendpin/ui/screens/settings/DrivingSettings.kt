@@ -236,6 +236,11 @@ private fun PauseForCallsRow(settings: AppSettings, accent: Color, scope: Corout
  * Speed limit alert and speed-adaptive volume — both GPS-driven, so both share one
  * `ACCESS_FINE_LOCATION` request. Nothing here reads location for anything but a
  * speed reading; see `SpeedMonitor`'s own doc for the "why fine, not coarse".
+ *
+ * The limit source is a toggle: "Auto-detect" looks up the posted limit from a
+ * local offline database using GPS coordinates (no internet, no tracking), or
+ * "Manual" uses a typed-in limit — the original behaviour, preserved as the
+ * fallback for areas the database doesn't cover or before the data is downloaded.
  */
 @Composable
 private fun SpeedFeaturesRow(settings: AppSettings, accent: Color, scope: CoroutineScope) {
@@ -244,8 +249,15 @@ private fun SpeedFeaturesRow(settings: AppSettings, accent: Color, scope: Corout
     val adaptiveEnabled by settings.speedAdaptiveVolume.collectAsState(initial = false)
     val limitKmh by settings.drivingSpeedLimitKmh.collectAsState(initial = 0)
     val tolerancePct by settings.drivingSpeedTolerancePct.collectAsState(initial = 5)
+    val autoDetect by settings.speedLimitAutoDetect.collectAsState(initial = false)
     val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ==
         PackageManager.PERMISSION_GRANTED
+
+    // The detected limit from GPS — exposed by SpeedMonitor for the UI to display
+    val detectedLimit by com.engabd.sendpin.SendpinApp.instance.speedMonitor
+        .detectedLimitKmh.collectAsState(initial = null)
+    val activeLimit by com.engabd.sendpin.SendpinApp.instance.speedMonitor
+        .activeLimitKmh.collectAsState(initial = null)
 
     val askLocation = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -256,31 +268,93 @@ private fun SpeedFeaturesRow(settings: AppSettings, accent: Color, scope: Corout
         scope.launch { set() }
     }
 
+    // The description line under "Speed limit alert" — shows what's in effect right now.
+    val alertDescription = if (alertEnabled && granted) {
+        val effective = activeLimit
+        if (effective != null && effective > 0) {
+            val trigger = com.engabd.sendpin.service.SpeedAlert.triggerSpeedKmh(effective, tolerancePct).toInt() + 1
+            if (autoDetect) "Auto: $effective km/h here — beeps at $trigger km/h"
+            else "Beeps at $trigger km/h and above"
+        } else if (autoDetect) {
+            "Detecting limit from location…"
+        } else {
+            "Set a limit below to activate"
+        }
+    } else {
+        "A gentle tone if your GPS speed goes well over a limit you set"
+    }
+
     ToggleRow(
         "Speed limit alert",
-        if (alertEnabled && granted && limitKmh > 0) {
-            val trigger = com.engabd.sendpin.service.SpeedAlert.triggerSpeedKmh(limitKmh, tolerancePct).toInt() + 1
-            "Beeps at $trigger km/h and above"
-        } else {
-            "A gentle tone if your GPS speed goes well over a limit you set"
-        },
+        alertDescription,
         alertEnabled && granted, accent,
     ) { on -> requestThenSet(on) { settings.setSpeedLimitAlertEnabled(on) } }
 
     if (alertEnabled && granted) {
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-            OledField(
-                value = if (limitKmh > 0) limitKmh.toString() else "",
-                onChange = { v -> scope.launch { settings.setDrivingSpeedLimitKmh(v.filter(Char::isDigit).toIntOrNull() ?: 0) } },
-                label = "Limit (km/h)", placeholder = "e.g. 100", accent = accent,
-                modifier = Modifier.weight(1f),
+        // ── Limit source toggle: Auto-detect vs Manual ──────────────────────
+        FieldLabel("Limit source")
+        com.engabd.sendpin.ui.design.SegmentedToggle(
+            options = listOf("Auto-detect", "Manual"),
+            selectedIndex = if (autoDetect) 0 else 1,
+            modifier = Modifier.fillMaxWidth(),
+        ) { i ->
+            scope.launch { settings.setSpeedLimitAutoDetect(i == 0) }
+        }
+
+        if (autoDetect) {
+            // Show detected limit and database status
+            val detected = detectedLimit
+            Note(
+                if (detected != null) {
+                    "Detected: $detected km/h on this road. Falls back to manual if no data."
+                } else {
+                    "Looking up speed limits from local data. Falls back to manual limit if the area isn't covered."
+                },
+                title = "Auto-detect",
+                info = "Uses a local database of Victoria's speed zones — no internet, no tracking. " +
+                    "The database is downloaded once (~50 MB) and updated monthly. " +
+                    "If the database isn't downloaded yet, or you're outside Victoria, " +
+                    "it falls back to the manual limit below.",
             )
+        } else {
+            // Manual limit input (original behaviour)
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                OledField(
+                    value = if (limitKmh > 0) limitKmh.toString() else "",
+                    onChange = { v -> scope.launch { settings.setDrivingSpeedLimitKmh(v.filter(Char::isDigit).toIntOrNull() ?: 0) } },
+                    label = "Limit (km/h)", placeholder = "e.g. 100", accent = accent,
+                    modifier = Modifier.weight(1f),
+                )
+                OledField(
+                    value = tolerancePct.toString(),
+                    onChange = { v -> scope.launch { settings.setDrivingSpeedTolerancePct(v.filter(Char::isDigit).toIntOrNull() ?: 0) } },
+                    label = "Tolerance (%)", placeholder = "5", accent = accent,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+
+        // Tolerance is always shown — it applies to both auto and manual modes
+        if (autoDetect) {
             OledField(
                 value = tolerancePct.toString(),
                 onChange = { v -> scope.launch { settings.setDrivingSpeedTolerancePct(v.filter(Char::isDigit).toIntOrNull() ?: 0) } },
                 label = "Tolerance (%)", placeholder = "5", accent = accent,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.fillMaxWidth(),
             )
+        }
+
+        // Manual fallback limit is still relevant in auto-detect mode — it's used
+        // when the database has no data for the current location.
+        if (autoDetect) {
+            FieldLabel("Manual fallback")
+            OledField(
+                value = if (limitKmh > 0) limitKmh.toString() else "",
+                onChange = { v -> scope.launch { settings.setDrivingSpeedLimitKmh(v.filter(Char::isDigit).toIntOrNull() ?: 0) } },
+                label = "Fallback limit (km/h)", placeholder = "e.g. 60", accent = accent,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Note("Used when the database has no data for your location (e.g. outside Victoria).")
         }
     }
 
