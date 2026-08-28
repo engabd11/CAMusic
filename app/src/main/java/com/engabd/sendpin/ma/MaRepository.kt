@@ -407,17 +407,78 @@ class MaRepository(
         })
     }
 
+    /**
+     * Global search across all MA providers.
+     *
+     * The server's `music/search` reaches into every connected provider — music
+     * libraries (OpenSubsonic, Jellyfin), streaming services (Spotify, Tidal) and
+     * radio/podcast providers (BBC Sounds, Tune-In) alike. A track result from
+     * BBC Sounds is a radio episode, not a song: its `uri` (`bbc_sounds://track/…`)
+     * plays a completely unrelated programme when handed to `player_queues/play_media`,
+     * which looks to the user like tapping one song and hearing another.
+     *
+     * `library_only: true` would restrict results to MA's own library database,
+     * but that excludes items that exist only in a provider's catalogue and have
+     * not been synced into the library — OpenSubsonic tracks that the library
+     * index does not yet know about, which is most of a Navidrome collection during
+     * a fresh setup. So the filter is applied **after** the search: anything from a
+     * provider domain that is not a music library or streaming service is dropped
+     * from the track results. Artists, albums and playlists are left alone — the
+     * wrong-song bug is specific to tracks, and a BBC Sounds "artist" is at worst
+     * an empty browse, not the wrong audio.
+     *
+     * The domain list mirrors [MaParse.streamProviderLabel]: the providers a
+     * listener would recognise as a source of music, plus `library` (MA's own
+     * database) and the bare provider-instance form (`opensubsonic--xxx`).
+     */
     suspend fun search(query: String, limit: Int = 30): MaSearchResults {
         val res = api.sendCommand("music/search", buildJsonObject {
             put("search_query", query); put("limit", limit)
         })?.jsonObject
-        return MaSearchResults(
+        val raw = MaSearchResults(
             artists = MaParse.items(res?.get("artists"), serverUrl),
             albums = MaParse.items(res?.get("albums"), serverUrl),
             tracks = MaParse.items(res?.get("tracks"), serverUrl),
             playlists = MaParse.items(res?.get("playlists"), serverUrl),
         )
+        return raw.copy(tracks = raw.tracks.filter { isMusicProvider(it.provider) })
     }
+
+    /**
+     * Whether a provider domain is one a listener would expect a *song* to come
+     * from. Radio stations, podcast feeds, audiobook services and metadata/lookup
+     * providers are not music sources — their "track" results are episodes or
+     * programmes, and playing them when the user tapped a song is the wrong-song
+     * bug. The bare `library` domain is MA's own database, and provider-instance
+     * IDs (`opensubsonic--xxx`, `jellyfin--xxx`) are checked by their domain
+     * prefix.
+     */
+    private fun isMusicProvider(provider: String): Boolean {
+        if (provider == "library") return true
+        // Provider-instance IDs carry the domain before the first `--`.
+        val domain = provider.substringBefore("--")
+        return domain in MUSIC_PROVIDER_DOMAINS
+    }
+
+    /**
+     * Provider domains that supply actual music (as opposed to radio programmes,
+     * podcast episodes, audiobooks, or metadata/lookup services). Mirrors the
+     * domains [MaParse.streamProviderLabel] recognises, plus the on-device/local
+     * sources and MA's own builtin library.
+     */
+    private val MUSIC_PROVIDER_DOMAINS = setOf(
+        "library",
+        "opensubsonic", "subsonic",
+        "jellyfin", "emby", "plex",
+        "spotify", "tidal", "qobuz", "deezer",
+        "apple_music", "ytmusic", "youtube_music",
+        "soundcloud", "bandcamp",
+        "neteasecloudmusic", "qqmusic", "zvuk_music", "yandex_music",
+        "ibroadcast", "musicme", "kion_music",
+        "filesystem_local", "filesystem_smb", "filesystem_nfs", "filesystem_onedrive", "filesystem_google_drive",
+        "webdav",
+        "nugs", "yousee",
+    )
 
     /** Browse into a container item (artist → albums, album/playlist → tracks). */
     suspend fun children(item: MaItem): List<MaItem> = when (item.mediaType) {
