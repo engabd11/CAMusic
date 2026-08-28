@@ -286,9 +286,6 @@ class MaNowPlaying(private val app: Context) {
     @Volatile private var pendingSkipFromTrack: String? = null
     /** Identity of the track last seen, for spotting a skip landing. */
     @Volatile private var lastTrackId: String? = null
-    /** Last `elapsed_time_last_updated` accepted, per queue — the staleness gate. */
-    private val lastStamp = mutableMapOf<String, Double>()
-
     private fun freezeForSeek(playerId: String, target: Long) {
         pendingSeekMs = target
         pendingSkip = false
@@ -371,12 +368,17 @@ class MaNowPlaying(private val app: Context) {
 
         if (elapsed == null) return
 
+        // Translate the server-side capture timestamp (`elapsed_time_last_updated`,
+        // a Unix epoch in seconds) to local wall-clock ms — the same clock domain the
+        // tracker uses. Falls back to "now" when the server omits the field.
+        val capturedAtMs = queue?.elapsedTimeLastUpdated?.let { (it * 1000).toLong() }
+            ?: System.currentTimeMillis()
+
         if (trackChanged) {
-            lastStamp.remove(playerId)
-            queue?.elapsedTimeLastUpdated?.let { lastStamp[playerId] = it }
             positions.setAnchor(
                 queueId = playerId,
                 elapsedMs = 0L,
+                capturedAtMs = System.currentTimeMillis(),
                 isPlaying = player.isPlaying,
                 durationMs = np?.durationMs,
                 speed = queue?.playbackSpeed,
@@ -384,22 +386,10 @@ class MaNowPlaying(private val app: Context) {
             return
         }
 
-        // Staleness gate. A repeated `elapsed_time_last_updated` means the server has
-        // not recomputed the playhead — for a remote speaker that is most polls — so
-        // re-anchoring on it would keep re-applying however stale that reading was,
-        // dragging the shade's bar backwards every time. Let the projection carry on;
-        // a play/pause is still news, and [setPlaying] snapshots the projection rather
-        // than trusting the stale number.
-        val stamp = queue?.elapsedTimeLastUpdated
-        if (stamp != null && lastStamp[playerId]?.let { stamp <= it } == true) {
-            positions.setPlaying(playerId, player.isPlaying)
-            return
-        }
-        if (stamp != null) lastStamp[playerId] = stamp
-
         positions.setAnchor(
             queueId = playerId,
             elapsedMs = elapsed,
+            capturedAtMs = capturedAtMs,
             isPlaying = player.isPlaying,
             durationMs = np?.durationMs,
             speed = queue?.playbackSpeed,
