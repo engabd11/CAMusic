@@ -576,6 +576,7 @@ class Playback(private val app: Context) {
                 // Re-stamp before letting it run. The held anchor describes an instant
                 // now a whole warm-up in the past, so projecting from it unchanged
                 // would jump the bar forward by exactly the gap the hold just hid.
+                _audibleSeq.value += 1
                 progressAnchor = progressAnchor?.copy(atLocalUs = clockNowUs())
                 republishPosition()
             },
@@ -678,6 +679,10 @@ class Playback(private val app: Context) {
                 // always passes through BUFFERING before it is heard. Cleared by the
                 // engine's onAudible the moment this stream makes a sound.
                 awaitingAudibleSinceUs = c.clock.nowUs()
+                // Publish the hold immediately rather than waiting for the next tick:
+                // the UI releases its own optimistic freeze on this, and 250 ms of
+                // "running" is long enough to let the outgoing track's position through.
+                republishPosition()
                 val kind = streamKind
                 scope.launch {
                     requestAudioFocus(kind)
@@ -896,6 +901,32 @@ class Playback(private val app: Context) {
      * engine that never reports itself playing costs a brief freeze rather than a bar
      * stuck for the whole track.
      */
+    /**
+     * Is the playhead actually advancing right now?
+     *
+     * `_isPlaying` goes true on `stream/start`, over a second before any sound. Anything
+     * that projects the position forward on its own - `NowPlayingViewModel`'s
+     * [com.engabd.sendpin.ui.viewmodel.PlayerPositionTracker] does, between readings -
+     * has to be told the difference, or it runs the bar across the warm-up that
+     * [awaitingAudible] exists to hold it over.
+     */
+    private val _audibleSeq = MutableStateFlow(0L)
+
+    /**
+     * Counts streams that have actually been heard.
+     *
+     * A level ("is it playing?") cannot answer "has the stream I am waiting for
+     * started?", because the outgoing track is still coming out of the speaker for
+     * more than a second after a skip is asked for. The UI's optimistic freeze needs
+     * the *edge*, so it samples this when it freezes and releases when it moves.
+     */
+    val audibleSeq: StateFlow<Long> = _audibleSeq.asStateFlow()
+
+    private val _playheadRunning = MutableStateFlow(false)
+    val playheadRunning: StateFlow<Boolean> = _playheadRunning.asStateFlow()
+
+    val isPlayheadRunning: Boolean get() = _playheadRunning.value
+
     private fun awaitingAudible(nowUs: Long): Boolean =
         SendspinPlaybackSupport.PlayheadGate.awaitingAudible(awaitingAudibleSinceUs, nowUs)
 
@@ -1023,15 +1054,16 @@ class Playback(private val app: Context) {
 
     /** Publish the anchor projected to now — see [ProgressProjection]. */
     private fun republishPosition() {
+        val nowUs = clockNowUs()
+        // `playing` false holds at the anchor rather than running on, which is exactly
+        // what a stream that has started but is not audible yet needs.
+        val running = _isPlaying.value && !awaitingAudible(nowUs)
+        _playheadRunning.value = running
         val a = progressAnchor
         if (a == null) {
             _positionMs.value = 0L
             return
         }
-        val nowUs = clockNowUs()
-        // `playing` false holds at the anchor rather than running on, which is exactly
-        // what a stream that has started but is not audible yet needs.
-        val running = _isPlaying.value && !awaitingAudible(nowUs)
         _positionMs.value = ProgressProjection.project(a, nowUs, running)
     }
 

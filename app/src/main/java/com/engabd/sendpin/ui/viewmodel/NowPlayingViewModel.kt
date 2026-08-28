@@ -309,7 +309,25 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
      * seconds and then goes back to 00:01".
      */
     private fun sendspinAuthoritative(): Boolean =
-        !isLocal && sendspinPlaying.value && targetId() == myPlayerId
+        !isLocal && sendspinPlaying.value && targetIsThisPhone()
+
+    /**
+     * Is the current target this phone's own Sendspin player?
+     *
+     * Not a plain id comparison since Music Assistant 2.10: the target is the
+     * `universal_player` wrapper (`up…`) and [myPlayerId] is the protocol client it
+     * renders through, so the two are never equal. Comparing them directly left
+     * [sendspinAuthoritative] permanently false, which handed the playhead to MA's
+     * five-second poll - and a poll that has not yet noticed a skip re-anchors the bar
+     * on the outgoing track's elapsed time, then on zero, which is the seek bar
+     * jumping forward and then back at the start of every track.
+     */
+    private fun targetIsThisPhone(): Boolean {
+        val id = targetId()
+        if (id == myPlayerId) return true
+        return _players.value.firstOrNull { it.playerId == id }
+            ?.isSelfOrActiveOutput(myPlayerId) == true
+    }
 
     /** Identity of the current track, for detecting a change between polls. */
     @Volatile private var lastTrackId: String? = null
@@ -592,10 +610,22 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     @Volatile private var pendingSeekMs: Long? = null
     @Volatile private var pendingSkipFromTrack: String? = null
 
+    /**
+     * [Playback.audibleSeq] as it was when the current optimistic freeze was armed.
+     *
+     * The freeze may only be released by a stream that became audible *after* it. A
+     * level check cannot express that: when a skip is asked for, the outgoing track is
+     * still playing and stays audible for over a second, so "audio is flowing" is
+     * already true and released the freeze immediately - letting the old track's
+     * playhead drive the bar under the new track's title.
+     */
+    @Volatile private var freezeAtAudibleSeq: Long = -1L
+
     private fun freezeForSeek(target: Long) {
         val key = positionKey()
         pendingSeekMs = target
         pendingSkipFromTrack = null
+        freezeAtAudibleSeq = playback.audibleSeq.value
         positions.setOptimisticSeek(key, target, state.value.durationMs.takeIf { it > 0 })
         armFreezeWatchdog(key)
     }
@@ -604,6 +634,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         val key = positionKey()
         pendingSeekMs = null
         pendingSkipFromTrack = lastTrackId
+        freezeAtAudibleSeq = playback.audibleSeq.value
         positions.setOptimisticTrackChange(key)
         armFreezeWatchdog(key)
     }
@@ -619,6 +650,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     private fun releaseFreeze(key: String) {
         pendingSeekMs = null
         pendingSkipFromTrack = null
+        freezeAtAudibleSeq = -1L
         freezeWatchdog?.cancel(); freezeWatchdog = null
         positions.confirmPlaying(key)
     }
@@ -660,6 +692,13 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                 else -> true
             }
             if (!confirmed) return
+            // When this phone is the player, the server naming the new track is not
+            // enough to lift the freeze: our own stream is still warming up for over a
+            // second after that poll, and releasing here hands the bar straight back to
+            // the *outgoing* track's playhead, under the new track's title. The
+            // [Playback.audibleSeq] collector releases it instead, on the edge where
+            // the new stream is first heard.
+            if (sendspinAuthoritative()) return
             releaseFreeze(key)
             // [releaseFreeze] already snapped the anchor to exactly the confirmed
             // target via [PlayerPositionTracker.confirmPlaying]. Falling through to
@@ -1734,17 +1773,24 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             settings.navStreamFormat.collect { navFormat = it.takeIf { f -> f != "raw" } }
         }
-        // When this phone *is* the Music Assistant player, the Sendspin stream starting
-        // is proof that audio is flowing — which is exactly what releases an optimistic
-        // freeze in the official app, rather than a guess made from polled state. A
-        // remote speaker gives us no such signal and still relies on the poll
-        // corroborating the skip (see [anchorFromServer]).
+        // When this phone *is* the Music Assistant player, audio actually coming out is
+        // proof the skip landed - which is what releases an optimistic freeze, rather
+        // than a guess made from polled state. A remote speaker gives us no such signal
+        // and still relies on the poll corroborating the skip (see [anchorFromServer]).
+        //
+        // Deliberately [Playback.playheadRunning] and not `sendspinPlaying`: the latter
+        // goes true on `stream/start`, over a second before the decoder and audio track
+        // have warmed up. Releasing the freeze there let the *outgoing* track's playhead
+        // through for that second - the bar jumped back up to where the previous track
+        // had reached, ran on, then dropped to zero when the new stream finally
+        // anchored, which is the "jumps forward and backwards" at the start of a track.
         viewModelScope.launch {
-            sendspinPlaying.collect { playing ->
-                if (playing && !isLocal) {
-                    val key = positionKey()
-                    if (positions.isFrozen(key)) releaseFreeze(key)
-                }
+            playback.audibleSeq.collect { seq ->
+                if (isLocal) return@collect
+                val armedAt = freezeAtAudibleSeq
+                if (armedAt < 0 || seq <= armedAt) return@collect
+                val key = positionKey()
+                if (positions.isFrozen(key)) releaseFreeze(key)
             }
         }
         // Remember whatever the selected player last had loaded.
@@ -1906,7 +1952,10 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                 positions.setAnchor(
                     positionKey(),
                     ms,
-                    isPlaying = true,
+                    // Not a constant `true`: between readings the tracker projects the
+                    // anchor forward itself, and during a stream's warm-up there is
+                    // nothing to project - the position is deliberately being held.
+                    isPlaying = playback.isPlayheadRunning,
                     durationMs = playback.playbackDurationMs.takeIf { it > 0 },
                 )
             }
