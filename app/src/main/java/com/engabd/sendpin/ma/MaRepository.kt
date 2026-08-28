@@ -746,11 +746,63 @@ class MaRepository(
             put("queue_id", queueId); put("queue_item_id", itemId); put("pos_shift", posShift)
         })
 
+    /** Move a queue item to the end of the queue. */
+    suspend fun moveQueueItemEnd(queueId: String, itemId: String) =
+        api.sendCommand("player_queues/move_item_end", buildJsonObject {
+            put("queue_id", queueId); put("queue_item_id", itemId)
+        })
+
     /** Save the current queue as a playlist. */
     suspend fun saveQueueAsPlaylist(queueId: String, name: String) =
         api.sendCommand("player_queues/save_as_playlist", buildJsonObject {
             put("queue_id", queueId); put("name", name)
         })
+
+    /**
+     * Get a single queue's full state by queue_id, or null if not found.
+     * Lighter than `player_queues/all` when only one queue is needed.
+     */
+    suspend fun getQueue(queueId: String) =
+        api.sendCommand("player_queues/get", buildJsonObject { put("queue_id", queueId) })
+
+    /** Seek to a position (seconds) within the current track on the given queue. */
+    suspend fun seekQueue(queueId: String, positionSec: Int) =
+        api.sendCommand("player_queues/seek", buildJsonObject {
+            put("queue_id", queueId); put("position", positionSec.coerceAtLeast(0))
+        })
+
+    /** Stop playback on the given queue. */
+    suspend fun stopQueue(queueId: String) =
+        api.sendCommand("player_queues/stop", buildJsonObject { put("queue_id", queueId) })
+
+    /** Pause playback on the given queue. */
+    suspend fun pauseQueue(queueId: String) =
+        api.sendCommand("player_queues/pause", buildJsonObject { put("queue_id", queueId) })
+
+    /** Play (start) playback on the given queue. */
+    suspend fun playQueue(queueId: String) =
+        api.sendCommand("player_queues/play", buildJsonObject { put("queue_id", queueId) })
+
+    /** Resume playback on the given queue, optionally with a fade-in. */
+    suspend fun resumeQueue(queueId: String, fadeIn: Boolean? = null) =
+        api.sendCommand("player_queues/resume", buildJsonObject {
+            put("queue_id", queueId)
+            fadeIn?.let { put("fade_in", it) }
+        })
+
+    /** Skip forward/backward by [seconds] in the current track (negative = back). */
+    suspend fun skipQueue(queueId: String, seconds: Int) =
+        api.sendCommand("player_queues/skip", buildJsonObject {
+            put("queue_id", queueId); put("seconds", seconds)
+        })
+
+    /** Next track on the given queue. */
+    suspend fun nextTrack(queueId: String) =
+        api.sendCommand("player_queues/next", buildJsonObject { put("queue_id", queueId) })
+
+    /** Previous track on the given queue. */
+    suspend fun previousTrack(queueId: String) =
+        api.sendCommand("player_queues/previous", buildJsonObject { put("queue_id", queueId) })
 
     /**
      * Jump to a queue row. `play_index` takes `index: int | str` and resolves a
@@ -943,6 +995,214 @@ class MaRepository(
     suspend fun setGroupVolume(leaderId: String, level: Int) =
         api.sendCommand("players/cmd/group_volume", buildJsonObject {
             put("player_id", leaderId); put("volume_level", level.coerceIn(0, 100))
+        })
+
+    /** Volume up by one step on the given player. */
+    suspend fun volumeUp(playerId: String) = cmd("volume_up", playerId)
+
+    /** Volume down by one step on the given player. */
+    suspend fun volumeDown(playerId: String) = cmd("volume_down", playerId)
+
+    /** Resume (or restart) playback on the given player, optionally with a source or media. */
+    suspend fun resumePlayer(playerId: String) = cmd("resume", playerId)
+
+    /** Toggle play/pause on the given player (not queue — the player-level toggle). */
+    suspend fun playPausePlayer(playerId: String) = cmd("play_pause", playerId)
+
+    /**
+     * Play an announcement (TTS/chime URL) on the given player.
+     * [preAnnounce] = play a chime before the announcement. [volumeLevel] = override
+     * volume for the announcement only. [preAnnounceUrl] = custom pre-announce chime.
+     */
+    suspend fun playAnnouncement(
+        playerId: String,
+        url: String,
+        preAnnounce: Boolean? = null,
+        volumeLevel: Int? = null,
+        preAnnounceUrl: String? = null,
+    ) = api.sendCommand("players/cmd/play_announcement", buildJsonObject {
+        put("player_id", playerId); put("url", url)
+        preAnnounce?.let { put("pre_announce", it) }
+        volumeLevel?.let { put("volume_level", it.coerceIn(0, 100)) }
+        preAnnounceUrl?.let { put("pre_announce_url", it) }
+    })
+
+    /** Add the currently playing item on the given player to favorites. */
+    suspend fun addCurrentlyPlayingToFavorites(playerId: String) =
+        api.sendCommand("players/add_currently_playing_to_favorites", buildJsonObject {
+            put("player_id", playerId)
+        })
+
+    /** Find a player by its display name (case-insensitive, exact match server-side). */
+    suspend fun getPlayerByName(name: String) =
+        api.sendCommand("players/get_by_name", buildJsonObject { put("name", name) })
+
+    /**
+     * Create a permanent group player (ADMIN). [members] = child player IDs.
+     * [dynamic] = members can change at runtime.
+     */
+    suspend fun createGroupPlayer(provider: String, name: String, members: List<String>, dynamic: Boolean? = null) =
+        api.sendCommand("players/create_group_player", buildJsonObject {
+            put("provider", provider); put("name", name)
+            put("members", JsonArray(members.map { JsonPrimitive(it) }))
+            dynamic?.let { put("dynamic", it) }
+        })
+
+    /** Remove a player permanently (ADMIN). */
+    suspend fun removePlayer(playerId: String) =
+        api.sendCommand("players/remove", buildJsonObject { put("player_id", playerId) })
+
+    // --- library counts ----------------------------------------------------
+
+    /** Total track count in the library, optionally filtered. */
+    suspend fun trackCount(favoriteOnly: Boolean? = null) =
+        api.sendCommand("music/tracks/count", buildJsonObject {
+            favoriteOnly?.let { put("favorite_only", it) }
+        })?.jsonPrimitive?.intOrNull ?: 0
+
+    /** Total album count in the library. */
+    suspend fun albumCount(favoriteOnly: Boolean? = null) =
+        api.sendCommand("music/albums/count", buildJsonObject {
+            favoriteOnly?.let { put("favorite_only", it) }
+        })?.jsonPrimitive?.intOrNull ?: 0
+
+    /** Total artist count in the library. */
+    suspend fun artistCount(favoriteOnly: Boolean? = null, albumArtistsOnly: Boolean? = null) =
+        api.sendCommand("music/artists/count", buildJsonObject {
+            favoriteOnly?.let { put("favorite_only", it) }
+            albumArtistsOnly?.let { put("album_artists_only", it) }
+        })?.jsonPrimitive?.intOrNull ?: 0
+
+    /** Total playlist count in the library. */
+    suspend fun playlistCount() =
+        api.sendCommand("music/playlists/count", buildJsonObject {})?.jsonPrimitive?.intOrNull ?: 0
+
+    /** Total podcast count in the library. */
+    suspend fun podcastCount(favoriteOnly: Boolean? = null) =
+        api.sendCommand("music/podcasts/count", buildJsonObject {
+            favoriteOnly?.let { put("favorite_only", it) }
+        })?.jsonPrimitive?.intOrNull ?: 0
+
+    /** Total radio station count in the library. */
+    suspend fun radioCount() =
+        api.sendCommand("music/radios/count", buildJsonObject {})?.jsonPrimitive?.intOrNull ?: 0
+
+    // --- genres ------------------------------------------------------------
+
+    /** Browse genres in the library, paginated. */
+    suspend fun genres(offset: Int = 0, limit: Int = PAGE_SIZE, favorite: Boolean? = null, search: String? = null) =
+        MaParse.items(
+            api.sendCommand("music/genres/library_items", buildJsonObject {
+                put("limit", limit); put("offset", offset)
+                favorite?.let { put("favorite", it) }
+                search?.let { put("search", it) }
+            }),
+            serverUrl,
+        )
+
+    /** All tracks for a given genre. */
+    suspend fun genreTracks(genreItem: MaItem) =
+        MaParse.items(api.sendCommand("music/genres/tracks", itemRef(genreItem)), serverUrl)
+
+    // --- browse & item lookup ---------------------------------------------
+
+    /**
+     * Browse the MA music provider tree from a path string (e.g. "spotify/browse/your-music").
+     * Returns a mixed list of browse folders and media items.
+     */
+    suspend fun browse(path: String? = null) =
+        MaParse.items(api.sendCommand("music/browse", buildJsonObject {
+            path?.let { put("path", it) }
+        }), serverUrl)
+
+    /**
+     * Get a single media item by its media_type, item_id, and provider.
+     * More general than `music/tracks/get` — works for any media type.
+     */
+    suspend fun item(mediaType: String, itemId: String, provider: String, allowUpdateMetadata: Boolean? = null) =
+        MaParse.item(api.sendCommand("music/item", buildJsonObject {
+            put("media_type", mediaType)
+            put("item_id", itemId)
+            put("provider_instance_id_or_domain", provider)
+            allowUpdateMetadata?.let { put("allow_update_metadata", it) }
+        }), serverUrl)
+
+    /** Get a track by its name, optionally with artist and album for disambiguation. */
+    suspend fun trackByName(trackName: String, artistName: String? = null, albumName: String? = null, trackVersion: String? = null) =
+        MaParse.item(api.sendCommand("music/track_by_name", buildJsonObject {
+            put("track_name", trackName)
+            artistName?.let { put("artist_name", it) }
+            albumName?.let { put("album_name", it) }
+            trackVersion?.let { put("track_version", it) }
+        }), serverUrl)
+
+    /** All albums a track appears on (compilations, reissues, etc.). */
+    suspend fun trackAlbums(item: MaItem) =
+        MaParse.items(api.sendCommand("music/tracks/track_albums", itemRef(item)), serverUrl)
+
+    /** Top/featured albums for an artist (across all their providers, deduplicated). */
+    suspend fun artistTopAlbums(item: MaItem, providerFilter: String? = null) =
+        MaParse.items(api.sendCommand("music/artists/top_albums", buildJsonObject {
+            put("item_id", item.itemId)
+            put("provider_instance_id_or_domain", item.provider)
+            providerFilter?.let { put("provider_filter", it) }
+        }), serverUrl)
+
+    /** Full details for a single podcast. */
+    suspend fun getPodcast(item: MaItem) =
+        MaParse.item(api.sendCommand("music/podcasts/get", itemRef(item)), serverUrl)
+
+    /** A single podcast episode by its provider podcast id and episode id. */
+    suspend fun podcastEpisode(podcastItem: MaItem, episodeId: String) =
+        MaParse.item(api.sendCommand("music/podcasts/podcast_episode", buildJsonObject {
+            put("item_id", episodeId)
+            put("provider_instance_id_or_domain", podcastItem.provider)
+        }), serverUrl)
+
+    /** Full details for a single radio station. */
+    suspend fun getRadio(item: MaItem) =
+        MaParse.item(api.sendCommand("music/radios/get", itemRef(item)), serverUrl)
+
+    /** All versions of a radio station across providers. */
+    suspend fun radioVersions(item: MaItem) =
+        MaParse.items(api.sendCommand("music/radios/radio_versions", itemRef(item)), serverUrl)
+
+    /** Full details for a single playlist (more fields than library_items). */
+    suspend fun getPlaylist(item: MaItem) =
+        MaParse.item(api.sendCommand("music/playlists/get", itemRef(item)), serverUrl)
+
+    /** Export a playlist to M3U8 format. Returns the M3U8 string. */
+    suspend fun exportPlaylist(playlistItemId: String): String? =
+        api.sendCommand("music/playlists/export_playlist", buildJsonObject {
+            put("db_playlist_id", playlistItemId)
+        })?.jsonPrimitive?.contentOrNull
+
+    /**
+     * Import a playlist from M3U8 data, creating a new builtin playlist.
+     * [libraryMatching] = attempt to find tracks by searching providers using metadata.
+     */
+    suspend fun importPlaylist(m3uData: String, libraryMatching: Boolean? = null) =
+        MaParse.item(api.sendCommand("music/playlists/import_playlist", buildJsonObject {
+            put("m3u_data", m3uData)
+            libraryMatching?.let { put("library_matching", it) }
+        }), serverUrl)
+
+    /**
+     * Refresh a media item's metadata by requesting its full object or searching
+     * for substitutes. Best-effort — the server may not find a replacement.
+     */
+    suspend fun refreshItem(item: MaItem) =
+        MaParse.item(api.sendCommand("music/refresh_item", itemRef(item)), serverUrl)
+
+    /**
+     * Trigger a music provider sync (background task). [mediaTypes] = only sync
+     * these types (None = all). [providers] = only sync these provider instances
+     * (None = all).
+     */
+    suspend fun syncProviders(mediaTypes: List<String>? = null, providers: List<String>? = null) =
+        api.sendCommand("music/sync", buildJsonObject {
+            mediaTypes?.let { put("media_types", JsonArray(it.map { JsonPrimitive(it) })) }
+            providers?.let { put("providers", JsonArray(it.map { JsonPrimitive(it) })) }
         })
 
     // --- queue transfer (cross-device handoff) ----------------------------
