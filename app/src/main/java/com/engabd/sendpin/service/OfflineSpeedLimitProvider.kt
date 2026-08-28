@@ -1,9 +1,7 @@
 package com.engabd.sendpin.service
 
 import android.content.Context
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Offline speed-limit provider backed by a local SQLite R-tree database.
@@ -33,7 +31,7 @@ class OfflineSpeedLimitProvider(
     private val database = SpeedLimitDatabase(context)
     private val cache = SpeedLimitCache()
 
-    override val ready: StateFlow<Boolean> = database.ready.asStateFlow()
+    override val ready: StateFlow<Boolean> = database.ready
 
     init {
         // Try to open on construction — if it's already downloaded from a

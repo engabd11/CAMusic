@@ -2,6 +2,7 @@ package com.engabd.sendpin.service
 
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
+import kotlin.math.cos
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -33,7 +34,7 @@ class SpeedLimitDatabase(context: Context) {
     private val tmpFile: File = File(context.filesDir, DB_FILENAME_TMP)
 
     private val _ready = MutableStateFlow(false)
-    override val ready: StateFlow<Boolean> = _ready.asStateFlow()
+    val ready: StateFlow<Boolean> = _ready.asStateFlow()
 
     private var db: SQLiteDatabase? = null
 
@@ -54,7 +55,7 @@ class SpeedLimitDatabase(context: Context) {
             db = SQLiteDatabase.openDatabase(
                 dbFile.absolutePath,
                 null,
-                SQLiteDatabase.OPEN_READONLY or SQLiteDatabase.OPEN_NO_LOCALIZED_COLLATORS,
+                SQLiteDatabase.OPEN_READONLY,
             )
             _ready.value = true
             true
@@ -121,7 +122,12 @@ class SpeedLimitDatabase(context: Context) {
                 WHERE r.min_lon <= ? AND r.max_lon >= ?
                   AND r.min_lat <= ? AND r.max_lat >= ?
                 """,
-                arrayOf(lon + lonDeg, lon - lonDeg, lat + latDeg, lat - latDeg),
+                arrayOf(
+                    (lon + lonDeg).toString(),
+                    (lon - lonDeg).toString(),
+                    (lat + latDeg).toString(),
+                    (lat - latDeg).toString(),
+                ),
             ).use { cursor ->
                 val results = mutableListOf<Pair<Int, Int>>()
                 while (cursor.moveToNext()) {
