@@ -568,6 +568,17 @@ class Playback(private val app: Context) {
             // MaRepository.playMedia uses, and its own status text already
             // surfaces through the c.statusText collector below.
             onFatalError = { c.reconnectNow() },
+            // Audio is out, so the next progress reading describes something this
+            // phone can actually hear - let it anchor the bar, and republish now so
+            // the held position starts running without waiting for that reading.
+            onAudible = {
+                awaitingAudibleSinceUs = 0L
+                // Re-stamp before letting it run. The held anchor describes an instant
+                // now a whole warm-up in the past, so projecting from it unchanged
+                // would jump the bar forward by exactly the gap the hold just hid.
+                progressAnchor = progressAnchor?.copy(atLocalUs = clockNowUs())
+                republishPosition()
+            },
         ).also {
             // Read once, at connect time: switching mid-connection would orphan
             // whatever the old output was doing mid-stream.
@@ -663,6 +674,10 @@ class Playback(private val app: Context) {
                 // playhead backwards on the same track — Music Assistant restarts the
                 // queue to seek. Open the window that lets the next reading do it.
                 acceptRewindUntilUs = c.clock.nowUs() + REWIND_GRACE_US
+                // Unconditional: every stream/start rebuilds the media source and so
+                // always passes through BUFFERING before it is heard. Cleared by the
+                // engine's onAudible the moment this stream makes a sound.
+                awaitingAudibleSinceUs = c.clock.nowUs()
                 val kind = streamKind
                 scope.launch {
                     requestAudioFocus(kind)
@@ -860,6 +875,31 @@ class Playback(private val app: Context) {
     @Volatile private var acceptRewindUntilUs: Long = 0L
 
     /**
+     * [ClockSync.nowUs] the current stream started at while its audio is still
+     * inaudible; 0 once it is out, or when it never went quiet.
+     *
+     * `stream/start` says Music Assistant has begun sending, not that anything can be
+     * heard - the decoder and audio track take over a second to warm up on a cold
+     * start, measured on-device. Progress readings arriving in that gap describe the
+     * server's stream, which is already running, so anchoring on them ran the bar
+     * forward across our own warm-up; then Music Assistant switched to reporting this
+     * player's real position and the bar snapped back to the start. That is the
+     * "it counts up, then jumps back to the beginning" glitch. Readings are held until
+     * audio is actually out, so the first one to anchor is one this phone can hear.
+     */
+    @Volatile private var awaitingAudibleSinceUs: Long = 0L
+
+    /**
+     * Is a stream started but not yet audible?
+     *
+     * Bounded by [SendspinPlaybackSupport.PlayheadGate.AUDIBLE_WAIT_BUDGET_US] so an
+     * engine that never reports itself playing costs a brief freeze rather than a bar
+     * stuck for the whole track.
+     */
+    private fun awaitingAudible(nowUs: Long): Boolean =
+        SendspinPlaybackSupport.PlayheadGate.awaitingAudible(awaitingAudibleSinceUs, nowUs)
+
+    /**
      * Take a `server/state` progress reading, dated by the server's own clock.
      *
      * `metadata.timestamp` is in server time, so [ClockSync.serverTimeToLocal] converts
@@ -886,10 +926,32 @@ class Playback(private val app: Context) {
     private fun anchorProgress(c: SendspinClient, np: com.engabd.sendpin.protocol.NowPlaying?) {
         val nowUs = c.clock.nowUs()
         val trackKey = np?.let { "${it.title}|${it.artist}" }
-        if (trackKey != anchoredTrackKey) {
+        val newTrack = trackKey != anchoredTrackKey
+        if (newTrack) {
             anchoredTrackKey = trackKey
             trackSettleUntilUs = nowUs + TRACK_TRANSITION_SETTLE_US
         } else if (nowUs < trackSettleUntilUs) {
+            return
+        }
+        if (awaitingAudible(nowUs)) {
+            // A new track with no audio out yet is at its start, whatever the server's
+            // queue clock has already run up to - and showing that beats showing the
+            // outgoing track's position until the first frame lands.
+            //
+            // Anchored at zero rather than left without an anchor: the bar has to have
+            // something to run from the instant audio arrives, and the next
+            // `server/state` can be seconds behind it. Dropping the anchor here left
+            // the bar sitting at 0:00 after the music had started, which is a worse lie
+            // than the jump this whole gate exists to remove.
+            if (newTrack) {
+                progressAnchor = ProgressProjection.Anchor(
+                    positionMs = 0L,
+                    atLocalUs = nowUs,
+                    speedMilli = np?.speedMilli ?: ProgressProjection.NORMAL_SPEED_MILLI,
+                    durationMs = np?.durationMs ?: 0L,
+                )
+                _positionMs.value = 0
+            }
             return
         }
         val position = np?.progressMs
@@ -962,8 +1024,15 @@ class Playback(private val app: Context) {
     /** Publish the anchor projected to now — see [ProgressProjection]. */
     private fun republishPosition() {
         val a = progressAnchor
-        _positionMs.value =
-            if (a == null) 0L else ProgressProjection.project(a, clockNowUs(), _isPlaying.value)
+        if (a == null) {
+            _positionMs.value = 0L
+            return
+        }
+        val nowUs = clockNowUs()
+        // `playing` false holds at the anchor rather than running on, which is exactly
+        // what a stream that has started but is not audible yet needs.
+        val running = _isPlaying.value && !awaitingAudible(nowUs)
+        _positionMs.value = ProgressProjection.project(a, nowUs, running)
     }
 
     // The same clock base the sync filter runs on, so the fallback and the real

@@ -89,6 +89,39 @@ object SendspinPlaybackSupport {
     }
 
     /**
+     * Whether the playhead may run yet.
+     *
+     * `stream/start` says Music Assistant has begun sending; it does not say anything
+     * can be heard. Decoder and audio-track warm-up measured over 1.6 s on-device
+     * after a skip, and Music Assistant's progress readings keep running through it -
+     * so anchoring on them ran the bar forward across our own warm-up, and when the
+     * server switched to reporting this player's real position it snapped back to the
+     * start. Holding the playhead until audio is actually out replaces "counts up for
+     * a second, then jumps back to the beginning" with one clean start.
+     *
+     * Pure, like [HeadGate], because `Playback` is welded to a live WebSocket.
+     */
+    object PlayheadGate {
+        /**
+         * How long the playhead waits for a started stream to become audible.
+         *
+         * Comfortably over the ~1.7 s warm-up measured on-device, and short enough
+         * that an engine which never reports itself playing costs a brief freeze
+         * rather than a bar stuck for the whole track.
+         */
+        const val AUDIBLE_WAIT_BUDGET_US = 5_000_000L
+
+        /**
+         * Is a stream that started at [sinceUs] still waiting to be heard at [nowUs]?
+         *
+         * [sinceUs] 0 means nothing is being waited on: no stream is starting, or the
+         * one that was has already been heard.
+         */
+        fun awaitingAudible(sinceUs: Long, nowUs: Long): Boolean =
+            sinceUs != 0L && nowUs - sinceUs < AUDIBLE_WAIT_BUDGET_US
+    }
+
+    /**
      * What to do with the frame at the head of a stream.
      *
      * Split out as a pure function because it was the whole of the fix for tracks
