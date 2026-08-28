@@ -35,8 +35,9 @@ class PlayerPositionTrackerTest {
     @Test
     fun `scales the projection by playback speed`() {
         tracker.setAnchor(q, elapsedMs = 0, capturedAtMs = now, isPlaying = true, durationMs = 300_000, speed = 1.5f)
-        now += 10_000
-        assertEquals(15_000L, tracker.effectiveMs(q))
+        now += 2_000
+        // 2 s of wall time × 1.5 = 3 s of media time (well within the projection cap).
+        assertEquals(3_000L, tracker.effectiveMs(q))
     }
 
     @Test
@@ -54,8 +55,10 @@ class PlayerPositionTrackerTest {
 
     @Test
     fun `caps at the duration and reports the end`() {
-        tracker.setAnchor(q, elapsedMs = 100_000, capturedAtMs = now, isPlaying = true, durationMs = 120_000)
-        now += 60_000
+        // Anchor near the end; a small projection reaches the duration cap.
+        tracker.setAnchor(q, elapsedMs = 118_000, capturedAtMs = now, isPlaying = true, durationMs = 120_000)
+        now += 5_000
+        // 118 s + 5 s projection = 123 s, clamped to the 120 s duration.
         assertEquals(120_000L, tracker.effectiveMs(q))
         assertTrue(tracker.isAtEnd(q))
     }
