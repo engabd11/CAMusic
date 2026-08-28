@@ -285,7 +285,7 @@ class SendspinNativeEngine(
         if (streamId == 0L || streamId != streamIds.get()) return false
         if (!drainSignalled) return false
         // The native ring has drained and no frames remain to decode.
-        return frameQueue.isEmpty && nativeOutput.bufferedFrames() == 0L
+        return frameQueue.isEmpty() && nativeOutput.bufferedFrames() == 0L
     }
 
     override fun start(format: StreamStartPlayerInfo) {
