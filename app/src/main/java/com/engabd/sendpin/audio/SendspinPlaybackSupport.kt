@@ -119,6 +119,32 @@ object SendspinPlaybackSupport {
          */
         fun awaitingAudible(sinceUs: Long, nowUs: Long): Boolean =
             sinceUs != 0L && nowUs - sinceUs < AUDIBLE_WAIT_BUDGET_US
+
+        /**
+         * How far past a track's end a progress reading may land and still be believed.
+         *
+         * Covers rounding and the scheduling lead; anything beyond it is not this
+         * track's playhead.
+         */
+        const val PROGRESS_SLACK_MS = 2_000L
+
+        /**
+         * Does [positionMs] plausibly describe a track of [durationMs]?
+         *
+         * Music Assistant has been observed sending a `server/state` whose
+         * `track_progress` sits far past `track_duration` - 457044 ms against a
+         * 252000 ms track, across a pause, confirmed against the server's own
+         * `player_queues` view of the same item. The projection *clamps* an over-long
+         * anchor to the duration, so believing it pins the bar at the end of the track
+         * until the next honest reading arrives. Keeping the existing projection is
+         * strictly better: at worst slightly stale, rather than confidently wrong at
+         * the far end of the bar.
+         *
+         * [durationMs] `<= 0` means the length is unknown, and then any position is as
+         * plausible as any other.
+         */
+        fun describesTrack(positionMs: Long, durationMs: Long): Boolean =
+            durationMs <= 0L || positionMs <= durationMs + PROGRESS_SLACK_MS
     }
 
     /**

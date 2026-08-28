@@ -68,3 +68,37 @@ class PlayheadGateTest {
         )
     }
 }
+
+/**
+ * Rejecting a `server/state` progress reading that cannot be this track's playhead.
+ *
+ * Music Assistant was observed sending `track_progress` far past `track_duration`
+ * (457044 ms against a 252000 ms track, confirmed against the server's own
+ * `player_queues` view of the same item). [ProgressProjection] *clamps* an over-long
+ * anchor to the duration, so believing one pins the bar at the end of the track until
+ * the next honest reading.
+ */
+class ProgressPlausibilityTest {
+
+    @Test
+    fun `a reading past the end of the track is not a playhead`() {
+        assertFalse(PlayheadGate.describesTrack(positionMs = 457_044L, durationMs = 252_000L))
+    }
+
+    @Test
+    fun `an ordinary reading is`() {
+        assertTrue(PlayheadGate.describesTrack(positionMs = 120_000L, durationMs = 252_000L))
+    }
+
+    @Test
+    fun `the very end of a track still counts`() {
+        // Rounding and the scheduling lead can put a legitimate reading just past the
+        // duration; only a reading well beyond it is nonsense.
+        assertTrue(PlayheadGate.describesTrack(positionMs = 252_500L, durationMs = 252_000L))
+    }
+
+    @Test
+    fun `an unknown duration rules nothing out`() {
+        assertTrue(PlayheadGate.describesTrack(positionMs = 999_999L, durationMs = 0L))
+    }
+}

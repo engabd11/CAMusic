@@ -991,10 +991,26 @@ class Playback(private val app: Context) {
             _positionMs.value = 0
             return
         }
+        // Past the end of the track this reading claims to describe: not a playhead.
+        // See [SendspinPlaybackSupport.PlayheadGate.describesTrack].
+        if (!SendspinPlaybackSupport.PlayheadGate.describesTrack(position, np.durationMs ?: 0L)) {
+            return
+        }
         val stampedLocalUs = np.progressAtServerUs
             ?.takeIf { it > 0L && c.clock.isSynced() }
             ?.let { c.clock.serverTimeToLocal(it) }
             ?.takeIf { kotlin.math.abs(nowUs - it) <= MAX_ANCHOR_AGE_US }
+            // ...and no further into the past than we are willing to project forward.
+            // The stamp is what decides how much elapsed time gets *added* to the
+            // reading, so a stale one inflates the playhead by exactly its own age:
+            // a reading of 8495 ms stamped 7.4 s ago rendered as 15860 ms, jumping the
+            // bar ten seconds in a single message, and the next pause snapped it back
+            // to the raw 8495. Music Assistant recomputes a queue's elapsed time on
+            // its own cadence and stamps the *message*, so readings this old are
+            // routine rather than exceptional. Past the bound, fall back to dating the
+            // reading "now" (below) - which is what this did unconditionally before
+            // any of it was dated, so it is no worse than the old behaviour.
+            ?.takeIf { nowUs - it <= MAX_PROJECTED_LEAD_US }
         val candidate = ProgressProjection.Anchor(
             positionMs = position,
             atLocalUs = stampedLocalUs ?: nowUs,
@@ -1424,6 +1440,18 @@ class Playback(private val app: Context) {
          * arrival time is the safer anchor.
          */
         const val MAX_ANCHOR_AGE_US = 30_000_000L
+
+        /**
+         * How far into the past a reading's own timestamp may sit and still be
+         * projected forward from.
+         *
+         * Deliberately far tighter than [MAX_ANCHOR_AGE_US], which only asks whether
+         * the server is speaking our clock at all. This asks a different question:
+         * how much invented elapsed time are we willing to add to a reading? Every
+         * microsecond of staleness becomes playhead, so a couple of seconds is the
+         * most that can be wrong without being visible.
+         */
+        const val MAX_PROJECTED_LEAD_US = 2_000_000L
 
         /** How long a same-track reading is held after a detected track boundary. */
         const val TRACK_TRANSITION_SETTLE_US = 600_000L
