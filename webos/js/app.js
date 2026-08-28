@@ -184,11 +184,10 @@
         async getArtist(id) {
             const r = await this._api('getArtist.view', `id=${id}`);
             const artist = r.artist;
-            const albums = await this._api('getArtist.view', `id=${id}`);
             return {
                 id: artist.id,
                 name: artist.name,
-                albums: (albums.artist?.album || []).map(a => ({
+                albums: (artist.album || []).map(a => ({
                     id: a.id,
                     name: a.name,
                     coverArt: a.coverArt,
@@ -536,7 +535,7 @@
 
         switchTab(tab) {
             state.activeTab = tab;
-            // Update tab focus
+            // Clear all data-focused attributes on tabs first
             document.querySelectorAll('.nav-tab').forEach(t => {
                 t.dataset.focused = (t.dataset.tab === tab) ? 'true' : 'false';
             });
@@ -549,6 +548,14 @@
 
         _setupKeyboard() {
             document.addEventListener('keydown', (e) => {
+                // If the focused element is a text input, only handle BACK and ENTER
+                // (arrow keys are for D-pad navigation, not text editing)
+                const activeEl = document.activeElement;
+                if (activeEl && (activeEl.tagName === 'INPUT' && activeEl.type === 'text') &&
+                    e.keyCode !== KEYS.BACK && e.keyCode !== KEYS.ENTER) {
+                    return; // Let the input handle the key
+                }
+
                 switch (e.keyCode) {
                     case KEYS.BACK:
                         this._handleBack();
@@ -580,11 +587,11 @@
         },
 
         _handleBack() {
-            // If in album detail, go back to library
+            // If in album detail, restore the library shelves
             if (state.albumDetail) {
                 state.albumDetail = null;
+                this._restoreLibraryView();
                 this.switchTab('library');
-                this.renderLibrary();
                 return;
             }
             // If on a non-library tab, go to library
@@ -660,8 +667,17 @@
             } else if (el.classList.contains('album-card')) {
                 this.showAlbum(el.dataset.albumId, el.dataset.serverType);
             } else if (el.classList.contains('track-row')) {
-                const idx = parseInt(el.dataset.queueIndex);
-                App.playTrackAt(idx);
+                if (el.dataset.queueIndex !== undefined) {
+                    const idx = parseInt(el.dataset.queueIndex);
+                    App.playTrackAt(idx);
+                } else if (el.dataset.albumId) {
+                    this.showAlbum(el.dataset.albumId, el.dataset.serverType || 'subsonic');
+                } else if (el.dataset.songId) {
+                    // Search result song — play as single track
+                    if (state.subsonicClient) {
+                        App.playQueue([{id: el.dataset.songId, title: el.querySelector('.track-title')?.textContent || '', type: 'song'}], 0);
+                    }
+                }
             } else if (el.classList.contains('server-card')) {
                 App.activateServer(el.dataset.serverId);
             }
@@ -763,6 +779,28 @@
             } catch (e) {
                 console.error('Failed to load album:', e);
             }
+        },
+
+        _restoreLibraryView() {
+            // Rebuild the original library shelves HTML that showAlbum overwrote
+            const view = document.getElementById('view-library');
+            view.innerHTML = `
+                <div class="library-content">
+                    <div class="shelf" id="recentlyAdded">
+                        <h2 class="shelf-title">Recently Added</h2>
+                        <div class="shelf-items" id="recentlyAddedItems"></div>
+                    </div>
+                    <div class="shelf" id="recentlyPlayed">
+                        <h2 class="shelf-title">Recently Played</h2>
+                        <div class="shelf-items" id="recentlyPlayedItems"></div>
+                    </div>
+                    <div class="shelf" id="allAlbums">
+                        <h2 class="shelf-title">All Albums</h2>
+                        <div class="shelf-items" id="allAlbumsItems"></div>
+                    </div>
+                </div>
+            `;
+            this.renderLibrary();
         },
 
         // ── Search ──────────────────────────────────────────────
@@ -881,6 +919,13 @@
                 } catch (e) {
                     document.getElementById('hueBridgeStatus').textContent = 'Failed: ' + e.message;
                 }
+            });
+
+            document.getElementById('hueGroupBtn').addEventListener('click', () => {
+                // Cycle focus to the group ID input field for editing
+                const gidInput = document.getElementById('hueGroupId');
+                gidInput.focus();
+                gidInput.select();
             });
 
             document.getElementById('hueToggleBtn').addEventListener('click', async () => {
@@ -1106,7 +1151,20 @@
             const track = state.queue[state.queueIndex];
             state.currentTrack = track;
 
-            if (state.subsonicClient) {
+            if (state.activeServer && state.activeServer.kind === 'music_assistant') {
+                // MA: tell the server to play this track on its own player
+                if (state.maClient) {
+                    // For MA, we need a player ID. Use the configured target player.
+                    // The web app controls MA's server-side playback, not local audio.
+                    const playerId = state.activeServer.options?.targetPlayer || '';
+                    if (playerId) {
+                        const uri = `musicassistant://library/track/${track.id}`;
+                        state.maClient.playMedia(playerId, uri).catch(e => console.error('MA play failed:', e));
+                    } else {
+                        console.warn('No MA target player configured — select a player in Settings');
+                    }
+                }
+            } else if (state.subsonicClient) {
                 const url = state.subsonicClient.streamUrl(track.id);
                 state.audio.play(url);
             }

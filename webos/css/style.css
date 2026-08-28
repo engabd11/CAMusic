@@ -610,6 +610,66 @@ html, body {
     transform: scale(1.1);
 }
 
+/* ── Album detail ────────────────────────────────────────────── */
+
+.album-detail {
+    max-width: 1600px;
+    margin: 0 auto;
+}
+
+.album-header {
+    display: flex;
+    gap: 32px;
+    margin-bottom: 32px;
+}
+
+.album-detail-art {
+    width: 200px;
+    height: 200px;
+    border-radius: var(--radius);
+    object-fit: cover;
+    flex-shrink: 0;
+    background: var(--surface-dim);
+}
+
+.album-detail-info {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
+.album-detail-title {
+    font-size: 48px;
+    font-weight: 700;
+}
+
+.album-detail-artist {
+    font-size: 32px;
+    font-weight: 500;
+    color: var(--on-surface-dim);
+}
+
+.play-all-btn {
+    background: var(--primary);
+    color: var(--on-surface);
+    font-size: 28px;
+    font-weight: 600;
+    padding: 16px 48px;
+    border: none;
+    border-radius: 24px;
+    cursor: pointer;
+    transition: all 200ms ease;
+    margin-top: 16px;
+    align-self: flex-start;
+}
+
+.play-all-btn.spotlight-focused {
+    outline: var(--focus-ring);
+    outline-offset: 2px;
+    transform: scale(1.05);
+}
+
 /* ── Empty / loading states ──────────────────────────────────── */
 
 .empty-state {
