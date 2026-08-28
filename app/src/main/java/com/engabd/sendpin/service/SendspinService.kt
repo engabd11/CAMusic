@@ -516,7 +516,7 @@ class SendspinService : Service() {
             // `elapsed_time_last_updated` via the tracker in [MaNowPlaying],
             // whether this phone is the player or a remote speaker is.
             // The Sendspin path no longer sources position independently.
-            combine(shade, ma.positionMs) { s, remotePos -> remotePos }.collect { pos ->
+            ma.positionMs.collect { pos ->
                 shadePlayer?.let { it.latestPositionMs = pos; it.refresh() }
             }
         }

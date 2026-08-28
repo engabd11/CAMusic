@@ -294,19 +294,15 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     private fun positionKey(): String = streamQueueId()
 
     /**
-     * True when this phone's own Sendspin stream is the best answer about the playhead.
+     * True when this phone's own Sendspin stream is the best answer about *when a
+     * change landed* — not about where the playhead is.
      *
-     * When we *are* the player, `server/state` is pushed on every change and carries
-     * the server-clock instant its progress reading was true at. Music Assistant's
-     * `elapsed_time` / `elapsed_time_last_updated` is the authoritative position on
-     * both paths now — the tracker anchors to the server's capture time, never "now",
-     * making re-anchoring idempotent (massdroid's model).
-     *
-     * That gap is what the bar was showing. A new track was detected on a poll and
-     * anchored at zero *at detection time* — but the server had already been playing
-     * for however long the poll took to notice, so the bar ran ahead of the music and
-     * the next poll dragged it back to around a second. Hence "it moves a couple of
-     * seconds and then goes back to 00:01".
+     * Position comes from Music Assistant's `elapsed_time` /
+     * `elapsed_time_last_updated` on both paths now, via [PlayerPositionTracker]. What
+     * being the player still buys is the audible edge: our own decoder can say the
+     * instant a new stream starts making a sound, which a poll cannot. So this gates
+     * *who releases an optimistic freeze* — the [Playback.audibleSeq] collector when
+     * we are the player, the poll's own corroboration when a speaker is.
      */
     private fun sendspinAuthoritative(): Boolean =
         !isLocal && sendspinPlaying.value && targetIsThisPhone()
@@ -709,22 +705,21 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
 
         val speed = q?.playbackSpeed ?: 1f
 
-        // Translate the server-side capture timestamp (`elapsed_time_last_updated`,
-        // a Unix epoch in seconds) to local wall-clock ms — the same clock domain the
-        // tracker uses. Falls back to "now" when the server omits the field. Clamped
-        // to "now" when ahead (a server clock slightly ahead of the phone would
-        // otherwise produce a negative projection delta, freezing the bar).
-        val nowMs = System.currentTimeMillis()
+        // The server's own capture timestamp (`elapsed_time_last_updated`, a Unix
+        // epoch in seconds) as local wall-clock ms, handed over raw: the tracker
+        // decides whether it is fresh enough to project from, and null means the
+        // server said nothing. Only taken when `elapsed` came from the queue too —
+        // the stamp describes the queue's reading, so pairing it with the player's
+        // fallback would anchor one number on another's timestamp.
         val capturedAtMs = q?.elapsedTimeLastUpdated
+            ?.takeIf { q.elapsedMs != null }
             ?.let { (it * 1000).toLong() }
-            ?.let { if (it > nowMs) nowMs else it }
-            ?: nowMs
 
         // A track change is news no matter what the clock says: anchor at zero.
         if (trackChanged) {
             positions.setAnchor(
                 key, 0L,
-                capturedAtMs = nowMs,
+                capturedAtMs = null,
                 isPlaying = isPlaying, durationMs = duration, speed = speed,
             )
             return
@@ -735,7 +730,6 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             capturedAtMs = capturedAtMs,
             isPlaying = isPlaying, durationMs = duration, speed = speed,
         )
-        positions.setPlaying(key, isPlaying)
     }
 
     /**
@@ -1771,12 +1765,14 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         // than a guess made from polled state. A remote speaker gives us no such signal
         // and still relies on the poll corroborating the skip (see [anchorFromServer]).
         //
-        // Deliberately [Playback.playheadRunning] and not `sendspinPlaying`: the latter
-        // goes true on `stream/start`, over a second before the decoder and audio track
-        // have warmed up. Releasing the freeze there let the *outgoing* track's playhead
+        // Deliberately [Playback.audibleSeq] and not `sendspinPlaying`: the latter goes
+        // true on `stream/start`, over a second before the decoder and audio track have
+        // warmed up. Releasing the freeze there let the *outgoing* track's playhead
         // through for that second - the bar jumped back up to where the previous track
         // had reached, ran on, then dropped to zero when the new stream finally
         // anchored, which is the "jumps forward and backwards" at the start of a track.
+        // And an edge rather than a level, because when the skip is asked for the old
+        // stream is still audible: only "a *new* stream has been heard" answers it.
         viewModelScope.launch {
             playback.audibleSeq.collect { seq ->
                 if (isLocal) return@collect

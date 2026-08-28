@@ -197,14 +197,25 @@ Other measurement notes:
 
 ---
 
-## 6. Light Sync is not affected — verified, do not re-investigate
+## 6. Light Sync — mostly unaffected, with one path that is
 
 Direct-bridge sync on this phone runs off `AudioAnalysisTap` / `AudioLead`
-(ExoPlayer's sink), never the playhead. The only light path that reads a position
-is `ScanFrameSource` (`positionMs - offsetMs`), and it is remote-only
-(`if (now.isSelf) reset()`) and reads app-scoped `MaNowPlaying`, **not**
-`NowPlayingViewModel`. `DirectLightSync`'s `isPlaying` gate uses
+(ExoPlayer's sink), never the playhead. `DirectLightSync`'s `isPlaying` gate uses
 `Playback.isPlaying`, whose semantics must not change.
+
+**But one path does read the playhead, and this rewrite is under it.**
+`ScanFrameSource` (`positionMs - offsetMs`) is remote-only
+(`if (now.isSelf) reset()`) and reads app-scoped `MaNowPlaying` rather than
+`NowPlayingViewModel` — which is a different claim from "not affected", because
+`MaNowPlaying.positionMs` is exactly what this rewrite re-plumbs. The original
+"verified unaffected" note (and the PR body repeating it) checked the wrong thing.
+
+It matters because `PositionSlew.snapErrorS` is 0.75 s: anything that makes the
+anchor stall and then catch up in one step is classified as a *seek* and hard-snaps
+the beat grid, which is the glitch `PositionSlew` exists to prevent. That is the
+failure mode of capping the projection rather than the anchor — see
+`PlayerPositionTracker.MAX_PROJECTION_MS`. **Verify on-device with Light Sync
+running on a remote speaker**, not just with the seek bar.
 
 ---
 

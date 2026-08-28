@@ -103,11 +103,11 @@ class Playback(private val app: Context) {
     private val _groupUpdates = MutableSharedFlow<SendspinIncoming.GroupUpdate>(extraBufferCapacity = 16)
     val groupUpdates: SharedFlow<SendspinIncoming.GroupUpdate> = _groupUpdates.asSharedFlow()
     private val _connectionLog = MutableStateFlow<List<String>>(emptyList()); val connectionLog: StateFlow<List<String>> = _connectionLog
-    // Exposed as flows so the media notification's seek bar tracks the track instead
-    // of only refreshing when play/pause flips.
-    private val _positionMs = MutableStateFlow(0L); val positionMs: StateFlow<Long> = _positionMs
+    // Exposed as a flow so the media notification's duration tracks the track instead
+    // of only refreshing when play/pause flips. There is deliberately no position here:
+    // it comes from MA's `elapsed_time` / `elapsed_time_last_updated` via
+    // [com.engabd.sendpin.ui.viewmodel.PlayerPositionTracker] on every path.
     private val _durationMs = MutableStateFlow(0L); val durationMs: StateFlow<Long> = _durationMs
-    val playbackPositionMs: Long get() = _positionMs.value
     val playbackDurationMs: Long get() = _durationMs.value
 
     val savedUsername: Flow<String> get() = settings.maUsername
@@ -547,15 +547,10 @@ class Playback(private val app: Context) {
             // MaRepository.playMedia uses, and its own status text already
             // surfaces through the c.statusText collector below.
             onFatalError = { c.reconnectNow() },
-            // Audio is out, so the playhead may run. Signal the edge so the UI's
-            // optimistic freeze releases — the outgoing track was still audible for
-            // over a second after a skip, so a level check cannot express "the stream
-            // I am waiting for has started".
-            onAudible = {
-                awaitingAudibleSinceUs = 0L
-                _audibleSeq.value += 1
-                _playheadRunning.value = _isPlaying.value
-            },
+            // Audio is out. Signal the edge so the UI's optimistic freeze releases —
+            // the outgoing track was still audible for over a second after a skip, so a
+            // level check cannot express "the stream I am waiting for has started".
+            onAudible = { _audibleSeq.value += 1 },
         ).also {
             // Read once, at connect time: switching mid-connection would orphan
             // whatever the old output was doing mid-stream.
@@ -646,13 +641,6 @@ class Playback(private val app: Context) {
                 coldEngineJob?.cancel(); coldEngineJob = null
                 eng.start(format)
                 idleJob?.cancel(); idleJob = null
-                // Unconditional: every stream/start rebuilds the media source and so
-                // always passes through BUFFERING before it is heard. Cleared by the
-                // engine's onAudible the moment this stream makes a sound.
-                awaitingAudibleSinceUs = c.clock.nowUs()
-                // The playhead is held until audio is actually out — stream/start
-                // precedes sound by over 1.6 s (decoder + audio-track warm-up).
-                _playheadRunning.value = false
                 val kind = streamKind
                 scope.launch {
                     requestAudioFocus(kind)
@@ -811,29 +799,14 @@ class Playback(private val app: Context) {
         }
     }
 
-    // --- playhead ----------------------------------------------------------
+    // --- audible edge -------------------------------------------------------
     //
-    // The Sendspin server pushes `server/state` on every change and stamps it with the
-    // server-clock instant it was true at. That is a far better basis for the position
-    // bar than Music Assistant's five-second poll: it needs no polling, it arrives the
-    // moment anything happens, and — because the timestamp shares the audio frames'
-    // time domain — the clock filter can say exactly how old the reading is instead of
-    // the app assuming it describes the moment it was parsed.
-    //
-    // Assuming that is what made the bar jitter: a reading a second old was rendered as
-    // "now", so the bar ran ahead, and the next message pulled it back.
-
-    @Volatile private var awaitingAudibleSinceUs: Long = 0L
-
-    /**
-     * Is a stream started but not yet audible?
-     *
-     * Bounded by [SendspinPlaybackSupport.PlayheadGate.AUDIBLE_WAIT_BUDGET_US] so an
-     * engine that never reports itself playing costs a brief freeze rather than a bar
-     * stuck for the whole track.
-     */
-    private fun awaitingAudible(nowUs: Long): Boolean =
-        SendspinPlaybackSupport.PlayheadGate.awaitingAudible(awaitingAudibleSinceUs, nowUs)
+    // The playhead itself is not here. It lives in `PlayerPositionTracker`, off Music
+    // Assistant's `elapsed_time` / `elapsed_time_last_updated`, on every path. What
+    // this side still owns is the one thing MA cannot see: the instant *this phone's*
+    // stream actually starts making a sound. `stream/start` precedes that by over
+    // 1.6 s (decoder and audio-track warm-up, measured on-device), and for that second
+    // the outgoing track is still coming out of the speaker.
 
     /**
      * Counts streams that have actually been heard.
@@ -845,18 +818,6 @@ class Playback(private val app: Context) {
      */
     private val _audibleSeq = MutableStateFlow(0L)
     val audibleSeq: StateFlow<Long> = _audibleSeq.asStateFlow()
-
-    /**
-     * Is the playhead actually advancing right now?
-     *
-     * `_isPlaying` goes true on `stream/start`, over a second before any sound. Anything
-     * that projects the position forward on its own — `PlayerPositionTracker` does,
-     * between readings — has to be told the difference, or it runs the bar across the
-     * warm-up that [awaitingAudible] exists to hold it over.
-     */
-    private val _playheadRunning = MutableStateFlow(false)
-    val playheadRunning: StateFlow<Boolean> = _playheadRunning.asStateFlow()
-    val isPlayheadRunning: Boolean get() = _playheadRunning.value
 
     /**
      * Bring the player socket back now if it is down — see
@@ -1166,7 +1127,6 @@ class Playback(private val app: Context) {
         _currentFormat.value = "-"
         _streamQuality.value = null
         _isPlaying.value = false
-        _positionMs.value = 0
         _durationMs.value = 0
         if (stopService) {
             SendspinService.stopMedia(app)

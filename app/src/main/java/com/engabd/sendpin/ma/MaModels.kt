@@ -361,11 +361,12 @@ data class MaQueue(
     /**
      * Unix epoch **seconds** when the server last recomputed [elapsedMs].
      *
-     * The staleness gate. For a remote speaker MA reports whatever it last scraped
-     * from that provider, so `elapsed_time` on its own says nothing about how old it
-     * is — two polls a second apart can carry the same reading. Comparing this stamp
-     * is what tells a fresh reading from a repeat, and lets an out-of-order response
-     * be dropped instead of dragging the bar back to a finished track.
+     * Two jobs, both in [com.engabd.sendpin.ui.viewmodel.PlayerPositionTracker]: it
+     * is what the playhead is projected forward *from*, and it is how a fresh reading
+     * is told from the server restating itself. For a remote speaker MA reports
+     * whatever it last scraped from that provider, so `elapsed_time` on its own says
+     * nothing about how old it is — two polls a second apart can carry the same
+     * reading, and re-anchoring on the repeat would drag the bar back.
      *
      * Null on a server that doesn't send it; callers must treat null as "can't tell"
      * rather than "stale", or a missing field would silently stop all updates.

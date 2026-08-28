@@ -124,7 +124,7 @@ class MaNowPlaying(private val app: Context) {
                 artworkUrl = np.imageUrl,
                 durationMs = np.durationMs ?: 0L,
                 isPlaying = p.isPlaying,
-                isSelf = id == myPlayerId,
+                isSelf = p.isSelfOrActiveOutput(myPlayerId),
                 volumeLevel = p.volumeLevel,
                 // MA does not surface a separate mute flag on the player; volume 0 is
                 // what the session needs to render a muted icon, and unmuting is a
@@ -260,12 +260,35 @@ class MaNowPlaying(private val app: Context) {
         // When this phone is the player, audio starting to flow on it is the strongest
         // confirmation available that a seek or skip actually landed — better than any
         // inference from polled state, and it arrives sooner.
+        //
+        // The *edge*, not the level: `isPlaying` is already true when a skip is asked
+        // for, because the outgoing track keeps coming out of the speaker for over a
+        // second afterwards. Releasing on that hands the bar straight back to the old
+        // track's playhead. Mirrors `NowPlayingViewModel`, which drives the on-screen
+        // bar from the same signal.
         scope.launch {
-            SendpinApp.instance.playback.isPlaying.collect { playing ->
+            SendpinApp.instance.playback.audibleSeq.collect { seq ->
+                val armedAt = freezeAtAudibleSeq
+                if (armedAt < 0 || seq <= armedAt) return@collect
+                if (!targetIsThisPhone()) return@collect
                 val id = targetId()
-                if (playing && id == myPlayerId && positions.isFrozen(id)) releaseFreeze(id)
+                if (positions.isFrozen(id)) releaseFreeze(id)
             }
         }
+    }
+
+    /**
+     * Is the selected player this phone?
+     *
+     * Not a plain id comparison since Music Assistant 2.10: the target is the
+     * `universal_player` wrapper (`up…`) and [myPlayerId] is the protocol client it
+     * renders through, so the two are never equal. See [MaPlayer.isSelfOrActiveOutput].
+     */
+    private fun targetIsThisPhone(): Boolean {
+        val id = targetId()
+        if (id == myPlayerId) return true
+        return _players.value.firstOrNull { it.playerId == id }
+            ?.isSelfOrActiveOutput(myPlayerId) == true
     }
 
     // ── Optimistic freeze bookkeeping ────────────────────────────────────────
@@ -286,10 +309,20 @@ class MaNowPlaying(private val app: Context) {
     @Volatile private var pendingSkipFromTrack: String? = null
     /** Identity of the track last seen, for spotting a skip landing. */
     @Volatile private var lastTrackId: String? = null
+
+    /**
+     * [Playback.audibleSeq] as it was when the current freeze was armed.
+     *
+     * The freeze may only be released by a stream that became audible *after* it —
+     * see the collector in `init` for why a level cannot express that.
+     */
+    @Volatile private var freezeAtAudibleSeq: Long = -1L
+
     private fun freezeForSeek(playerId: String, target: Long) {
         pendingSeekMs = target
         pendingSkip = false
         pendingSkipFromTrack = null
+        freezeAtAudibleSeq = SendpinApp.instance.playback.audibleSeq.value
         positions.setOptimisticSeek(playerId, target, now.value?.durationMs)
         armFreezeWatchdog(playerId)
     }
@@ -298,6 +331,7 @@ class MaNowPlaying(private val app: Context) {
         pendingSeekMs = null
         pendingSkip = true
         pendingSkipFromTrack = lastTrackId
+        freezeAtAudibleSeq = SendpinApp.instance.playback.audibleSeq.value
         positions.setOptimisticTrackChange(playerId)
         armFreezeWatchdog(playerId)
     }
@@ -314,6 +348,7 @@ class MaNowPlaying(private val app: Context) {
         pendingSeekMs = null
         pendingSkip = false
         pendingSkipFromTrack = null
+        freezeAtAudibleSeq = -1L
         freezeWatchdog?.cancel(); freezeWatchdog = null
         positions.confirmPlaying(playerId)
     }
@@ -368,22 +403,21 @@ class MaNowPlaying(private val app: Context) {
 
         if (elapsed == null) return
 
-        // Translate the server-side capture timestamp (`elapsed_time_last_updated`,
-        // a Unix epoch in seconds) to local wall-clock ms — the same clock domain the
-        // tracker uses. Falls back to "now" when the server omits the field. Clamped
-        // to "now" when ahead (a server clock slightly ahead of the phone would
-        // otherwise produce a negative projection delta, freezing the bar).
-        val nowMs = System.currentTimeMillis()
+        // The server's own capture timestamp (`elapsed_time_last_updated`, a Unix
+        // epoch in seconds) as local wall-clock ms, handed over raw: the tracker
+        // decides whether it is fresh enough to project from, and null means the
+        // server said nothing. Only taken when `elapsed` came from the queue too —
+        // the stamp describes the queue's reading, so pairing it with the player's
+        // fallback would anchor one number on another's timestamp.
         val capturedAtMs = queue?.elapsedTimeLastUpdated
+            ?.takeIf { queue.elapsedMs != null }
             ?.let { (it * 1000).toLong() }
-            ?.let { if (it > nowMs) nowMs else it }
-            ?: nowMs
 
         if (trackChanged) {
             positions.setAnchor(
                 queueId = playerId,
                 elapsedMs = 0L,
-                capturedAtMs = nowMs,
+                capturedAtMs = null,
                 isPlaying = player.isPlaying,
                 durationMs = np?.durationMs,
                 speed = queue?.playbackSpeed,
@@ -399,7 +433,6 @@ class MaNowPlaying(private val app: Context) {
             durationMs = np?.durationMs,
             speed = queue?.playbackSpeed,
         )
-        positions.setPlaying(playerId, player.isPlaying)
     }
 
     // --- refresh ----------------------------------------------------------

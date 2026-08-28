@@ -32,46 +32,60 @@ import kotlinx.coroutines.isActive
  * 1. Anchor `(elapsed, capturedAt)`; never substitute "now" for `capturedAt`.
  * 2. Interpolate **only while playing**; frozen at `elapsed` otherwise. Never advance
  *    across paused time.
- * 3. **Cap how far a capture may be forward-projected.** MA freezes
- *    `elapsed_time_last_updated` while paused, so an event arriving after a long pause
- *    carries a capture stale by the whole pause. Beyond the cap, anchor the value as-is
- *    instead of projecting it.
- * 4. **Re-anchor the timestamp to "now" on the paused→play boundary**, so a stale
- *    capture cannot jump the position on resume.
+ * 3. **A capture too old to project from is anchored as-is**, at arrival time. MA
+ *    freezes `elapsed_time_last_updated` while paused, so an event landing after a
+ *    long pause carries a capture stale by the whole pause; projecting that would jump
+ *    the bar by the paused seconds. Past [MAX_PROJECTION_MS] the reading is taken at
+ *    face value and interpolation continues from *now* — the bar keeps moving, which
+ *    is the whole point of interpolating.
+ * 4. **Re-anchor to "now" across a play/pause transition**, so a capture frozen over
+ *    the pause cannot jump the position on resume.
  *
- * Time is the wall clock (`System.currentTimeMillis`), matching the domain of
- * `elapsed_time_last_updated` — MA's server reports it as a Unix epoch in seconds,
- * and the caller converts to local ms. A monotonic clock would avoid NTP jumps, but
- * the cap on forward projection limits the damage from a clock correction to at most
- * [MAX_PROJECTION_MS] of inflated progress — the same bound that handles paused-stale
- * captures. The wall clock is also the only clock the server timestamp can be
- * meaningfully compared to.
+ * Rules 3 and 4 both re-base the anchor, and re-basing on every poll would be
+ * non-idempotent all over again — a restated reading would drag the bar back to
+ * wherever it was last re-based. So a reading carrying a capture stamp this queue is
+ * already anchored on is discarded as *no news*: the anchor already running is the
+ * better answer, and leaving it alone is what stops sparse polls moving the bar. That
+ * one test stands in for the whole of the old guard machinery, and unlike those guards
+ * it asks a question with an answer — "has the server recomputed since we last
+ * looked?" — rather than guessing at intent.
+ *
+ * Time is the wall clock (`System.currentTimeMillis`), the only clock MA's
+ * `elapsed_time_last_updated` — a Unix epoch in seconds — can be compared to. There
+ * is deliberately no clock-offset estimation between phone and server: skew and NTP
+ * corrections simply make captures look stale, and rule 3 then anchors them at arrival
+ * time. A badly skewed clock costs the sub-second freshness of the server's stamp, not
+ * a working bar.
  */
 class PlayerPositionTracker(
-    /** Monotonic milliseconds. Injectable so the projection is testable off-device. */
+    /** Wall-clock milliseconds. Injectable so the projection is testable off-device. */
     private val nowMs: () -> Long = { System.currentTimeMillis() },
 ) {
 
     /** Why an anchor is refusing server updates. */
     enum class FreezeReason { SEEK, TRACK_CHANGE }
 
-    /**
-     * Max wall-clock gap we forward-project a server-captured elapsed time across.
-     *
-     * During live playback `(now - capturedAt)` is just WS latency (well under a second
-     * on LAN), so projecting it yields the true current position. But the MA server
-     * *freezes* `elapsed_time_last_updated` while paused, so a `QUEUE_UPDATED` that
-     * lands right after a long pause/background carries a capture stale by the whole
-     * pause duration — projecting that forward jumps the position ahead by the paused
-     * seconds (and can shoot past the track end, e.g. 4:04 on a 3:31 track). Beyond
-     * this cap the capture is treated as stale and the elapsed value is anchored as-is.
-     */
-
     /** One queue's playhead. */
     data class Anchor(
         val elapsedMs: Long,
-        /** The wall-clock instant [elapsedMs] was captured at — *server* capture time, not "now". */
+        /**
+         * The wall-clock instant interpolation runs from.
+         *
+         * The server's own capture time whenever that is close enough to project from,
+         * so re-deriving from the same reading lands on the same value; arrival time
+         * when it is not (see [PlayerPositionTracker.MAX_PROJECTION_MS]).
+         */
         val capturedAtMs: Long,
+        /**
+         * The raw `elapsed_time_last_updated` this anchor was built from, or null when
+         * the server sent none.
+         *
+         * Only ever compared, never projected from: it is how [PlayerPositionTracker.setAnchor]
+         * tells a fresh reading from the server restating itself. Null means "can't
+         * tell", which counts as news — a server that omits the field must not read as
+         * one that has stopped updating.
+         */
+        val serverStampMs: Long?,
         val isPlaying: Boolean,
         val durationMs: Long,
         /**
@@ -86,15 +100,15 @@ class PlayerPositionTracker(
         /**
          * Anchor plus speed-scaled time since it was taken, capped at the duration.
          *
-         * Interpolation runs only while playing and not frozen. The projection is
-         * capped at [PlayerPositionTracker.MAX_PROJECTION_MS] of wall-clock delta: a
-         * capture stale by a long pause would otherwise shoot the bar past the track
-         * end.
+         * Interpolation runs only while playing and not frozen, and is deliberately
+         * unbounded in time. [capturedAtMs] is already guaranteed recent by
+         * [PlayerPositionTracker.setAnchor], so there is nothing left here to cap —
+         * and capping *here* would stall the bar at `elapsed + cap` whenever the server
+         * has not recomputed lately, which for a remote speaker is most polls.
          */
         fun effectiveAt(now: Long): Long {
             if (!isPlaying || freezeReason != null) return clamp(elapsedMs)
-            val projectedDelta = ((now - capturedAtMs).coerceIn(0L, MAX_PROJECTION_MS) * speed).toLong()
-            return clamp(elapsedMs + projectedDelta)
+            return clamp(elapsedMs + ((now - capturedAtMs).coerceAtLeast(0L) * speed).toLong())
         }
 
         /** True once the projection has run out the track — the caller should re-poll. */
@@ -110,10 +124,22 @@ class PlayerPositionTracker(
      * A reading from the server.
      *
      * [capturedAtMs] is the server's own capture timestamp (`elapsed_time_last_updated`
-     * converted to the local monotonic clock), NOT "now". This is what makes
-     * re-anchoring idempotent: every reading re-derives the same continuous function of
-     * `(elapsed, capturedAt, now)`, so a repeated or sparse reading lands on the value
-     * already displayed. There is nothing to jump, and therefore nothing to filter.
+     * as local wall-clock ms), NOT "now", and null when the server sent none. Anchoring
+     * on it is what makes re-anchoring idempotent: the displayed value is a continuous
+     * function of `(elapsed, capturedAt, now)`, so a repeated or sparse reading lands on
+     * the value already displayed.
+     *
+     * Three things happen, in an order that matters:
+     *
+     * 1. A play/pause transition is applied first and on its own terms — snapshot the
+     *    projected position, re-base to now. MA freezes its capture stamp while paused,
+     *    so applying the reading first would jump the bar forward by the paused seconds
+     *    on resume.
+     * 2. A reading whose capture stamp this queue is already anchored on is *no news*,
+     *    and the running anchor is kept. Without this, steps 1 and 3 would re-base on
+     *    every poll and the bar would sawtooth.
+     * 3. Otherwise the reading is applied — anchored to its own capture time when that
+     *    is recent enough to project from, and to now when it is not.
      *
      * [isPlaying], [durationMs] and [speed] keep their current values when null, so an
      * event that only carries a new elapsed time doesn't wipe what a fuller poll
@@ -124,7 +150,7 @@ class PlayerPositionTracker(
     fun setAnchor(
         queueId: String,
         elapsedMs: Long,
-        capturedAtMs: Long,
+        capturedAtMs: Long?,
         isPlaying: Boolean? = null,
         durationMs: Long? = null,
         speed: Float? = null,
@@ -132,37 +158,41 @@ class PlayerPositionTracker(
         anchors.update { existing ->
             val current = existing[queueId]
             if (current?.freezeReason != null) return@update existing
+            val now = nowMs()
+            val playing = isPlaying ?: current?.isPlaying ?: false
+            val duration = durationMs ?: current?.durationMs ?: 0L
+            val rate = speed ?: current?.speed ?: 1f
+
+            // 1. Play/pause first: hold the bar where it had got to, and start the clock
+            //    again from here rather than from a capture taken before the pause.
+            val running = if (current != null && current.isPlaying != playing) {
+                current.copy(
+                    elapsedMs = current.effectiveAt(now),
+                    capturedAtMs = now,
+                    isPlaying = playing,
+                )
+            } else {
+                current
+            }
+
+            // 2. The server restating itself is not news. Let the projection carry on.
+            if (running != null && capturedAtMs != null && capturedAtMs == running.serverStampMs) {
+                val kept = running.copy(durationMs = duration, speed = rate)
+                return@update if (kept == current) existing else existing + (queueId to kept)
+            }
+
+            // 3. News. Project from the server's own capture time while it is close
+            //    enough to be worth having; otherwise take the reading at arrival time,
+            //    which also covers a server clock reading ahead of ours.
             existing + (
                 queueId to Anchor(
                     elapsedMs = elapsedMs,
-                    capturedAtMs = capturedAtMs,
-                    isPlaying = isPlaying ?: current?.isPlaying ?: false,
-                    durationMs = durationMs ?: current?.durationMs ?: 0L,
-                    speed = speed ?: current?.speed ?: 1f,
+                    capturedAtMs = capturedAtMs?.takeIf { now - it in 0..MAX_PROJECTION_MS } ?: now,
+                    serverStampMs = capturedAtMs,
+                    isPlaying = playing,
+                    durationMs = duration,
+                    speed = rate,
                     freezeReason = null,
-                )
-            )
-        }
-    }
-
-    /**
-     * A play/pause transition. Snapshots the projected position as the new anchor so
-     * neither the bar nor the media session sees a jump: pausing freezes it where it
-     * was, resuming carries on from there.
-     *
-     * On the paused→play boundary the capture timestamp is re-anchored to "now", so a
-     * stale capture (MA freezes `elapsed_time_last_updated` while paused) cannot jump
-     * the position forward by the pause duration on resume.
-     */
-    fun setPlaying(queueId: String, isPlaying: Boolean) {
-        anchors.update { existing ->
-            val current = existing[queueId] ?: return@update existing
-            if (current.isPlaying == isPlaying) return@update existing
-            existing + (
-                queueId to current.copy(
-                    elapsedMs = current.effectiveAt(nowMs()),
-                    capturedAtMs = nowMs(),
-                    isPlaying = isPlaying,
                 )
             )
         }
@@ -189,6 +219,9 @@ class PlayerPositionTracker(
                 queueId to Anchor(
                     elapsedMs = elapsedMs,
                     capturedAtMs = nowMs(),
+                    // Ours, not the server's, so whatever it says next counts as news
+                    // and can confirm or replace this.
+                    serverStampMs = null,
                     isPlaying = current?.isPlaying ?: false,
                     durationMs = durationMs ?: current?.durationMs ?: 0L,
                     speed = current?.speed ?: 1f,
@@ -267,17 +300,24 @@ class PlayerPositionTracker(
         const val TICK_MS = 250L
 
         /**
-         * Max wall-clock gap we forward-project a server-captured elapsed time across.
+         * How old a server capture may be and still be projected forward from.
          *
          * During live playback `(now - capturedAt)` is just WS latency (well under a
-         * second on LAN). But MA freezes `elapsed_time_last_updated` while paused, so
-         * an event arriving after a long pause carries a capture stale by the whole
-         * pause duration — projecting that forward jumps the bar ahead by the paused
-         * seconds. Beyond this cap the capture is treated as stale and the elapsed
-         * value is anchored as-is.
+         * second on LAN), and projecting it yields the true current position. But MA
+         * freezes `elapsed_time_last_updated` while paused, so an event landing after a
+         * long pause carries a capture stale by the whole pause — projecting that
+         * jumps the bar ahead by the paused seconds, and can shoot past the track end
+         * (measured: 4:04 on a 3:31 track). Past this the reading is anchored at
+         * arrival time instead, and interpolation carries on from there.
          *
-         * 5 seconds: generous enough for any real WS latency on a LAN, tight enough
-         * that a pause-then-event can't shoot the bar past the track end.
+         * This bounds the *anchor*, not the projection, and the distinction is the
+         * whole point. Capping the projection would stall the bar at `elapsed + cap`
+         * whenever the server has not recomputed lately — which for a remote speaker
+         * is most polls, as [com.engabd.sendpin.hue.PositionSlew] records — turning
+         * smooth interpolation back into the stepping it exists to remove.
+         *
+         * 5 seconds: generous enough for any real WS latency or modest clock skew,
+         * tight enough that a pause-then-event is caught.
          */
         const val MAX_PROJECTION_MS = 5_000L
     }

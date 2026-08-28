@@ -80,6 +80,17 @@ class SendspinExoEngine(
 ) : SendspinPlaybackEngine {
 
     val audioLead = AudioLead()
+
+    /**
+     * Has the *current* stream produced audio yet?
+     *
+     * Reset by [start] rather than tracked as a level, because the question the UI's
+     * optimistic freeze asks is per-stream: at the instant `stream/start` arrives the
+     * previous track is still coming out of the speaker (measured: `isPlaying` only
+     * goes false two milliseconds later), so a level would say "audible" for the very
+     * transition it exists to catch.
+     */
+    @Volatile private var streamAudible = false
     val audioAnalysisTap = AudioAnalysisTap(audioLead)
 
     /**
@@ -230,17 +241,6 @@ class SendspinExoEngine(
      * nothing user-visible. A bounded, backed-off retry turns that into a handful of
      * quick attempts and then a clean give-up.
      */
-    /**
-     * Has the *current* stream produced audio yet?
-     *
-     * Reset by [start] rather than tracked as a level, because the question the
-     * playhead asks is per-stream: at the instant `stream/start` arrives the previous
-     * track is still coming out of the speaker (measured: `isPlaying` only goes false
-     * two milliseconds later), so a level would say "audible" for the very transition
-     * it exists to catch.
-     */
-    @Volatile private var streamAudible = false
-
     private val playerListener = object : Player.Listener {
         override fun onPlayerError(error: PlaybackException) {
             Log.e("SendspinExoEngine", "player error: ${error.errorCodeName}", error)
