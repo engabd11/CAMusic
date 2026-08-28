@@ -86,6 +86,23 @@ class PlayerPositionTrackerTest {
     }
 
     @Test
+    fun `a new elapsed on the same capture stamp is still news`() {
+        // The "no news" test compares the whole reading, not the stamp alone. If MA
+        // ever reflects an outside seek in `elapsed_time` without moving the stamp, a
+        // stamp-only test would swallow it - and on a remote speaker nothing else would
+        // notice, because there is no local stream to contradict it.
+        val stamp = now
+        tracker.setAnchor(q, elapsedMs = 10_000, capturedAtMs = stamp, isPlaying = true, durationMs = 300_000)
+        now += 2_000
+        assertEquals(12_000L, tracker.effectiveMs(q))
+
+        tracker.setAnchor(q, elapsedMs = 200_000, capturedAtMs = stamp, isPlaying = true, durationMs = 300_000)
+        // Applied, and projected from the stamp it came with, exactly like any other
+        // reading: the server said 200 s was true 2 s ago.
+        assertEquals(202_000L, tracker.effectiveMs(q))
+    }
+
+    @Test
     fun `the bar keeps moving while the server goes quiet for longer than the cap`() {
         // For a remote speaker a repeated `elapsed_time_last_updated` is most polls and
         // the gaps run to seconds (see PositionSlew). Interpolation has to carry across

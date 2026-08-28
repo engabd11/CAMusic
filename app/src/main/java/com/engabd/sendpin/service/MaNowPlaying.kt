@@ -254,7 +254,19 @@ class MaNowPlaying(private val app: Context) {
         scope.launch {
             now.map { it?.playerId }.distinctUntilChanged().collectLatest { id ->
                 if (id == null) { _positionMs.value = 0L; return@collectLatest }
-                positions.observe(id).collect { _positionMs.value = it }
+                var lastEndPoll = 0L
+                positions.observe(id).collect { ms ->
+                    _positionMs.value = ms
+                    // The projection has run out the track and no fresh anchor arrived,
+                    // so the server has almost certainly moved on. Ask, rather than
+                    // leaving the shade pinned at the duration until the 5 s poll floor
+                    // comes round. Rate-limited: the ticker keeps emitting while pinned.
+                    // Mirrors `NowPlayingViewModel.followPosition`.
+                    if (positions.isAtEnd(id)) {
+                        val t = android.os.SystemClock.elapsedRealtime()
+                        if (t - lastEndPoll > END_REPOLL_MIN_MS) { lastEndPoll = t; refresh() }
+                    }
+                }
             }
         }
         // When this phone is the player, audio starting to flow on it is the strongest
@@ -534,6 +546,9 @@ class MaNowPlaying(private val app: Context) {
 
     private companion object {
         const val POLL_MS = 5_000L
+
+        /** Floor between end-of-track re-polls, so a pinned bar cannot spin the socket. */
+        const val END_REPOLL_MIN_MS = 1_000L
 
         /** How near the server's clock has to land for a seek to count as landed. */
         const val SEEK_CONFIRM_MS = 3_000L

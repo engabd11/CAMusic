@@ -77,14 +77,25 @@ class PlayerPositionTracker(
          */
         val capturedAtMs: Long,
         /**
-         * The raw `elapsed_time_last_updated` this anchor was built from, or null when
-         * the server sent none.
+         * The raw reading this anchor was built from: `elapsed_time` and
+         * `elapsed_time_last_updated`, or null when the server sent no stamp.
          *
-         * Only ever compared, never projected from: it is how [PlayerPositionTracker.setAnchor]
-         * tells a fresh reading from the server restating itself. Null means "can't
-         * tell", which counts as news — a server that omits the field must not read as
-         * one that has stopped updating.
+         * Only ever compared, never projected from — [elapsedMs] and [capturedAtMs]
+         * drift away from these the moment a pause is folded in. Together they are how
+         * [PlayerPositionTracker.setAnchor] tells a fresh reading from the server
+         * restating itself.
+         *
+         * The *pair*, deliberately, not the stamp alone. A repeated stamp usually does
+         * mean the server has not recomputed, but "usually" is not good enough here: if
+         * MA ever reflects an outside seek in `elapsed_time` without moving the stamp,
+         * a stamp-only test would swallow it, and on a remote speaker nothing else
+         * would ever notice. Requiring both to repeat still kills the sawtooth — that
+         * case repeats both — while leaving every real change a way through.
+         *
+         * Null [serverStampMs] means "can't tell", which counts as news: a server that
+         * omits the field must not read as one that has stopped updating.
          */
+        val serverElapsedMs: Long?,
         val serverStampMs: Long?,
         val isPlaying: Boolean,
         val durationMs: Long,
@@ -176,7 +187,9 @@ class PlayerPositionTracker(
             }
 
             // 2. The server restating itself is not news. Let the projection carry on.
-            if (running != null && capturedAtMs != null && capturedAtMs == running.serverStampMs) {
+            if (running != null && capturedAtMs != null &&
+                capturedAtMs == running.serverStampMs && elapsedMs == running.serverElapsedMs
+            ) {
                 val kept = running.copy(durationMs = duration, speed = rate)
                 return@update if (kept == current) existing else existing + (queueId to kept)
             }
@@ -188,6 +201,7 @@ class PlayerPositionTracker(
                 queueId to Anchor(
                     elapsedMs = elapsedMs,
                     capturedAtMs = capturedAtMs?.takeIf { now - it in 0..MAX_PROJECTION_MS } ?: now,
+                    serverElapsedMs = elapsedMs,
                     serverStampMs = capturedAtMs,
                     isPlaying = playing,
                     durationMs = duration,
@@ -221,6 +235,7 @@ class PlayerPositionTracker(
                     capturedAtMs = nowMs(),
                     // Ours, not the server's, so whatever it says next counts as news
                     // and can confirm or replace this.
+                    serverElapsedMs = null,
                     serverStampMs = null,
                     isPlaying = current?.isPlaying ?: false,
                     durationMs = durationMs ?: current?.durationMs ?: 0L,
