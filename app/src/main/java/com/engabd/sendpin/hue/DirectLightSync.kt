@@ -179,7 +179,7 @@ private const val DROP_LEVEL_STEP = 0.15f
  *
  * @param tap The tap actually installed in that backend's render chain — it
  *   must be *the same instance* the backend handed to its `TapRenderersFactory`
- *   (or, for MA via [com.engabd.sendpin.audio.SendspinExoEngine], its Oboe
+ *   (or, for MA via [com.engabd.sendpin.audio.SendspinNativeEngine], its Oboe
  *   sink), not a second one. Activating a tap the audio never flows through
  *   yields a connected bridge and lights that never move. A fresh instance
  *   every time the MA engine reconnects — see [DirectLightSync]'s rewiring.
@@ -1552,7 +1552,7 @@ class DirectLightSync(
                 .collect { track -> onTrackChanged(track) }
         }
         // Re-point the tap hookup whenever the active backend changes - a local
-        // <-> MA switch, or MA reconnecting to a fresh SendspinExoEngine (a new
+        // <-> MA switch, or MA reconnecting to a fresh SendspinNativeEngine (a new
         // AudioAnalysisTap instance every time). A no-op while nothing is
         // running: start() does its own initial rewireTap() call, and a source
         // change that arrives before that is exactly what wiredTap == null /

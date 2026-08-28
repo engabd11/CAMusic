@@ -96,6 +96,7 @@ class AppSettings(private val context: Context) {
         private val NAV_FADE_SECONDS = stringPreferencesKey("nav_fade_seconds") // 0 = off, gapless
         private val BEAT_MATCHED_CROSSFADE = booleanPreferencesKey("beat_matched_crossfade") // time the fade to land on a beat
         private val STATIC_DELAY_MS = stringPreferencesKey("sendspin_static_delay_ms") // per-player latency trim
+        private val CLOCK_OFFSET_US = stringPreferencesKey("sendspin_clock_offset_us") // persisted clock offset for fast reconnect
         private val REPLAY_GAIN = stringPreferencesKey("replay_gain_mode")      // off | track | album
         private val LYRICS_OFFSET_MS = stringPreferencesKey("lyrics_offset_ms") // +ve = lyrics run late
         private val KEEP_ALIVE_ANNOUNCEMENTS = booleanPreferencesKey("keep_alive_announcements") // persist connection for TTS
@@ -669,7 +670,7 @@ class AppSettings(private val context: Context) {
     /**
      * Whether to request 24-bit bit-perfect playback from the AudioTrack path.
      * When true and the device supports `ENCODING_PCM_24BIT_PACKED` (API 31+,
-     * which is our minSdk), [SendspinExoEngine] builds a 24-bit AudioTrack
+     * which is our minSdk), [SendspinNativeEngine] builds a 24-bit AudioTrack
      * instead of truncating to 16-bit. The server must also be sending 24-bit
      * — see [FormatNegotiator.MAX_BIT_DEPTH], which is now 24.
      */
@@ -711,7 +712,7 @@ class AppSettings(private val context: Context) {
      * The system AudioDeviceInfo ID to route audio to, for USB DAC support.
      * Empty string means "let the system pick" (default speaker/headset).
      * Set by [com.engabd.sendpin.service.Playback] when a USB audio device is
-     * detected; consumed by both [SendspinExoEngine] and [LocalPlayer].
+     * detected; consumed by both [SendspinNativeEngine] and [LocalPlayer].
      */
     val preferredAudioDeviceId: Flow<String> = context.dataStore.data.map { it[PREFERRED_AUDIO_DEVICE_ID] ?: "" }
 
@@ -736,6 +737,22 @@ class AppSettings(private val context: Context) {
         val v = ms.coerceIn(-MAX_TRIM_MS, MAX_TRIM_MS).toString()
         it[STATIC_DELAY_MS] = v
         putMaOption(it, ServerConfig.OPT_STATIC_DELAY_MS, v)
+    }
+
+    /**
+     * The persisted clock offset (server-minus-wall, microseconds) from the last
+     * converged Kalman filter run. Seeded into the filter on the next connect so
+     * a reconnect can skip cold-start convergence — see
+     * [SendspinClient.seedClockOffset].
+     *
+     * 0 = no persisted value (first run, or the offset was never saved).
+     */
+    val clockOffsetUs: Flow<Long> = context.dataStore.data.map {
+        it[CLOCK_OFFSET_US]?.toLongOrNull() ?: 0L
+    }
+
+    suspend fun setClockOffsetUs(us: Long) = context.dataStore.edit {
+        it[CLOCK_OFFSET_US] = us.toString()
     }
 
     /**

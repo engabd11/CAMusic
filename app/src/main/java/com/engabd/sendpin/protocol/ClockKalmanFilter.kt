@@ -1,5 +1,6 @@
 package com.engabd.sendpin.protocol
 
+import android.util.Log
 import kotlin.math.abs
 import kotlin.math.round
 import kotlin.math.sqrt
@@ -314,5 +315,61 @@ class ClockKalmanFilter(
         lastRttUs = 0L
         suspectResidual = 0.0
         consecutiveStartupRejections = 0
+    }
+
+    /**
+     * Soft reset: throw away the converged offset but seed it from a persisted
+     * value (e.g. saved across a reconnect), keeping the drift estimate and
+     * sample count so the filter skips the cold-start convergence phase.
+     *
+     * Ported from MassDroid's `ClockSynchronizer.softReset` — used by
+     * [SendspinClient] to persist the clock offset across reconnects, so a
+     * player that was in sync before the socket dropped can resume on the same
+     * timeline without waiting for 8 fresh `client/time` ↔ `server/time`
+     * round-trips.
+     *
+     * @param previousOffsetUs the persisted offset (server-minus-wall, us)
+     * @param preserveDrift if true, keep the drift estimate from before the reset
+     * @param initialCovariance the covariance to seed the offset with — small
+     *   enough to pass [isReadyForPlaybackStart] immediately on a good LAN,
+     *   large enough that a real discrepancy is noticed quickly. Defaults to
+     *   50 000 (≈7 ms std dev), matching MassDroid.
+     */
+    fun softReset(
+        previousOffsetUs: Long,
+        preserveDrift: Boolean = true,
+        initialCovariance: Double = 50_000.0,
+    ) {
+        val prevDrift = drift
+        val prevUseDrift = useDrift
+        reset()
+        if (previousOffsetUs != 0L) {
+            offset = previousOffsetUs.toDouble()
+            if (preserveDrift) {
+                drift = prevDrift
+                useDrift = prevUseDrift
+            }
+            offsetCovariance = initialCovariance
+            count = 2  // skip initialization phase
+            Log.d("ClockKalman", "Soft reset: seeded offset=${previousOffsetUs}us " +
+                "drift=${"%.6f".format(drift)} useDrift=$useDrift " +
+                "covariance=${"%.0f".format(initialCovariance)}")
+        }
+    }
+
+    /**
+     * Seed the offset from a persisted value on cold start, before any
+     * `client/time` ↔ `server/time` round-trips have arrived.
+     *
+     * Unlike [softReset], this does not preserve drift (there is none yet) and
+     * sets the covariance high enough that the filter will still converge from
+     * real samples rather than trusting the seed blindly.
+     */
+    fun seedOffset(offsetUs: Long) {
+        if (offsetUs == 0L || count > 0) return
+        offset = offsetUs.toDouble()
+        offsetCovariance = 50_000.0
+        count = 2
+        Log.d("ClockKalman", "Seeded offset=${offsetUs}us from persisted value")
     }
 }

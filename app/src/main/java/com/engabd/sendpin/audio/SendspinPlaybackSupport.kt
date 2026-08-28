@@ -7,7 +7,7 @@ import com.engabd.sendpin.protocol.StreamStartPlayerInfo
  *
  * Originally lived inside `SendspinAudioEngine`, the `MediaCodec`+`AudioTrack` engine
  * that decoded the binary Sendspin stream directly. That engine was superseded by
- * [SendspinExoEngine] (the one actually selected by `Playback.startSendspin`) and
+ * [SendspinNativeEngine] (the one actually selected by `Playback.startSendspin`) and
  * removed as dead code, but these three decisions have no equivalent there and are
  * still relied on: [StreamContinuity] and [Scheduling] are consumed by the live
  * gapless/continuation path in `Playback.kt`, and [HeadGate] is mirrored by

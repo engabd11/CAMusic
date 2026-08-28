@@ -158,6 +158,32 @@ class SendspinClient(
     val groupUpdates: SharedFlow<SendspinIncoming.GroupUpdate> = _groupUpdates.asSharedFlow()
 
     /**
+     * Callback to persist the clock offset (server-minus-wall, microseconds) so
+     * it survives a reconnect. Fired every ~100 `server/time` samples once the
+     * filter's error estimate is under 2 ms — the same condition MassDroid's
+     * `ClockSynchronizer` uses — so a player that was in sync before the socket
+     * dropped can resume on the same timeline without waiting for cold-start
+     * convergence.
+     *
+     * Set by [Playback] to write the value through [AppSettings]. The client
+     * itself does not touch storage; this is a callback, not a dependency.
+     */
+    @Volatile
+    var onClockOffsetPersist: ((serverMinusWallUs: Long) -> Unit)? = null
+
+    /**
+     * Seed the clock filter from a persisted offset on startup, before any
+     * `client/time` ↔ `server/time` round-trips have arrived. Called by
+     * [Playback] after the client is constructed but before [connect].
+     *
+     * If real samples have already been processed, this is a no-op: the live
+     * filter is always preferred over a stale persisted value.
+     */
+    fun seedClockOffset(serverMinusWallUs: Long) {
+        clock.filter.seedOffset(serverMinusWallUs)
+    }
+
+    /**
      * The single ordered queue every socket callback feeds. Unbounded, because
      * dropping to make room would be exactly the reordering this exists to prevent;
      * [Inbox.accept] is the memory guard instead.
@@ -472,6 +498,13 @@ class SendspinClient(
                     clock.markStartupRejected()
                 } else {
                     clock.onServerTime(p.clientTransmitted, p.serverReceived, p.serverTransmitted, msg.clientReceivedUs)
+                    // Persist the clock offset every ~100 samples when error < 2 ms,
+                    // so a reconnect can seed the filter and skip cold-start convergence.
+                    // Matches MassDroid's ClockSynchronizer persistence policy.
+                    val sc = clock.filter.sampleCount
+                    if (sc > 0 && sc % 100 == 0 && clock.errorUs() < 2_000L) {
+                        onClockOffsetPersist?.invoke(clock.currentOffsetUs())
+                    }
                 }
             }
             is SendspinIncoming.ServerState -> {

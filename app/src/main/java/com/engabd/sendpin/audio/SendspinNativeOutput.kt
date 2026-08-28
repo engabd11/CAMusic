@@ -135,7 +135,7 @@ class SendspinNativeOutput {
      * to written, meaning not one frame was ever consumed.
      *
      * This only bites with drift correction on — i.e. grouped playback, where
-     * [SendspinSyncDataSource] is in use. Solo playback sets it false and the engine
+     * the SYNC timing policy is in use. Solo playback sets it false and the engine
      * ignores the timestamp entirely as a pure FIFO, which is why the Oboe path could
      * look merely unproven rather than broken.
      *

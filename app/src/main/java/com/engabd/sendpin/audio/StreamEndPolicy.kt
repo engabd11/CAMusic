@@ -13,7 +13,7 @@ package com.engabd.sendpin.audio
  * - a TTS announcement finished.
  *
  * The engine's answer has been to throw the tail away and mute what was already
- * decoded ([SendspinDataSource.discardQueued] and its long note). That is exactly
+ * decoded ([SendspinNativeEngine.flush] and its long note). That is exactly
  * right for a pause — the server has streamed up to ~30 s ahead, and playing it out
  * made pausing take over 20 s to fall silent — and exactly wrong for the other two,
  * because the tail *is* the end of the thing you were listening to. An announcement
