@@ -677,6 +677,16 @@
                     if (state.subsonicClient) {
                         App.playQueue([{id: el.dataset.songId, title: el.querySelector('.track-title')?.textContent || '', type: 'song'}], 0);
                     }
+                } else if (el.dataset.artistId) {
+                    // Search result artist — show their albums (simplified: open first album)
+                    // Full artist detail view would need a dedicated screen
+                    if (state.subsonicClient) {
+                        state.subsonicClient.getArtist(el.dataset.artistId).then(artist => {
+                            if (artist.albums && artist.albums.length > 0) {
+                                this.showAlbum(artist.albums[0].id, 'subsonic');
+                            }
+                        }).catch(e => console.error('Artist lookup failed:', e));
+                    }
                 }
             } else if (el.classList.contains('server-card')) {
                 App.activateServer(el.dataset.serverId);
