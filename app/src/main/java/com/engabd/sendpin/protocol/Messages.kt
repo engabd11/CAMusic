@@ -103,9 +103,19 @@ data class ClientStatePayload(
     val state: String = "synchronized",
     val player: PlayerStateInfo = PlayerStateInfo(),
     /**
-     * Whether this client is available to receive a stream. Always `true` while
-     * the socket is up — the Sendspin spec includes this field and some servers
-     * use it to decide whether to include the player in group operations.
+     * Whether this client is available to receive a stream.
+     *
+     * Not a constant, and the spec is unusually direct about why: *"a player
+     * reports `available: true` only after it has established clock
+     * synchronization"*, and `true` means *"client is operational and ready to
+     * participate in playback; for a player or source this means its clock is
+     * synchronized"*. Music Assistant uses it to decide whether this player can be
+     * put in a group — so answering `true` from the moment the socket opens invites
+     * the server to add a speaker that cannot yet place a sample on the shared
+     * timeline, which is a group that sounds wrong from its first second.
+     *
+     * See [SendspinClient.sendClientState] for the one place that stops telling the
+     * truth about it, and why.
      */
     val available: Boolean = true,
 )

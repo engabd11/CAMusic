@@ -50,12 +50,21 @@ constexpr double RATE_K = MAX_RATE_DEV / static_cast<double>(SNAP_US);
 // buffer is healthy (observed on slower devices).
 constexpr int64_t OUTLIER_US = 15000;
 
-// A |drift| this large is not a drift. The engine's whole correction range tops
-// out at SNAP_US (50 ms); five seconds is a hundred times that, and no clock
-// this code is allowed to see can be that far out while the stream is otherwise
-// healthy. It means one of the two halves of `intendedHead - dac0` is being
-// computed in the wrong domain — which is a bug upstream of here, and one this
-// engine cannot fix from inside the callback.
+// A |drift| this large is not a drift. It means one of the two halves of
+// `intendedHead - dac0` is being computed in the wrong domain — which is a bug
+// upstream of here, and one this engine cannot fix from inside the callback.
+//
+// Thirty seconds, not five. The head of a stream legitimately shows a drift the
+// size of the server's own stream buffer: the producer writes the first chunks
+// with a presentation time that far ahead, and the callback is *supposed* to
+// hold the read position until it arrives — that wait is how every Sendspin
+// player starts a track together. At five seconds a server with a generous
+// buffer tripped this on the first callback of every stream, which switched
+// correction off for the whole track and left the player permanently out of
+// step with the group it had just joined. The domain bug this guards against
+// misses by accumulated suspend time — minutes on a phone that has slept once,
+// hours on one that has been up for days — so thirty seconds still catches it
+// with three orders of magnitude to spare.
 //
 // What it CAN do is refuse to act on it. Inserting `silenceFront` frames without
 // advancing the read position is correct for a real 50 ms drift and catastrophic
@@ -64,7 +73,7 @@ constexpr int64_t OUTLIER_US = 15000;
 // while reporting itself as playing. Audio that is out of sync beats audio that
 // does not exist, so past this threshold the correction is switched off and the
 // samples go through untouched.
-constexpr int64_t IMPLAUSIBLE_DRIFT_US = 5000000;
+constexpr int64_t IMPLAUSIBLE_DRIFT_US = 30000000;
 
 // Callbacks at the head of a stream that print the timeline breakdown. Enough to
 // see the anchor resolve (the first getTimestamp poll lands within a few

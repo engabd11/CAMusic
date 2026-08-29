@@ -88,6 +88,19 @@ samples, error ≤ ~5 ms). `ClockKalmanFilter.kt` implements this (pure Kotlin, 
 - **Ordered stream**: control JSON and binary audio share one WebSocket; process them through **one
   ordered flow** so `stream/clear` can't be reordered past audio frames.
 - **static_delay_ms**: manual per-player sync trim, sent in `client/state`.
+- **The binary chunk timestamp *is* the playout instant.** The spec: *"binary audio messages
+  contain timestamps in the server's time domain indicating when the audio should be played"*.
+  There is no server-advertised `buffer_ms` and nothing for the client to add — a client that
+  adds its own "scheduling headroom" to the presentation time is simply that far behind every
+  other speaker, permanently, with nothing in the protocol to converge it away. Scheduling slack
+  belongs *before* this number (the decode ring, the startup trim), never on top of it.
+- **One timeline, grouped or not.** Group membership does not change when a sample is due, so
+  solo playback is scheduled exactly like grouped playback. Anchoring a solo stream to local
+  `now` "because there is no one to sync with" makes a later group join a re-anchor across
+  however far apart the two timelines drifted — which the audio path cannot do without either a
+  long silence or giving up on correction altogether.
+- **`available` is not a constant.** *"A player reports `available: true` only after it has
+  established clock synchronization."* MA uses it to decide whether the player can be grouped.
 
 ## nowdroid rewrite map (M0)
 

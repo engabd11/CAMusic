@@ -65,9 +65,13 @@ interface SendspinPlaybackEngine {
     // ---- New methods for the native engine ----
 
     /**
-     * Swap between grouped (SYNC) and solo (DIRECT) timing mode mid-stream.
-     * Reconfigures the native output's drift correction mode and re-arms the
-     * timeline anchor without requiring a new `stream/start`.
+     * Tell the engine whether this player is in a Sendspin group.
+     *
+     * Informational. Playback is scheduled against the server clock either way —
+     * that is the only timeline the protocol has — so grouping changes nothing
+     * about when a sample is due and this must not disturb audio that is already
+     * running. It used to swap timing policies and restart the native output
+     * mid-stream, which silenced the leader whenever a second speaker joined it.
      */
     fun setGrouped(grouped: Boolean)
 
@@ -84,7 +88,7 @@ interface SendspinPlaybackEngine {
     /**
      * Freeze the native consumer without dropping the ring: fade to silence
      * and hold the read position, preserving buffered audio across a transient
-     * interruption (audio focus loss). Used instead of a flush for solo/DIRECT
+     * interruption (audio focus loss). Used instead of a flush for transient
      * focus interruptions.
      */
     fun freezeOutput()

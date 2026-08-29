@@ -67,13 +67,29 @@ class FrameDelayQueue<T> {
 
     fun clear() = queue.clear()
 
-    /** Add a freshly rendered frame, stamped with the time it was rendered. */
+    /**
+     * Add a freshly rendered frame, stamped with the time it was rendered.
+     *
+     * The eviction bound is in **time**, not frames, and that distinction is the
+     * whole bug it fixes. A fixed 120-entry cap is two seconds at 60 fps, which was
+     * assumed to be "well past any real delay" — but the Music Assistant path holds
+     * a couple of seconds of decoded PCM in the native ring by design, so its lead
+     * is 2.5 s and up, and the delay that follows from it is longer than the history
+     * the queue was allowed to keep. Every frame was then evicted before it came
+     * due, [poll] returned null on every tick, and the room stopped reacting
+     * entirely: lights that worked for a solo player went dead the moment the extra
+     * buffering of a group pushed the lead over the cap.
+     *
+     * Keeping `delay + MARGIN_MS` of history makes the bound follow the delay
+     * instead of contradicting it, while still refusing to grow for the length of a
+     * track if the delay ever collapses to zero. [HARD_MAX_ENTRIES] stays as a
+     * memory backstop for a nonsense lead, sized well above any real one.
+     */
     fun offer(value: T, nowNanos: Long) {
         queue.addLast(Entry(nowNanos, value))
-        // The queue is time-bounded in normal operation, but a delay that
-        // collapses to zero while frames keep arriving would otherwise let it
-        // grow unchecked. 60 Hz for two seconds is well past any real delay.
-        while (queue.size > MAX_ENTRIES) queue.removeFirst()
+        val keepNanos = ((delayMs + MARGIN_MS) * 1_000_000f).toLong()
+        while (queue.size > 1 && nowNanos - queue.first().at > keepNanos) queue.removeFirst()
+        while (queue.size > HARD_MAX_ENTRIES) queue.removeFirst()
     }
 
     /**
@@ -102,6 +118,17 @@ class FrameDelayQueue<T> {
         /** How fast the applied delay may move, in milliseconds per second. */
         const val SLEW_MS_PER_S = 120f
 
-        private const val MAX_ENTRIES = 120
+        /**
+         * History kept beyond the current delay, so a frame is still there when it
+         * comes due even though the delay is slewing and the render loop jitters.
+         */
+        private const val MARGIN_MS = 250f
+
+        /**
+         * Absolute cap, for a lead no real sink could produce. Ten seconds at 60 fps
+         * — far past [com.engabd.sendpin.audio.SendspinNativeEngine]'s own clamp on
+         * the lead it reports, so in practice the time bound above is what applies.
+         */
+        private const val HARD_MAX_ENTRIES = 600
     }
 }
