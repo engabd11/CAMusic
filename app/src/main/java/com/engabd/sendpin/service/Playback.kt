@@ -695,10 +695,47 @@ class Playback(private val app: Context) {
         // means this player has been placed on the shared timeline; null means
         // solo. The engine's setGrouped reconfigures drift correction and re-arms
         // the timeline without requiring a new stream/start.
+        //
+        // However, group/update alone is NOT sufficient to determine sync mode.
+        // MassDroid's SendspinManager comment says: "group/update arrives for
+        // both solo and multi groups, can't distinguish here." The group leader
+        // may receive group/update with a null groupId (it IS the group, rather
+        // than being IN one), and some servers may not send it to the leader at
+        // all. So we also poll the MA API (players/all) and check group_members
+        // / synced_to — the same approach MassDroid's SendspinAudioController uses.
         scope.launch {
             c.groupUpdates.collect {
                 _groupUpdates.tryEmit(it)
                 eng.setGrouped(it.groupId != null)
+            }
+        }
+        // MA API poll: the authoritative group-state check. `group/update` from
+        // the Sendspin socket is a hint, but the server's player list is the
+        // ground truth — it reflects grouping regardless of whether the leader
+        // or member is this player. Checked at connect and then every 5s while
+        // streaming, matching MassDroid's continuous collector cadence.
+        scope.launch {
+            val maApi = (app.applicationContext as SendpinApp).maApi
+            while (true) {
+                if (!maApi.state.value.name.startsWith("CONNECTED")) {
+                    kotlinx.coroutines.delay(2_000)
+                    continue
+                }
+                val inGroup = runCatching {
+                    val players = maRepo.players()
+                    val self = players.firstOrNull { it.playerId == playerId }
+                    // This player is in a group if it has members other than itself
+                    // (it's a leader with members) or if another player lists it
+                    // as a member (it's synced to a leader).
+                    val selfInGroup = self?.groupChilds?.any { it != playerId } == true
+                    val childOfOther = players.any { it.playerId != playerId && playerId in it.groupChilds }
+                    selfInGroup || childOfOther
+                }.getOrDefault(false)
+                if (eng.grouped != inGroup) {
+                    android.util.Log.i("Playback", "Group state from MA API poll: inGroup=$inGroup (was grouped=${eng.grouped})")
+                    eng.setGrouped(inGroup)
+                }
+                kotlinx.coroutines.delay(5_000)
             }
         }
 
