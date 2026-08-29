@@ -714,6 +714,13 @@ class Playback(private val app: Context) {
         // ground truth — it reflects grouping regardless of whether the leader
         // or member is this player. Checked at connect and then every 5s while
         // streaming, matching MassDroid's continuous collector cadence.
+        //
+        // NOTE: `playerId` here is the Sendspin client UUID, not the MA server's
+        // `player_id` (e.g. `up0997467a`). `players/get` resolves the UUID
+        // server-side, but `players/all` returns MA-format IDs. So we use
+        // `getPlayer(playerId)` to fetch this phone's player (which returns the
+        // MA-format ID and group_members), then also fetch all players to check
+        // whether this phone is a member of another player's group.
         scope.launch {
             val maApi = (app.applicationContext as SendpinApp).maApi
             while (true) {
@@ -722,13 +729,16 @@ class Playback(private val app: Context) {
                     continue
                 }
                 val inGroup = runCatching {
-                    val players = maRepo.players()
-                    val self = players.firstOrNull { it.playerId == playerId }
-                    // This player is in a group if it has members other than itself
-                    // (it's a leader with members) or if another player lists it
-                    // as a member (it's synced to a leader).
-                    val selfInGroup = self?.groupChilds?.any { it != playerId } == true
-                    val childOfOther = players.any { it.playerId != playerId && playerId in it.groupChilds }
+                    val self = maRepo.getPlayer(playerId)
+                    val selfId = self?.playerId
+                    // This player is a leader with members other than itself.
+                    val selfInGroup = self?.groupChilds?.any { it != selfId } == true
+                    // This player is a member of another player's group. Match
+                    // by the MA-format ID, not the Sendspin UUID.
+                    val childOfOther = if (selfId != null) {
+                        val all = maRepo.players()
+                        all.any { it.playerId != selfId && selfId in it.groupChilds }
+                    } else false
                     selfInGroup || childOfOther
                 }.getOrDefault(false)
                 if (eng.grouped != inGroup) {
