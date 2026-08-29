@@ -379,7 +379,9 @@ class SendspinClient(
             payload = ClientStatePayload(
                 state = state,
                 // The spec's wire range is 0..5000; a negative trim is meaningful
-                // locally (play later) but has nothing to say to the server.
+                // locally (play later) but has nothing to say to the server. The signed
+                // value is kept in [_staticDelayMs] above, which is what the engine
+                // reads — see the echo guard in `handleIncoming`.
                 player = PlayerStateInfo(volume, muted, staticDelayMs.coerceIn(0, MAX_STATIC_DELAY_MS)),
             )
         )
@@ -552,8 +554,30 @@ class SendspinClient(
                 if (p.command == "set_static_delay") {
                     p.staticDelayMs?.let { ms ->
                         val clamped = ms.coerceIn(0, MAX_STATIC_DELAY_MS)
-                        dbg("server/command set_static_delay=${clamped}ms")
-                        sendClientState(staticDelayMs = clamped)
+                        // An echo of our own clamp is not an instruction.
+                        //
+                        // This is what erased a negative trim, and the loop is worth
+                        // spelling out. The wire field is unsigned, so [sendClientState]
+                        // sends `coerceIn(0, MAX)` — a local -300 goes out as 0. MA
+                        // stores that and echoes `set_static_delay: 0` back. This handler
+                        // took the echo at face value, overwrote the signed local value
+                        // with zero, and `Playback` persisted the zero to DataStore. The
+                        // setting was gone within one round trip of being set, which is
+                        // why it looked like negatives were rejected outright.
+                        //
+                        // So: an incoming zero that is exactly what our own negative
+                        // value clamps to is our own reflection, and is ignored. Anything
+                        // else really is the server asking, and is applied.
+                        val ours = _staticDelayMs.value
+                        val isOwnEcho = ours < 0 && clamped == 0
+                        if (isOwnEcho) {
+                            dbg("server/command set_static_delay=0 ignored (echo of local ${ours}ms)")
+                        } else {
+                            dbg("server/command set_static_delay=${clamped}ms")
+                            sendClientState(staticDelayMs = clamped)
+                            _serverCommands.tryEmit(p)
+                        }
+                        return@let
                     }
                 }
                 _serverCommands.tryEmit(p)

@@ -1,5 +1,8 @@
 package com.engabd.sendpin.ui.design
 
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.Modifier
+import androidx.compose.foundation.basicMarquee
 import android.animation.ValueAnimator
 import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.LinearEasing
@@ -280,3 +283,48 @@ fun rememberReducedMotion(): Boolean {
     }
     return reduced
 }
+
+/**
+ * Scroll a title that is too long to fit, once every [restMs], then rest.
+ *
+ * Long titles were ellipsised everywhere, which for classical, live and remixed tracks
+ * means the part that distinguishes one from another is the part that gets cut. A
+ * marquee shows the whole thing without giving it more room.
+ *
+ * Three things it deliberately does not do.
+ *
+ * It does not scroll continuously. A title sliding without pause is movement in the
+ * corner of the eye for as long as the song lasts; twenty seconds of stillness between
+ * passes is long enough to stop being noticed and short enough that the rest of the
+ * title is never far away.
+ *
+ * It does not engage for text that fits. `basicMarquee` only animates when the content
+ * overflows its constraints, so a short title is left completely alone — no jitter, and
+ * no layout difference between a title that scrolls and one that does not.
+ *
+ * It does not run when the listener has asked for less motion. [LocalReducedMotion]
+ * already gates the shimmer and the artwork drift; a scrolling title is exactly the kind
+ * of ambient movement that setting exists to stop.
+ *
+ * Note for callers: a marquee needs a bounded width, and it left-aligns once it starts
+ * moving. Centre the *container* rather than the text, or a centred title will appear to
+ * jump left as the animation begins.
+ */
+@Composable
+fun Modifier.titleMarquee(restMs: Int = TITLE_MARQUEE_REST_MS): Modifier {
+    if (LocalReducedMotion.current) return this
+    return this.basicMarquee(
+        iterations = Int.MAX_VALUE,
+        // Both delays, not just the repeat: the first pass should not start the instant
+        // a track changes, or the title moves while the listener is still reading it.
+        initialDelayMillis = restMs,
+        repeatDelayMillis = restMs,
+        velocity = TITLE_MARQUEE_VELOCITY,
+    )
+}
+
+/** How long a title rests between passes. */
+const val TITLE_MARQUEE_REST_MS = 20_000
+
+/** Scroll speed. Slower than the 30 dp/s default — this is a title, not a ticker. */
+val TITLE_MARQUEE_VELOCITY = 24.dp

@@ -179,7 +179,7 @@ class SendspinNativeEngine(
      * and re-arms the timeline without requiring a new `stream/start`.
      */
     @Volatile private var _grouped: Boolean = false
-    val grouped: Boolean get() = _grouped
+    override val grouped: Boolean get() = _grouped
 
     @Volatile override var staticDelayMs: Int = 0
 

@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.engabd.sendpin.audio.StreamQuality
+import com.engabd.sendpin.ui.design.titleMarquee
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
@@ -261,20 +262,29 @@ fun VolumeRow(volume: Float, onChange: (Float) -> Unit) {
  */
 @Composable
 fun TrackTitleBlock(state: NowPlayingViewModel.State, showComposer: Boolean = true) {
-    Text(
-        if (state.blank) "Nothing playing" else state.title,
-        color = if (state.idle) TextSecondary else TextPrimary,
-        fontFamily = AppFont, fontWeight = FontWeight.ExtraBold,
-        fontSize = 27.sp, letterSpacing = (-0.5).sp, maxLines = 1,
-        overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
-    )
+    // Each line is its own full-width row so the *box* is centred and the text inside it
+    // is free to scroll. Centring the Text itself instead would make a long title jump
+    // left the moment the marquee engaged — see [titleMarquee].
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+        Text(
+            if (state.blank) "Nothing playing" else state.title,
+            color = if (state.idle) TextSecondary else TextPrimary,
+            fontFamily = AppFont, fontWeight = FontWeight.ExtraBold,
+            fontSize = 27.sp, letterSpacing = (-0.5).sp, maxLines = 1,
+            overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
+            modifier = Modifier.titleMarquee(),
+        )
+    }
     if (state.artist.isNotBlank()) {
         Spacer(Modifier.height(5.dp))
-        Text(
-            state.artist, color = inkOn(0.62f), fontFamily = AppFont,
-            fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1,
-            overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
-        )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+            Text(
+                state.artist, color = inkOn(0.62f), fontFamily = AppFont,
+                fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1,
+                overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
+                modifier = Modifier.titleMarquee(),
+            )
+        }
     }
     if (showComposer && state.composer.isNotBlank()) {
         Spacer(Modifier.height(2.dp))
@@ -285,10 +295,13 @@ fun TrackTitleBlock(state: NowPlayingViewModel.State, showComposer: Boolean = tr
     }
     if (state.album.isNotBlank()) {
         Spacer(Modifier.height(2.dp))
-        Text(
-            state.album, color = TextFaint, style = MaterialTheme.typography.bodyMedium,
-            maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
-        )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+            Text(
+                state.album, color = TextFaint, style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
+                modifier = Modifier.titleMarquee(),
+            )
+        }
     }
 }
 

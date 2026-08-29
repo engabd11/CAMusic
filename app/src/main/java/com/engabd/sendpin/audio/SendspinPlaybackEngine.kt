@@ -72,6 +72,16 @@ interface SendspinPlaybackEngine {
     fun setGrouped(grouped: Boolean)
 
     /**
+     * Whether this player is currently on a group timeline.
+     *
+     * Readable, not just settable, because being grouped changes decisions well outside
+     * the engine: a group member must not be disconnected when the app is backgrounded,
+     * and must not drop to the idle clock cadence, however quiet it happens to be at
+     * that moment. See [com.engabd.sendpin.service.Playback.setClientIdleMode].
+     */
+    val grouped: Boolean get() = false
+
+    /**
      * Freeze the native consumer without dropping the ring: fade to silence
      * and hold the read position, preserving buffered audio across a transient
      * interruption (audio focus loss). Used instead of a flush for solo/DIRECT

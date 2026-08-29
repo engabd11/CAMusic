@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.engabd.sendpin.tv.design.TvButton
+import com.engabd.sendpin.ui.design.titleMarquee
 import com.engabd.sendpin.ui.design.AlbumArt
 import com.engabd.sendpin.ui.design.LocalAccent
 import com.engabd.sendpin.ui.design.MeterBar
@@ -82,7 +83,11 @@ fun TvNowPlayingScreen(viewModel: NowPlayingViewModel = viewModel()) {
                 state.title.ifBlank { "Unknown title" },
                 color = TextPrimary, fontWeight = FontWeight.ExtraBold,
                 style = MaterialTheme.typography.headlineMedium,
-                maxLines = 2, overflow = TextOverflow.Ellipsis,
+                // One line here, not two: a marquee scrolls its content as a single
+                // row, so a two-line title would be laid out on one line and only the
+                // first screenful ever shown. Scrolling one line shows all of it.
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.titleMarquee(),
             )
             Text(
                 state.artist.ifBlank { "Unknown artist" },
