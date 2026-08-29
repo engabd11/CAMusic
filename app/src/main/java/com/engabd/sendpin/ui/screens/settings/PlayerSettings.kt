@@ -14,6 +14,9 @@ import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.data.rememberIsIgnoringBatteryOptimizations
 import com.engabd.sendpin.ma.MaConfigEntry
 import com.engabd.sendpin.ui.design.HSlider
+import com.engabd.sendpin.ui.theme.TextPrimary
+import com.engabd.sendpin.ui.theme.AppFont
+import kotlin.math.roundToInt
 import com.engabd.sendpin.ui.design.InfoChip
 import com.engabd.sendpin.ui.theme.MonoFont
 import com.engabd.sendpin.ui.theme.TextSecondary
@@ -230,6 +233,79 @@ internal fun PlayerSection(
                     "mix.",
             ) { duck = it; scope.launch { settings.setDuckAnnouncements(it) } }
         }
+
+        LatencyTrimCard(settings, accent, scope)
+    }
+}
+
+/**
+ * This phone's own latency trim.
+ *
+ * The setting has existed and been honoured by the engine for some time, and has had
+ * **no UI at all** — the only way to change it was for Music Assistant to push a
+ * `set_static_delay`. So a phone that ran ahead of or behind the rest of a group could
+ * not be corrected from the app that was causing it.
+ *
+ * Signed, and that is the point of the control. A positive trim says "this path adds
+ * latency, play earlier"; a negative one says "play later", which is what a phone with a
+ * fast Bluetooth codec needs when the rest of the room is on wired speakers. The value
+ * itself always allowed negatives; what erased them was a round trip through the server,
+ * whose wire field is unsigned — see the echo guard in `SendspinClient.handleIncoming`.
+ *
+ * Slider for coarse, buttons for fine. A 4000 ms range on a phone-width slider is about
+ * 10 ms per pixel, which is far coarser than the difference a listener can hear, so the
+ * slider alone could never land on the right value.
+ */
+@Composable
+private fun LatencyTrimCard(settings: AppSettings, accent: Color, scope: CoroutineScope) {
+    val trim by settings.staticDelayMs.collectAsStateWithLifecycle(initialValue = 0)
+    var drag by remember { mutableStateOf<Int?>(null) }
+    val shown = drag ?: trim
+
+    fun set(ms: Int) {
+        scope.launch { settings.setStaticDelayMs(ms.coerceIn(-AppSettings.MAX_TRIM_MS, AppSettings.MAX_TRIM_MS)) }
+    }
+
+    SettingsCard(
+        title = "Latency trim",
+        lead = "Nudge this phone earlier or later against the rest of a group.",
+        info = "Every playback path has its own delay - Bluetooth is slower than wired, " +
+            "and one speaker's DSP is slower than another's. This shifts when this phone " +
+            "plays, so it lines up with the room.\n\n" +
+            "Positive plays earlier, to make up for a slow path. Negative plays later, " +
+            "for when this phone is the fast one.\n\n" +
+            "Tip: play something with a strong beat, stand between this phone and another " +
+            "speaker, and adjust in 10 ms steps until the echo collapses into one sound. " +
+            "The last 20 ms are the ones that matter, which is what the buttons are for.",
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                if (shown == 0) "In line" else if (shown > 0) "$shown ms earlier" else "${-shown} ms later",
+                color = TextPrimary, fontFamily = AppFont,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.weight(1f),
+            )
+            if (shown != 0) {
+                OledButton("Reset", accent, outline = true) { drag = null; set(0) }
+            }
+        }
+        HSlider(
+            value = ((shown + AppSettings.MAX_TRIM_MS).toFloat() / (2f * AppSettings.MAX_TRIM_MS)).coerceIn(0f, 1f),
+            onChange = { drag = ((it * 2f - 1f) * AppSettings.MAX_TRIM_MS).roundToInt() },
+            onCommit = { f -> drag = null; set(((f * 2f - 1f) * AppSettings.MAX_TRIM_MS).roundToInt()) },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        // Fine adjustment. Both magnitudes, because 10 ms gets you close and 1 ms is
+        // where a beat stops sounding doubled.
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(-10, -1, +1, +10).forEach { step ->
+                OledButton(
+                    text = if (step > 0) "+$step" else "$step",
+                    accent = accent, outline = true, modifier = Modifier.weight(1f),
+                ) { drag = null; set(trim + step) }
+            }
+        }
+        Note("Applies to this phone only. Per-speaker offsets live on the Speakers screen.")
     }
 }
 

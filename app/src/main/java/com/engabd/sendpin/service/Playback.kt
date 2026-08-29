@@ -29,6 +29,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
@@ -50,6 +51,25 @@ import android.os.SystemClock
 class Playback(private val app: Context) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /**
+     * Everything one Sendspin session owns, so [disconnect] can end all of it at once.
+     *
+     * [startSendspin] launches twenty-one collectors, and [disconnect] used to cancel
+     * exactly two of them — `connectJob` and `idleJob`. Every foreground reconnect
+     * therefore left the previous set running against a released engine and a closed
+     * client, and started a fresh set alongside. After N reconnects there were N copies
+     * of the MA group poll hitting `players/all` every five seconds, N-1 of them calling
+     * `setGrouped()` on engines that no longer exist.
+     *
+     * That is enough on its own to explain sync that works sometimes and not others: the
+     * live engine's grouped flag was being set by whichever stale loop answered last.
+     *
+     * A child of [scope] rather than a fresh top-level one, so the process-wide scope is
+     * still the single parent and nothing outlives it.
+     */
+    private var sessionJob: Job = SupervisorJob(null)
+    private var sessionScope: CoroutineScope = CoroutineScope(sessionJob + Dispatchers.Default)
     private val settings = AppSettings(app)
     private val discovery = MaDiscovery(app)
 
@@ -457,7 +477,16 @@ class Playback(private val app: Context) {
                 // the engine and closes the socket whatever `stopService` says, so
                 // without the `isPlaying` guard, locking the screen mid-song stopped
                 // the music.
-                if (!keepAlive && _connected.value && !_isPlaying.value) {
+                //
+                // Never while grouped either, whatever the setting says. A member of a
+                // multi-room group is silent between tracks and silent while the leader
+                // is paused, so `!isPlaying` is true for perfectly ordinary stretches of
+                // a group session — and hanging up during one takes this phone out of
+                // the group entirely. Someone who has grouped their speakers has asked
+                // for this phone to be part of a room, which is a stronger statement
+                // about what they want than a general battery preference.
+                val grouped = engine?.grouped == true
+                if (!keepAlive && !grouped && _connected.value && !_isPlaying.value) {
                     disconnect(stopService = true, reason = "user_request")
                 }
             }
@@ -525,6 +554,12 @@ class Playback(private val app: Context) {
     }
 
     private suspend fun startSendspin(url: String, token: String?, name: String) {
+        // A session's collectors belong to the session. Anything still running from a
+        // previous one is talking to a client and an engine that are already gone.
+        sessionJob.cancel()
+        sessionJob = SupervisorJob(scope.coroutineContext[Job])
+        sessionScope = CoroutineScope(sessionJob + Dispatchers.Default)
+
         val c = SendspinClient(); client = c
         // Propagate the current idle state — if nothing is playing when the client
         // connects, start in idle mode rather than running fast timer loops until
@@ -560,13 +595,13 @@ class Playback(private val app: Context) {
         }
         // Persist the clock offset when the filter publishes it.
         c.onClockOffsetPersist = { offsetUs ->
-            scope.launch { settings.setClockOffsetUs(offsetUs) }
+            sessionScope.launch { settings.setClockOffsetUs(offsetUs) }
         }
 
-        scope.launch { c.state.collect { _connected.value = it == SendspinClient.State.CONNECTED } }
-        scope.launch { c.statusText.collect { _connectionStatus.value = it } }
-        scope.launch { c.events.collect { _connectionLog.value = it } }
-        scope.launch {
+        sessionScope.launch { c.state.collect { _connected.value = it == SendspinClient.State.CONNECTED } }
+        sessionScope.launch { c.statusText.collect { _connectionStatus.value = it } }
+        sessionScope.launch { c.events.collect { _connectionLog.value = it } }
+        sessionScope.launch {
             c.nowPlaying.collect { np ->
                 _trackTitle.value = np?.title ?: ""
                 _artist.value = np?.artist ?: ""
@@ -575,7 +610,7 @@ class Playback(private val app: Context) {
                 _durationMs.value = np?.durationMs ?: 0
             }
         }
-        scope.launch {
+        sessionScope.launch {
             c.streamFormat.collect { f ->
                 // `StreamQuality.khz` rather than integer division, which rendered a
                 // 44.1kHz stream as "44kHz" in the Settings readout.
@@ -585,7 +620,7 @@ class Playback(private val app: Context) {
                 _streamQuality.value = f?.let { StreamQuality(it.codec, it.sampleRate, it.bitDepth) }
             }
         }
-        scope.launch {
+        sessionScope.launch {
             c.serverCommands.collect { cmd ->
                 when (cmd.command) {
                     // The player volume *is* this phone's media volume. Music Assistant
@@ -605,7 +640,7 @@ class Playback(private val app: Context) {
                     // Latched by the client, which owns the value; persisted here so
                     // it survives a reconnect.
                     "set_static_delay" -> cmd.staticDelayMs?.let { ms ->
-                        scope.launch { settings.setStaticDelayMs(ms) }
+                        sessionScope.launch { settings.setStaticDelayMs(ms) }
                     }
                     // Anything else the spec grows: say so rather than vanishing.
                     else -> android.util.Log.w("Playback", "unhandled server/command '${cmd.command}'")
@@ -642,7 +677,7 @@ class Playback(private val app: Context) {
                 eng.start(format)
                 idleJob?.cancel(); idleJob = null
                 val kind = streamKind
-                scope.launch {
+                sessionScope.launch {
                     requestAudioFocus(kind)
                     _isPlaying.value = true
                     SendspinService.startMedia(app)
@@ -668,10 +703,10 @@ class Playback(private val app: Context) {
                 eng.endOfStream(drain = plan.action == TailAction.DRAIN)
                 tailJob?.cancel()
                 if (plan.action == TailAction.DRAIN) {
-                    tailJob = scope.launch { drainTail(eng, endedAt, plan, endedStreamId) }
+                    tailJob = sessionScope.launch { drainTail(eng, endedAt, plan, endedStreamId) }
                 }
                 idleJob?.cancel()
-                idleJob = scope.launch {
+                idleJob = sessionScope.launch {
                     delay(SendspinPlaybackSupport.END_LINGER_MS)
                     _isPlaying.value = false
                     SendspinService.idleMedia(app)
@@ -703,10 +738,24 @@ class Playback(private val app: Context) {
         // than being IN one), and some servers may not send it to the leader at
         // all. So we also poll the MA API (players/all) and check group_members
         // / synced_to — the same approach MassDroid's SendspinAudioController uses.
-        scope.launch {
+        // A channel rather than a direct write, so `group/update` is a *hint that
+        // something changed* and never an answer in its own right.
+        //
+        // It used to call `setGrouped(it.groupId != null)` outright — and the comment
+        // right above says why that cannot be right: the leader may receive an update
+        // with a null groupId because it *is* the group rather than being in one. So a
+        // genuinely grouped player was being flipped back to DIRECT by its own group
+        // notification, and the poll below took up to five seconds to undo it. In DIRECT
+        // the engine anchors to local `now` with drift correction off, which is exactly
+        // the audible symptom. Each flip also restarts the Oboe stream, so a flapping
+        // pair of sources restarted the audio over and over.
+        //
+        // Now it wakes the poll instead. Same latency benefit, no fighting.
+        val groupRecheck = Channel<Unit>(Channel.CONFLATED)
+        sessionScope.launch {
             c.groupUpdates.collect {
                 _groupUpdates.tryEmit(it)
-                eng.setGrouped(it.groupId != null)
+                groupRecheck.trySend(Unit)
             }
         }
         // MA API poll: the authoritative group-state check. `group/update` from
@@ -721,8 +770,13 @@ class Playback(private val app: Context) {
         // `getPlayer(playerId)` to fetch this phone's player (which returns the
         // MA-format ID and group_members), then also fetch all players to check
         // whether this phone is a member of another player's group.
-        scope.launch {
+        sessionScope.launch {
             val maApi = (app.applicationContext as SendpinApp).maApi
+            // Debounced against flapping. A grouping change on the server can produce a
+            // burst of `group/update`s, and every `setGrouped` that actually flips
+            // restarts the native Oboe stream — so acting on each one in turn would
+            // restart the audio several times for a single change.
+            var lastApplied = -1L
             while (true) {
                 if (!maApi.state.value.name.startsWith("CONNECTED")) {
                     kotlinx.coroutines.delay(2_000)
@@ -740,21 +794,33 @@ class Playback(private val app: Context) {
                         all.any { it.playerId != selfId && selfId in it.groupChilds }
                     } else false
                     selfInGroup || childOfOther
-                }.getOrDefault(false)
-                if (eng.grouped != inGroup) {
-                    android.util.Log.i("Playback", "Group state from MA API poll: inGroup=$inGroup (was grouped=${eng.grouped})")
+                }.getOrDefault(eng.grouped)
+                // getOrDefault(eng.grouped), not false: a failed lookup — the socket
+                // dozed, the server was slow — is not evidence that the player left its
+                // group, and treating it as such dropped a grouped player into DIRECT
+                // every time the API had a bad moment.
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (eng.grouped != inGroup && now - lastApplied >= GROUP_FLIP_MIN_MS) {
+                    android.util.Log.i(
+                        "Playback",
+                        "Group state from MA API poll: inGroup=$inGroup (was grouped=${eng.grouped})",
+                    )
                     eng.setGrouped(inGroup)
+                    lastApplied = now
                 }
-                kotlinx.coroutines.delay(5_000)
+                // Wake early when `group/update` says something moved, so a grouping
+                // change is picked up in milliseconds rather than at the next tick —
+                // which was the whole appeal of acting on it directly, without the cost.
+                withTimeoutOrNull(GROUP_POLL_MS) { groupRecheck.receive() }
             }
         }
 
         // Audio output preferences. Read before the first stream/start, because
         // both are consumed when the AudioTrack is built (once per stream).
-        scope.launch {
+        sessionScope.launch {
             settings.bitPerfect24Bit.collect { eng.bitPerfect = it }
         }
-        scope.launch {
+        sessionScope.launch {
             settings.preferredAudioDeviceId.collect { id ->
                 val am = app.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
                 eng.setPreferredDevice(AudioOutputs.resolve(am, id))
@@ -764,18 +830,18 @@ class Playback(private val app: Context) {
         // The latency trim. The setting pushes into the client, and the client is the
         // only thing that writes the engine — one arrow in, so a value the *server*
         // pushes (`set_static_delay`) and one the user sets can't fight each other.
-        scope.launch { settings.staticDelayMs.collect { c.setStaticDelayMs(it) } }
-        scope.launch { c.staticDelay.collect { eng.staticDelayMs = it } }
+        sessionScope.launch { settings.staticDelayMs.collect { c.setStaticDelayMs(it) } }
+        sessionScope.launch { c.staticDelay.collect { eng.staticDelayMs = it } }
 
         // Mute while the clock is still converging, per the spec — decoding and
         // buffering carry on, only the gain goes to zero. See SyncGate.
-        scope.launch { c.syncMuted.collect { eng.setSyncMuted(it) } }
+        sessionScope.launch { c.syncMuted.collect { eng.setSyncMuted(it) } }
 
         // What kind of thing the next stream is, and whether a `stream/end` was a
         // pause someone else asked for. Straight off the API socket rather than
         // through MaNowPlaying, whose cache is sampled at 300 ms and polled at 5 s —
         // both far too slow to still be true when `stream/end` lands.
-        scope.launch {
+        sessionScope.launch {
             val api = (app.applicationContext as SendpinApp).maApi
             api.events.collect { raw ->
                 val ev = MaParse.event(raw) ?: return@collect
@@ -807,7 +873,7 @@ class Playback(private val app: Context) {
                 }
             }
         }
-        scope.launch { settings.duckAnnouncements.collect { duckAnnouncements = it } }
+        sessionScope.launch { settings.duckAnnouncements.collect { duckAnnouncements = it } }
 
         // The persistent connection service keeps the process (and this WebSocket)
         // alive in the background and shows a small "connected" notification with a
@@ -818,7 +884,7 @@ class Playback(private val app: Context) {
         // The advertised format list is what stops the server converting: it may only
         // stream something we listed. Built from the user's audio preferences, and sent
         // once in the hello — which is why changing those settings needs a reconnect.
-        scope.launch {
+        sessionScope.launch {
             val codec = settings.sendspinCodec.first()
             connectedCodec = codec
             val bitPerfect = settings.bitPerfect24Bit.first()
@@ -1152,6 +1218,17 @@ class Playback(private val app: Context) {
      * immediately rather than waiting up to 30s for the next tick.
      */
     fun setClientIdleMode(idle: Boolean) {
+        // A grouped player is never idle, whatever this phone is playing.
+        //
+        // Idle mode drops the clock cadence to one sample every thirty seconds, which is
+        // right for a solo player waiting around for an announcement and wrong for a
+        // group member: it is silent between tracks and while the leader is paused, and
+        // when the next stream starts it has to hit the group timeline immediately. From
+        // thirty-second samples the filter needs several seconds to be trustworthy
+        // again, and the startup trim discards whatever arrived during the wait — the
+        // track then starts a second or two in. Group members were paying that on every
+        // track.
+        if (idle && engine?.grouped == true) return
         client?.setIdleMode(idle)
     }
 
@@ -1164,6 +1241,9 @@ class Playback(private val app: Context) {
         // Kill any connect still in flight *first*, or it lands after this returns and
         // silently resurrects the connection this call exists to end. See [connectJob].
         connectJob?.cancel(); connectJob = null
+        // Every collector [startSendspin] launched, in one go. Before this, twenty-one
+        // of them survived a disconnect and accumulated across reconnects.
+        sessionJob.cancel()
         abandonAudioFocus()
         unregisterNoisyReceiver()
         engine?.release(); engine = null
@@ -1189,6 +1269,25 @@ class Playback(private val app: Context) {
     }
 
     private companion object {
+        /**
+         * How long between group-state polls when nothing has hinted otherwise.
+         *
+         * The poll is woken early by `group/update`, so this is only the backstop for a
+         * grouping change made somewhere the Sendspin socket never hears about — the
+         * Music Assistant web UI, say.
+         */
+        const val GROUP_POLL_MS = 5_000L
+
+        /**
+         * The minimum time between two applied group-state flips.
+         *
+         * Every flip that actually changes the mode restarts the native Oboe stream, so
+         * a burst of `group/update`s during one grouping change would restart the audio
+         * several times over. Long enough to swallow a burst, short enough that a real
+         * change is still immediate.
+         */
+        const val GROUP_FLIP_MIN_MS = 1_500L
+
         /**
          * How often [drainTail] re-checks. Fine enough that "the queue ran dry" and
          * "a pause landed" are both noticed inside the grace window, coarse enough

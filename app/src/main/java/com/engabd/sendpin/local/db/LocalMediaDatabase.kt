@@ -18,7 +18,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
  * them — gigabytes on disk that the app would no longer know it had, and no way back
  * but downloading the lot again.
  */
-@Database(entities = [DownloadedTrackEntity::class, PlayHistoryEntity::class], version = 4)
+@Database(entities = [DownloadedTrackEntity::class, PlayHistoryEntity::class], version = 5)
 abstract class LocalMediaDatabase : RoomDatabase() {
     abstract fun downloadDao(): DownloadDao
     abstract fun playHistoryDao(): PlayHistoryDao
@@ -79,13 +79,32 @@ abstract class LocalMediaDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v4 → v5: `streamProvider` and `durationMs`, both nullable/zero-defaulted.
+         *
+         * Added because the Stats screen could not answer two questions it looked like
+         * it was already answering. Every Music Assistant play was filed under the
+         * literal provider "MA" whatever it had actually streamed from, so the server
+         * breakdown was one bar; and `durationPlayedMs` had nothing to be a fraction of,
+         * so "how much of this did I hear" was unanswerable and skips were invisible.
+         *
+         * Existing rows keep null and 0, which the screen reads as "not recorded" — the
+         * same way the format breakdown treats a codec nobody wrote down.
+         */
+        internal val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE play_history ADD COLUMN streamProvider TEXT")
+                db.execSQL("ALTER TABLE play_history ADD COLUMN durationMs INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun get(context: Context): LocalMediaDatabase =
             instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
                     context.applicationContext,
                     LocalMediaDatabase::class.java,
                     "local_media.db",
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build().also { instance = it }
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).build().also { instance = it }
             }
     }
 }

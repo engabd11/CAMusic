@@ -52,6 +52,7 @@ import coil.compose.AsyncImage
 import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.ma.LibraryViewModel
+import com.engabd.sendpin.ui.design.titleMarquee
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
@@ -569,6 +570,10 @@ fun MiniPlayerBar(
                     fontFamily = AppFont,
                     fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                    // Only the title. The bar is 14sp of text in a strip across the
+                    // bottom of every screen, and two lines scrolling at once there
+                    // would be movement the listener never asked to look at.
+                    modifier = Modifier.titleMarquee(),
                 )
                 // Falls back to the player name so an idle bar still says *where*.
                 val sub = if (st.blank) st.playerName else st.artist

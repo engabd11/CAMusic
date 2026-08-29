@@ -66,7 +66,16 @@ class SendspinConnectionService : Service() {
                     context.startService(intent)
                 }
             }.onFailure {
-                android.util.Log.w("SendspinConnection", "couldn't start service: ${it.message}")
+                // Warn, and *say what it means*. A service that silently never started
+                // is indistinguishable from a sync bug from the outside: the connection
+                // works while the app is on screen and dies a minute after it is put
+                // down, with nothing in the log to say which of the two it was.
+                android.util.Log.w(
+                    "SendspinConnection",
+                    "couldn't start the foreground service (${it.message}) - the player " +
+                        "will drop when the app is backgrounded until it can be started " +
+                        "from the foreground again",
+                )
             }
         }
 

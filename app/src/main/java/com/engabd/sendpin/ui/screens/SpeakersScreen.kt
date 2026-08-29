@@ -240,11 +240,17 @@ private fun JoinedCard(p: SpeakerUi, onSelect: () -> Unit, onUnjoin: () -> Unit,
             if (!p.isTarget) {
                 Spacer(Modifier.height(10.dp))
                 if (p.offsetKnown) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text("Sync offset", color = TextFaint, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, modifier = Modifier.weight(1f))
-                        StepBtn("−") { onOffset(-5) }
-                        Text("${p.offsetMs} ms", color = TextSecondary, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 11.sp, modifier = Modifier.widthIn(min = 54.dp))
-                        StepBtn("+") { onOffset(5) }
+                        // Two magnitudes each way. A single ±5 step is the wrong size for
+                        // both jobs: too small to cross a 200 ms gap without twenty taps,
+                        // too large to land on the value where a doubled beat collapses
+                        // into one. Ten gets you close, one finishes it.
+                        StepBtn("−10") { onOffset(-10) }
+                        StepBtn("−1") { onOffset(-1) }
+                        Text("${p.offsetMs} ms", color = TextSecondary, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 11.sp, modifier = Modifier.widthIn(min = 48.dp))
+                        StepBtn("+1") { onOffset(1) }
+                        StepBtn("+10") { onOffset(10) }
                     }
                 } else {
                     Text(
@@ -349,8 +355,16 @@ private fun PlayerIcon(isSelf: Boolean, joined: Boolean) {
 
 @Composable
 private fun StepBtn(label: String, onClick: () -> Unit) {
-    Box(Modifier.size(26.dp).clip(RoundedCornerShape(8.dp)).background(Glass).border(1.dp, Hairline, RoundedCornerShape(8.dp)).clickable(onClick = onClick), contentAlignment = Alignment.Center) {
-        Text(label, color = TextSecondary, fontWeight = FontWeight.ExtraBold, fontSize = 13.sp)
+    // Wide enough for a two-character label now that the steps are ±1 and ±10; height
+    // unchanged so the row still lines up with the volume slider above it.
+    Box(
+        Modifier.widthIn(min = 30.dp).height(26.dp).clip(RoundedCornerShape(8.dp))
+            .background(Glass).border(1.dp, Hairline, RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 5.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(label, color = TextSecondary, fontWeight = FontWeight.ExtraBold, fontSize = 12.sp)
     }
 }
 

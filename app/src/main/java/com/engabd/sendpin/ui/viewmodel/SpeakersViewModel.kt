@@ -359,7 +359,17 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
                 repo.setSyncDelay(playerId, sd.key, next)
             } catch (e: Exception) {
                 _syncDelays.update { it + (playerId to sd) }
-                _error.value = e.message ?: "Couldn't change the sync offset"
+                // Name the likeliest cause rather than repeating the server's message.
+                // Music Assistant's own config entry for a Sendspin player is unsigned —
+                // `static_delay_ms` is documented 0..5000 — so a negative offset is
+                // refused server-side however willing this app is to send one. Without
+                // saying so, the button just appears not to work below zero.
+                _error.value = when {
+                    next < 0 -> "Music Assistant refused a negative offset for this " +
+                        "speaker. Nudge the *other* speakers later instead, or use the " +
+                        "latency trim in Settings for this phone."
+                    else -> e.message ?: "Couldn't change the sync offset"
+                }
             }
         }
     }

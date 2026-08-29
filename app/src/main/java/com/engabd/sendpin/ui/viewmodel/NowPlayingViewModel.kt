@@ -1964,15 +1964,27 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
      * ever runs to completion for the track it started watching.
      */
     private suspend fun recordHistoryWhenPlayed(identity: TrackIdentity) {
-        val played = state.map { s ->
+        // Combined with [positionMs], and that is the whole fix for "stats only ever
+        // record Music Assistant".
+        //
+        // `State.positionMs` is hard-coded to 0 on the local branch — the real local
+        // playhead lives in the separate [positionMs] flow, because the local player
+        // knows its own position exactly and needs no server anchor. This gate read
+        // `State`, so for every Jellyfin, Subsonic, Navidrome, downloaded and local-file
+        // play the threshold below could never be met: the flow only ever emitted
+        // `false` on a track change, and the function returned without inserting a row.
+        // MA was not preferred, it was the only path whose position was visible here.
+        val played = combine(state, positionMs) { s, pos -> s to pos }.map { (s, pos) ->
+            val at = if (s.positionMs > 0) s.positionMs else pos
             when {
                 TrackIdentity(s.title, s.artist, s.album) != identity -> false
-                s.durationMs > 0 && s.positionMs >= minOf(s.durationMs / 2, HISTORY_THRESHOLD_MS) -> true
+                s.durationMs > 0 && at >= minOf(s.durationMs / 2, HISTORY_THRESHOLD_MS) -> true
                 else -> null
             }
         }.first { it != null }
         if (played != true) return
         val s = state.value
+        val playedMs = if (s.positionMs > 0) s.positionMs else positionMs.value
         try {
             // Listening DNA snapshot — opt-in, and only ever available for a local
             // session (TrackScanRepository has no data for an MA-streamed track).
@@ -1980,7 +1992,12 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             // very likely already been adopted into the memory cache by whatever
             // warmed it (Light Sync, the Music Map timeline) if it was going to be;
             // a miss here just means a null snapshot for this one play.
-            val scan = if (settings.listeningDna.first() && s.isLocalSession) {
+            // Not gated on isLocalSession any more. A scan is keyed by the track, not
+            // by which backend happened to play it, so a track that has been scanned
+            // locally and is now coming through Music Assistant has one to snapshot —
+            // and refusing to look was why the Listening DNA fields were empty for every
+            // MA row. `peek` is a memory-cache read, so a miss costs nothing.
+            val scan = if (settings.listeningDna.first()) {
                 local.current.value?.let { trackScans.peek(it) }
             } else null
             val dao = LocalMediaDatabase.get(getApplication()).playHistoryDao()
@@ -1992,10 +2009,18 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                     artist = identity.artist,
                     album = identity.album,
                     provider = s.source,
+                    // Where the bytes actually came from, as opposed to which backend
+                    // this app was talking to. `s.source` is the literal "MA" for
+                    // everything Music Assistant played, so a library of Jellyfin and
+                    // Subsonic and local files all filed as one provider and the "By
+                    // server" breakdown was a single bar. MA already tells us which
+                    // provider it streamed from; it was simply being thrown away.
+                    streamProvider = s.streamProvider,
                     codec = s.sourceQuality?.codec,
                     sampleRate = s.sourceQuality?.sampleRateHz ?: 0,
                     bitDepth = s.sourceQuality?.bitDepth ?: 0,
-                    durationPlayedMs = s.positionMs,
+                    durationPlayedMs = playedMs,
+                    durationMs = s.durationMs,
                     bpm = scan?.bpm,
                     keyTonic = scan?.key?.tonic,
                     keyMode = scan?.key?.mode?.name,
