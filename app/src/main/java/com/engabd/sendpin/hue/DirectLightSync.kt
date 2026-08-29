@@ -263,7 +263,29 @@ class DirectLightSync(
         source.tap.onAnalysisReset = ::onAnalysisReset
         source.tap.setActive(true)
         wiredTap = source.tap
+        // A different player is a different lead, and the two are not close: the local
+        // path's sink buffer is a couple of hundred milliseconds, while Music
+        // Assistant's engine keeps seconds of decoded PCM in its native ring. Slewing
+        // between them at [FrameDelayQueue.SLEW_MS_PER_S] takes the better part of
+        // twenty seconds, and for all of it the lights are running ahead of the music
+        // by the difference. Seed instead — the reason [FrameDelayQueue.resetDelay]
+        // exists is "no history to slew from", and a source that has just been swapped
+        // in has none.
+        seedDelayOnNextLead = true
     }
+
+    /**
+     * The tap was just rewired and the delay should be seeded rather than slewed, as
+     * soon as the new source reports a lead at all.
+     *
+     * Deferred rather than done in [rewireTap] because the switch happens on
+     * `stream/start`, before the new engine has written its first chunk — its lead is
+     * still [com.engabd.sendpin.audio.AudioLead.UNKNOWN] at that moment, and seeding
+     * from null would just set zero and slew from there, which is the thing this
+     * avoids.
+     */
+    @Volatile private var seedDelayOnNextLead = false
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     /**
@@ -1206,7 +1228,13 @@ class DirectLightSync(
             // Hold the rendered frame until the audio it describes is actually
             // audible. See FrameDelayQueue: the tap runs ahead of the speaker, so
             // without this the lights lead the music rather than trail it.
-            delayQueue.updateDelay(activeSource.value.lead.leadMs, dt)
+            val leadMs = activeSource.value.lead.leadMs
+            if (seedDelayOnNextLead && leadMs != null) {
+                seedDelayOnNextLead = false
+                delayQueue.resetDelay(leadMs)
+            } else {
+                delayQueue.updateDelay(leadMs, dt)
+            }
             delayQueue.offer(colours, now)
             val held = delayQueue.poll(now) ?: continue
 

@@ -45,21 +45,33 @@ import kotlin.math.abs
  * correction. The decode thread never blocks on the clock — it decodes and
  * writes to the ring immediately, and the native callback does all timing.
  *
- * ## Two modes, one instance
+ * ## One timeline, always the server's
  *
- * Unlike MassDroid, which swaps entire engine instances at a group join/leave
- * boundary, CAMusic uses a single instance with a [grouped] flag that controls
- * which timing policy is active:
+ * Every chunk is presented at `serverToLocal(its timestamp)` — no added
+ * headroom, drift correction on — whether this player is alone or in a group.
+ * That is what the protocol asks for (*"binary audio messages contain
+ * timestamps in the server's time domain indicating when the audio should be
+ * played"*), and it is what makes grouping free: [setGrouped] records the flag
+ * and touches nothing else, because a speaker joining does not change when this
+ * player's samples are due.
  *
- * - **SYNC (grouped = true)**: 200 ms headroom, clock-readiness gate, drift
- *   correction ON. Matches the official client phase so this player shares the
- *   group's playout instant.
- * - **DIRECT (grouped = false)**: local anchor, drift correction OFF, instant
- *   start. No clock dependency, no headroom — playback begins ~now.
+ * It used to run two timing policies — a SYNC one on the server clock for
+ * grouped playback, and a DIRECT one anchored to local `now` for solo — and
+ * swap between them mid-stream. Both halves of that were wrong in the same way.
+ * A solo player on a private timeline is seconds away from the timeline the
+ * server is streaming against, so joining a group meant re-anchoring across
+ * that gap: the Oboe stream restarted, the output re-muted, and the native
+ * callback was handed a multi-second "drift" it could only sit out in silence
+ * (or, past its implausibility ceiling, give up on for the rest of the track and
+ * play permanently out of step). And the SYNC half added 200 ms of "headroom" to
+ * the presentation time, which is not slack — it is a standing 200 ms offset
+ * from every other Sendspin speaker, with nothing anywhere to converge it away.
+ * Together those are exactly the two symptoms: the leader falling silent a few
+ * seconds after a speaker joined it, and a group that never quite locked.
  *
- * The mode can change mid-stream without requiring a new `stream/start`:
- * [setGrouped] reconfigures the native output's drift correction mode and
- * re-arms the timeline anchor.
+ * The local anchor survives as a **fallback only** — see [serverTimeline] — for
+ * a stream that has to start while the clock filter has not converged, where the
+ * alternative is no audio at all.
  *
  * ## Clock domains
  *
@@ -145,7 +157,7 @@ class SendspinNativeEngine(
         private const val REOPEN_SETTLE_MS = 350L
         private const val REOPEN_MAX_WAIT_MS = 8_000L
 
-        // SYNC mode: 200 ms headroom (official client phase), clock gate.
+        // Server-timeline mode: buffer threshold + clock gate before the first write.
         private const val SYNC_START_BUFFER_MS = 250L
         private const val SYNC_CLOCK_WAIT_MS = 3_000L
 
@@ -158,11 +170,46 @@ class SendspinNativeEngine(
         private const val NOTABLE_START_TRIM_MS = 250L
         private const val SYNC_CLOCK_ERROR_US = 15_000L
         private const val START_TARGET_HEADROOM_US = 50_000L
-        private const val SCHEDULE_HEADROOM_US = 200_000L
 
-        // DIRECT mode: local anchor, instant start.
+        // Local-anchor fallback: used only when the clock never converges.
         private const val DIRECT_START_BUFFER_MS = 350L
         private const val DIRECT_START_HEADROOM_US = 60_000L
+
+        /**
+         * How long the output may stay muted waiting for the native correction to
+         * report a lock before it is unmuted anyway.
+         *
+         * The unmute test is `|driftEma| < 5 ms`, and there are real states in which
+         * that never becomes true — the native engine gives up on an implausible
+         * timeline and switches correction off, or a route with a wildly misreported
+         * HAL latency parks the estimate off zero. Without a deadline the player then
+         * decodes, feeds and consumes a whole track at gain zero: MA shows it playing,
+         * the ring drains, the logs are clean, and not a sound comes out. That is the
+         * worst failure this engine has, because nothing about it looks like a failure.
+         *
+         * So the mute is bounded, on exactly the argument
+         * [com.engabd.sendpin.protocol.SyncGate] and the native `IMPLAUSIBLE_DRIFT_US`
+         * already make in their own comments: audio that is out of step beats audio
+         * that does not exist.
+         */
+        private const val SYNC_MUTE_MAX_MS = 3_000L
+
+        /** Smoothed native drift below which the timeline counts as locked. */
+        private const val LOCKED_DRIFT_US = 5_000L
+
+        /**
+         * Ceiling on the lead reported to Light Sync, matching
+         * [AudioLeadProbe.MAX_PLAUSIBLE_LEAD_US]'s role on the local path.
+         *
+         * The steady-state lead is the ring depth ([RING_TARGET_MS]) plus the output
+         * latency, but at the head of a stream the first chunks are written with a
+         * presentation time the whole server-side stream buffer ahead of now — several
+         * seconds. Reporting that transient makes the light-show delay slew off toward
+         * a hold longer than the show's own frame history, and the room stops reacting
+         * until it slews back. Clamp instead: the transient is not a lead anyone can
+         * act on.
+         */
+        private const val MAX_REPORTED_LEAD_US = 4_000_000L
     }
 
     // ---- Public state exposed to Playback.kt ----
@@ -173,13 +220,39 @@ class SendspinNativeEngine(
     @Volatile override var bitPerfect: Boolean = false
 
     /**
-     * Whether this player is in a Sendspin group — selects SYNC vs DIRECT
-     * timing policy. Set by Playback.kt from `group/update`'s `group_id`.
-     * Can change mid-stream: [setGrouped] reconfigures the native output
-     * and re-arms the timeline without requiring a new `stream/start`.
+     * Whether this player is in a Sendspin group.
+     *
+     * Reported outward (see [SendspinPlaybackEngine.grouped]) and **not** used for
+     * timing. It used to select between two different playback timelines, and that
+     * is what broke grouping: a solo player anchored audio to its own `now`, so the
+     * moment Music Assistant added a second speaker the engine had to abandon a
+     * timeline it was seconds ahead on and re-anchor onto the server's — restarting
+     * the Oboe stream, re-muting, and handing the native callback a multi-second
+     * "drift" that is not a drift at all. The leader went quiet while the listener
+     * was told everything was fine.
+     *
+     * The Sendspin spec has one timeline and it is the server's: *"binary audio
+     * messages contain timestamps in the server's time domain indicating when the
+     * audio should be played"*. Being in a group does not change when a sample is
+     * due — it only changes whether anyone else is playing it at the same moment.
+     * So the engine schedules against the server clock always (see [serverTimeline]),
+     * joining a group is a no-op for the audio path, and a player that was already
+     * on the shared timeline simply gains a neighbour.
      */
     @Volatile private var _grouped: Boolean = false
     override val grouped: Boolean get() = _grouped
+
+    /**
+     * Whether playback is scheduled against the **server** clock (the normal case,
+     * and the only spec-conformant one) or against a local anchor.
+     *
+     * The local anchor is a fallback and nothing more: it exists for a stream that
+     * has to start while the clock filter has not converged, where the alternative
+     * is silence. [startupGate] decides once per stream, waiting up to
+     * [SYNC_CLOCK_WAIT_MS] for the clock before giving up on it, and [onFlush]
+     * re-arms the decision for the next one.
+     */
+    @Volatile private var serverTimeline: Boolean = true
 
     @Volatile override var staticDelayMs: Int = 0
 
@@ -439,21 +512,19 @@ class SendspinNativeEngine(
 
     // ---- New interface methods ----
 
+    /**
+     * Record group membership. **Deliberately does not touch playback.**
+     *
+     * Every stream is already scheduled on the server timeline (see [_grouped] and
+     * [serverTimeline]), so a speaker joining or leaving changes nothing about when
+     * this player's samples are due. It used to restart the Oboe stream, re-arm the
+     * timeline and re-mute — mid-track, from a polling coroutine — which is what
+     * silenced the leader the moment a second speaker joined it.
+     */
     override fun setGrouped(grouped: Boolean) {
         if (_grouped == grouped) return
         _grouped = grouped
-        Log.d(TAG, "Mode swap: grouped=$grouped")
-        if (configured && nativeOutput.isStarted) {
-            // Reconfigure drift correction mode on the live native output.
-            // This requires a restart of the native stream.
-            startNativeOutput()
-            // Re-arm the timeline anchor so the new mode takes effect immediately.
-            onFlush()
-            if (playbackStarted) {
-                playbackStarted = false
-                beginStartupMute()
-            }
-        }
+        Log.d(TAG, "grouped=$grouped (timeline unchanged: server clock)")
     }
 
     override fun freezeOutput() {
@@ -465,10 +536,10 @@ class SendspinNativeEngine(
     override fun unfreezeOutput() {
         Log.d(TAG, "Unfreeze output (resume from preserved buffer) grouped=$_grouped")
         outputFrozen = false
-        if (_grouped) {
-            // Grouped: the leader kept playing, so the preserved buffer is
-            // behind the live group timeline. Re-mute and reset sync metrics
-            // so the native correction skips forward inaudibly.
+        if (serverTimeline) {
+            // The queue kept playing server-side while we held the read position, so
+            // the preserved buffer is behind the live timeline. Re-mute and reset sync
+            // metrics so the native correction skips forward inaudibly.
             beginStartupMute()
             resetSyncMetrics()
         }
@@ -494,58 +565,93 @@ class SendspinNativeEngine(
         releaseInternal()
     }
 
-    // ---- Mode-specific timing ----
+    // ---- Timing ----
 
-    private val isSync: Boolean get() = _grouped
+    /** True while playback is scheduled against the server clock — the normal case. */
+    private val isSync: Boolean get() = serverTimeline
     private val startupMuteMs: Long get() = if (isSync) SYNC_STARTUP_MUTE_MS else DIRECT_STARTUP_MUTE_MS
     private val startBufferMs: Long get() = if (isSync) SYNC_START_BUFFER_MS else DIRECT_START_BUFFER_MS
 
     /**
-     * Role-specific local output time + headroom for [serverTimestampUs].
+     * Local output time for [serverTimestampUs], plus any headroom to add to it.
      *
-     * SYNC: play at `serverToLocal(serverTs) + 200 ms headroom` (official
-     * client phase). The native callback aligns the real DAC presentation
-     * time to this, cancelling measured HAL latency.
+     * On the server timeline the answer is just `serverToLocal(serverTs)` and the
+     * headroom is **zero**, because the spec's timestamp already *is* the instant the
+     * sample is meant to be heard: *"binary audio messages contain timestamps in the
+     * server's time domain indicating when the audio should be played"*. The native
+     * callback aligns the real DAC presentation time to this value, cancelling
+     * measured HAL latency, so anything added here is not scheduling slack — it is a
+     * standing offset from every other speaker in the group.
      *
-     * DIRECT: anchor the first frame to ~now and keep relative chunk spacing.
-     * No clock dependency, no headroom — playback starts immediately.
+     * There used to be 200 ms of it, described as scheduling headroom. It is not: the
+     * producer's slack is the ring ([RING_TARGET_MS]) and the start trim's own
+     * [START_TARGET_HEADROOM_US], both of which sit *before* this number. All the
+     * 200 ms did was put this phone a fifth of a second behind every other Sendspin
+     * player on the same timeline, permanently and with nothing to converge — which
+     * is what "the two speakers never sync to each other" sounds like.
+     *
+     * The local-anchor fallback (clock never converged) anchors the first frame to
+     * ~now and keeps relative chunk spacing, so a solo player still gets audio.
      */
     private fun computeLocalPlan(serverTimestampUs: Long, outputLatencyUs: Long): LocalPlan {
-        if (isSync) {
-            val localOutputUs = clock.serverTimeToLocal(serverTimestampUs)
-            return LocalPlan(localOutputUs, SCHEDULE_HEADROOM_US)
-        } else {
-            if (anchorServerUs == 0L) {
-                anchorServerUs = serverTimestampUs
-                anchorLocalUs = nowUs() + outputLatencyUs + DIRECT_START_HEADROOM_US
-            }
-            val localOutputUs = anchorLocalUs + (serverTimestampUs - anchorServerUs)
-            return LocalPlan(localOutputUs, 0L)
+        if (serverTimeline) {
+            return LocalPlan(clock.serverTimeToLocal(serverTimestampUs), 0L)
         }
+        if (anchorServerUs == 0L) {
+            anchorServerUs = serverTimestampUs
+            anchorLocalUs = nowUs() + outputLatencyUs + DIRECT_START_HEADROOM_US
+        }
+        return LocalPlan(anchorLocalUs + (serverTimestampUs - anchorServerUs), 0L)
     }
 
     /**
-     * Extra start gate after the buffer threshold is met.
+     * Extra start gate after the buffer threshold is met: wait for the clock.
      *
-     * SYNC: wait for clock convergence (with a 3 s timeout backstop).
-     * DIRECT: ready immediately.
+     * Every stream starts out aiming for the server timeline, group or no group —
+     * that is the only timeline the protocol has, and starting a solo stream on a
+     * private one is what makes joining a group later so violent. Waiting costs at
+     * most [SYNC_CLOCK_WAIT_MS], and in practice nothing at all: the `client/time`
+     * loop runs for the life of the connection, so by the time anyone presses play
+     * the filter has been converged for a while.
+     *
+     * If the clock really has not arrived by the deadline, fall back to the local
+     * anchor and start anyway — silence is the worse answer — and say so, because
+     * a player on the local anchor is a player that cannot be grouped.
      */
     private fun startupGate(neededMs: Long): Boolean {
-        if (!isSync) return true
-        if (clock.isReadyForPlaybackStart()) return trimStartupLateFrames(neededMs, START_TARGET_HEADROOM_US)
+        if (clock.isReadyForPlaybackStart()) {
+            serverTimeline = true
+            return trimStartupLateFrames(neededMs, START_TARGET_HEADROOM_US)
+        }
         val now = System.currentTimeMillis()
         if (startupWaitStartedMs == 0L) startupWaitStartedMs = now
-        val timedOutReady = now - startupWaitStartedMs >= SYNC_CLOCK_WAIT_MS &&
-            clock.isSynced() &&
-            clock.errorUs() <= SYNC_CLOCK_ERROR_US
-        if (!timedOutReady) maybeLogStartupWait("clock", neededMs)
-        return timedOutReady && trimStartupLateFrames(neededMs, START_TARGET_HEADROOM_US)
+        if (now - startupWaitStartedMs < SYNC_CLOCK_WAIT_MS) {
+            maybeLogStartupWait("clock", neededMs)
+            return false
+        }
+        // Past the deadline. A merely imprecise offset is still an offset: keep the
+        // server timeline if the filter has anything at all to say, and only drop to
+        // the local anchor when it has nothing.
+        serverTimeline = clock.isSynced() && clock.errorUs() <= SYNC_CLOCK_ERROR_US
+        Log.w(
+            TAG,
+            "clock gate timed out after ${SYNC_CLOCK_WAIT_MS}ms " +
+                "(synced=${clock.isSynced()} err=${clock.errorUs()}us) — starting on " +
+                (if (serverTimeline) "the server timeline anyway"
+                else "a LOCAL anchor; this player cannot be grouped"),
+        )
+        return trimStartupLateFrames(neededMs, START_TARGET_HEADROOM_US)
     }
 
     /** Called from flushQueuesAndDecoder so mode-specific state can be reset. */
     private fun onFlush() {
         anchorServerUs = 0L
         anchorLocalUs = 0L
+        // Aim for the server timeline again. The local anchor is a per-stream
+        // concession to a clock that had not arrived yet, not a mode to stay in:
+        // [startupGate] re-decides, and by the next stream the filter has usually
+        // had several more seconds of samples.
+        serverTimeline = true
         // What ExoPlayer used to do for us. The tap was an AudioProcessor on the old MA
         // path, so the player flushed it on every seek, track change and reconfigure,
         // and the analyzer, the tempo/structure/gesture trackers and the layer chain all
@@ -917,8 +1023,14 @@ class SendspinNativeEngine(
         // off the head of the queue. Local playback was unaffected because LocalPlayer
         // still runs the real probe, which is why this looked like "the lights regressed
         // for MA" specifically.
+        //
+        // Clamped, because the head of a stream is not steady state: the first chunks
+        // carry a presentation time the whole server-side stream buffer ahead of now,
+        // and reporting that pushes the light show's hold past the frame history it
+        // keeps — the room simply stops reacting until the delay slews back down. See
+        // [MAX_REPORTED_LEAD_US].
         val scheduledAheadUs = (plan.presentationUs - nowUs()).coerceAtLeast(0L)
-        audioLead.leadUs = scheduledAheadUs + plan.outputLatencyUs
+        audioLead.leadUs = (scheduledAheadUs + plan.outputLatencyUs).coerceAtMost(MAX_REPORTED_LEAD_US)
         // Track-relative, per the field's contract — the same value handed to the tap
         // just above, not the absolute output-clock stamp it was being given.
         audioLead.mediaTimeUs = mediaTimeUs
@@ -934,15 +1046,23 @@ class SendspinNativeEngine(
         maybeSampleNativeSync()
         maybeLogWriteTiming(serverTimestampUs, plan, nowUs(), writeLength, frames)
 
-        // Unmute once actually locked (SYNC) or after time cushion (DIRECT).
-        if (syncMuted &&
-            syncMuteStartedMs > 0L &&
-            System.currentTimeMillis() - syncMuteStartedMs > startupMuteMs &&
-            (!isSync || abs(nativeOutput.driftEmaUs()) < 5_000L)
-        ) {
-            syncMuted = false
-            syncMuteStartedMs = 0L
-            applyOutputVolume()
+        // Unmute once actually locked, or once the deadline says to stop waiting for
+        // a lock that is not coming — see [SYNC_MUTE_MAX_MS].
+        if (syncMuted && syncMuteStartedMs > 0L) {
+            val heldMs = System.currentTimeMillis() - syncMuteStartedMs
+            val locked = !isSync || abs(nativeOutput.driftEmaUs()) < LOCKED_DRIFT_US
+            if (heldMs > startupMuteMs && (locked || heldMs > SYNC_MUTE_MAX_MS)) {
+                if (!locked) {
+                    Log.w(
+                        TAG,
+                        "unmuting without a lock after ${heldMs}ms " +
+                            "(drift=${nativeOutput.driftEmaUs() / 1000}ms) - out of step beats silent",
+                    )
+                }
+                syncMuted = false
+                syncMuteStartedMs = 0L
+                applyOutputVolume()
+            }
         }
     }
 
@@ -964,7 +1084,7 @@ class SendspinNativeEngine(
         val now = System.currentTimeMillis()
         if (now - lastStartupLogMs < 1_000L) return
         lastStartupLogMs = now
-        Log.d(TAG, "start-wait reason=$reason grouped=$isSync buf=${bufferDurationMs()}ms need=${neededMs}ms codec=$activeCodec clockErr=${clock.errorUs()}us")
+        Log.d(TAG, "start-wait reason=$reason serverTimeline=$serverTimeline grouped=$_grouped buf=${bufferDurationMs()}ms need=${neededMs}ms codec=$activeCodec clockErr=${clock.errorUs()}us")
     }
 
     private fun maybeLogWriteTiming(
@@ -978,7 +1098,7 @@ class SendspinNativeEngine(
         val force = writtenChunkCount <= 12 || writtenChunkCount % 250 == 0L
         if (!force && nowMs - lastTimingLogMs < 1_000L) return
         lastTimingLogMs = nowMs
-        Log.d(TAG, "write chunk#$writtenChunkCount grouped=$isSync codec=$activeCodec serverTs=${serverTimestampUs / 1000}ms " +
+        Log.d(TAG, "write chunk#$writtenChunkCount serverTimeline=$serverTimeline grouped=$_grouped codec=$activeCodec serverTs=${serverTimestampUs / 1000}ms " +
             "present=${plan.presentationUs / 1000}ms now=${nowUsValue / 1000}ms " +
             "lead=${(plan.presentationUs - nowUsValue) / 1000}ms frames=$frames " +
             "ring=${nativeOutput.bufferedFrames() * 1000L / activeSampleRate}ms " +
@@ -1075,7 +1195,13 @@ class SendspinNativeEngine(
     // ---- Native output ----
 
     private fun startNativeOutput() {
-        if (!nativeOutput.start(activeSampleRate, activeChannels, isSync)) {
+        // Drift correction on, always. It used to be `isSync`, i.e. "are we grouped",
+        // which meant grouping had to restart the Oboe stream to turn it on — the
+        // restart that silenced the leader. There is one timeline now and the
+        // correction is what holds the DAC to it; on the local-anchor fallback it
+        // holds the DAC to *that*, which is equally what we want. Solo it costs
+        // nothing: with nothing to correct the rate stays exactly 1.0.
+        if (!nativeOutput.start(activeSampleRate, activeChannels, true)) {
             Log.e(TAG, "Native output failed to start ${activeSampleRate}Hz ch=$activeChannels; stream will be silent")
         }
         if (outputFrozen) nativeOutput.setFrozen(true)

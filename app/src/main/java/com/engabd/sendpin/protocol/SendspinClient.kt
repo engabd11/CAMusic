@@ -99,6 +99,23 @@ class SendspinClient(
     private val _syncMuted = MutableStateFlow(false)
     val syncMuted: StateFlow<Boolean> = _syncMuted.asStateFlow()
 
+    /**
+     * Whether the clock filter has converged at least once on **this** connection.
+     *
+     * A latch rather than a live reading, and that is deliberate. The spec's rule is
+     * about the *first* `client/state`: do not offer yourself for playback before you
+     * can place a sample on the shared timeline. It is not an invitation to flap. A
+     * converged filter can be stood down for a moment by a single suspect residual
+     * (see [ClockKalmanFilter.isStepSuspected]), and reporting `available: false` on
+     * that would ask Music Assistant to drop a playing speaker out of its group over a
+     * blip it will have resolved by the next sample.
+     *
+     * So: unavailable until convergence, available from then until the socket closes.
+     * [SyncGate] still reports `state: "error"` and mutes for the transient case,
+     * which is the mechanism the spec actually gives for "synchronization issues".
+     */
+    @Volatile private var everConverged = false
+
     /** Roles the server actually activated, from `server/hello`. */
     private val _activeRoles = MutableStateFlow<List<String>>(emptyList())
     val activeRoles: StateFlow<List<String>> = _activeRoles.asStateFlow()
@@ -378,6 +395,7 @@ class SendspinClient(
         val msg = SendspinClientState(
             payload = ClientStatePayload(
                 state = state,
+                available = everConverged,
                 // The spec's wire range is 0..5000; a negative trim is meaningful
                 // locally (play later) but has nothing to say to the server. The signed
                 // value is kept in [_staticDelayMs] above, which is what the engine
@@ -409,6 +427,11 @@ class SendspinClient(
             // `webSocket = newWebSocket(...)` assignment in connect(), which would make
             // the field-based send() a silent no-op. Send the first frame via the param.
             this@SendspinClient.webSocket = webSocket
+            // A new socket is a new connection, and the spec's rule is per-connection:
+            // the first client/state on it must not claim availability the filter has
+            // not re-established. Cheap to re-earn — the seeded filter needs three
+            // samples at the 300 ms cold-start cadence.
+            everConverged = false
             val t = token
             dbg("ws OPEN (http ${response.code}) → ${if (t.isNullOrBlank()) "no token, sending hello" else "sending auth"}")
             if (t.isNullOrBlank()) {
@@ -690,6 +713,15 @@ class SendspinClient(
                     clockReady = ready,
                     unreadyMs = if (ready) 0L else System.currentTimeMillis() - unreadySinceMs,
                 )
+                // Latched off the same decision the mute uses, so the two can never
+                // disagree, and so a filter that never converges still ends up
+                // available: SyncGate stops muting at its deadline on the argument
+                // that a player with nothing to be out of step with should still make
+                // a sound, and a player MA refuses to stream to makes none.
+                if (!everConverged && !d.muted) {
+                    everConverged = true
+                    dbg(if (ready) "clock converged → available:true" else "sync deadline passed → available:true")
+                }
                 if (_syncMuted.value != d.muted) {
                     dbg(if (d.muted) "clock unconverged → muting" else "clock ready → unmuting")
                 }

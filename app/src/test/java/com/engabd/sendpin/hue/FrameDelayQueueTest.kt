@@ -128,6 +128,72 @@ class FrameDelayQueueTest {
         assertNotNull(q.poll(t0 + 1_000_000 * ms), "eviction dropped frames it should have kept")
     }
 
+    /**
+     * The regression that killed Light Sync on the Music Assistant path.
+     *
+     * The MA engine keeps ~2.5 s of decoded PCM in its native ring, so the tap runs
+     * that far ahead of the speaker and the correct hold is ~2.4 s. The queue used to
+     * be capped at a flat 120 entries — two seconds at the render rate — so every
+     * frame was evicted before it came due, [FrameDelayQueue.poll] returned null on
+     * every tick, and the room stopped reacting at all. It looked like "the lights
+     * ignore the beat when a second speaker joins", because the extra buffering of a
+     * grouped stream is what pushed the lead over the cap.
+     */
+    @Test
+    fun `a lead longer than two seconds still delivers frames`() {
+        val q = FrameDelayQueue<Int>()
+        q.resetDelay(2_500f)              // hold 2.4 s, the MA engine's real lead
+        assertEquals(2_400f, q.delayMs)
+
+        val t0 = 1_000_000_000L
+        val frameNanos = 1_000L / 60 * ms // one render tick at 60 fps
+        // Five seconds of frames at 60 fps — comfortably past the old 120-entry cap.
+        var n = 0
+        var t = t0
+        var delivered: Int? = null
+        repeat(300) {
+            q.offer(n++, t)
+            delivered = q.poll(t) ?: delivered
+            t += frameNanos
+        }
+        assertNotNull(delivered, "nothing was ever due: the queue evicted frames before their turn")
+
+        // And what came out is the frame from ~2.4 s ago, not the newest one.
+        val expected = ((300 - 1) - (2_400f / (frameNanos / ms.toFloat()))).toInt()
+        assertTrue(
+            kotlin.math.abs(delivered!! - expected) <= 4,
+            "expected a frame from ~2.4 s back (~$expected), got $delivered",
+        )
+    }
+
+    @Test
+    fun `eviction follows the delay rather than a fixed frame count`() {
+        // A short delay must not keep five seconds of history around, and a long one
+        // must: the bound is the delay, not a constant that contradicts it.
+        val short = FrameDelayQueue<Int>()
+        short.resetDelay(200f)   // hold 100 ms
+        val long = FrameDelayQueue<Int>()
+        long.resetDelay(3_100f)  // hold 3 s
+
+        val t0 = 1_000_000_000L
+        repeat(300) {
+            short.offer(it, t0 + it.toLong() * 16 * ms)
+            long.offer(it, t0 + it.toLong() * 16 * ms)
+        }
+        val end = t0 + 299L * 16 * ms
+
+        // The short queue threw away everything older than its own hold plus margin.
+        assertNull(
+            short.poll(end - 2_000 * ms),
+            "a 100 ms hold kept two seconds of history",
+        )
+        // The long one still has a frame from three seconds back to hand over.
+        assertNotNull(
+            long.poll(end),
+            "a 3 s hold evicted the frame it was holding for",
+        )
+    }
+
     @Test
     fun `clear drops pending frames`() {
         val q = FrameDelayQueue<Int>()
