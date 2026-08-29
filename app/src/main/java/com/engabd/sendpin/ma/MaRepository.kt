@@ -52,11 +52,14 @@ class MaRepository(
          * Player-config keys that mean "shift this speaker's audio in time", best
          * first.
          *
-         * `sendspin_sync_delay` is exact and Sendspin-only. `sync_adjust` is Music
-         * Assistant's own generic equivalent and is what a Sonos or Chromecast member
-         * carries. Matched by *suffix*, because a provider may namespace the key.
+         * `sendspin_sync_delay` is the Sendspin protocol's own key (older builds).
+         * `sendspin_static_delay` is what sendspin-cli and newer MA builds expose
+         * — the same setting under a clearer name. `sync_adjust` is Music
+         * Assistant's own generic equivalent and is what a Sonos or Chromecast
+         * member carries. Matched by *suffix*, because a provider may namespace
+         * the key (e.g. `sendspin-cli-DESKTOP||protocol||sendspin_static_delay`).
          */
-        private val SYNC_KEYS = listOf("sendspin_sync_delay", "sync_adjust")
+        private val SYNC_KEYS = listOf("sendspin_sync_delay", "sendspin_static_delay", "sync_adjust")
 
         /**
          * The same list with repeats of one media item removed, first copy kept.
