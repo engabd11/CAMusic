@@ -28,6 +28,7 @@ import com.engabd.sendpin.ma.MaSimilarTrack
 import com.engabd.sendpin.subsonic.SubsonicClient
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -1801,6 +1802,20 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                 if (armedAt < 0 || seq <= armedAt) return@collect
                 val key = positionKey()
                 if (positions.isFrozen(key)) releaseFreeze(key)
+            }
+        }
+        // And arm the freeze when the app replaces the queue. A skip already froze on
+        // its way out; a play started from the library did not, so its first anchor
+        // took Music Assistant's `elapsed_time` at face value — which is a second or
+        // two in by then, because MA starts the stream job well before this phone makes
+        // a sound. That is the seek bar appearing to start a tapped song part-way in.
+        // Released by the collector above, on the edge where the new stream is heard.
+        //
+        // `drop(1)` so the replayed current value of a StateFlow is not read as a fresh
+        // request the moment this collector attaches.
+        viewModelScope.launch {
+            playback.playStartSeq.drop(1).collect {
+                if (!isLocal && sendspinAuthoritative()) freezeForTrackChange()
             }
         }
         // Remember whatever the selected player last had loaded.

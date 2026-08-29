@@ -51,11 +51,19 @@ import kotlinx.coroutines.isActive
  * looked?" — rather than guessing at intent.
  *
  * Time is the wall clock (`System.currentTimeMillis`), the only clock MA's
- * `elapsed_time_last_updated` — a Unix epoch in seconds — can be compared to. There
- * is deliberately no clock-offset estimation between phone and server: skew and NTP
- * corrections simply make captures look stale, and rule 3 then anchors them at arrival
- * time. A badly skewed clock costs the sub-second freshness of the server's stamp, not
- * a working bar.
+ * `elapsed_time_last_updated` — a Unix epoch in seconds — can be compared to. The two
+ * clocks are not the same clock, and the asymmetry matters: a server clock reading
+ * *ahead* of ours makes a capture look like it came from the future, which rule 3
+ * already catches by anchoring at arrival time. A server clock reading *behind* ours
+ * makes every capture look uniformly stale by the skew — well inside
+ * [MAX_PROJECTION_MS] — so the skew was projected forward on every single anchor, and
+ * the bar sat a second or two ahead of the music from 0:00 onwards.
+ *
+ * [skew] closes that without the clock-offset estimator this class deliberately does
+ * not want. Real staleness is never negative, so across many readings the *smallest*
+ * observed `(now - capturedAt)` is very nearly the pure offset between the clocks:
+ * a rolling minimum estimates it for free out of readings that were arriving anyway,
+ * with no extra round trips and nothing to keep in sync.
  */
 class PlayerPositionTracker(
     /** Wall-clock milliseconds. Injectable so the projection is testable off-device. */
@@ -132,6 +140,55 @@ class PlayerPositionTracker(
     private val anchors = MutableStateFlow<Map<String, Anchor>>(emptyMap())
 
     /**
+     * How far behind this phone's wall clock the server's appears to run, in ms.
+     *
+     * A leaky rolling minimum of `(now - capturedAt)` over live readings. The minimum
+     * because network latency and server staleness only ever *add* to that difference,
+     * so the smallest value seen is the closest thing to the clock offset alone. Leaky
+     * — it is allowed to drift back up by [SKEW_DECAY_MS] per reading — because a
+     * minimum that could only fall would be permanently poisoned by one unusually
+     * prompt reading, and would never notice an NTP correction on either machine.
+     *
+     * Zero until a reading has been seen, so the very first anchor behaves exactly as
+     * it did before this existed.
+     */
+    @Volatile private var skewMs: Long = 0L
+
+    /** True once [skewMs] means something. */
+    @Volatile private var skewSeen = false
+
+    /**
+     * The correction actually applied, in ms — zero unless the clocks are far enough
+     * apart to be worth correcting.
+     *
+     * The deadband is not a tolerance, it is the point of the thing. Two clocks within
+     * a couple of hundred milliseconds produce a bar that is right; what they also
+     * produce is exact idempotence, because the anchor is then the server's own stamp
+     * untouched and any reading describing the same moment re-derives the same answer.
+     * A correction that is always on would trade that property away to fix an error
+     * nobody can see. Below [SKEW_DEADBAND_MS] this returns zero and the class behaves
+     * exactly as it did before the estimator existed; above it, the correction is worth
+     * more than the property.
+     */
+    val skew: Long get() = if (skewSeen && skewMs >= SKEW_DEADBAND_MS) skewMs else 0L
+
+    /** The raw estimate, before the deadband. Diagnostics and tests. */
+    val rawSkew: Long get() = if (skewSeen) skewMs else 0L
+
+    /**
+     * Fold one reading's apparent lag into [skewMs].
+     *
+     * Only readings that arrive while playing are used. A capture frozen across a pause
+     * looks arbitrarily stale, and feeding those in would only ever push the estimate
+     * up — never down, since this tracks a minimum — so they are simply not evidence.
+     */
+    private fun observeLag(lagMs: Long, playing: Boolean) {
+        if (!playing || lagMs < 0 || lagMs > MAX_PROJECTION_MS) return
+        skewMs = if (!skewSeen) lagMs else minOf(lagMs, skewMs + SKEW_DECAY_MS)
+        skewSeen = true
+    }
+
+    /**
      * A reading from the server.
      *
      * [capturedAtMs] is the server's own capture timestamp (`elapsed_time_last_updated`
@@ -197,10 +254,24 @@ class PlayerPositionTracker(
             // 3. News. Project from the server's own capture time while it is close
             //    enough to be worth having; otherwise take the reading at arrival time,
             //    which also covers a server clock reading ahead of ours.
+            //
+            //    The capture time is corrected for clock skew before it is used as an
+            //    anchor. Without that, a server clock running a second behind this one
+            //    made every capture look a second stale, and the projection added that
+            //    second to the position on every anchor, forever — a bar that was ahead
+            //    of the music even at the very start of a track. See [skew].
+            if (capturedAtMs != null) observeLag(now - capturedAtMs, playing)
+            val anchorAt = capturedAtMs
+                ?.let { it + skew }
+                // Never anchor in the future: the correction is an estimate, and one
+                // that overshoots would run the bar backwards.
+                ?.coerceAtMost(now)
+                ?.takeIf { now - it in 0..MAX_PROJECTION_MS }
+                ?: now
             existing + (
                 queueId to Anchor(
                     elapsedMs = elapsedMs,
-                    capturedAtMs = capturedAtMs?.takeIf { now - it in 0..MAX_PROJECTION_MS } ?: now,
+                    capturedAtMs = anchorAt,
                     serverElapsedMs = elapsedMs,
                     serverStampMs = capturedAtMs,
                     isPlaying = playing,
@@ -335,5 +406,27 @@ class PlayerPositionTracker(
          * tight enough that a pause-then-event is caught.
          */
         const val MAX_PROJECTION_MS = 5_000L
+
+        /**
+         * How fast the [skew] estimate is allowed to drift back up, per reading.
+         *
+         * A pure minimum can only ever fall, so a single unusually prompt reading would
+         * pin the estimate low for the rest of the session and no clock correction on
+         * either machine would ever be noticed. Letting it rise by 20 ms a reading means
+         * a genuine step change is tracked out within a few seconds of polling, while
+         * ordinary jitter — which is far larger than 20 ms and lands above the minimum
+         * anyway — does not move it at all.
+         */
+        const val SKEW_DECAY_MS = 20L
+
+        /**
+         * How far apart the clocks have to look before the skew correction is applied.
+         *
+         * A quarter of a second. Below that the bar is already right to within a frame
+         * or two of the seek bar's own resolution, and leaving the anchor alone keeps
+         * the idempotence the rest of this class is built on. The bug this exists for
+         * was one to two *seconds*, which is four to eight times this.
+         */
+        const val SKEW_DEADBAND_MS = 250L
     }
 }

@@ -267,7 +267,16 @@ class MaApiClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
                 // rejection — a bad argument, a missing permission — answers the same
                 // way however many times it is asked, and retrying it just multiplies
                 // the delay before the user sees why.
-                if (!e.isTransport || attempt++ >= retries) throw e
+                if (!e.isTransport || attempt++ >= retries) {
+                    // The one place every Music Assistant failure passes through, and
+                    // until now none of them left a trace: the whole `ma/` package had
+                    // two Log.e calls, both about the socket, so a failed browse or play
+                    // existed only as snackbar text that was gone before anyone could
+                    // read it. A logcat line with the command name turns that class of
+                    // bug from a hunt into a read.
+                    Log.w("MaApi", "command '$command' failed: ${e.message} (code=${e.code})")
+                    throw e
+                }
                 delay(500L * attempt)
             }
         }

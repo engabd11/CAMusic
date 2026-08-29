@@ -868,6 +868,30 @@ class Playback(private val app: Context) {
     val audibleSeq: StateFlow<Long> = _audibleSeq.asStateFlow()
 
     /**
+     * Counts queue replacements this app asked for.
+     *
+     * The mirror of [audibleSeq]: that one is "a stream started being heard", this one
+     * is "the user asked for a different one". Between the two edges the position bar
+     * has nothing trustworthy to show — Music Assistant starts its stream job well
+     * before this phone makes a sound, so its `elapsed_time` is already one to two
+     * seconds in by the time the first poll lands, and adopting it made a freshly
+     * tapped song appear to start a second or two along.
+     *
+     * A skip already had this covered, because [MaNowPlaying.next] freezes the bar on
+     * the way out. Playing something from the library did not go through there, so it
+     * was the one route to a new track with nothing guarding the first anchor.
+     *
+     * Raised only for a queue *replacement*. Adding to the queue does not change what
+     * is playing, so freezing the bar for it would stop the position of the current
+     * track for no reason.
+     */
+    private val _playStartSeq = MutableStateFlow(0L)
+    val playStartSeq: StateFlow<Long> = _playStartSeq.asStateFlow()
+
+    /** Called by [com.engabd.sendpin.ma.MaRepository] when it replaces a queue. */
+    fun noteQueueReplaced() { _playStartSeq.value += 1 }
+
+    /**
      * Bring the player socket back now if it is down — see
      * [SendspinClient.reconnectNow]. Called when the user asks for playback, so a
      * socket that dropped while the phone was asleep is not still counting down a

@@ -9,6 +9,7 @@ import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.PlayerIdentity
 import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ma.MaRepository
+import com.engabd.sendpin.ma.queueFrom
 import com.engabd.sendpin.library.MusicSource
 import com.engabd.sendpin.library.MusicSources
 import com.engabd.sendpin.subsonic.SubsonicClient
@@ -397,7 +398,7 @@ class ArtistDetailViewModel(
             localPlayer.setQueue(localTracks(tracks))
         } else {
             maRepo.playOn(playTarget(), tracks.mapNotNull { it.uri }.shuffled(), "replace")
-            maRepo.setShuffle(playTarget(), true)
+            maRepo.setShuffleOn(playTarget(), true)
         }
         _toast.tryEmit("Shuffling ${ref.name}")
     }
@@ -483,14 +484,14 @@ class ArtistDetailViewModel(
                     localPlayer.setShuffle(false)
                     localPlayer.setQueue(localTracks(shelf), start)
                 } else {
-                    // Play the top-tracks shelf starting from this track — MA 2.10's
-                    // play_media supports start_item, so one command sends every
-                    // shelf track as `media` and jumps to the tapped one. The old
-                    // approach (play the track, add the rest, then call play) was
-                    // three commands for what the API was designed to do in one.
-                    val uris = shelf.mapNotNull { it.uri }
+                    // The rest of the shelf, from the tapped track onwards. Sliced here
+                    // rather than named as `start_item`, which MA ignores for tracks —
+                    // see [queueFrom]. Top tracks has no container URI to send instead:
+                    // the artist's own URI would enqueue the whole catalogue, which is a
+                    // different request than the one made.
+                    val uris = queueFrom(shelf, track)
                     if (uris.isNotEmpty()) {
-                        maRepo.playOn(playTarget(), uris, "replace", radioMode = false, startItem = track.uri)
+                        maRepo.playOn(playTarget(), uris, "replace", radioMode = false)
                     }
                 }
                 _toast.tryEmit("Playing ${track.name}")

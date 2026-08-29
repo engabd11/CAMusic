@@ -121,6 +121,10 @@ fun AlbumDetailScreen(
             discGroups(tracks, album?.discTitles.orEmpty())
         }
     }
+    // The album exactly as it is drawn: disc groups concatenated, each group already in
+    // track order. This — not `tracks` — is what a tap has to queue, or the row the user
+    // pressed and the song that starts are picked out of two differently-ordered lists.
+    val playOrder = remember(discs) { discs.flatMap { it.tracks } }
     val musicBrainzId by viewModel.musicBrainzId.collectAsStateWithLifecycle()
 
     val related by viewModel.related.collectAsStateWithLifecycle()
@@ -220,7 +224,7 @@ fun AlbumDetailScreen(
                                     track = track,
                                     index = index,
                                     accent = albumPalette.accent,
-                                    onPlay = { viewModel.playTrack(track) },
+                                    onPlay = { viewModel.playTrack(track, playOrder) },
                                     onFavorite = { viewModel.toggleFavorite(track) },
                                     onLongPress = { actionsFor = track },
                                     onAddToQueue = { viewModel.enqueueTrack(track, "add") },
@@ -279,7 +283,7 @@ fun AlbumDetailScreen(
                 MediaActionsSheet(
                     item = picked,
                     onClose = { actionsFor = null },
-                    onPlayNow = { viewModel.playTrack(picked) },
+                    onPlayNow = { viewModel.playTrack(picked, playOrder) },
                     onPlayNext = { viewModel.enqueueTrack(picked, "next") },
                     onAddToQueue = { viewModel.enqueueTrack(picked, "add") },
                 )

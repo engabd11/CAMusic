@@ -9,6 +9,7 @@ import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.PlayerIdentity
 import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ma.MaRepository
+import com.engabd.sendpin.ma.queueFrom
 import com.engabd.sendpin.library.MusicSource
 import com.engabd.sendpin.library.MusicSources
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -138,7 +139,7 @@ class PlaylistDetailViewModel(
                     localPlayer.setQueue(localTracks())
                 } else {
                     maRepo.playOn(playTarget(), _tracks.value.mapNotNull { it.uri }.shuffled(), "replace")
-                    maRepo.setShuffle(playTarget(), true)
+                    maRepo.setShuffleOn(playTarget(), true)
                 }
                 _toast.tryEmit("Shuffling ${_playlist.value?.name ?: "playlist"}")
             } catch (e: Exception) { _toast.tryEmit(e.message ?: "Couldn't shuffle") }
@@ -184,14 +185,11 @@ class PlaylistDetailViewModel(
                     localPlayer.setShuffle(false)
                     localPlayer.setQueue(localTracks(), start)
                 } else {
-                    // Play the whole playlist starting from this track — MA 2.10's
-                    // play_media supports start_item, so one command sends every
-                    // track as `media` and jumps to the tapped one. The old approach
-                    // (play the track, add the rest) was two commands for what the
-                    // API was designed to do in one.
-                    val uris = _tracks.value.mapNotNull { it.uri }
+                    // The rest of the playlist, from the tapped track onwards. Sliced
+                    // here rather than named as `start_item` — see [queueFrom].
+                    val uris = queueFrom(_tracks.value, track)
                     if (uris.isNotEmpty()) {
-                        maRepo.playOn(playTarget(), uris, "replace", radioMode = false, startItem = track.uri)
+                        maRepo.playOn(playTarget(), uris, "replace", radioMode = false)
                     }
                 }
                 _toast.tryEmit("Playing ${track.name}")

@@ -148,6 +148,14 @@ class SendspinNativeEngine(
         // SYNC mode: 200 ms headroom (official client phase), clock gate.
         private const val SYNC_START_BUFFER_MS = 250L
         private const val SYNC_CLOCK_WAIT_MS = 3_000L
+
+        /**
+         * A startup trim this long is a lost intro, not housekeeping.
+         *
+         * A quarter of a second is about where a dropped opening stops being
+         * imperceptible and starts being "it skipped the beginning".
+         */
+        private const val NOTABLE_START_TRIM_MS = 250L
         private const val SYNC_CLOCK_ERROR_US = 15_000L
         private const val START_TARGET_HEADROOM_US = 50_000L
         private const val SCHEDULE_HEADROOM_US = 200_000L
@@ -614,7 +622,17 @@ class SendspinNativeEngine(
             droppedBytes += dropped.length.toLong()
         }
         if (droppedFrames > 0) {
-            Log.d(TAG, "start-trim frames=$droppedFrames bytes=$droppedBytes headroom=${headroomUs / 1000}ms buf=${bufferDurationMs()}ms")
+            // Every dropped frame is audio the listener will not hear: the stream starts
+            // that far in. A little is unavoidable when joining a group already playing.
+            // A lot means this speaker spent too long getting ready — usually waiting on
+            // clock convergence, which [ClockKalmanFilter.READY_SEEDED_MIN_SAMPLES] is
+            // there to shorten — and is worth saying out loud rather than filing at
+            // debug with the routine trims.
+            val lostMs = droppedFrames * estimatedFrameDurationUs / 1000L
+            val line = "start-trim frames=$droppedFrames bytes=$droppedBytes " +
+                "lost=${lostMs}ms headroom=${headroomUs / 1000}ms buf=${bufferDurationMs()}ms"
+            if (lostMs >= NOTABLE_START_TRIM_MS) Log.w(TAG, "$line - start of track lost")
+            else Log.d(TAG, line)
         }
         if (bufferDurationMs() < neededMs) {
             maybeLogStartupWait("post-trim-buffer", neededMs)

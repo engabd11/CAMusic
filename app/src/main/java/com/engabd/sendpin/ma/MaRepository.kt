@@ -21,6 +21,16 @@ class MaRepository(
     private val onPlaybackRequested: () -> Unit = {
         runCatching { com.engabd.sendpin.SendpinApp.instance.playback.wakePlayerSocket() }
     },
+    /**
+     * Called when a command has *replaced* a queue, so the position bar can hold at
+     * zero until sound is actually out — see [com.engabd.sendpin.service.Playback.playStartSeq].
+     *
+     * Distinct from [onPlaybackRequested], which fires for enqueues too: adding to the
+     * queue leaves the playing track alone, and freezing its position would be wrong.
+     */
+    private val onQueueReplaced: () -> Unit = {
+        runCatching { com.engabd.sendpin.SendpinApp.instance.playback.noteQueueReplaced() }
+    },
 ) {
 
     private val serverUrl: String? get() = api.serverUrl
@@ -28,6 +38,30 @@ class MaRepository(
     // --- library browse ---------------------------------------------------
 
     companion object {
+        /**
+         * Cached `player_id -> (queue_id, fetched at)`.
+         *
+         * In the companion rather than the instance because every screen constructs its
+         * own [MaRepository] over the one process-wide [MaApiClient] — a per-instance
+         * cache would be cold on every navigation, which is most of the taps that
+         * mattered. Keyed by player id and guarded by [queueIdServer] so switching
+         * Music Assistant servers cannot serve one server's queue id for another's.
+         */
+        private val queueIdCache = java.util.concurrent.ConcurrentHashMap<String, Pair<String, Long>>()
+
+        /** Which server [queueIdCache] holds answers for. */
+        @Volatile private var queueIdServer: String? = null
+
+        /**
+         * How long a queue id is trusted.
+         *
+         * The answer only changes when grouping changes. Thirty seconds is short enough
+         * that a group made from the Music Assistant web UI is picked up while the user
+         * is still looking at the screen, and long enough that scrolling a list and
+         * tapping four songs costs one lookup rather than four round trips.
+         */
+        private const val QUEUE_ID_TTL_MS = 30_000L
+
         /**
          * How many library items to ask for at once.
          *
@@ -280,6 +314,39 @@ class MaRepository(
         )
     }
 
+    /**
+     * The Discover rows the server offers, without their contents.
+     *
+     * MA 2.10 split the recommendations API in two: this listing names the rows, and
+     * [recommendationItems] fills one. The app never adopted the split, so [recommendations]
+     * above — which reads `folder["items"]` — has been returning nothing at all on any
+     * 2.10 server, and the whole "For you" shelf silently disappeared. Worse, everything
+     * *behind* those rows disappeared with it: the built-in provider alone offers sixteen,
+     * including "Random artists", "Forgotten Albums", "Most Played Tracks" and
+     * "Never / Rarely Played", and music providers add their own on top.
+     *
+     * Reading the rows generically is what makes those appear — and any row a future
+     * server or a newly-installed provider grows, without another change here.
+     */
+    suspend fun recommendationRows(): List<MaRecommendationRow> =
+        MaParse.recommendationRows(api.sendCommand("music/recommendations"), serverUrl)
+
+    /**
+     * The contents of one Discover row.
+     *
+     * Deduplicated for the same reason [recommendations] was: a row like "Recent artists"
+     * can legitimately list one artist under two provider mappings.
+     */
+    suspend fun recommendationItems(row: MaRecommendationRow): List<MaItem> = distinctItems(
+        MaParse.items(
+            api.sendCommand("music/recommendations/items", buildJsonObject {
+                put("provider", row.provider)
+                put("item_id", row.itemId)
+            }),
+            serverUrl,
+        )
+    )
+
     /** Audiobooks and podcasts in progress. */
     suspend fun inProgress(limit: Int = 12) =
         MaParse.items(api.sendCommand("music/in_progress_items", buildJsonObject { put("limit", limit) }), serverUrl)
@@ -481,12 +548,40 @@ class MaRepository(
      *
      * `player_queues/get_active_queue` is Music Assistant's own answer to the question,
      * so it is used in preference to guessing from `synced_to`.
+     *
+     * ## Cached, because it was a round trip on every tap
+     *
+     * This sits in front of [playOn], so it used to add a full WebSocket round trip
+     * ahead of *every* play, enqueue and shuffle in the app — the answer being fetched
+     * again each time to learn something that only changes when grouping changes. On a
+     * phone that had let its socket doze, that round trip is also the one that waits out
+     * the reconnect backoff, so the tap-to-sound delay was two serial round trips at
+     * best and a reconnect plus two at worst.
+     *
+     * The answer is now held for [QUEUE_ID_TTL_MS]. That is short enough that a
+     * grouping change made in another app is picked up within a few seconds, and long
+     * enough that a burst of taps costs one lookup. [invalidateQueueId] drops it
+     * immediately for the case the app already knows about — this phone's own grouping
+     * changing underneath it.
      */
     suspend fun activeQueueId(playerId: String): String {
+        val now = System.currentTimeMillis()
+        if (queueIdServer != serverUrl) { queueIdCache.clear(); queueIdServer = serverUrl }
+        queueIdCache[playerId]?.let { (id, at) -> if (now - at < QUEUE_ID_TTL_MS) return id }
         val res = runCatching {
             api.sendCommand("player_queues/get_active_queue", buildJsonObject { put("player_id", playerId) })
         }.getOrNull()?.jsonObject
-        return res?.get("queue_id")?.jsonPrimitive?.contentOrNull ?: playerId
+        val id = res?.get("queue_id")?.jsonPrimitive?.contentOrNull ?: playerId
+        // Only a real answer is cached. Falling back to the player id is what happens
+        // when the socket is down, and caching that would keep the wrong id in place
+        // for the whole TTL once it came back.
+        if (res != null) queueIdCache[playerId] = id to now
+        return id
+    }
+
+    /** Forget the cached queue id — call when this player's grouping changes. */
+    fun invalidateQueueId(playerId: String? = null) {
+        if (playerId == null) queueIdCache.clear() else queueIdCache.remove(playerId)
     }
 
     /** A single player's state, or null when the server doesn't know it. */
@@ -610,6 +705,10 @@ class MaRepository(
                 startFromBeginning?.let { put("start_from_beginning", it) }
                 user?.let { put("user", it) }
             })
+            // After the command lands, not before: a play that the server refused has
+            // not replaced anything, and freezing the bar for it would leave the
+            // position of the track still playing stuck at zero.
+            if (option == "replace") onQueueReplaced()
         } catch (e: MaApiException) {
             throw describePlayFailure(e, uris)
         }
@@ -693,6 +792,18 @@ class MaRepository(
         api.sendCommand("player_queues/shuffle", buildJsonObject {
             put("queue_id", queueId); put("shuffle_enabled", enabled)
         })
+
+    /**
+     * Shuffle on whatever queue [playerId] is actually using — the [playOn] of shuffle.
+     *
+     * Every "shuffle this album/artist/playlist" button was handing [setShuffle] a
+     * *player* id. On an ungrouped player the two ids happen to be equal, so it worked;
+     * on a synced player they are not, and the flag landed on a queue nobody was
+     * listening to while the music played on in order. Same trap [playOn] exists to
+     * close, and the reason the KDoc at the top of this file says to route through it.
+     */
+    suspend fun setShuffleOn(playerId: String, enabled: Boolean) =
+        setShuffle(activeQueueId(playerId), enabled)
 
     /** [mode] is `off`, `one` or `all`. */
     suspend fun setRepeat(queueId: String, mode: String) =

@@ -35,6 +35,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -67,6 +69,27 @@ data class LibraryShelves(
     val recommendations: List<MaItem> = emptyList(),
     val recent: List<MaItem> = emptyList(),
     val frequent: List<MaItem> = emptyList(),
+    /** Music Assistant's own Discover rows — see [LibraryViewModel.loadDiscoverRows]. */
+    val discover: List<DiscoverShelf> = emptyList(),
+)
+
+/**
+ * One shelf the *server* named, as opposed to the seven this app hard-codes above.
+ *
+ * The fixed shelves each exist because someone wrote a loader for one specific Music
+ * Assistant command. That does not scale: MA's built-in recommendations provider alone
+ * offers sixteen rows, and every music provider can add more. Carrying the row's own
+ * name and icon means a row the server grows appears here with no change to the app.
+ */
+@Immutable
+data class DiscoverShelf(
+    val key: String,
+    val title: String,
+    /** MA's `mdi-*` icon name, mapped to a Material icon at the tile. */
+    val icon: String?,
+    val items: List<MaItem>,
+    /** Artists read better as circles; everything else as squares. */
+    val circular: Boolean,
 )
 
 /**
@@ -104,8 +127,57 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * Whether to ask MA to keep the music going once this queue runs dry. Read at
      * play time rather than cached: `radio_mode` is a parameter of
      * `player_queues/play_media`, so it only ever means anything here.
+     *
+     * **Not applied to a plain tap any more.** In MA 2.10 `radio_mode` is translated
+     * into a `radio_playlist://` dynamic source seeded from the item, which is a
+     * *generated* queue — so with the setting on, tapping a song from Recently added
+     * played something adjacent to it rather than the song itself, intermittently and
+     * with no visible cause. Every detail screen already hardcoded `false`; only the
+     * shelf and list taps read the setting, which is why the two behaved differently
+     * for the same track. A tap now plays what was tapped, and radio is reached
+     * deliberately through [startRadio] — the "Start radio from this" action.
+     *
+     * The setting itself still means what it says. On the local/Subsonic backend
+     * [startLocalRadio] tops the queue up two tracks before the end. On Music Assistant
+     * [applyDontStopTheMusic] hands the same job to the server's own
+     * `player_queues/dont_stop_the_music`, which is MA's feature for "keep going when
+     * this runs dry" — as opposed to `radio_mode`, which is "don't play what I asked
+     * for, play something like it".
      */
     private suspend fun radioMode(): Boolean = settings.radioMode.first()
+
+    /**
+     * Mirror the Radio Mode setting onto whatever MA queue this phone is playing to.
+     *
+     * Best-effort and fire-and-forget: it is a preference about what happens minutes
+     * from now, so it must never delay or fail a play. Applied after the play command
+     * rather than before, because the queue it names may not exist until then.
+     */
+    private fun applyDontStopTheMusic() {
+        viewModelScope.launch {
+            runCatching { maRepo.setDontStopTheMusic(maRepo.activeQueueId(playTarget()), radioMode()) }
+        }
+    }
+
+    /**
+     * Play [item] and let Music Assistant carry on with things like it.
+     *
+     * The explicit form of what the Radio Mode setting used to do to every tap. Sends
+     * `radio_mode = true` regardless of the setting, because the user asked for it here
+     * and now rather than in Settings a fortnight ago.
+     */
+    fun startRadio(item: MaItem) {
+        val uri = item.uri ?: run { _toast.tryEmit("Can't start radio from that"); return }
+        viewModelScope.launch {
+            try {
+                localPlayer.stop()
+                maRepo.playOn(playTarget(), listOf(uri), "replace", radioMode = true)
+                _toast.tryEmit("Radio from ${item.name}")
+            } catch (e: Exception) {
+                _toast.tryEmit(e.message ?: "Couldn't start radio")
+            }
+        }
+    }
 
     private val maApi = (app as SendpinApp).maApi
     private val maRepo = MaRepository(maApi)
@@ -201,6 +273,21 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         if (b == Backend.SUBSONIC) active?.kind?.needsAddress == false || nav.isNotBlank() else ma.isNotBlank()
     }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
+    /**
+     * The three settings a tap has to know, held rather than read.
+     *
+     * Each of these used to be a `settings.<x>.first()` on the play path. A DataStore
+     * read is a suspending call that can touch disk, and "play at original quality" did
+     * two of them before it had even decided whether it applied — so every tap in the
+     * library paid for settings that are almost always at their defaults. Collected
+     * eagerly here instead: the value is in memory by the time any row is tappable, and
+     * a change still lands immediately.
+     */
+    private val preferOriginalNow = settings.preferOriginal
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+    private val preferHiResNow = settings.preferHiRes
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
     private val _node = MutableStateFlow(Node("Library", emptyList())); val node: StateFlow<Node> = _node
     private val _loading = MutableStateFlow(false); val loading: StateFlow<Boolean> = _loading
     private val _error = MutableStateFlow<String?>(null); val error: StateFlow<String?> = _error
@@ -248,6 +335,14 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private val _inProgress = MutableStateFlow<List<MaItem>>(emptyList()); val inProgress: StateFlow<List<MaItem>> = _inProgress
 
     /**
+     * Music Assistant's Discover rows, each already filled. Declared above the
+     * [shelves] combine that reads it — see the note on [_frequent] for why that
+     * matters here specifically.
+     */
+    private val _discover = MutableStateFlow<List<DiscoverShelf>>(emptyList())
+    val discover: StateFlow<List<DiscoverShelf>> = _discover
+
+    /**
      * A reachability answer for the Navidrome server that does *not* depend on it
      * being the active backend.
      *
@@ -288,11 +383,14 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      */
     val shelves: StateFlow<LibraryShelves> = combine(
         _favoriteAlbums, _favoriteArtists, _inProgress, _recentlyAdded,
-        _recommendations, _recent, _frequent,
+        _recommendations, _recent, _frequent, _discover,
     ) { s ->
+        @Suppress("UNCHECKED_CAST")
         LibraryShelves(
-            favoriteAlbums = s[0], favoriteArtists = s[1], inProgress = s[2],
-            recentlyAdded = s[3], recommendations = s[4], recent = s[5], frequent = s[6],
+            favoriteAlbums = s[0] as List<MaItem>, favoriteArtists = s[1] as List<MaItem>,
+            inProgress = s[2] as List<MaItem>, recentlyAdded = s[3] as List<MaItem>,
+            recommendations = s[4] as List<MaItem>, recent = s[5] as List<MaItem>,
+            frequent = s[6] as List<MaItem>, discover = s[7] as List<DiscoverShelf>,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, LibraryShelves())
 
@@ -510,8 +608,8 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         _node.value = Node("Library", rootItems())
         listOfNotNull(
             loadFavoriteAlbums(), loadFavoriteArtists(), loadRecent(),
-            loadRecentlyAdded(), loadRecommendations(), loadInProgress(),
-            loadFrequent(),
+            loadRecentlyAdded(), loadRecommendations(), loadDiscoverRows(),
+            loadInProgress(), loadFrequent(),
         ).joinAll()
     }
 
@@ -1141,9 +1239,15 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                         // buttons keep driving) a player that is no longer the one
                         // making the sound.
                         if (option == "replace") localPlayer.stop()
-                        item.uri?.let {
-                            maRepo.playOn(playTarget(), listOf(it), option, radioMode())
+                        val uri = item.uri
+                        if (uri == null) {
+                            // Reported success unconditionally before, even though the
+                            // `?.let` had sent nothing at all.
+                            _toast.tryEmit("Can't play ${item.name}")
+                            return@launch
                         }
+                        maRepo.playOn(playTarget(), listOf(uri), option, radioMode = false)
+                        if (option == "replace") applyDontStopTheMusic()
                         _toast.tryEmit(if (option == "replace") "Playing ${item.name}" else "Added to queue")
                     }
                 }
@@ -1170,7 +1274,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                     if (option == "next") localPlayer.playNext(listOf(track)) else localPlayer.addToQueue(listOf(track))
                 } else {
                     val uri = item.uri ?: run { _toast.tryEmit("Couldn't queue that"); return@launch }
-                    maRepo.playOn(playTarget(), listOf(uri), option, radioMode())
+                    maRepo.playOn(playTarget(), listOf(uri), option, radioMode = false)
                 }
                 _toast.tryEmit(if (option == "next") "Playing next" else "Added to queue")
             } catch (e: Exception) {
@@ -1303,13 +1407,16 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      *    losing the queue for a 44.1/16 file the server would have passed through.
      */
     private suspend fun navidromeDirect(item: MaItem): DirectStream? {
-        if (!settings.preferOriginal.first()) return null
+        // Ordered cheapest-first, and every one of these is now a memory read. The
+        // Navidrome search below is a full HTTP round trip on the tap path, so the
+        // point of these guards is that it is reached only when it can actually help.
+        if (!preferOriginalNow.value) return null
         if (_backend.value != Backend.MA) return null
         if (item.mediaType != "track") return null
         if (_targetPlayer.value.isNotBlank() && _targetPlayer.value != myPlayerId) return null
 
         val fmt = item.audioFormat ?: return null
-        val hiRes = settings.preferHiRes.first()
+        val hiRes = preferHiResNow.value
         if (FormatNegotiator.canStreamUntouched(fmt.sampleRate, fmt.bitDepth, hiRes)) return null
 
         val sc = navidromeClient() ?: return null
@@ -1399,7 +1506,8 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 if (_backend.value == Backend.MA && tracks.none { it.provider == DOWNLOAD }) {
                     if (replacing) localPlayer.stop()
-                    maRepo.playOn(playTarget(), tracks.mapNotNull { it.uri }, option, radioMode())
+                    maRepo.playOn(playTarget(), tracks.mapNotNull { it.uri }.distinct(), option, radioMode = false)
+                    if (replacing) applyDontStopTheMusic()
                     _toast.tryEmit(queuedMessage(option, tracks.size))
                 } else {
                     // Local playback — stop MA first so both don't play at once.
@@ -2264,6 +2372,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         loadRecent()
         loadRecentlyAdded()
         loadRecommendations()
+        loadDiscoverRows()
         loadInProgress()
         loadFrequent()
     }
@@ -2388,6 +2497,64 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 else source?.randomAlbums(12).orEmpty()
             } catch (_: Exception) { emptyList() }
             rememberFavorites(_recommendations.value)
+        }
+    }
+
+    /**
+     * Music Assistant's own Discover rows, each fetched and published as it lands.
+     *
+     * MA 2.10 answers `music/recommendations` with the row *listing* — names, icons,
+     * ids — and nothing else; the contents of each row come from a second call. So this
+     * is one cheap call followed by a fan-out, rather than the single call the app used
+     * to make and then find empty.
+     *
+     * Three things are deliberate:
+     *
+     *  - **Rows are published incrementally.** A server with fifteen enabled rows is
+     *    fifteen round trips; waiting for all of them would leave the library blank for
+     *    as long as the slowest one takes. Each row appears the moment it is filled.
+     *  - **Concurrency is capped.** They all share the one WebSocket, and firing fifteen
+     *    commands into it at once just queues them behind each other while starving
+     *    whatever else the app is doing — including the play command from a tap.
+     *  - **Rows the fixed shelves already cover are dropped.** "Recently played",
+     *    "Recently added tracks" and "In progress" have their own loaders above and
+     *    their own places on screen; listing them twice is worse than not having them
+     *    from the server at all.
+     */
+    private fun loadDiscoverRows(): Job? {
+        if (_backend.value != Backend.MA || _offline.value) { _discover.value = emptyList(); return null }
+        return viewModelScope.launch {
+            val rows = try { maRepo.recommendationRows() } catch (_: Exception) { emptyList() }
+            val wanted = rows.filter { it.enabledByDefault && it.itemId !in DISCOVER_COVERED_ELSEWHERE }
+            if (wanted.isEmpty()) { _discover.value = emptyList(); return@launch }
+            _discover.value = emptyList()
+            // Keeps the row order the server chose, however the fetches interleave.
+            val filled = LinkedHashMap<String, DiscoverShelf>()
+            val gate = Semaphore(DISCOVER_CONCURRENCY)
+            coroutineScope {
+                wanted.forEach { row ->
+                    launch {
+                        val items = gate.withPermit {
+                            // Already inline on a pre-2.10 server; one call otherwise.
+                            row.items.ifEmpty {
+                                try { maRepo.recommendationItems(row) } catch (_: Exception) { emptyList() }
+                            }
+                        }
+                        if (items.isEmpty()) return@launch
+                        rememberFavorites(items)
+                        synchronized(filled) {
+                            filled[row.itemId] = DiscoverShelf(
+                                key = "${row.provider}:${row.itemId}",
+                                title = row.name,
+                                icon = row.icon,
+                                items = items,
+                                circular = items.all { it.mediaType == "artist" },
+                            )
+                            _discover.value = wanted.mapNotNull { filled[it.itemId] }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -2554,6 +2721,27 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         const val CATEGORY = "__cat__"
         const val DOWNLOAD = "__dl__"
         const val DOWNLOADS_TITLE = "Downloads"
+
+        /**
+         * Discover rows the app already has a dedicated shelf for.
+         *
+         * Music Assistant's built-in recommendations provider offers these under its own
+         * names, and the app fetches the same three through [loadRecent],
+         * [loadRecentlyAdded] and [loadInProgress]. Showing both would be the same
+         * albums twice, a few rows apart.
+         */
+        val DISCOVER_COVERED_ELSEWHERE = setOf(
+            "recently_played", "recently_added_tracks", "in_progress",
+        )
+
+        /**
+         * How many Discover rows to fetch at once.
+         *
+         * They share the one WebSocket with everything else the app does, including the
+         * play command behind a tap. Four keeps the library filling briskly without the
+         * library's own background work being what makes a tap feel slow.
+         */
+        const val DISCOVER_CONCURRENCY = 4
 
         /** Four minutes in: a play, however long the track. The usual convention. */
         const val SCROBBLE_MAX_MS = 4 * 60 * 1000L

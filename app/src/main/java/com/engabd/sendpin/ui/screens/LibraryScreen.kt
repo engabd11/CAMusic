@@ -235,6 +235,11 @@ fun LibraryScreen(
                 onDownload = if (picked.provider == SubsonicClient.PROVIDER) {
                     { viewModel.download(picked) }
                 } else null,
+                // Only Music Assistant can generate a queue, and only from something
+                // with a URI to seed it with.
+                onStartRadio = if (backend == LibraryViewModel.Backend.MA && picked.uri != null) {
+                    { viewModel.startRadio(picked) }
+                } else null,
                 // A playlist has nothing to be filed into but itself, and an artist
                 // resolves to albums rather than tracks — so neither is offered.
                 onAddToPlaylist = if (picked.mediaType == "track" || picked.mediaType == "album") {
@@ -418,7 +423,22 @@ private fun Browse(
             // Navidrome only — MA has no equivalent of getAlbumList2(frequent), so
             // the list is empty on that backend and the shelf drops out here.
             ShelfSpec("Played most", shelves.frequent),
+            // Then whatever Music Assistant's own Discover rows turned out to be:
+            // "Random artists", "Forgotten Albums", "Never / Rarely Played", and any
+            // row a provider adds. Named by the server, so nothing here has to know
+            // what they are — see [LibraryViewModel.loadDiscoverRows]. They come last
+            // because the shelves above are answers to questions the listener asked
+            // (what I favourited, what I was in the middle of) and these are the
+            // server's suggestions.
+            *shelves.discover.map {
+                ShelfSpec(it.title, it.items, circular = it.circular)
+            }.toTypedArray(),
         ).filter { it.items.isNotEmpty() }
+            // The title is the shelf's lazy key, and the Discover rows are named by the
+            // server — so a row called "Favourite albums" would be a duplicate key and
+            // a crash, not a cosmetic clash. The fixed shelves are listed first, so
+            // first-wins keeps them and drops the server's twin.
+            .distinctBy { it.title }
     }
 
     LazyVerticalGrid(
