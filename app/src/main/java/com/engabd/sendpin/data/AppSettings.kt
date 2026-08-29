@@ -196,6 +196,20 @@ class AppSettings(private val context: Context) {
         // default, for the same reason LIGHT_SYNC_SPATIAL is: unproven on a
         // real track in a real room until a user turns it on.
         private val MUSIC_DNA_ENABLED = booleanPreferencesKey("music_dna_enabled")
+
+        // --- Effects (ambience shows) ---
+        /** Last effect selected, so the screen reopens where it was left. Not auto-resumed. */
+        private val EFFECTS_LAST = stringPreferencesKey("effects_last")
+        /** Per-effect 0..1, as a JSON object keyed by wire name. Same shape as the tunables. */
+        private val EFFECTS_INTENSITY = stringPreferencesKey("effects_intensity")
+        /** `synth`, `clip` or `off`. */
+        private val EFFECTS_SOUND_MODE = stringPreferencesKey("effects_sound_mode")
+        /** Per-effect user clip, as a JSON object of wire name to content:// URI. */
+        private val EFFECTS_CLIPS = stringPreferencesKey("effects_clips")
+        /** 0..100. Stored as a string like the other ints here. */
+        private val EFFECTS_VOLUME = stringPreferencesKey("effects_volume")
+        /** Minutes until the show stops itself; 0 is off. */
+        private val EFFECTS_SLEEP_MINUTES = stringPreferencesKey("effects_sleep_minutes")
         private val EMOTIONAL_ARC_ENABLED = booleanPreferencesKey("emotional_arc_enabled")
         private val PHANTOM_STAGE_ENABLED = booleanPreferencesKey("phantom_stage_enabled")
         private val PHONE_CONDUCTOR_ENABLED = booleanPreferencesKey("phone_conductor_enabled")
@@ -1181,6 +1195,52 @@ class AppSettings(private val context: Context) {
     /** Layer 1 — a deterministic per-track visual fingerprint. Off by default. */
     val musicDnaEnabled: Flow<Boolean> = context.dataStore.data.map { it[MUSIC_DNA_ENABLED] ?: false }
 
+    // --- Effects (ambience shows) ---
+
+    val effectsLast: Flow<String> = context.dataStore.data.map { it[EFFECTS_LAST] ?: "" }
+
+    /** How lively each effect is, 0..1. Missing means the middle. */
+    val effectsIntensity: Flow<Map<String, Float>> = context.dataStore.data.map { prefs ->
+        parseFloatMap(prefs[EFFECTS_INTENSITY])
+    }
+
+    val effectsSoundMode: Flow<String> = context.dataStore.data.map { it[EFFECTS_SOUND_MODE] ?: "synth" }
+
+    /** Wire name to a persisted `content://` URI the listener picked. */
+    val effectsClips: Flow<Map<String, String>> = context.dataStore.data.map { prefs ->
+        val raw = prefs[EFFECTS_CLIPS]
+        if (raw.isNullOrBlank()) return@map emptyMap()
+        try {
+            serverJson.decodeFromString(JsonObject.serializer(), raw)
+                .mapNotNull { (k, v) -> v.jsonPrimitive.content.takeIf { it.isNotBlank() }?.let { k to it } }
+                .toMap()
+        } catch (_: Exception) { emptyMap() }
+    }
+
+    val effectsVolume: Flow<Int> = context.dataStore.data.map {
+        it[EFFECTS_VOLUME]?.toIntOrNull()?.coerceIn(0, 100) ?: 70
+    }
+
+    /**
+     * Minutes until an effect stops itself. Sixty by default, and that default is doing
+     * real work: a show is a 60 Hz render loop, a 48 kHz synth, a partial wake lock, a
+     * Wi-Fi lock and a foreground service, and nobody means to leave that running
+     * overnight.
+     */
+    val effectsSleepMinutes: Flow<Int> = context.dataStore.data.map {
+        it[EFFECTS_SLEEP_MINUTES]?.toIntOrNull()?.coerceIn(0, 480) ?: 60
+    }
+
+    private fun parseFloatMap(raw: String?): Map<String, Float> {
+        if (raw.isNullOrBlank()) return emptyMap()
+        return try {
+            serverJson.decodeFromString(JsonObject.serializer(), raw).mapNotNull { (k, v) ->
+                val f = v.jsonPrimitive.floatOrNull ?: v.jsonPrimitive.content.toFloatOrNull()
+                if (f != null) k to f.coerceIn(0f, 1f) else null
+            }.toMap()
+        } catch (_: Exception) { emptyMap() }
+    }
+
     /** Layer 2 — colour temperature follows the song's live structure. Off by default. */
     val emotionalArcEnabled: Flow<Boolean> = context.dataStore.data.map { it[EMOTIONAL_ARC_ENABLED] ?: false }
 
@@ -1349,6 +1409,43 @@ class AppSettings(private val context: Context) {
 
     suspend fun setLightSyncEffect(effect: String) {
         context.dataStore.edit { it[LIGHT_SYNC_EFFECT] = effect }
+    }
+
+    suspend fun setEffectsLast(wire: String) {
+        context.dataStore.edit { it[EFFECTS_LAST] = wire }
+    }
+
+    /** Read-modify-write inside one edit, so two sliders cannot race each other. */
+    suspend fun setEffectIntensity(wire: String, value: Float) {
+        context.dataStore.edit { prefs ->
+            val next = parseFloatMap(prefs[EFFECTS_INTENSITY]) + (wire to value.coerceIn(0f, 1f))
+            prefs[EFFECTS_INTENSITY] = JsonObject(next.mapValues { JsonPrimitive(it.value) }).toString()
+        }
+    }
+
+    suspend fun setEffectsSoundMode(mode: String) {
+        context.dataStore.edit { it[EFFECTS_SOUND_MODE] = mode }
+    }
+
+    /** A null [uri] clears the clip for [wire] and falls back to the synth. */
+    suspend fun setEffectClip(wire: String, uri: String?) {
+        context.dataStore.edit { prefs ->
+            val raw = prefs[EFFECTS_CLIPS]
+            val current = if (raw.isNullOrBlank()) emptyMap() else try {
+                serverJson.decodeFromString(JsonObject.serializer(), raw)
+                    .mapValues { it.value.jsonPrimitive.content }
+            } catch (_: Exception) { emptyMap() }
+            val next = if (uri == null) current - wire else current + (wire to uri)
+            prefs[EFFECTS_CLIPS] = JsonObject(next.mapValues { JsonPrimitive(it.value) }).toString()
+        }
+    }
+
+    suspend fun setEffectsVolume(v: Int) {
+        context.dataStore.edit { it[EFFECTS_VOLUME] = v.coerceIn(0, 100).toString() }
+    }
+
+    suspend fun setEffectsSleepMinutes(m: Int) {
+        context.dataStore.edit { it[EFFECTS_SLEEP_MINUTES] = m.coerceIn(0, 480).toString() }
     }
 
     suspend fun setLightSyncColor(color: String) {

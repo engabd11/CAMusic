@@ -71,6 +71,7 @@ import com.engabd.sendpin.library.MusicSources
 import com.engabd.sendpin.ui.viewmodel.LightSyncViewModel
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
 import com.engabd.sendpin.ui.screens.AlbumDetailScreen
+import com.engabd.sendpin.ui.screens.EffectsScreen
 import com.engabd.sendpin.ui.screens.DownloadsScreen
 import com.engabd.sendpin.ui.screens.ArtistDetailScreen
 import com.engabd.sendpin.ui.screens.LibraryScreen
@@ -183,6 +184,9 @@ private fun sectionOf(route: String?): String? = when {
     // trying to leave straight back on top.
     route == "downloads?from=library" -> "library"
     route == "downloads" || route == "stats" -> "settings"
+    // Effects is a sibling of Light Sync in the flat graph, and reached from it — so
+    // the Lights tab is the one that should stay lit while it is open.
+    route == "effects" -> "light_sync"
     else -> route
 }
 
@@ -301,6 +305,9 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
         // resolved in a `composable {}` block the owner is the back-stack entry, and
         // the tab bar's `saveState = true` clears that store on every tab change.
         val lightSyncVm: LightSyncViewModel = viewModel()
+        // Same reasoning, and it matters more here: an ambience show that stopped
+        // because the user glanced at the Library tab would not be much of an ambience.
+        val effectsVm: com.engabd.sendpin.ui.viewmodel.EffectsViewModel = viewModel()
 
         // Adaptive grid columns: the library's 6-column base was designed for phones.
         // On tablets and foldables (Medium/Expanded width), scale up so covers aren't
@@ -696,6 +703,13 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                             // area list, a flash of "couldn't reach Home Assistant", and
                             // then the areas reappearing. See LightSyncScreen's own note.
                             viewModel = lightSyncVm,
+                            onOpenEffects = { navController.navigate("effects") },
+                        )
+                    }
+                    screen("effects") {
+                        EffectsScreen(
+                            onBack = { navController.popBackStack() },
+                            viewModel = effectsVm,
                         )
                     }
                     screen("settings") {

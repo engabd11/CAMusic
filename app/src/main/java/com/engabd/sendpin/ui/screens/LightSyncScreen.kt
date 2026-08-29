@@ -87,6 +87,8 @@ fun LightSyncScreen(
      * the Activity, the connection and the areas simply outlive the visit.
      */
     viewModel: LightSyncViewModel = viewModel(),
+    /** Opens the ambience Effects screen. Only offered on the direct-to-bridge path. */
+    onOpenEffects: () -> Unit = {},
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val settings = remember(context) {
@@ -95,7 +97,10 @@ fun LightSyncScreen(
     val lsMode by settings.lightSyncMode.collectAsState(initial = null)
     when (lsMode) {
         null -> Box(Modifier.fillMaxSize().background(Ink))
-        "direct" -> DirectLightSyncScreen(onBack)
+        // Effects drives the bridge's entertainment stream directly, which is what the
+        // direct path already owns. The Home Assistant path talks to HA's own light
+        // service and has no per-frame stream to script, so it does not offer them.
+        "direct" -> DirectLightSyncScreen(onBack, onOpenEffects)
         else -> HaLightSyncScreen(onBack, viewModel)
     }
 }
@@ -389,7 +394,7 @@ private fun HaLightSyncScreen(onBack: () -> Unit, viewModel: LightSyncViewModel)
  * "Auto" pill that silently resolved to High would be worse than no pill.
  */
 @Composable
-private fun DirectLightSyncScreen(onBack: () -> Unit) {
+private fun DirectLightSyncScreen(onBack: () -> Unit, onOpenEffects: () -> Unit = {}) {
     val accent = LocalAccent.current
     val context = androidx.compose.ui.platform.LocalContext.current
     val app = context.applicationContext as com.engabd.sendpin.SendpinApp
@@ -627,6 +632,34 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                 }
 
                 Spacer(Modifier.height(22.dp))
+                SectionLabel("Ambience")
+                Spacer(Modifier.height(10.dp))
+                GlassCard(radius = 18.dp) {
+                    Row(
+                        Modifier.fillMaxWidth().clickable(onClick = onOpenEffects).padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(
+                            Modifier.size(42.dp).clip(RoundedCornerShape(13.dp)).background(Glass)
+                                .border(1.dp, Hairline, RoundedCornerShape(13.dp)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(Icons.Default.AutoAwesome, null, tint = TextMuted, modifier = Modifier.size(20.dp))
+                        }
+                        Spacer(Modifier.width(13.dp))
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+                            Text("Effects", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                            Text(
+                                "Fireworks, thunderstorm, fireplace and more - with their own sound, " +
+                                    "and no music needed",
+                                color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
+                            )
+                        }
+                        Icon(Icons.Default.ChevronRight, null, tint = TextFaint, modifier = Modifier.size(20.dp))
+                    }
+                }
+
+                Spacer(Modifier.height(22.dp))
                 SectionLabel("Colour")
                 Spacer(Modifier.height(10.dp))
                 // Every dynamic source works on the direct path now.
@@ -860,6 +893,15 @@ private fun DirectLightSyncScreen(onBack: () -> Unit) {
                         "analysis first. Until a track has been read its fingerprint is being " +
                         "guessed at from what has played so far.",
                     checked = musicDna,
+                    // Music DNA reads the offline track scan, and there is no scan for a
+                    // stream arriving from Music Assistant — `scanTrack` is null for both
+                    // MA feeds by construction, so `MusicDnaLayer.apply` hands back its
+                    // input unchanged. The toggle moved and nothing happened, which reads
+                    // as a broken feature rather than an inapplicable one.
+                    unavailable = if (feed == com.engabd.sendpin.hue.LightSyncFeed.SENDSPIN_PCM) {
+                        "Needs a local track scan - not available while Music Assistant " +
+                            "is streaming to this phone."
+                    } else null,
                 ) { on -> scope.launch { settings.setMusicDnaEnabled(on) } }
 
                 Spacer(Modifier.height(16.dp))
@@ -967,6 +1009,14 @@ private fun FeatureRow(
     gist: String,
     info: String,
     checked: Boolean,
+    /**
+     * Why this cannot work right now, or null when it can.
+     *
+     * A toggle that does nothing is worse than one that is not offered: the listener
+     * flips it, sees no change, and concludes the *feature* is broken. Saying so in the
+     * row turns "Music DNA does nothing" into a fact about the source.
+     */
+    unavailable: String? = null,
     onChange: (Boolean) -> Unit,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -976,14 +1026,15 @@ private fun FeatureRow(
                 horizontalArrangement = Arrangement.spacedBy(2.dp),
             ) {
                 Text(
-                    title, color = TextSecondary, fontWeight = FontWeight.SemiBold,
-                    fontSize = 13.sp,
+                    title,
+                    color = if (unavailable != null) TextFaint else TextSecondary,
+                    fontWeight = FontWeight.SemiBold, fontSize = 13.sp,
                 )
                 InfoChip(title, info, Modifier.heightIn(0.dp))
             }
-            Text(gist, color = TextFaint, fontSize = 11.sp, lineHeight = 15.sp)
+            Text(unavailable ?: gist, color = TextFaint, fontSize = 11.sp, lineHeight = 15.sp)
         }
-        AccentSwitch(checked, onChange)
+        AccentSwitch(checked && unavailable == null, enabled = unavailable == null) { onChange(it) }
     }
 }
 
@@ -1359,10 +1410,10 @@ private fun OffsetStep(label: String, onClick: () -> Unit) {
 }
 
 @Composable
-private fun AccentSwitch(checked: Boolean, onChange: (Boolean) -> Unit) {
+private fun AccentSwitch(checked: Boolean, enabled: Boolean = true, onChange: (Boolean) -> Unit) {
     val accent = LocalAccent.current
     Switch(
-        checked = checked, onCheckedChange = onChange,
+        checked = checked, onCheckedChange = onChange, enabled = enabled,
         colors = SwitchDefaults.colors(
             checkedThumbColor = Ink, checkedTrackColor = accent, checkedBorderColor = accent,
             uncheckedThumbColor = TextMuted, uncheckedTrackColor = Glass, uncheckedBorderColor = Hairline,
@@ -1371,7 +1422,7 @@ private fun AccentSwitch(checked: Boolean, onChange: (Boolean) -> Unit) {
 }
 
 @Composable
-private fun CircleBtn(icon: ImageVector, cd: String, onClick: () -> Unit) {
+internal fun CircleBtn(icon: ImageVector, cd: String, onClick: () -> Unit) {
     Box(Modifier.size(34.dp).clip(CircleShape).background(Glass).border(1.dp, Hairline, CircleShape).clickable(onClick = onClick), contentAlignment = Alignment.Center) {
         Icon(icon, cd, tint = TextSecondary, modifier = Modifier.size(17.dp))
     }

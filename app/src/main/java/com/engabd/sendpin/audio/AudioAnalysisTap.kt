@@ -239,6 +239,21 @@ class AudioAnalysisTap(
         publishClock(mediaTimeUs, frames)
     }
 
+    /**
+     * The public form of [onFlush], for a producer that is not ExoPlayer.
+     *
+     * When Music Assistant played through ExoPlayer, this tap was an `AudioProcessor`
+     * and the player called [onFlush] on every seek, track change and reconfigure — so
+     * the analyzer, the tempo/structure/gesture trackers and the whole layer chain were
+     * reset between tracks. [analyseExternal] has no such caller, so once the MA path
+     * moved to [SendspinNativeEngine] nothing reset any of it: every MA track change
+     * carried the previous track's tempo estimate, structure and AGC baselines forward,
+     * and `DirectLightSync.onAnalysisReset` became dead code on that path.
+     *
+     * Called by the native engine wherever ExoPlayer would have flushed.
+     */
+    fun resetAnalysis() = onFlush()
+
     override fun onFlush() {
         // Discard buffered audio so a seek doesn't feed the analyzer up to a
         // second of stale samples, and tell the analysis thread to start clean.

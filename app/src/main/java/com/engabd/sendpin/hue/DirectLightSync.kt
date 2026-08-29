@@ -27,6 +27,7 @@ import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.data.Crypto
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -84,6 +85,15 @@ private const val TAG = "DirectLightSync"
  * keepalive has to beat that. Matches syncoV2's `KEEPALIVE_INTERVAL`.
  */
 private const val KEEPALIVE_INTERVAL_MS = 9000L
+
+/**
+ * How long the artwork URL has to hold still before it is acted on.
+ *
+ * A backend handover emits a null between two covers, and a run of skips emits one URL
+ * per track. Neither is worth an extraction. Short enough that the room still changes
+ * colour with the song rather than after it.
+ */
+private const val ART_SETTLE_MS = 250L
 
 /** The wire value that means "let the picker choose". */
 const val INTENSITY_AUTO = "auto"
@@ -440,8 +450,69 @@ class DirectLightSync(
      */
     @Volatile private var lastAlbumColours: AlbumColours? = null
 
+    /**
+     * The ambience show that owns the room, or null when the music show does.
+     *
+     * Volatile because the render loop reads it every 16 ms on its own coroutine while
+     * the UI starts and stops it from another.
+     */
+    @Volatile private var ambience: com.engabd.sendpin.hue.ambience.AmbienceSession? = null
+
+    /**
+     * True when [startAmbience] opened the bridge session itself.
+     *
+     * Effects has to work with the master Light Sync switch off — someone who wants a
+     * fireplace has not necessarily asked for music-reactive lighting — so it opens the
+     * session when there is not one. It must then close only what it opened, or stopping
+     * an effect would tear down a music show that was running before it.
+     */
+    @Volatile private var ambienceOwnsSession = false
+
+    private val _ambienceRunning = MutableStateFlow<String?>(null)
+
+    /** Wire name of the running effect, for the UI. */
+    val ambienceRunning: StateFlow<String?> = _ambienceRunning.asStateFlow()
+
     /** The art URL the collector last saw, for re-extraction on scheme change. */
     @Volatile private var lastArtUrl: String? = null
+
+    /**
+     * The last art URL that actually produced a palette.
+     *
+     * Distinct from [lastArtUrl], and the distinction is the whole fix for "the colours
+     * are wrong when I play from the library, but right from the queue".
+     *
+     * `activeSource.artUrl` is not "the artwork of the current track" — it is derived
+     * from whichever feed is currently winning, and
+     * [com.engabd.sendpin.service.PlaybackOwner]'s `soundOwner` passes through `NONE`
+     * during *any* backend handover. With NONE the feed picker falls back to LOCAL_PCM,
+     * whose `localPlayer.current` was just cleared by `stop()`. So a transient null
+     * reaches this class on every play started from the library — which calls
+     * `localPlayer.stop()` / `stopMaPlayback()` first — while a queue advance stays
+     * inside one backend and never emits one.
+     *
+     * That null used to clear both caches and call `setAlbumColors(emptyList())`, which
+     * drops the engine to the Sunset fallback. Remembering the last good URL means a
+     * handover blip cannot erase a palette, and the scheme-change collector has
+     * something real to re-extract from.
+     */
+    @Volatile private var lastGoodArtUrl: String? = null
+
+    /**
+     * Recently extracted palettes, keyed by `url + scheme`.
+     *
+     * Extraction is a network fetch, a decode and a k-means over CIELAB, so switching
+     * colour mode and back used to mean doing all of it again — and if that refetch
+     * failed (MA covers go through `/imageproxy`, which the loader has to probe three
+     * URL shapes to satisfy) the palette was simply lost. Keyed by scheme as well as
+     * URL because v1 and v2 are different extractions of the same cover.
+     *
+     * Four entries: enough for a mode switch and a couple of tracks back, small enough
+     * that it is never worth thinking about.
+     */
+    private val paletteCache = object : LinkedHashMap<String, AlbumColours>(8, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, AlbumColours>) = size > 4
+    }
 
     /**
      * The scanned Auto-intensity parameters for this track, or null when it is
@@ -712,9 +783,97 @@ class DirectLightSync(
      *   kill the session that had just been opened on the new area.
      */
     suspend fun stop() = withContext(Dispatchers.IO) {
+        // Ownership is cleared *before* the show is stopped, so [stopAmbience] cannot
+        // turn round and call this again — the session is already being closed here.
+        ambienceOwnsSession = false
+        stopAmbience()
         if (!running.getAndSet(false)) return@withContext
         cleanup()
     }
+
+    // ---- Ambience shows -------------------------------------------------
+
+    /**
+     * Hand the room to an ambience show.
+     *
+     * Opens the bridge session if there is not one, because Effects has to work with the
+     * master Light Sync switch off. Never opens a *second* one: a Hue bridge allows a
+     * single streaming client per entertainment area, and the render loop's
+     * `DtlsPeerClosed` branch deliberately never retries a bridge-initiated teardown —
+     * so a second `action: start` from this same app would look exactly like the Hue app
+     * taking the area away, and would poison the session for good.
+     *
+     * @return false if there is no bridge to talk to, or audio focus was refused.
+     */
+    suspend fun startAmbience(
+        effect: com.engabd.sendpin.hue.ambience.AmbienceEffect,
+        sink: com.engabd.sendpin.hue.ambience.AudioSink?,
+        focus: com.engabd.sendpin.hue.ambience.FocusGate?,
+        params: com.engabd.sendpin.hue.ambience.AmbienceParams,
+        onAudioFailed: (String) -> Unit = {},
+    ): Boolean = withContext(Dispatchers.IO) {
+        stopAmbience()
+        if (!running.get()) {
+            start()
+            // start() is best-effort: no bridge, no key, no area all land here.
+            if (!running.get()) return@withContext false
+            ambienceOwnsSession = true
+        }
+        val chans = channels
+        if (chans.isEmpty()) {
+            if (ambienceOwnsSession) { ambienceOwnsSession = false; stop() }
+            return@withContext false
+        }
+        val session = com.engabd.sendpin.hue.ambience.AmbienceSession(
+            script = com.engabd.sendpin.hue.ambience.scriptFor(effect),
+            room = com.engabd.sendpin.hue.ambience.RoomModel(chans),
+            sink = sink,
+            focus = focus,
+            params = params,
+            onAudioFailed = onAudioFailed,
+        )
+        if (!session.start(scope)) {
+            if (ambienceOwnsSession) { ambienceOwnsSession = false; stop() }
+            return@withContext false
+        }
+        // Both limiters start clean, or a per-channel value held from the music show
+        // would leak into the first frames of the effect.
+        rateLimiter.reset()
+        safety?.reset()
+        ambience = session
+        _ambienceRunning.value = effect.wire
+        true
+    }
+
+    /** Stop whatever ambience show is running, and close the session if Effects opened it. */
+    suspend fun stopAmbience() {
+        val session = ambience ?: return
+        // Cleared *first*, so the very next render tick falls through to the ordinary
+        // path rather than calling into a session that is being torn down.
+        ambience = null
+        _ambienceRunning.value = null
+        runCatching { session.stop() }
+        rateLimiter.reset()
+        safety?.reset()
+        // A queue still holding frames from before the effect would replay them into
+        // the music show that resumes after it.
+        delayQueue.clear()
+        idleStartS = -1f
+        idleT = 0f
+        if (ambienceOwnsSession) {
+            ambienceOwnsSession = false
+            stop()
+        }
+    }
+
+    /** Live parameter change — intensity or brightness moved while a show is running. */
+    fun retuneAmbience(params: com.engabd.sendpin.hue.ambience.AmbienceParams) {
+        ambience?.retune(params)
+    }
+
+    fun pauseAmbience() { ambience?.pause() }
+
+    fun resumeAmbience() { ambience?.resume() }
 
     private suspend fun cleanup() {
         wiredTap?.let { it.setActive(false); it.onFrame = null; it.onAnalysisReset = null }
@@ -980,6 +1139,46 @@ class DirectLightSync(
             val enc = encoder ?: continue
             val client = dtls ?: continue
 
+            // An ambience show, if one is running, takes the room outright.
+            //
+            // Checked *before* `fresh` and `isIdle` below, and that ordering is
+            // load-bearing: a scripted effect produces no analysis frames at all,
+            // so `fresh` is always false and `isIdle` always true, and the idle
+            // show would quietly paint over the effect on every single tick.
+            val amb = ambience
+            if (amb != null) {
+                if (_framesFresh.value) _framesFresh.value = false
+                val painted = try {
+                    amb.renderLights()
+                } catch (e: Exception) {
+                    logThrottled("Ambience render failed: ${e.message}")
+                    continue
+                }
+                if (painted != null) {
+                    // The delay queue and the layer chain are both skipped here.
+                    // The queue's delay tracks a *music* sink's AudioLead, which
+                    // means nothing for a show whose sound this app is generating
+                    // itself — and whose clock is already the speaker's playhead.
+                    // The layers all read an AnalysisFrame, a track scan or live
+                    // structure, none of which exist. Safety and the rate limiter
+                    // are kept, and the session brings its own limiter so the
+                    // music show's flash budget and rung cannot leak into this one.
+                    val ambGuarded = amb.safety.process(painted, dt)
+                    val ambDue = rateLimiter.process(ambGuarded, dt)
+                    if (isUnchanged(ambDue) && (now - lastSendAt) < RESEND_INTERVAL_NANOS) continue
+                    when (emitFrame(ambDue, now, enc, client)) {
+                        EmitResult.ABORT -> return
+                        EmitResult.RETRY -> continue@render
+                        EmitResult.OK -> {
+                            lastSent = HashMap(ambDue)
+                            continue@render
+                        }
+                    }
+                }
+                // A show that has not started painting yet falls through to the
+                // ordinary path, so the room is not blanked while it warms up.
+            }
+
             // A tap that has gone quiet means paused, seeking, or a gap between
             // tracks. A player that is not playing at all means the same thing.
             // In either case we switch to the slow ambient idle show so the room
@@ -1049,40 +1248,10 @@ class DirectLightSync(
             // packet can never leave the room stale until the 9 s keepalive.
             if (isUnchanged(due) && (now - lastSendAt) < RESEND_INTERVAL_NANOS) continue
 
-            val packets = try {
-                enc.buildPackets(due)
-            } catch (e: Exception) {
-                logThrottled("Encode failed: ${e.message}")
-                continue
-            }
-
-            for (packet in packets) {
-                try {
-                    client.send(packet)
-                    lastFrame = packet
-                    lastSendAt = now
-                } catch (e: DtlsPeerClosed) {
-                    // Bridge-initiated teardown: the Hue app took the area, or
-                    // the user pressed stop there. Deliberately never retried —
-                    // reconnecting here is what makes that stop button look
-                    // broken, because the app immediately takes the area back.
-                    Log.w(TAG, "Bridge revoked the stream: ${e.message}")
-                    revoked = true
-                    running.set(false)
-                    _error.value = "The bridge revoked the stream (another app may have taken over)"
-                    scope.launch { cleanup() }
-                    return
-                } catch (e: Exception) {
-                    // A network fault, by elimination. Wi-Fi drops and roams are
-                    // ordinary events on a phone, and until now any of them
-                    // ended the session for good.
-                    logThrottled("DTLS send failed: ${e.message}")
-                    if (++sendFailures >= SEND_FAILURES_BEFORE_RECONNECT) {
-                        if (!reconnect()) return
-                        continue@render
-                    }
-                }
-                sendFailures = 0
+            when (emitFrame(due, now, enc, client)) {
+                EmitResult.ABORT -> return
+                EmitResult.RETRY -> continue@render
+                EmitResult.OK -> Unit
             }
 
             // Recorded only once the frame has been through the socket. Setting
@@ -1106,6 +1275,60 @@ class DirectLightSync(
         }
     }
 
+    /** What [emitFrame] wants the render loop to do next. */
+    private enum class EmitResult { OK, RETRY, ABORT }
+
+    /**
+     * Encode one frame and put it on the wire.
+     *
+     * Extracted so the music path and the ambience path share it rather than keeping two
+     * copies of the DTLS failure handling — which is the part that is easy to get subtly
+     * wrong and expensive to get wrong twice. Everything here was previously inline in
+     * [renderLoop] and is unchanged in behaviour.
+     */
+    private suspend fun emitFrame(
+        due: Map<Int, Rgb>,
+        now: Long,
+        enc: HueStreamEncoder,
+        client: DtlsPskClient,
+    ): EmitResult {
+        val packets = try {
+            enc.buildPackets(due)
+        } catch (e: Exception) {
+            logThrottled("Encode failed: ${e.message}")
+            return EmitResult.RETRY
+        }
+
+        for (packet in packets) {
+            try {
+                client.send(packet)
+                lastFrame = packet
+                lastSendAt = now
+            } catch (e: DtlsPeerClosed) {
+                // Bridge-initiated teardown: the Hue app took the area, or the user
+                // pressed stop there. Deliberately never retried — reconnecting here is
+                // what makes that stop button look broken, because the app immediately
+                // takes the area back.
+                Log.w(TAG, "Bridge revoked the stream: ${e.message}")
+                revoked = true
+                running.set(false)
+                _error.value = "The bridge revoked the stream (another app may have taken over)"
+                scope.launch { cleanup() }
+                return EmitResult.ABORT
+            } catch (e: Exception) {
+                // A network fault, by elimination. Wi-Fi drops and roams are ordinary
+                // events on a phone, and until this they ended the session for good.
+                logThrottled("DTLS send failed: ${e.message}")
+                if (++sendFailures >= SEND_FAILURES_BEFORE_RECONNECT) {
+                    if (!reconnect()) return EmitResult.ABORT
+                    return EmitResult.RETRY
+                }
+            }
+            sendFailures = 0
+        }
+        return EmitResult.OK
+    }
+
     /**
      * Decode the cover at [url] and hand its colours, with their dwell weights,
      * to the engine.
@@ -1126,27 +1349,49 @@ class DirectLightSync(
      * creates the engine). Without the cache, the first extraction lands while
      * the engine is still null and is silently lost; `distinctUntilChanged` then
      * suppresses the re-emit, and the room stays on the Sunset fallback.
+     *
+     * **A null or blank [url] keeps the palette that is already there.** It used to
+     * clear both caches and hand the engine an empty list, which drops it to the Sunset
+     * fallback for every dynamic scheme — see [lastGoodArtUrl] for why that null arrives
+     * on every library-initiated play and never on a queue advance, which is exactly the
+     * shape of the reported bug. "No artwork right now" is not the same claim as "this
+     * track has no artwork", and only the second would justify throwing colours away.
+     * [clearAlbumArt] exists for the case that really does mean it.
      */
     private suspend fun applyAlbumArt(url: String?) = withContext(Dispatchers.IO) {
-        if (url.isNullOrBlank()) {
-            lastAlbumColours = null
-            engine?.setAlbumColors(emptyList())
-            return@withContext
-        }
+        if (url.isNullOrBlank()) return@withContext
         try {
-            val request = ImageRequest.Builder(context)
-                .data(url)
-                .allowHardware(false)  // getPixels needs a software bitmap
-                .build()
-            val result = context.imageLoader.execute(request)
-            val bitmap = (result as? SuccessResult)?.drawable?.toBitmap() ?: return@withContext
             val scheme = ColorScheme.fromWire(settings.lightSyncColor.first())
-            val extracted = when (scheme) {
-                ColorScheme.ALBUM_ART -> extractAlbumColoursV1(bitmap)
-                ColorScheme.ALBUM_ART_V2 -> extractAlbumColours(bitmap)
-                else -> extractAlbumColours(bitmap)  // SONG and statics don't use album colours
-            } ?: return@withContext
+            val key = "$url|${scheme.wire}"
+            // A mode switch, or coming back to a track played a moment ago, should not
+            // cost a refetch — and must not be able to *lose* a palette to a failed one.
+            val cached = synchronized(paletteCache) { paletteCache[key] }
+            val extracted = cached ?: run {
+                val request = ImageRequest.Builder(context)
+                    .data(url)
+                    .allowHardware(false)  // getPixels needs a software bitmap
+                    .build()
+                val result = context.imageLoader.execute(request)
+                val bitmap = (result as? SuccessResult)?.drawable?.toBitmap() ?: run {
+                    // Loudly, and with the URL: MA covers go through /imageproxy and the
+                    // loader probes three URL shapes to find one the server answers, so a
+                    // miss here is a real and diagnosable thing rather than a curiosity.
+                    Log.w(TAG, "Album art did not load, keeping previous palette: $url")
+                    return@withContext
+                }
+                val fresh = when (scheme) {
+                    ColorScheme.ALBUM_ART -> extractAlbumColoursV1(bitmap)
+                    ColorScheme.ALBUM_ART_V2 -> extractAlbumColours(bitmap)
+                    else -> extractAlbumColours(bitmap)  // SONG and statics don't use album colours
+                } ?: run {
+                    Log.w(TAG, "Album art yielded no colours, keeping previous palette: $url")
+                    return@withContext
+                }
+                synchronized(paletteCache) { paletteCache[key] = fresh }
+                fresh
+            }
             lastAlbumColours = extracted
+            lastGoodArtUrl = url
             // v1 (album_art/even) has no weights — pass null so the engine uses
             // pure even interpolation (Palette.evenSample), matching syncoV2's
             // Palette(colors, weights=None). v2 passes the real population weights
@@ -1156,8 +1401,22 @@ class DirectLightSync(
         } catch (e: Exception) {
             // A cover that will not load is not a reason to stop the show; the
             // engine keeps whatever palette it already had.
-            Log.w(TAG, "Album art palette failed: ${e.message}")
+            Log.w(TAG, "Album art palette failed for $url: ${e.message}")
         }
+    }
+
+    /**
+     * Forget the album palette outright — the deliberate version of what a null URL
+     * used to do by accident.
+     *
+     * Only for a real stop, where there is no longer a track whose colours these are.
+     * A handover between backends is not that, and neither is artwork that has not
+     * arrived yet.
+     */
+    private fun clearAlbumArt() {
+        lastAlbumColours = null
+        lastGoodArtUrl = null
+        engine?.setAlbumColors(emptyList())
     }
 
     /**
@@ -1532,8 +1791,14 @@ class DirectLightSync(
                 // the cached cover with the right one so the room reads the
                 // sleeve the way the selected option promises.
                 if (scheme == ColorScheme.ALBUM_ART || scheme == ColorScheme.ALBUM_ART_V2) {
-                    val url = lastArtUrl
-                    if (url != null) applyAlbumArt(url)
+                    // The last URL that *worked*, not the last one seen. `lastArtUrl`
+                    // tracks the feed, and the feed goes momentarily null on every
+                    // backend handover — so guarding on it meant that after one of those
+                    // there was nothing to re-extract from, `albumPalette` was already
+                    // null, and switching to album art landed on Sunset and stayed
+                    // there until a genuinely new cover arrived. That is the "change to
+                    // another colour and come back and it's wrong" report.
+                    lastGoodArtUrl?.let { applyAlbumArt(it) }
                 }
             }
         }
@@ -1541,10 +1806,19 @@ class DirectLightSync(
         // album-art scheme is selected, so switching to one mid-track picks up
         // the cover already on screen instead of waiting for the next song.
         scope.launch {
-            activeSource.map { it.artUrl }.distinctUntilChanged().collect { url ->
-                lastArtUrl = url
-                applyAlbumArt(url)
-            }
+            @OptIn(kotlinx.coroutines.FlowPreview::class)
+            activeSource.map { it.artUrl }
+                .distinctUntilChanged()
+                // A backend handover emits null for a moment on its way from one cover
+                // to the next. [applyAlbumArt] already refuses to act on a null, so this
+                // is belt and braces — but it also collapses the null-then-URL pair into
+                // one extraction rather than two, and stops a rapid run of skips
+                // starting a fetch per track.
+                .debounce(ART_SETTLE_MS)
+                .collect { url ->
+                    lastArtUrl = url
+                    applyAlbumArt(url)
+                }
         }
         // The track itself, for the scan.
         scope.launch {
@@ -1603,7 +1877,17 @@ class DirectLightSync(
             }
         }
         scope.launch {
-            isPlaying.collect { playing -> playerPlaying = playing }
+            isPlaying.collect { playing ->
+                playerPlaying = playing
+                // Music starting ends an ambience show. Handled here rather than in the
+                // Effects screen because most ways music starts never go near it: the
+                // notification's play button, a headset button, Android Auto, a voice
+                // assistant, or another phone joining a group. This is the one place all
+                // of them arrive.
+                if (playing && ambience != null) {
+                    launch { stopAmbience() }
+                }
+            }
         }
     }
 
