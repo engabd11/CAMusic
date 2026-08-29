@@ -15,6 +15,7 @@ import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.LibraryAdd
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Radio
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Icon
@@ -70,6 +71,11 @@ fun BoxScope.MediaActionsSheet(
     onDownload: (() -> Unit)? = null,
     /** Null leaves the row out. Absent for a playlist — filing one into itself. */
     onAddToPlaylist: (() -> Unit)? = null,
+    /**
+     * Null leaves the row out. Offered on the Music Assistant backend only, where the
+     * server can generate a queue from the item.
+     */
+    onStartRadio: (() -> Unit)? = null,
     /** Null leaves the row out. Only ever passed for a track's album. */
     onGoToAlbum: (() -> Unit)? = null,
     /** Null leaves the row out. Only ever passed for a track's artist. */
@@ -150,6 +156,15 @@ fun BoxScope.MediaActionsSheet(
                     Icons.Default.LibraryAdd, "Add to playlist",
                     if (whole) "Every track in it" else "Pick a playlist",
                 ) { onClose(); add() }
+            }
+            onStartRadio?.let { radio ->
+                // The deliberate form of what the Radio Mode setting used to do to
+                // every tap. Said out loud here, because a generated queue is a
+                // different thing from the item that was pressed.
+                ActionRow(
+                    Icons.Default.Radio, "Start radio",
+                    "Plays this, then more like it",
+                ) { onClose(); radio() }
             }
             onGoToAlbum?.let { go ->
                 ActionRow(Icons.Default.Album, "Go to album", item.album ?: "Open the album") { onClose(); go() }

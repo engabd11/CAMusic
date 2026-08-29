@@ -14,6 +14,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -285,6 +286,21 @@ class MaNowPlaying(private val app: Context) {
                 if (!targetIsThisPhone()) return@collect
                 val id = targetId()
                 if (positions.isFrozen(id)) releaseFreeze(id)
+            }
+        }
+        // The other end of the same story: something in the app replaced the queue.
+        // A skip freezes on its way out through [next]/[previous], but a play started
+        // from the library never came through here, so its first anchor adopted MA's
+        // `elapsed_time` — already a second or two in, because the server begins the
+        // stream job well before this phone makes a sound. Freezing on the request and
+        // releasing on the audible edge is exactly what a skip already does; this just
+        // arms it for the route that was missing.
+        //
+        // `drop(1)` because a StateFlow replays its current value to a new collector,
+        // and the count standing at whatever it was is not a fresh request.
+        scope.launch {
+            SendpinApp.instance.playback.playStartSeq.drop(1).collect {
+                if (targetIsThisPhone()) freezeForTrackChange(targetId())
             }
         }
     }

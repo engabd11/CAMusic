@@ -8,9 +8,12 @@ import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.PlayerIdentity
 import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ma.MaRepository
+import com.engabd.sendpin.ma.queueFrom
 import com.engabd.sendpin.library.MusicSource
 import com.engabd.sendpin.library.MusicSources
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel.Load
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -149,11 +152,19 @@ class AlbumDetailViewModel(
                         _musicBrainzId.value = it.musicBrainzId
                     }
                 } else {
-                    // Fetch full album metadata, then tracks.
+                    // Metadata and tracks together, not one after the other. They are
+                    // independent reads and the screen needs both before it is usable,
+                    // so running them in series made opening any album cost two serial
+                    // round trips for no reason — [ArtistDetailViewModel] already loads
+                    // its four shelves this way.
                     val ref = MaItem(itemId, provider, initialName, null, "album", null, initialArt, null)
-                    val albumMeta = maRepo.getAlbum(ref)
+                    val (albumMeta, trackList) = coroutineScope {
+                        val meta = async { maRepo.getAlbum(ref) }
+                        val trk = async { maRepo.albumTracks(ref) }
+                        meta.await() to trk.await()
+                    }
                     if (albumMeta != null) _album.value = albumMeta
-                    _tracks.value = maRepo.albumTracks(ref)
+                    _tracks.value = trackList
                     // MA's own description has always been parsed — `metadata.description
                     // ?? metadata.review` — and never shown, so the notes section was
                     // Navidrome-only for want of one assignment.
@@ -283,7 +294,7 @@ class AlbumDetailViewModel(
                     localPlayer.setQueue(localTracks())
                 } else {
                     maRepo.playOn(playTarget(), uris, "replace")
-                    maRepo.setShuffle(playTarget(), true)
+                    maRepo.setShuffleOn(playTarget(), true)
                 }
                 _toast.tryEmit("Shuffling ${_album.value?.name ?: "album"}")
             } catch (e: Exception) {
@@ -372,28 +383,36 @@ class AlbumDetailViewModel(
         }
     }
 
-    /** Play a specific track from the album. */
-    fun playTrack(track: MaItem) {
+    /**
+     * Play a specific track from the album.
+     *
+     * [order] is the album as the *screen* has it — multi-disc grouped and, where the
+     * server gave track numbers, sorted by them (see [com.engabd.sendpin.ui.screens.discGroups]).
+     * It has to be passed in rather than read from [tracks], because those two lists can
+     * differ: the screen sorts, the view model held what the server sent, and the queue
+     * was built from the latter. Tapping the fourth row then played whatever the server
+     * happened to list fourth. Defaults to the unordered list for callers with no screen
+     * order of their own.
+     */
+    fun playTrack(track: MaItem, order: List<MaItem>? = null) {
+        val queue = order?.takeIf { it.isNotEmpty() } ?: _tracks.value
         viewModelScope.launch {
             try {
                 if (isLocal) {
                     // The album is the queue; the tapped track is where it starts.
-                    val start = _tracks.value.indexOfFirst { it.itemId == track.itemId }.coerceAtLeast(0)
+                    val start = queue.indexOfFirst { it.itemId == track.itemId }.coerceAtLeast(0)
                     stopMaPlayback()
-                    localPlayer.setQueue(localTracks(), start)
+                    localPlayer.setQueue(localTracks(queue), start)
                     _toast.tryEmit("Playing ${track.name}")
                     return@launch
                 } else {
-                    // Play the whole album starting from this track — MA 2.10's
-                    // play_media supports start_item, so one command sends every
-                    // track as `media` and jumps to the tapped one. The old approach
-                    // (play the track, add the rest, then call play) was three
-                    // commands for what the API was designed to do in one, and was
-                    // race-prone: a "replace" followed by an "add" meant the queue
-                    // briefly held only one track.
-                    val uris = _tracks.value.mapNotNull { it.uri }
+                    // The rest of the album, from the tapped track onwards, as one
+                    // "replace". Sliced here rather than named as `start_item`: MA
+                    // only honours that parameter when `media` is a container, and
+                    // this sends tracks — see [queueFrom].
+                    val uris = queueFrom(queue, track)
                     if (uris.isNotEmpty()) {
-                        maRepo.playOn(playTarget(), uris, "replace", radioMode = false, startItem = track.uri)
+                        maRepo.playOn(playTarget(), uris, "replace", radioMode = false)
                     }
                 }
                 _toast.tryEmit("Playing ${track.name}")
@@ -414,7 +433,7 @@ class AlbumDetailViewModel(
     }
 
     /** The album as a local queue, offline copies preferred over the stream. */
-    private fun localTracks() = _tracks.value.map {
+    private fun localTracks(from: List<MaItem> = _tracks.value) = from.map {
         downloads.toLocalTrack(it, streamUrl = source?.streamUrl(it.itemId))
     }
 

@@ -41,6 +41,26 @@ class ClockKalmanFilter(
         const val READY_MAX_ERROR_US = 5_000L
 
         /**
+         * How many live samples a *seeded* filter needs before grouped playback may
+         * start.
+         *
+         * [seedOffset] already knows the offset — it was measured in an earlier session
+         * and persisted precisely so a reconnect would not have to rediscover it. What
+         * live samples add after a seed is not the offset but *corroboration*: evidence
+         * that it has not moved since. Three of those is plenty, and the error bar and
+         * the step detector in [isReadyForPlaybackStart] still have to agree.
+         *
+         * Demanding the full eight was costing audio, not buying safety. At the 300 ms
+         * cold-start cadence it is around 1.8 s of waiting, during which Music Assistant
+         * is already streaming — and [com.engabd.sendpin.audio.SendspinNativeEngine]'s
+         * startup trim then drops every frame whose slot passed during the wait. The
+         * result was a grouped speaker starting each track a second or two in, with the
+         * intro simply gone. Three samples is roughly 0.9 s, and what remains to trim is
+         * a fraction of a second.
+         */
+        const val READY_SEEDED_MIN_SAMPLES = 3
+
+        /**
          * A residual this far outside the measurement's own error bar is not noise.
          *
          * Both tests have to pass, and they guard different things. The multiple of
@@ -112,9 +132,23 @@ class ClockKalmanFilter(
      * only read [errorUs] would schedule the head of a stream against it and hold
      * the song silent until it landed. Saying "not ready" for the one sample it
      * takes to confirm the step costs a few hundred milliseconds and is the truth.
+     *
+     * A filter seeded from a persisted offset needs fewer live samples to clear the
+     * first test — see [READY_SEEDED_MIN_SAMPLES]. Both other tests are unchanged, so a
+     * seed that has gone stale is still caught: it shows up as a step, and
+     * [isStepSuspected] holds the gate shut until the next sample resolves it.
      */
     fun isReadyForPlaybackStart(): Boolean =
-        count >= READY_MIN_SAMPLES && errorUs() <= READY_MAX_ERROR_US && !isStepSuspected()
+        count >= (if (seeded) READY_SEEDED_MIN_SAMPLES else READY_MIN_SAMPLES) &&
+            errorUs() <= READY_MAX_ERROR_US && !isStepSuspected()
+
+    /**
+     * The offset was seeded from a persisted value rather than measured from scratch.
+     *
+     * Cleared by [reset], which is a genuine cold start, but survives [softReset] —
+     * that keeps the offset it already had, which is the same claim a seed makes.
+     */
+    private var seeded = false
 
     /**
      * The caller dropped a `server/time` reply without feeding it into the filter —
@@ -315,6 +349,9 @@ class ClockKalmanFilter(
         lastRttUs = 0L
         suspectResidual = 0.0
         consecutiveStartupRejections = 0
+        // A full reset throws the offset away, so any seed that was standing behind it
+        // is gone too — the next start has to earn the full sample count again.
+        seeded = false
     }
 
     /**
@@ -370,6 +407,7 @@ class ClockKalmanFilter(
         offset = offsetUs.toDouble()
         offsetCovariance = 50_000.0
         count = 2
+        seeded = true
         Log.d("ClockKalman", "Seeded offset=${offsetUs}us from persisted value")
     }
 }

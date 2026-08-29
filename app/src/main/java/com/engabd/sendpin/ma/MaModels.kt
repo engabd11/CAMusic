@@ -188,6 +188,34 @@ data class MaItem(
     }
 }
 
+/**
+ * One row on Music Assistant's Discover page — "Random artists", "Forgotten albums",
+ * "Never / Rarely Played", and whatever else the server's providers offer.
+ *
+ * In MA 2.10 `music/recommendations` returns these **without** their items: the listing
+ * is one cheap call that names the rows, and each row's contents come from a separate
+ * `music/recommendations/items {provider, item_id}`. Before 2.10 the items came inline,
+ * which is why [items] is still parsed when present — see [MaParse.recommendationRows].
+ *
+ * @param itemId the row's id, e.g. `forgotten_albums`. Passed back to fetch its items.
+ * @param provider the provider instance that owns the row, e.g. `recommendations` for
+ *   the built-in library rows. Also passed back — two providers may offer rows with the
+ *   same id.
+ * @param icon a Material Design Icons name such as `mdi-timer-sand`, for the UI to map.
+ * @param enabledByDefault the server's opinion on whether this row is worth showing
+ *   unasked. The busier rows (every "random" and "forgotten" variant) are false.
+ * @param items the row's contents when the server sent them inline, else empty.
+ */
+data class MaRecommendationRow(
+    val itemId: String,
+    val provider: String,
+    val name: String,
+    val icon: String? = null,
+    val subtitle: String? = null,
+    val enabledByDefault: Boolean = true,
+    val items: List<MaItem> = emptyList(),
+)
+
 /** What a player is currently playing (from a player's `current_media`). */
 data class MaNowPlaying(
     val title: String,
@@ -619,6 +647,69 @@ object MaParse {
         else -> emptyList()
     }
 
+    /**
+     * The rows `music/recommendations` offers.
+     *
+     * A row with no `item_id` is dropped: without it there is nothing to ask
+     * `music/recommendations/items` for, so the row could never be filled.
+     */
+    fun recommendationRows(result: JsonElement?, serverUrl: String?): List<MaRecommendationRow> =
+        (result as? JsonArray).orEmpty().mapNotNull { el ->
+            val o = el as? JsonObject ?: return@mapNotNull null
+            val id = o["item_id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+            MaRecommendationRow(
+                itemId = id,
+                provider = o["provider"]?.jsonPrimitive?.contentOrNull ?: "recommendations",
+                // `name` is the server's English label. `translation_key` is what the
+                // official frontend localises; the app has no translations, so the name
+                // is the better of the two and the key is not worth carrying.
+                name = o["name"]?.jsonPrimitive?.contentOrNull ?: id.replace('_', ' '),
+                icon = o["icon"]?.jsonPrimitive?.contentOrNull,
+                subtitle = o["subtitle"]?.jsonPrimitive?.contentOrNull,
+                enabledByDefault = o["enabled_by_default"]?.jsonPrimitive?.booleanOrNull ?: true,
+                // Empty on 2.10, populated by older servers that inlined the items.
+                items = (o["items"] as? JsonArray)?.mapNotNull { item(it, serverUrl) }.orEmpty(),
+            )
+        }
+
+    /**
+     * The item's media type, worked out rather than assumed.
+     *
+     * This used to be `?: "track"`. That default is wrong often enough to be the second
+     * cause of the wrong-song bug: `music/recently_played_items` and
+     * `music/recommendations/items` return **mixed** types, and MA 2.10's slim summary
+     * items do not always carry `media_type`. An album row that arrived without the
+     * field became a "track", passed [MaItem.playable], and was sent to `play_media` as
+     * a single URI — whereupon MA resolved the album and played its *first* track. From
+     * the shelf that reads as "I tapped a song and something else entirely played".
+     *
+     * MA's URIs are `library://<media_type>/<id>` (and `<provider>://<media_type>/<id>`
+     * for provider items), so the type is right there in the URI whenever the field is
+     * missing. Only when both are absent is "track" assumed, which is at least the
+     * commonest case.
+     *
+     * No logging here on purpose. This object is a pure parser with no Android
+     * dependency — that is what lets the whole `ma/` test suite run off-device — and a
+     * line per item would fire five hundred times on one library page anyway.
+     */
+    private fun mediaTypeOf(o: JsonObject): String {
+        o["media_type"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }?.let { return it }
+        // "library://album/123" -> "album": after "://", before the next "/".
+        val fromUri = o["uri"]?.jsonPrimitive?.contentOrNull
+            ?.substringAfter("://", "")?.substringBefore('/')?.takeIf { it.isNotBlank() }
+        if (fromUri != null && fromUri in KNOWN_MEDIA_TYPES) return fromUri
+        return "track"
+    }
+
+    /**
+     * Every type the app can act on. Used to sanity-check a type read out of a URI:
+     * without it a stream URL like `http://host/file.mp3` would yield "host".
+     */
+    private val KNOWN_MEDIA_TYPES = setOf(
+        "track", "album", "artist", "playlist", "radio", "genre",
+        "podcast", "podcast_episode", "audiobook", "chapter", "folder",
+    )
+
     fun item(el: JsonElement?, serverUrl: String?): MaItem? {
         val o = el as? JsonObject ?: return null
         val itemId = o["item_id"]?.jsonPrimitive?.contentOrNull ?: return null
@@ -627,7 +718,7 @@ object MaParse {
             provider = o["provider"]?.jsonPrimitive?.contentOrNull ?: "library",
             name = o["name"]?.jsonPrimitive?.contentOrNull ?: "?",
             uri = o["uri"]?.jsonPrimitive?.contentOrNull,
-            mediaType = o["media_type"]?.jsonPrimitive?.contentOrNull ?: "track",
+            mediaType = mediaTypeOf(o),
             subtitle = artistString(o) ?: o["owner"]?.jsonPrimitive?.contentOrNull,
             image = imageUrl(o, serverUrl),
             duration = o["duration"]?.jsonPrimitive?.let { it.intOrNull ?: it.doubleOrNull?.toInt() },
