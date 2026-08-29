@@ -9,7 +9,7 @@ import com.engabd.sendpin.audio.AudioAnalysisTap
 import com.engabd.sendpin.audio.AudioLead
 import com.engabd.sendpin.audio.AudioOutputs
 import com.engabd.sendpin.audio.FormatNegotiator
-import com.engabd.sendpin.audio.SendspinExoEngine
+import com.engabd.sendpin.audio.SendspinNativeEngine
 import com.engabd.sendpin.audio.SendspinPlaybackEngine
 import com.engabd.sendpin.audio.SendspinPlaybackSupport
 import com.engabd.sendpin.audio.StreamQuality
@@ -149,10 +149,10 @@ class Playback(private val app: Context) {
 
     /**
      * The tap/lead pair actually installed in the current MA engine's render
-     * chain, when [SendspinExoEngine] is up and connected — null otherwise,
+     * chain, when [SendspinNativeEngine] is up and connected — null otherwise,
      * including while a fresh connection is still being established. A live
      * [StateFlow] rather than a one-time read because it changes on every
-     * reconnect: a new `SendspinExoEngine` means a new [AudioAnalysisTap]
+     * reconnect: a new `SendspinNativeEngine` means a new [AudioAnalysisTap]
      * instance, and [com.engabd.sendpin.hue.DirectLightSync] needs to notice
      * and re-hook it.
      */
@@ -242,8 +242,17 @@ class Playback(private val app: Context) {
             // phone's own media volume, and the engine scalar is the focus duck alone.
             // Multiplying the two here would duck to 30% of 30% on a second interruption.
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> engine?.setVolume(0.3f)
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> engine?.setVolume(0f)
-            AudioManager.AUDIOFOCUS_GAIN -> engine?.setVolume(1f)
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+                // Freeze the native output instead of flushing: the server feeds
+                // realtime after a flush and never rebuilds the deep buffer, so
+                // freezing preserves the ring across the interruption and resumes
+                // instantly + click-free when focus returns.
+                engine?.freezeOutput()
+            }
+            AudioManager.AUDIOFOCUS_GAIN -> {
+                engine?.unfreezeOutput()
+                engine?.setVolume(1f)
+            }
             AudioManager.AUDIOFOCUS_LOSS -> onPermanentFocusLoss()
         }
     }
@@ -522,45 +531,37 @@ class Playback(private val app: Context) {
         // the next isPlaying transition. The connection service drives this from
         // its own watchPlayback observer, but the client needs to know *now*.
         if (!_isPlaying.value) c.setIdleMode(true)
-        // ExoPlayer is the MA engine. Not a default, not an opt-in — the only one.
-        //
-        // It was an experimental switch, off by default, on the reasoning that the
-        // path was unvalidated on hardware and should not silently become everyone's
-        // player on upgrade. Hardware has since answered: the hand-built
-        // MediaCodec + AudioTrack engine (`SendspinAudioEngine`) produced no audio
-        // on the owner's device, and the ExoPlayer path does. A toggle whose off
-        // position is silence is not a safety measure. That dead engine has since
-        // been removed; its two still-relied-on decisions (END_LINGER_MS below, and
-        // the head gate `SyncGate.MAX_MUTE_MS` mirrors) now live in
-        // [SendspinPlaybackSupport].
-        //
-        // Oboe stays opt-in and off: that path is still silent, and the
-        // investigation is live in `docs/oboe-investigation.md`.
-        val eng = SendspinExoEngine(
+        // The native Oboe engine is the only MA engine. It replaces the ExoPlayer-
+        // based SendspinExoEngine, which routed through ExoPlayer's AudioSink and
+        // lost server timestamps, starved the native ring, and was off by default.
+        // This engine decodes via MediaCodec and writes PCM directly to
+        // SendspinNativeOutput (Oboe), with the native callback owning ALL
+        // timeline/drift correction.
+        val eng = SendspinNativeEngine(
             app,
             c.clock,
-            // The engine has already retried and given up (see its own bound) —
-            // force a fresh Sendspin socket rather than leaving a dead stream
-            // sitting there. If Music Assistant still wants this player playing,
-            // a reconnect is what gives it another chance to send stream/start;
-            // reconnectNow() is the same "the user asked for music" escalation
-            // MaRepository.playMedia uses, and its own status text already
-            // surfaces through the c.statusText collector below.
+            // The engine has exhausted its own retry — force a fresh Sendspin
+            // socket rather than leaving a dead stream sitting there.
             onFatalError = { c.reconnectNow() },
-            // Audio is out. Signal the edge so the UI's optimistic freeze releases —
-            // the outgoing track was still audible for over a second after a skip, so a
-            // level check cannot express "the stream I am waiting for has started".
+            // Audio is out. Signal the edge so the UI's optimistic freeze releases.
             onAudible = { _audibleSeq.value += 1 },
         ).also {
-            // Read once, at connect time: switching mid-connection would orphan
-            // whatever the old output was doing mid-stream.
-            it.useOboe = settings.useOboeOutput.first()
             _maAudioSource.value = it.audioAnalysisTap to it.audioLead
         }
         engine = eng
-        // Which output is live is the first thing any "MA plays but there is no
-        // sound" report needs to establish, and it is otherwise invisible.
-        android.util.Log.i("Playback", "sendspin engine = SendspinExoEngine (oboe=${eng.useOboe})")
+        android.util.Log.i("Playback", "sendspin engine = SendspinNativeEngine (oboe=always)")
+
+        // Seed the clock filter from the persisted offset so a reconnect can
+        // skip cold-start convergence. No-op if there is no persisted value.
+        val persistedOffsetUs = settings.clockOffsetUs.first()
+        if (persistedOffsetUs != 0L) {
+            c.seedClockOffset(persistedOffsetUs)
+            android.util.Log.i("Playback", "seeded clock offset=${persistedOffsetUs}us from persisted value")
+        }
+        // Persist the clock offset when the filter publishes it.
+        c.onClockOffsetPersist = { offsetUs ->
+            scope.launch { settings.setClockOffsetUs(offsetUs) }
+        }
 
         scope.launch { c.state.collect { _connected.value = it == SendspinClient.State.CONNECTED } }
         scope.launch { c.statusText.collect { _connectionStatus.value = it } }
@@ -635,8 +636,7 @@ class Playback(private val app: Context) {
                     queueStateAgeMs = state?.let { now - it.second } ?: Long.MAX_VALUE,
                     msSincePreviousStreamEnd = lastStreamEndAtMs?.let { now - it },
                 )
-                (eng as? SendspinExoEngine)?.speech =
-                    streamKind == StreamClassifier.Kind.ANNOUNCEMENT && duckAnnouncements
+                (eng as? SendspinNativeEngine)?.let { /* speech attrs handled natively */ }
                 tailJob?.cancel(); tailJob = null
                 coldEngineJob?.cancel(); coldEngineJob = null
                 eng.start(format)
@@ -691,13 +691,14 @@ class Playback(private val app: Context) {
         // grouping changes. Forwarded to whoever is showing group state — the
         // Speakers screen re-reads on it instead of waiting out its 5 s poll.
         //
-        // Also the only signal SendspinExoEngine has for solo vs grouped mode
-        // (SendspinSyncDataSource vs SendspinDirectDataSource). A groupId means
-        // this player has been placed on the shared timeline; null means solo.
+        // Also the only signal the engine has for solo vs grouped mode. A groupId
+        // means this player has been placed on the shared timeline; null means
+        // solo. The engine's setGrouped reconfigures drift correction and re-arms
+        // the timeline without requiring a new stream/start.
         scope.launch {
             c.groupUpdates.collect {
                 _groupUpdates.tryEmit(it)
-                (eng as? SendspinExoEngine)?.grouped = it.groupId != null
+                eng.setGrouped(it.groupId != null)
             }
         }
 
@@ -967,12 +968,12 @@ class Playback(private val app: Context) {
         pauseRemotePlayer()
     }
 
-    fun onMediaNext() = transport { it.next(playerId) }
+    fun onMediaNext() = transport { it.next(playerId); engine?.expectDiscontinuity("next") }
 
-    fun onMediaPrevious() = transport { it.previous(playerId) }
+    fun onMediaPrevious() = transport { it.previous(playerId); engine?.expectDiscontinuity("previous") }
 
     /** [positionSec] — seconds from the start of the current item, per `players/cmd/seek`. */
-    fun onMediaSeek(positionSec: Int) = transport { it.seek(playerId, positionSec) }
+    fun onMediaSeek(positionSec: Int) = transport { it.seek(playerId, positionSec); engine?.expectDiscontinuity("seek") }
 
     /**
      * The user moved the volume.

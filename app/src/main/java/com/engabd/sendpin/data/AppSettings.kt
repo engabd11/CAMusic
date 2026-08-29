@@ -84,11 +84,10 @@ class AppSettings(private val context: Context) {
         private val SENDSPIN_CODEC = stringPreferencesKey("sendspin_codec")     // "auto" | "flac" | "pcm" | "opus"
         private val NAV_STREAM_FORMAT = stringPreferencesKey("nav_stream_format") // Subsonic `format=` ("raw" = original)
         private val BIT_PERFECT = booleanPreferencesKey("bit_perfect_24bit")     // 24-bit AudioTrack path when available
-        // "sendspin_exoplayer" was here and is deliberately not replaced. The
-        // ExoPlayer engine is the only MA engine now, so a stored `false` from a
-        // tester's earlier install must not keep silencing them — leaving the key
-        // unread is what makes the upgrade unconditional.
-        private val SENDSPIN_OBOE = booleanPreferencesKey("sendspin_oboe") // experimental: native Oboe output instead of the platform AudioTrack
+        // "sendspin_exoplayer" and "sendspin_oboe" were here and are deliberately
+        // not replaced. The native Oboe engine is the only MA engine now, so a
+        // stored `false` from a tester's earlier install must not keep silencing
+        // them — leaving the keys unread is what makes the upgrade unconditional.
         private val PREFERRED_AUDIO_DEVICE_ID = stringPreferencesKey("preferred_audio_device_id") // USB DAC routing
         private val DOWNLOAD_STORAGE_CAP_MB = stringPreferencesKey("download_storage_cap_mb") // 0 = unlimited
         private val DOWNLOAD_WIFI_ONLY = booleanPreferencesKey("download_wifi_only") // skip downloads on mobile data
@@ -96,6 +95,7 @@ class AppSettings(private val context: Context) {
         private val NAV_FADE_SECONDS = stringPreferencesKey("nav_fade_seconds") // 0 = off, gapless
         private val BEAT_MATCHED_CROSSFADE = booleanPreferencesKey("beat_matched_crossfade") // time the fade to land on a beat
         private val STATIC_DELAY_MS = stringPreferencesKey("sendspin_static_delay_ms") // per-player latency trim
+        private val CLOCK_OFFSET_US = stringPreferencesKey("sendspin_clock_offset_us") // persisted clock offset for fast reconnect
         private val REPLAY_GAIN = stringPreferencesKey("replay_gain_mode")      // off | track | album
         private val LYRICS_OFFSET_MS = stringPreferencesKey("lyrics_offset_ms") // +ve = lyrics run late
         private val KEEP_ALIVE_ANNOUNCEMENTS = booleanPreferencesKey("keep_alive_announcements") // persist connection for TTS
@@ -669,30 +669,11 @@ class AppSettings(private val context: Context) {
     /**
      * Whether to request 24-bit bit-perfect playback from the AudioTrack path.
      * When true and the device supports `ENCODING_PCM_24BIT_PACKED` (API 31+,
-     * which is our minSdk), [SendspinExoEngine] builds a 24-bit AudioTrack
+     * which is our minSdk), [SendspinNativeEngine] builds a 24-bit AudioTrack
      * instead of truncating to 16-bit. The server must also be sending 24-bit
      * — see [FormatNegotiator.MAX_BIT_DEPTH], which is now 24.
      */
     val bitPerfect24Bit: Flow<Boolean> = context.dataStore.data.map { it[BIT_PERFECT] ?: false }
-
-    /**
-     * Experimental: routes decoded MA audio through the native Oboe engine
-     * ([com.engabd.sendpin.audio.SendspinNativeOutput]) instead of the platform
-     * `AudioTrack`. Only 16-bit PCM is supported - combining this with
-     * [bitPerfect24Bit] is a known gap, not yet handled.
-     *
-     * Off by default and staying that way for now: this path is silent on device.
-     * The stream opens and starts cleanly, `buffered == written` on every stall so
-     * not one frame is ever consumed, and ExoPlayer eventually gives up with
-     * `Player stuck playing with no progress`. Three genuine defects have been
-     * fixed along the way and none of them was this one — see
-     * `docs/oboe-investigation.md`.
-     *
-     * The `useExoPlayerForSendspin` companion to this is gone: the ExoPlayer engine
-     * is no longer optional, it is the only MA engine. See
-     * [com.engabd.sendpin.service.Playback.startSendspin].
-     */
-    val useOboeOutput: Flow<Boolean> = context.dataStore.data.map { it[SENDSPIN_OBOE] ?: false }
 
     /**
      * Ask other apps to duck for a Home Assistant announcement, rather than taking
@@ -711,7 +692,7 @@ class AppSettings(private val context: Context) {
      * The system AudioDeviceInfo ID to route audio to, for USB DAC support.
      * Empty string means "let the system pick" (default speaker/headset).
      * Set by [com.engabd.sendpin.service.Playback] when a USB audio device is
-     * detected; consumed by both [SendspinExoEngine] and [LocalPlayer].
+     * detected; consumed by both [SendspinNativeEngine] and [LocalPlayer].
      */
     val preferredAudioDeviceId: Flow<String> = context.dataStore.data.map { it[PREFERRED_AUDIO_DEVICE_ID] ?: "" }
 
@@ -736,6 +717,22 @@ class AppSettings(private val context: Context) {
         val v = ms.coerceIn(-MAX_TRIM_MS, MAX_TRIM_MS).toString()
         it[STATIC_DELAY_MS] = v
         putMaOption(it, ServerConfig.OPT_STATIC_DELAY_MS, v)
+    }
+
+    /**
+     * The persisted clock offset (server-minus-wall, microseconds) from the last
+     * converged Kalman filter run. Seeded into the filter on the next connect so
+     * a reconnect can skip cold-start convergence — see
+     * [SendspinClient.seedClockOffset].
+     *
+     * 0 = no persisted value (first run, or the offset was never saved).
+     */
+    val clockOffsetUs: Flow<Long> = context.dataStore.data.map {
+        it[CLOCK_OFFSET_US]?.toLongOrNull() ?: 0L
+    }
+
+    suspend fun setClockOffsetUs(us: Long) = context.dataStore.edit {
+        it[CLOCK_OFFSET_US] = us.toString()
     }
 
     /**
@@ -998,11 +995,6 @@ class AppSettings(private val context: Context) {
         // Flow. See [bootBitPerfect].
         bootPrefs.edit().putBoolean("bit_perfect", value).apply()
         context.dataStore.edit { it[BIT_PERFECT] = value }
-    }
-
-    /** Takes effect on the next `connectToServer()` — see [useOboeOutput]. */
-    suspend fun setUseOboeOutput(value: Boolean) {
-        context.dataStore.edit { it[SENDSPIN_OBOE] = value }
     }
 
     /** Clamped to the range the slider offers, so a bad write cannot desync the show. */

@@ -5,12 +5,13 @@ import com.engabd.sendpin.protocol.StreamStartPlayerInfo
 
 /**
  * What [com.engabd.sendpin.service.Playback] needs from a Sendspin (MA) playback
- * engine - implemented by [SendspinExoEngine], the only one now that the original
- * hand-built `MediaCodec`+`AudioTrack` engine has been removed as dead code.
- * Audio focus, the noisy-headphones receiver, and the volume/mute/staticDelay/
- * preferredDevice forwarding in `Playback.kt` all go through this interface
- * rather than the concrete engine, so a future second implementation would not
- * need every caller to know which one is live.
+ * engine - implemented by [SendspinNativeEngine], the native Oboe engine that
+ * replaced the ExoPlayer-based `SendspinExoEngine`.
+ *
+ * Audio focus, the noisy-headphones receiver, and the volume/mute/staticDelay
+ * forwarding in `Playback.kt` all go through this interface rather than the
+ * concrete engine, so a future second implementation would not need every
+ * caller to know which one is live.
  */
 interface SendspinPlaybackEngine {
     fun start(format: StreamStartPlayerInfo)
@@ -27,8 +28,8 @@ interface SendspinPlaybackEngine {
      * Identifies the stream [start] most recently loaded; 0 before the first one.
      *
      * Everything to do with a tail is stamped with this, because a tail outlives the
-     * stream that produced it. The drain `stream/end` begins is still counting when
-     * the *next* `stream/start` arrives, and "the current stream" has moved on by the
+     * stream that produced it. The drain `stream/end` begins is still counting when the
+     * *next* `stream/start` arrives, and "the current stream" has moved on by the
      * time it fires.
      */
     val currentStreamId: Long get() = 0L
@@ -40,9 +41,9 @@ interface SendspinPlaybackEngine {
      * Whether the player has played out everything it was given for [streamId].
      *
      * The only honest answer to "has the tail been heard yet". What is left to hear
-     * once the last frame has been handed over lives in the decoder and the audio
-     * track, not in any queue this app can count, so nothing shallower than the
-     * player's own end of playback can tell.
+     * once the last frame has been handed over lives in the decoder and the native
+     * ring, not in any queue this app can count, so nothing shallower than the
+     * native output's own end of playback can tell.
      */
     fun hasPlayedOut(streamId: Long): Boolean = false
 
@@ -60,4 +61,44 @@ interface SendspinPlaybackEngine {
 
     var staticDelayMs: Int
     var bitPerfect: Boolean
+
+    // ---- New methods for the native engine ----
+
+    /**
+     * Swap between grouped (SYNC) and solo (DIRECT) timing mode mid-stream.
+     * Reconfigures the native output's drift correction mode and re-arms the
+     * timeline anchor without requiring a new `stream/start`.
+     */
+    fun setGrouped(grouped: Boolean)
+
+    /**
+     * Freeze the native consumer without dropping the ring: fade to silence
+     * and hold the read position, preserving buffered audio across a transient
+     * interruption (audio focus loss). Used instead of a flush for solo/DIRECT
+     * focus interruptions.
+     */
+    fun freezeOutput()
+
+    /** Resume from a [freezeOutput] — fade back in from the held position. */
+    fun unfreezeOutput()
+
+    /**
+     * Dynamic-range compressor level: 0 = off, 1 = soft, 2 = medium, 3 = hard.
+     * Amplitude-only output effect; no effect on timing/latency/sync.
+     */
+    fun setCompressorLevel(level: Int)
+
+    /**
+     * High-end output quantization: noise-shaped TPDF dither at the float→int16
+     * step. Amplitude-only; no effect on timing/latency/sync.
+     */
+    fun setDither(enabled: Boolean)
+
+    /**
+     * Signal an upcoming discontinuity (seek, track change): the server keeps
+     * sending the OLD position's in-flight frames until it processes the
+     * command. Drop all frames until the next `stream/start` (configure) or
+     * `stream/clear` (flush) arrives, with a bounded timeout backstop.
+     */
+    fun expectDiscontinuity(reason: String)
 }

@@ -21,7 +21,7 @@ data class NegotiatedFormat(
 object FormatNegotiator {
 
     /**
-     * What [SendspinExoEngine] renders by default: 16-bit PCM through an
+     * What [SendspinNativeEngine] renders by default: 16-bit PCM through an
      * `ENCODING_PCM_16BIT` AudioTrack. Advertising a depth we then truncate only
      * makes the server spend bandwidth on bits thrown away on arrival, so this
      * stays the floor *and* the default ceiling.
@@ -32,7 +32,7 @@ object FormatNegotiator {
      * The ceiling when the user turns bit-perfect on. The engine asks the FLAC
      * decoder for float output and builds the AudioTrack from the depth the
      * decoder actually reports, so 24-bit sources keep their resolution instead
-     * of being requantised — see [SendspinExoEngine.bitPerfect].
+     * of being requantised — see [SendspinNativeEngine.bitPerfect].
      *
      * Gated on the setting rather than always-on: 24-bit costs real bandwidth,
      * and on a device whose mixer runs at 16-bit the extra bits are resampled
@@ -64,7 +64,7 @@ object FormatNegotiator {
      */
     const val DEFAULT_MAX_RATE = 96_000
 
-    /** Every codec [SendspinExoEngine] can decode, in the order "auto" offers them. */
+    /** Every codec [SendspinNativeEngine] can decode, in the order "auto" offers them. */
     val CODECS = listOf("flac", "pcm", "opus")
 
     /**
@@ -148,7 +148,7 @@ object FormatNegotiator {
 
     /**
      * The ceiling this phone can actually put out — its mixer's native rate at the
-     * depth [SendspinExoEngine] renders. This is the honest "playing at" answer
+     * depth [SendspinNativeEngine] renders. This is the honest "playing at" answer
      * when the file is decoded on the device itself (playing a Navidrome stream
      * direct) rather than negotiated with Music Assistant, since nothing upstream
      * gets a say in it.

@@ -102,6 +102,12 @@ data class PlayerStateInfo(
 data class ClientStatePayload(
     val state: String = "synchronized",
     val player: PlayerStateInfo = PlayerStateInfo(),
+    /**
+     * Whether this client is available to receive a stream. Always `true` while
+     * the socket is up — the Sendspin spec includes this field and some servers
+     * use it to decide whether to include the player in group operations.
+     */
+    val available: Boolean = true,
 )
 
 @Serializable

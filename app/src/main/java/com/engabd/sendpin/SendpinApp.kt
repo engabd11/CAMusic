@@ -155,7 +155,7 @@ class SendpinApp : Application(), ImageLoaderFactory {
 
     /**
      * Whichever backend is actually producing sound right now, for
-     * [directLightSync] — MA (via [com.engabd.sendpin.audio.SendspinExoEngine])
+     * [directLightSync] — MA (via [com.engabd.sendpin.audio.SendspinNativeEngine])
      * when it has a tap installed *and* is playing, else [localPlayer] always.
      * That "else" is what keeps local playback's Light Sync behaviour identical
      * to before MA support existed: with nothing playing on MA, this is exactly

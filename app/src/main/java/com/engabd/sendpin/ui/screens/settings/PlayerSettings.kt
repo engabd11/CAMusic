@@ -194,7 +194,6 @@ internal fun PlayerSection(
         // taken meant leaving the page that changed it. Every row of it is about one
         // phone's registration with one Music Assistant server, which is this page.
         MaPlayerStatusCard(viewModel, settings)
-        MaExperimentalCard(settings, accent, scope)
 
         SettingsCard(
             title = "Announcements",
@@ -283,53 +282,6 @@ private fun MaPlaybackConfigCard(viewModel: PlayerViewModel, accent: Color) {
                 "did not take.\n\nTip: if you see one, sign in to Music Assistant with an admin " +
                 "account under Libraries. Nothing on this card will save until you do.",
         )
-    }
-}
-
-/**
- * Player-internals switches not ready for general use.
- *
- * Only one is left. The ExoPlayer engine used to be the other, off by default,
- * on the reasoning that an unvalidated path should not silently become everyone's
- * player — but hardware settled that: the engine it replaced makes no sound on the
- * owner's device. It is now the only MA engine and has no switch. See
- * [com.engabd.sendpin.service.Playback.startSendspin].
- *
- * [AppSettings.useOboeOutput] routes decoded audio through a native Oboe engine
- * instead of the platform AudioTrack, and takes effect on the next MA connection
- * rather than retroactively on whatever is playing.
- *
- * Lives here rather than in the device-wide Audio settings: it is entirely about
- * how *this phone talks to Music Assistant specifically* — the Navidrome/local
- * path never touches it — so it belongs with the rest of this phone's Music
- * Assistant player settings, the same reasoning that already moved
- * gapless/crossfade ([MaPlaybackConfigCard]) here.
- */
-@Composable
-private fun MaExperimentalCard(settings: AppSettings, accent: Color, scope: CoroutineScope) {
-    var useOboe by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
-        useOboe = settings.useOboeOutput.first()
-    }
-
-    SettingsCard(
-        title = "Experimental",
-        lead = "Not ready for everyday use. Turn this on only if you're specifically testing it.",
-    ) {
-        ToggleRow(
-            title = "Native Oboe output",
-            subtitle = "Currently produces no sound at all",
-            checked = useOboe,
-            accent = accent,
-            info = "Routes decoded audio through a native engine instead of the platform " +
-                "AudioTrack, so playback cannot be interrupted by garbage collection.\n\nIt " +
-                "does not work yet. The audio stream opens and starts, but nothing is ever " +
-                "consumed from it, so the result is silence rather than a glitch. Three " +
-                "separate bugs have been fixed on the way to this one and none of them was " +
-                "it.\n\nTip: leave it off unless you are helping track it down. If you turned " +
-                "it on and have no sound at all, this is why, and turning it back off fixes it " +
-                "immediately.",
-        ) { useOboe = it; scope.launch { settings.setUseOboeOutput(it) } }
     }
 }
 

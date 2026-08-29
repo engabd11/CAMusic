@@ -132,7 +132,7 @@ class LocalPlayer(private val context: Context) {
      * The live player, rebuilt on demand after a [release].
      *
      * A `by lazy` here was a one-way door, and the identical shape had already been
-     * fixed once in [com.engabd.sendpin.audio.SendspinExoEngine] — where it was
+     * fixed once in [com.engabd.sendpin.audio.SendspinNativeEngine] — where it was
      * reachable through ordinary use and left the Music Assistant path deaf for the
      * rest of the connection. Nothing reaches it here today ([release] has no caller
      * outside process teardown), which is exactly why it was worth changing now: a

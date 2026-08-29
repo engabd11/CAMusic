@@ -483,12 +483,15 @@ class ArtistDetailViewModel(
                     localPlayer.setShuffle(false)
                     localPlayer.setQueue(localTracks(shelf), start)
                 } else {
-                    // MA's play_media with "replace" always starts at index 0, so the
-                    // tapped track goes first and the rest follows it.
-                    track.uri?.let { maRepo.playOn(playTarget(), listOf(it), "replace") }
-                    val rest = shelf.mapNotNull { it.uri }.filter { it != track.uri }
-                    if (rest.isNotEmpty()) maRepo.playOn(playTarget(), rest, "add")
-                    maRepo.play(playTarget())
+                    // Play the top-tracks shelf starting from this track — MA 2.10's
+                    // play_media supports start_item, so one command sends every
+                    // shelf track as `media` and jumps to the tapped one. The old
+                    // approach (play the track, add the rest, then call play) was
+                    // three commands for what the API was designed to do in one.
+                    val uris = shelf.mapNotNull { it.uri }
+                    if (uris.isNotEmpty()) {
+                        maRepo.playOn(playTarget(), uris, "replace", radioMode = false, startItem = track.uri)
+                    }
                 }
                 _toast.tryEmit("Playing ${track.name}")
             } catch (e: Exception) {
