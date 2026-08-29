@@ -277,7 +277,18 @@ class PlaybackOwner(
      * [Playback] before `LocalPlayer.playing` has flipped, and an arbitration that
      * read the flow would sometimes see `false` and tear the engine down anyway.
      */
-    fun noteLocalTakingOver() {
+    fun noteLocalTakingOver() = noteTakingOutput()
+
+    /**
+     * Something in this process is about to claim the audio output.
+     *
+     * The general form of [noteLocalTakingOver]. The local player was the only
+     * in-process claimant when that was written; ambience effects are a second, with
+     * exactly the same problem — an `AUDIOFOCUS_GAIN` from inside this app evicts the
+     * Sendspin path, which cannot tell that from a rival app and releases its engine.
+     * [isInternalHandover] covers both for free, because both leave the same mark.
+     */
+    fun noteTakingOutput() {
         localClaimAtMs = android.os.SystemClock.elapsedRealtime()
     }
 

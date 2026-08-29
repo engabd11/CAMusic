@@ -546,6 +546,17 @@ class SendspinNativeEngine(
     private fun onFlush() {
         anchorServerUs = 0L
         anchorLocalUs = 0L
+        // What ExoPlayer used to do for us. The tap was an AudioProcessor on the old MA
+        // path, so the player flushed it on every seek, track change and reconfigure,
+        // and the analyzer, the tempo/structure/gesture trackers and the layer chain all
+        // started each track clean. Nothing called into the tap once this engine took
+        // over, so MA track changes carried the previous song's state forward — the
+        // second half of "light sync regressed for the MA player".
+        audioAnalysisTap.resetAnalysis()
+        // The buffered position is about to stop being true.
+        audioLead.leadUs = AudioLead.UNKNOWN
+        audioLead.mediaTimeUs = AudioLead.UNKNOWN
+        mediaAnchorUs = 0L
     }
 
     // ---- Volume management ----
@@ -892,9 +903,25 @@ class SendspinNativeEngine(
         )
 
         // Update AudioLead: how far ahead of the speaker the tap is.
-        val bufferedUs = nativeOutput.bufferedFrames() * 1_000_000L / activeSampleRate.coerceAtLeast(1)
-        audioLead.leadUs = bufferedUs
-        audioLead.mediaTimeUs = plan.presentationUs
+        //
+        // The distance from *now* to when this chunk is scheduled to be heard, plus the
+        // output path's own latency — which is what [AudioLeadProbe] measured on the
+        // ExoPlayer path it replaced (`presentationTimeUs - getCurrentPositionUs()`).
+        //
+        // It used to report `bufferedFrames()`, the whole depth of the native ring. That
+        // is a different quantity, and the producer deliberately keeps the ring at
+        // RING_TARGET_MS = 2500 — so the lead read as ~2.5 s regardless of how far ahead
+        // the tap actually was. [com.engabd.sendpin.hue.FrameDelayQueue] then held light
+        // frames for 2.4 s while its own MAX_ENTRIES caps at roughly 2 s, so Music
+        // Assistant's lights ran about two seconds behind the music *and* dropped frames
+        // off the head of the queue. Local playback was unaffected because LocalPlayer
+        // still runs the real probe, which is why this looked like "the lights regressed
+        // for MA" specifically.
+        val scheduledAheadUs = (plan.presentationUs - nowUs()).coerceAtLeast(0L)
+        audioLead.leadUs = scheduledAheadUs + plan.outputLatencyUs
+        // Track-relative, per the field's contract — the same value handed to the tap
+        // just above, not the absolute output-clock stamp it was being given.
+        audioLead.mediaTimeUs = mediaTimeUs
 
         writtenChunkCount++
 

@@ -212,6 +212,19 @@
         </service>
 
         <!--
+          Ambience effects. A third service rather than a third role for one of the
+          others: the sound here is synthesised, so there is no ExoPlayer and no
+          MediaSession to expose, and an ambience show is not a track that "next"
+          or a scrub bar could mean anything for. What it does need is to stay
+          unfrozen while the phone is put down, which is all this provides.
+        -->
+        <service
+            android:name=".service.EffectsService"
+            android:foregroundServiceType="mediaPlayback"
+            android:exported="false">
+        </service>
+
+        <!--
           Android Auto's browse tree and session, distinct from the two services
           above: those come and go with playback, but Auto needs something bound
           and queryable (browse, search) whether or not anything is currently
