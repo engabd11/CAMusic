@@ -111,6 +111,8 @@ class ServerConfigTest {
                 ServerKind.NAVIDROME,
                 ServerKind.SUBSONIC,
                 ServerKind.JELLYFIN,
+                ServerKind.EMBY,
+                ServerKind.PLEX,
                 ServerKind.LOCAL,
                 ServerKind.DOWNLOADS,
             ),
@@ -163,6 +165,8 @@ class LocalProviderTest {
     fun `every source provider counts as local, and so does the download index`() {
         assertTrue(MusicSources.isLocalProvider("subsonic"))
         assertTrue(MusicSources.isLocalProvider("jellyfin"))
+        assertTrue(MusicSources.isLocalProvider("emby"))
+        assertTrue(MusicSources.isLocalProvider("plex"))
         assertTrue(MusicSources.isLocalProvider(MusicSources.DOWNLOAD_PROVIDER))
     }
 
