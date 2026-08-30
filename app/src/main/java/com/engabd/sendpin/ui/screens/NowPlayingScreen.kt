@@ -98,15 +98,27 @@ fun NowPlayingScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val settings = remember(context) { AppSettings(context) }
-    val visualizerByDefault by settings.showVisualizer.collectAsStateWithLifecycle(initialValue = false)
+    val visualizerByDefault by settings.showVisualizer.collectAsStateWithLifecycle<Boolean?>(initialValue = null)
 
     // Which sheet or card is up, if any. Shared with the overlay layout so the two
     // cannot drift — see PlayerSheetState.
     val sheets = rememberPlayerSheets()
     // The cover's slot: the sleeve, lyrics, or the live visualizer — a mode of the
     // player, not an overlay, so whichever is active takes the cover's place.
-    var coverSlot by rememberSaveable {
-        mutableStateOf(if (visualizerByDefault) CoverSlot.VISUALIZER else CoverSlot.ART)
+    var coverSlot by rememberSaveable { mutableStateOf(CoverSlot.ART) }
+
+    // The setting is read from DataStore, which resolves *after* the first
+    // composition, so it cannot seed `rememberSaveable` directly: the initializer
+    // would always see the pre-load value and, being an initializer, would never
+    // run again — which left the toggle doing nothing at all. Apply it once it
+    // lands, and only while the slot is still where it started, so it can never
+    // override a choice the listener has already made or a restored slot.
+    var defaultApplied by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(visualizerByDefault) {
+        val want = visualizerByDefault ?: return@LaunchedEffect
+        if (defaultApplied) return@LaunchedEffect
+        defaultApplied = true
+        if (want && coverSlot == CoverSlot.ART) coverSlot = CoverSlot.VISUALIZER
     }
 
     LaunchedEffect(Unit) {

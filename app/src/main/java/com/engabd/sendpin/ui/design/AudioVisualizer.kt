@@ -4,9 +4,14 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.geometry.CornerRadius
@@ -18,8 +23,10 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.audio.AnalysisFrame
+import com.engabd.sendpin.audio.AudioAnalysisTap
 import com.engabd.sendpin.service.PlaybackOwner
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlin.math.exp
 
 /**
  * The latest [AnalysisFrame] from whichever player is actually making sound right now.
@@ -33,17 +40,23 @@ import kotlinx.coroutines.flow.MutableStateFlow
  */
 @Composable
 fun rememberActiveAnalysisFrame(): State<AnalysisFrame?> {
+    val tap = rememberActiveTap()
+    val frameFlow = remember(tap) { tap?.frames ?: MutableStateFlow(null) }
+    return frameFlow.collectAsStateWithLifecycle()
+}
+
+/** The tap owned by whichever player is actually making sound right now. */
+@Composable
+private fun rememberActiveTap(): AudioAnalysisTap? {
     val app = SendpinApp.instance
     val owner by app.playbackOwner.state.collectAsStateWithLifecycle()
-    val tap = remember(owner.soundOwner, owner.sendspinTap) {
+    return remember(owner.soundOwner, owner.sendspinTap) {
         when (owner.soundOwner) {
             PlaybackOwner.Who.LOCAL -> app.localPlayer.audioAnalysisTap
             PlaybackOwner.Who.SENDSPIN -> owner.sendspinTap?.first
             PlaybackOwner.Who.NONE -> null
         }
     }
-    val frameFlow = remember(tap) { tap?.frames ?: MutableStateFlow(null) }
-    return frameFlow.collectAsStateWithLifecycle()
 }
 
 /**
@@ -66,20 +79,54 @@ fun rememberActiveAnalysisFrame(): State<AnalysisFrame?> {
  */
 @Composable
 fun AudioVisualizer(modifier: Modifier = Modifier, color: Color = LocalAccent.current) {
+    val tap = rememberActiveTap()
     val frame by rememberActiveAnalysisFrame()
-    val levels = remember { FloatArray(BAND_COUNT) }
 
-    val bands = frame?.melbank
-    for (i in levels.indices) {
-        val target = bands?.getOrNull(i)?.coerceIn(0f, 1f) ?: 0f
-        levels[i] += (target - levels[i]) * SMOOTHING
+    // Analysis only ran while Light Sync was on, so on a phone with no bridge
+    // configured this drew a flat line for ever — and this PR promotes it from an
+    // opt-in strip to a tap on the cover, where that dead state is far more
+    // visible. Ask for frames while it is on screen and give them back after.
+    DisposableEffect(tap) {
+        tap?.setUiActive(true)
+        onDispose { tap?.setUiActive(false) }
+    }
+
+    val levels = remember { FloatArray(BAND_COUNT) }
+    // The bars are plain data; this is what the draw phase actually depends on.
+    // Reading it *inside* the draw lambda below — rather than easing `levels`
+    // during composition, which is what this replaced — is the whole point: a
+    // FloatArray is not snapshot state, so a draw that only read it had nothing
+    // to invalidate on and painted its first frame for ever. `AmbientRain` in
+    // this same package is the pattern.
+    var tick by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(Unit) {
+        var lastNanos = 0L
+        while (true) {
+            withFrameNanos { nanos ->
+                val dt = if (lastNanos == 0L) 0f else (nanos - lastNanos) / 1_000_000_000f
+                lastNanos = nanos
+                val bands = frame?.melbank
+                val a = if (dt <= 0f) 0f else 1f - exp(-dt / SMOOTHING_TAU_S)
+                var moved = false
+                for (i in levels.indices) {
+                    val target = bands?.getOrNull(i)?.coerceIn(0f, 1f) ?: 0f
+                    val next = levels[i] + (target - levels[i]) * a
+                    if (kotlin.math.abs(next - levels[i]) > 1e-4f) moved = true
+                    levels[i] = next
+                }
+                if (moved) tick++
+            }
+        }
     }
 
     Box(modifier) {
         Canvas(Modifier.fillMaxSize().blur(28.dp)) {
+            tick
             drawMirroredBars(levels, color.copy(alpha = 0.9f))
         }
         Canvas(Modifier.fillMaxSize()) {
+            tick
             drawMirroredBars(levels, color)
         }
     }
@@ -113,8 +160,14 @@ private fun DrawScope.drawMirroredBars(levels: FloatArray, color: Color) {
 
 private const val BAND_COUNT = 16
 
-/** How much of each new frame closes the gap to its target, per recomposition. */
-private const val SMOOTHING = 0.35f
+/**
+ * Time constant for the bars' easing.
+ *
+ * A time constant rather than a per-frame fraction, so the bars move at the same
+ * speed whatever the display refresh rate is — the raw melbank updates hard
+ * enough at ~50 Hz to read as flicker at this size.
+ */
+private const val SMOOTHING_TAU_S = 0.045f
 
 /** A faint resting height so silence reads as "ready", not as missing bars. */
 private const val MIN_HEIGHT_FRACTION = 0.015f

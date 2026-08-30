@@ -414,6 +414,9 @@ class DirectLightSync(
         val clamped = fraction.coerceIn(0f, 1f)
         engine?.brightness = clamped
         layerBrightness = clamped
+        // An ambience show bypasses the engine entirely, so it needs telling
+        // separately or the ceiling would apply to music and not to effects.
+        ambience?.setBrightness(clamped)
     }
 
     private val musicDnaLayer = MusicDnaLayer()
@@ -665,6 +668,9 @@ class DirectLightSync(
     private var renderJob: Job? = null
     private val running = AtomicBoolean(false)
 
+    /** Set for the duration of [start]'s handshake. See the note at its use. */
+    private val starting = AtomicBoolean(false)
+
 
     /**
      * Start the direct Light Sync session.
@@ -690,6 +696,15 @@ class DirectLightSync(
             _error.value = "Bridge not configured. Set up a bridge in Settings first."
             return@withContext
         }
+
+        // `running` is not a guard on its own: it is set only at the *end* of the
+        // sequence below, after an HTTPS round trip and a DTLS handshake, so two
+        // callers arriving inside that window both read false and both opened a
+        // session. A second `action: start` on one area looks to the bridge exactly
+        // like another app taking it away, and poisons it for good — see the note on
+        // [startAmbience]. This closes that window; the check above stays as the
+        // cheap path for the overwhelmingly common already-running case.
+        if (!starting.compareAndSet(false, true)) return@withContext
 
         try {
             // 1. Fetch the entertainment configuration (channels + positions).
@@ -806,6 +821,8 @@ class DirectLightSync(
             _error.value = e.message ?: "Failed to start Light Sync"
             Log.e(TAG, "start failed", e)
             cleanup()
+        } finally {
+            starting.set(false)
         }
     }
 

@@ -154,18 +154,45 @@ class AudioAnalysisTap(
 
     private var analysisThread: Thread? = null
 
+    /** Which consumers currently want frames. See [setActive] and [setUiActive]. */
+    private var syncWants = false
+    private var uiWants = false
+
     @Volatile
     private var analysisRunning = false
 
     /**
-     * Turn analysis on or off. The processor stays in ExoPlayer's chain either
-     * way (see [isActive]); this only decides whether audio is analysed.
+     * Turn analysis on or off for Light Sync. The processor stays in ExoPlayer's
+     * chain either way (see [isActive]); this only decides whether audio is
+     * analysed.
      */
     @Synchronized
     fun setActive(on: Boolean) {
-        if (on == active) return
-        active = on
-        if (on) startAnalysis() else stopAnalysis()
+        if (on == syncWants) return
+        syncWants = on
+        applyActive()
+    }
+
+    /**
+     * Turn analysis on or off for an on-screen consumer, currently the visualizer.
+     *
+     * Kept separate from [setActive] rather than sharing one flag: the two
+     * consumers come and go independently, and with a single flag whichever
+     * stopped first would take the frames away from the other — closing the
+     * visualizer would have stopped Light Sync's analysis mid-track.
+     */
+    @Synchronized
+    fun setUiActive(on: Boolean) {
+        if (on == uiWants) return
+        uiWants = on
+        applyActive()
+    }
+
+    private fun applyActive() {
+        val want = syncWants || uiWants
+        if (want == active) return
+        active = want
+        if (want) startAnalysis() else stopAnalysis()
     }
 
     // ── AudioProcessor ────────────────────────────────────────────────────
