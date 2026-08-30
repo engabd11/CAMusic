@@ -410,7 +410,22 @@ private fun DirectLightSyncScreen(onBack: () -> Unit, onOpenEffects: () -> Unit 
     // the beat" over a room full of idle lamps.
     val framesFresh by direct.framesFresh.collectAsStateWithLifecycle()
     val scanState by app.scanFrameSource.state.collectAsStateWithLifecycle()
-    val feed by remember { derivedStateOf { app.activeLightSyncSource.value.feed } }
+    // Collected, not read through `derivedStateOf`. That form reads a StateFlow's
+    // `.value`, which is not snapshot state, so the derivation had no dependencies to
+    // invalidate on: it computed the feed once on first composition and never again.
+    // Open the screen before starting anything and it stayed on LOCAL_PCM for the rest
+    // of the visit, so a Music Assistant queue on a remote speaker — the one case the
+    // whole SCAN_REMOTE path exists for — was reported through the local player's
+    // branch of [ShowStatusRules] and never said what it was actually doing.
+    //
+    // The whole source rather than a `map` of its `feed`: mapping needs a seed value to
+    // collect against, and the only honest seed is the flow's own `.value` — which is
+    // the very read this is replacing, and which lint rejects for exactly the reason
+    // above. A StateFlow collected whole brings its current value with it. The extra
+    // recompositions are nothing: [SendpinApp.activeLightSyncSource] is deduplicated by
+    // `stateIn` and only changes on a backend handover.
+    val lightSource by app.activeLightSyncSource.collectAsStateWithLifecycle()
+    val feed = lightSource.feed
     val maNow by app.maNowPlaying.now.collectAsStateWithLifecycle()
     val remoteSpeaker = maNow?.takeIf { !it.isSelf }?.playerName
     val enabled by settings.lightSyncEnabled.collectAsState(initial = false)

@@ -146,8 +146,27 @@ private const val FRAME_PERIOD_NANOS = 1_000_000_000L / STREAM_FPS
 /** Longest step the engine may be advanced by after a stall, in seconds. */
 private const val MAX_STEP_S = 0.1f
 
-/** How long without an analysis frame before the room is treated as silent. */
-private const val FRAME_STALE_NANOS = 250_000_000L
+/**
+ * How long without an analysis frame before the room is treated as silent.
+ *
+ * This decides two things at once — whether the room runs the show or the idle
+ * pattern, and which of "Reacting to the beat" / "Waiting for music on this phone"
+ * the screen says — and it is deliberately one number so those two can never
+ * disagree. See [ShowStatus].
+ *
+ * A quarter of a second sounds generous and is not. A frame gap is not a silence:
+ * it is the analysis thread being descheduled, a decoder handing over a buffer late,
+ * or a producer that writes in chunks. At 250 ms an ordinary hiccup crossed the line
+ * both ways within a few frames, so the status line flickered between the two
+ * sentences and the lamps flickered between two shows with it — which is what "the
+ * status keeps changing and the light is erratic" was.
+ *
+ * Six hundred milliseconds is past anything a working pipeline produces and still
+ * well short of a pause anyone would notice waiting for: the idle pattern is a slow
+ * fade that does not begin for [IDLE_FADE_IN_DELAY_S] seconds anyway, so the extra
+ * third of a second is invisible at the one moment it costs anything.
+ */
+private const val FRAME_STALE_NANOS = 600_000_000L
 
 /** How long the player must be paused/stopped before the idle ambient show fades in. */
 private const val IDLE_FADE_IN_DELAY_S = 5f
@@ -1038,6 +1057,24 @@ class DirectLightSync(
      * `fresh` goes true and the ordinary render path runs.
      */
     internal fun onSynthFrame(frame: AnalysisFrame, grid: BeatGrid?, scan: TrackScan, posS: Float) {
+        // Only when the scan really is the feed. [ScanFrameSource] decides to drive
+        // from [com.engabd.sendpin.service.MaNowPlaying] alone — "a Music Assistant
+        // player that is not this one is playing" — and that is not the same question
+        // as "this phone can hear nothing". Put this phone in a group behind another
+        // speaker and both are true at once: MA reports the group's leader, which is
+        // not us, while the Sendspin engine is decoding the group's audio right here
+        // and feeding the tap.
+        //
+        // [LightSyncFeedPicker] already resolves that correctly and hands the room to
+        // the real PCM. Nothing stopped the synth from writing anyway, though, so the
+        // two producers took turns overwriting `latestFrame`, `latestGrid` and
+        // `latestStructure` at ~50 Hz each and the render loop drew whichever landed
+        // last — a show alternating between a spectrum and a beat schedule, frame by
+        // frame. That is the erratic half of "the light is erratic on the MA player".
+        //
+        // Cheap enough to test per frame: one StateFlow read of a value that changes
+        // only on a backend handover.
+        if (activeSource.value.feed != LightSyncFeed.SCAN_REMOTE) return
         latestGrid = grid
         // The scan's own structure, through the very function the live path uses to
         // enrich a causal tracker's guess — here there is no guess to enrich, so it

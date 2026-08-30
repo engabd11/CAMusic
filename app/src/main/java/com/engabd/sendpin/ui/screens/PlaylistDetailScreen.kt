@@ -108,6 +108,7 @@ fun PlaylistDetailScreen(
                         PlaylistHero(
                             name = playlist?.name ?: name,
                             artUrl = playlistArt,
+                            coverSeed = itemId.hashCode(),
                             trackCount = tracks.size,
                             totalDuration = tracks.sumOf { it.duration ?: 0 },
                             onPlayAll = viewModel::playAll,
@@ -177,6 +178,12 @@ fun PlaylistDetailScreen(
 private fun PlaylistHero(
     name: String,
     artUrl: String?,
+    /**
+     * Which colours a cover-less playlist is generated in. The playlist's own id, so
+     * it is the same cover here as on the tile that was tapped to get here — see
+     * [com.engabd.sendpin.ui.design.GeneratedCover].
+     */
+    coverSeed: Int,
     trackCount: Int,
     totalDuration: Int,
     onPlayAll: () -> Unit,
@@ -202,10 +209,15 @@ private fun PlaylistHero(
                         .clip(RoundedCornerShape(16.dp)),
                 )
             } else {
-                Box(
-                    Modifier.fillMaxSize().clip(RoundedCornerShape(16.dp)).background(Ink3),
-                    contentAlignment = Alignment.Center,
-                ) { Icon(Icons.AutoMirrored.Filled.QueueMusic, null, tint = TextFaint, modifier = Modifier.size(48.dp)) }
+                // The same generated cover the library tiles use, so a playlist with no
+                // artwork is recognisably the same playlist here as it was in the grid
+                // you tapped. See [com.engabd.sendpin.ui.design.GeneratedCover].
+                GeneratedCover(
+                    coverSeed,
+                    Icons.AutoMirrored.Filled.QueueMusic,
+                    Modifier.fillMaxSize().shadow(24.dp, RoundedCornerShape(16.dp)),
+                    RoundedCornerShape(16.dp),
+                )
             }
         }
 

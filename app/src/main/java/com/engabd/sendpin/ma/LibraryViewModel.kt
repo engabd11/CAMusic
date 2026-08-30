@@ -64,9 +64,30 @@ import kotlinx.coroutines.launch
 data class LibraryShelves(
     val favoriteAlbums: List<MaItem> = emptyList(),
     val favoriteArtists: List<MaItem> = emptyList(),
+    /**
+     * "Continue listening" — what you were in the middle of, of any kind.
+     *
+     * Music Assistant's `music/in_progress_items` answers that for the two media
+     * types it tracks a position on, podcasts and audiobooks, and for a long time
+     * this shelf was only ever those. A listener whose library is music saw a
+     * "Continue listening" shelf that never once mentioned music.
+     *
+     * So the songs are folded in here too, behind the genuinely-unfinished items,
+     * and taken out of [recent] as they go. See [ContinueListening].
+     */
     val inProgress: List<MaItem> = emptyList(),
     val recentlyAdded: List<MaItem> = emptyList(),
     val recommendations: List<MaItem> = emptyList(),
+    /**
+     * "Recently played", less the songs [inProgress] has taken — see
+     * [ContinueListening] for why the line is drawn there.
+     *
+     * What is left is the albums, artists, playlists and radio stations, which is a
+     * different question — "where was I listening" rather than "what was I listening
+     * to" — and reads as its own shelf rather than a copy of the one above it. A
+     * library that only ever plays single tracks empties this shelf out entirely, and
+     * an empty shelf is dropped from the page.
+     */
     val recent: List<MaItem> = emptyList(),
     val frequent: List<MaItem> = emptyList(),
     /** Music Assistant's own Discover rows — see [LibraryViewModel.loadDiscoverRows]. */
@@ -386,10 +407,15 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         _recommendations, _recent, _frequent, _discover,
     ) { s ->
         @Suppress("UNCHECKED_CAST")
+        val split = ContinueListening.split(
+            inProgress = s[2] as List<MaItem>,
+            recentlyPlayed = s[5] as List<MaItem>,
+        )
+        @Suppress("UNCHECKED_CAST")
         LibraryShelves(
             favoriteAlbums = s[0] as List<MaItem>, favoriteArtists = s[1] as List<MaItem>,
-            inProgress = s[2] as List<MaItem>, recentlyAdded = s[3] as List<MaItem>,
-            recommendations = s[4] as List<MaItem>, recent = s[5] as List<MaItem>,
+            inProgress = split.continueListening, recentlyAdded = s[3] as List<MaItem>,
+            recommendations = s[4] as List<MaItem>, recent = split.recentlyPlayed,
             frequent = s[6] as List<MaItem>, discover = s[7] as List<DiscoverShelf>,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, LibraryShelves())
@@ -2382,7 +2408,12 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         if (_offline.value) { _recent.value = emptyList(); return null }
         return viewModelScope.launch {
             _recent.value = try {
-                if (_backend.value == Backend.MA) maRepo.recentlyPlayed()
+                // A longer list than a single shelf needs, because on MA this one feeds
+                // two: [shelves] splits the songs out of it into "Continue listening".
+                // At the default twelve, a listener who plays single tracks left
+                // "Recently played" with two entries in it and "Continue listening"
+                // with ten, which is a worse page than either shelf alone.
+                if (_backend.value == Backend.MA) maRepo.recentlyPlayed(MA_RECENT_LIMIT)
                 else source?.recentlyPlayed(12).orEmpty()
             } catch (_: Exception) { emptyList() }
             // The only loader that used to skip this, which is why "Recently played"
@@ -2754,6 +2785,15 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
          * none at all for providers that don't implement `reportProgress`.
          */
         const val PROGRESS_REPORT_MS = 10_000L
+
+        /**
+         * How many recently-played items to ask Music Assistant for.
+         *
+         * Split across two shelves (see [LibraryShelves.inProgress]), so it is sized
+         * to fill both rather than one. Well inside what a carousel will lazily
+         * compose and one command either way.
+         */
+        const val MA_RECENT_LIMIT = 30
 
         /** `getAlbumList2`'s documented maximum `size`. */
         const val SUBSONIC_PAGE = 500

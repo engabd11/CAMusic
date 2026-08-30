@@ -412,11 +412,15 @@ private fun Browse(
     // rather than by each shelf checking itself.
     val shelfRows = remember(shelves) {
         listOf(
-            // Favourites lead: what you chose to keep is a better front page than
-            // whatever the scanner saw last. The rest keep their old order behind them.
+            // Unfinished business leads. Favourites used to, on the argument that what
+            // you chose to keep beats whatever the scanner saw last — true, but a
+            // favourite is still there tomorrow and a half-finished chapter is what
+            // you opened the app for. It carries the last songs played as well as the
+            // podcasts and audiobooks now, so it answers that for a music library too
+            // — see [LibraryShelves.inProgress].
+            ShelfSpec("Continue listening", shelves.inProgress),
             ShelfSpec("Favourite albums", shelves.favoriteAlbums),
             ShelfSpec("Favourite artists", shelves.favoriteArtists, circular = true),
-            ShelfSpec("Continue listening", shelves.inProgress),
             ShelfSpec("Recently added", shelves.recentlyAdded),
             ShelfSpec("For you", shelves.recommendations),
             ShelfSpec("Recently played", shelves.recent),
