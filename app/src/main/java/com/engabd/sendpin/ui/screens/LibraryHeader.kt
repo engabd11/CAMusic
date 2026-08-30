@@ -95,6 +95,8 @@ internal fun Header(
                 // Lights tabs could disagree with what the library was browsing.
                 // Made clickable and larger: tap to switch libraries without going to Settings.
                 BackendTag(
+                    icon = activeServerConfig?.kind?.let(::serverKindIcon)
+                        ?: if (backend == Backend.SUBSONIC) Icons.Default.LibraryMusic else Icons.Default.Speaker,
                     label = activeServerConfig?.displayName ?: if (backend == Backend.SUBSONIC) "Library" else "Music Assistant",
                     onClick = onLibraryBadgeClick,
                 )
@@ -152,20 +154,36 @@ private fun RefreshButton(refreshing: Boolean, onClick: () -> Unit) {
     )
 }
 
-/** A quiet read-only badge naming the library backend Settings has selected. */
+/**
+ * A quiet read-only badge naming the library backend Settings has selected.
+ *
+ * [icon] is the same glyph `LibrariesSettings`' provider picker uses for this server
+ * kind (see `serverKindIcon`) — so a Jellyfin library reads as "the Jellyfin one"
+ * here too, not just in Settings where the kind was chosen.
+ */
 @Composable
-private fun BackendTag(label: String, onClick: (() -> Unit)? = null) {
+private fun BackendTag(icon: ImageVector, label: String, onClick: (() -> Unit)? = null) {
     val hasClick = onClick != null
-    Text(
-        label, color = if (hasClick) TextPrimary else TextFaint, fontFamily = AppFont, fontWeight = FontWeight.Bold,
-        fontSize = 11.sp, letterSpacing = 0.6.sp, maxLines = 1,
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
         modifier = Modifier
             .clip(RoundedCornerShape(100))
             .background(if (hasClick) LocalAccent.current.copy(alpha = 0.15f) else Glass)
             .border(1.dp, if (hasClick) LocalAccent.current.copy(alpha = 0.4f) else HairlineSoft, RoundedCornerShape(100))
             .then(if (hasClick) Modifier.clickable(onClick = onClick) else Modifier)
             .padding(horizontal = 12.dp, vertical = 6.dp),
-    )
+    ) {
+        Icon(
+            icon, null,
+            tint = if (hasClick) TextPrimary else TextFaint,
+            modifier = Modifier.size(12.dp),
+        )
+        Text(
+            label, color = if (hasClick) TextPrimary else TextFaint, fontFamily = AppFont, fontWeight = FontWeight.Bold,
+            fontSize = 11.sp, letterSpacing = 0.6.sp, maxLines = 1,
+        )
+    }
 }
 
 /** A compact labelled action chip. */

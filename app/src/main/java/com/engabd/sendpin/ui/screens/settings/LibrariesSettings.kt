@@ -5,7 +5,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -16,7 +15,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -31,6 +29,7 @@ import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ui.design.GlassCard
 import com.engabd.sendpin.ui.design.a
 import com.engabd.sendpin.ui.design.SegmentedToggle
+import com.engabd.sendpin.ui.design.serverKindIcon
 import com.engabd.sendpin.ui.design.TitleGap
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.discovery.PlayerIdentity
@@ -236,7 +235,7 @@ private fun ServerCard(
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
-                        kindIcon(config.kind), null,
+                        serverKindIcon(config.kind), null,
                         tint = if (active) accent else TextMuted,
                         modifier = Modifier.size(22.dp),
                     )
@@ -318,7 +317,7 @@ private fun ProviderPicker(accent: Color, onPick: (ServerKind) -> Unit) {
         ) {}
 
         ServerKind.addable.forEach { kind ->
-            NavRow(kindIcon(kind), kind.label, kind.blurb, accent) { onPick(kind) }
+            NavRow(serverKindIcon(kind), kind.label, kind.blurb, accent) { onPick(kind) }
         }
 
         Spacer(Modifier.height(4.dp))
@@ -329,7 +328,7 @@ private fun ProviderPicker(accent: Color, onPick: (ServerKind) -> Unit) {
         )
         ServerKind.planned.forEach { kind ->
             Box(Modifier.alpha(0.4f)) {
-                NavRow(kindIcon(kind), kind.label, kind.blurb, accent, enabled = false) {}
+                NavRow(serverKindIcon(kind), kind.label, kind.blurb, accent, enabled = false) {}
             }
         }
     }
@@ -869,16 +868,4 @@ private fun PlexSignInRow(
         status ?: if (hasToken) "Signed in. Sign in again if playback ever stops working."
         else "Opens plex.tv in your browser to sign in, then comes back here on its own.",
     )
-}
-
-private fun kindIcon(kind: ServerKind): ImageVector = when (kind) {
-    ServerKind.MUSIC_ASSISTANT -> Icons.Default.Cloud
-    ServerKind.NAVIDROME, ServerKind.SUBSONIC -> Icons.Default.Storage
-    ServerKind.JELLYFIN, ServerKind.EMBY, ServerKind.PLEX -> Icons.Default.Dns
-    ServerKind.AUDIOBOOKSHELF -> Icons.AutoMirrored.Filled.MenuBook
-    ServerKind.KODI -> Icons.Default.Tv
-    ServerKind.SMB, ServerKind.WEBDAV -> Icons.Default.Folder
-    ServerKind.LOCAL -> Icons.Default.Smartphone
-    ServerKind.DOWNLOADS -> Icons.Default.DownloadDone
-    else -> Icons.Default.CloudQueue
 }
