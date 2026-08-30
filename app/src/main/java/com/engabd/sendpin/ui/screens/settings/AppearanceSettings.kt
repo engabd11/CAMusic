@@ -30,7 +30,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.engabd.sendpin.crash.CrashReporter
 import com.engabd.sendpin.crash.CrashReport
 import com.engabd.sendpin.BuildConfig
-import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.ui.design.HSlider
 import com.engabd.sendpin.ui.design.LocalAccent
@@ -43,13 +42,12 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 
-/** How the app looks, and how the player behaves. */
+/** How the app looks — theme, accent, and the shape of the player itself. */
 @Composable
 internal fun AppearanceSection(settings: AppSettings, accent: Color, scope: CoroutineScope) {
     val themeKey by settings.theme.collectAsStateWithLifecycle(initialValue = ThemeChoice.OLED.key)
     val accentKey by settings.accentSource.collectAsStateWithLifecycle(initialValue = AccentChoice.ALBUM.key)
     val fixedHex by settings.fixedAccent.collectAsStateWithLifecycle(initialValue = "")
-    val offset by settings.lyricsOffsetMs.collectAsStateWithLifecycle(initialValue = 0)
     val theme = ThemeChoice.from(themeKey)
     val accentChoice = AccentChoice.from(accentKey)
 
@@ -59,12 +57,6 @@ internal fun AppearanceSection(settings: AppSettings, accent: Color, scope: Coro
     // other row on it was already live.
     val layout by settings.nowPlayingLayout.collectAsStateWithLifecycle(initialValue = "tab")
     val seekBarStyle by settings.seekBarStyle.collectAsStateWithLifecycle(initialValue = "line")
-    val swipeToSkip by settings.swipeToSkip.collectAsStateWithLifecycle(initialValue = false)
-    val showVisualizer by settings.showVisualizer.collectAsStateWithLifecycle(initialValue = false)
-    val showMusicMap by settings.showMusicMap.collectAsStateWithLifecycle(initialValue = false)
-    val djMode by settings.djMode.collectAsStateWithLifecycle(initialValue = false)
-    val sensorGestures by settings.sensorGestures.collectAsStateWithLifecycle(initialValue = false)
-    val listeningDna by settings.listeningDna.collectAsStateWithLifecycle(initialValue = false)
     val motionMode by settings.motionMode.collectAsStateWithLifecycle(initialValue = AppSettings.MOTION_SYSTEM)
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -149,86 +141,6 @@ internal fun AppearanceSection(settings: AppSettings, accent: Color, scope: Coro
         }
 
         SettingsCard(
-            title = "On the player",
-            lead = "Two extras for the Now Playing screen, both off by default.",
-        ) {
-            ToggleRow(
-                title = "Live visualizer",
-                subtitle = "Frequency bars over the artwork, off the analysis Light Sync already runs",
-                checked = showVisualizer,
-                accent = accent,
-            ) { scope.launch { settings.setShowVisualizer(it) } }
-            ToggleRow(
-                title = "Music map",
-                subtitle = "A tap-to-seek structure timeline under the seek bar",
-                checked = showMusicMap,
-                accent = accent,
-                info = "One coloured band per section of the track, with repeated sections — a " +
-                    "chorus coming back — sharing a colour. Tap anywhere on it to seek " +
-                    "there.\n\nDrawn from the offline track scan, so it only appears for " +
-                    "tracks that have been scanned; everything else shows the seek bar alone.",
-            ) { scope.launch { settings.setShowMusicMap(it) } }
-        }
-
-        SettingsCard(
-            title = "Hands off the screen",
-            lead = "Ways to change track without looking at the phone. Both off by default.",
-        ) {
-            ToggleRow(
-                title = "Swipe to skip",
-                subtitle = "On Now Playing: swipe right for next, left for previous",
-                checked = swipeToSkip,
-                accent = accent,
-            ) { scope.launch { settings.setSwipeToSkip(it) } }
-            ToggleRow(
-                title = "Shake, flip and tap",
-                subtitle = "Shake to skip, lie it face-down to pause, double-tap the body to play/pause",
-                checked = sensorGestures,
-                accent = accent,
-                info = "Shake: a sharp jerk skips to the next track. Flip face-down (with the " +
-                    "proximity sensor covered, the way it would be lying screen-down on a " +
-                    "table): pauses. Double-tap the phone's body: play/pause.\n\nAll three read " +
-                    "the accelerometer and proximity sensor, and only while this is on — " +
-                    "nothing is sent anywhere.",
-            ) { on ->
-                scope.launch { settings.setSensorGestures(on) }
-                if (on) SendpinApp.instance.playbackGestureMonitor.start()
-                else SendpinApp.instance.playbackGestureMonitor.stop()
-            }
-        }
-
-        SettingsCard(
-            title = "What the track scans are for",
-            lead = "Two uses for the key and tempo the offline scan already works out. Both need " +
-                "tracks that have been scanned, and both are off by default.",
-        ) {
-            ToggleRow(
-                title = "Harmonic DJ mode",
-                subtitle = "Auto-queue by compatible key and tempo, not just genre and artist",
-                checked = djMode,
-                accent = accent,
-                info = "\"Keep the music going\" already picks the next few tracks by genre and " +
-                    "artist when there's no server to ask for something more like this. DJ mode " +
-                    "adds a bonus for tracks whose key sits well against what's playing on the " +
-                    "Camelot wheel (the same or relative key, or one step around it) and whose " +
-                    "tempo is close, or exactly half or double time.\n\nOnly applies to the " +
-                    "offline, on-this-phone picker. An unscanned track simply keeps its " +
-                    "genre/artist ranking.",
-            ) { scope.launch { settings.setDjMode(it) } }
-            ToggleRow(
-                title = "Listening DNA",
-                subtitle = "Log each play's key and tempo, for the Stats screen",
-                checked = listeningDna,
-                accent = accent,
-                info = "Adds a dominant-keys and a BPM sweet-spot breakdown to Stats, from a " +
-                    "snapshot of each played track's key and tempo kept alongside the usual " +
-                    "listening history.\n\nNothing extra is stored until this is turned on, and " +
-                    "turning it off again stops new snapshots without deleting the ones already " +
-                    "logged.",
-            ) { scope.launch { settings.setListeningDna(it) } }
-        }
-
-        SettingsCard(
             title = "Motion",
             lead = when (motionMode) {
                 AppSettings.MOTION_FULL -> "Everything animates, whatever the system setting says."
@@ -258,30 +170,6 @@ internal fun AppearanceSection(settings: AppSettings, accent: Color, scope: Coro
                     "follows the system setting on its own. Set it here only if you want the " +
                     "app to differ from the rest of the phone.",
             )
-        }
-
-        SettingsCard(
-            title = "Lyrics timing",
-            lead = "Nudge synced lyrics against the vocal.",
-            info = "Providers stamp the same track differently, so there is no right answer here, " +
-                "only what looks in time to you. Adjustments snap to 50 ms, which is finer than " +
-                "anyone can pick out against a sung line.\n\nThe offset applies to every track " +
-                "rather than being remembered per song.\n\nTip: set it against a slow, clear " +
-                "vocal rather than a fast one. If lyrics run late on some songs and early on " +
-                "others, that is the provider disagreeing with itself and no single offset will " +
-                "fix both.",
-        ) {
-            SliderRow(
-                value = (offset + AppSettings.MAX_LYRICS_OFFSET_MS) /
-                    (2f * AppSettings.MAX_LYRICS_OFFSET_MS),
-                format = { if (offset == 0) "0 ms" else "%+d ms".format(offset) },
-                onChange = { f ->
-                    val ms = (f * 2f * AppSettings.MAX_LYRICS_OFFSET_MS -
-                        AppSettings.MAX_LYRICS_OFFSET_MS).toInt()
-                    scope.launch { settings.setLyricsOffsetMs((ms / 50) * 50) }
-                },
-            )
-            Note("Later ← → earlier")
         }
     }
 }

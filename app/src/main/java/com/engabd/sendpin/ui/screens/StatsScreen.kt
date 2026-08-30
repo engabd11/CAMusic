@@ -26,6 +26,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.engabd.sendpin.local.db.DayTotals
 import com.engabd.sendpin.local.db.HourCell
 import com.engabd.sendpin.local.db.TempoEnergyPoint
+import com.engabd.sendpin.ui.design.AmbientRain
 import com.engabd.sendpin.ui.design.Bloom
 import com.engabd.sendpin.ui.design.CircleIconButton
 import com.engabd.sendpin.ui.design.LocalAccent
@@ -63,6 +64,7 @@ fun StatsScreen(onBack: () -> Unit = {}, viewModel: StatsViewModel = viewModel()
 
     Box(Modifier.fillMaxSize().background(Ink)) {
         Bloom(accent, 420.dp, (-60).dp, (-56).dp, 0.4f)
+        AmbientRain(Modifier.fillMaxSize())
 
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars)) {
             Row(
