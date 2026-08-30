@@ -140,6 +140,21 @@ any OAuth is written.
 
 ---
 
+## Icons
+
+Every `ServerKind` has a glyph — `ui/design/ServerKindIcon.kt` — used in the provider
+picker, each server's own card, and the Library screen's top-line badge alike, so a
+server reads as the same thing wherever it shows up.
+
+Where a real brand mark exists it's used: `res/drawable-nodpi/ic_logo_*.png`, sourced
+from [dashboard-icons](https://github.com/walkxcode/dashboard-icons) (CC0 — icons
+built for exactly this, naming a self-hosted service in someone else's UI). Everything
+else falls back to a generic Material glyph. Adding a real mark for a kind that
+doesn't have one: drop a same-named PNG in that folder and add its line to
+`serverKindLogoRes`; there's nothing else to wire up.
+
+---
+
 ## What is deliberately not abstracted
 
 **Playback routing.** `MusicSource.streamUrl` says where the bytes are; whether they
