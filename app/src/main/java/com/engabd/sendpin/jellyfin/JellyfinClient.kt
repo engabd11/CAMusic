@@ -401,6 +401,15 @@ class JellyfinClient(
     suspend fun mostPlayed(limit: Int = 200): List<MaItem> =
         items(types = "MusicAlbum", sortBy = "PlayCount", sortOrder = "Descending", filters = "IsPlayed", limit = limit)
 
+    /**
+     * Tracks with a saved resume point — `IsResumable`, the same filter Jellyfin's
+     * own clients use for "Continue Watching"/"Continue Listening". Album-level
+     * shelves elsewhere in this file ask for `MusicAlbum`; a resume point belongs
+     * to a track, so this asks for `Audio` instead.
+     */
+    suspend fun continueListening(limit: Int = 12): List<MaItem> =
+        items(types = "Audio", sortBy = "DatePlayed", sortOrder = "Descending", filters = "IsResumable", limit = limit)
+
     suspend fun randomSongs(size: Int = 100): List<MaItem> =
         items(types = "Audio", sortBy = "Random", limit = size)
 

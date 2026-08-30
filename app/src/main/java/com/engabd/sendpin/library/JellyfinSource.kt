@@ -69,6 +69,7 @@ class JellyfinSource(private val client: JellyfinClient) : MusicSource {
     override suspend fun recentlyAdded(limit: Int): List<MaItem> = client.recentlyAdded(limit)
     override suspend fun recentlyPlayed(limit: Int): List<MaItem> = client.recentlyPlayed(limit)
     override suspend fun mostPlayed(limit: Int): List<MaItem> = client.mostPlayed(limit)
+    override suspend fun continueListening(limit: Int): List<MaItem> = client.continueListening(limit)
     override suspend fun favorites(): MaSearchResults = client.favorites()
     override suspend fun randomSongs(size: Int): List<MaItem> = client.randomSongs(size)
     override suspend fun randomAlbums(limit: Int): List<MaItem> = client.randomAlbums(limit)

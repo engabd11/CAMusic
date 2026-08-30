@@ -418,7 +418,7 @@ private fun Browse(
             // you opened the app for. It carries the last songs played as well as the
             // podcasts and audiobooks now, so it answers that for a music library too
             // — see [LibraryShelves.inProgress].
-            ShelfSpec("Continue listening", shelves.inProgress),
+            ShelfSpec("Continue listening", shelves.inProgress, maxRows = 1),
             ShelfSpec("Favourite albums", shelves.favoriteAlbums),
             ShelfSpec("Favourite artists", shelves.favoriteArtists, circular = true),
             ShelfSpec("Recently added", shelves.recentlyAdded),
@@ -653,6 +653,13 @@ internal data class ShelfSpec(
     val items: List<MaItem>,
     /** Artists are people, not sleeves: round tiles, centred names, initials fallback. */
     val circular: Boolean = false,
+    /**
+     * The shelf's own ceiling on rows, before [shelfCarousel]'s single-item rule
+     * still collapses it to one. Continue listening reads better as one long row —
+     * it is a short list of unfinished things, not a browsable wall — where every
+     * other shelf keeps the two-row default.
+     */
+    val maxRows: Int = 2,
 )
 
 /**
@@ -684,7 +691,7 @@ private fun androidx.compose.foundation.lazy.grid.LazyGridScope.shelfCarousel(
     item(key = "shelf_${spec.title}", span = { full(gridCols) }, contentType = { "shelf" }) {
         // One row for a shelf with a single item — a second, empty row under it is
         // 158dp of nothing, and it reads as a shelf that failed to load.
-        val rowCount = if (spec.items.size < 2) 1 else 2
+        val rowCount = spec.maxRows.coerceAtMost(if (spec.items.size < 2) 1 else 2)
         val tileHeight = shelfTileHeight()
         Column(Modifier.padding(top = 12.dp)) {
             LibraryShelf(spec.title, spec.items.size)

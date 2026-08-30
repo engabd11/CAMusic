@@ -2589,11 +2589,18 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Load in-progress audiobooks/podcasts (MA only). */
+    /**
+     * Load what's unfinished: MA's in-progress audiobooks/podcasts, or — on a
+     * Jellyfin library — tracks with a saved resume point. Subsonic/Navidrome have
+     * no per-track resume concept at all (see [MusicSource.continueListening]'s
+     * default), so this shelf simply doesn't appear there.
+     */
     private fun loadInProgress(): Job? {
-        if (_backend.value != Backend.MA) { _inProgress.value = emptyList(); return null }
+        if (_offline.value) { _inProgress.value = emptyList(); return null }
         return viewModelScope.launch {
-            _inProgress.value = try { maRepo.inProgress() } catch (_: Exception) { emptyList() }
+            _inProgress.value = try {
+                if (_backend.value == Backend.MA) maRepo.inProgress() else source?.continueListening(12).orEmpty()
+            } catch (_: Exception) { emptyList() }
             rememberFavorites(_inProgress.value)
         }
     }

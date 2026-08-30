@@ -103,6 +103,15 @@ interface MusicSource {
     /** Most played. Empty where the server doesn't track it. */
     suspend fun mostPlayed(limit: Int = 200): List<MaItem> = emptyList()
 
+    /**
+     * Tracks with a partial play position saved server-side — Jellyfin's resume
+     * points. Empty where the server has no such concept (a plain Subsonic/
+     * Navidrome server tracks a play *count*, never a mid-track position for a
+     * song). Distinct from [savedQueue]: this is per-item resume state the library
+     * can browse as a shelf, not a whole-queue snapshot for handing off playback.
+     */
+    suspend fun continueListening(limit: Int = 12): List<MaItem> = emptyList()
+
     /** Everything starred / favourited, across types. */
     suspend fun favorites(): MaSearchResults
 
