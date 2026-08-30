@@ -246,6 +246,8 @@ internal fun CoverTile(
                         .fillMaxSize()
                         .sharedArt("art-${item.itemId}-${item.provider}"),
                 )
+            } else if (item.mediaType == "playlist") {
+                GeneratedCover(item.itemId.hashCode(), Icons.AutoMirrored.Filled.QueueMusic, Modifier.fillMaxSize())
             } else {
                 Icon(Icons.Default.Album, null, tint = TextFaint, modifier = Modifier.size(24.dp))
             }
@@ -334,6 +336,8 @@ internal fun ShelfTile(
                     item.itemId.hashCode(),
                     size = ShelfTileWidth,
                 )
+            } else if (item.mediaType == "playlist") {
+                GeneratedCover(item.itemId.hashCode(), Icons.AutoMirrored.Filled.QueueMusic, Modifier.fillMaxSize(), shape)
             } else {
                 Icon(Icons.Default.Album, null, tint = TextFaint, modifier = Modifier.size(24.dp))
             }
@@ -478,6 +482,17 @@ internal fun ItemRow(
 
             item.mediaType == "artist" ->
                 GradientAvatar(item.name, item.name.hashCode(), size = 46.dp)
+
+            // A playlist with no cover gets a generated one rather than the generic
+            // glyph below, so the same playlist looks the same in a row as it does in
+            // a shelf. See [GeneratedCover].
+            item.mediaType == "playlist" ->
+                GeneratedCover(
+                    item.itemId.hashCode(),
+                    Icons.AutoMirrored.Filled.QueueMusic,
+                    Modifier.size(46.dp),
+                    RoundedCornerShape(11.dp),
+                )
 
             else -> Box(
                 Modifier.size(46.dp).clip(RoundedCornerShape(11.dp)).background(Glass),

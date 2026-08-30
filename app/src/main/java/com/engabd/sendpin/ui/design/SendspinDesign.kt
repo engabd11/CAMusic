@@ -42,6 +42,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.Path
@@ -880,6 +881,71 @@ fun MeterBar(
                 .clip(RoundedCornerShape(100))
                 .background(color),
         )
+    }
+}
+
+/**
+ * A cover for something that has none, drawn from the album palette.
+ *
+ * Not every playlist has artwork — a smart playlist has nothing to make one from, and
+ * plenty of hand-made ones are never given one — and until now those fell to a small
+ * grey glyph on a flat panel. In a grid of album covers that reads as a broken image
+ * rather than as a design, and a shelf of them reads as several.
+ *
+ * So one is generated instead, in the language the rest of the app already speaks: the
+ * two-swatch diagonal of [GradientAvatar], the wash-and-ghosted-glyph of the library's
+ * category cards, and the same hue source as both — [LocalPalette], which follows
+ * whatever is playing. The cover therefore belongs to the record on the player the way
+ * every other coloured surface in the app does, and a page of them is one set rather
+ * than a set of accidents.
+ *
+ * [seed] picks the swatches and must be stable for a given item — the playlist's id,
+ * not its position in a list — or the tile changes colour as the shelf reloads.
+ *
+ * Deliberately *not* the artist fallback: an artist gets initials, because a name is
+ * the thing that identifies them and there is room for it. A playlist's name is already
+ * printed under the tile.
+ */
+@Composable
+fun GeneratedCover(
+    seed: Int,
+    glyph: ImageVector,
+    modifier: Modifier = Modifier,
+    shape: Shape = RoundedCornerShape(14.dp),
+) {
+    val palette = LocalPalette.current
+    val light = LocalSendspinColors.current.isLight
+    // The same asymmetry the category cards document: a swatch lifted onto black is a
+    // colour, and the identical value on the off-white page is a tint with nothing
+    // behind it — so the wash firms up and the mark comes down toward the ink.
+    val from = palette.swatch(seed)
+    val to = palette.swatch(seed + 2)
+    val mark = if (light) lerp(from, Color.Black, 0.5f) else Color.White
+    Box(
+        modifier
+            .clip(shape)
+            // Opaque base *then* the wash, rather than the wash alone. The tile shows
+            // up on four surfaces — a grid cell over Ink3, a shelf tile, a list row on
+            // the bare page and a 200dp hero over the melt backdrop — and a
+            // translucent-only fill would be a different colour on each of them. Two
+            // background modifiers, drawn in chain order, cost one extra rect.
+            .background(Ink3)
+            .background(
+                Brush.linearGradient(
+                    listOf(from.a(if (light) 0.42f else 0.34f), to.a(if (light) 0.16f else 0.10f)),
+                    start = Offset.Zero,
+                    end = Offset.Infinite,
+                )
+            )
+            // Over the fill, not under it: the tiles that have their own border draw it
+            // on the parent, where a child filling the box paints straight over it.
+            .border(1.dp, HairlineSoft, shape),
+        contentAlignment = Alignment.Center,
+    ) {
+        // Sized as a fraction rather than in dp: the same composable is a 46dp list
+        // thumbnail, a 116dp shelf tile and a 200dp detail header, and a fixed glyph
+        // would be a blob at one end and a speck at the other.
+        Icon(glyph, null, tint = mark.a(if (light) 0.55f else 0.42f), modifier = Modifier.fillMaxSize(0.36f))
     }
 }
 
