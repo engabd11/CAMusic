@@ -284,9 +284,10 @@ class AudioAnalysisTapTest {
             tap.analyseExternal(burst, 48_000, 2, C.ENCODING_PCM_16BIT, 0L)
 
             // A quarter of a second in. Unpaced, all 150 are already through; paced,
-            // the catch-up ceiling puts the most that can have been read at ~50. The
-            // bound is deliberately slack in between — this asserts that the loop is
-            // rate-limited at all, not what the servo's constants happen to be.
+            // a burst this size sits inside the servo's hold band, so ~12 hops have
+            // been read. The bound is deliberately slack in between — this asserts
+            // that the loop is rate-limited at all, not what the constants happen to
+            // be.
             Thread.sleep(250)
             val early = frames.get()
             assertTrue(early > 0, "nothing was analysed at all")
@@ -301,6 +302,88 @@ class AudioAnalysisTapTest {
                 abs(got - expected) <= 2,
                 "got $got analysis frames from a ${seconds}s burst, expected ~$expected",
             )
+        } finally {
+            tap.setActive(false)
+        }
+    }
+
+    /**
+     * The backlog a burst leaves behind is *reported*, because that is what makes
+     * holding it correct.
+     *
+     * [AudioLead] says how long until the newest sample handed over is heard. A
+     * frame drawn from the far side of a three-second burst describes audio heard
+     * three seconds before that, so [com.engabd.sendpin.hue.FrameDelayQueue]'s hold
+     * has to come down by exactly this much or the room runs that far behind — which
+     * is what the Music Assistant player looked like next to the local one, since
+     * only its producer bursts.
+     */
+    @Test
+    fun `the lag of each frame is reported and unwinds as the burst plays`() {
+        val tap = AudioAnalysisTap()
+        val lags = java.util.concurrent.ConcurrentLinkedQueue<Float>()
+        val frames = AtomicInteger()
+        tap.onFrame = {
+            lags.add(tap.analysisLagS)
+            frames.incrementAndGet()
+        }
+        tap.setActive(true)
+        try {
+            val seconds = 3.0
+            tap.analyseExternal(pcm16(48_000, 2, seconds), 48_000, 2, C.ENCODING_PCM_16BIT, 0L)
+            settle(frames)
+
+            val seen = lags.toList()
+            assertTrue(seen.size > 100, "too few frames to judge the lag (${seen.size})")
+            // Once the write has landed, a frame is most of the burst from the end of
+            // it — which is exactly the hold that has to come off. (Not the *first*
+            // frame: the consumer thread is already running, so it may get a hop away
+            // before the producer has finished writing.)
+            val peak = seen.max()
+            assertTrue(peak > seconds.toFloat() - 0.5f, "the deepest lag reported was ${peak}s, expected ~$seconds")
+            // And the last frame is at the end of the burst, with nothing behind it.
+            assertTrue(seen.last() < 0.05f, "last frame reported a lag of ${seen.last()}s, expected ~0")
+            // From the peak on it only unwinds: each frame consumes a hop and nothing
+            // adds to the ring. A rise there would mean hops were being skipped.
+            val unwinding = seen.drop(seen.indexOf(peak))
+            assertTrue(
+                unwinding.zipWithNext().all { (a, b) -> b <= a + 1e-6f },
+                "the lag went back up without a producer to explain it",
+            )
+        } finally {
+            tap.setActive(false)
+        }
+    }
+
+    /**
+     * A producer that feeds in real time leaves nothing to compensate for, so the
+     * local player's hold is the one it always had. This is the arm of the same
+     * behaviour that must *not* change.
+     *
+     * Fed at true real time rather than through [pump]'s `paced` flag, which sleeps a
+     * flat millisecond per chunk — enough to keep the ring from overrunning, which is
+     * all it was for, but some forty times faster than playback and so itself a burst.
+     */
+    @Test
+    fun `a real-time producer keeps the lag near zero`() {
+        val tap = configured(48_000, 2)
+        var worst = 0f
+        tap.onFrame = { if (tap.analysisLagS > worst) worst = tap.analysisLagS }
+        tap.setActive(true)
+        try {
+            val chunkMs = 20L
+            val input = pcm16(48_000, 2, 1.0)
+            val chunkBytes = (48_000 * chunkMs / 1000).toInt() * 2 * 2
+            while (input.hasRemaining()) {
+                val n = minOf(chunkBytes, input.remaining())
+                val slice = input.slice().limit(n) as ByteBuffer
+                tap.queueInput(slice)
+                input.position(input.position() + n - slice.remaining())
+                tap.getOutput()
+                Thread.sleep(chunkMs)
+            }
+            Thread.sleep(300)
+            assertTrue(worst < 0.2f, "a real-time producer built a backlog of ${worst}s")
         } finally {
             tap.setActive(false)
         }

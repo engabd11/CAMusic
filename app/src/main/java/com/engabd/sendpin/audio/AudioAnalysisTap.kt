@@ -100,6 +100,38 @@ class AudioAnalysisTap(
     private var framePositionS = Float.NaN
 
     /**
+     * How far the frame just delivered to [onFrame] sits *behind* the newest
+     * sample the producer has handed over, in seconds.
+     *
+     * Read it from inside [onFrame] and nowhere else, for the same reason as
+     * [analysisPositionS]: it describes *that* frame.
+     *
+     * ## What it is for
+     *
+     * [AudioLead] measures how long it is until the **newest** sample handed to
+     * this tap reaches the ear. The frame being analysed is not that sample — it
+     * is this much older, so its audio is heard this much *sooner*. The hold
+     * [com.engabd.sendpin.hue.FrameDelayQueue] applies is therefore
+     * `lead - analysisLag - pipeline`, and leaving the middle term out is only
+     * harmless while the lag is small and steady.
+     *
+     * On the Music Assistant path it is neither.
+     * [com.engabd.sendpin.audio.SendspinNativeEngine]'s producer fills its native
+     * ring to `RING_TARGET_MS` as fast as the decoder will go on every
+     * `stream/start` — which Music Assistant sends between tracks, on every pause
+     * and for every announcement — so seconds of audio land here in a few tens of
+     * milliseconds and the lag steps from ~0 to the whole ring depth. The lead
+     * steps with it, so the two cancel; without this term the room was held out of
+     * step by the entire burst until the pacing servo had ground it back down.
+     * ExoPlayer's sink is throttled to real time and never produced a burst, which
+     * is why the local player always looked right and the MA player did not.
+     */
+    val analysisLagS: Float get() = frameLagS
+
+    @Volatile
+    private var frameLagS = 0f
+
+    /**
      * Invoked on the analysis thread whenever analysis state is discarded — a
      * seek, a track change, or the start of a session.
      *
@@ -475,16 +507,33 @@ class AudioAnalysisTap(
      * So the consumer keeps its own clock. One hop per [ANALYSIS_HOP] of audio,
      * measured against [System.nanoTime], for every producer alike.
      *
-     * ## Catching up without a step
+     * ## Why the backlog a burst leaves behind is kept, not drained
      *
-     * Pacing alone would leave the consumer wherever a burst left it — up to the
-     * producer's whole lead behind the newest sample, permanently, which is a light
-     * show running that far late. So the rate is servoed rather than fixed: the
-     * backlog is driven toward [TARGET_BACKLOG_HOPS] by consuming up to
-     * [MAX_CATCHUP] times real time, in proportion to how far past that it is. A
-     * two-second start burst is absorbed inside a second — which is time the show
-     * has anyway, because [com.engabd.sendpin.hue.FrameDelayQueue] is holding
-     * everything back by the producer's lead for exactly as long.
+     * The rate used to be servoed down to a fixed two-hop backlog, on the reasoning
+     * that a consumer sitting behind the producer is a light show running late. That
+     * is only true if the hold downstream ignores the gap — and it no longer does:
+     * [analysisLagS] reports it per frame and
+     * [com.engabd.sendpin.hue.FrameDelayQueue] subtracts it. Once the hold is
+     * `lead - lag - pipeline`, *any* backlog is correctly timed, and draining one is
+     * not a correction but a distortion:
+     *
+     *  - **The show raced.** Consuming at four times real time hands
+     *    [com.engabd.sendpin.hue.DirectLightSync]'s 60 Hz render loop four hops of
+     *    music per tick while its envelopes integrate one tick of wall clock, so
+     *    every decay ran four times too fast for the best part of a second after
+     *    each `stream/start`.
+     *  - **The room went dark early.** Draining to two hops leaves the tap 40 ms
+     *    from the end of what it has been given, while the *speaker* is still two
+     *    and a half seconds from the end of it. Frames stopped, `framesFresh` went
+     *    false, and the idle show painted over the last two seconds of every Music
+     *    Assistant track. Holding the backlog keeps frames coming for exactly as
+     *    long as there is audio left to hear.
+     *
+     * So the servo now only guards the ring. It runs at real time for any backlog a
+     * real producer can produce — [HOLD_BACKLOG_HOPS] is sized above a whole
+     * `SendspinNativeEngine` start burst — and catches up only past that, where the
+     * alternative is the ring overrunning and a hole in the beat grid. The local
+     * player never reaches it at all, so its behaviour is unchanged.
      *
      * Nothing is ever skipped. The analyzer's `tAudio` is its own sample counter,
      * so dropping hops to catch up would slide its clock — and with it the tempo
@@ -504,6 +553,8 @@ class AudioAnalysisTap(
                 ring.dropAll()
                 analyzer.reset()
                 _frames.value = null
+                framePositionS = Float.NaN
+                frameLagS = 0f
                 dueAt = System.nanoTime()
                 onAnalysisReset?.invoke()
                 continue
@@ -530,10 +581,13 @@ class AudioAnalysisTap(
             val period = (HOP_PERIOD_NANOS / catchupRate(backlog)).toLong()
             dueAt = if (now - dueAt > period) now + period else dueAt + period
             if (!ring.read(hopL, hopR)) continue
-            // Read after the hop leaves the ring, so it reflects what this frame
+            // Read after the hop leaves the ring, so both reflect what this frame
             // is made of, and published before the callback so a consumer reading
-            // it from inside onFrame sees this frame's position.
+            // them from inside onFrame sees this frame's position and lag. What is
+            // left in the ring after the read *is* the lag: every sample still
+            // waiting was handed over after the ones in this hop.
             framePositionS = readClock()
+            frameLagS = ring.availableFrames.toFloat() / TARGET_RATE
             // pushStereo copies out of both buffers immediately, so they are reused.
             val frame = analyzer.pushStereo(hopL, hopR)
             // Detached copy for the flow, live array for the callback — see [frames].
@@ -545,13 +599,13 @@ class AudioAnalysisTap(
     /**
      * How many times real time to consume at, for a backlog of [backlogFrames].
      *
-     * 1.0 at or below [TARGET_BACKLOG_HOPS], rising linearly to [MAX_CATCHUP] a
+     * 1.0 at or below [HOLD_BACKLOG_HOPS], rising linearly to [MAX_CATCHUP] a
      * further [CATCHUP_SPAN_HOPS] beyond it. Linear rather than a threshold: a
      * step would have the show lurch every time a producer's chunk size happened
      * to straddle the trip point.
      */
     private fun catchupRate(backlogFrames: Int): Float {
-        val target = TARGET_BACKLOG_HOPS * ANALYSIS_HOP
+        val target = HOLD_BACKLOG_HOPS * ANALYSIS_HOP
         val over = (backlogFrames - target).toFloat()
         if (over <= 0f) return 1f
         val span = (CATCHUP_SPAN_HOPS * ANALYSIS_HOP).toFloat()
@@ -703,28 +757,29 @@ class AudioAnalysisTap(
             ANALYSIS_HOP * 1_000_000_000L / ANALYSIS_SAMPLE_RATE
 
         /**
-         * The backlog the rate servo aims to sit at, in hops.
+         * The largest backlog the consumer will sit on at plain real time, in hops.
          *
-         * Not zero. The frame a hop produces describes audio this far *older*
-         * than the newest sample the producer has written, while
-         * [com.engabd.sendpin.hue.FrameDelayQueue] holds the rendered colours by
-         * the producer's lead to the newest sample — so the backlog is the one
-         * timing error the pacing introduces, and it is worth keeping under the
-         * 100 ms Hue itself costs. Two hops is 40 ms, and small enough that an
-         * ordinary producer's chunk-to-chunk jitter never has the servo working.
+         * Sized above a whole `SendspinNativeEngine` start burst — `RING_TARGET_MS`
+         * is 2.5 s, or 125 hops — so the backlog Music Assistant's producer leaves
+         * behind is held rather than chased. [analysisLagS] is what makes holding it
+         * correct; see [analysisLoop] for why chasing it was not.
+         *
+         * 175 hops is 3.5 s. With [CATCHUP_SPAN_HOPS] on top, full-speed catch-up
+         * lands at 4.5 s, comfortably inside [RING_CAPACITY]'s ~5.9 s, so the servo
+         * always has room to work before the producer starts dropping.
          */
-        private const val TARGET_BACKLOG_HOPS = 2
+        private const val HOLD_BACKLOG_HOPS = 175
 
-        /** How far past the target the backlog has to be for full-speed catch-up. */
+        /** How far past [HOLD_BACKLOG_HOPS] the backlog must be for full-speed catch-up. */
         private const val CATCHUP_SPAN_HOPS = 50
 
         /**
          * The fastest the consumer may run, as a multiple of real time.
          *
-         * Four clears a 2.5 s start burst in under a second, inside the window
-         * where the delay queue is holding everything back anyway. Higher would
-         * shorten that further and start feeding the tempo tracker audio faster
-         * than its own smoothing constants expect.
+         * Only ever reached by a backlog no real producer explains, where the
+         * alternative is overrunning the ring. Higher would clear it sooner and
+         * start feeding the tempo tracker audio faster than its own smoothing
+         * constants expect.
          */
         private const val MAX_CATCHUP = 4f
 
