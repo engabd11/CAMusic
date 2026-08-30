@@ -7,8 +7,8 @@
 <p align="center"><strong>One app. Your music. Your Philips Hue lights. Your Music Assistant speakers.</strong></p>
 
 <p align="center">
-  A local-first Android music player that also drives your lights and your multi-room audio.<br>
-  No account, no cloud, no subscription.
+  A local-first Android music player that drives your lights and your multi-room audio too,<br>
+  running entirely on your own network and ready the moment you open it.
 </p>
 
 <p align="center">
@@ -29,7 +29,7 @@ Three apps' worth of function in one, all talking to servers you run yourself.
 | 🎵 **A player** | Navidrome, Subsonic, Jellyfin, Emby, Plex and local files. Gapless, bit-perfect, ReplayGain, offline downloads. |
 | 🔊 **A speaker** | A full Music Assistant player over the Sendspin protocol, clock-synced for multi-room. |
 | 💡 **A light show** | Philips Hue Entertainment, straight to the bridge at 60 Hz, reacting to what is playing. |
-| ✨ **An atmosphere** | Scripted ambience effects with their own synthesised sound — no music required. |
+| ✨ **An atmosphere** | Scripted ambience effects with their own synthesised sound, no music required. |
 
 Runs on phones, Android TV, Android Auto, and LG webOS TVs.
 
@@ -38,6 +38,18 @@ Runs on phones, Android TV, Android Auto, and LG webOS TVs.
   <img src="docs/screenshots/light-sync.jpg" width="30%" />
   <img src="docs/screenshots/library.jpg" width="30%" />
 </p>
+
+---
+
+## Why CAMusic
+
+CAMusic is short for Cyborg Automation Music, built by [Cyborg Automation AU](https://github.com/engabd11).
+The idea started with Philips Hue: Spotify and Samsung's Music Sync can drive the Hue
+Entertainment system properly, but if you're on neither, most other players fall back to a
+generic colour cycle that leaves the rest of what the bridge can do on the table. CAMusic
+renders straight to the bridge at 60 frames a second instead, reading the room's own layout
+and the track itself to shape every effect, so a Hue Entertainment setup gets the quality
+it's actually capable of no matter what you're playing from.
 
 ---
 
@@ -51,10 +63,10 @@ Point it at a server you already run. Nothing leaves your network.
 | **Jellyfin** | ✅ | ✅ | ✅ | ✅ |
 | **Emby** | ✅ | ✅ | ✅ | ✅ |
 | **Plex** | ✅ | ✅ | ✅ | ✅ |
-| **Music Assistant** | ✅ | ✅ | — | ✅ |
-| **On-device files** | ✅ | ✅ | n/a | — |
+| **Music Assistant** | ✅ | ✅ | n/a | ✅ |
+| **On-device files** | ✅ | ✅ | n/a | n/a |
 
-Plex signs in with a plex.tv PIN rather than a password typed into the app — tap
+Plex signs in with a plex.tv PIN rather than a password typed into the app: tap
 "Sign in with Plex" and finish it in the browser.
 
 Artists, albums, playlists, radio, podcasts and audiobooks. Search across everything.
@@ -72,9 +84,9 @@ Two directions at once, and they are genuinely different features.
 ungroup speakers, and set per-player sync offsets. MA's own gapless and crossfade
 settings are exposed here rather than making you open its web UI.
 
-The library front page is built from **MA's own Discover rows** — Random artists,
+The library front page is built from **MA's own Discover rows**: Random artists,
 Forgotten albums, Never/rarely played, Most played, and whatever else your providers
-offer — so a row the server grows appears without an app update.
+offer, so a row the server grows appears without an app update.
 
 **As a player.** CAMusic registers itself as a Sendspin player, so MA can stream to this
 phone like any other speaker, including as part of a synced group.
@@ -86,7 +98,7 @@ phone like any other speaker, including as part of a synced group.
   start rather than muting through it.
 - **Announcements** (Home Assistant TTS, doorbells, timers) reach the phone even in the
   background, ducking whatever is playing rather than stopping it.
-- **A latency trim**, signed, in Settings → Player — for when this phone's output path is
+- **A latency trim**, signed, in Settings → Player, for when this phone's output path is
   faster or slower than the rest of the room.
 
 ## Light Sync
@@ -101,10 +113,10 @@ renders **60 frames a second** from the audio it is decoding.
 - **Real spatial awareness.** Lamp positions come from the entertainment area, so waves
   travel across the room, bass sits low, and the room's own shape (a line, a ring, a
   cluster) changes how effects are drawn.
-- **Colour from the album art**, extracted for a *room* rather than for a UI accent —
+- **Colour from the album art**, extracted for a *room* rather than for a UI accent,
   population-weighted so each colour holds for its share of the sleeve.
 - **Five intensity rungs** plus Auto, which picks per track.
-- **Creative layers** — Music DNA, Emotional Arc, Phantom Stage, Phone Conductor. See
+- **Creative layers**: Music DNA, Emotional Arc, Phantom Stage, Phone Conductor. See
   [docs/creative-light-shows.md](docs/creative-light-shows.md).
 - **Flash safety** on a WCAG-derived budget, and a hard 12.5 Hz per-channel ceiling
   because that is what the Zigbee relay can carry.
@@ -116,15 +128,15 @@ A syncoV2 bridge for anyone already running that. Fewer effects, no spatial work
 ### When the phone cannot hear the music
 
 Playing to a *remote* speaker means this phone has no audio to analyse. Rather than
-going dark, CAMusic drives the show from an **offline scan** of the track — beats,
-sections and spectral shape worked out in advance — following the server's playhead.
+going dark, CAMusic drives the show from an **offline scan** of the track: beats,
+sections and spectral shape worked out in advance, following the server's playhead.
 
 ## Effects
 
 Ambience shows with their own sound, independent of music. **Fireworks, thunderstorm,
 underwater, fireplace, light train, aurora.**
 
-The lights and the audio are not two things kept in step — they are two projections of
+The lights and the audio are not two things kept in step; they are two projections of
 the same event. A lightning strike is one object; the room reads it when it happens and
 the speaker reads it after the propagation delay its own distance implies. So the thunder
 always lands with the flash, at whatever intensity, on any hardware.
@@ -134,13 +146,13 @@ can also take an audio file of your own as a bed instead.
 
 ## Everything else
 
-- **Driving mode** — huge targets, swipe anywhere, GPS speed-limit awareness from an
+- **Driving mode**: huge targets, swipe anywhere, GPS speed-limit awareness from an
   offline geohashed database.
 - **Android Auto**, **Android TV**, and a **webOS** app for LG TVs.
 - **Home-screen widget** with artwork and transport.
-- **Listening stats** — a listening clock, tempo/energy scatter, artist-variety entropy,
+- **Listening stats**: a listening clock, tempo/energy scatter, artist-variety entropy,
   streaks, and where your music actually came from.
-- **DSP** — parametric EQ and per-player settings, driven through MA.
+- **DSP**: parametric EQ and per-player settings, driven through MA.
 
 ---
 
@@ -229,10 +241,10 @@ whichever is playing.
 
 ## Recent releases
 
-**v0.10.8** — Music Assistant 2.10 API compliance; multi-room group-state fixes.
-**v0.10.7** — native Oboe Sendspin engine, replacing the ExoPlayer path.
-**v0.10.6** — Android Auto; phone UI polish; creative light-show layers.
-**v0.10.0** — Android TV flavour; webOS TV app; GPS speed limits.
+**v0.10.8**: Music Assistant 2.10 API compliance; multi-room group-state fixes.
+**v0.10.7**: native Oboe Sendspin engine, replacing the ExoPlayer path.
+**v0.10.6**: Android Auto; phone UI polish; creative light-show layers.
+**v0.10.0**: Android TV flavour; webOS TV app; GPS speed limits.
 
 Full history: [docs/release-history.md](docs/release-history.md).
 
@@ -247,7 +259,7 @@ Full history: [docs/release-history.md](docs/release-history.md).
 ## Known limitations
 
 - **Hue entertainment areas are one client at a time.** If the Hue app takes the area,
-  CAMusic's stream is revoked and stays stopped — deliberately, so its own stop button
+  CAMusic's stream is revoked and stays stopped, deliberately, so its own stop button
   works.
 - **Music DNA needs a local track scan**, so it does nothing while Music Assistant is
   streaming to the phone. The toggle says so.
@@ -298,10 +310,11 @@ anything that makes the light show look better in a real room.
 
 ## Credits
 
-Built on [Music Assistant](https://music-assistant.io), the Sendspin protocol, and
+CAMusic is developed by Cyborg Automation AU. It's built on
+[Music Assistant](https://music-assistant.io), the Sendspin protocol, and
 [syncoV2](https://github.com/oliverhoefling/syncoV2), whose colour extraction and effect
 model the direct light path is a port of. Clock sync follows MassDroid's approach.
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE).
+Apache License 2.0. See [LICENSE](LICENSE).

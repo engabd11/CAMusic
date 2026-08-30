@@ -198,14 +198,19 @@ internal fun AboutSection(accent: Color, onOpenStats: () -> Unit = {}) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         SettingsCard(
             title = "CAMusic",
-            lead = "A Music Assistant player and controller for Android.",
-            info = "Direct playback from self-hosted libraries: Navidrome, Subsonic, Jellyfin, or " +
-                "files on this phone. Offline downloads that keep working with no network. Hue " +
-                "light sync driven by the music itself rather than by a preset.\n\nIt is a " +
-                "Music Assistant player as well as a controller, so this phone shows up as a " +
-                "speaker in Music Assistant's own list.",
+            lead = "A Music Assistant player built to give Philips Hue Entertainment its full power.",
+            info = "CAMusic is short for Cyborg Automation Music, built by Cyborg Automation AU.\n\n" +
+                "The idea started with Hue: Spotify and Samsung's Music Sync can drive the " +
+                "Entertainment system properly, but most players settle for a generic colour " +
+                "cycle that leaves the rest of what the bridge can do on the table. CAMusic " +
+                "renders straight to the bridge at 60 frames a second instead, using the room's " +
+                "own layout and the track itself to shape every effect.\n\nIt plays your own " +
+                "library with the same directness, and is a full Music Assistant player and " +
+                "controller in its own right, so this phone shows up as a speaker in Music " +
+                "Assistant's own list.",
         ) {
             StatusPanel {
+                StatusRow("Developer", "Cyborg Automation AU")
                 StatusRow("Version", BuildConfig.VERSION_NAME)
                 StatusRow("Build", BuildConfig.VERSION_CODE.toString())
             }
