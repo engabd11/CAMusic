@@ -20,8 +20,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.map
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -419,8 +417,15 @@ private fun DirectLightSyncScreen(onBack: () -> Unit, onOpenEffects: () -> Unit 
     // of the visit, so a Music Assistant queue on a remote speaker — the one case the
     // whole SCAN_REMOTE path exists for — was reported through the local player's
     // branch of [ShowStatusRules] and never said what it was actually doing.
-    val feedFlow = remember(app) { app.activeLightSyncSource.map { it.feed }.distinctUntilChanged() }
-    val feed by feedFlow.collectAsStateWithLifecycle(app.activeLightSyncSource.value.feed)
+    //
+    // The whole source rather than a `map` of its `feed`: mapping needs a seed value to
+    // collect against, and the only honest seed is the flow's own `.value` — which is
+    // the very read this is replacing, and which lint rejects for exactly the reason
+    // above. A StateFlow collected whole brings its current value with it. The extra
+    // recompositions are nothing: [SendpinApp.activeLightSyncSource] is deduplicated by
+    // `stateIn` and only changes on a backend handover.
+    val lightSource by app.activeLightSyncSource.collectAsStateWithLifecycle()
+    val feed = lightSource.feed
     val maNow by app.maNowPlaying.now.collectAsStateWithLifecycle()
     val remoteSpeaker = maNow?.takeIf { !it.isSelf }?.playerName
     val enabled by settings.lightSyncEnabled.collectAsState(initial = false)
