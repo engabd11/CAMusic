@@ -8,7 +8,6 @@ import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.audio.FormatNegotiator
 import com.engabd.sendpin.audio.LocalTrack
 import com.engabd.sendpin.audio.StreamQuality
-import com.engabd.sendpin.audio.TrackScan
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.PlayerIdentity
 import com.engabd.sendpin.local.db.LocalMediaDatabase
@@ -352,19 +351,6 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         combine(localSnap, _positionMs, local.positionMs) { l, server, here ->
             if (l.active) here else server
         }.stateIn(viewModelScope, SharingStarted.Eagerly, 0L)
-
-    private val _currentScan = MutableStateFlow<TrackScan?>(null)
-
-    /**
-     * The current track's offline scan, if it has one — for the Music Map timeline.
-     *
-     * [TrackScanRepository.peek] only answers from memory, and nothing keeps that
-     * cache warm for the currently-playing track unless Light Sync is also on (it
-     * warms it for its own reasons). So this calls the suspending [TrackScanRepository.cached]
-     * itself, exactly as [com.engabd.sendpin.hue.DirectLightSync] already does for
-     * its own lookup, rather than relying on that as a side effect.
-     */
-    val currentScan: StateFlow<TrackScan?> = _currentScan.asStateFlow()
 
     private var tickerJob: Job? = null
 
@@ -1768,17 +1754,6 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         }
         viewModelScope.launch { settings.targetPlayer.collect { _target.value = it } }
         viewModelScope.launch { settings.radioMode.collect { _radioMode.value = it } }
-        // The Music Map timeline's scan lookup. collectLatest so a fast skip-skip-skip
-        // cancels an in-flight disk read rather than racing the UI with a stale scan.
-        // Local sessions only — TrackScanRepository has no data for an MA-streamed track.
-        viewModelScope.launch {
-            combine(state.map { it.isLocalSession }, local.current) { isLocal, track -> isLocal to track }
-                .distinctUntilChanged()
-                .collectLatest { (isLocalTrack, track) ->
-                    _currentScan.value = null
-                    _currentScan.value = if (isLocalTrack && track != null) trackScans.cached(track) else null
-                }
-        }
         viewModelScope.launch {
             settings.navStreamFormat.collect { navFormat = it.takeIf { f -> f != "raw" } }
         }

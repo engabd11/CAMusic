@@ -94,11 +94,27 @@ fun NowPlayingOverlay(
     val currentItem by viewModel.currentItem.collectAsStateWithLifecycle()
     val favouritable by viewModel.favouritableItem.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val settings = remember(context) { AppSettings(context) }
+    val visualizerByDefault by settings.showVisualizer.collectAsStateWithLifecycle<Boolean?>(initialValue = null)
 
     // Shared with the tab layout so the two cannot drift — see PlayerSheetState.
     val sheets = rememberPlayerSheets()
-    // Lyrics are a *mode* of the player, not an overlay: they take the cover's place.
-    var showLyrics by rememberSaveable { mutableStateOf(false) }
+    // The cover's slot: the sleeve, lyrics, or the live visualizer — see NowPlayingScreen.
+    var coverSlot by rememberSaveable { mutableStateOf(CoverSlot.ART) }
+
+    // The setting is read from DataStore, which resolves *after* the first
+    // composition, so it cannot seed `rememberSaveable` directly: the initializer
+    // would always see the pre-load value and, being an initializer, would never
+    // run again — which left the toggle doing nothing at all. Apply it once it
+    // lands, and only while the slot is still where it started, so it can never
+    // override a choice the listener has already made or a restored slot.
+    var defaultApplied by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(visualizerByDefault) {
+        val want = visualizerByDefault ?: return@LaunchedEffect
+        if (defaultApplied) return@LaunchedEffect
+        defaultApplied = true
+        if (want && coverSlot == CoverSlot.ART) coverSlot = CoverSlot.VISUALIZER
+    }
 
     LaunchedEffect(Unit) {
         viewModel.toast.collect { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }
@@ -158,12 +174,8 @@ fun NowPlayingOverlay(
     val gestureBlocked by rememberUpdatedState(!expanded || sheets.sheetOpen)
 
     // Swipe right/left to skip, gated behind its own Appearance setting.
-    val settings = remember(context) { AppSettings(context) }
     val swipeToSkip by settings.swipeToSkip.collectAsStateWithLifecycle(initialValue = false)
     val skipThresholdPx = with(LocalDensity.current) { 64.dp.toPx() }
-    val showVisualizer by settings.showVisualizer.collectAsStateWithLifecycle(initialValue = false)
-    val showMusicMap by settings.showMusicMap.collectAsStateWithLifecycle(initialValue = false)
-    val currentScan by viewModel.currentScan.collectAsStateWithLifecycle()
 
     // Motion.spatialOffsetPx(), not spatial(): this settles a ~2000px drag, and the
     // generic Float spring's default 0.01px visibility threshold made the coroutine
@@ -354,53 +366,56 @@ fun NowPlayingOverlay(
                 // The container carries the weight so neither branch can resize the
                 // Column under the artwork — see NowPlayingScreen.
                 AnimatedContent(
-                    targetState = showLyrics,
+                    targetState = coverSlot,
                     transitionSpec = {
                         (fadeIn(Motion.fadeThroughIn()) togetherWith fadeOut(Motion.fadeThroughOut()))
                             .using(SizeTransform(clip = false))
                     },
                     modifier = Modifier.fillMaxWidth().weight(1f),
-                    label = "lyricsOrArt",
-                ) { lyrics ->
-                    if (lyrics) {
-                        LyricsPane(
+                    label = "coverSlot",
+                ) { slot ->
+                    when (slot) {
+                        CoverSlot.LYRICS -> LyricsPane(
                             viewModel = viewModel,
                             positionMs = scrubber.positionMs,
                             modifier = Modifier.fillMaxSize(),
                         )
-                    } else {
-                        // No shared-element flight between the mini bar and this cover,
-                        // deliberately. A shared element is drawn in the transition
-                        // layout's own overlay, above and outside the composable it
-                        // came from — so while the player slid up or down under the
-                        // finger, the artwork was travelling on a separate spring, in
-                        // separate coordinates, at a separate speed. It read as the
-                        // cover coming *unstuck* from the player carrying it.
-                        //
-                        // Without the key the art is an ordinary child of the sliding
-                        // Box: one surface, one movement, nothing to fall out of step.
-                        // The bar's thumbnail simply cross-fades, which is what a
-                        // control that is being replaced should do.
-                        Box(Modifier.fillMaxSize()) {
+                        CoverSlot.VISUALIZER -> AudioVisualizer(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                // Tap anywhere on the visualizer to bring the cover back.
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                ) { coverSlot = CoverSlot.ART },
+                        )
+                        CoverSlot.ART ->
+                            // No shared-element flight between the mini bar and this cover,
+                            // deliberately. A shared element is drawn in the transition
+                            // layout's own overlay, above and outside the composable it
+                            // came from — so while the player slid up or down under the
+                            // finger, the artwork was travelling on a separate spring, in
+                            // separate coordinates, at a separate speed. It read as the
+                            // cover coming *unstuck* from the player carrying it.
+                            //
+                            // Without the key the art is an ordinary child of the sliding
+                            // Box: one surface, one movement, nothing to fall out of step.
+                            // The bar's thumbnail simply cross-fades, which is what a
+                            // control that is being replaced should do.
                             AlbumArt(
                                 art = art,
                                 glow = palette.swatch(0),
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    .graphicsLayer { alpha = artDim.value },
+                                    .graphicsLayer { alpha = artDim.value }
+                                    // Tap → the live visualizer takes the cover's place.
+                                    .clickable(
+                                        interactionSource = remember { MutableInteractionSource() },
+                                        indication = null,
+                                    ) { coverSlot = CoverSlot.VISUALIZER },
                                 glowAlpha = artGlow.value,
                                 placeholder = Icons.AutoMirrored.Filled.QueueMusic,
                             )
-                            if (showVisualizer) {
-                                AudioVisualizer(
-                                    modifier = Modifier
-                                        .align(Alignment.BottomCenter)
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 16.dp, vertical = 10.dp)
-                                        .height(48.dp),
-                                )
-                            }
-                        }
                     }
                 }
 
@@ -430,8 +445,8 @@ fun NowPlayingOverlay(
                     // Sleep timer
                     SleepTimerChip(viewModel)
                     // Lyrics — swaps the cover for the words, in place.
-                    IconChip(Icons.Default.Lyrics, "Lyrics", active = showLyrics) {
-                        showLyrics = !showLyrics
+                    IconChip(Icons.Default.Lyrics, "Lyrics", active = coverSlot == CoverSlot.LYRICS) {
+                        coverSlot = if (coverSlot == CoverSlot.LYRICS) CoverSlot.ART else CoverSlot.LYRICS
                     }
                     // Queue
                     IconChip(Icons.AutoMirrored.Filled.QueueMusic, "Queue", active = sheets.panel == Panel.QUEUE) {
@@ -466,15 +481,6 @@ fun NowPlayingOverlay(
                 Spacer(Modifier.height(16.dp))
 
                 SeekRow(scrubber, st.durationMs, playing = st.isPlaying)
-
-                if (showMusicMap && currentScan != null) {
-                    Spacer(Modifier.height(8.dp))
-                    MusicMapTimeline(
-                        scan = currentScan!!,
-                        positionMs = scrubber.positionMs,
-                        onSeek = { viewModel.seekTo(it) },
-                    )
-                }
 
                 Spacer(Modifier.height(14.dp))
 

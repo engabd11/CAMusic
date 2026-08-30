@@ -50,7 +50,7 @@
         <activity
             android:name=".tv.TvMainActivity"
             android:exported="true"
-            android:theme="@style/Theme.Sendspin">
+            android:theme="@style/Theme.CAMusic">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />

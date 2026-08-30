@@ -150,7 +150,6 @@ class AppSettings(private val context: Context) {
         private val LIGHT_SYNC_INTENSITY = stringPreferencesKey("light_sync_intensity") // auto|subtle|medium|high|intense|extreme
         /** Rungs Auto may choose between, comma-separated wire keys. */
         private val LIGHT_SYNC_AUTO_LEVELS = stringPreferencesKey("light_sync_auto_levels")
-        private val LIGHT_SYNC_EFFECT = stringPreferencesKey("light_sync_effect") // music|movies|fireworks
         private val LIGHT_SYNC_COLOR = stringPreferencesKey("light_sync_color") // colour scheme wire key
         private val LIGHT_SYNC_BRIGHTNESS = stringPreferencesKey("light_sync_brightness") // 5..100
 
@@ -221,7 +220,6 @@ class AppSettings(private val context: Context) {
         // user turns it on, per the plan's own design principle.
         private val SWIPE_TO_SKIP = booleanPreferencesKey("swipe_to_skip")
         private val SHOW_VISUALIZER = booleanPreferencesKey("show_visualizer")
-        private val SHOW_MUSIC_MAP = booleanPreferencesKey("show_music_map")
         private val DJ_MODE = booleanPreferencesKey("dj_mode")
         private val SENSOR_GESTURES = booleanPreferencesKey("sensor_gestures")
         private val LISTENING_DNA = booleanPreferencesKey("listening_dna")
@@ -630,11 +628,17 @@ class AppSettings(private val context: Context) {
     val seekBarStyle: Flow<String> = context.dataStore.data.map { it[SEEK_BAR_STYLE] ?: "line" }
     /** Swipe right/left on Now Playing to skip forward/back. Off by default. */
     val swipeToSkip: Flow<Boolean> = context.dataStore.data.map { it[SWIPE_TO_SKIP] ?: false }
-    /** A live frequency-bar visualizer on Now Playing. Off by default. */
+    /**
+     * Whether Now Playing opens with the live visualizer already showing in the
+     * cover's slot, instead of the cover itself — a tap on the cover reaches it
+     * either way. Off by default.
+     */
     val showVisualizer: Flow<Boolean> = context.dataStore.data.map { it[SHOW_VISUALIZER] ?: false }
-    /** The song-structure timeline below the seek bar. Off by default. */
-    val showMusicMap: Flow<Boolean> = context.dataStore.data.map { it[SHOW_MUSIC_MAP] ?: false }
-    /** Auto-queues by BPM/key compatibility instead of genre/artist alone. Off by default. */
+    /**
+     * Weighs BPM/key compatibility into the local "keep the music going" ranking, on
+     * top of its existing genre/artist score — never Music Assistant, which tops up
+     * its own queue server-side. Off by default.
+     */
     val djMode: Flow<Boolean> = context.dataStore.data.map { it[DJ_MODE] ?: false }
     /** Shake to skip, flip face-down to pause, double-tap to play/pause. Off by default. */
     val sensorGestures: Flow<Boolean> = context.dataStore.data.map { it[SENSOR_GESTURES] ?: false }
@@ -919,10 +923,6 @@ class AppSettings(private val context: Context) {
         context.dataStore.edit { it[SHOW_VISUALIZER] = on }
     }
 
-    suspend fun setShowMusicMap(on: Boolean) {
-        context.dataStore.edit { it[SHOW_MUSIC_MAP] = on }
-    }
-
     suspend fun setDjMode(on: Boolean) {
         context.dataStore.edit { it[DJ_MODE] = on }
     }
@@ -1112,9 +1112,6 @@ class AppSettings(private val context: Context) {
 
     /** Intensity mode: subtle / medium / high / intense / extreme. */
     val lightSyncIntensity: Flow<String> = context.dataStore.data.map { it[LIGHT_SYNC_INTENSITY] ?: "high" }
-
-    /** Effect: music / movies / fireworks. */
-    val lightSyncEffect: Flow<String> = context.dataStore.data.map { it[LIGHT_SYNC_EFFECT] ?: "music" }
 
     /** Colour scheme wire key. */
     val lightSyncColor: Flow<String> = context.dataStore.data.map { it[LIGHT_SYNC_COLOR] ?: "album_art_v2" }
@@ -1405,10 +1402,6 @@ class AppSettings(private val context: Context) {
 
     suspend fun setLightSyncIntensity(intensity: String) {
         context.dataStore.edit { it[LIGHT_SYNC_INTENSITY] = intensity }
-    }
-
-    suspend fun setLightSyncEffect(effect: String) {
-        context.dataStore.edit { it[LIGHT_SYNC_EFFECT] = effect }
     }
 
     suspend fun setEffectsLast(wire: String) {

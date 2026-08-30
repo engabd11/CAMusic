@@ -235,6 +235,23 @@ class SendpinApp : Application(), ImageLoaderFactory {
     }
 
     /**
+     * Who turned the master Light Sync switch on for a running ambience show, if
+     * anyone — see [com.engabd.sendpin.hue.ambience.AmbienceSyncOwnership]. Lives
+     * here, not on `EffectsViewModel`, because `LightSyncScreen`'s own master-switch
+     * handler needs to read and update it too, and both are already process-scoped
+     * consumers of this class.
+     */
+    val ambienceSyncOwnership =
+        MutableStateFlow(com.engabd.sendpin.hue.ambience.AmbienceSyncOwnership.NONE)
+
+    /**
+     * The running ambience show's sound. Here for the same reason as
+     * [ambienceSyncOwnership]: the show outlives the Effects screen's view model,
+     * so its audio cannot be owned by it. See [AmbienceAudioHolder].
+     */
+    val ambienceAudio = com.engabd.sendpin.hue.ambience.AmbienceAudioHolder()
+
+    /**
      * Direct Hue Bridge Light Sync. Process-scoped so it survives Activity
      * destruction and switches between [localPlayer] and MA's audio tap via
      * [activeLightSyncSource]. Only active when the user has configured a
@@ -323,6 +340,32 @@ class SendpinApp : Application(), ImageLoaderFactory {
     val musicSource = MutableStateFlow<com.engabd.sendpin.library.MusicSource?>(null)
 
     private val appScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+
+    /**
+     * End the ambience show from anywhere, including from the notification after
+     * the Effects screen's view model has been cleared.
+     *
+     * `EffectsService.onStopRequested` used to be a lambda over that view model, so
+     * once the Activity went away the notification's Stop button removed the
+     * notification and left the show running. Routing it through the process scope
+     * instead means the one place that knows how to end a show is reachable from
+     * every place that can ask for one to end.
+     */
+    fun stopAmbienceShow() {
+        appScope.launch {
+            runCatching { directLightSync.stopAmbience() }
+            ambienceAudio.release()
+            if (ambienceSyncOwnership.value ==
+                com.engabd.sendpin.hue.ambience.AmbienceSyncOwnership.AUTO_ENABLED
+            ) {
+                runCatching { AppSettings(this@SendpinApp).setLightSyncEnabled(false) }
+            }
+            ambienceSyncOwnership.value =
+                com.engabd.sendpin.hue.ambience.AmbienceSyncOwnership.NONE
+            com.engabd.sendpin.service.EffectsService.onStopRequested = null
+            com.engabd.sendpin.service.EffectsService.stop(this@SendpinApp)
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()

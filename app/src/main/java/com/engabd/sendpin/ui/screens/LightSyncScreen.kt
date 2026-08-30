@@ -430,7 +430,6 @@ private fun DirectLightSyncScreen(onBack: () -> Unit, onOpenEffects: () -> Unit 
     val remoteSpeaker = maNow?.takeIf { !it.isSelf }?.playerName
     val enabled by settings.lightSyncEnabled.collectAsState(initial = false)
     val intensity by settings.lightSyncIntensity.collectAsState(initial = "high")
-    val effect by settings.lightSyncEffect.collectAsState(initial = "music")
     val autoLevels by settings.lightSyncAutoLevels.collectAsState(initial = listOf("subtle", "medium", "high"))
     val colour by settings.lightSyncColor.collectAsState(initial = "album_art_v2")
     val brightnessPct by settings.lightSyncBrightness.collectAsState(initial = 100)
@@ -505,7 +504,23 @@ private fun DirectLightSyncScreen(onBack: () -> Unit, onOpenEffects: () -> Unit 
                                 color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
                             )
                         }
-                        AccentSwitch(enabled) { on -> scope.launch { settings.setLightSyncEnabled(on) } }
+                        AccentSwitch(enabled) { on ->
+                            scope.launch {
+                                // A running ambience show may have turned this on itself
+                                // (see EffectsViewModel.start). If the user now touches
+                                // the switch themselves while that's true, that confirms
+                                // they want sync on regardless of the show — adopt it, so
+                                // stopping the show later doesn't turn it back off under
+                                // them.
+                                if (on && app.ambienceSyncOwnership.value ==
+                                    com.engabd.sendpin.hue.ambience.AmbienceSyncOwnership.AUTO_ENABLED
+                                ) {
+                                    app.ambienceSyncOwnership.value =
+                                        com.engabd.sendpin.hue.ambience.AmbienceSyncOwnership.USER_ADOPTED
+                                }
+                                settings.setLightSyncEnabled(on)
+                            }
+                        }
                     }
                 }
 
@@ -626,24 +641,6 @@ private fun DirectLightSyncScreen(onBack: () -> Unit, onOpenEffects: () -> Unit 
                             }
                         }
                     }
-                }
-
-                Spacer(Modifier.height(22.dp))
-                SectionLabel("Effect")
-                Spacer(Modifier.height(10.dp))
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    // Off the engine's own enum, so the tiles can only offer what
-                    // it renders. There is no Movies here: the direct path drives
-                    // lights from this phone's music, with no video to accompany.
-                    com.engabd.sendpin.hue.SyncEffect.entries.forEach { e ->
-                        EffectTile(e.wire, effectIcon(e.wire), e.wire == effect) {
-                            scope.launch { settings.setLightSyncEffect(e.wire) }
-                        }
-                    }
-                }
-                LightSyncRepository.EFFECT_BLURBS[effect]?.let {
-                    Spacer(Modifier.height(9.dp))
-                    Text(it, color = TextFaint, style = MaterialTheme.typography.bodySmall)
                 }
 
                 Spacer(Modifier.height(22.dp))

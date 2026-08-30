@@ -315,7 +315,6 @@ class SyncoEngine(
             params = withTunables(baseParams)
             updateRoles()
         }
-    var effect: SyncEffect = SyncEffect.MUSIC
     var brightness: Float = 1.0f
         set(value) { field = value.coerceIn(0f, 1f) }
     var time: Float = 0.0f
@@ -820,28 +819,6 @@ class SyncoEngine(
         }
     }
 
-    // ── Accessors for the alternate renderers ─────────────────────────────
-
-    /** Fireworks owns its own burst state and decay, so it renders separately. */
-    private val fireworks = FireworksEffect()
-
-    /**
-     * Each lamp's `(xrank, height)` — the two axes Fireworks places bursts on.
-     * Exposed rather than handing over the whole channel map, so the effect
-     * depends on a shape it actually needs.
-     */
-    internal val lampLayout: Map<Int, Pair<Float, Float>>
-        get() = cmap.mapValues { (_, info) -> info.xrank to info.pos.z }
-
-    /** Smoothed room loudness, for effects that breathe with the music. */
-    internal val energyEnvValue: Float get() = energyEnv
-
-    /** The active rung's event gates, so alternate renderers share the tuning. */
-    internal fun gatesFor(frame: AnalysisFrame): Pair<Float, Float> {
-        val g = eventGates(frame.salience, frame.onsetWidth)
-        return g.ampScale to g.widthGate
-    }
-
     // ── Public setters ────────────────────────────────────────────────────
 
     /** The scheme the user picked, so album art can be applied only when wanted. */
@@ -909,18 +886,22 @@ class SyncoEngine(
 
     // ── Envelope update ───────────────────────────────────────────────────
 
-    private fun updateEnv(frame: AnalysisFrame) {
+    private fun updateEnv(frame: AnalysisFrame, dt: Float) {
+        val rise = frameAlpha(ENV_RISE, dt)
+        val fall = frameAlpha(ENV_FALL, dt)
+        val pRise = frameAlpha(PRESENCE_RISE, dt)
+        val pFall = frameAlpha(PRESENCE_FALL, dt)
         for ((name, value) in frame.bands) {
             val prev = env[name] ?: 0f
-            val a = if (value > prev) ENV_RISE else ENV_FALL
+            val a = if (value > prev) rise else fall
             env[name] = prev + (value - prev) * a
             val pp = presence[name] ?: 0f
-            val pa = if (value > pp) PRESENCE_RISE else PRESENCE_FALL
+            val pa = if (value > pp) pRise else pFall
             presence[name] = pp + (value - pp) * pa
         }
-        val a = if (frame.energy > energyEnv) ENV_RISE else ENV_FALL
+        val a = if (frame.energy > energyEnv) rise else fall
         energyEnv += (frame.energy - energyEnv) * a
-        loud = max(frame.energy, loud * GATE_DECAY)
+        loud = max(frame.energy, loud * frameDecay(GATE_DECAY, dt))
     }
 
     // ── Highlight ranking ─────────────────────────────────────────────────
@@ -934,7 +915,7 @@ class SyncoEngine(
      * [PREDROP_HEUR_CAP], times out after [PREDROP_TIMEOUT_S], and then blocks
      * re-commit for [PREDROP_REFRACTORY_S].
      */
-    private fun updatePredrop(structure: StructureState?): Float {
+    private fun updatePredrop(structure: StructureState?, dt: Float): Float {
         predropReleased = 0f
         if (structure == null) {
             predrop = 0f
@@ -978,10 +959,11 @@ class SyncoEngine(
             target = 0f
         }
 
+        val step = dt * TUNING_FPS
         predrop = if (target > predrop)
-            min(target, predrop + PREDROP_RISE)
+            min(target, predrop + PREDROP_RISE * step)
         else
-            max(target, predrop - PREDROP_FALL)
+            max(target, predrop - PREDROP_FALL * step)
         return predrop
     }
 
@@ -1113,7 +1095,7 @@ class SyncoEngine(
         gesture: GestureState? = null,
     ): Map<Int, Rgb> {
         time += dt
-        updateEnv(frame)
+        updateEnv(frame, dt)
 
         val p = params
 
@@ -1122,10 +1104,9 @@ class SyncoEngine(
         // used to live and why the music path had no pop at all.
         updateMelTransient(frame)
 
-        // Effect and rung both choose a renderer. Fireworks replaces the whole
-        // path; Extreme is a different renderer rather than a louder music one,
-        // which is why `graphReactive` exists as a flag on the params.
-        if (effect == SyncEffect.FIREWORKS) return fireworks.render(this, frame, dt, p)
+        // The rung chooses a renderer. Extreme is a different renderer rather than
+        // a louder music one, which is why `graphReactive` exists as a flag on the
+        // params.
         if (p.graphReactive) return renderExtreme(frame, dt)
 
         val musicGate = if (SILENCE_GATE > 0f) min(1f, loud / SILENCE_GATE) else 1f
@@ -1184,14 +1165,14 @@ class SyncoEngine(
         // treatment however the song is shaped.
         val build = structure?.buildProgress ?: 0f
         val sectionLevel = structure?.sectionLevel ?: 1f
-        val predrop = updatePredrop(structure) * p.predropDepth * musicGate
+        val predrop = updatePredrop(structure, dt) * p.predropDepth * musicGate
         if (structure?.dropNow == true && p.dropBoost > 0f) {
             swell = max(swell, p.dropBoost * (1f + 0.35f * predropReleased) * musicGate)
             // A drop is a new section: reshuffle the room so the same lamps
             // aren't carrying the same roles through the whole track.
             if (p.dynamicRoles) { roleOffset++; updateRoles() }
         }
-        swell *= SWELL_DECAY
+        swell *= frameDecay(SWELL_DECAY, dt)
         val satMul = 1f - max(p.buildDesat * build, 0.6f * predrop)
 
         // ── Phrase ───────────────────────────────────────────────────────
@@ -1279,7 +1260,8 @@ class SyncoEngine(
         }
 
         // Flash decay
-        for (cid in lightFlash.keys) lightFlash[cid] = lightFlash[cid]!! * p.flashDecay
+        val flashFade = frameDecay(p.flashDecay, dt)
+        for (cid in lightFlash.keys) lightFlash[cid] = lightFlash[cid]!! * flashFade
 
         // Beat flash assignment. Reactive detection is taken as the baseline and
         // the scheduled pulse folded in with max(), so an unlocked or mistaken
@@ -1496,7 +1478,7 @@ class SyncoEngine(
 
             // Smooth brightness
             val (prevColor, prevB) = state[cid] ?: (Triple(0f, 0f, 0f) to 0f)
-            val alpha = if (target >= prevB) p.briAttack else p.briDecay
+            val alpha = frameAlpha(if (target >= prevB) p.briAttack else p.briDecay, dt)
             var newB = prevB + (target - prevB) * alpha
 
             // Colour, on a tilted room axis rather than left-to-right alone.
@@ -1511,10 +1493,11 @@ class SyncoEngine(
             val nrTgt = if (tm > 1e-6f) Triple(tr / tm, tg / tm, tb / tm) else Triple(0f, 0f, 0f)
             val (nr, ng, nb) = nrTgt
             val (pr, pg, pb) = prevColor
+            val cLerp = frameAlpha(p.colourLerp, dt)
             var nc = Triple(
-                pr + (nr - pr) * p.colourLerp,
-                pg + (ng - pg) * p.colourLerp,
-                pb + (nb - pb) * p.colourLerp,
+                pr + (nr - pr) * cLerp,
+                pg + (ng - pg) * cLerp,
+                pb + (nb - pb) * cLerp,
             )
 
             // Saturation. Tension through a build pulls the room toward white,
@@ -1530,9 +1513,15 @@ class SyncoEngine(
             }
 
             // Flash + brightness, slew-limited
+            // Brightness moves no faster than the rung's rise/fall ceiling, in
+            // full scale per second. A single-frame jump is what bulbs render as
+            // a hard edge, and what the downstream rate limiter used to quantise
+            // into a staircase; capping the *rate* removes both. The fall is
+            // always the slower of the two, per Philips' guidance that brightness
+            // should transition more slowly than colour.
             var b = min(1f, newB + flash)
             val prevEmit = emitB[cid] ?: 0f
-            if (p.briSlew < 1f && b > prevEmit + p.briSlew) b = prevEmit + p.briSlew
+            b = b.coerceIn(prevEmit - p.briFallRate * dt, prevEmit + p.briRiseRate * dt)
             emitB[cid] = b
             b *= brightness
 
@@ -1813,7 +1802,8 @@ class SyncoEngine(
             return mx
         }
 
-        for (cid in lightFlash.keys) lightFlash[cid] = lightFlash[cid]!! * p.flashDecay
+        val flashFade = frameDecay(p.flashDecay, dt)
+        for (cid in lightFlash.keys) lightFlash[cid] = lightFlash[cid]!! * flashFade
 
         // A hit in a quiet passage cannot flash as bright as one in a drop; the
         // melbank is AGC-relative, so absolute loudness has to come from salience.
@@ -1878,7 +1868,7 @@ class SyncoEngine(
                 ).coerceIn(0f, 1f)
 
             val (prevColor, prevB) = state[cid] ?: (Triple(0f, 0f, 0f) to 0f)
-            val alpha = if (target >= prevB) p.briAttack else p.briDecay
+            val alpha = frameAlpha(if (target >= prevB) p.briAttack else p.briDecay, dt)
             val newB = prevB + (target - prevB) * alpha
 
             // Colour stays keyed to the lamp's fixed position plus the drift
@@ -1889,10 +1879,11 @@ class SyncoEngine(
             val m = max(tgt.first, max(tgt.second, tgt.third))
             val nt = if (m > 1e-6f) Triple(tgt.first / m, tgt.second / m, tgt.third / m)
             else Triple(0f, 0f, 0f)
+            val cLerp = frameAlpha(p.colourLerp, dt)
             var nc = Triple(
-                prevColor.first + (nt.first - prevColor.first) * p.colourLerp,
-                prevColor.second + (nt.second - prevColor.second) * p.colourLerp,
-                prevColor.third + (nt.third - prevColor.third) * p.colourLerp,
+                prevColor.first + (nt.first - prevColor.first) * cLerp,
+                prevColor.second + (nt.second - prevColor.second) * cLerp,
+                prevColor.third + (nt.third - prevColor.third) * cLerp,
             )
             state[cid] = nc to newB
 
@@ -1901,8 +1892,15 @@ class SyncoEngine(
                 nc = Triple(nc.first * s + (1 - s), nc.second * s + (1 - s), nc.third * s + (1 - s))
             }
             val cval = max(nc.first, max(nc.second, nc.third))
-            val b = min(1f, newB + (lightFlash[cid] ?: 0f)).coerceIn(0f, 1f) *
-                (0.35f + 0.65f * cval) * brightness
+            // Extreme bypasses FieldSafety at the user's request, so the rate
+            // ceiling is the only thing shaping its edges. Slewed before the
+            // colour-value term and the user's ceiling, matching the music path.
+            val prevEmit = emitB[cid] ?: 0f
+            val slewed = min(1f, newB + (lightFlash[cid] ?: 0f))
+                .coerceIn(prevEmit - p.briFallRate * dt, prevEmit + p.briRiseRate * dt)
+                .coerceIn(0f, 1f)
+            emitB[cid] = slewed
+            val b = slewed * (0.35f + 0.65f * cval) * brightness
             out[cid] = Triple(
                 (nc.first * b).coerceIn(0f, 1f),
                 (nc.second * b).coerceIn(0f, 1f),
@@ -1943,11 +1941,12 @@ class SyncoEngine(
      * seconds; [intensity] (0..1) fades the movement in, so at 0 this matches
      * [renderIdle] and at 1 the full wandering show is active.
      */
-    fun renderIdleShow(t: Float, intensity: Float = 1f): Map<Int, Rgb> {
+    fun renderIdleShow(t: Float, dt: Float, intensity: Float = 1f): Map<Int, Rgb> {
         predrop = 0f
         predropCommit = false
         predropStreak = 0
         predropReleased = 0f
+        val p = params
         val inten = intensity.coerceIn(0f, 1f)
         val base = 0.22f
         val amp = 0.30f * inten
@@ -1962,7 +1961,20 @@ class SyncoEngine(
             val w1 = 0.5f + 0.5f * sin(2f * PI.toFloat() * (info.pos.x * 0.9f - t * 0.10f))
             val w2 = 0.5f + 0.5f * sin(2f * PI.toFloat() * (info.pos.z * 0.7f + t * 0.06f) + 1.7f)
             val wave = 0.6f * w1 + 0.4f * w2
-            val d = brightness * (base + amp * wave) * breath * (0.5f + 0.5f * m)
+            // Rate-limited and recorded exactly as the music path does, because
+            // `emitB` means "what this engine last put on the wire" and the slew
+            // clamps the next frame against it. Rendering straight to the output
+            // here left that memory holding a value from before the pause, so the
+            // first frame back on the music path clamped against *that* and the
+            // room flashed to roughly its pre-pause brightness before sliding
+            // down. It also makes dropping into the idle show a fade rather than
+            // a step.
+            val prevEmit = emitB[cid] ?: 0f
+            val level = ((base + amp * wave) * breath * (0.5f + 0.5f * m))
+                .coerceIn(prevEmit - p.briFallRate * dt, prevEmit + p.briRiseRate * dt)
+                .coerceIn(0f, 1f)
+            emitB[cid] = level
+            val d = brightness * level
             val (nr, ng, nb) = nc
             out[cid] = Triple(nr * d, ng * d, nb * d)
         }

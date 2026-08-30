@@ -116,11 +116,16 @@ class LightSyncRepository(private val ha: HaClient) {
             "extreme" to "Max club - dark room, fast beats chase side to side",
         )
 
-        /** From `SyncEffect` in const.py. */
+        /**
+         * From `SyncEffect` in const.py — the Home Assistant integration's own
+         * effect list, for the HA-path picker only. The direct engine dropped its
+         * "Fireworks" render mode (now redundant with the Ambience effect of the
+         * same name), but HA's syncoV2 still reports one if it has it, so this
+         * key stays for that path — it just no longer has a blurb here.
+         */
         val EFFECT_BLURBS = mapOf(
             "music" to "Beat and frequency choreography",
             "movies" to "Calm - brightness follows the soundtrack",
-            "fireworks" to "Bursts ignite on big beats, then fade",
         )
     }
 

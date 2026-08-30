@@ -83,8 +83,8 @@ object PlayerIdentity {
         cachedDeviceInfo?.let { return it }
 
         cachedDeviceInfo = DeviceInfo(
-            productName = "Sendpin",
-            manufacturer = "Sendpin",
+            productName = "CAMusic",
+            manufacturer = "CAMusic",
             softwareVersion = BuildConfig.VERSION_NAME,
         )
         return cachedDeviceInfo!!

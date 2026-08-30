@@ -97,12 +97,29 @@ fun NowPlayingScreen(
     val favouritable by viewModel.favouritableItem.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val settings = remember(context) { AppSettings(context) }
+    val visualizerByDefault by settings.showVisualizer.collectAsStateWithLifecycle<Boolean?>(initialValue = null)
 
     // Which sheet or card is up, if any. Shared with the overlay layout so the two
     // cannot drift — see PlayerSheetState.
     val sheets = rememberPlayerSheets()
-    // Lyrics are a *mode* of the player, not an overlay: they take the cover's place.
-    var showLyrics by rememberSaveable { mutableStateOf(false) }
+    // The cover's slot: the sleeve, lyrics, or the live visualizer — a mode of the
+    // player, not an overlay, so whichever is active takes the cover's place.
+    var coverSlot by rememberSaveable { mutableStateOf(CoverSlot.ART) }
+
+    // The setting is read from DataStore, which resolves *after* the first
+    // composition, so it cannot seed `rememberSaveable` directly: the initializer
+    // would always see the pre-load value and, being an initializer, would never
+    // run again — which left the toggle doing nothing at all. Apply it once it
+    // lands, and only while the slot is still where it started, so it can never
+    // override a choice the listener has already made or a restored slot.
+    var defaultApplied by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(visualizerByDefault) {
+        val want = visualizerByDefault ?: return@LaunchedEffect
+        if (defaultApplied) return@LaunchedEffect
+        defaultApplied = true
+        if (want && coverSlot == CoverSlot.ART) coverSlot = CoverSlot.VISUALIZER
+    }
 
     LaunchedEffect(Unit) {
         viewModel.toast.collect { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }
@@ -137,12 +154,8 @@ fun NowPlayingScreen(
     val queueRevealPx = with(LocalDensity.current) { 56.dp.toPx() }
     // How far sideways a swipe has to travel before it means "skip". Same settings
     // instance SeekRow already builds locally for the seek-bar style read.
-    val settings = remember(context) { AppSettings(context) }
     val swipeToSkip by settings.swipeToSkip.collectAsStateWithLifecycle(initialValue = false)
     val skipThresholdPx = with(LocalDensity.current) { 64.dp.toPx() }
-    val showVisualizer by settings.showVisualizer.collectAsStateWithLifecycle(initialValue = false)
-    val showMusicMap by settings.showMusicMap.collectAsStateWithLifecycle(initialValue = false)
-    val currentScan by viewModel.currentScan.collectAsStateWithLifecycle()
 
     CompositionLocalProvider(LocalAccent provides accent, LocalPalette provides palette) {
         Box(
@@ -218,56 +231,51 @@ fun NowPlayingScreen(
                 // only flexible child of this Column and anything that grows beside it
                 // takes the difference out of the artwork.
                 AnimatedContent(
-                    targetState = showLyrics,
+                    targetState = coverSlot,
                     transitionSpec = {
                         (fadeIn(Motion.fadeThroughIn()) togetherWith fadeOut(Motion.fadeThroughOut()))
                             .using(SizeTransform(clip = false))
                     },
                     modifier = Modifier.fillMaxWidth().weight(1f),
-                    label = "lyricsOrArt",
-                ) { lyrics ->
-                    if (lyrics) {
-                        LyricsPane(
+                    label = "coverSlot",
+                ) { slot ->
+                    when (slot) {
+                        CoverSlot.LYRICS -> LyricsPane(
                             viewModel = viewModel,
                             positionMs = scrubber.positionMs,
                             modifier = Modifier.fillMaxSize(),
                         )
-                    } else {
-                        Box(Modifier.fillMaxSize()) {
-                            AlbumArt(
-                                art = art,
-                                glow = palette.swatch(0),
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    // graphicsLayer rather than Modifier.alpha: the State is
-                                    // read in the layer block, so easing the dim costs no
-                                    // recomposition for the length of the transition.
-                                    .graphicsLayer { alpha = artDim.value }
-                                    // Long-press → quick actions (go to album/artist, share).
-                                    // No ripple: a tap here has never done anything, and
-                                    // adding one now would read as a new, absent affordance.
-                                    // Nothing to act on with an empty player.
-                                    .combinedClickable(
-                                        interactionSource = remember { MutableInteractionSource() },
-                                        indication = null,
-                                        onClick = {},
-                                        onLongClick = if (favouritable != null) {
-                                            { sheets.actions = true }
-                                        } else null,
-                                    ),
-                                glowAlpha = artGlow.value,
-                                placeholder = Icons.AutoMirrored.Filled.QueueMusic,
-                            )
-                            if (showVisualizer) {
-                                AudioVisualizer(
-                                    modifier = Modifier
-                                        .align(Alignment.BottomCenter)
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 16.dp, vertical = 10.dp)
-                                        .height(48.dp),
-                                )
-                            }
-                        }
+                        CoverSlot.VISUALIZER -> AudioVisualizer(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                // Tap anywhere on the visualizer to bring the cover back.
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                ) { coverSlot = CoverSlot.ART },
+                        )
+                        CoverSlot.ART -> AlbumArt(
+                            art = art,
+                            glow = palette.swatch(0),
+                            modifier = Modifier
+                                .fillMaxSize()
+                                // graphicsLayer rather than Modifier.alpha: the State is
+                                // read in the layer block, so easing the dim costs no
+                                // recomposition for the length of the transition.
+                                .graphicsLayer { alpha = artDim.value }
+                                // Tap → the live visualizer takes the cover's place.
+                                // Long-press → quick actions (go to album/artist, share).
+                                .combinedClickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                    onClick = { coverSlot = CoverSlot.VISUALIZER },
+                                    onLongClick = if (favouritable != null) {
+                                        { sheets.actions = true }
+                                    } else null,
+                                ),
+                            glowAlpha = artGlow.value,
+                            placeholder = Icons.AutoMirrored.Filled.QueueMusic,
+                        )
                     }
                 }
 
@@ -279,8 +287,8 @@ fun NowPlayingScreen(
                     horizontalArrangement = Arrangement.spacedBy(19.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    IconChip(Icons.Default.Lyrics, "Lyrics", active = showLyrics) {
-                        showLyrics = !showLyrics
+                    IconChip(Icons.Default.Lyrics, "Lyrics", active = coverSlot == CoverSlot.LYRICS) {
+                        coverSlot = if (coverSlot == CoverSlot.LYRICS) CoverSlot.ART else CoverSlot.LYRICS
                     }
                     SleepTimerChip(viewModel)
                     IconChip(Icons.AutoMirrored.Filled.QueueMusic, "Queue", active = sheets.panel == Panel.QUEUE) {
@@ -339,15 +347,6 @@ fun NowPlayingScreen(
                 Spacer(Modifier.height(14.dp))
 
                 SeekRow(scrubber, st.durationMs, playing = st.isPlaying)
-
-                if (showMusicMap && currentScan != null) {
-                    Spacer(Modifier.height(8.dp))
-                    MusicMapTimeline(
-                        scan = currentScan!!,
-                        positionMs = scrubber.positionMs,
-                        onSeek = { viewModel.seekTo(it) },
-                    )
-                }
 
                 Spacer(Modifier.height(10.dp))
 

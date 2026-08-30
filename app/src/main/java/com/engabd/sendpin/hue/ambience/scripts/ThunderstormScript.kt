@@ -37,15 +37,23 @@ import kotlin.math.sin
  * The lamps nearest the strike also flash first, by their real distance in the room —
  * which is the same relationship again, one order of magnitude down.
  */
-class ThunderstormScript : AmbienceScript {
-
-    override val effect = AmbienceEffect.THUNDERSTORM
+class ThunderstormScript(
+    override val effect: AmbienceEffect = AmbienceEffect.THUNDERSTORM,
+    /**
+     * Seeds the strike scheduler. Two storms sharing a seed are the same storm:
+     * same strikes, same distances, same times — which is what made the second
+     * Fireworks tile a copy of the first before this was parameterised.
+     */
+    seed: Long = 0x57_0A_11_5EL,
+    private val nearBolt: Rgb = NEAR_BOLT,
+    private val farBolt: Rgb = FAR_BOLT,
+) : AmbienceScript {
 
     private lateinit var room: RoomModel
     @Volatile private var params = AmbienceParams()
 
     /** The scheduler's own stream, advanced only by [schedule], so windows are stable. */
-    private val rng = Rng(0x57_0A_11_5EL)
+    private val rng = Rng(seed)
     private var nextStrikeS = 0.6
 
     // Audio bed voices. Owned by the generator thread alone.
@@ -104,7 +112,7 @@ class ThunderstormScript : AmbienceScript {
             // flicker group anyway, and a strike that survives the limiter reads better
             // than one that gets averaged into a smear.
             val flickers = if (distKm < 1.5f) 1 + rng.nextInt(2) else 1
-            val colour = lerpRgb(NEAR_BOLT, FAR_BOLT, (distKm / 8f).coerceIn(0f, 1f))
+            val colour = lerpRgb(nearBolt, farBolt, (distKm / 8f).coerceIn(0f, 1f))
             var k = 0
             while (k < flickers) {
                 emit(

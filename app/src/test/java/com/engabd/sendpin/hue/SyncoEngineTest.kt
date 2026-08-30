@@ -1,6 +1,7 @@
 package com.engabd.sendpin.hue
 
 import com.engabd.sendpin.audio.AnalysisFrame
+import kotlin.math.abs
 import kotlin.math.sin
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -240,7 +241,7 @@ class SyncoEngineTest {
     @Test
     fun `idle show renders every channel inside unit range`() {
         val engine = SyncoEngine(channels()).apply { setScheme(ColorScheme.SUNSET) }
-        val frames = (0..300).map { engine.renderIdleShow(it * 0.05f, intensity = 1f) }
+        val frames = (0..300).map { engine.renderIdleShow(it * 0.05f, 0.05f, intensity = 1f) }
         for (out in frames) {
             assertEquals(5, out.size)
             for ((r, g, b) in out.values) {
@@ -268,6 +269,134 @@ class SyncoEngineTest {
         engine.setTunables(mapOf("reactivity" to 2f, "colour_speed" to 0f))
         engine.setTunables(emptyMap())
         assertEquals(base, engine.modeParams())
+    }
+
+    // ── Frame-rate independence and the brightness slew ───────────────────
+
+    /** Mean of each light's max channel — the field brightness the eye reads. */
+    private fun fieldOf(colors: Map<Int, Rgb>): Float {
+        if (colors.isEmpty()) return 0f
+        var s = 0f
+        for (c in colors.values) s += maxOf(c.first, maxOf(c.second, c.third))
+        return s / colors.size
+    }
+
+    /** Steady loud content, with no transient in it for the envelope to chase. */
+    private fun loudSteady(): AnalysisFrame = AnalysisFrame(
+        bands = mapOf("sub_bass" to 0.8f, "bass" to 0.8f, "low_mid" to 0.4f, "mid" to 0.4f, "high" to 0.3f),
+        energy = 0.8f,
+        melbank = FloatArray(16) { 0.6f },
+        salience = 1f,
+        onsetWidth = 1f,
+    )
+
+    @Test
+    fun `the brightness envelope follows wall time, not frame count`() {
+        // Every easing coefficient is tuned per frame at TUNING_FPS and then
+        // re-expressed for the dt actually observed. Before that it was applied
+        // once per rendered frame whatever the frame took, so the decay between
+        // beats ran at a different speed at the analyser's ~50 Hz than at the
+        // render loop's 60 Hz, and drifted again on every scheduling hiccup.
+        // That timing sensitivity is what read as shimmer on the lights.
+        fun decayAfter(fps: Int, seconds: Float): Float {
+            val dt = 1f / fps
+            val eng = SyncoEngine(channels()).apply { mode = SyncMode.HIGH }
+            var t = 0f
+            while (t < 1f) { eng.render(loudSteady(), dt); t += dt }
+            var last = 0f
+            t = 0f
+            while (t < seconds - 1e-4f) { last = fieldOf(eng.render(AnalysisFrame(), dt)); t += dt }
+            return last
+        }
+        for (s in listOf(0.1f, 0.25f, 0.5f, 1f)) {
+            val hi = decayAfter(60, s)
+            val lo = decayAfter(30, s)
+            assertTrue(
+                abs(hi - lo) < 0.05f,
+                "after ${s}s of silence the field was $hi at 60 fps but $lo at 30 fps",
+            )
+        }
+    }
+
+    @Test
+    fun `emitted brightness never moves faster than the rung's ceiling`() {
+        // The anti-choppiness guarantee. A single-frame jump is what a bulb
+        // renders as a hard edge; capping the rate is what removes it. Extreme
+        // is excluded only because it scales by a colour-value term *after* the
+        // slew, so its emitted max-channel is not the slewed value itself.
+        val dt = 1f / 60f
+        for (mode in SyncMode.entries) {
+            val p = MODE_PARAMS.getValue(mode)
+            if (p.graphReactive) continue
+            val eng = SyncoEngine(channels()).apply { this.mode = mode }
+            var prev: Map<Int, Rgb>? = null
+            repeat(240) { i ->
+                // Alternate full blast and silence to demand the fastest moves
+                // the engine can be asked for.
+                val f = if (i % 2 == 0) frame(i, beat = true) else AnalysisFrame()
+                val out = eng.render(f, dt)
+                prev?.let { pv ->
+                    for ((cid, c) in out) {
+                        val now = maxOf(c.first, maxOf(c.second, c.third))
+                        val was = pv.getValue(cid).let { maxOf(it.first, maxOf(it.second, it.third)) }
+                        val d = now - was
+                        assertTrue(
+                            d <= p.briRiseRate * dt + 1e-3f,
+                            "$mode channel $cid rose $d in one frame, over ${p.briRiseRate * dt}",
+                        )
+                        assertTrue(
+                            -d <= p.briFallRate * dt + 1e-3f,
+                            "$mode channel $cid fell ${-d} in one frame, over ${p.briFallRate * dt}",
+                        )
+                    }
+                }
+                prev = out
+            }
+        }
+    }
+
+    @Test
+    fun `the tuned presets are unchanged at the nominal frame rate`() {
+        // frameAlpha is the exact conversion, so re-expressing a coefficient for
+        // a 1/60 s step has to return it untouched — otherwise this refactor
+        // would have quietly retuned all five rungs.
+        val dt = 1f / TUNING_FPS
+        for (a in listOf(0.008f, 0.04f, 0.10f, 0.30f, 0.55f, 0.80f, 1f)) {
+            assertEquals(a, frameAlpha(a, dt), 1e-6f, "frameAlpha moved $a at nominal rate")
+            assertEquals(a, frameDecay(a, dt), 1e-6f, "frameDecay moved $a at nominal rate")
+        }
+        // …and a double-length step has to compose exactly like two of them.
+        val once = frameDecay(0.8f, dt * 2f)
+        val twice = frameDecay(0.8f, dt) * frameDecay(0.8f, dt)
+        assertEquals(twice, once, 1e-6f, "a 2-frame decay did not compose")
+    }
+
+    @Test
+    fun `resuming from the idle show does not flash the room`() {
+        // The brightness slew clamps each frame against the last one this engine
+        // emitted. The idle show renders straight to the output, so if it does not
+        // also record what it emitted, the first frame back on the music path
+        // clamps against a value from before the pause — and the room jumps to
+        // roughly that instead of continuing from what is actually lit.
+        val dt = 1f / 60f
+        val eng = SyncoEngine(channels()).apply { mode = SyncMode.SUBTLE }
+
+        // Play loudly enough to leave the emitted brightness high.
+        var lastMusic = 0f
+        repeat(120) { i -> lastMusic = fieldOf(eng.render(frame(i, beat = i % 20 == 0), dt)) }
+
+        // Pause: the idle show takes the room somewhere much dimmer.
+        var idle = 0f
+        repeat(120) { i -> idle = fieldOf(eng.renderIdleShow(i * dt, dt, 0.05f)) }
+
+        // Resume on a quiet passage.
+        val firstBack = fieldOf(eng.render(AnalysisFrame(), dt))
+
+        assertTrue(
+            firstBack <= idle + 0.10f,
+            "resuming jumped from the idle level $idle to $firstBack " +
+                "(the room was at $lastMusic before the pause)",
+        )
     }
 }
 

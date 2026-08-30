@@ -243,11 +243,17 @@ internal fun StatusRow(label: String, value: String) {
     }
 }
 
-/** A boxed group of [StatusRow]s. */
+/**
+ * A group of [StatusRow]s.
+ *
+ * Unboxed: a status panel only ever appears inside a [SettingsCard], which already
+ * gives it a surface — a second, nested box around a handful of label/value lines
+ * read as a card inside a card rather than as one grouped panel.
+ */
 @Composable
 internal fun StatusPanel(content: @Composable ColumnScope.() -> Unit) {
     Column(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Ink3).padding(14.dp),
+        Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(6.dp),
         content = content,
     )
@@ -371,11 +377,13 @@ internal fun DropdownPicker(
     val selected = options.getOrNull(selectedIndex)
 
     Box(modifier.fillMaxWidth()) {
+        // A hairline outline, not a filled box — the card underneath is already the
+        // surface. Kept (unlike ToggleRow's, dropped entirely) because a dropdown
+        // needs a visible tap target its own chevron alone doesn't make obvious.
         Row(
             Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(12.dp))
-                .background(Ink3)
                 .border(1.dp, if (open) accent.a(0.5f) else Hairline, RoundedCornerShape(12.dp))
                 .clickable { open = true }
                 .padding(horizontal = 14.dp, vertical = 12.dp),
@@ -438,6 +446,12 @@ internal fun DropdownPicker(
  * uncapped, drawn at a bare 11sp with no line height, so a two-hundred-character
  * explanation beside a fixed-size switch produced a six-line row. The long form goes
  * in [info] now, behind a chip on the title. See [InfoChip].
+ *
+ * Unboxed, flush with the card's own edge: a [SettingsCard] is already the
+ * surface, and a toggle only ever appears inside one. A row of its own background
+ * and border read as a card nested in a card, which is what every row in this file
+ * used to do — the whole reason [SettingsComponents.kt] exists in one place is so
+ * that stops being true everywhere at once.
  */
 @Composable
 internal fun ToggleRow(
@@ -450,10 +464,9 @@ internal fun ToggleRow(
     onChange: (Boolean) -> Unit,
 ) {
     Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Ink3)
-            .border(1.dp, Hairline, RoundedCornerShape(12.dp))
+        Modifier.fillMaxWidth()
             .clickable(enabled = enabled) { onChange(!checked) }
-            .padding(horizontal = 14.dp, vertical = 12.dp),
+            .padding(vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {

@@ -36,6 +36,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.ma.LibraryViewModel
+import com.engabd.sendpin.ui.design.Bloom
 import com.engabd.sendpin.ui.design.LocalAccent
 import com.engabd.sendpin.ui.design.LocalPalette
 import com.engabd.sendpin.ui.design.Motion
@@ -68,7 +69,11 @@ import java.io.OutputStreamWriter
  * - **Playback & audio** — everything between the file and the speaker.
  * - **Downloads** — music kept on the phone.
  * - **Light Sync** — the plumbing behind the light show (the show itself is a tab).
- * - **Appearance** — how the app looks and how the player behaves.
+ * - **Appearance** — how the app looks: theme, accent, the shape of the player.
+ * - **Playback & Behavior** — how the player *behaves*: gestures, the local
+ *   auto-queue's ranking, lyrics timing. Split out of Appearance, which used to
+ *   carry all of it under one card mixing "how it looks" with "how it acts" —
+ *   right for nobody trying to find a specific setting.
  * - **About**.
  *
  * Two levels deep, not one: a server has its own page, and so does the Hue bridge.
@@ -121,8 +126,13 @@ enum class SettingsSection(
     ),
     APPEARANCE(
         "Appearance",
-        "Theme, accent colour, the Now Playing layout and lyrics timing",
+        "Theme, accent colour, the Now Playing layout and seek bar",
         Icons.Default.Palette,
+    ),
+    BEHAVIOR(
+        "Playback & Behavior",
+        "Gestures, Harmonic DJ mode, Listening DNA, and lyrics timing",
+        Icons.Default.Gesture,
     ),
     ABOUT(
         "About",
@@ -184,7 +194,14 @@ fun SettingsScreen(
 
     val state = rememberSettingsOverview(settings, libraryViewModel)
 
+    // The same swatch each section's own index row is tinted with, carried onto the
+    // page itself — a quiet colour cue that this is "the Light Sync page" rather
+    // than a fourth identical grey screen. Falls back to the ambient accent on the
+    // index, where there is no one section to key off.
+    val bloomColor = section?.let { LocalPalette.current.swatch(it.ordinal) } ?: accent
+
     Box(Modifier.fillMaxSize().background(Ink)) {
+        Bloom(bloomColor, 420.dp, (-60).dp, (-56).dp, 0.30f)
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars)) {
             Row(
                 Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, top = 16.dp, bottom = 14.dp),
@@ -291,6 +308,8 @@ fun SettingsScreen(
 
                             SettingsSection.APPEARANCE -> AppearanceSection(settings, accent, scope)
 
+                            SettingsSection.BEHAVIOR -> BehaviorSection(settings, accent, scope)
+
                             SettingsSection.ABOUT -> AboutSection(accent, onOpenStats)
                         }
                         }
@@ -337,7 +356,8 @@ private data class SettingsOverview(
         // Nothing about the audio path or the app itself changes often enough to be
         // worth a live line, and a row that reads "Output: Phone speaker" would be
         // wrong every time headphones are plugged in while this screen is not open.
-        SettingsSection.AUDIO, SettingsSection.STATS, SettingsSection.BACKUP, SettingsSection.ABOUT -> null
+        SettingsSection.AUDIO, SettingsSection.STATS, SettingsSection.BACKUP,
+        SettingsSection.BEHAVIOR, SettingsSection.ABOUT -> null
     }
 }
 

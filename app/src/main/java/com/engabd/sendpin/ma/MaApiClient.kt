@@ -211,7 +211,7 @@ class MaApiClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
             val l = login
             if (l != null) {
                 val res = sendRaw("auth/login", buildJsonObject {
-                    put("username", l.first); put("password", l.second); put("device_name", "Sendpin")
+                    put("username", l.first); put("password", l.second); put("device_name", "CAMusic")
                 })?.jsonObject
                 val tok = res?.get("access_token")?.jsonPrimitive?.contentOrNull
                 val ok = res?.get("success")?.jsonPrimitive?.booleanOrNull ?: false
@@ -219,10 +219,10 @@ class MaApiClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
                     throw MaApiException(res?.get("error")?.jsonPrimitive?.contentOrNull ?: "Login failed", -1)
                 }
                 authToken = tok
-                sendRaw("auth", buildJsonObject { put("token", tok); put("device_name", "Sendpin") })
+                sendRaw("auth", buildJsonObject { put("token", tok); put("device_name", "CAMusic") })
             } else if (!token.isNullOrBlank()) {
                 authToken = token
-                sendRaw("auth", buildJsonObject { put("token", token!!); put("device_name", "Sendpin") })
+                sendRaw("auth", buildJsonObject { put("token", token!!); put("device_name", "CAMusic") })
             }
             // else: no credentials — assume an open LAN server. Commands that turn
             // out to need auth will fail individually rather than blocking connect.

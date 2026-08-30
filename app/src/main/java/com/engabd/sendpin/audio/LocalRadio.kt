@@ -110,12 +110,20 @@ class LocalRadio(private val historyLimit: Int = 200) {
      * [exclude] is what is already in the queue: suggesting a song that is about to
      * play anyway is the one mistake that makes a radio feel broken rather than
      * merely uninspired.
+     *
+     * [bonus] is the same extra ranking signal [offline] takes — Harmonic DJ mode's
+     * key/tempo compatibility score. It only re-orders *within* whichever rung
+     * answers first: a rung further down the ladder is a weaker claim about "more
+     * like this" than the one above it, and DJ mode re-ranking should never make a
+     * merely key-compatible genre-ladder guess beat a real similarity match. The
+     * default contributes nothing, so every existing caller is unaffected.
      */
     suspend fun next(
         source: RadioSource,
         seed: MaItem?,
         count: Int = 10,
         exclude: Set<String> = emptySet(),
+        bonus: (MaItem) -> Int = { 0 },
     ): List<MaItem> {
         // Ask for more than needed at every rung: most of what comes back is usually
         // already in the history or the queue, and a second round trip to fill the
@@ -145,6 +153,7 @@ class LocalRadio(private val historyLimit: Int = 200) {
                 .filter { it.itemId.isNotBlank() }
                 .filterNot { it.itemId in exclude || it.itemId in history }
                 .distinctBy { it.itemId }
+                .sortedByDescending { bonus(it) }
                 .take(count)
             if (picked.isNotEmpty()) {
                 remember(picked.map { it.itemId })

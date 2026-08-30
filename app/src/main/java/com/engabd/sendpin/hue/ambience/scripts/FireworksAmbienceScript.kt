@@ -33,14 +33,17 @@ import kotlin.math.sin
  * burst, the audio side starts whistling `LAUNCH_S` earlier — and because both read the
  * same `startS`, the whistle always ends exactly when the sky lights up.
  */
-class FireworksAmbienceScript : AmbienceScript {
-
-    override val effect = AmbienceEffect.FIREWORKS
+class FireworksAmbienceScript(
+    override val effect: AmbienceEffect = AmbienceEffect.FIREWORKS,
+    /** See the note on `ThunderstormScript`'s seed: same seed, same show. */
+    seed: Long = 0xF1_2E_00_2AL,
+    private val shellColours: Array<Rgb> = SHELL_COLOURS,
+) : AmbienceScript {
 
     private lateinit var room: RoomModel
     @Volatile private var params = AmbienceParams()
 
-    private val rng = Rng(0xF1_2E_00_2AL)
+    private val rng = Rng(seed)
     private var nextBurstS = 0.8
 
     /**
@@ -90,7 +93,7 @@ class FireworksAmbienceScript : AmbienceScript {
                     gain = 0.45f + 0.55f * rng.f01(),
                     origin = origin,
                     azimuth = az,
-                    colour = SHELL_COLOURS[rng.nextInt(SHELL_COLOURS.size)],
+                    colour = shellColours[rng.nextInt(shellColours.size)],
                     // Shell size: drives both the light shell's radius and the boom's depth.
                     timbre = 0.5f + 0.5f * rng.f01(),
                     seed = rng.nextLong(),
@@ -210,7 +213,7 @@ class FireworksAmbienceScript : AmbienceScript {
         }
     }
 
-    private companion object {
+    companion object {
         /** Concurrent shells that can each keep their own voice. Beyond this the oldest recycles. */
         const val MAX_VOICES = 12
 
@@ -225,6 +228,11 @@ class FireworksAmbienceScript : AmbienceScript {
         const val CRACKLE_S = 2.4
 
         val NIGHT = Rgb(0.02f, 0.02f, 0.06f)
+        /**
+         * The saturated show. The Hue light-effects guide describes two explosion
+         * archetypes — "reds and oranges with smoke" or "white hot and intense" —
+         * and [WHITE_HOT_SHELLS] is the other one.
+         */
         val SHELL_COLOURS = arrayOf(
             Rgb(1.00f, 0.30f, 0.25f),
             Rgb(1.00f, 0.78f, 0.25f),
@@ -232,6 +240,15 @@ class FireworksAmbienceScript : AmbienceScript {
             Rgb(0.65f, 0.40f, 1.00f),
             Rgb(0.40f, 1.00f, 0.55f),
             Rgb(1.00f, 0.55f, 0.85f),
+        )
+
+        /** Magnesium and gold: the "white hot and intense" archetype. */
+        val WHITE_HOT_SHELLS = arrayOf(
+            Rgb(1.00f, 0.97f, 0.90f),
+            Rgb(1.00f, 0.86f, 0.55f),
+            Rgb(1.00f, 0.72f, 0.30f),
+            Rgb(0.95f, 0.95f, 1.00f),
+            Rgb(1.00f, 0.60f, 0.18f),
         )
     }
 }
