@@ -105,9 +105,9 @@ fun EffectsScreen(onBack: () -> Unit, viewModel: EffectsViewModel) {
                 }
 
                 Text(
-                    "Each effect drives the lights from a script and makes its own sound. " +
-                        "The two are the same thing rather than two things kept in step, so " +
-                        "the thunder always lands with the flash.",
+                    "Each effect drives the lights from a script. Most play a recorded " +
+                        "bed underneath; Thunderstorm generates its sound from the same " +
+                        "script as the lights, so its thunder always lands with the flash.",
                     color = TextMuted, fontSize = 12.sp, lineHeight = 17.sp,
                 )
                 Spacer(Modifier.height(16.dp))
@@ -330,7 +330,7 @@ private fun LabeledSliderRow(
 
 private fun ambienceIcon(e: AmbienceEffect): ImageVector = when (e) {
     AmbienceEffect.FIREWORKS, AmbienceEffect.FIREWORKS_2 -> Icons.Default.Celebration
-    AmbienceEffect.THUNDERSTORM -> Icons.Default.Thunderstorm
+    AmbienceEffect.THUNDERSTORM, AmbienceEffect.THUNDERSTORM_2 -> Icons.Default.Thunderstorm
     AmbienceEffect.UNDERWATER -> Icons.Default.Water
     AmbienceEffect.FIREPLACE -> Icons.Default.LocalFireDepartment
     AmbienceEffect.LIGHT_TRAIN -> Icons.Default.Train

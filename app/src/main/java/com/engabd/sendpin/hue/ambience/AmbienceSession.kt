@@ -166,6 +166,18 @@ class AmbienceSession(
         script.retune(p)
     }
 
+    /**
+     * The user's master brightness ceiling moved.
+     *
+     * Separate from [retune] because the script does not need telling: the
+     * ceiling is applied to the rendered frame in [renderLights], not inside the
+     * script, and handing a script a fresh params object would restart tuning it
+     * has already done.
+     */
+    fun setBrightness(v: Float) {
+        params = params.copy(brightness = v.coerceIn(0f, 1f))
+    }
+
     fun pause() {
         if (paused) return
         pausedAtS = nowS()

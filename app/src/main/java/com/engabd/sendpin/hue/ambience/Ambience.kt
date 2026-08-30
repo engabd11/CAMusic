@@ -27,18 +27,41 @@ import kotlin.math.ln
  * render: that engine has one clock — the analysis frame — and nothing to say when
  * there is no music. Ambience has its own clock, no music, and sound of its own.
  */
-enum class AmbienceEffect(val wire: String, val title: String, val blurb: String) {
+enum class AmbienceEffect(
+    val wire: String,
+    val title: String,
+    val blurb: String,
+    /**
+     * Whether "Default" should generate this effect's sound rather than play a
+     * recorded bed for it.
+     *
+     * Only the synthesised path is an [AudioSink][com.engabd.sendpin.hue.ambience.AudioSink],
+     * and only an AudioSink can be the show clock — a recording runs on its own
+     * clock and free-wheels against the light script. For most effects that is
+     * fine, because nothing in them has to land on a specific frame. For a storm
+     * it is the entire premise: the delay between a flash and its thunder *is*
+     * the effect, and Philips' own guidance is that people spot desync instantly.
+     * Thunderstorm II is the recorded-bed variant for anyone who wants the
+     * fidelity instead.
+     */
+    val defaultSoundIsGenerated: Boolean = false,
+) {
     FIREWORKS(
         "fireworks", "Fireworks",
         "Shells climb, burst overhead and crackle away into the dark.",
     ),
     FIREWORKS_2(
         "fireworks_2", "Fireworks II",
-        "A second show for the same sky — different shells, same dark.",
+        "The same sky, burning white and gold instead of colour.",
     ),
     THUNDERSTORM(
         "thunderstorm", "Thunderstorm",
         "Rain on the roof, and lightning that arrives before its thunder.",
+        defaultSoundIsGenerated = true,
+    ),
+    THUNDERSTORM_2(
+        "thunderstorm_2", "Thunderstorm II",
+        "A warmer, further-off storm — more sky than roof.",
     ),
     UNDERWATER(
         "underwater", "Underwater",
