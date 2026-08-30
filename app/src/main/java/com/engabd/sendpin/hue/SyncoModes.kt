@@ -1,6 +1,7 @@
 package com.engabd.sendpin.hue
 
 import kotlin.math.max
+import kotlin.math.pow
 
 /**
  * What the light show *is*: the modes, the effects, the colour schemes, and the
@@ -40,6 +41,32 @@ enum class ColorScheme(val wire: String) {
     companion object { fun fromWire(s: String?) = entries.firstOrNull { it.wire == s } ?: ALBUM_ART_V2 }
 }
 
+// ── Frame-rate normalisation ────────────────────────────────────────────────
+
+/** The nominal render rate the easing coefficients below were tuned against. */
+const val TUNING_FPS = 60f
+
+/**
+ * Re-express a per-frame easing coefficient tuned at [TUNING_FPS] for the frame
+ * time actually observed.
+ *
+ * Every smoother in the engine used to apply its coefficient once per rendered
+ * frame regardless of how long that frame took. Analysis runs at ~50 Hz and the
+ * render loop at 60 Hz, and scheduling moves it further still, so the effective
+ * envelope tracked loop timing rather than wall time — which is what made the
+ * brightness between beats shimmer. The Hue EDK defines every animation in
+ * milliseconds for exactly this reason; nothing in it is frame-indexed.
+ *
+ * The conversion is exact, so `frameAlpha(a, 1/60f) == a` and the tuned presets
+ * keep their existing feel at nominal rate.
+ */
+fun frameAlpha(alpha60: Float, dt: Float): Float =
+    if (alpha60 >= 1f) 1f else 1f - (1f - alpha60).pow(dt * TUNING_FPS)
+
+/** [frameAlpha] for a coefficient applied multiplicatively as a decay. */
+fun frameDecay(decay60: Float, dt: Float): Float =
+    if (decay60 <= 0f) 0f else decay60.pow(dt * TUNING_FPS)
+
 // ── Mode parameters ───────────────────────────────────────────────────────
 
 /**
@@ -56,11 +83,38 @@ data class ModeParams(
     val colourSpeed: Float = 0.05f,   // palette drift per second
     val shimmer: Float = 0.10f,       // sparkle amount (vocal-role lights)
     val colourSat: Float = 0.7f,      // <1 softens colours toward white
-    val colourLerp: Float = 0.40f,    // per-frame colour easing
-    val briAttack: Float = 1.0f,      // per-frame brightness rise rate
-    val briDecay: Float = 0.30f,      // per-frame brightness fall rate
-    val flashDecay: Float = 0.80f,    // per-frame fade of the beat flash
-    val briSlew: Float = 1.0f,        // max brightness RISE per frame (anti-strobe)
+    val colourLerp: Float = 0.40f,    // colour easing, per frame at TUNING_FPS
+    val briAttack: Float = 1.0f,      // brightness rise easing, per frame at TUNING_FPS
+    val briDecay: Float = 0.30f,      // brightness fall easing, per frame at TUNING_FPS
+    val flashDecay: Float = 0.80f,    // beat-flash fade, per frame at TUNING_FPS
+
+    /**
+     * Ceiling on how fast emitted brightness may rise, in full scale per second.
+     *
+     * This replaced a per-*frame* cap that limited the rise only and was disabled
+     * outright on three of the five rungs — so a beat attack was a single-frame
+     * discontinuity, which bulbs show as a hard edge and which the rate limiter
+     * downstream then quantised into a staircase.
+     *
+     * Philips' guidance is that people are far more sensitive to rapid brightness
+     * changes than to rapid colour changes, so the brightness transition should be
+     * the *slower* of the two. The encoder already slews chromaticity at
+     * [XY_SLEW_MAX] (~4.8 full scale/s); these stay under that, and [briFallRate]
+     * stays well under [briRiseRate].
+     *
+     * The rise is deliberately the looser of the two. Its job is only to stop a
+     * *single-frame* discontinuity, which is what bulbs render as a hard edge; a
+     * full-scale move still spans about three frames, matching the 50 ms intensity
+     * ramp of the Hue EDK's own `ExplosionEffect`. Clamping it harder than that
+     * would fight `flashDecay` — the beat flash has a ~52 ms half-life, so a slow
+     * rise reaches its peak only after the flash has already decayed out from
+     * under it, and beats lose their punch. The fall is what buys the smooth
+     * dimming between beats.
+     */
+    val briRiseRate: Float = 24f,
+
+    /** Ceiling on how fast emitted brightness may fall. See [briRiseRate]. */
+    val briFallRate: Float = 5f,
     val roleMix: Triple<Float, Float, Float> = Triple(1f, 0f, 0f),  // (bass, mid, vocal) fractions
     val roleRotateBeats: Int = 0,     // swap role assignments every N beats
     val dynamicRoles: Boolean = false,
@@ -195,6 +249,7 @@ val MODE_PARAMS = mapOf(
         base = 0.80f, floor = 0.80f, bassGain = 0f, beatGain = 0f, beatThreshold = 99f,
         colourSpeed = 0.04f, shimmer = 0f, colourSat = 1f,
         colourLerp = 0.10f, briAttack = 0.12f, briDecay = 0.08f,
+        briRiseRate = 4f, briFallRate = 1.5f,
         highlightQuantile = 0f,
         colourJump = 0.020f,
         colourBeatStep = 0.008f,
@@ -216,6 +271,7 @@ val MODE_PARAMS = mapOf(
         base = 0.12f, floor = 0.05f, bassGain = 0.14f, beatGain = 0.9f, beatThreshold = 1.4f,
         colourSpeed = 0.05f, shimmer = 0.10f, colourSat = 0.7f,
         colourLerp = 0.40f, briAttack = 1f, briDecay = 0.30f,
+        briRiseRate = 16f, briFallRate = 3f,
         colourJump = 0.045f, colourSpread = 0.70f, highlightQuantile = 0.30f,
         weakPulse = 0.25f, downbeatPulse = 0.40f,
         melbankGain = 0.45f, melbankFloor = 0.06f, colourFlow = 0.05f, spectralPop = 0.35f,
@@ -232,7 +288,8 @@ val MODE_PARAMS = mapOf(
     SyncMode.HIGH to ModeParams(
         base = 0.06f, floor = 0.035f, bassGain = 0.30f, beatGain = 1.6f, beatThreshold = 1.1f,
         colourSpeed = 0.06f, shimmer = 0.50f, colourSat = 0.8f,
-        colourLerp = 0.38f, briAttack = 1f, briDecay = 0.38f, flashDecay = 0.80f, briSlew = 0.30f,
+        colourLerp = 0.38f, briAttack = 1f, briDecay = 0.38f, flashDecay = 0.80f,
+        briRiseRate = 20f, briFallRate = 4f,
         colourJump = 0.09f, colourSpread = 0.55f, highlightQuantile = 0.40f,
         weakPulse = 0.16f, downbeatPulse = 0.45f, fullRoomAccent = 0.94f,
         roleMix = Triple(0.4f, 0.3f, 0.3f), midGain = 1.0f, midThreshold = 1.25f,
@@ -254,7 +311,8 @@ val MODE_PARAMS = mapOf(
     SyncMode.INTENSE to ModeParams(
         base = 0.05f, floor = 0.10f, bassGain = 0.16f, beatGain = 1.7f, beatThreshold = 1.0f,
         colourSpeed = 0.05f, shimmer = 0f, colourSat = 0.97f,
-        colourLerp = 0.55f, briAttack = 1f, briDecay = 0.40f, briSlew = 0.22f, flashDecay = 0.82f,
+        colourLerp = 0.55f, briAttack = 1f, briDecay = 0.40f, flashDecay = 0.82f,
+        briRiseRate = 24f, briFallRate = 5f,
         colourJump = 0.16f, colourSpread = 0.22f, highlightQuantile = 0.18f,
         weakPulse = 0.42f, downbeatPulse = 0.55f, fullRoomAccent = 0f,
         hardSnap = true,
@@ -282,6 +340,7 @@ val MODE_PARAMS = mapOf(
         rotateRate = 0.36f, rotateSwing = 0.85f, bandLoudStrength = 0.8f,
         roomPunch = 1.5f, energyGain = 0.06f, flashDecay = 0.70f,
         briAttack = 0.5f, briDecay = 0.4f,
+        briRiseRate = 26f, briFallRate = 6f,
         colourSpeed = 0.05f, colourFlow = 0.05f, colourSpread = 0.4f, colourLerp = 0.4f,
         colourSat = 0.97f, panGain = 0.6f, colourTilt = 0.30f,
         // No gestureGain, and it would do nothing if there were one: `renderExtreme`

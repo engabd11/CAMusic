@@ -819,25 +819,6 @@ class SyncoEngine(
         }
     }
 
-    // ── Accessors for the alternate renderers ─────────────────────────────
-
-    /**
-     * Each lamp's `(xrank, height)` — the two axes Fireworks places bursts on.
-     * Exposed rather than handing over the whole channel map, so the effect
-     * depends on a shape it actually needs.
-     */
-    internal val lampLayout: Map<Int, Pair<Float, Float>>
-        get() = cmap.mapValues { (_, info) -> info.xrank to info.pos.z }
-
-    /** Smoothed room loudness, for effects that breathe with the music. */
-    internal val energyEnvValue: Float get() = energyEnv
-
-    /** The active rung's event gates, so alternate renderers share the tuning. */
-    internal fun gatesFor(frame: AnalysisFrame): Pair<Float, Float> {
-        val g = eventGates(frame.salience, frame.onsetWidth)
-        return g.ampScale to g.widthGate
-    }
-
     // ── Public setters ────────────────────────────────────────────────────
 
     /** The scheme the user picked, so album art can be applied only when wanted. */
@@ -905,18 +886,22 @@ class SyncoEngine(
 
     // ── Envelope update ───────────────────────────────────────────────────
 
-    private fun updateEnv(frame: AnalysisFrame) {
+    private fun updateEnv(frame: AnalysisFrame, dt: Float) {
+        val rise = frameAlpha(ENV_RISE, dt)
+        val fall = frameAlpha(ENV_FALL, dt)
+        val pRise = frameAlpha(PRESENCE_RISE, dt)
+        val pFall = frameAlpha(PRESENCE_FALL, dt)
         for ((name, value) in frame.bands) {
             val prev = env[name] ?: 0f
-            val a = if (value > prev) ENV_RISE else ENV_FALL
+            val a = if (value > prev) rise else fall
             env[name] = prev + (value - prev) * a
             val pp = presence[name] ?: 0f
-            val pa = if (value > pp) PRESENCE_RISE else PRESENCE_FALL
+            val pa = if (value > pp) pRise else pFall
             presence[name] = pp + (value - pp) * pa
         }
-        val a = if (frame.energy > energyEnv) ENV_RISE else ENV_FALL
+        val a = if (frame.energy > energyEnv) rise else fall
         energyEnv += (frame.energy - energyEnv) * a
-        loud = max(frame.energy, loud * GATE_DECAY)
+        loud = max(frame.energy, loud * frameDecay(GATE_DECAY, dt))
     }
 
     // ── Highlight ranking ─────────────────────────────────────────────────
@@ -930,7 +915,7 @@ class SyncoEngine(
      * [PREDROP_HEUR_CAP], times out after [PREDROP_TIMEOUT_S], and then blocks
      * re-commit for [PREDROP_REFRACTORY_S].
      */
-    private fun updatePredrop(structure: StructureState?): Float {
+    private fun updatePredrop(structure: StructureState?, dt: Float): Float {
         predropReleased = 0f
         if (structure == null) {
             predrop = 0f
@@ -974,10 +959,11 @@ class SyncoEngine(
             target = 0f
         }
 
+        val step = dt * TUNING_FPS
         predrop = if (target > predrop)
-            min(target, predrop + PREDROP_RISE)
+            min(target, predrop + PREDROP_RISE * step)
         else
-            max(target, predrop - PREDROP_FALL)
+            max(target, predrop - PREDROP_FALL * step)
         return predrop
     }
 
@@ -1109,7 +1095,7 @@ class SyncoEngine(
         gesture: GestureState? = null,
     ): Map<Int, Rgb> {
         time += dt
-        updateEnv(frame)
+        updateEnv(frame, dt)
 
         val p = params
 
@@ -1179,14 +1165,14 @@ class SyncoEngine(
         // treatment however the song is shaped.
         val build = structure?.buildProgress ?: 0f
         val sectionLevel = structure?.sectionLevel ?: 1f
-        val predrop = updatePredrop(structure) * p.predropDepth * musicGate
+        val predrop = updatePredrop(structure, dt) * p.predropDepth * musicGate
         if (structure?.dropNow == true && p.dropBoost > 0f) {
             swell = max(swell, p.dropBoost * (1f + 0.35f * predropReleased) * musicGate)
             // A drop is a new section: reshuffle the room so the same lamps
             // aren't carrying the same roles through the whole track.
             if (p.dynamicRoles) { roleOffset++; updateRoles() }
         }
-        swell *= SWELL_DECAY
+        swell *= frameDecay(SWELL_DECAY, dt)
         val satMul = 1f - max(p.buildDesat * build, 0.6f * predrop)
 
         // ── Phrase ───────────────────────────────────────────────────────
@@ -1274,7 +1260,8 @@ class SyncoEngine(
         }
 
         // Flash decay
-        for (cid in lightFlash.keys) lightFlash[cid] = lightFlash[cid]!! * p.flashDecay
+        val flashFade = frameDecay(p.flashDecay, dt)
+        for (cid in lightFlash.keys) lightFlash[cid] = lightFlash[cid]!! * flashFade
 
         // Beat flash assignment. Reactive detection is taken as the baseline and
         // the scheduled pulse folded in with max(), so an unlocked or mistaken
@@ -1491,7 +1478,7 @@ class SyncoEngine(
 
             // Smooth brightness
             val (prevColor, prevB) = state[cid] ?: (Triple(0f, 0f, 0f) to 0f)
-            val alpha = if (target >= prevB) p.briAttack else p.briDecay
+            val alpha = frameAlpha(if (target >= prevB) p.briAttack else p.briDecay, dt)
             var newB = prevB + (target - prevB) * alpha
 
             // Colour, on a tilted room axis rather than left-to-right alone.
@@ -1506,10 +1493,11 @@ class SyncoEngine(
             val nrTgt = if (tm > 1e-6f) Triple(tr / tm, tg / tm, tb / tm) else Triple(0f, 0f, 0f)
             val (nr, ng, nb) = nrTgt
             val (pr, pg, pb) = prevColor
+            val cLerp = frameAlpha(p.colourLerp, dt)
             var nc = Triple(
-                pr + (nr - pr) * p.colourLerp,
-                pg + (ng - pg) * p.colourLerp,
-                pb + (nb - pb) * p.colourLerp,
+                pr + (nr - pr) * cLerp,
+                pg + (ng - pg) * cLerp,
+                pb + (nb - pb) * cLerp,
             )
 
             // Saturation. Tension through a build pulls the room toward white,
@@ -1525,9 +1513,15 @@ class SyncoEngine(
             }
 
             // Flash + brightness, slew-limited
+            // Brightness moves no faster than the rung's rise/fall ceiling, in
+            // full scale per second. A single-frame jump is what bulbs render as
+            // a hard edge, and what the downstream rate limiter used to quantise
+            // into a staircase; capping the *rate* removes both. The fall is
+            // always the slower of the two, per Philips' guidance that brightness
+            // should transition more slowly than colour.
             var b = min(1f, newB + flash)
             val prevEmit = emitB[cid] ?: 0f
-            if (p.briSlew < 1f && b > prevEmit + p.briSlew) b = prevEmit + p.briSlew
+            b = b.coerceIn(prevEmit - p.briFallRate * dt, prevEmit + p.briRiseRate * dt)
             emitB[cid] = b
             b *= brightness
 
@@ -1808,7 +1802,8 @@ class SyncoEngine(
             return mx
         }
 
-        for (cid in lightFlash.keys) lightFlash[cid] = lightFlash[cid]!! * p.flashDecay
+        val flashFade = frameDecay(p.flashDecay, dt)
+        for (cid in lightFlash.keys) lightFlash[cid] = lightFlash[cid]!! * flashFade
 
         // A hit in a quiet passage cannot flash as bright as one in a drop; the
         // melbank is AGC-relative, so absolute loudness has to come from salience.
@@ -1873,7 +1868,7 @@ class SyncoEngine(
                 ).coerceIn(0f, 1f)
 
             val (prevColor, prevB) = state[cid] ?: (Triple(0f, 0f, 0f) to 0f)
-            val alpha = if (target >= prevB) p.briAttack else p.briDecay
+            val alpha = frameAlpha(if (target >= prevB) p.briAttack else p.briDecay, dt)
             val newB = prevB + (target - prevB) * alpha
 
             // Colour stays keyed to the lamp's fixed position plus the drift
@@ -1884,10 +1879,11 @@ class SyncoEngine(
             val m = max(tgt.first, max(tgt.second, tgt.third))
             val nt = if (m > 1e-6f) Triple(tgt.first / m, tgt.second / m, tgt.third / m)
             else Triple(0f, 0f, 0f)
+            val cLerp = frameAlpha(p.colourLerp, dt)
             var nc = Triple(
-                prevColor.first + (nt.first - prevColor.first) * p.colourLerp,
-                prevColor.second + (nt.second - prevColor.second) * p.colourLerp,
-                prevColor.third + (nt.third - prevColor.third) * p.colourLerp,
+                prevColor.first + (nt.first - prevColor.first) * cLerp,
+                prevColor.second + (nt.second - prevColor.second) * cLerp,
+                prevColor.third + (nt.third - prevColor.third) * cLerp,
             )
             state[cid] = nc to newB
 
@@ -1896,8 +1892,15 @@ class SyncoEngine(
                 nc = Triple(nc.first * s + (1 - s), nc.second * s + (1 - s), nc.third * s + (1 - s))
             }
             val cval = max(nc.first, max(nc.second, nc.third))
-            val b = min(1f, newB + (lightFlash[cid] ?: 0f)).coerceIn(0f, 1f) *
-                (0.35f + 0.65f * cval) * brightness
+            // Extreme bypasses FieldSafety at the user's request, so the rate
+            // ceiling is the only thing shaping its edges. Slewed before the
+            // colour-value term and the user's ceiling, matching the music path.
+            val prevEmit = emitB[cid] ?: 0f
+            val slewed = min(1f, newB + (lightFlash[cid] ?: 0f))
+                .coerceIn(prevEmit - p.briFallRate * dt, prevEmit + p.briRiseRate * dt)
+                .coerceIn(0f, 1f)
+            emitB[cid] = slewed
+            val b = slewed * (0.35f + 0.65f * cval) * brightness
             out[cid] = Triple(
                 (nc.first * b).coerceIn(0f, 1f),
                 (nc.second * b).coerceIn(0f, 1f),

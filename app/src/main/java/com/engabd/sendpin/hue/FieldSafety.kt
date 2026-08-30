@@ -41,7 +41,7 @@ private const val RED_SATURATION = 0.55f
 
 private const val WINDOW_S = 1.0f
 
-/** Slow anchor (~0.5 s) the field is pinned toward while limiting. */
+/** Slow anchor (~0.5 s) the field is pinned toward while limiting. Per frame at [TUNING_FPS]. */
 private const val EMA_ALPHA = 0.04f
 
 /** Compression engages instantly once the budget is exceeded… */
@@ -161,7 +161,7 @@ class FieldSafety(
         // Track how hard the *incoming* field is swinging, peak-held, so release
         // waits for the content to genuinely calm rather than merely for a timer.
         if (prevRaw == null) prevRaw = field
-        activity = max(activity * ACTIVITY_DECAY, abs(field - prevRaw!!))
+        activity = max(activity * frameDecay(ACTIVITY_DECAY, dt), abs(field - prevRaw!!))
         prevRaw = field
 
         prune()
@@ -175,7 +175,7 @@ class FieldSafety(
         } else {
             if (over) 0f else 1f
         }
-        val rate = if (compTarget < comp) ENGAGE_RATE else RELEASE_RATE
+        val rate = frameAlpha(if (compTarget < comp) ENGAGE_RATE else RELEASE_RATE, dt)
         comp += (compTarget - comp) * rate
         val limiting = comp < 0.999f
 
@@ -185,7 +185,7 @@ class FieldSafety(
         // the new mode flashes — would otherwise pin the room black indefinitely.
         // Letting it climb can only reduce compression, never create a flash.
         val anchor = ema!!
-        if (!limiting || field > anchor) ema = anchor + (field - anchor) * EMA_ALPHA
+        if (!limiting || field > anchor) ema = anchor + (field - anchor) * frameAlpha(EMA_ALPHA, dt)
 
         // While limiting, pull the field's temporal swing toward the anchor two
         // ways at once: a gain compresses the bright peaks, and a white floor
@@ -273,29 +273,52 @@ class FieldSafety(
 }
 
 /**
- * Caps how often any single channel may make a *perceptible* change, at
+ * Caps how often any single channel may complete a *transition*, at
  * [PHYSICAL_MAX_EFFECT_HZ].
  *
  * Separate from [FieldSafety] and deliberately not bypassable. The flash budget
  * is a comfort limit that Extreme is allowed to escape at the user's request;
  * this is a statement about the hardware. Philips' guidance is that the bridge
  * relays at 25 Hz over Zigbee and the fastest effect rate should therefore stay
- * under 12.5 Hz — past that the change is coalesced away before it reaches a
- * bulb, so emitting it produces no visible benefit and only more strobing.
+ * under 12.5 Hz.
  *
- * Holds the previous value rather than dropping the frame, so the stream stays
- * continuous as the Entertainment API asks; only the *change* is deferred.
+ * A *transition* is a direction reversal of at least [FLASH_DELTA], the same
+ * definition [FieldSafety.trackFlash] uses and the one WCAG is written in. That
+ * distinction is the whole point: continuous motion in one direction is a single
+ * transition however many frames it spans, so a ramp passes at full frame rate.
+ *
+ * This previously gated on *samples* instead — it held a channel's last value
+ * until 80 ms had elapsed, then released the whole accumulated delta at once. On
+ * anything faster than about 6 full scale per second, which includes every beat
+ * attack and most of the decay after it, that turned a smooth envelope into a
+ * 12.5 Hz staircase with ≥0.10 risers. It was most visible on single-channel
+ * bulbs; a gradient strip presents several channels whose hold timers land out of
+ * phase, so the eye averaged their staircases into something that read smooth.
+ *
+ * A reversal that arrives too soon holds at the extreme until the interval is
+ * spent, then releases. That release is a step, but a bounded one: everything
+ * upstream is already rate-capped (see `ModeParams.briRiseRate`), so the hold can
+ * only ever accumulate `rate * minInterval` of travel — and it engages at all
+ * only when the content reverses faster than 12.5 Hz, which real music does not.
+ * Colour is never held: chromaticity is slewed in [HueStreamEncoder], and
+ * Philips' guidance is that colour may transition faster than brightness.
  */
 class EffectRateLimiter(maxHz: Float = PHYSICAL_MAX_EFFECT_HZ) {
 
     private val minInterval = 1f / maxHz
-    private val lastChangeAt = HashMap<Int, Float>()
-    private val held = HashMap<Int, Rgb>()
+
+    private class Channel(
+        var level: Float,
+        var dir: Int = 0,
+        var lastExtreme: Float,
+        var lastReversalAt: Float,
+    )
+
+    private val channels = HashMap<Int, Channel>()
     private var t = 0f
 
     fun reset() {
-        lastChangeAt.clear()
-        held.clear()
+        channels.clear()
         t = 0f
     }
 
@@ -304,34 +327,55 @@ class EffectRateLimiter(maxHz: Float = PHYSICAL_MAX_EFFECT_HZ) {
         t += dt
         val out = HashMap<Int, Rgb>(colors.size)
         for ((cid, c) in colors) {
-            val prev = held[cid]
-            if (prev == null) {
-                held[cid] = c
-                lastChangeAt[cid] = t
+            val level = levelOf(c)
+            val ch = channels[cid]
+            if (ch == null) {
+                channels[cid] = Channel(level = level, lastExtreme = level, lastReversalAt = t)
                 out[cid] = c
                 continue
             }
-            val since = t - (lastChangeAt[cid] ?: 0f)
-            if (!perceptible(prev, c) || since >= minInterval) {
-                // Either nothing worth calling a change, or enough time has
-                // passed that the bridge can actually deliver one.
-                if (perceptible(prev, c)) lastChangeAt[cid] = t
-                held[cid] = c
-                out[cid] = c
-            } else {
-                out[cid] = prev
+
+            val delta = level - ch.level
+            val moving = when {
+                delta > DIR_EPS -> 1
+                delta < -DIR_EPS -> -1
+                else -> 0
             }
+
+            if (moving != 0 && ch.dir != 0 && moving != ch.dir) {
+                // `ch.level` is a local extreme, so the swing that just finished
+                // is what counts as a transition — below the threshold it is
+                // dither, not a flash, and must not latch the channel.
+                val swing = abs(ch.level - ch.lastExtreme)
+                if (swing >= FLASH_DELTA && t - ch.lastReversalAt < minInterval) {
+                    // Blocked: hold at the extreme. `dir` and `lastExtreme` are
+                    // deliberately left alone so the channel stays in this
+                    // reversal until the interval is spent — updating them would
+                    // let the held output register as a fresh sub-threshold swing
+                    // and unlatch the gate on the very next frame.
+                    out[cid] = scaleTo(c, ch.level)
+                    continue
+                }
+                if (swing >= FLASH_DELTA) ch.lastReversalAt = t
+                ch.lastExtreme = ch.level
+            }
+
+            if (moving != 0) ch.dir = moving
+            ch.level = level
+            out[cid] = c
         }
         return out
     }
 
     private companion object {
-        /**
-         * What counts as a change worth rate-limiting. Below the WCAG flash
-         * threshold a step is a smooth gradation rather than a transition, and
-         * holding those would visibly quantise fades.
-         */
-        fun perceptible(a: Rgb, b: Rgb): Boolean =
-            abs(max(a.first, max(a.second, a.third)) - max(b.first, max(b.second, b.third))) >= FLASH_DELTA
+        fun levelOf(c: Rgb): Float = max(c.first, max(c.second, c.third))
+
+        /** [c] at a held [level], preserving hue so only brightness is limited. */
+        fun scaleTo(c: Rgb, level: Float): Rgb {
+            val m = levelOf(c)
+            if (m <= 1e-6f) return Rgb(level, level, level)
+            val k = level / m
+            return Rgb(min(1f, c.first * k), min(1f, c.second * k), min(1f, c.third * k))
+        }
     }
 }

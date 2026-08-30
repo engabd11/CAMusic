@@ -4,6 +4,7 @@ import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sin
+import kotlin.test.assertEquals
 import kotlin.test.Test
 import kotlin.test.assertTrue
 
@@ -242,12 +243,70 @@ class EffectRateLimiterTest {
     }
 
     @Test
-    fun `a held frame keeps the previous value rather than going dark`() {
+    fun `a blocked reversal holds near the previous value rather than jumping or going dark`() {
         // The Entertainment API asks for a continuous stream; suppressing a
-        // change must never mean emitting nothing or emitting black.
+        // transition must never mean emitting nothing, emitting black, or
+        // releasing the whole accumulated jump at once.
+        //
+        // Note the first step down is *not* blocked: with no established
+        // direction it is the start of a transition, not a reversal, and one
+        // transition is exactly what the ceiling allows.
         val limiter = EffectRateLimiter()
         limiter.process(mapOf(0 to Rgb(1f, 1f, 1f)), dt)
-        val out = limiter.process(mapOf(0 to Rgb(0f, 0f, 0f)), dt).getValue(0)
-        assertTrue(out.first > 0.9f, "a rate-limited change emitted the new value instead of holding")
+        limiter.process(mapOf(0 to Rgb(0f, 0f, 0f)), dt)
+        val out = limiter.process(mapOf(0 to Rgb(1f, 1f, 1f)), dt).getValue(0)
+        assertTrue(out.first < 0.25f, "a blocked reversal released the whole jump: ${out.first}")
+        assertTrue(out.first >= 0f, "emitted a negative level")
+    }
+
+    @Test
+    fun `a blocked reversal arrives once the interval is spent`() {
+        // Holding is bounded, not permanent: the channel has to catch up with
+        // its input as soon as the ceiling allows, or a fast passage would leave
+        // the room stuck on a stale colour.
+        val limiter = EffectRateLimiter()
+        limiter.process(mapOf(0 to Rgb(1f, 1f, 1f)), dt)
+        limiter.process(mapOf(0 to Rgb(0f, 0f, 0f)), dt)
+        var last = 0f
+        repeat(30) {
+            last = limiter.process(mapOf(0 to Rgb(1f, 1f, 1f)), dt).getValue(0).first
+        }
+        assertTrue(last > 0.9f, "the reversal never arrived, ending at $last")
+    }
+
+    @Test
+    fun `the limiter never amplifies a step its input did not make`() {
+        // The staircase this replaced came from holding a fast *monotone* ramp
+        // and then releasing the accumulated delta. Driven by a rate-capped
+        // input — which is what the engine now produces — the output must never
+        // move further in one frame than the input did.
+        val limiter = EffectRateLimiter()
+        val step = 0.02f
+        var v = 0f
+        var dir = 1
+        var prevOut = 0f
+        repeat(600) { i ->
+            if (i % 37 == 0) dir = -dir
+            v = (v + dir * step).coerceIn(0f, 1f)
+            val out = limiter.process(mapOf(0 to Rgb(v, v, v)), dt).getValue(0).first
+            assertTrue(
+                abs(out - prevOut) <= step + 1e-4f,
+                "output moved ${abs(out - prevOut)} in one frame from an input that moved at most $step",
+            )
+            prevOut = out
+        }
+    }
+
+    @Test
+    fun `sub-threshold dither cannot latch the limiter`() {
+        // A channel wobbling below the flash threshold is a gradation, not a
+        // series of transitions, and must pass through untouched however fast it
+        // alternates — otherwise ordinary noise would gate the whole channel.
+        val limiter = EffectRateLimiter()
+        for (i in 0 until 200) {
+            val v = 0.5f + if (i % 2 == 0) 0.02f else -0.02f
+            val out = limiter.process(mapOf(0 to Rgb(v, v, v)), dt).getValue(0)
+            assertEquals(v, out.first, 1e-4f, "sub-threshold dither was held")
+        }
     }
 }
