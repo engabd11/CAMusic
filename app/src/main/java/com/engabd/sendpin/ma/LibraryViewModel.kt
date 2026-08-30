@@ -2088,24 +2088,24 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             is com.engabd.sendpin.library.JellyfinSource -> JellyfinRadioSource(s.jellyfin)
             else -> null
         }
+        // Harmonic DJ mode needs TrackScanRepository, which only ever has data for
+        // files on this phone — there's no server round trip that could carry BPM/key
+        // compatibility for the generator-backed rungs. It re-ranks *within* whichever
+        // rung/pool answers on either path, offline or online, rather than being an
+        // offline-only concern: a Subsonic/Jellyfin session with a working generator
+        // is exactly as real a "keep the music going" session as an offline one.
+        //
+        // The seed's scan is looked up once, out here: `bonus` is a sort selector,
+        // which Kotlin re-invokes on every comparison rather than once per element,
+        // and what is playing does not change between two of them. A null seed scan
+        // means there is nothing to be compatible *with*, so the whole bonus drops
+        // out and the ranking is the plain genre/artist (or generator-order) one.
+        val seedScan = if (settings.djMode.first()) playing?.let { trackScans.peek(it) } else null
+        val bonus: (MaItem) -> Int = if (seedScan == null) ({ 0 }) else djBonus(seedScan)
         val picked = if (_offline.value || generator == null) {
-            // Harmonic DJ mode only applies here: it needs TrackScanRepository, which
-            // only ever has data for files on this phone, and there's no server round
-            // trip that could carry BPM/key compatibility. `radio.next`'s server-backed
-            // rungs below stay untouched.
-            //
-            // The seed's scan is looked up once, out here: `bonus` is a sort selector,
-            // which Kotlin re-invokes on every comparison rather than once per element,
-            // and what is playing does not change between two of them. A null seed scan
-            // means there is nothing to be compatible *with*, so the whole bonus drops
-            // out and the ranking is the plain genre/artist one.
-            val seedScan = if (settings.djMode.first()) playing?.let { trackScans.peek(it) } else null
-            radio.offline(
-                downloads.value.map { downloadItem(it) }, seed, RADIO_BATCH, exclude,
-                bonus = if (seedScan == null) ({ 0 }) else djBonus(seedScan),
-            )
+            radio.offline(downloads.value.map { downloadItem(it) }, seed, RADIO_BATCH, exclude, bonus = bonus)
         } else {
-            radio.next(generator, seed, RADIO_BATCH, exclude)
+            radio.next(generator, seed, RADIO_BATCH, exclude, bonus = bonus)
         }
         if (picked.isEmpty()) return
         rememberSeeds(picked)

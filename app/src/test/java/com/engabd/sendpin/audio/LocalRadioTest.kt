@@ -136,6 +136,26 @@ class LocalRadioTest {
         assertEquals(listOf("a", "b"), picked.map { it.itemId })
     }
 
+    @Test
+    fun `a bonus re-ranks within the winning rung, not across rungs`() = runBlocking {
+        // Harmonic DJ mode's online widening: the bonus favours "c" within the rung
+        // that actually answered, but must never pull a weaker rung ahead of it.
+        val source = FakeSource(similarTrack = listOf(track("a"), track("b"), track("c")))
+        val picked = LocalRadio().next(
+            source, seed = track("seed"), count = 2,
+            bonus = { if (it.itemId == "c") 5 else 0 },
+        )
+        assertEquals(listOf("c", "a"), picked.map { it.itemId })
+        assertEquals(listOf("similarTrack"), source.asked)
+    }
+
+    @Test
+    fun `a default bonus leaves ordering exactly as before`() = runBlocking {
+        val source = FakeSource(similarTrack = listOf(track("a"), track("b"), track("c")))
+        val picked = LocalRadio().next(source, seed = track("seed"), count = 5)
+        assertEquals(listOf("a", "b", "c"), picked.map { it.itemId })
+    }
+
     // ─── Offline ─────────────────────────────────────────────────────────────
 
     @Test
