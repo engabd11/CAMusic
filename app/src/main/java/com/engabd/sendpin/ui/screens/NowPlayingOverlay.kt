@@ -581,13 +581,28 @@ fun MiniPlayerBar(
                     // would be movement the listener never asked to look at.
                     modifier = Modifier.titleMarquee(),
                 )
-                // Falls back to the player name so an idle bar still says *where*.
-                val sub = if (st.blank) st.playerName else st.artist
+                // Leads with the speaker/player name — the same thing the full player
+                // pins at the top of the cover — so a minimised bar still says *where*
+                // this is playing, not just *what*. It comes first and the artist
+                // trails after a separator: with one line to work with, ellipsis eats
+                // the artist before it ever reaches the speaker name, which is the
+                // half of this line you can't get anywhere else on a collapsed player.
+                val speakerLabel = if (st.groupSize > 1) "${st.playerName} (${st.groupSize})" else st.playerName
+                val sub = when {
+                    st.blank || st.artist.isBlank() -> speakerLabel
+                    else -> "$speakerLabel · ${st.artist}"
+                }
                 if (sub.isNotBlank()) {
-                    Text(
-                        sub, color = TextMuted, fontFamily = AppFont,
-                        fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Icon(
+                            if (st.isSelf) Icons.Default.Smartphone else Icons.Default.Speaker, null,
+                            tint = TextMuted, modifier = Modifier.size(11.dp),
+                        )
+                        Text(
+                            sub, color = TextMuted, fontFamily = AppFont,
+                            fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
             }
 
