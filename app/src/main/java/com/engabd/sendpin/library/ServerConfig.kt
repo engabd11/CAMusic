@@ -54,18 +54,21 @@ enum class ServerKind(
         supported = true,
         urlHint = "http://192.168.0.10:8096",
     ),
-
-    // ── Planned. Listed so the roadmap is visible where it is asked about. ──
     EMBY(
         "Emby",
         "Jellyfin's ancestor, with a near-identical API and its own auth header.",
+        supported = true,
         urlHint = "http://192.168.0.10:8096",
     ),
     PLEX(
         "Plex",
         "Needs the plex.tv PIN sign-in rather than a server password.",
+        supported = true,
+        urlHint = "http://192.168.0.10:32400",
         auth = AuthStyle.LINKED_ACCOUNT,
     ),
+
+    // ── Planned. Listed so the roadmap is visible where it is asked about. ──
     AUDIOBOOKSHELF(
         "Audiobookshelf",
         "Audiobooks and podcasts, with a music library alongside them.",
@@ -219,10 +222,10 @@ data class ServerConfig(
         /** This phone's latency trim against that server's clock, in milliseconds. */
         const val OPT_STATIC_DELAY_MS = "staticDelayMs"
 
-        /** Jellyfin: the authenticated user's id, needed on most of its endpoints. */
+        /** Jellyfin/Emby: the authenticated user's id, needed on most of its endpoints. */
         const val OPT_USER_ID = "userId"
 
-        /** Jellyfin: which of the server's libraries to browse. */
+        /** Jellyfin/Emby: which of the server's libraries to browse. Plex: the music section's key. */
         const val OPT_LIBRARY_ID = "libraryId"
     }
 }

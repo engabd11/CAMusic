@@ -26,7 +26,7 @@ Three apps' worth of function in one, all talking to servers you run yourself.
 
 | | |
 |---|---|
-| 🎵 **A player** | Navidrome, Jellyfin, Subsonic and local files. Gapless, bit-perfect, ReplayGain, offline downloads. |
+| 🎵 **A player** | Navidrome, Subsonic, Jellyfin, Emby, Plex and local files. Gapless, bit-perfect, ReplayGain, offline downloads. |
 | 🔊 **A speaker** | A full Music Assistant player over the Sendspin protocol, clock-synced for multi-room. |
 | 💡 **A light show** | Philips Hue Entertainment, straight to the bridge at 60 Hz, reacting to what is playing. |
 | ✨ **An atmosphere** | Scripted ambience effects with their own synthesised sound — no music required. |
@@ -49,8 +49,13 @@ Point it at a server you already run. Nothing leaves your network.
 |---|:---:|:---:|:---:|:---:|
 | **Navidrome / Subsonic** | ✅ | ✅ | ✅ | ✅ |
 | **Jellyfin** | ✅ | ✅ | ✅ | ✅ |
+| **Emby** | ✅ | ✅ | ✅ | ✅ |
+| **Plex** | ✅ | ✅ | ✅ | ✅ |
 | **Music Assistant** | ✅ | ✅ | — | ✅ |
 | **On-device files** | ✅ | ✅ | n/a | — |
+
+Plex signs in with a plex.tv PIN rather than a password typed into the app — tap
+"Sign in with Plex" and finish it in the browser.
 
 Artists, albums, playlists, radio, podcasts and audiobooks. Search across everything.
 Multi-disc albums group properly, liner notes and biographies show where the server has

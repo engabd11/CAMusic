@@ -33,7 +33,10 @@ import com.engabd.sendpin.ui.design.a
 import com.engabd.sendpin.ui.design.SegmentedToggle
 import com.engabd.sendpin.ui.design.TitleGap
 import com.engabd.sendpin.ui.theme.*
+import com.engabd.sendpin.discovery.PlayerIdentity
+import com.engabd.sendpin.plex.PlexAuth
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import android.content.ContentResolver
@@ -387,7 +390,13 @@ private fun ServerDetail(
             url = url.trim(),
             username = user,
             password = pass,
-            token = if (credentialsChanged && config.kind.auth != AuthStyle.TOKEN) "" else token,
+            // Only USER_PASSWORD/OPTIONAL_USER_PASSWORD tokens are *derived* from the
+            // address and login — a TOKEN is pasted in directly, and a LINKED_ACCOUNT
+            // one (Plex) comes from plex.tv and has nothing to do with which server
+            // address it is pointed at, so an address change must not drop either.
+            token = if (credentialsChanged &&
+                (config.kind.auth == AuthStyle.USER_PASSWORD || config.kind.auth == AuthStyle.OPTIONAL_USER_PASSWORD)
+            ) "" else token,
             // The folder list stays. It used to be dropped here unconditionally, and
             // only the picker path survived that by passing `customOptions` — so every
             // *other* save of a local library silently wiped the chosen folder.
@@ -433,6 +442,9 @@ private fun ServerDetail(
                 }
                 AuthStyle.TOKEN ->
                     SecretField(token, { token = it }, "Access token", accent, secretVisible, { secretVisible = it })
+                AuthStyle.LINKED_ACCOUNT -> if (config.kind == ServerKind.PLEX) {
+                    PlexSignInRow(hasToken = token.isNotBlank(), onToken = { token = it }, accent = accent, scope = scope)
+                }
                 else -> Unit
             }
 
@@ -474,7 +486,8 @@ private fun ServerDetail(
                         isNew -> "Save & connect"
                         else -> "Save & reconnect"
                     },
-                    enabled = url.isNotBlank() && !(connecting && isActive),
+                    enabled = url.isNotBlank() && !(connecting && isActive) &&
+                        (config.kind.auth != AuthStyle.LINKED_ACCOUNT || token.isNotBlank()),
                     accent = accent,
                 ) {
                     scope.launch {
@@ -787,6 +800,75 @@ private fun LocalFolderCard(
         }
         Note("The scan runs when you save. Music is found by its tags, so a flat folder still browses by artist and album.")
     }
+}
+
+/**
+ * The Plex PIN sign-in, done in place of a password field.
+ *
+ * `AuthStyle.LINKED_ACCOUNT` has no fields of its own to render — there is no
+ * password this app is allowed to see — so this is what fills that space instead: a
+ * button that mints a PIN, opens plex.tv in the browser with it pre-filled, and polls
+ * [PlexAuth] until the user finishes signing in there or gives up. See [PlexAuth]'s
+ * own docs for why this is a whole flow rather than a token exchange like Jellyfin's.
+ */
+@Composable
+private fun PlexSignInRow(
+    hasToken: Boolean,
+    onToken: (String) -> Unit,
+    accent: Color,
+    scope: CoroutineScope,
+) {
+    val context = LocalContext.current
+    var working by remember { mutableStateOf(false) }
+    var status by remember { mutableStateOf<String?>(null) }
+
+    OledButton(
+        when {
+            working -> "Waiting for plex.tv…"
+            hasToken -> "Signed in — sign in again"
+            else -> "Sign in with Plex"
+        },
+        enabled = !working,
+        accent = accent,
+    ) {
+        working = true
+        status = null
+        scope.launch {
+            val clientId = PlayerIdentity.getPlayerId(context)
+            try {
+                val pin = PlexAuth.requestPin(clientId)
+                context.startActivity(
+                    Intent(Intent.ACTION_VIEW, Uri.parse(PlexAuth.authUrl(pin, clientId)))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+                var token: String? = null
+                var attempts = 0
+                // Plex's own apps poll every couple of seconds; ten minutes covers a
+                // slow browser round trip without polling for ever if the tab is
+                // abandoned.
+                while (token == null && attempts < 300) {
+                    delay(2000)
+                    token = PlexAuth.pollPin(pin, clientId)
+                    attempts++
+                }
+                val signedIn = token
+                if (signedIn != null) {
+                    onToken(signedIn)
+                    status = "Signed in. Save & connect below to finish."
+                } else {
+                    status = "Timed out waiting for plex.tv. Try again."
+                }
+            } catch (e: Exception) {
+                status = e.message ?: "Couldn't reach plex.tv"
+            } finally {
+                working = false
+            }
+        }
+    }
+    Note(
+        status ?: if (hasToken) "Signed in. Sign in again if playback ever stops working."
+        else "Opens plex.tv in your browser to sign in, then comes back here on its own.",
+    )
 }
 
 private fun kindIcon(kind: ServerKind): ImageVector = when (kind) {
