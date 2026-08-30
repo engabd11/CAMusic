@@ -134,7 +134,7 @@ class SubsonicClient(
          */
         private val shared: OkHttpClient get() = Http.base
 
-        private const val CLIENT = "sendpin"
+        private const val CLIENT = "CAMusic"
         private const val API_VERSION = "1.16.1"
         private const val HEX = "0123456789abcdef"
 

@@ -43,8 +43,8 @@ class MessagesTest {
         // so sending Build.MODEL here is what made every rename read back as the
         // phone's model. Both reference clients send a constant; so do we.
         val info = com.engabd.sendpin.discovery.PlayerIdentity.getDeviceInfo()
-        assertEquals("Sendpin", info.productName)
-        assertEquals("Sendpin", info.manufacturer)
+        assertEquals("CAMusic", info.productName)
+        assertEquals("CAMusic", info.manufacturer)
     }
 
     @Test
