@@ -20,6 +20,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -410,7 +412,15 @@ private fun DirectLightSyncScreen(onBack: () -> Unit, onOpenEffects: () -> Unit 
     // the beat" over a room full of idle lamps.
     val framesFresh by direct.framesFresh.collectAsStateWithLifecycle()
     val scanState by app.scanFrameSource.state.collectAsStateWithLifecycle()
-    val feed by remember { derivedStateOf { app.activeLightSyncSource.value.feed } }
+    // Collected, not read through `derivedStateOf`. That form reads a StateFlow's
+    // `.value`, which is not snapshot state, so the derivation had no dependencies to
+    // invalidate on: it computed the feed once on first composition and never again.
+    // Open the screen before starting anything and it stayed on LOCAL_PCM for the rest
+    // of the visit, so a Music Assistant queue on a remote speaker — the one case the
+    // whole SCAN_REMOTE path exists for — was reported through the local player's
+    // branch of [ShowStatusRules] and never said what it was actually doing.
+    val feedFlow = remember(app) { app.activeLightSyncSource.map { it.feed }.distinctUntilChanged() }
+    val feed by feedFlow.collectAsStateWithLifecycle(app.activeLightSyncSource.value.feed)
     val maNow by app.maNowPlaying.now.collectAsStateWithLifecycle()
     val remoteSpeaker = maNow?.takeIf { !it.isSelf }?.playerName
     val enabled by settings.lightSyncEnabled.collectAsState(initial = false)

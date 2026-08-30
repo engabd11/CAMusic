@@ -255,4 +255,54 @@ class AudioAnalysisTapTest {
             tap.setActive(false)
         }
     }
+
+    /**
+     * The consumer's own clock, which is what makes a bursty producer harmless.
+     *
+     * [AudioAnalysisTap.analyseExternal]'s caller is
+     * [com.engabd.sendpin.audio.SendspinNativeEngine]'s producer thread, which fills
+     * its native ring as fast as the decoder will go and only paces itself once the
+     * ring is at target — so every `stream/start`, and Music Assistant sends one
+     * between every track, dumps seconds of audio in one go. The loop used to drain
+     * that flat out, which handed [com.engabd.sendpin.hue.DirectLightSync]'s 60 Hz
+     * render loop a hundred-odd frames it could only sample two or three of, and then
+     * nothing at all until the next chunk.
+     *
+     * Three seconds in one write is well past anything the local path can produce, so
+     * this is the MA case exactly.
+     */
+    @Test
+    fun `a burst is analysed at the rate it plays, not the rate it arrives`() {
+        val tap = AudioAnalysisTap()
+        val frames = AtomicInteger()
+        tap.onFrame = { frames.incrementAndGet() }
+        tap.setActive(true)
+        try {
+            val seconds = 3.0
+            val burst = pcm16(48_000, 2, seconds)
+            val expected = (expectedFramesPerSecond * seconds).roundToInt()  // 150
+            tap.analyseExternal(burst, 48_000, 2, C.ENCODING_PCM_16BIT, 0L)
+
+            // A quarter of a second in. Unpaced, all 150 are already through; paced,
+            // the catch-up ceiling puts the most that can have been read at ~50. The
+            // bound is deliberately slack in between — this asserts that the loop is
+            // rate-limited at all, not what the servo's constants happen to be.
+            Thread.sleep(250)
+            val early = frames.get()
+            assertTrue(early > 0, "nothing was analysed at all")
+            assertTrue(early < expected * 2 / 3, "the whole burst was drained at once ($early of $expected in 250ms)")
+
+            // And it all arrives: catching up is done by running faster, never by
+            // skipping hops. The analyzer's tAudio is its own sample counter, so a
+            // dropped hop would slide the beat grid away from the track.
+            val got = settle(frames)
+            assertEquals(0L, tap.droppedSamples, "the ring overran, so the count below is meaningless")
+            assertTrue(
+                abs(got - expected) <= 2,
+                "got $got analysis frames from a ${seconds}s burst, expected ~$expected",
+            )
+        } finally {
+            tap.setActive(false)
+        }
+    }
 }
