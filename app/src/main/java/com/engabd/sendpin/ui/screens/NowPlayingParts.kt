@@ -307,6 +307,15 @@ fun TrackTitleBlock(state: NowPlayingViewModel.State, showComposer: Boolean = tr
 
 // ── Everything drawn over the player ──────────────────────────────────────
 
+/**
+ * What the cover's own slot is showing — the sleeve, the lyrics, or the live
+ * visualizer. All three take the slot's *place* rather than sitting over it, the
+ * same way [PlayerSheetState] governs what sits over the rest of the player.
+ * Shared between the tab and overlay layouts so a mode chosen in one reads the
+ * same in the other.
+ */
+enum class CoverSlot { ART, LYRICS, VISUALIZER }
+
 /** Which sheet is up, if any. Hoisted so the gesture handlers can stand down. */
 @Stable
 class PlayerSheetState {
