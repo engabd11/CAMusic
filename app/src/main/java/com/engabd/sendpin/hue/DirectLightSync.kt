@@ -1266,7 +1266,7 @@ class DirectLightSync(
             val colours = try {
                 if (isIdle) {
                     updateIdle(dt)
-                    eng.renderIdleShow(idleT, idleIntensity())
+                    eng.renderIdleShow(idleT, dt, idleIntensity())
                 } else {
                     idleStartS = -1f
                     idleT = 0f

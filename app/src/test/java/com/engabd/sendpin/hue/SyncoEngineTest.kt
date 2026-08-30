@@ -241,7 +241,7 @@ class SyncoEngineTest {
     @Test
     fun `idle show renders every channel inside unit range`() {
         val engine = SyncoEngine(channels()).apply { setScheme(ColorScheme.SUNSET) }
-        val frames = (0..300).map { engine.renderIdleShow(it * 0.05f, intensity = 1f) }
+        val frames = (0..300).map { engine.renderIdleShow(it * 0.05f, 0.05f, intensity = 1f) }
         for (out in frames) {
             assertEquals(5, out.size)
             for ((r, g, b) in out.values) {
@@ -369,6 +369,34 @@ class SyncoEngineTest {
         val once = frameDecay(0.8f, dt * 2f)
         val twice = frameDecay(0.8f, dt) * frameDecay(0.8f, dt)
         assertEquals(twice, once, 1e-6f, "a 2-frame decay did not compose")
+    }
+
+    @Test
+    fun `resuming from the idle show does not flash the room`() {
+        // The brightness slew clamps each frame against the last one this engine
+        // emitted. The idle show renders straight to the output, so if it does not
+        // also record what it emitted, the first frame back on the music path
+        // clamps against a value from before the pause — and the room jumps to
+        // roughly that instead of continuing from what is actually lit.
+        val dt = 1f / 60f
+        val eng = SyncoEngine(channels()).apply { mode = SyncMode.SUBTLE }
+
+        // Play loudly enough to leave the emitted brightness high.
+        var lastMusic = 0f
+        repeat(120) { i -> lastMusic = fieldOf(eng.render(frame(i, beat = i % 20 == 0), dt)) }
+
+        // Pause: the idle show takes the room somewhere much dimmer.
+        var idle = 0f
+        repeat(120) { i -> idle = fieldOf(eng.renderIdleShow(i * dt, dt, 0.05f)) }
+
+        // Resume on a quiet passage.
+        val firstBack = fieldOf(eng.render(AnalysisFrame(), dt))
+
+        assertTrue(
+            firstBack <= idle + 0.10f,
+            "resuming jumped from the idle level $idle to $firstBack " +
+                "(the room was at $lastMusic before the pause)",
+        )
     }
 }
 

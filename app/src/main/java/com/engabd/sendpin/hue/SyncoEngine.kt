@@ -1941,11 +1941,12 @@ class SyncoEngine(
      * seconds; [intensity] (0..1) fades the movement in, so at 0 this matches
      * [renderIdle] and at 1 the full wandering show is active.
      */
-    fun renderIdleShow(t: Float, intensity: Float = 1f): Map<Int, Rgb> {
+    fun renderIdleShow(t: Float, dt: Float, intensity: Float = 1f): Map<Int, Rgb> {
         predrop = 0f
         predropCommit = false
         predropStreak = 0
         predropReleased = 0f
+        val p = params
         val inten = intensity.coerceIn(0f, 1f)
         val base = 0.22f
         val amp = 0.30f * inten
@@ -1960,7 +1961,20 @@ class SyncoEngine(
             val w1 = 0.5f + 0.5f * sin(2f * PI.toFloat() * (info.pos.x * 0.9f - t * 0.10f))
             val w2 = 0.5f + 0.5f * sin(2f * PI.toFloat() * (info.pos.z * 0.7f + t * 0.06f) + 1.7f)
             val wave = 0.6f * w1 + 0.4f * w2
-            val d = brightness * (base + amp * wave) * breath * (0.5f + 0.5f * m)
+            // Rate-limited and recorded exactly as the music path does, because
+            // `emitB` means "what this engine last put on the wire" and the slew
+            // clamps the next frame against it. Rendering straight to the output
+            // here left that memory holding a value from before the pause, so the
+            // first frame back on the music path clamped against *that* and the
+            // room flashed to roughly its pre-pause brightness before sliding
+            // down. It also makes dropping into the idle show a fade rather than
+            // a step.
+            val prevEmit = emitB[cid] ?: 0f
+            val level = ((base + amp * wave) * breath * (0.5f + 0.5f * m))
+                .coerceIn(prevEmit - p.briFallRate * dt, prevEmit + p.briRiseRate * dt)
+                .coerceIn(0f, 1f)
+            emitB[cid] = level
+            val d = brightness * level
             val (nr, ng, nb) = nc
             out[cid] = Triple(nr * d, ng * d, nb * d)
         }
