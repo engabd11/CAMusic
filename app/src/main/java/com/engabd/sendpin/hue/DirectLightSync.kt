@@ -735,7 +735,6 @@ class DirectLightSync(
                 // and no amount of watching the lights distinguishes the two.
                 Log.i(TAG, "Entertainment area geometry: ${it.roomSummary}")
                 it.mode = SyncMode.fromWire(settings.lightSyncIntensity.first())
-                it.effect = SyncEffect.fromWire(settings.lightSyncEffect.first())
                 it.setScheme(ColorScheme.fromWire(settings.lightSyncColor.first()))
                 it.brightness = settings.lightSyncBrightness.first() / 100f
                 // Not via applyBrightness: the [engine] field is not assigned
@@ -1825,9 +1824,6 @@ class DirectLightSync(
                     selectLimiter(mode)
                 }
             }
-        }
-        scope.launch {
-            settings.lightSyncEffect.collect { wire -> engine?.effect = SyncEffect.fromWire(wire) }
         }
         scope.launch {
             settings.hueBridgeId.collect { pairedBridgeId = it }

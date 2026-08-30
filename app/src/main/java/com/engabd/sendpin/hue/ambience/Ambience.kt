@@ -23,14 +23,18 @@ import kotlin.math.ln
  * skip to another effect — the relationship holds, because neither medium stores a copy
  * of anything.
  *
- * This is deliberately *not* [com.engabd.sendpin.hue.SyncEffect]. That enum is "how the
- * engine renders music", and its own UI says the tiles can only offer what the engine
- * renders. Ambience has a different clock, no music, and sound of its own.
+ * This is deliberately not the same thing as the main reactive engine's music-driven
+ * render: that engine has one clock — the analysis frame — and nothing to say when
+ * there is no music. Ambience has its own clock, no music, and sound of its own.
  */
 enum class AmbienceEffect(val wire: String, val title: String, val blurb: String) {
     FIREWORKS(
         "fireworks", "Fireworks",
         "Shells climb, burst overhead and crackle away into the dark.",
+    ),
+    FIREWORKS_2(
+        "fireworks_2", "Fireworks II",
+        "A second show for the same sky — different shells, same dark.",
     ),
     THUNDERSTORM(
         "thunderstorm", "Thunderstorm",

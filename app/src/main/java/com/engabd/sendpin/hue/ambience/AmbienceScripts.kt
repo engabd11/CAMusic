@@ -15,7 +15,8 @@ import com.engabd.sendpin.hue.ambience.scripts.UnderwaterScript
  * resume it mid-storm.
  */
 fun scriptFor(effect: AmbienceEffect): AmbienceScript = when (effect) {
-    AmbienceEffect.FIREWORKS -> FireworksAmbienceScript()
+    AmbienceEffect.FIREWORKS -> FireworksAmbienceScript(AmbienceEffect.FIREWORKS)
+    AmbienceEffect.FIREWORKS_2 -> FireworksAmbienceScript(AmbienceEffect.FIREWORKS_2)
     AmbienceEffect.THUNDERSTORM -> ThunderstormScript()
     AmbienceEffect.UNDERWATER -> UnderwaterScript()
     AmbienceEffect.FIREPLACE -> FireplaceScript()

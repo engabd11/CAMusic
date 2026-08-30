@@ -242,6 +242,16 @@ class SendpinApp : Application(), ImageLoaderFactory {
      * selected (or no bridge is configured), this stays idle and the existing
      * HA-based path handles Light Sync.
      */
+    /**
+     * Who turned the master Light Sync switch on for a running ambience show, if
+     * anyone — see [com.engabd.sendpin.hue.ambience.AmbienceSyncOwnership]. Lives
+     * here, not on `EffectsViewModel`, because `LightSyncScreen`'s own master-switch
+     * handler needs to read and update it too, and both are already process-scoped
+     * consumers of this class.
+     */
+    val ambienceSyncOwnership =
+        MutableStateFlow(com.engabd.sendpin.hue.ambience.AmbienceSyncOwnership.NONE)
+
     val directLightSync: com.engabd.sendpin.hue.DirectLightSync by lazy {
         com.engabd.sendpin.hue.DirectLightSync(
             this,

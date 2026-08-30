@@ -160,7 +160,7 @@ fun EffectsScreen(onBack: () -> Unit, viewModel: EffectsViewModel) {
                                     fontWeight = FontWeight.SemiBold)
                                 Spacer(Modifier.height(8.dp))
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Pill("Synth", soundMode == "synth") { viewModel.setSoundMode("synth") }
+                                    Pill("Default", soundMode == "synth") { viewModel.setSoundMode("synth") }
                                     Pill("My clip", soundMode == "clip") { viewModel.setSoundMode("clip") }
                                     Pill("Off", soundMode == "off") { viewModel.setSoundMode("off") }
                                 }
@@ -329,7 +329,7 @@ private fun LabeledSliderRow(
 }
 
 private fun ambienceIcon(e: AmbienceEffect): ImageVector = when (e) {
-    AmbienceEffect.FIREWORKS -> Icons.Default.Celebration
+    AmbienceEffect.FIREWORKS, AmbienceEffect.FIREWORKS_2 -> Icons.Default.Celebration
     AmbienceEffect.THUNDERSTORM -> Icons.Default.Thunderstorm
     AmbienceEffect.UNDERWATER -> Icons.Default.Water
     AmbienceEffect.FIREPLACE -> Icons.Default.LocalFireDepartment

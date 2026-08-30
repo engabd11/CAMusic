@@ -33,9 +33,9 @@ import kotlin.math.sin
  * burst, the audio side starts whistling `LAUNCH_S` earlier — and because both read the
  * same `startS`, the whistle always ends exactly when the sky lights up.
  */
-class FireworksAmbienceScript : AmbienceScript {
-
-    override val effect = AmbienceEffect.FIREWORKS
+class FireworksAmbienceScript(
+    override val effect: AmbienceEffect = AmbienceEffect.FIREWORKS,
+) : AmbienceScript {
 
     private lateinit var room: RoomModel
     @Volatile private var params = AmbienceParams()

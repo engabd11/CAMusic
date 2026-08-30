@@ -315,7 +315,6 @@ class SyncoEngine(
             params = withTunables(baseParams)
             updateRoles()
         }
-    var effect: SyncEffect = SyncEffect.MUSIC
     var brightness: Float = 1.0f
         set(value) { field = value.coerceIn(0f, 1f) }
     var time: Float = 0.0f
@@ -822,9 +821,6 @@ class SyncoEngine(
 
     // ── Accessors for the alternate renderers ─────────────────────────────
 
-    /** Fireworks owns its own burst state and decay, so it renders separately. */
-    private val fireworks = FireworksEffect()
-
     /**
      * Each lamp's `(xrank, height)` — the two axes Fireworks places bursts on.
      * Exposed rather than handing over the whole channel map, so the effect
@@ -1122,10 +1118,9 @@ class SyncoEngine(
         // used to live and why the music path had no pop at all.
         updateMelTransient(frame)
 
-        // Effect and rung both choose a renderer. Fireworks replaces the whole
-        // path; Extreme is a different renderer rather than a louder music one,
-        // which is why `graphReactive` exists as a flag on the params.
-        if (effect == SyncEffect.FIREWORKS) return fireworks.render(this, frame, dt, p)
+        // The rung chooses a renderer. Extreme is a different renderer rather than
+        // a louder music one, which is why `graphReactive` exists as a flag on the
+        // params.
         if (p.graphReactive) return renderExtreme(frame, dt)
 
         val musicGate = if (SILENCE_GATE > 0f) min(1f, loud / SILENCE_GATE) else 1f

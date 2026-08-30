@@ -21,19 +21,6 @@ enum class SyncMode(val wire: String) {
     companion object { fun fromWire(s: String?) = entries.firstOrNull { it.wire == s } ?: HIGH }
 }
 
-/**
- * Effects the direct engine renders.
- *
- * No Movies. syncoV2 offers it, but the direct path is a music player driving a
- * Hue bridge — there is no video for a calm, brightness-follows-the-soundtrack
- * mode to accompany. A stored `"movies"` value from the Home Assistant path
- * falls back to Music rather than selecting something that does nothing.
- */
-enum class SyncEffect(val wire: String) {
-    MUSIC("music"), FIREWORKS("fireworks");
-    companion object { fun fromWire(s: String?) = entries.firstOrNull { it.wire == s } ?: MUSIC }
-}
-
 enum class ColorScheme(val wire: String) {
     /**
      * Derived from what is playing rather than fixed. These render the static

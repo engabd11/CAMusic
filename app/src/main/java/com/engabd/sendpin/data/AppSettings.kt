@@ -150,7 +150,6 @@ class AppSettings(private val context: Context) {
         private val LIGHT_SYNC_INTENSITY = stringPreferencesKey("light_sync_intensity") // auto|subtle|medium|high|intense|extreme
         /** Rungs Auto may choose between, comma-separated wire keys. */
         private val LIGHT_SYNC_AUTO_LEVELS = stringPreferencesKey("light_sync_auto_levels")
-        private val LIGHT_SYNC_EFFECT = stringPreferencesKey("light_sync_effect") // music|movies|fireworks
         private val LIGHT_SYNC_COLOR = stringPreferencesKey("light_sync_color") // colour scheme wire key
         private val LIGHT_SYNC_BRIGHTNESS = stringPreferencesKey("light_sync_brightness") // 5..100
 
@@ -1113,9 +1112,6 @@ class AppSettings(private val context: Context) {
     /** Intensity mode: subtle / medium / high / intense / extreme. */
     val lightSyncIntensity: Flow<String> = context.dataStore.data.map { it[LIGHT_SYNC_INTENSITY] ?: "high" }
 
-    /** Effect: music / movies / fireworks. */
-    val lightSyncEffect: Flow<String> = context.dataStore.data.map { it[LIGHT_SYNC_EFFECT] ?: "music" }
-
     /** Colour scheme wire key. */
     val lightSyncColor: Flow<String> = context.dataStore.data.map { it[LIGHT_SYNC_COLOR] ?: "album_art_v2" }
 
@@ -1405,10 +1401,6 @@ class AppSettings(private val context: Context) {
 
     suspend fun setLightSyncIntensity(intensity: String) {
         context.dataStore.edit { it[LIGHT_SYNC_INTENSITY] = intensity }
-    }
-
-    suspend fun setLightSyncEffect(effect: String) {
-        context.dataStore.edit { it[LIGHT_SYNC_EFFECT] = effect }
     }
 
     suspend fun setEffectsLast(wire: String) {

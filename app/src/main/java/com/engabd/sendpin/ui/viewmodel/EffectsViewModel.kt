@@ -2,12 +2,16 @@ package com.engabd.sendpin.ui.viewmodel
 
 import android.app.Application
 import android.content.Intent
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.data.AppSettings
+import com.engabd.sendpin.hue.ambience.AmbienceAssets
+import com.engabd.sendpin.hue.ambience.AmbienceClipPlayer
 import com.engabd.sendpin.hue.ambience.AmbienceEffect
 import com.engabd.sendpin.hue.ambience.AmbienceParams
+import com.engabd.sendpin.hue.ambience.AmbienceSyncOwnership
 import com.engabd.sendpin.hue.ambience.AudioFocusGate
 import com.engabd.sendpin.hue.ambience.AudioTrackSink
 import com.engabd.sendpin.service.EffectsService
@@ -57,10 +61,112 @@ class EffectsViewModel(app: Application) : AndroidViewModel(app) {
     val remainingS: StateFlow<Int?> = _remainingS
 
     private var sleepJob: Job? = null
-    private var sink: AudioTrackSink? = null
+
+    /** Whichever backend is making the show's sound, or null in "Off". */
+    private sealed class ActiveAudio {
+        class Synth(val sink: AudioTrackSink) : ActiveAudio()
+        class Clip(val player: AmbienceClipPlayer) : ActiveAudio()
+    }
+    private var active: ActiveAudio? = null
+
+    /**
+     * >0 for the whole duration of any [start] or [stop] call this view model is
+     * running, so the [running] observer below can tell "this view model is doing
+     * that itself" from "the show ended some other way" — the master Light Sync
+     * switch turned off directly, or the bridge session died.
+     *
+     * Needed because `DirectLightSync.startAmbience` always calls `stopAmbience`
+     * first, even to switch straight to a different effect or restart for a sound
+     * change — so `running` genuinely passes through null on every ordinary
+     * [start], not just on [stop]. A depth counter, not a bool, so two overlapping
+     * calls (a rapid effect switch) can't have the first call's cleanup clear a
+     * guard the second call still needs.
+     */
+    private var mutatingSelfDepth = 0
+
+    init {
+        // A show can end without ever calling stop() on this view model: turning
+        // the master switch off directly tears down the bridge session, which
+        // tears down any ambience show riding on it too (see DirectLightSync.stop).
+        // Without this, that path left this view model's own audio backend and
+        // foreground-service notification orphaned — the lights went dark but the
+        // sound kept playing and the "stop" affordance stayed up for a show that
+        // had already ended.
+        viewModelScope.launch {
+            var previous = running.value
+            running.collect { current ->
+                if (previous != null && current == null && mutatingSelfDepth == 0) {
+                    active?.release(); active = null
+                    EffectsService.onStopRequested = null
+                    EffectsService.stop(getApplication())
+                    (getApplication<Application>() as SendpinApp).ambienceSyncOwnership.value =
+                        AmbienceSyncOwnership.NONE
+                }
+                previous = current
+            }
+        }
+    }
+
+    private fun ActiveAudio.release() = when (this) {
+        is ActiveAudio.Synth -> sink.release()
+        is ActiveAudio.Clip -> player.release()
+    }
+
+    private fun setActiveVolume(v: Float) = when (val a = active) {
+        is ActiveAudio.Synth -> a.sink.setVolume(v)
+        is ActiveAudio.Clip -> a.player.setVolume(v)
+        null -> {}
+    }
 
     fun intensityOf(effect: AmbienceEffect): Float =
         intensities.value[effect.wire] ?: 0.5f
+
+    /**
+     * The sound backend for [effect] given the current `effectsSoundMode`, or null for
+     * a silent show ("Off", or a failed clip/synth with nothing left to fall back to).
+     *
+     * "My Clip" plays the user's own file as a bed with no further fallback beyond the
+     * synthesised sound — the effect's script drives the lights either way, never the
+     * file (see the copy in `EffectsScreen`). "Default" prefers a bundled real-recording
+     * bed for [effect] when one ships as an app asset, and otherwise plays exactly the
+     * synthesised sound this mode has always played — effects with no bundled asset yet
+     * are unaffected by this change.
+     */
+    private suspend fun buildActiveAudio(app: SendpinApp, effect: AmbienceEffect, mode: String, vol: Float): ActiveAudio? {
+        fun synth(): ActiveAudio? =
+            runCatching { AudioTrackSink(app).also { it.setVolume(vol) } }
+                .getOrNull()?.let { ActiveAudio.Synth(it) }
+
+        fun clip(uri: Uri): ActiveAudio.Clip? {
+            // `player` (nullable var) exists only so the error callback can refer to
+            // the instance it belongs to — a local val can't appear in its own
+            // initializer. `p` is what every immediate call below actually uses.
+            var player: AmbienceClipPlayer? = null
+            val p = AmbienceClipPlayer(app) {
+                _toast.tryEmit("Couldn't play that sound — showing lights only")
+                player?.let(::releaseIfCurrent)
+            }
+            player = p
+            return runCatching { p.start(uri, vol) }
+                .fold({ ActiveAudio.Clip(p) }, { p.release(); null })
+        }
+
+        return when (mode) {
+            "off" -> null
+            "clip" -> settings.effectsClips.first()[effect.wire]
+                ?.let { runCatching { Uri.parse(it) }.getOrNull() }
+                ?.let { clip(it) } ?: synth()
+            else -> AmbienceAssets.bedAssetPath(app, effect)
+                ?.let { clip(Uri.parse("asset:///$it")) } ?: synth()
+        }
+    }
+
+    /** Silences the show if [player] is still the one making its sound. */
+    private fun releaseIfCurrent(player: AmbienceClipPlayer) {
+        if ((active as? ActiveAudio.Clip)?.player === player) {
+            active = null
+        }
+    }
 
     /**
      * Start [effect], stopping whatever was running.
@@ -74,57 +180,111 @@ class EffectsViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun start(effect: AmbienceEffect) {
         viewModelScope.launch {
-            val app = getApplication<Application>() as SendpinApp
-            // 1. Say the output is changing hands, so the loser knows it was us.
-            runCatching { app.playbackOwner.noteTakingOutput() }
-            // 2. Stop the music properly rather than letting focus loss do it.
-            runCatching { app.playbackOwner.pause() }
+            mutatingSelfDepth++
+            try {
+                val app = getApplication<Application>() as SendpinApp
+                // 1. Say the output is changing hands, so the loser knows it was us.
+                runCatching { app.playbackOwner.noteTakingOutput() }
+                // 2. Stop the music properly rather than letting focus loss do it.
+                runCatching { app.playbackOwner.pause() }
 
-            val mode = settings.effectsSoundMode.first()
-            val vol = settings.effectsVolume.first() / 100f
-            val newSink = if (mode == "off") null else runCatching {
-                AudioTrackSink(app).also { it.setVolume(vol) }
-            }.getOrNull()
-            sink?.release()
-            sink = newSink
+                val mode = settings.effectsSoundMode.first()
+                val vol = settings.effectsVolume.first() / 100f
+                val newActive = buildActiveAudio(app, effect, mode, vol)
+                active?.release()
+                active = newActive
 
-            val gate = if (newSink == null) null else AudioFocusGate(
-                context = app,
-                onLoss = { stop() },
-                onTransientLoss = { lights.pauseAmbience() },
-                onGain = { lights.resumeAmbience() },
-                // A nav prompt should duck the sound, not end the show. The lights are
-                // the point; the audio accompanies them.
-                onDuck = { ducking -> sink?.setVolume(if (ducking) vol * 0.2f else vol) },
-            )
+                val gate = if (newActive == null) null else AudioFocusGate(
+                    context = app,
+                    onLoss = { stop() },
+                    onTransientLoss = {
+                        lights.pauseAmbience()
+                        (active as? ActiveAudio.Clip)?.player?.pause()
+                    },
+                    onGain = {
+                        lights.resumeAmbience()
+                        (active as? ActiveAudio.Clip)?.player?.resume()
+                    },
+                    // A nav prompt should duck the sound, not end the show. The lights
+                    // are the point; the audio accompanies them.
+                    onDuck = { ducking -> setActiveVolume(if (ducking) vol * 0.2f else vol) },
+                )
 
-            val ok = lights.startAmbience(
-                effect = effect,
-                sink = newSink,
-                focus = gate,
-                params = AmbienceParams(intensity = intensityOf(effect)),
-                onAudioFailed = { msg -> _toast.tryEmit(msg) },
-            )
-            if (!ok) {
-                sink?.release(); sink = null
-                _toast.tryEmit("Couldn't start — check a Hue entertainment area is selected")
-                return@launch
+                // Only a Synth backend is a real AudioSink the show clock can read; a
+                // Clip backend runs in parallel with sink = null, which falls the
+                // light-side clock back to wall time (see AmbienceSession.nowS()).
+                val sink = (newActive as? ActiveAudio.Synth)?.sink
+
+                // startAmbience self-opens the bridge session if sync is off, but
+                // never told the master switch that — so the switch stayed visually
+                // off under a running show, and turning it on and back off later
+                // could kill a show it never knew it owned. Own that here instead:
+                // turn sync on if it was off, and remember whether this show is the
+                // reason, so stop() knows whether turning it back off again is its
+                // call to make.
+                //
+                // Only on a genuine start from idle — `startAmbience` always stops
+                // and restarts the session internally (a sound-mode change or
+                // switching straight to a different effect calls this same function
+                // while one is already running), and re-deciding ownership on every
+                // one of those would read "sync is already on" and wrongly adopt a
+                // show that never stopped.
+                if (running.value == null) {
+                    if (settings.lightSyncEnabled.first()) {
+                        app.ambienceSyncOwnership.value = AmbienceSyncOwnership.USER_ADOPTED
+                    } else {
+                        settings.setLightSyncEnabled(true)
+                        app.ambienceSyncOwnership.value = AmbienceSyncOwnership.AUTO_ENABLED
+                    }
+                }
+
+                val ok = lights.startAmbience(
+                    effect = effect,
+                    sink = sink,
+                    focus = gate,
+                    params = AmbienceParams(intensity = intensityOf(effect)),
+                    onAudioFailed = { msg -> _toast.tryEmit(msg) },
+                )
+                if (!ok) {
+                    active?.release(); active = null
+                    if (app.ambienceSyncOwnership.value == AmbienceSyncOwnership.AUTO_ENABLED) {
+                        settings.setLightSyncEnabled(false)
+                    }
+                    app.ambienceSyncOwnership.value = AmbienceSyncOwnership.NONE
+                    _toast.tryEmit("Couldn't start — check a Hue entertainment area is selected")
+                    return@launch
+                }
+                settings.setEffectsLast(effect.wire)
+                EffectsService.onStopRequested = { stop() }
+                EffectsService.start(app, effect.title)
+                armSleepTimer()
+            } finally {
+                mutatingSelfDepth--
             }
-            settings.setEffectsLast(effect.wire)
-            EffectsService.onStopRequested = { stop() }
-            EffectsService.start(app, effect.title)
-            armSleepTimer()
         }
     }
 
     fun stop() {
         viewModelScope.launch {
-            sleepJob?.cancel(); sleepJob = null
-            _remainingS.value = null
-            lights.stopAmbience()
-            sink?.release(); sink = null
-            EffectsService.onStopRequested = null
-            EffectsService.stop(getApplication())
+            mutatingSelfDepth++
+            try {
+                sleepJob?.cancel(); sleepJob = null
+                _remainingS.value = null
+                lights.stopAmbience()
+                active?.release(); active = null
+                val app = getApplication<Application>() as SendpinApp
+                // Only turn sync back off if this show is the reason it was on —
+                // never for a show that started with sync already on for its own
+                // reasons.
+                if (app.ambienceSyncOwnership.value == AmbienceSyncOwnership.AUTO_ENABLED) {
+                    settings.setLightSyncEnabled(false)
+                }
+                app.ambienceSyncOwnership.value = AmbienceSyncOwnership.NONE
+                EffectsService.onStopRequested = null
+                EffectsService.stop(getApplication())
+            } finally {
+                mutatingSelfDepth--
+            }
         }
     }
 
@@ -152,7 +312,7 @@ class EffectsViewModel(app: Application) : AndroidViewModel(app) {
     fun setVolume(v: Int) {
         viewModelScope.launch {
             settings.setEffectsVolume(v)
-            sink?.setVolume(v / 100f)
+            setActiveVolume(v / 100f)
         }
     }
 
