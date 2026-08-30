@@ -5,7 +5,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -16,7 +15,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -31,9 +29,13 @@ import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ui.design.GlassCard
 import com.engabd.sendpin.ui.design.a
 import com.engabd.sendpin.ui.design.SegmentedToggle
+import com.engabd.sendpin.ui.design.ServerKindGlyph
 import com.engabd.sendpin.ui.design.TitleGap
 import com.engabd.sendpin.ui.theme.*
+import com.engabd.sendpin.discovery.PlayerIdentity
+import com.engabd.sendpin.plex.PlexAuth
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import android.content.ContentResolver
@@ -232,8 +234,8 @@ private fun ServerCard(
                         .background(if (active) accent.a(0.16f) else Glass),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Icon(
-                        kindIcon(config.kind), null,
+                    ServerKindGlyph(
+                        config.kind,
                         tint = if (active) accent else TextMuted,
                         modifier = Modifier.size(22.dp),
                     )
@@ -315,7 +317,7 @@ private fun ProviderPicker(accent: Color, onPick: (ServerKind) -> Unit) {
         ) {}
 
         ServerKind.addable.forEach { kind ->
-            NavRow(kindIcon(kind), kind.label, kind.blurb, accent) { onPick(kind) }
+            ProviderRow(kind, accent) { onPick(kind) }
         }
 
         Spacer(Modifier.height(4.dp))
@@ -326,8 +328,44 @@ private fun ProviderPicker(accent: Color, onPick: (ServerKind) -> Unit) {
         )
         ServerKind.planned.forEach { kind ->
             Box(Modifier.alpha(0.4f)) {
-                NavRow(kindIcon(kind), kind.label, kind.blurb, accent, enabled = false) {}
+                ProviderRow(kind, accent, enabled = false) {}
             }
+        }
+    }
+}
+
+/**
+ * [NavRow], specialised for a provider: the real brand mark where one exists, the
+ * generic glyph otherwise — see [ServerKindGlyph]. Kept separate from `NavRow` itself
+ * rather than widening its `icon: ImageVector` parameter, since every other caller of
+ * `NavRow` (Stats, Downloads, Light Sync's own settings rows) has an actual
+ * `ImageVector` and no logo to plug in.
+ */
+@Composable
+private fun ProviderRow(kind: ServerKind, accent: Color, enabled: Boolean = true, onClick: () -> Unit) {
+    GlassCard(radius = 16.dp) {
+        Row(
+            Modifier.fillMaxWidth().clickable(enabled = enabled, onClick = onClick).padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Box(
+                Modifier.size(34.dp).clip(RoundedCornerShape(10.dp))
+                    .background(if (enabled) accent.a(0.14f) else Glass),
+                contentAlignment = Alignment.Center,
+            ) {
+                ServerKindGlyph(kind, tint = if (enabled) accent else TextFaint, modifier = Modifier.size(18.dp))
+            }
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+                Text(
+                    kind.label,
+                    color = if (enabled) TextPrimary else TextMuted,
+                    fontFamily = AppFont,
+                    style = MaterialTheme.typography.titleLarge,
+                )
+                Text(kind.blurb, color = TextFaint, fontFamily = AppFont, style = MaterialTheme.typography.bodySmall)
+            }
+            if (enabled) Icon(Icons.Default.ChevronRight, null, tint = TextMuted, modifier = Modifier.size(20.dp))
         }
     }
 }
@@ -387,7 +425,13 @@ private fun ServerDetail(
             url = url.trim(),
             username = user,
             password = pass,
-            token = if (credentialsChanged && config.kind.auth != AuthStyle.TOKEN) "" else token,
+            // Only USER_PASSWORD/OPTIONAL_USER_PASSWORD tokens are *derived* from the
+            // address and login — a TOKEN is pasted in directly, and a LINKED_ACCOUNT
+            // one (Plex) comes from plex.tv and has nothing to do with which server
+            // address it is pointed at, so an address change must not drop either.
+            token = if (credentialsChanged &&
+                (config.kind.auth == AuthStyle.USER_PASSWORD || config.kind.auth == AuthStyle.OPTIONAL_USER_PASSWORD)
+            ) "" else token,
             // The folder list stays. It used to be dropped here unconditionally, and
             // only the picker path survived that by passing `customOptions` — so every
             // *other* save of a local library silently wiped the chosen folder.
@@ -433,6 +477,9 @@ private fun ServerDetail(
                 }
                 AuthStyle.TOKEN ->
                     SecretField(token, { token = it }, "Access token", accent, secretVisible, { secretVisible = it })
+                AuthStyle.LINKED_ACCOUNT -> if (config.kind == ServerKind.PLEX) {
+                    PlexSignInRow(hasToken = token.isNotBlank(), onToken = { token = it }, accent = accent, scope = scope)
+                }
                 else -> Unit
             }
 
@@ -474,7 +521,8 @@ private fun ServerDetail(
                         isNew -> "Save & connect"
                         else -> "Save & reconnect"
                     },
-                    enabled = url.isNotBlank() && !(connecting && isActive),
+                    enabled = url.isNotBlank() && !(connecting && isActive) &&
+                        (config.kind.auth != AuthStyle.LINKED_ACCOUNT || token.isNotBlank()),
                     accent = accent,
                 ) {
                     scope.launch {
@@ -789,14 +837,71 @@ private fun LocalFolderCard(
     }
 }
 
-private fun kindIcon(kind: ServerKind): ImageVector = when (kind) {
-    ServerKind.MUSIC_ASSISTANT -> Icons.Default.Cloud
-    ServerKind.NAVIDROME, ServerKind.SUBSONIC -> Icons.Default.Storage
-    ServerKind.JELLYFIN, ServerKind.EMBY, ServerKind.PLEX -> Icons.Default.Dns
-    ServerKind.AUDIOBOOKSHELF -> Icons.AutoMirrored.Filled.MenuBook
-    ServerKind.KODI -> Icons.Default.Tv
-    ServerKind.SMB, ServerKind.WEBDAV -> Icons.Default.Folder
-    ServerKind.LOCAL -> Icons.Default.Smartphone
-    ServerKind.DOWNLOADS -> Icons.Default.DownloadDone
-    else -> Icons.Default.CloudQueue
+/**
+ * The Plex PIN sign-in, done in place of a password field.
+ *
+ * `AuthStyle.LINKED_ACCOUNT` has no fields of its own to render — there is no
+ * password this app is allowed to see — so this is what fills that space instead: a
+ * button that mints a PIN, opens plex.tv in the browser with it pre-filled, and polls
+ * [PlexAuth] until the user finishes signing in there or gives up. See [PlexAuth]'s
+ * own docs for why this is a whole flow rather than a token exchange like Jellyfin's.
+ */
+@Composable
+private fun PlexSignInRow(
+    hasToken: Boolean,
+    onToken: (String) -> Unit,
+    accent: Color,
+    scope: CoroutineScope,
+) {
+    val context = LocalContext.current
+    var working by remember { mutableStateOf(false) }
+    var status by remember { mutableStateOf<String?>(null) }
+
+    OledButton(
+        when {
+            working -> "Waiting for plex.tv…"
+            hasToken -> "Signed in — sign in again"
+            else -> "Sign in with Plex"
+        },
+        enabled = !working,
+        accent = accent,
+    ) {
+        working = true
+        status = null
+        scope.launch {
+            val clientId = PlayerIdentity.getPlayerId(context)
+            try {
+                val pin = PlexAuth.requestPin(clientId)
+                context.startActivity(
+                    Intent(Intent.ACTION_VIEW, Uri.parse(PlexAuth.authUrl(pin, clientId)))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+                var token: String? = null
+                var attempts = 0
+                // Plex's own apps poll every couple of seconds; ten minutes covers a
+                // slow browser round trip without polling for ever if the tab is
+                // abandoned.
+                while (token == null && attempts < 300) {
+                    delay(2000)
+                    token = PlexAuth.pollPin(pin, clientId)
+                    attempts++
+                }
+                val signedIn = token
+                if (signedIn != null) {
+                    onToken(signedIn)
+                    status = "Signed in. Save & connect below to finish."
+                } else {
+                    status = "Timed out waiting for plex.tv. Try again."
+                }
+            } catch (e: Exception) {
+                status = e.message ?: "Couldn't reach plex.tv"
+            } finally {
+                working = false
+            }
+        }
+    }
+    Note(
+        status ?: if (hasToken) "Signed in. Sign in again if playback ever stops working."
+        else "Opens plex.tv in your browser to sign in, then comes back here on its own.",
+    )
 }

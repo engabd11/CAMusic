@@ -1,7 +1,10 @@
 package com.engabd.sendpin.library
 
+import com.engabd.sendpin.emby.EmbyClient
+import com.engabd.sendpin.emby.EmbyException
 import com.engabd.sendpin.jellyfin.JellyfinClient
 import com.engabd.sendpin.jellyfin.JellyfinException
+import com.engabd.sendpin.plex.PlexClient
 import com.engabd.sendpin.subsonic.SubsonicClient
 
 /**
@@ -28,6 +31,8 @@ object MusicSources {
     private val SOURCE_PROVIDERS: Set<String> = setOf(
         com.engabd.sendpin.subsonic.SubsonicClient.PROVIDER,
         com.engabd.sendpin.jellyfin.JellyfinClient.PROVIDER,
+        EmbyClient.PROVIDER,
+        PlexClient.PROVIDER,
         "local",
     )
 
@@ -69,6 +74,32 @@ object MusicSources {
                 // a constant shared by every copy of the app meant two phones on one
                 // account fought over a single session in the server's dashboard.
                 deviceId = com.engabd.sendpin.discovery.PlayerIdentity.getPlayerId(context),
+            ).apply {
+                streamFormat = config.option(ServerConfig.OPT_STREAM_FORMAT) ?: "raw"
+            },
+        )
+
+        ServerKind.EMBY -> EmbySource(
+            EmbyClient(
+                baseUrl = config.url,
+                token = config.token,
+                userId = config.option(ServerConfig.OPT_USER_ID).orEmpty(),
+                libraryId = config.option(ServerConfig.OPT_LIBRARY_ID).orEmpty(),
+                deviceId = com.engabd.sendpin.discovery.PlayerIdentity.getPlayerId(context),
+            ).apply {
+                streamFormat = config.option(ServerConfig.OPT_STREAM_FORMAT) ?: "raw"
+            },
+        )
+
+        // The token here is a plex.tv account token, minted by `PlexAuth`'s PIN flow
+        // and already sitting in `config.token` by the time a source is built — see
+        // [prepare], which for Plex has nothing left to exchange.
+        ServerKind.PLEX -> PlexSource(
+            PlexClient(
+                baseUrl = config.url,
+                token = config.token,
+                librarySectionKey = config.option(ServerConfig.OPT_LIBRARY_ID).orEmpty(),
+                clientIdentifier = com.engabd.sendpin.discovery.PlayerIdentity.getPlayerId(context),
             ).apply {
                 streamFormat = config.option(ServerConfig.OPT_STREAM_FORMAT) ?: "raw"
             },
@@ -148,6 +179,52 @@ object MusicSources {
             if (client.libraryId.isBlank()) {
                 client.musicLibraries().firstOrNull()?.let {
                     client.libraryId = it.itemId
+                    updated = updated.withOption(ServerConfig.OPT_LIBRARY_ID, it.itemId)
+                }
+            }
+            updated
+        }
+
+        is EmbySource -> {
+            val client = source.emby
+            var updated = config
+            val tokenWorks = client.token.isNotBlank() && client.userId.isNotBlank() &&
+                client.pingResult() == null
+            if (!tokenWorks) {
+                client.token = ""
+                val (token, userId) = try {
+                    client.authenticate(config.username, config.password)
+                } catch (e: EmbyException) {
+                    if (e.isAuth) throw SourceAuthException(e.message ?: "Emby refused that login")
+                    throw e
+                }
+                updated = updated.copy(token = token).withOption(ServerConfig.OPT_USER_ID, userId)
+            }
+            if (client.libraryId.isBlank()) {
+                client.musicLibraries().firstOrNull()?.let {
+                    client.libraryId = it.itemId
+                    updated = updated.withOption(ServerConfig.OPT_LIBRARY_ID, it.itemId)
+                }
+            }
+            updated
+        }
+
+        is PlexSource -> {
+            val client = source.plex
+            // The token was minted by `PlexAuth`'s PIN flow before this server was
+            // ever saved, so there is no sign-in step here — only picking a music
+            // section, the same reason Jellyfin picks a library above. A refused
+            // token surfaces as the same `SourceAuthException` a bad password would,
+            // so the connect form re-prompts rather than falling back to downloads.
+            var updated = config
+            val error = client.pingResult()
+            if (error != null) {
+                if (error.isAuth) throw SourceAuthException(error.message ?: "Plex refused that sign-in")
+                throw error
+            }
+            if (client.librarySectionKey.isBlank()) {
+                client.musicSections().firstOrNull()?.let {
+                    client.librarySectionKey = it.itemId
                     updated = updated.withOption(ServerConfig.OPT_LIBRARY_ID, it.itemId)
                 }
             }

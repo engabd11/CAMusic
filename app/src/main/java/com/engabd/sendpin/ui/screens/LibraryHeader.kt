@@ -39,6 +39,7 @@ import com.engabd.sendpin.ma.LibraryViewModel.Backend
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.library.ServerConfig
+import com.engabd.sendpin.library.ServerKind
 
 /**
  * The library's chrome: the title row, the search field and the small controls
@@ -95,6 +96,8 @@ internal fun Header(
                 // Lights tabs could disagree with what the library was browsing.
                 // Made clickable and larger: tap to switch libraries without going to Settings.
                 BackendTag(
+                    kind = activeServerConfig?.kind,
+                    fallbackIcon = if (backend == Backend.SUBSONIC) Icons.Default.LibraryMusic else Icons.Default.Speaker,
                     label = activeServerConfig?.displayName ?: if (backend == Backend.SUBSONIC) "Library" else "Music Assistant",
                     onClick = onLibraryBadgeClick,
                 )
@@ -152,20 +155,39 @@ private fun RefreshButton(refreshing: Boolean, onClick: () -> Unit) {
     )
 }
 
-/** A quiet read-only badge naming the library backend Settings has selected. */
+/**
+ * A quiet read-only badge naming the library backend Settings has selected.
+ *
+ * [kind]'s real logo is used when there is one — the same mark `LibrariesSettings`'
+ * provider picker uses (see `ServerKindGlyph`), so a Jellyfin library reads as "the
+ * Jellyfin one" here too, not just in Settings where it was chosen. [kind] is null
+ * when there is no [ServerConfig] to read one from yet, in which case [fallbackIcon]
+ * draws instead — the same edge case [label] already falls back for.
+ */
 @Composable
-private fun BackendTag(label: String, onClick: (() -> Unit)? = null) {
+private fun BackendTag(kind: ServerKind?, fallbackIcon: ImageVector, label: String, onClick: (() -> Unit)? = null) {
     val hasClick = onClick != null
-    Text(
-        label, color = if (hasClick) TextPrimary else TextFaint, fontFamily = AppFont, fontWeight = FontWeight.Bold,
-        fontSize = 11.sp, letterSpacing = 0.6.sp, maxLines = 1,
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
         modifier = Modifier
             .clip(RoundedCornerShape(100))
             .background(if (hasClick) LocalAccent.current.copy(alpha = 0.15f) else Glass)
             .border(1.dp, if (hasClick) LocalAccent.current.copy(alpha = 0.4f) else HairlineSoft, RoundedCornerShape(100))
             .then(if (hasClick) Modifier.clickable(onClick = onClick) else Modifier)
             .padding(horizontal = 12.dp, vertical = 6.dp),
-    )
+    ) {
+        val tint = if (hasClick) TextPrimary else TextFaint
+        if (kind != null) {
+            ServerKindGlyph(kind, tint = tint, modifier = Modifier.size(12.dp))
+        } else {
+            Icon(fallbackIcon, null, tint = tint, modifier = Modifier.size(12.dp))
+        }
+        Text(
+            label, color = if (hasClick) TextPrimary else TextFaint, fontFamily = AppFont, fontWeight = FontWeight.Bold,
+            fontSize = 11.sp, letterSpacing = 0.6.sp, maxLines = 1,
+        )
+    }
 }
 
 /** A compact labelled action chip. */

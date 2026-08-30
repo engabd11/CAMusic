@@ -6,9 +6,9 @@ CAMusic browses and plays from two kinds of thing:
   never decodes for. It is a mode, not a provider, and does not implement
   `MusicSource`.
 - **Everything else** — a library the *phone itself* plays. Navidrome, Subsonic,
-  Jellyfin today; Plex, Emby, Kodi, a WebDAV share and the cloud drives next. These
-  are all the same shape: list artists and albums, answer a search, hand out a URL
-  ExoPlayer can open.
+  Jellyfin, Emby and Plex today; Audiobookshelf, Kodi, a WebDAV share and the cloud
+  drives next. These are all the same shape: list artists and albums, answer a
+  search, hand out a URL ExoPlayer can open.
 
 That second shape is `library/MusicSource.kt`. Before it existed, Navidrome was a
 `SubsonicClient?` field with `when (backend)` around forty call sites, and a third
@@ -86,6 +86,15 @@ they need no device.
 | **Navidrome** | Subsonic token (`t=md5(password+salt)`) | The reference implementation. OpenSubsonic extensions give lyrics, ReplayGain and full format data. |
 | **Subsonic-compatible** | Same | Gonic, Airsonic, Astiga, Ampache's Subsonic API. Same client; capabilities probed via `getOpenSubsonicExtensions`, so an older server loses lyrics rather than offering a pane it can't fill. |
 | **Jellyfin** | `POST /Users/AuthenticateByName`, `Authorization: MediaBrowser …` | Token and user id both persisted — the user id is in the *path* of most endpoints. `MediaSources[].MediaStreams[]` carries a complete format reading. |
+| **Emby** | `POST /Users/AuthenticateByName`, `X-Emby-Authorization` header | Jellyfin's ancestor: near-identical `/Items` DTOs, but no `/universal` negotiator — a transcode names its container in the path, `/Audio/{id}/stream.mp3`, instead. |
+| **Plex** | plex.tv PIN flow (`PlexAuth`) → `X-Plex-Token`; no server password is ever typed | `/library/sections` → `/library/sections/{id}/all?type=8\|9\|10` (artist/album/track), read from whichever of `Metadata`/`Directory` the response used. Streaming needs the track's own metadata first — see `PlexClient`'s class doc — so `item()` caches each track's `Media[].Part[].key` and cover path as it's parsed. No favourites, playlist writes, lyrics or rich format reading; see `PlexSource`'s class doc for why each is left out rather than faked. |
+
+Plex was the odd one out: its PIN flow needs a browser round-trip and a polled
+`/pins/{id}` rather than a password ever touching this app. `AuthStyle.LINKED_ACCOUNT`
+exists for exactly that, and `LibrariesSettings.PlexSignInRow` is the "Sign in" button
+it needed instead of credential fields — it mints a PIN via `PlexAuth.requestPin`,
+opens `PlexAuth.authUrl` in the browser, and polls `PlexAuth.pollPin` every couple of
+seconds until plex.tv hands back a token or the user gives up.
 
 ### Planned — HTTP APIs
 
@@ -93,14 +102,8 @@ These are the same shape as what exists and should be adapters, not projects.
 
 | Provider | Auth | Browse | Stream |
 |---|---|---|---|
-| **Emby** | `POST /Users/AuthenticateByName`, `X-Emby-Authorization` header | Jellyfin's ancestor: `/Items` with `IncludeItemTypes`, near-identical DTOs | `/Audio/{id}/universal` |
-| **Plex** | plex.tv PIN flow → `X-Plex-Token`; no server password is ever typed | `/library/sections` → `/library/sections/{id}/all?type=8\|9\|10` (artist/album/track) | `/library/parts/{id}/file.flac?X-Plex-Token=` |
 | **Audiobookshelf** | `POST /login` → bearer token | `/api/libraries`, `/api/libraries/{id}/items` | `/api/items/{id}/file/{ino}` |
 | **Kodi** | HTTP basic, JSON-RPC not REST | `AudioLibrary.GetArtists` / `GetAlbums` / `GetSongs` over `POST /jsonrpc` | `/vfs/{encoded path}` |
-
-Plex is the odd one: its PIN flow needs a browser round-trip and a polled
-`/pins/{id}` — `AuthStyle.LINKED_ACCOUNT` exists for exactly that, and the setup form
-has to offer a "Sign in" button rather than credential fields.
 
 ### Planned — filesystems
 
@@ -134,6 +137,21 @@ Steps 3 and 4 are shared by all of them, which is the argument for building one
 the phone's own music, so it needs no crawler, no tag reader and no index. It is the
 right one to build first, and it is what proves the `IndexedFileSource` shape before
 any OAuth is written.
+
+---
+
+## Icons
+
+Every `ServerKind` has a glyph — `ui/design/ServerKindIcon.kt` — used in the provider
+picker, each server's own card, and the Library screen's top-line badge alike, so a
+server reads as the same thing wherever it shows up.
+
+Where a real brand mark exists it's used: `res/drawable-nodpi/ic_logo_*.png`, sourced
+from [dashboard-icons](https://github.com/walkxcode/dashboard-icons) (CC0 — icons
+built for exactly this, naming a self-hosted service in someone else's UI). Everything
+else falls back to a generic Material glyph. Adding a real mark for a kind that
+doesn't have one: drop a same-named PNG in that folder and add its line to
+`serverKindLogoRes`; there's nothing else to wire up.
 
 ---
 
