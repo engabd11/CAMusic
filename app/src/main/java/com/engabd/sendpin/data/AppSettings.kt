@@ -2,6 +2,7 @@ package com.engabd.sendpin.data
 
 import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -9,6 +10,7 @@ import com.engabd.sendpin.library.ServerConfig
 import com.engabd.sendpin.library.ServerKind
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.builtins.ListSerializer
@@ -28,6 +30,33 @@ private val Context.dataStore by preferencesDataStore(name = "sendpin_settings")
  * player socket itself needs no login on a LAN.)
  */
 class AppSettings(private val context: Context) {
+
+    /**
+     * One stored setting, as a flow that emits only when *that* setting changes.
+     *
+     * `dataStore.data` emits the whole snapshot on every write to *any* key, and
+     * `map` does not dedupe — so every one of these flows used to re-emit its
+     * unchanged value each time an unrelated preference was written. Collectors
+     * across the app are written as though that could not happen ("DataStore only
+     * emits on change", "this collector only fires on a *change*"), and the ones
+     * that do real work on each emission paid for it:
+     *
+     *  - [com.engabd.sendpin.hue.DirectLightSync]'s colour collector calls
+     *    `setScheme`, which on the Song scheme draws a **fresh set of random hues**.
+     *    So the room re-rolled its colours on an unrelated settings write — and on
+     *    the Music Assistant path that includes the clock offset the client persists
+     *    every ~100 `server/time` samples, which is why the colours "sometimes
+     *    changed on their own" there and never on the local player.
+     *  - The same collector re-fetches and re-extracts the cover art each time.
+     *  - The intensity and auto-level collectors force an immediate re-pick, so the
+     *    show could jump a rung for no reason the user could see.
+     *
+     * Every setting below goes through here, so the contract those comments assume
+     * is now the real one.
+     */
+    private fun <T> pref(read: (Preferences) -> T): Flow<T> =
+        context.dataStore.data.map(read).distinctUntilChanged()
+
     companion object {
         /**
          * The fixed id of the always-present Downloads library. See [withDownloads].
@@ -352,12 +381,12 @@ class AppSettings(private val context: Context) {
         else list + ServerConfig(id = DOWNLOADS_SERVER_ID, kind = ServerKind.DOWNLOADS)
 
     /** Every configured server, oldest first. Secrets are already decrypted. */
-    val servers: Flow<List<ServerConfig>> = context.dataStore.data.map { prefs ->
+    val servers: Flow<List<ServerConfig>> = pref { prefs ->
         storedServers(prefs)
     }
 
     /** The id of the server the Library tab browses, or "" before anything is set up. */
-    val activeServerId: Flow<String> = context.dataStore.data.map { prefs ->
+    val activeServerId: Flow<String> = pref { prefs ->
         resolveActiveId(prefs, storedServers(prefs))
     }
 
@@ -608,56 +637,56 @@ class AppSettings(private val context: Context) {
         return true
     }
 
-    val backend: Flow<String> = context.dataStore.data.map { it[BACKEND] ?: "ma" }
-    val maBaseUrl: Flow<String> = context.dataStore.data.map { it[MA_BASE_URL] ?: "" }
-    val maUsername: Flow<String> = context.dataStore.data.map { it[MA_USERNAME] ?: "" }
-    val maPassword: Flow<String> = context.dataStore.data.map { Crypto.decrypt(it[MA_PASSWORD] ?: "") }
-    val navUrl: Flow<String> = context.dataStore.data.map { it[NAV_URL] ?: "" }
-    val navUsername: Flow<String> = context.dataStore.data.map { it[NAV_USERNAME] ?: "" }
-    val navPassword: Flow<String> = context.dataStore.data.map { Crypto.decrypt(it[NAV_PASSWORD] ?: "") }
-    val haUrl: Flow<String> = context.dataStore.data.map { it[HA_URL] ?: "" }
-    val haToken: Flow<String> = context.dataStore.data.map { Crypto.decrypt(it[HA_TOKEN] ?: "") }
-    val playerName: Flow<String> = context.dataStore.data.map {
+    val backend: Flow<String> = pref { it[BACKEND] ?: "ma" }
+    val maBaseUrl: Flow<String> = pref { it[MA_BASE_URL] ?: "" }
+    val maUsername: Flow<String> = pref { it[MA_USERNAME] ?: "" }
+    val maPassword: Flow<String> = pref { Crypto.decrypt(it[MA_PASSWORD] ?: "") }
+    val navUrl: Flow<String> = pref { it[NAV_URL] ?: "" }
+    val navUsername: Flow<String> = pref { it[NAV_USERNAME] ?: "" }
+    val navPassword: Flow<String> = pref { Crypto.decrypt(it[NAV_PASSWORD] ?: "") }
+    val haUrl: Flow<String> = pref { it[HA_URL] ?: "" }
+    val haToken: Flow<String> = pref { Crypto.decrypt(it[HA_TOKEN] ?: "") }
+    val playerName: Flow<String> = pref {
         maOption(it, ServerConfig.OPT_PLAYER_NAME) ?: it[PLAYER_NAME] ?: ""
     }
-    val targetPlayer: Flow<String> = context.dataStore.data.map {
+    val targetPlayer: Flow<String> = pref {
         maOption(it, ServerConfig.OPT_TARGET_PLAYER) ?: it[TARGET_PLAYER] ?: ""
     }
-    val nowPlayingLayout: Flow<String> = context.dataStore.data.map { it[NOW_PLAYING_LAYOUT] ?: "tab" }
+    val nowPlayingLayout: Flow<String> = pref { it[NOW_PLAYING_LAYOUT] ?: "tab" }
     /** How the Now Playing seek bar is drawn — a straight line, or a wobbling wave. */
-    val seekBarStyle: Flow<String> = context.dataStore.data.map { it[SEEK_BAR_STYLE] ?: "line" }
+    val seekBarStyle: Flow<String> = pref { it[SEEK_BAR_STYLE] ?: "line" }
     /** Swipe right/left on Now Playing to skip forward/back. Off by default. */
-    val swipeToSkip: Flow<Boolean> = context.dataStore.data.map { it[SWIPE_TO_SKIP] ?: false }
+    val swipeToSkip: Flow<Boolean> = pref { it[SWIPE_TO_SKIP] ?: false }
     /**
      * Whether Now Playing opens with the live visualizer already showing in the
      * cover's slot, instead of the cover itself — a tap on the cover reaches it
      * either way. Off by default.
      */
-    val showVisualizer: Flow<Boolean> = context.dataStore.data.map { it[SHOW_VISUALIZER] ?: false }
+    val showVisualizer: Flow<Boolean> = pref { it[SHOW_VISUALIZER] ?: false }
     /**
      * Weighs BPM/key compatibility into the local "keep the music going" ranking, on
      * top of its existing genre/artist score — never Music Assistant, which tops up
      * its own queue server-side. Off by default.
      */
-    val djMode: Flow<Boolean> = context.dataStore.data.map { it[DJ_MODE] ?: false }
+    val djMode: Flow<Boolean> = pref { it[DJ_MODE] ?: false }
     /** Shake to skip, flip face-down to pause, double-tap to play/pause. Off by default. */
-    val sensorGestures: Flow<Boolean> = context.dataStore.data.map { it[SENSOR_GESTURES] ?: false }
+    val sensorGestures: Flow<Boolean> = pref { it[SENSOR_GESTURES] ?: false }
     /** Captures bpm/key/energy per play for the Stats screen's DNA section. Off by default. */
-    val listeningDna: Flow<Boolean> = context.dataStore.data.map { it[LISTENING_DNA] ?: false }
+    val listeningDna: Flow<Boolean> = pref { it[LISTENING_DNA] ?: false }
     /** Phantom Stage uses real per-section stem energy instead of frequency-band proxies. Off by default. */
-    val stemSeparation: Flow<Boolean> = context.dataStore.data.map { it[STEM_SEPARATION] ?: false }
-    val onboardingCompleted: Flow<Boolean> = context.dataStore.data.map { it[ONBOARDING_COMPLETED] ?: false }
-    val theme: Flow<String> = context.dataStore.data.map { it[THEME] ?: "oled" }
-    val accentSource: Flow<String> = context.dataStore.data.map { it[ACCENT_SOURCE] ?: "album" }
+    val stemSeparation: Flow<Boolean> = pref { it[STEM_SEPARATION] ?: false }
+    val onboardingCompleted: Flow<Boolean> = pref { it[ONBOARDING_COMPLETED] ?: false }
+    val theme: Flow<String> = pref { it[THEME] ?: "oled" }
+    val accentSource: Flow<String> = pref { it[ACCENT_SOURCE] ?: "album" }
     /** Stored as an ARGB hex string; empty means "use the built-in amber". */
-    val fixedAccent: Flow<String> = context.dataStore.data.map { it[FIXED_ACCENT] ?: "" }
-    val preferHiRes: Flow<Boolean> = context.dataStore.data.map {
+    val fixedAccent: Flow<String> = pref { it[FIXED_ACCENT] ?: "" }
+    val preferHiRes: Flow<Boolean> = pref {
         maOption(it, ServerConfig.OPT_PREFER_HI_RES)?.toBooleanStrictOrNull() ?: it[PREFER_HI_RES] ?: true
     }
-    val preferFlac: Flow<Boolean> = context.dataStore.data.map {
+    val preferFlac: Flow<Boolean> = pref {
         maOption(it, ServerConfig.OPT_PREFER_FLAC)?.toBooleanStrictOrNull() ?: it[PREFER_FLAC] ?: true
     }
-    val preferOriginal: Flow<Boolean> = context.dataStore.data.map { it[PREFER_ORIGINAL] ?: false }
+    val preferOriginal: Flow<Boolean> = pref { it[PREFER_ORIGINAL] ?: false }
 
     /**
      * Which codec this phone advertises to Music Assistant. "auto" offers all three in
@@ -671,9 +700,9 @@ class AppSettings(private val context: Context) {
      * keeps the name a player first registered under, so a change here is what tells
      * [com.engabd.sendpin.service.Playback.enablePlayer] it has to register anew.
      */
-    val registeredPlayerName: Flow<String> = context.dataStore.data.map { it[REGISTERED_NAME] ?: "" }
+    val registeredPlayerName: Flow<String> = pref { it[REGISTERED_NAME] ?: "" }
 
-    val sendspinCodec: Flow<String> = context.dataStore.data.map {
+    val sendspinCodec: Flow<String> = pref {
         maOption(it, ServerConfig.OPT_SENDSPIN_CODEC) ?: it[SENDSPIN_CODEC] ?: "auto"
     }
 
@@ -682,7 +711,7 @@ class AppSettings(private val context: Context) {
      * untouched; anything else asks the server to transcode, which is worth it on a
      * slow connection and wasteful on a fast one.
      */
-    val navStreamFormat: Flow<String> = context.dataStore.data.map { it[NAV_STREAM_FORMAT] ?: "raw" }
+    val navStreamFormat: Flow<String> = pref { it[NAV_STREAM_FORMAT] ?: "raw" }
 
     /**
      * Whether to request 24-bit bit-perfect playback from the AudioTrack path.
@@ -691,7 +720,7 @@ class AppSettings(private val context: Context) {
      * instead of truncating to 16-bit. The server must also be sending 24-bit
      * — see [FormatNegotiator.MAX_BIT_DEPTH], which is now 24.
      */
-    val bitPerfect24Bit: Flow<Boolean> = context.dataStore.data.map { it[BIT_PERFECT] ?: false }
+    val bitPerfect24Bit: Flow<Boolean> = pref { it[BIT_PERFECT] ?: false }
 
     /**
      * Ask other apps to duck for a Home Assistant announcement, rather than taking
@@ -704,7 +733,7 @@ class AppSettings(private val context: Context) {
      * noticeably louder or quieter than the music, and there is no way to detect that
      * from here. Turning this off restores plain media focus.
      */
-    val duckAnnouncements: Flow<Boolean> = context.dataStore.data.map { it[DUCK_ANNOUNCEMENTS] ?: true }
+    val duckAnnouncements: Flow<Boolean> = pref { it[DUCK_ANNOUNCEMENTS] ?: true }
 
     /**
      * The system AudioDeviceInfo ID to route audio to, for USB DAC support.
@@ -712,7 +741,7 @@ class AppSettings(private val context: Context) {
      * Set by [com.engabd.sendpin.service.Playback] when a USB audio device is
      * detected; consumed by both [SendspinNativeEngine] and [LocalPlayer].
      */
-    val preferredAudioDeviceId: Flow<String> = context.dataStore.data.map { it[PREFERRED_AUDIO_DEVICE_ID] ?: "" }
+    val preferredAudioDeviceId: Flow<String> = pref { it[PREFERRED_AUDIO_DEVICE_ID] ?: "" }
 
     /**
      * This player's latency trim, in milliseconds, for lining it up against other
@@ -726,7 +755,7 @@ class AppSettings(private val context: Context) {
      * Stored as a string because DataStore has no int key helper in use here and the
      * other numeric settings already do this.
      */
-    val staticDelayMs: Flow<Int> = context.dataStore.data.map {
+    val staticDelayMs: Flow<Int> = pref {
         maOption(it, ServerConfig.OPT_STATIC_DELAY_MS)?.toIntOrNull()
             ?: it[STATIC_DELAY_MS]?.toIntOrNull() ?: 0
     }
@@ -745,7 +774,7 @@ class AppSettings(private val context: Context) {
      *
      * 0 = no persisted value (first run, or the offset was never saved).
      */
-    val clockOffsetUs: Flow<Long> = context.dataStore.data.map {
+    val clockOffsetUs: Flow<Long> = pref {
         it[CLOCK_OFFSET_US]?.toLongOrNull() ?: 0L
     }
 
@@ -764,7 +793,7 @@ class AppSettings(private val context: Context) {
      * Only the Navidrome/offline path reads this — Music Assistant applies gain
      * server-side in its own DSP pipeline, so applying it again here would double it.
      */
-    val replayGainMode: Flow<String> = context.dataStore.data.map { it[REPLAY_GAIN] ?: "album" }
+    val replayGainMode: Flow<String> = pref { it[REPLAY_GAIN] ?: "album" }
 
     suspend fun setReplayGainMode(mode: String) = context.dataStore.edit { it[REPLAY_GAIN] = mode }
 
@@ -776,17 +805,17 @@ class AppSettings(private val context: Context) {
      * against a different master, or carry an offset tag nobody applied — and there is
      * no way to know which is right from here. So it is the listener's dial.
      */
-    val lyricsOffsetMs: Flow<Int> = context.dataStore.data.map { it[LYRICS_OFFSET_MS]?.toIntOrNull() ?: 0 }
+    val lyricsOffsetMs: Flow<Int> = pref { it[LYRICS_OFFSET_MS]?.toIntOrNull() ?: 0 }
 
     suspend fun setLyricsOffsetMs(ms: Int) = context.dataStore.edit {
         it[LYRICS_OFFSET_MS] = ms.coerceIn(-MAX_LYRICS_OFFSET_MS, MAX_LYRICS_OFFSET_MS).toString()
     }
 
     /** Download storage cap in MB. 0 means unlimited. */
-    val downloadStorageCapMb: Flow<Int> = context.dataStore.data.map { it[DOWNLOAD_STORAGE_CAP_MB]?.toIntOrNull() ?: 0 }
+    val downloadStorageCapMb: Flow<Int> = pref { it[DOWNLOAD_STORAGE_CAP_MB]?.toIntOrNull() ?: 0 }
 
     /** Only download over Wi-Fi, skip on mobile data. */
-    val downloadWifiOnly: Flow<Boolean> = context.dataStore.data.map { it[DOWNLOAD_WIFI_ONLY] ?: false }
+    val downloadWifiOnly: Flow<Boolean> = pref { it[DOWNLOAD_WIFI_ONLY] ?: false }
 
     /**
      * Whether to keep the Sendspin connection alive in the background for HA TTS
@@ -795,7 +824,7 @@ class AppSettings(private val context: Context) {
      * who don't use TTS can disable this to save battery; the connection will only
      * run during active playback and stop when idle.
      */
-    val keepAliveForAnnouncements: Flow<Boolean> = context.dataStore.data.map {
+    val keepAliveForAnnouncements: Flow<Boolean> = pref {
         maOption(it, ServerConfig.OPT_KEEP_ALIVE)?.toBooleanStrictOrNull()
             ?: it[KEEP_ALIVE_ANNOUNCEMENTS] ?: true
     }
@@ -813,7 +842,7 @@ class AppSettings(private val context: Context) {
      * playback *starts* (`player_queues/play_media`), which the library does,
      * while the toggle that sets it lives on Now Playing.
      */
-    val radioMode: Flow<Boolean> = context.dataStore.data.map { it[RADIO_MODE] ?: false }
+    val radioMode: Flow<Boolean> = pref { it[RADIO_MODE] ?: false }
 
     /**
      * Seconds of fade between tracks on the local player. 0 — the default — is
@@ -824,7 +853,7 @@ class AppSettings(private val context: Context) {
      * is after; a true overlap needs a second player and is its own piece of work.
      * Suppressed automatically when the queue is a single album.
      */
-    val navFadeSeconds: Flow<Int> = context.dataStore.data.map { it[NAV_FADE_SECONDS]?.toIntOrNull() ?: 0 }
+    val navFadeSeconds: Flow<Int> = pref { it[NAV_FADE_SECONDS]?.toIntOrNull() ?: 0 }
 
     suspend fun setNavFadeSeconds(value: Int) = context.dataStore.edit {
         it[NAV_FADE_SECONDS] = value.coerceIn(0, 12).toString()
@@ -837,7 +866,7 @@ class AppSettings(private val context: Context) {
      * back to the fixed window silently either way, so there's nothing lost by
      * defaulting it off beyond the listener not knowing to turn it on.
      */
-    val beatMatchedCrossfade: Flow<Boolean> = context.dataStore.data.map { it[BEAT_MATCHED_CROSSFADE] ?: false }
+    val beatMatchedCrossfade: Flow<Boolean> = pref { it[BEAT_MATCHED_CROSSFADE] ?: false }
 
     suspend fun setBeatMatchedCrossfade(value: Boolean) = context.dataStore.edit {
         it[BEAT_MATCHED_CROSSFADE] = value
@@ -951,7 +980,7 @@ class AppSettings(private val context: Context) {
      * same thing and nothing downstream could tell a deliberate "no server, thanks"
      * from an interrupted setup.
      */
-    val onboardingSkipped: Flow<Boolean> = context.dataStore.data.map { it[ONBOARDING_SKIPPED] ?: false }
+    val onboardingSkipped: Flow<Boolean> = pref { it[ONBOARDING_SKIPPED] ?: false }
 
     suspend fun setOnboardingSkipped(skipped: Boolean) {
         context.dataStore.edit { it[ONBOARDING_SKIPPED] = skipped }
@@ -1060,19 +1089,19 @@ class AppSettings(private val context: Context) {
     // ── Direct Hue Bridge Light Sync ──────────────────────────────────────
 
     /** The bridge IP on the LAN, e.g. "192.168.0.42". */
-    val hueBridgeIp: Flow<String> = context.dataStore.data.map { it[HUE_BRIDGE_IP] ?: "" }
+    val hueBridgeIp: Flow<String> = pref { it[HUE_BRIDGE_IP] ?: "" }
 
     /** The Hue application key (username). Encrypted at rest. */
-    val hueAppKey: Flow<String> = context.dataStore.data.map { Crypto.decrypt(it[HUE_APP_KEY] ?: "") }
+    val hueAppKey: Flow<String> = pref { Crypto.decrypt(it[HUE_APP_KEY] ?: "") }
 
     /** The Hue client key (PSK, 32-char hex). Encrypted at rest. */
-    val hueClientKey: Flow<String> = context.dataStore.data.map { Crypto.decrypt(it[HUE_CLIENT_KEY] ?: "") }
+    val hueClientKey: Flow<String> = pref { Crypto.decrypt(it[HUE_CLIENT_KEY] ?: "") }
 
     /** The hue-application-id used as the DTLS PSK identity. */
-    val hueAppId: Flow<String> = context.dataStore.data.map { it[HUE_APP_ID] ?: "" }
+    val hueAppId: Flow<String> = pref { it[HUE_APP_ID] ?: "" }
 
     /** The entertainment area UUID to stream to. */
-    val hueEntertainmentConfigId: Flow<String> = context.dataStore.data.map { it[HUE_CONFIG_ID] ?: "" }
+    val hueEntertainmentConfigId: Flow<String> = pref { it[HUE_CONFIG_ID] ?: "" }
 
     /**
      * The paired bridge's id. The bridge's TLS certificate carries this as its
@@ -1080,10 +1109,10 @@ class AppSettings(private val context: Context) {
      * *that* bridge — ordinary hostname verification cannot apply when the
      * connection is made to an IP address.
      */
-    val hueBridgeId: Flow<String> = context.dataStore.data.map { it[HUE_BRIDGE_ID] ?: "" }
+    val hueBridgeId: Flow<String> = pref { it[HUE_BRIDGE_ID] ?: "" }
 
     /** Which Light Sync transport: "ha" (Home Assistant) or "direct" (Hue Bridge). */
-    val lightSyncMode: Flow<String> = context.dataStore.data.map { it[LIGHT_SYNC_MODE] ?: "ha" }
+    val lightSyncMode: Flow<String> = pref { it[LIGHT_SYNC_MODE] ?: "ha" }
 
     /**
      * Rungs Auto is allowed to pick between.
@@ -1092,7 +1121,7 @@ class AppSettings(private val context: Context) {
      * rather than clipped, so a heavy track still reaches the top of a narrow
      * selection. Defaults to the calmer three, matching syncoV2.
      */
-    val lightSyncAutoLevels: Flow<List<String>> = context.dataStore.data.map { prefs ->
+    val lightSyncAutoLevels: Flow<List<String>> = pref { prefs ->
         prefs[LIGHT_SYNC_AUTO_LEVELS]
             ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
             ?.takeIf { it.isNotEmpty() }
@@ -1101,34 +1130,34 @@ class AppSettings(private val context: Context) {
 
     /** Whether [lightSyncMode] follows the selected library. See the key's docs. */
     val lightSyncModeAuto: Flow<Boolean> =
-        context.dataStore.data.map { it[LIGHT_SYNC_MODE_AUTO] ?: true }
+        pref { it[LIGHT_SYNC_MODE_AUTO] ?: true }
 
     /**
      * The direct-mode master toggle. The HA path keeps its own per-area `enabled`
      * switch in Home Assistant; direct mode has no HA to hold that state, so it
      * lives here. Off by default: pairing a bridge shouldn't start streaming to it.
      */
-    val lightSyncEnabled: Flow<Boolean> = context.dataStore.data.map { it[LIGHT_SYNC_ENABLED] ?: false }
+    val lightSyncEnabled: Flow<Boolean> = pref { it[LIGHT_SYNC_ENABLED] ?: false }
 
     /** Intensity mode: subtle / medium / high / intense / extreme. */
-    val lightSyncIntensity: Flow<String> = context.dataStore.data.map { it[LIGHT_SYNC_INTENSITY] ?: "high" }
+    val lightSyncIntensity: Flow<String> = pref { it[LIGHT_SYNC_INTENSITY] ?: "high" }
 
     /** Colour scheme wire key. */
-    val lightSyncColor: Flow<String> = context.dataStore.data.map { it[LIGHT_SYNC_COLOR] ?: "album_art_v2" }
+    val lightSyncColor: Flow<String> = pref { it[LIGHT_SYNC_COLOR] ?: "album_art_v2" }
 
     /** Master brightness ceiling (5..100). */
-    val lightSyncBrightness: Flow<Int> = context.dataStore.data.map { it[LIGHT_SYNC_BRIGHTNESS]?.toIntOrNull() ?: 100 }
+    val lightSyncBrightness: Flow<Int> = pref { it[LIGHT_SYNC_BRIGHTNESS]?.toIntOrNull() ?: 100 }
 
     /** Whether advanced tunables are shown on the direct Light Sync screen. */
-    val lightSyncAdvanced: Flow<Boolean> = context.dataStore.data.map { it[LIGHT_SYNC_ADVANCED] ?: false }
+    val lightSyncAdvanced: Flow<Boolean> = pref { it[LIGHT_SYNC_ADVANCED] ?: false }
 
     /**
      * Direct-mode advanced tunables. Keys are the syncoV2 tunable names;
      * missing keys default to 1.0 (no change). Values are coerced to 0..2.
      */
-    val lightSyncTunables: Flow<Map<String, Float>> = context.dataStore.data.map { prefs ->
+    val lightSyncTunables: Flow<Map<String, Float>> = pref { prefs ->
         val raw = prefs[LIGHT_SYNC_TUNABLES]
-        if (raw.isNullOrBlank()) return@map emptyMap()
+        if (raw.isNullOrBlank()) return@pref emptyMap()
         try {
             val obj = serverJson.decodeFromString(JsonObject.serializer(), raw)
             obj.mapNotNull { (k, v) ->
@@ -1140,11 +1169,11 @@ class AppSettings(private val context: Context) {
     }
 
     /** Analyse tracks ahead of the show. See the key's docs for the default. */
-    val lightSyncPrescan: Flow<Boolean> = context.dataStore.data.map { it[LIGHT_SYNC_PRESCAN] ?: true }
+    val lightSyncPrescan: Flow<Boolean> = pref { it[LIGHT_SYNC_PRESCAN] ?: true }
 
     /** Only pull remote tracks down for analysis on an unmetered network. */
     val lightSyncPrescanWifiOnly: Flow<Boolean> =
-        context.dataStore.data.map { it[LIGHT_SYNC_PRESCAN_WIFI] ?: true }
+        pref { it[LIGHT_SYNC_PRESCAN_WIFI] ?: true }
 
     /** Room gestures. Off unless asked for — see the key's docs. */
     /**
@@ -1162,7 +1191,7 @@ class AppSettings(private val context: Context) {
      * offset so the two controls do not mean opposite things.
      */
     val lightSyncSpeakerOffsetMs: Flow<Int> =
-        context.dataStore.data.map { it[LIGHT_SYNC_SPEAKER_OFFSET]?.toIntOrNull() ?: 0 }
+        pref { it[LIGHT_SYNC_SPEAKER_OFFSET]?.toIntOrNull() ?: 0 }
 
     /**
      * Let Light Sync react to *other apps'* playback.
@@ -1173,7 +1202,7 @@ class AppSettings(private val context: Context) {
      * starts, because the projection token is single-use. That is a platform rule and
      * there is no way around it — see `capture/PlaybackCapture.kt`.
      */
-    val captureOtherApps: Flow<Boolean> = context.dataStore.data.map { it[CAPTURE_OTHER_APPS] ?: false }
+    val captureOtherApps: Flow<Boolean> = pref { it[CAPTURE_OTHER_APPS] ?: false }
 
     /**
      * Motion: `system`, `full` or `reduced`.
@@ -1184,29 +1213,29 @@ class AppSettings(private val context: Context) {
      * animated on a device where that setting is off for other reasons, had nothing to
      * say so with. `system` stays the default and keeps the old behaviour exactly.
      */
-    val motionMode: Flow<String> = context.dataStore.data.map { it[MOTION_MODE] ?: MOTION_SYSTEM }
+    val motionMode: Flow<String> = pref { it[MOTION_MODE] ?: MOTION_SYSTEM }
 
     val lightSyncSpatial: Flow<Boolean> =
-        context.dataStore.data.map { it[LIGHT_SYNC_SPATIAL] ?: false }
+        pref { it[LIGHT_SYNC_SPATIAL] ?: false }
 
     /** Layer 1 — a deterministic per-track visual fingerprint. Off by default. */
-    val musicDnaEnabled: Flow<Boolean> = context.dataStore.data.map { it[MUSIC_DNA_ENABLED] ?: false }
+    val musicDnaEnabled: Flow<Boolean> = pref { it[MUSIC_DNA_ENABLED] ?: false }
 
     // --- Effects (ambience shows) ---
 
-    val effectsLast: Flow<String> = context.dataStore.data.map { it[EFFECTS_LAST] ?: "" }
+    val effectsLast: Flow<String> = pref { it[EFFECTS_LAST] ?: "" }
 
     /** How lively each effect is, 0..1. Missing means the middle. */
-    val effectsIntensity: Flow<Map<String, Float>> = context.dataStore.data.map { prefs ->
+    val effectsIntensity: Flow<Map<String, Float>> = pref { prefs ->
         parseFloatMap(prefs[EFFECTS_INTENSITY])
     }
 
-    val effectsSoundMode: Flow<String> = context.dataStore.data.map { it[EFFECTS_SOUND_MODE] ?: "synth" }
+    val effectsSoundMode: Flow<String> = pref { it[EFFECTS_SOUND_MODE] ?: "synth" }
 
     /** Wire name to a persisted `content://` URI the listener picked. */
-    val effectsClips: Flow<Map<String, String>> = context.dataStore.data.map { prefs ->
+    val effectsClips: Flow<Map<String, String>> = pref { prefs ->
         val raw = prefs[EFFECTS_CLIPS]
-        if (raw.isNullOrBlank()) return@map emptyMap()
+        if (raw.isNullOrBlank()) return@pref emptyMap()
         try {
             serverJson.decodeFromString(JsonObject.serializer(), raw)
                 .mapNotNull { (k, v) -> v.jsonPrimitive.content.takeIf { it.isNotBlank() }?.let { k to it } }
@@ -1214,7 +1243,7 @@ class AppSettings(private val context: Context) {
         } catch (_: Exception) { emptyMap() }
     }
 
-    val effectsVolume: Flow<Int> = context.dataStore.data.map {
+    val effectsVolume: Flow<Int> = pref {
         it[EFFECTS_VOLUME]?.toIntOrNull()?.coerceIn(0, 100) ?: 70
     }
 
@@ -1224,7 +1253,7 @@ class AppSettings(private val context: Context) {
      * Wi-Fi lock and a foreground service, and nobody means to leave that running
      * overnight.
      */
-    val effectsSleepMinutes: Flow<Int> = context.dataStore.data.map {
+    val effectsSleepMinutes: Flow<Int> = pref {
         it[EFFECTS_SLEEP_MINUTES]?.toIntOrNull()?.coerceIn(0, 480) ?: 60
     }
 
@@ -1239,13 +1268,13 @@ class AppSettings(private val context: Context) {
     }
 
     /** Layer 2 — colour temperature follows the song's live structure. Off by default. */
-    val emotionalArcEnabled: Flow<Boolean> = context.dataStore.data.map { it[EMOTIONAL_ARC_ENABLED] ?: false }
+    val emotionalArcEnabled: Flow<Boolean> = pref { it[EMOTIONAL_ARC_ENABLED] ?: false }
 
     /** Layer 3 — instrument groups at fixed positions in the room. Off by default. */
-    val phantomStageEnabled: Flow<Boolean> = context.dataStore.data.map { it[PHANTOM_STAGE_ENABLED] ?: false }
+    val phantomStageEnabled: Flow<Boolean> = pref { it[PHANTOM_STAGE_ENABLED] ?: false }
 
     /** Layer 4 — phone motion as a lighting controller. Off by default. */
-    val phoneConductorEnabled: Flow<Boolean> = context.dataStore.data.map { it[PHONE_CONDUCTOR_ENABLED] ?: false }
+    val phoneConductorEnabled: Flow<Boolean> = pref { it[PHONE_CONDUCTOR_ENABLED] ?: false }
 
     suspend fun setHueBridge(
         ip: String,
@@ -1298,7 +1327,7 @@ class AppSettings(private val context: Context) {
     // whatever is on screen.
 
     /** The feature is switched on at all. Off by default — it asks for permissions. */
-    val drivingEnabled: Flow<Boolean> = context.dataStore.data.map { it[DRIVING_ENABLED] ?: false }
+    val drivingEnabled: Flow<Boolean> = pref { it[DRIVING_ENABLED] ?: false }
 
     /**
      * Which window mechanism the bar uses.
@@ -1313,7 +1342,7 @@ class AppSettings(private val context: Context) {
      * free positioning, and costs `SYSTEM_ALERT_WINDOW`.
      */
     val drivingMechanism: Flow<String> =
-        context.dataStore.data.map { it[DRIVING_MECHANISM] ?: DRIVING_PIP }
+        pref { it[DRIVING_MECHANISM] ?: DRIVING_PIP }
 
     /**
      * The bonded Bluetooth device the user nominated as their car stereo, or blank.
@@ -1325,30 +1354,30 @@ class AppSettings(private val context: Context) {
      * "know that Maps is running". Connecting to the car is the same situation and
      * costs one runtime permission.
      */
-    val drivingCarAddress: Flow<String> = context.dataStore.data.map { it[DRIVING_CAR_ADDRESS] ?: "" }
-    val drivingCarName: Flow<String> = context.dataStore.data.map { it[DRIVING_CAR_NAME] ?: "" }
+    val drivingCarAddress: Flow<String> = pref { it[DRIVING_CAR_ADDRESS] ?: "" }
+    val drivingCarName: Flow<String> = pref { it[DRIVING_CAR_NAME] ?: "" }
 
     /**
      * Auto-pause playback while the phone is ringing or on a call. Off by default:
      * it needs `READ_PHONE_STATE`, requested at runtime only when this is turned on
      * — the same "don't ask until it's wanted" rule the driving-car picker follows.
      */
-    val pauseForCalls: Flow<Boolean> = context.dataStore.data.map { it[PAUSE_FOR_CALLS] ?: false }
+    val pauseForCalls: Flow<Boolean> = pref { it[PAUSE_FOR_CALLS] ?: false }
 
     /**
      * GPS speed-limit alert. Off by default and needs `ACCESS_FINE_LOCATION`,
      * requested at runtime only when turned on — see [SpeedMonitor].
      */
-    val speedLimitAlertEnabled: Flow<Boolean> = context.dataStore.data.map { it[SPEED_LIMIT_ALERT_ENABLED] ?: false }
+    val speedLimitAlertEnabled: Flow<Boolean> = pref { it[SPEED_LIMIT_ALERT_ENABLED] ?: false }
 
     /** 0 means "not set" — [SpeedMonitor] treats that as "nothing to alert on". */
-    val drivingSpeedLimitKmh: Flow<Int> = context.dataStore.data.map { it[DRIVING_SPEED_LIMIT_KMH]?.toIntOrNull() ?: 0 }
+    val drivingSpeedLimitKmh: Flow<Int> = pref { it[DRIVING_SPEED_LIMIT_KMH]?.toIntOrNull() ?: 0 }
 
     /** How far over [drivingSpeedLimitKmh] before the alert fires. Default 5%, per SpeedAlert's own doc. */
-    val drivingSpeedTolerancePct: Flow<Int> = context.dataStore.data.map { it[DRIVING_SPEED_TOLERANCE_PCT]?.toIntOrNull() ?: 5 }
+    val drivingSpeedTolerancePct: Flow<Int> = pref { it[DRIVING_SPEED_TOLERANCE_PCT]?.toIntOrNull() ?: 5 }
 
     /** Speed-adaptive volume boost. Off by default; shares [SpeedMonitor] with the alert above. */
-    val speedAdaptiveVolume: Flow<Boolean> = context.dataStore.data.map { it[SPEED_ADAPTIVE_VOLUME] ?: false }
+    val speedAdaptiveVolume: Flow<Boolean> = pref { it[SPEED_ADAPTIVE_VOLUME] ?: false }
 
     /**
      * Dynamic speed-limit detection. When true, [SpeedMonitor] looks up the
@@ -1356,10 +1385,10 @@ class AppSettings(private val context: Context) {
      * of using [drivingSpeedLimitKmh]. The manual limit serves as fallback.
      * Off by default — the user opts in after downloading the speed-limit data.
      */
-    val speedLimitAutoDetect: Flow<Boolean> = context.dataStore.data.map { it[SPEED_LIMIT_AUTO_DETECT] ?: false }
+    val speedLimitAutoDetect: Flow<Boolean> = pref { it[SPEED_LIMIT_AUTO_DETECT] ?: false }
 
     /** Version string of the last downloaded speed-limit database (e.g. "july_2026"). */
-    val speedLimitDbVersion: Flow<String?> = context.dataStore.data.map { it[SPEED_LIMIT_DB_VERSION] }
+    val speedLimitDbVersion: Flow<String?> = pref { it[SPEED_LIMIT_DB_VERSION] }
 
     suspend fun setSpeedLimitAlertEnabled(on: Boolean) = context.dataStore.edit { it[SPEED_LIMIT_ALERT_ENABLED] = on }
 
@@ -1493,13 +1522,13 @@ class AppSettings(private val context: Context) {
     // ── Crash reporting ────────────────────────────────────────────────────
 
     /** GitHub repo in owner/repo form, e.g. "engabd11/CAMusic". */
-    val crashGitHubRepo: Flow<String> = context.dataStore.data.map { it[CRASH_GITHUB_REPO] ?: "engabd11/CAMusic" }
+    val crashGitHubRepo: Flow<String> = pref { it[CRASH_GITHUB_REPO] ?: "engabd11/CAMusic" }
 
     /** Encrypted personal access token for automatic GitHub issue creation. */
-    val crashGitHubToken: Flow<String> = context.dataStore.data.map { Crypto.decrypt(it[CRASH_GITHUB_TOKEN] ?: "") }
+    val crashGitHubToken: Flow<String> = pref { Crypto.decrypt(it[CRASH_GITHUB_TOKEN] ?: "") }
 
     /** Whether to attempt an automatic GitHub issue on crash. */
-    val crashAutoUpload: Flow<Boolean> = context.dataStore.data.map { it[CRASH_AUTO_UPLOAD] ?: false }
+    val crashAutoUpload: Flow<Boolean> = pref { it[CRASH_AUTO_UPLOAD] ?: false }
 
     suspend fun setCrashGitHubRepo(repo: String) {
         context.dataStore.edit { it[CRASH_GITHUB_REPO] = repo.trim() }

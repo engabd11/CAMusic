@@ -282,6 +282,7 @@ class DirectLightSync(
         source.tap.onAnalysisReset = ::onAnalysisReset
         source.tap.setActive(true)
         wiredTap = source.tap
+        latestFrameLagMs = 0f
         // A different player is a different lead, and the two are not close: the local
         // path's sink buffer is a couple of hundred milliseconds, while Music
         // Assistant's engine keeps seconds of decoded PCM in its native ring. Slewing
@@ -397,6 +398,38 @@ class DirectLightSync(
 
     /** Seconds into the current track, published from [onAnalysisFrame]. */
     @Volatile private var latestPositionS: Float = -1f
+
+    /**
+     * How far behind the newest sample its backend has handed over [latestFrame]
+     * sits, in milliseconds. Published from [onAnalysisFrame] alongside it.
+     *
+     * See [effectiveLeadMs] for what it is for, and
+     * [com.engabd.sendpin.audio.AudioAnalysisTap.analysisLagS] for where it comes
+     * from.
+     */
+    @Volatile private var latestFrameLagMs: Float = 0f
+
+    /**
+     * How long the frame being rendered right now should be held, expressed as a
+     * lead for [FrameDelayQueue].
+     *
+     * [com.engabd.sendpin.audio.AudioLead] answers a question about the *newest*
+     * sample the backend has handed to the tap: how long until that one is heard.
+     * The frame being rendered describes audio [latestFrameLagMs] older than that,
+     * which is heard exactly that much sooner — so the hold has to come down by the
+     * same amount or the room runs late by it.
+     *
+     * On the local player the lag is a couple of hops and the term barely moves.
+     * On Music Assistant it is the whole of `SendspinNativeEngine`'s start burst,
+     * seconds of it, on every track change and every pause — which is what "the
+     * lights are smooth on Navidrome and not on MA" was. Both paths compute the
+     * hold the same way now; only the numbers differ.
+     *
+     * Null when the backend has no position yet, which [FrameDelayQueue] reads as
+     * "hold what you have" rather than as zero.
+     */
+    private fun effectiveLeadMs(): Float? =
+        activeSource.value.lead.leadMs?.let { (it - latestFrameLagMs).coerceAtLeast(0f) }
 
     /**
      * The user's brightness ceiling, mirrored from [SyncoEngine.brightness] so
@@ -730,7 +763,7 @@ class DirectLightSync(
             dtls = client
 
             // 4. Create the stream encoder + effects engine.
-            delayQueue.resetDelay(activeSource.value.lead.leadMs)
+            delayQueue.resetDelay(effectiveLeadMs())
             lastSent = null
             sendFailures = 0
             revoked = false
@@ -778,6 +811,7 @@ class DirectLightSync(
             latestStructure = null
             latestGesture = null
             latestPositionS = -1f
+            latestFrameLagMs = 0f
             // A new session starts from the room as it is, not from whatever the
             // last one left behind — the layers outlive any one stream, since
             // they are plain fields on this object rather than per-session state.
@@ -1011,6 +1045,9 @@ class DirectLightSync(
         // reconnect, and this callback only ever fires from whichever tap is
         // actually wired (see rewireTap).
         val pos = wiredTap?.analysisPositionS ?: Float.NaN
+        // Read here rather than in the render loop for the same reason as `pos`:
+        // both describe *this* frame, and the next hop moves them on.
+        latestFrameLagMs = (wiredTap?.analysisLagS ?: 0f) * 1000f
         if (!pos.isNaN()) {
             // Published unconditionally (not just once a scan is committed) —
             // the light-show layers want "where in the track are we" whether
@@ -1281,7 +1318,7 @@ class DirectLightSync(
             // Hold the rendered frame until the audio it describes is actually
             // audible. See FrameDelayQueue: the tap runs ahead of the speaker, so
             // without this the lights lead the music rather than trail it.
-            val leadMs = activeSource.value.lead.leadMs
+            val leadMs = effectiveLeadMs()
             if (seedDelayOnNextLead && leadMs != null) {
                 seedDelayOnNextLead = false
                 delayQueue.resetDelay(leadMs)
@@ -1825,7 +1862,10 @@ class DirectLightSync(
      * source of truth, and no path where the UI and the lights disagree.
      *
      * These collectors run for the life of the process. While the engine is null
-     * every apply is a no-op, which costs nothing — DataStore only emits on change.
+     * every apply is a no-op, which costs nothing — and each flow emits only when
+     * its own setting changes, which [AppSettings.pref] is what makes true. It was
+     * not always: several of these do real work per emission, and the colour one
+     * re-rolled the Song palette on a write to any key at all.
      */
     private fun observeSettings() {
         scope.launch {
