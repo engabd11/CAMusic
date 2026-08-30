@@ -14,7 +14,7 @@
 - [x] Music Assistant Sendspin player (FLAC, Opus, PCM)
 - [x] Clock-synced grouped playback (Kalman filter, NTP-style four-point exchange)
 - [x] MA library browser, search, queue, speaker control, playlists
-- [x] Navidrome, Subsonic/OpenSubsonic, and Jellyfin as standalone libraries
+- [x] Navidrome, Subsonic/OpenSubsonic, Jellyfin, Emby and Plex as standalone libraries
 - [x] Local files on device (MediaStore source)
 - [x] Multiple library servers — add, switch, manage independently
 - [x] Offline downloads with storage cap and Wi-Fi-only option
@@ -143,6 +143,69 @@
 - [x] **The light-show layers stop littering** — roughly 240 maps and 2,400 short-lived arrays a
       second removed from the one thread in the app with a hard deadline
 
+**v0.10.7** (PRs #93, #94, #95):
+
+- [x] **Android Auto** — a `CarMediaLibraryService` browse tree and a session facade
+      (`CarSessionPlayer`), browsing every configured library server. A track tapped in the car
+      always plays on *this phone*, never a speaker in another room
+- [x] **First Android TV release**, behind a new `tv` product flavour: a D-pad Now Playing,
+      Library, Queue, Light Sync and Settings, compiling the same `app/src/main` business logic
+      as the phone. The phone release still ships as the `mobile` APK, matching every prior
+      release's package id
+- [x] **Phone UI polish** — two-row library carousels, art-directed category tiles, settings
+      descriptions behind an info chip, one motion language across the app, and the album cover
+      no longer flashing between two tracks of the same album
+
+**v0.10.8** (PR #96):
+
+- [x] **Six settings-gated creative features** — swipe-to-skip, the live audio visualizer, the
+      music map timeline, harmonic DJ mode, phone-sensor gesture controls, and Listening DNA stats
+- [x] **On-device stem separation** for the Phantom Stage lighting layer
+- [x] A seek that could leak into the next track; a transport icon that shifted width; the sleep
+      timer chip shifting its neighbours
+
+**v0.10.9** (PRs #100–#109):
+
+- [x] **A native Oboe engine for the Sendspin player**, replacing the broken ExoPlayer path, with
+      real drift correction in native code
+- [x] **The MA playhead rewritten** on an idempotent, server-anchored model
+- [x] **Multi-room sync fixed** — group-state detection, and a shared-timeline bug that could mute
+      a whole track once a speaker joined
+- [x] **Light Sync steady on the MA player**, which had been erratic since MA playback landed
+- [x] **A webOS TV app** for LG televisions, **dynamic GPS-based speed limits**, **Effects mode**,
+      a generated cover for playlist-less playlists, a reordered Continue Listening shelf that now
+      carries songs, and full Music Assistant 2.10.0 API compliance
+
+**v0.11.0** (PRs #110–#114):
+
+- [x] **Emby and Plex as libraries.** Two more `MusicSource` adapters: Emby over its
+      near-identical-to-Jellyfin API, and Plex over its own, signing in through the plex.tv PIN
+      flow so no Plex password is ever typed into the app. Both browse, play, download and
+      scrobble; every server kind now shows its own brand mark rather than a generic glyph
+- [x] **Real recorded sound for the ambience effects** — a bundled looping bed per effect,
+      played by a parallel clip player, with the synthesised sound kept for the effects whose
+      audio has to line up with their lights. The show's audio moved to a process-scoped holder,
+      so swiping the app away no longer leaves a bed looping with nothing able to reach it
+- [x] **The master Light Sync switch and an ambience show stopped fighting.** A show that
+      self-opened the bridge session now says so, and stopping it puts the switch back only if it
+      was the one that turned it on. Two `action: start` PUTs on one entertainment area — the
+      state that poisons a session for good — can no longer be raced into
+- [x] **A visualiser that reads as a spectrum**: per-bin AGC divided back out, bars running low to
+      high rather than mirrored, and asymmetric analyser ballistics with peak-hold caps
+- [x] **Lyrics that read as typography**, and **Settings reorganised** into Playback & Behavior
+      with the card-in-card nesting removed
+- [x] **The MA burst no longer holds the room out of step.** `AudioAnalysisTap` reports how far
+      behind the newest sample each frame is, and `FrameDelayQueue` subtracts it — so the backlog a
+      `stream/start` burst leaves behind is held and correctly timed rather than chased at four
+      times real time, which had been racing the show and painting the idle show over the last two
+      seconds of every track
+- [x] **Downloads delete off the main thread.** Both halves of a delete are disk — the unlink and
+      the Room write — and every caller outside the eviction loop is a tap handler, so
+      "Delete all downloads" over a filled cap blocked the UI thread behind thousands of `unlink`
+      calls and a full table wipe
+- [x] **Plex genre browse filters by tag id**, which is what Plex takes, rather than by name,
+      which is what Jellyfin and Subsonic take
+
 ### Next up
 
 - [ ] **On-device verification of the newest work.** The playback chain is confirmed on hardware.
@@ -174,9 +237,7 @@
 ### Planned
 
 - [ ] **More library providers** — each is an adapter against the `MusicSource` interface, not a
-      change to the app:
-  - Emby (near-identical API to Jellyfin)
-  - Plex (plex.tv PIN flow — no server password ever typed in the app)
+      change to the app. Emby and Plex shipped in v0.11.0; still to come:
   - Audiobookshelf (music libraries alongside audiobooks)
   - Kodi (JSON-RPC library browser)
 - [ ] **Network filesystems** — SMB, WebDAV, Google Drive, OneDrive, Dropbox, Box, pCloud. These
@@ -185,7 +246,7 @@
 - [ ] **Bit-perfect exclusive-mode output** — the native AAudio I24 path is written and
       deliberately not compiled. `flac_decode()` is still a skeleton and the ring buffer is
       byte-level rather than frame-level. The largest single audio item on the roadmap.
-- [ ] **Wider instrumented coverage** — 810 unit tests cover protocol, clock, DSP, parsing, the
+- [ ] **Wider instrumented coverage** — ~1,000 unit tests cover protocol, clock, DSP, parsing, the
       server list, the Philips Hue Entertainment sync engine, speed alert logic, beat-matched
       crossfade, the creative light-show layers, the announcement drain policy, the downloads index
       and the SAF-to-MediaStore folder mapping; two instrumented test classes pin the two

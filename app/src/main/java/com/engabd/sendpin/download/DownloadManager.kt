@@ -17,7 +17,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
@@ -189,7 +188,7 @@ class DownloadManager(
      * is under the cap (in MB). A cap of 0 means unlimited. Called after every
      * successful download and on app start.
      */
-    private fun enforceStorageCap(capMb: Int) {
+    private suspend fun enforceStorageCap(capMb: Int) {
         if (capMb <= 0) return
         val capBytes = capMb.toLong() * 1_048_576L
         // Never the track being listened to. Deleting the file out from under the
@@ -413,19 +412,28 @@ class DownloadManager(
     /** Drop a failed entry (e.g. once the user has retried it). */
     fun dismissJob(id: String) = clearJob(id)
 
-    fun delete(id: String) {
-        val entry = _downloads.value.firstOrNull { it.id == id } ?: return
+    /**
+     * Suspending, and on [Dispatchers.IO], because both halves of a delete are disk:
+     * unlinking the file (and its cover) and writing the row out of Room. These used
+     * to be plain functions that did the unlink inline and wrapped the Room write in
+     * `runBlocking`, and every caller outside the eviction loop is a tap handler —
+     * so a delete ran the whole thing on the main thread. One track was survivable;
+     * "Delete all downloads" over a filled cap is thousands of `unlink` calls and a
+     * full table wipe with the UI thread blocked behind them, which is an ANR.
+     */
+    suspend fun delete(id: String): Unit = withContext(Dispatchers.IO) {
+        val entry = _downloads.value.firstOrNull { it.id == id } ?: return@withContext
         runCatching { File(entry.filePath).delete() }
         // The cover is shared across an album — only bin it once the last track goes.
         entry.coverPath?.let { path ->
             if (_downloads.value.none { it.id != id && it.coverPath == path }) runCatching { File(path).delete() }
         }
-        runBlocking { dao.delete(id) }
+        dao.delete(id)
     }
 
-    fun deleteAll() {
+    suspend fun deleteAll(): Unit = withContext(Dispatchers.IO) {
         _downloads.value.forEach { runCatching { File(it.filePath).delete() } }
         runCatching { coverDir.listFiles()?.forEach { it.delete() } }
-        runBlocking { dao.deleteAll() }
+        dao.deleteAll()
     }
 }
