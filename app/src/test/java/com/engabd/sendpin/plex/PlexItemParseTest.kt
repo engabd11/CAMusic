@@ -109,4 +109,37 @@ class PlexItemParseTest {
         assertNotNull(track.image)
         assert("url=" in track.image!!) { track.image!! }
     }
+
+    // ── Genres ───────────────────────────────────────────────────────────
+    //
+    // Plex filters by a tag's numeric id, not by its name — unlike Jellyfin and
+    // Subsonic, where the name *is* the key. The id has to come off the Directory
+    // entry whichever of the two shapes a given server version answers with, or the
+    // genre shelf browses to nothing.
+
+    @Test
+    fun `a genre's id comes from a bare key`() {
+        assertEquals("8", client.genreId(obj("""{"key": "8", "title": "Rock"}""")))
+    }
+
+    @Test
+    fun `a genre's id comes out of a filter path in key`() {
+        assertEquals(
+            "8",
+            client.genreId(obj("""{"key": "/library/sections/1/all?genre=8&type=9", "title": "Rock"}""")),
+        )
+    }
+
+    @Test
+    fun `a genre's id falls back to fastKey when there is no key`() {
+        assertEquals(
+            "12",
+            client.genreId(obj("""{"fastKey": "/library/sections/1/all?genre=12", "title": "Jazz"}""")),
+        )
+    }
+
+    @Test
+    fun `a genre entry with neither key has no id`() {
+        assertNull(client.genreId(obj("""{"title": "Rock"}""")))
+    }
 }

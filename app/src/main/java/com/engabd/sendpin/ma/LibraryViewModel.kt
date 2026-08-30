@@ -1786,11 +1786,17 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     fun deleteCurrentTrackDownload() {
         val id = localPlayer.current.value?.navId ?: return
         if (!downloadManager.isDownloaded(id)) return
-        downloadManager.delete(id)
-        _playerToast.tryEmit("Offline copy deleted")
+        viewModelScope.launch {
+            downloadManager.delete(id)
+            _playerToast.tryEmit("Offline copy deleted")
+        }
     }
 
-    fun deleteDownload(id: String) = downloadManager.delete(id)
+    // Launched rather than called straight through: `delete` unlinks a file and
+    // writes Room, and every caller of this is a tap handler on the main thread.
+    fun deleteDownload(id: String) {
+        viewModelScope.launch { downloadManager.delete(id) }
+    }
 
     /** Drop a failed download row once the user has acknowledged it. */
     fun dismissDownload(id: String) = downloadManager.dismissJob(id)
@@ -1868,8 +1874,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun deleteAllDownloads() {
-        downloadManager.deleteAll()
-        _toast.tryEmit("Downloads cleared")
+        viewModelScope.launch {
+            downloadManager.deleteAll()
+            _toast.tryEmit("Downloads cleared")
+        }
     }
 
     /** Bytes the downloads take up, for the Settings readout. */

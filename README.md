@@ -241,18 +241,22 @@ whichever is playing.
 
 ## Recent releases
 
-**v0.10.8**: Music Assistant 2.10 API compliance; multi-room group-state fixes.
-**v0.10.7**: native Oboe Sendspin engine, replacing the ExoPlayer path.
-**v0.10.6**: Android Auto; phone UI polish; creative light-show layers.
-**v0.10.0**: Android TV flavour; webOS TV app; GPS speed limits.
+**v0.11.0**: Emby and Plex as libraries; recorded sound for the ambience effects; a
+spectrum analyser that reads as one; lyrics as typography; Settings reorganised.
+**v0.10.9**: native Oboe Sendspin engine; MA playhead rewritten on the server's anchor;
+webOS TV app; GPS speed limits; Effects mode.
+**v0.10.8**: six settings-gated creative features; on-device stem separation.
+**v0.10.7**: Android Auto; first Android TV release; phone UI polish.
+**v0.10.6**: analyser v3 (key detection 12.4 % → 71.1 % shift-consistent).
 
 Full history: [docs/release-history.md](docs/release-history.md).
 
 ### Next up
 
 - Wear OS companion
+- Audiobookshelf and Kodi as libraries
 - Lyrics beyond the current provider set
-- More Effects, and user-supplied clips per effect
+- More Effects, and more bundled beds
 
 ---
 
@@ -277,7 +281,7 @@ git clone https://github.com/engabd11/CAMusic.git
 cd CAMusic
 ./gradlew assembleMobileDebug          # phone/tablet
 ./gradlew assembleTvDebug              # Android TV
-./gradlew testMobileDebugUnitTest      # ~900 unit tests
+./gradlew testMobileDebugUnitTest      # ~1,000 unit tests
 ```
 
 Needs JDK 17+ and the Android SDK. The native audio engine builds through CMake as part

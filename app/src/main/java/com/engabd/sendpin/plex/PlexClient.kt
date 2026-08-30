@@ -69,6 +69,9 @@ class PlexClient(
         private const val TYPE_ARTIST = "8"
         private const val TYPE_ALBUM = "9"
         private const val TYPE_TRACK = "10"
+
+        /** The `genre=<id>` filter, for pulling a tag id back out of a filter path. */
+        private val GENRE_PARAM = Regex("[?&]genre=([^&]+)")
     }
 
     val serverUrl: String get() = base()
@@ -335,18 +338,43 @@ class PlexClient(
     suspend fun playlistTracks(id: String): List<MaItem> =
         entries(container("/playlists/$id/items")).mapNotNull(::item)
 
+    /**
+     * The library's genres.
+     *
+     * Unlike Jellyfin's and Subsonic's, where the genre's *name* is the key every
+     * other endpoint takes, Plex filters by the tag's numeric id — `genre=8` rather
+     * than `genre=Rock` — so the id is what [MaItem.itemId] carries here and what
+     * [songsByGenre] is handed back. A name went out as the filter value before this,
+     * which Plex answers with either the unfiltered section or a 400 depending on its
+     * version; the `runCatching` below turned both into an empty shelf.
+     */
     suspend fun genres(): List<MaItem> = runCatching {
         container("/library/sections/$librarySectionKey/genre", mapOf("type" to TYPE_ARTIST))["Directory"]
             ?.jsonArray.orEmpty()
             .mapNotNull { it as? JsonObject }
             .mapNotNull { o ->
                 val name = o.str("title") ?: return@mapNotNull null
+                val id = genreId(o) ?: return@mapNotNull null
                 MaItem(
-                    itemId = name, provider = PROVIDER, name = name, uri = o.str("key"),
+                    itemId = id, provider = PROVIDER, name = name, uri = o.str("key"),
                     mediaType = "genre", subtitle = null, image = null, duration = null,
                 )
             }
     }.getOrDefault(emptyList())
+
+    /**
+     * The tag id out of a genre `Directory` entry, whichever shape the server used.
+     *
+     * Current Plex returns `key` as the bare id and `fastKey` as the full filter
+     * path; older builds put the path in `key` itself. Reading the `genre=` parameter
+     * out of a path, and otherwise taking the last segment, covers both without
+     * having to know which one is answering.
+     */
+    internal fun genreId(o: JsonObject): String? {
+        val raw = o.str("key") ?: o.str("fastKey") ?: return null
+        val fromQuery = GENRE_PARAM.find(raw)?.groupValues?.get(1)
+        return (fromQuery ?: raw.substringAfterLast('/')).takeIf { it.isNotBlank() }
+    }
 
     suspend fun songsByGenre(genre: String, count: Int = 300, offset: Int = 0): List<MaItem> = runCatching {
         entries(
