@@ -144,8 +144,12 @@ class AppSettings(private val context: Context) {
         // location to look up the posted limit from a local offline database, instead
         // of the manually-typed [DRIVING_SPEED_LIMIT_KMH]. The manual value remains as
         // a fallback for areas where the database has no data. See [SpeedMonitor].
+        // There is deliberately no speed_limit_db_version key. It existed to compare
+        // a downloaded database against a remote version string, and the database is
+        // bundled in the APK now — so its version travels with the build, and the
+        // only copy that matters is the one inside the file, which
+        // SpeedLimitDatabase.databaseVersion() reads.
         private val SPEED_LIMIT_AUTO_DETECT = booleanPreferencesKey("speed_limit_auto_detect")
-        private val SPEED_LIMIT_DB_VERSION = stringPreferencesKey("speed_limit_db_version") // last downloaded DB version
 
         // Self-hosted crash reporting
         private val CRASH_GITHUB_REPO = stringPreferencesKey("crash_github_repo") // owner/repo, e.g. engabd11/CAMusic
@@ -1416,9 +1420,6 @@ class AppSettings(private val context: Context) {
      */
     val speedLimitAutoDetect: Flow<Boolean> = pref { it[SPEED_LIMIT_AUTO_DETECT] ?: false }
 
-    /** Version string of the last downloaded speed-limit database (e.g. "july_2026"). */
-    val speedLimitDbVersion: Flow<String?> = pref { it[SPEED_LIMIT_DB_VERSION] }
-
     suspend fun setSpeedLimitAlertEnabled(on: Boolean) = context.dataStore.edit { it[SPEED_LIMIT_ALERT_ENABLED] = on }
 
     suspend fun setDrivingSpeedLimitKmh(value: Int) = context.dataStore.edit {
@@ -1432,8 +1433,6 @@ class AppSettings(private val context: Context) {
     suspend fun setSpeedAdaptiveVolume(on: Boolean) = context.dataStore.edit { it[SPEED_ADAPTIVE_VOLUME] = on }
 
     suspend fun setSpeedLimitAutoDetect(on: Boolean) = context.dataStore.edit { it[SPEED_LIMIT_AUTO_DETECT] = on }
-
-    suspend fun setSpeedLimitDbVersion(version: String) = context.dataStore.edit { it[SPEED_LIMIT_DB_VERSION] = version }
 
     suspend fun setDrivingEnabled(on: Boolean) {
         context.dataStore.edit { it[DRIVING_ENABLED] = on }

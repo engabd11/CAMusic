@@ -237,10 +237,10 @@ private fun PauseForCallsRow(settings: AppSettings, accent: Color, scope: Corout
  * `ACCESS_FINE_LOCATION` request. Nothing here reads location for anything but a
  * speed reading; see `SpeedMonitor`'s own doc for the "why fine, not coarse".
  *
- * The limit source is a toggle: "Auto-detect" looks up the posted limit from a
- * local offline database using GPS coordinates (no internet, no tracking), or
- * "Manual" uses a typed-in limit — the original behaviour, preserved as the
- * fallback for areas the database doesn't cover or before the data is downloaded.
+ * The limit source is a toggle: "Auto-detect" looks up the posted limit from the
+ * speed-zone database bundled in the app (no internet, no tracking), or "Manual"
+ * uses a typed-in limit — the original behaviour, preserved as the fallback for
+ * everywhere the data does not cover, which is everywhere outside Victoria.
  */
 @Composable
 private fun SpeedFeaturesRow(settings: AppSettings, accent: Color, scope: CoroutineScope) {
@@ -256,6 +256,8 @@ private fun SpeedFeaturesRow(settings: AppSettings, accent: Color, scope: Corout
     // The detected limit from GPS — exposed by SpeedMonitor for the UI to display
     val detectedLimit by com.engabd.sendpin.SendpinApp.instance.speedMonitor
         .detectedLimitKmh.collectAsState(initial = null)
+    val limitDataStatus by com.engabd.sendpin.SendpinApp.instance.speedMonitor
+        .limitDataStatus.collectAsState(initial = null)
     val activeLimit by com.engabd.sendpin.SendpinApp.instance.speedMonitor
         .activeLimitKmh.collectAsState(initial = null)
 
@@ -302,19 +304,27 @@ private fun SpeedFeaturesRow(settings: AppSettings, accent: Color, scope: Corout
         }
 
         if (autoDetect) {
-            // Show detected limit and database status
+            // What the data is doing, from the provider itself rather than a second
+            // guess at it. This used to promise a ~50 MB monthly download that no
+            // code path could ever perform.
             val detected = detectedLimit
             Note(
-                if (detected != null) {
-                    "Detected: $detected km/h on this road. Falls back to manual if no data."
-                } else {
-                    "Looking up speed limits from local data. Falls back to manual limit if the area isn't covered."
+                when {
+                    detected != null -> "Detected: $detected km/h on this road."
+                    limitDataStatus != null -> limitDataStatus.orEmpty()
+                    else -> "Reads the posted limit from the map data in the app."
                 },
                 title = "Auto-detect",
-                info = "Uses a local database of Victoria's speed zones — no internet, no tracking. " +
-                    "The database is downloaded once (~50 MB) and updated monthly. " +
-                    "If the database isn't downloaded yet, or you're outside Victoria, " +
-                    "it falls back to the manual limit below.",
+                info = "Victoria's speed zones ship inside the app, so this needs no " +
+                    "internet and sends nothing anywhere. Your location is compared " +
+                    "against that data on this phone and then forgotten.\n\nThe data " +
+                    "covers Victoria only, and it is a snapshot: roadworks and recent " +
+                    "changes will not be in it. Anywhere it has no answer — including " +
+                    "every other state — the manual limit below is used instead, which " +
+                    "is why it is worth setting.\n\nTip: the limit shown here is what " +
+                    "the alert is actually using. If it stays blank while you drive, " +
+                    "the data has nothing for that road and the fallback is doing the " +
+                    "work.",
             )
         } else {
             // Manual limit input (original behaviour)

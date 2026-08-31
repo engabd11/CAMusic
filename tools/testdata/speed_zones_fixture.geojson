@@ -1,0 +1,86 @@
+{
+ "type": "FeatureCollection",
+ "features": [
+  {
+   "geometry": {
+    "type": "MultiLineString",
+    "coordinates": [
+     [
+      [
+       144.96,
+       -37.81
+      ],
+      [
+       144.9605,
+       -37.81
+      ],
+      [
+       144.961,
+       -37.81
+      ]
+     ],
+     [
+      [
+       144.97,
+       -37.815
+      ],
+      [
+       144.97,
+       -37.816
+      ]
+     ]
+    ]
+   },
+   "type": "Feature",
+   "properties": {
+    "speed_limit": "60",
+    "direction": "North",
+    "zone_length": 88.0,
+    "zone_conditions": [
+     "Normal Operation"
+    ]
+   }
+  },
+  {
+   "geometry": {
+    "type": "LineString",
+    "coordinates": [
+     [
+      145.0,
+      -37.9
+     ],
+     [
+      145.001,
+      -37.9
+     ]
+    ]
+   },
+   "type": "Feature",
+   "properties": {
+    "speed_limit": "80",
+    "direction": "East"
+   }
+  },
+  {
+   "geometry": {
+    "type": "MultiLineString",
+    "coordinates": [
+     [
+      [
+       145.1,
+       -37.5
+      ],
+      [
+       145.2,
+       -37.5
+      ]
+     ]
+    ]
+   },
+   "type": "Feature",
+   "properties": {
+    "speed_limit": "RTZ"
+   }
+  }
+ ]
+}
