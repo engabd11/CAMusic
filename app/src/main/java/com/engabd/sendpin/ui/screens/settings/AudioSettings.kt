@@ -17,6 +17,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.engabd.sendpin.audio.AudioOutputs
 import com.engabd.sendpin.audio.DeviceCapabilities
 import com.engabd.sendpin.audio.ReplayGain
+import com.engabd.sendpin.audio.SignalPath
 import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.data.rememberIsIgnoringBatteryOptimizations
@@ -110,29 +111,100 @@ private fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSco
 
         StatusPanel {
             StatusRow("Playing through", route?.label ?: "Unknown")
-            route?.sampleRateLabel?.let { StatusRow("Accepts", it) }
-            route?.bitDepthLabel?.let { StatusRow("Depth", it) }
+            route?.sampleRateLabel?.let { StatusRow("Device accepts", it) }
             if (mixerRate > 0) StatusRow("Mixer output", "${StreamQuality.khz(mixerRate)} kHz")
         }
         route?.bluetoothCodecNote?.let { Note(it) }
 
+        // The chain itself, stage by stage. The row above describes the *device*;
+        // this describes what is actually flowing through it, which is the question
+        // someone reading this card is really asking. See SignalPath.
+        val path by SignalPath.state.collectAsStateWithLifecycle()
+        if (path.source.known || path.decoded.known) {
+            CardDivider()
+            FieldLabel("Signal path")
+            StatusPanel {
+                if (path.source.known) StatusRow("File", path.source.summary())
+                if (path.decoded.known) StatusRow("Decoder output", path.decoded.summary())
+                if (path.sink.known) StatusRow("To Android", path.sink.summary())
+                StatusRow(
+                    "High-resolution output",
+                    if (path.floatOutput) "On" else "Off",
+                )
+            }
+            with(SignalPath) { path.explain(route?.isBluetooth == true) }?.let {
+                Note(it, warn = path.truncating)
+            }
+            Note(
+                "What each line means.",
+                title = "Signal path",
+                info = "**File** is what the container declares.\n\n**Decoder output** is " +
+                    "what the decoder actually handed over, and it is usually the line " +
+                    "that explains a disappointment: a 24-bit FLAC decoded by the phone's " +
+                    "own MediaCodec comes out as 16-bit PCM, and nothing downstream can " +
+                    "put those bits back.\n\n**To Android** is the last thing this app " +
+                    "can see. Past it the platform mixes, resamples if it has to, and on " +
+                    "Bluetooth hands the result to the codec.\n\n**High-resolution " +
+                    "output** is the switch that decides whether the decoder's extra bits " +
+                    "survive: without it Android converts anything above 16-bit down to " +
+                    "16 on the way to the sink.\n\nTip: on Bluetooth the device row above " +
+                    "will always say 16-bit, whatever LDAC is carrying — that is Android " +
+                    "describing the sink it gives apps, not the codec. These lines are " +
+                    "the ones that tell you something.",
+            )
+        }
+
+        CardDivider()
+        FieldLabel("Output sample rate")
+        val outRate by settings.outputSampleRateHz.collectAsStateWithLifecycle(initialValue = 0)
+        val rateOptions = listOf(0) + AppSettings.OUTPUT_RATES
+        SegmentedToggleRow(
+            labels = rateOptions.map { if (it == 0) "Follow file" else StreamQuality.khz(it) },
+            selectedIndex = rateOptions.indexOf(outRate).coerceAtLeast(0),
+        ) { i -> scope.launch { settings.setOutputSampleRateHz(rateOptions[i]) } }
+        Note(
+            if (outRate == 0)
+                "Every file plays at its own rate. Android converts if the output needs it."
+            else
+                "Everything is resampled to ${StreamQuality.khz(outRate)} kHz before it leaves the app.",
+            title = "Output sample rate",
+            info = "Follow file is right almost always: resampling is a loss, and doing " +
+                "it here on top of whatever Android does is two losses instead of one.\n\n" +
+                "Fixing a rate is worth it in one situation - when the output is locked " +
+                "to a rate your files are not. The Mixer output line above says what " +
+                "Android is running at. Matching it means this app resamples once, with " +
+                "a good resampler, instead of the platform doing it on every track.\n\n" +
+                "On Bluetooth the rate the codec negotiated is in Developer options " +
+                "under Bluetooth audio sample rate, and that is the number worth " +
+                "matching.\n\n" +
+                "Applies to the next track rather than the one playing.\n\n" +
+                "Tip: if you do not know, leave it on Follow file. A wrong choice here " +
+                "is audible and a right one usually is not.",
+        )
+
         CardDivider()
         ToggleRow(
-            title = "Bit-perfect (24-bit)",
-            subtitle = "Ask for 24-bit instead of 16",
+            title = "High-resolution output",
+            subtitle = if (route?.isBluetooth == true)
+                "Keeps the decoder's extra bits as far as the Bluetooth codec"
+            else
+                "Carry more than 16 bits to the output",
             checked = bitPerfect,
             accent = accent,
-            info = "Renders whatever depth the decoder reports instead of flattening everything to " +
-                "16 bits. It costs bandwidth, and a phone whose mixer runs at 16-bit gains " +
-                "nothing at all from it.\n\nOn a library this phone plays, it also turns on " +
-                "float output, so a 24-bit file is not requantised to 16 on its way to the " +
-                "sink. That is fixed when the player is built, so it applies the next time the " +
-                "app starts rather than straight away.\n\nIt is off by default because float " +
-                "output is still experimental. It has been heard to distort 44.1 kHz material " +
-                "on phones whose mixer runs at 48.\n\nTip: check the panel above first. If your " +
-                "output says it accepts 16-bit, there is nothing here for you. This is really " +
-                "for a USB DAC, and if you turn it on and hear distortion, turning it back off " +
-                "fixes it immediately.",
+            info = "Carries whatever depth the decoder produced instead of flattening it to " +
+                "16 bits on the way to the sink.\n\nThis matters on Bluetooth too, which is " +
+                "not obvious: LDAC is lossy, so nothing here is ever bit-perfect over the " +
+                "air — but the codec is fed by Android, and handing it a signal already " +
+                "truncated to 16 bits throws away resolution *before* it encodes. Check " +
+                "Developer options, Bluetooth audio bits per sample: if it says 24 or 32, " +
+                "the codec is ready for more than 16 and this is what supplies it.\n\nIt " +
+                "only helps where the decoder produced more than 16 bits to begin with. " +
+                "The Signal path panel above says whether it did.\n\nThe float path is " +
+                "fixed when the player is built, so a change applies next time the app " +
+                "starts rather than straight away.\n\nTip: if you hear distortion on 44.1 " +
+                "kHz material on a phone whose mixer runs at 48, turn it back off — that " +
+                "combination has been known to misbehave, and switching it off fixes it " +
+                "immediately.",
         ) { scope.launch { settings.setBitPerfect24Bit(it) } }
     }
 }

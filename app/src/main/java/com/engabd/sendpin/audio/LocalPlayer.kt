@@ -425,6 +425,28 @@ class LocalPlayer(private val context: Context) {
                 // sample — which in a 20-minute movement can be seconds away.
                 p.setSeekParameters(SeekParameters.EXACT)
                 p.addListener(playerListener)
+                // The decoder's *input* format - what the file declares. Paired with
+                // SignalPathProbe's report of what the decoder actually handed over,
+                // this is what makes "a 24-bit file arriving as 16-bit PCM" visible
+                // rather than something a listener has to infer from a flat number.
+                p.addAnalyticsListener(object : androidx.media3.exoplayer.analytics.AnalyticsListener {
+                    override fun onAudioInputFormatChanged(
+                        eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
+                        format: androidx.media3.common.Format,
+                        decoderReuseEvaluation: androidx.media3.exoplayer.DecoderReuseEvaluation?,
+                    ) {
+                        SignalPath.onSourceFormat(format)
+                    }
+
+                    override fun onAudioDisabled(
+                        eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
+                        counters: androidx.media3.exoplayer.DecoderCounters,
+                    ) {
+                        // Stop describing a chain that is no longer carrying anything.
+                        SignalPath.clear()
+                    }
+                })
+                SignalPath.onMixerRate(DeviceCapabilities.mixerRateHz())
                 preferredOutput?.let { d -> runCatching { p.setPreferredAudioDevice(d) } }
             }
     }

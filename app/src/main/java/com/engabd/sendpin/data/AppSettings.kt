@@ -217,6 +217,15 @@ class AppSettings(private val context: Context) {
          */
         private val LOCAL_DSP = stringPreferencesKey("local_dsp")
 
+        /**
+         * Resample this phone's own output to a fixed rate. 0 - the default - is
+         * "follow the source", which is the right answer almost always.
+         */
+        private val OUTPUT_SAMPLE_RATE = stringPreferencesKey("output_sample_rate_hz")
+
+        /** The rates the picker offers, beyond "follow the source". */
+        val OUTPUT_RATES = listOf(44_100, 48_000, 88_200, 96_000, 176_400, 192_000)
+
         /** Genre-to-preset rules, as a JSON list of [com.engabd.sendpin.hue.GenrePresetRule]. */
         private val GENRE_PRESET_RULES = stringPreferencesKey("light_show_genre_rules")
 
@@ -1558,6 +1567,18 @@ class AppSettings(private val context: Context) {
 
     suspend fun saveShowPresets(list: List<ShowPreset>) {
         context.dataStore.edit { it[SHOW_PRESETS] = ShowPreset.encode(list) }
+    }
+
+    /**
+     * A fixed output rate for the local player, or 0 to follow each file.
+     *
+     * Zero by default and that default is the honest one: resampling is a loss,
+     * and doing it here only helps when it *replaces* a worse one further down.
+     */
+    val outputSampleRateHz: Flow<Int> = pref { it[OUTPUT_SAMPLE_RATE]?.toIntOrNull() ?: 0 }
+
+    suspend fun setOutputSampleRateHz(rate: Int) {
+        context.dataStore.edit { it[OUTPUT_SAMPLE_RATE] = rate.toString() }
     }
 
     /** The local equaliser's curve. Off, and flat, until someone turns it on. */

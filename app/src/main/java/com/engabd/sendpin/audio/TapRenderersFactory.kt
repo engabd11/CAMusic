@@ -21,6 +21,19 @@ import androidx.media3.exoplayer.audio.DefaultAudioSink
  * separately by [AudioAnalysisTap.setActive] and runs on its own thread.
  */
 @OptIn(UnstableApi::class)
+/**
+ * The output rate the chain should resample to, or 0 to follow the source.
+ *
+ * A holder rather than a constructor argument because the processor chain is
+ * built once, when the player is constructed, and this is edited long after. Read
+ * at configure time - so a change applies to the next track, which the setting
+ * says.
+ */
+object OutputRate {
+    @Volatile
+    var hz: Int = 0
+}
+
 class TapRenderersFactory(
     context: Context,
     private val tap: AudioAnalysisTap,
@@ -37,13 +50,32 @@ class TapRenderersFactory(
             // The equaliser goes *before* the tap, so the light show reacts to
             // what is actually heard rather than to what was on disk. A biquad
             // cascade adds no latency, so AudioLead's measurement is unaffected.
-            .setAudioProcessors(listOfNotNull(dsp, tap).toTypedArray())
+            // SignalPathProbe first: it reports the format the decoder actually
+            // handed over, which is the one stage nothing else can see. The
+            // renderer reports what it *asked* the decoder for, and a 24-bit FLAC
+            // decoded by the platform's own MediaCodec arrives as 16-bit PCM with
+            // nothing upstream saying so.
+            // Sonic last, so the probe and the tap both see the decoder's own rate
+            // and the light show is not analysing a resampled copy. Inactive
+            // whenever the requested rate matches the source, which is the default.
+            .setAudioProcessors(
+                listOfNotNull(
+                    SignalPathProbe(),
+                    dsp,
+                    tap,
+                    OutputRate.hz.takeIf { it > 0 }?.let { rate ->
+                        androidx.media3.common.audio.SonicAudioProcessor()
+                            .apply { setOutputSampleRateHz(rate) }
+                    },
+                ).toTypedArray(),
+            )
             .setEnableFloatOutput(enableFloatOutput)
             .setEnableAudioTrackPlaybackParams(enableAudioOutputPlaybackParams)
             .build()
         // Wrapped rather than folded into the processor chain: the lead needs a
         // buffer's presentation time alongside the sink's current position, and
         // an AudioProcessor is given neither.
+        SignalPath.onFloatOutput(enableFloatOutput)
         return AudioLeadProbe(sink, lead)
     }
 }

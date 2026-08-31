@@ -611,6 +611,15 @@ class SendpinApp : Application(), ImageLoaderFactory {
         // to. `idleMedia` rather than `stopMedia` so the same grace period covers the
         // gap between tracks; `MaNowPlaying` nulls itself out while the local player
         // owns the phone, so this and LocalPlaybackService can't both post.
+        // The chosen output rate. Read by the processor chain when it configures,
+        // so this only has to keep the holder current - it does not rebuild
+        // anything, and the setting's own copy says it applies to the next track.
+        appScope.launch {
+            AppSettings(this@SendpinApp).outputSampleRateHz.collect {
+                com.engabd.sendpin.audio.OutputRate.hz = it
+            }
+        }
+
         // The local equaliser. One collector for the process: the processor sits in
         // a sink chain fixed when the player is built, so this is the only way a
         // slider move reaches it - and it reaches it on the next buffer rather than
