@@ -226,7 +226,12 @@ class AppSettings(private val context: Context) {
         private val MUSIC_DNA_ENABLED = booleanPreferencesKey("music_dna_enabled")
 
         // --- Effects (ambience shows) ---
-        /** Last effect selected, so the screen reopens where it was left. Not auto-resumed. */
+        /**
+         * Last effect started, so the screen reopens with that tile's controls already
+         * open. Read by `EffectsViewModel.lastEffect`. Never auto-resumed: a show holds
+         * a render loop, a wake lock and a foreground service, and none of that should
+         * come back without being asked for.
+         */
         private val EFFECTS_LAST = stringPreferencesKey("effects_last")
         /** Per-effect 0..1, as a JSON object keyed by wire name. Same shape as the tunables. */
         private val EFFECTS_INTENSITY = stringPreferencesKey("effects_intensity")
