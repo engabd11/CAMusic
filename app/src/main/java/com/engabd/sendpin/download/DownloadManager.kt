@@ -239,6 +239,11 @@ class DownloadManager(
             album = item.album ?: dl?.album,
             durationMs = (item.duration ?: 0).toLong() * 1000,
             artUrl = dl?.artUri ?: item.image,
+            // First tag only. Servers hand back anything from one word to a
+            // semicolon-separated list, the rules match loosely in both
+            // directions anyway, and a track's first genre is the one that
+            // describes it.
+            genre = item.genres.firstOrNull(),
             streamUrl = streamUrl,
             localPath = dl?.filePath ?: localPathFallback,
             // `MaAudioFormat.quality` rather than a hand-rolled copy: this used to

@@ -6,6 +6,8 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.engabd.sendpin.hue.GenrePresetRule
+import com.engabd.sendpin.hue.ShowPreset
 import com.engabd.sendpin.library.ServerConfig
 import com.engabd.sendpin.library.ServerKind
 import kotlinx.coroutines.flow.Flow
@@ -194,6 +196,21 @@ class AppSettings(private val context: Context) {
         private val LIGHT_SYNC_TUNABLES = stringPreferencesKey("light_sync_tunables")
         /** Whether the direct Light Sync screen shows the advanced tunables. */
         private val LIGHT_SYNC_ADVANCED = booleanPreferencesKey("light_sync_advanced")
+
+        /**
+         * Saved light shows, as a JSON list of [com.engabd.sendpin.hue.ShowPreset].
+         *
+         * Every control that shapes a show lives in one global set of switches, which
+         * is fine until you want two of them. Absent until something is saved, so the
+         * screen can tell "never used this" from "deleted them all".
+         */
+        private val SHOW_PRESETS = stringPreferencesKey("light_show_presets")
+
+        /** Genre-to-preset rules, as a JSON list of [com.engabd.sendpin.hue.GenrePresetRule]. */
+        private val GENRE_PRESET_RULES = stringPreferencesKey("light_show_genre_rules")
+
+        /** Whether [GENRE_PRESET_RULES] are applied on a track change at all. */
+        private val GENRE_PRESETS_ENABLED = booleanPreferencesKey("light_show_genre_auto")
 
         /**
          * Whether tracks are analysed ahead of the show.
@@ -1508,6 +1525,104 @@ class AppSettings(private val context: Context) {
 
     suspend fun setLightSyncAdvanced(on: Boolean) {
         context.dataStore.edit { it[LIGHT_SYNC_ADVANCED] = on }
+    }
+
+    // ── Saved light shows ────────────────────────────────────────────────
+
+    /**
+     * Every saved show, seeded with three starters on an install that has none.
+     *
+     * Seeded on *read* rather than written once, the same way the Downloads library
+     * is: a first write that races every other reader is how a migration becomes a
+     * bug, and there is nothing here that cannot be recomputed. The first real edit
+     * persists the list.
+     *
+     * A decode failure falls back to the starters rather than to an empty list —
+     * `ShowPreset.decode` returns null for exactly that case, and treating it as
+     * "no presets" would let the next save overwrite a list that was only unreadable.
+     */
+    val showPresets: Flow<List<ShowPreset>> = pref { prefs ->
+        prefs[SHOW_PRESETS]?.let { ShowPreset.decode(it) } ?: ShowPreset.starters()
+    }
+
+    suspend fun saveShowPresets(list: List<ShowPreset>) {
+        context.dataStore.edit { it[SHOW_PRESETS] = ShowPreset.encode(list) }
+    }
+
+    val genrePresetRules: Flow<List<GenrePresetRule>> = pref { prefs ->
+        prefs[GENRE_PRESET_RULES]?.let { GenrePresetRule.decode(it) } ?: emptyList()
+    }
+
+    suspend fun saveGenrePresetRules(list: List<GenrePresetRule>) {
+        context.dataStore.edit { it[GENRE_PRESET_RULES] = GenrePresetRule.encode(list) }
+    }
+
+    /** Off by default: a show that changes itself between tracks has to be asked for. */
+    val genrePresetsEnabled: Flow<Boolean> = pref { it[GENRE_PRESETS_ENABLED] ?: false }
+
+    suspend fun setGenrePresetsEnabled(on: Boolean) {
+        context.dataStore.edit { it[GENRE_PRESETS_ENABLED] = on }
+    }
+
+    /**
+     * Read every show control at once, to save as a preset.
+     *
+     * One snapshot rather than eleven `first()` calls, so a preset cannot capture
+     * half of one show and half of the next if something changes mid-save.
+     */
+    suspend fun captureShowPreset(name: String): ShowPreset {
+        val prefs = context.dataStore.data.first()
+        return ShowPreset(
+            name = name,
+            intensity = prefs[LIGHT_SYNC_INTENSITY] ?: "high",
+            autoLevels = prefs[LIGHT_SYNC_AUTO_LEVELS]
+                ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
+                ?.takeIf { it.isNotEmpty() }
+                ?: listOf("subtle", "medium", "high"),
+            color = prefs[LIGHT_SYNC_COLOR] ?: "album_art_v2",
+            brightness = prefs[LIGHT_SYNC_BRIGHTNESS]?.toIntOrNull() ?: 100,
+            tunables = lightSyncTunables.first(),
+            spatial = prefs[LIGHT_SYNC_SPATIAL] ?: false,
+            musicDna = prefs[MUSIC_DNA_ENABLED] ?: false,
+            emotionalArc = prefs[EMOTIONAL_ARC_ENABLED] ?: false,
+            phantomStage = prefs[PHANTOM_STAGE_ENABLED] ?: false,
+            stemSeparation = prefs[STEM_SEPARATION] ?: false,
+            phoneConductor = prefs[PHONE_CONDUCTOR_ENABLED] ?: false,
+        )
+    }
+
+    /**
+     * Put a preset's show on the room.
+     *
+     * One `edit` for all eleven controls, which matters more than it looks:
+     * DirectLightSync collects several of these and re-picks the show on each, so
+     * writing them one at a time would walk the room through up to eleven
+     * intermediate shows on the way to the one that was asked for.
+     *
+     * Deliberately does **not** touch the master switch, the bridge or the
+     * entertainment area. Applying a preset changes what the show looks like, never
+     * whether there is one or which lamps it runs on.
+     */
+    suspend fun applyShowPreset(preset: ShowPreset) {
+        context.dataStore.edit { prefs ->
+            prefs[LIGHT_SYNC_INTENSITY] = preset.intensity
+            prefs[LIGHT_SYNC_AUTO_LEVELS] = preset.autoLevels.joinToString(",")
+            prefs[LIGHT_SYNC_COLOR] = preset.color
+            prefs[LIGHT_SYNC_BRIGHTNESS] = preset.brightness.coerceIn(5, 100).toString()
+            prefs[LIGHT_SYNC_TUNABLES] = buildJsonObject {
+                for ((k, v) in preset.tunables) {
+                    if (com.engabd.sendpin.hue.SyncoEngine.TUNABLE_KEYS.contains(k)) {
+                        put(k, JsonPrimitive(v.coerceIn(0f, 2f)))
+                    }
+                }
+            }.toString()
+            prefs[LIGHT_SYNC_SPATIAL] = preset.spatial
+            prefs[MUSIC_DNA_ENABLED] = preset.musicDna
+            prefs[EMOTIONAL_ARC_ENABLED] = preset.emotionalArc
+            prefs[PHANTOM_STAGE_ENABLED] = preset.phantomStage
+            prefs[STEM_SEPARATION] = preset.stemSeparation
+            prefs[PHONE_CONDUCTOR_ENABLED] = preset.phoneConductor
+        }
     }
 
     suspend fun setLightSyncTunables(tunables: Map<String, Float>) {

@@ -47,6 +47,16 @@ data class LocalTrack(
     val durationMs: Long = 0,
     /** Cover art: a remote URL, or a `file://` path for a downloaded cover. */
     val artUrl: String? = null,
+    /**
+     * The track's first genre tag, or null when the library gives none.
+     *
+     * Carried here rather than looked up when wanted because this is the only
+     * description of the playing track that reaches the light-show side of the
+     * app: `MaItem` has the tags, `LocalTrack` is what crosses over. Used by the
+     * genre-to-preset rules in `SendpinApp`; nothing else reads it, and a null
+     * simply means no rule can match.
+     */
+    val genre: String? = null,
     val streamUrl: String? = null,
     val localPath: String? = null,
     /**
