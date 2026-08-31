@@ -1,8 +1,10 @@
 package com.engabd.sendpin.audio
 
+import androidx.annotation.OptIn
 import androidx.media3.common.C
 import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.common.audio.BaseAudioProcessor
+import androidx.media3.common.util.UnstableApi
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.abs
@@ -29,6 +31,7 @@ import kotlinx.serialization.json.Json
  * coefficients are rebuilt from a `@Volatile` snapshot at the top of a buffer
  * rather than mutated in place under the audio thread's feet.
  */
+@OptIn(UnstableApi::class)
 class LocalDsp : BaseAudioProcessor() {
 
     /**

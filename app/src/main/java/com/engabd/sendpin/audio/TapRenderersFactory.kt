@@ -8,6 +8,18 @@ import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 
 /**
+ * The output rate the local player's chain resamples to, or 0 to follow each file.
+ *
+ * A holder rather than a constructor argument because the processor chain is built
+ * once, when the player is constructed, and this is edited long after. Read at
+ * configure time, so a change applies to the next track - which the setting says.
+ */
+object OutputRate {
+    @Volatile
+    var hz: Int = 0
+}
+
+/**
  * A [DefaultRenderersFactory] that injects the [AudioAnalysisTap] into the
  * audio sink's processor chain. ExoPlayer routes all decoded PCM through the
  * sink's audio processors before it reaches the AudioTrack, so the tap sees
@@ -21,19 +33,6 @@ import androidx.media3.exoplayer.audio.DefaultAudioSink
  * separately by [AudioAnalysisTap.setActive] and runs on its own thread.
  */
 @OptIn(UnstableApi::class)
-/**
- * The output rate the chain should resample to, or 0 to follow the source.
- *
- * A holder rather than a constructor argument because the processor chain is
- * built once, when the player is constructed, and this is edited long after. Read
- * at configure time - so a change applies to the next track, which the setting
- * says.
- */
-object OutputRate {
-    @Volatile
-    var hz: Int = 0
-}
-
 class TapRenderersFactory(
     context: Context,
     private val tap: AudioAnalysisTap,

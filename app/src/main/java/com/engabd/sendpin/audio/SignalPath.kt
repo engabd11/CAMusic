@@ -1,8 +1,9 @@
 package com.engabd.sendpin.audio
 
+import androidx.annotation.OptIn
 import androidx.media3.common.C
 import androidx.media3.common.Format
-import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.common.util.UnstableApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -34,6 +35,7 @@ import kotlinx.coroutines.flow.asStateFlow
  * Everything here is observed, never assumed. A field that could not be read stays
  * null and the UI says so rather than guessing.
  */
+@OptIn(UnstableApi::class)
 object SignalPath {
 
     /** One stage of the chain. Null fields are "not observed yet", not "zero". */
@@ -200,6 +202,7 @@ object SignalPath {
  *
  * Passes every buffer through untouched — it is a probe, not a stage.
  */
+@OptIn(UnstableApi::class)
 class SignalPathProbe : androidx.media3.common.audio.BaseAudioProcessor() {
 
     override fun onConfigure(
@@ -219,6 +222,3 @@ class SignalPathProbe : androidx.media3.common.audio.BaseAudioProcessor() {
         replaceOutputBuffer(remaining).put(inputBuffer).flip()
     }
 }
-
-/** Media3 [AudioSink] wrapper that reports the configured output format. */
-internal fun Format.publishAsSinkFormat() = SignalPath.onSinkFormat(this)
