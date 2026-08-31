@@ -438,10 +438,6 @@ class AppSettings(private val context: Context) {
     // global key, and the first write moves it across. No one-shot upgrade pass, so
     // there is no version to get wrong and nothing to re-run if it half-fails.
 
-    /** The configured Music Assistant server, or null when there isn't one. */
-    val maServer: Flow<ServerConfig?> =
-        servers.map { list -> list.firstOrNull { it.kind == ServerKind.MUSIC_ASSISTANT } }
-
     private fun maOption(
         prefs: androidx.datastore.preferences.core.Preferences,
         key: String,
