@@ -937,7 +937,26 @@ private fun androidx.compose.foundation.lazy.grid.LazyGridScope.downloadsSection
         item(key = "hdr_ondevice", span = { full(gridCols) }, contentType = { "header" }) { LibraryShelf("On this device") }
         if (items.size > 1) {
             item(key = "dl_playall", span = { full(gridCols) }, contentType = { "playall" }) {
-                PlayAllBar(items.size, onPlayAll = { viewModel.playAll(items) })
+                var buildingSet by remember { mutableStateOf(false) }
+                PlayAllBar(
+                    items.size,
+                    onPlayAll = { viewModel.playAll(items) },
+                    // Only on a flat list of tracks. An album is already in the order
+                    // its maker chose, and reordering one is not a feature.
+                    onBuildSet = { buildingSet = true },
+                )
+                if (buildingSet) {
+                    val (scanned, total) = remember(items) { viewModel.scanCoverage(items) }
+                    SetBuilderDialog(
+                        scanned = scanned,
+                        total = total,
+                        onDismiss = { buildingSet = false },
+                        onBuild = { curve, minutes ->
+                            buildingSet = false
+                            viewModel.buildSet(items, curve, minutes)
+                        },
+                    )
+                }
             }
         }
         itemsIndexed(

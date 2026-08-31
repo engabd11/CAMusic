@@ -50,7 +50,13 @@ import com.engabd.sendpin.library.ServerKind
  */
 
 @Composable
-internal fun PlayAllBar(count: Int, onPlayAll: () -> Unit, onDownloadAll: (() -> Unit)? = null) {
+internal fun PlayAllBar(
+    count: Int,
+    onPlayAll: () -> Unit,
+    onDownloadAll: (() -> Unit)? = null,
+    /** Opens the set builder over these tracks. Absent where it cannot work. */
+    onBuildSet: (() -> Unit)? = null,
+) {
     val accent = LocalAccent.current
     Row(
         Modifier
@@ -71,6 +77,12 @@ internal fun PlayAllBar(count: Int, onPlayAll: () -> Unit, onDownloadAll: (() ->
             Text(
                 "Play all $count tracks", color = accent, fontFamily = AppFont,
                 fontWeight = FontWeight.Bold, fontSize = 13.sp,
+            )
+        }
+        onBuildSet?.let {
+            Icon(
+                Icons.Default.Timeline, "Build a set", tint = accent,
+                modifier = Modifier.size(20.dp).clip(CircleShape).clickable(onClick = it),
             )
         }
         onDownloadAll?.let {

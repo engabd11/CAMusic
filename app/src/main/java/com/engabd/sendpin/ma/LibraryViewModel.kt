@@ -13,6 +13,7 @@ import com.engabd.sendpin.audio.JellyfinRadioSource
 import com.engabd.sendpin.audio.RadioSource
 import com.engabd.sendpin.audio.SubsonicRadioSource
 import com.engabd.sendpin.audio.TrackScan
+import com.engabd.sendpin.audio.SetBuilder
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.PlayerIdentity
 import com.engabd.sendpin.download.DownloadJob
@@ -52,6 +53,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 /**
  * The library root's dynamic shelves, carried as one value rather than seven flows.
@@ -1549,6 +1551,69 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: Exception) {
                 _toast.tryEmit(e.message ?: "Couldn't play")
             }
+        }
+    }
+
+    // ── Set builder ──────────────────────────────────────────────────────
+
+    /**
+     * How much of [items] has been scanned, as (scanned, total).
+     *
+     * The set builder can only order tracks it knows the shape of, so the sheet
+     * says so up front rather than quietly building a worse set out of half a
+     * library. `peek` rather than `cached`, because this runs for every visible
+     * item and the answer only has to be good enough to put a number on screen.
+     */
+    fun scanCoverage(items: List<MaItem>): Pair<Int, Int> {
+        val playable = items.filter { it.playable || it.provider == DOWNLOAD }
+        val scanned = playable.count { trackScans.peek(localTrack(it)) != null }
+        return scanned to playable.size
+    }
+
+    /**
+     * Build a set out of [items] and play it.
+     *
+     * Only scanned tracks take part: an unscanned one has no tempo, key or energy,
+     * so it cannot be placed on the curve and including it would be padding rather
+     * than programming. The seed is whatever is playing, when that is one of them,
+     * so a set built mid-song carries on from where the listener already is.
+     *
+     * Local libraries only. Music Assistant tops up its own queue server-side with
+     * no key or tempo data to weigh, exactly as Harmonic DJ mode already documents.
+     */
+    fun buildSet(items: List<MaItem>, curve: SetBuilder.Curve, minutes: Int) {
+        viewModelScope.launch {
+            val playable = items.filter { it.playable || it.provider == DOWNLOAD }
+            val byId = playable.associateBy { it.itemId }
+            val candidates = playable.mapNotNull { item ->
+                val scan = trackScans.cached(localTrack(item)) ?: return@mapNotNull null
+                SetBuilder.Candidate.of(item.itemId, scan)
+            }
+            if (candidates.size < 2) {
+                _toast.tryEmit(
+                    "Not enough scanned tracks yet - run a sweep under Settings, " +
+                        "Light Sync, Track analysis",
+                )
+                return@launch
+            }
+
+            val playingId = localPlayer.current.value?.id
+            val ordered = SetBuilder.build(
+                candidates = candidates,
+                curve = curve,
+                targetS = minutes * 60f,
+                seed = candidates.firstOrNull { it.id == playingId },
+            )
+            val tracks = ordered.mapNotNull { byId[it.id] }
+            if (tracks.isEmpty()) {
+                _toast.tryEmit("Couldn't build a set from those tracks")
+                return@launch
+            }
+
+            stopMaPlayback()
+            localPlayer.setQueue(tracks.map { localTrack(it) }, 0)
+            val mins = (SetBuilder.durationOf(ordered) / 60f).roundToInt()
+            _toast.tryEmit("${curve.label}: ${tracks.size} tracks, about $mins minutes")
         }
     }
 
