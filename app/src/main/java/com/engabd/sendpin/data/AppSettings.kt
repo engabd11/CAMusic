@@ -270,6 +270,19 @@ class AppSettings(private val context: Context) {
         /** Two seconds either way covers every provider disagreement worth fixing. */
         const val MAX_LYRICS_OFFSET_MS = 2_000
 
+        /**
+         * [downloadStorageCapMb] as a byte count, or null for "no limit".
+         *
+         * One definition because there were three. `DownloadManager.enforceStorageCap`
+         * evicted at `capMb * 1_048_576` (MiB) while `LibraryViewModel` refused new
+         * downloads at `capMb * 1_000_000` (MB), so the threshold that deletes and the
+         * threshold that refuses were 4.9% apart — and the Downloads page labels the
+         * stored 1_000 as "1 GB", which is decimal. Decimal wins here because it is the
+         * one of the three the user actually reads.
+         */
+        fun storageCapBytes(capMb: Int): Long? =
+            if (capMb <= 0) null else capMb.toLong() * 1_000_000L
+
         const val MODE_HA = "ha"
         const val MODE_DIRECT = "direct"
 

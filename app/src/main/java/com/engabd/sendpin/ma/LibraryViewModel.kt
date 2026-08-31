@@ -1674,8 +1674,8 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         // vanished from disk contributes nothing to the total, and re-reading the
         // list each pass would spin on it.
         val capMb = settings.downloadStorageCapMb.first()
-        if (capMb > 0) {
-            val capBytes = capMb.toLong() * 1_000_000
+        val capBytes = AppSettings.storageCapBytes(capMb)
+        if (capBytes != null) {
             val nowPlayingId = localPlayer.current.value?.id
             for (entry in downloadManager.downloads.value) {
                 if (downloadManager.bytesUsed() <= capBytes) break

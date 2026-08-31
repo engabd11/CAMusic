@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import com.engabd.sendpin.audio.LocalTrack
+import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.library.MusicSources
 import com.engabd.sendpin.local.db.LocalMediaDatabase
 import com.engabd.sendpin.local.toEntity
@@ -187,10 +188,13 @@ class DownloadManager(
      * Enforce the storage cap: delete the oldest downloaded tracks until the total
      * is under the cap (in MB). A cap of 0 means unlimited. Called after every
      * successful download and on app start.
+     *
+     * The MB-to-bytes conversion is [AppSettings.storageCapBytes] and not a local
+     * multiply: this used to evict at MiB while the other half of the same feature
+     * refused new downloads at MB.
      */
     private suspend fun enforceStorageCap(capMb: Int) {
-        if (capMb <= 0) return
-        val capBytes = capMb.toLong() * 1_048_576L
+        val capBytes = AppSettings.storageCapBytes(capMb) ?: return
         // Never the track being listened to. Deleting the file out from under the
         // player is the one eviction a user would experience as the app breaking, and
         // it is also what the Downloads settings page promises does not happen.
