@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The one directory the app ever shares out of.
+
+  `cache-path` rather than `files-path`: a recap poster is a throwaway PNG that
+  exists only long enough for the share sheet to read it, and the cache is where
+  Android is allowed to reclaim it without asking us.
+-->
+<paths>
+    <cache-path name="shared" path="shared/" />
+</paths>
