@@ -56,16 +56,16 @@ internal fun PlayerSection(
     val connected by viewModel.connected.collectAsStateWithLifecycle()
     val configStatus by viewModel.configStatus.collectAsStateWithLifecycle()
 
+    // The name stays local editable state: it is a text field with its own Save
+    // button, so the field has to hold what is being typed rather than what is
+    // stored. The other three are switches that persist on tap and are therefore
+    // collected, so this page and the Playback & audio page cannot disagree.
     var playerName by remember { mutableStateOf("") }
-    var codec by remember { mutableStateOf("auto") }
-    var keepAlive by remember { mutableStateOf(true) }
-    var duck by remember { mutableStateOf(true) }
-    LaunchedEffect(Unit) {
-        playerName = settings.playerName.first()
-        codec = settings.sendspinCodec.first()
-        keepAlive = settings.keepAliveForAnnouncements.first()
-        duck = settings.duckAnnouncements.first()
-    }
+    LaunchedEffect(Unit) { playerName = settings.playerName.first() }
+
+    val codec by settings.sendspinCodec.collectAsStateWithLifecycle(initialValue = "auto")
+    val keepAlive by settings.keepAliveForAnnouncements.collectAsStateWithLifecycle(initialValue = true)
+    val duck by settings.duckAnnouncements.collectAsStateWithLifecycle(initialValue = true)
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         if (!hasMaServer) {
@@ -143,7 +143,6 @@ internal fun PlayerSection(
                 labels = CodecLabels,
                 selectedIndex = CodecValues.indexOf(codec).coerceAtLeast(0),
             ) { i ->
-                codec = CodecValues[i]
                 scope.launch { settings.setSendspinCodec(CodecValues[i]) }
             }
             Note(
@@ -219,7 +218,7 @@ internal fun PlayerSection(
                     "ongoing notification with it.\n\nTip: leave it off if nothing ever " +
                     "announces to this phone. It is the largest single battery saving on this " +
                     "page.",
-            ) { keepAlive = it; scope.launch { settings.setKeepAliveForAnnouncements(it) } }
+            ) { scope.launch { settings.setKeepAliveForAnnouncements(it) } }
             ToggleRow(
                 title = "Duck other apps to be heard",
                 subtitle = "Turn another app down rather than take the output from it",
@@ -231,7 +230,7 @@ internal fun PlayerSection(
                     "turn it off if announcements come out at a noticeably different volume " +
                     "from your music, since ducking leaves the other app's own level in the " +
                     "mix.",
-            ) { duck = it; scope.launch { settings.setDuckAnnouncements(it) } }
+            ) { scope.launch { settings.setDuckAnnouncements(it) } }
         }
 
         LatencyTrimCard(settings, accent, scope)

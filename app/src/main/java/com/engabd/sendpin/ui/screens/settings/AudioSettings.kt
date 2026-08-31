@@ -27,7 +27,6 @@ import com.engabd.sendpin.ui.theme.TextSecondary
 import com.engabd.sendpin.ui.theme.WarnAmber
 import com.engabd.sendpin.ui.viewmodel.PlayerViewModel
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
@@ -78,12 +77,12 @@ private fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSco
     val am = remember(context) { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
     val outputs = remember { AudioOutputs.list(am) }
 
-    var pinned by remember { mutableStateOf("") }
-    var bitPerfect by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
-        pinned = settings.preferredAudioDeviceId.first()
-        bitPerfect = settings.bitPerfect24Bit.first()
-    }
+    // Collected, not read once with `first()`. Both of these are also settable from
+    // the Music Assistant server's own page, so a one-shot read left whichever copy
+    // of the card you were not standing on showing the value from before the change.
+    // Cheap now that every AppSettings flow is deduped — see AppSettings.pref().
+    val pinned by settings.preferredAudioDeviceId.collectAsStateWithLifecycle(initialValue = "")
+    val bitPerfect by settings.bitPerfect24Bit.collectAsStateWithLifecycle(initialValue = false)
 
     val route = remember(pinned) { DeviceCapabilities.activeRoute(am, pinned) }
     val mixerRate = remember { DeviceCapabilities.mixerRateHz() }
@@ -99,7 +98,6 @@ private fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSco
             val labels = listOf("Automatic") + outputs.map { it.label }
             val ids = listOf("") + outputs.map { it.id }
             SegmentedToggleRow(labels, ids.indexOf(pinned).coerceAtLeast(0)) { i ->
-                pinned = ids[i]
                 scope.launch { settings.setPreferredAudioDeviceId(ids[i]) }
             }
             Note(
@@ -135,7 +133,7 @@ private fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSco
                 "output says it accepts 16-bit, there is nothing here for you. This is really " +
                 "for a USB DAC, and if you turn it on and hear distortion, turning it back off " +
                 "fixes it immediately.",
-        ) { bitPerfect = it; scope.launch { settings.setBitPerfect24Bit(it) } }
+        ) { scope.launch { settings.setBitPerfect24Bit(it) } }
     }
 }
 
@@ -150,16 +148,14 @@ private fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSco
  */
 @Composable
 internal fun StreamingCard(settings: AppSettings, accent: Color, scope: CoroutineScope) {
-    var preferHiRes by remember { mutableStateOf(true) }
-    var preferFlac by remember { mutableStateOf(true) }
-    var preferOriginal by remember { mutableStateOf(false) }
-    var bitPerfect by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
-        preferHiRes = settings.preferHiRes.first()
-        preferFlac = settings.preferFlac.first()
-        preferOriginal = settings.preferOriginal.first()
-        bitPerfect = settings.bitPerfect24Bit.first()
-    }
+    // This card is rendered on two pages at once — Playback & audio, and the Music
+    // Assistant server's own page — so reading each value once meant changing
+    // bit-perfect on one and finding the other still showing the old answer. The
+    // initial values are the same defaults AppSettings applies.
+    val preferHiRes by settings.preferHiRes.collectAsStateWithLifecycle(initialValue = true)
+    val preferFlac by settings.preferFlac.collectAsStateWithLifecycle(initialValue = true)
+    val preferOriginal by settings.preferOriginal.collectAsStateWithLifecycle(initialValue = false)
+    val bitPerfect by settings.bitPerfect24Bit.collectAsStateWithLifecycle(initialValue = false)
 
     SettingsCard(
         title = "What to ask Music Assistant for",
@@ -175,12 +171,12 @@ internal fun StreamingCard(settings: AppSettings, accent: Color, scope: Coroutin
             "Offer hi-res rates",
             "Also accept 88.2 and 96 kHz, so hi-res masters aren't downsampled to 48",
             preferHiRes, accent,
-        ) { preferHiRes = it; scope.launch { settings.setPreferHiRes(it) } }
+        ) { scope.launch { settings.setPreferHiRes(it) } }
         ToggleRow(
             "Prefer FLAC over PCM",
             "Lossless either way, FLAC uses about half the bandwidth",
             preferFlac, accent,
-        ) { preferFlac = it; scope.launch { settings.setPreferFlac(it) } }
+        ) { scope.launch { settings.setPreferFlac(it) } }
         ToggleRow(
             title = "Play at original quality",
             subtitle = "Bypass Music Assistant rather than let it resample",
@@ -193,7 +189,7 @@ internal fun StreamingCard(settings: AppSettings, accent: Color, scope: Coroutin
                 "way.\n\nTip: turn it on if you have hi-res files and one listening spot. Leave " +
                 "it off if you group speakers, because a track that goes direct drops out of " +
                 "the group.",
-        ) { preferOriginal = it; scope.launch { settings.setPreferOriginal(it) } }
+        ) { scope.launch { settings.setPreferOriginal(it) } }
         Note(
             "Output is ${if (bitPerfect) "up to 24-bit" else "16-bit"}, see Output above. " +
                 "Reconnect to apply a change here.",
@@ -205,8 +201,7 @@ internal fun StreamingCard(settings: AppSettings, accent: Color, scope: Coroutin
 
 @Composable
 private fun LoudnessCard(settings: AppSettings, accent: Color, scope: CoroutineScope) {
-    var mode by remember { mutableStateOf(ReplayGain.ALBUM) }
-    LaunchedEffect(Unit) { mode = settings.replayGainMode.first() }
+    val mode by settings.replayGainMode.collectAsStateWithLifecycle(initialValue = ReplayGain.ALBUM)
 
     SettingsCard(
         title = "Loudness",
@@ -214,7 +209,6 @@ private fun LoudnessCard(settings: AppSettings, accent: Color, scope: CoroutineS
             "tags in your files to even that out.",
     ) {
         SegmentedToggleRow(ReplayGainLabels, ReplayGainValues.indexOf(mode).coerceAtLeast(0)) {
-            mode = ReplayGainValues[it]
             scope.launch { settings.setReplayGainMode(ReplayGainValues[it]) }
         }
         Note(
