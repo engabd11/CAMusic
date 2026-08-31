@@ -988,12 +988,27 @@ class AppSettings(private val context: Context) {
      * The wizard's `finish(skipped)` took this and ignored it, so both paths wrote the
      * same thing and nothing downstream could tell a deliberate "no server, thanks"
      * from an interrupted setup.
+     *
+     * Read by `App.kt`'s wizard gate. Before that it was written and read by nothing,
+     * and the gate used a screen-local `rememberSaveable` instead — which survives a
+     * rotation and a process death but not a force-close, so skipping setup and then
+     * killing the app put the wizard straight back on the next launch.
      */
     val onboardingSkipped: Flow<Boolean> = pref { it[ONBOARDING_SKIPPED] ?: false }
 
     suspend fun setOnboardingSkipped(skipped: Boolean) {
+        bootPrefs.edit().putBoolean("onboarding_skipped", skipped).apply()
         context.dataStore.edit { it[ONBOARDING_SKIPPED] = skipped }
     }
+
+    /**
+     * Synchronous mirror of [onboardingSkipped], for the first frame.
+     *
+     * Same reason the theme and [hasCompletedOnboarding] have one: the wizard gate is
+     * evaluated before DataStore can answer, and seeding the collector with `false`
+     * would show a frame of the wizard to someone who has already dismissed it.
+     */
+    val hasSkippedOnboarding: Boolean get() = bootPrefs.getBoolean("onboarding_skipped", false)
 
     /**
      * Synchronous mirror of [onboardingCompleted], for `MainActivity.onCreate`.

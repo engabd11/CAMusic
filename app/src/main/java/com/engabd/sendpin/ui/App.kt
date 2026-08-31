@@ -255,6 +255,14 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
         val hasSavedServer by playerVm.hasSavedServer.collectAsStateWithLifecycle()
         val bootChecked by playerVm.bootChecked.collectAsStateWithLifecycle()
         val onboardingCompleted by themeSettings.onboardingCompleted.collectAsState(initial = false)
+        // Seeded from the synchronous mirror rather than from `false`, so the first
+        // frame already knows and nobody who dismissed the wizard sees a flash of it.
+        val onboardingSkipped by themeSettings.onboardingSkipped.collectAsState(
+            initial = themeSettings.hasSkippedOnboarding,
+        )
+        // Still here, and still only for *this* session: the persisted flag is written
+        // from a coroutine, so the tap that dismisses the wizard has to be answered
+        // before DataStore can have come back with it.
         var skipped by rememberSaveable { mutableStateOf(false) }
 
         // Keep the synchronous mirror in step. `MainActivity` reads it before the first
@@ -264,6 +272,13 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
         LaunchedEffect(onboardingCompleted) {
             if (onboardingCompleted && !themeSettings.hasCompletedOnboarding) {
                 themeSettings.setOnboardingCompleted(true)
+            }
+        }
+        // The skipped mirror is newer still, so it needs the same back-fill for an
+        // install that dismissed the wizard before the mirror existed.
+        LaunchedEffect(onboardingSkipped) {
+            if (onboardingSkipped && !themeSettings.hasSkippedOnboarding) {
+                themeSettings.setOnboardingSkipped(true)
             }
         }
 
@@ -284,7 +299,10 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
             return@SendspinTheme
         }
 
-        if (!onboardingCompleted && !hasSavedServer && !connected && !skipped) {
+        // `onboardingSkipped` is the persisted half and `skipped` the same-session one.
+        // Without the former, a force-close after skipping setup brought the wizard
+        // back — rememberSaveable does not outlive the process being killed.
+        if (!onboardingCompleted && !onboardingSkipped && !hasSavedServer && !connected && !skipped) {
             CompositionLocalProvider(LocalAccent provides accent, LocalPalette provides bootPalette) {
                 OnboardingWizard(
                     playerVm = playerVm,
