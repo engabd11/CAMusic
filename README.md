@@ -318,6 +318,10 @@ playing. `LocalDsp` sits ahead of the tap so the show reacts to what you actuall
 
 ## Recent releases
 
+**v0.11.1**, the next release, brings the ten band equaliser, the signal path card, saved
+light shows with genre rules, the Set Builder, the shareable listening recap, and the offline
+speed-limit database shipping inside the app.
+
 **v0.11.0**: Emby and Plex as libraries; recorded sound for the ambience effects; a spectrum
 analyser that reads as one; lyrics as typography; Settings reorganised.
 **v0.10.9**: native Oboe Sendspin engine; the MA playhead rewritten on the server's anchor;
@@ -325,10 +329,6 @@ the webOS TV app; GPS speed limits; Effects mode.
 **v0.10.8**: six creative features behind their own settings; on-device stem separation.
 **v0.10.7**: Android Auto; the first Android TV release; phone UI polish.
 **v0.10.6**: analyser v3, taking key detection from 12.4 % to 71.1 % shift consistency.
-
-Landed since v0.11.0: the ten band equaliser, the signal path card, saved light shows with
-genre rules, the Set Builder, the shareable listening recap, and the offline speed-limit
-database shipping inside the app.
 
 Full history: [docs/release-history.md](docs/release-history.md).
 
