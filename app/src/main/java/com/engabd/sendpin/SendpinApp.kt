@@ -611,6 +611,47 @@ class SendpinApp : Application(), ImageLoaderFactory {
         // to. `idleMedia` rather than `stopMedia` so the same grace period covers the
         // gap between tracks; `MaNowPlaying` nulls itself out while the local player
         // owns the phone, so this and LocalPlaybackService can't both post.
+        // The chosen output rate. Read by the processor chain when it configures,
+        // so this only has to keep the holder current - it does not rebuild
+        // anything, and the setting's own copy says it applies to the next track.
+        appScope.launch {
+            AppSettings(this@SendpinApp).outputSampleRateHz.collect {
+                com.engabd.sendpin.audio.OutputRate.hz = it
+            }
+        }
+
+        // The local equaliser. One collector for the process: the processor sits in
+        // a sink chain fixed when the player is built, so this is the only way a
+        // slider move reaches it - and it reaches it on the next buffer rather than
+        // the next track.
+        appScope.launch {
+            AppSettings(this@SendpinApp).localDsp.collect { localPlayer.localDsp.setConfig(it) }
+        }
+
+        // Genre-driven show presets. Here rather than inside DirectLightSync
+        // because that class only ever *reads* settings, and this writes them —
+        // the show it picks arrives back through the collectors DirectLightSync
+        // already has, so there is one direction of flow and no new coupling.
+        //
+        // Keyed on the genre rather than on the track: a whole album of one genre
+        // applies its preset once, at the first track, and re-applying the same
+        // show between every track would re-roll a Song-scheme palette each time.
+        appScope.launch {
+            val settings = AppSettings(this@SendpinApp)
+            activeLightSyncSource
+                .map { it.scanTrack?.genre }
+                .distinctUntilChanged()
+                .collect { genre ->
+                    if (!settings.genrePresetsEnabled.first()) return@collect
+                    val preset = com.engabd.sendpin.hue.GenrePresetRule.presetFor(
+                        rules = settings.genrePresetRules.first(),
+                        presets = settings.showPresets.first(),
+                        trackGenre = genre,
+                    ) ?: return@collect
+                    settings.applyShowPreset(preset)
+                }
+        }
+
         appScope.launch {
             maNowPlaying.now
                 .map { it != null && it.title.isNotBlank() }

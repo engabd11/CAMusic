@@ -8,6 +8,18 @@ import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 
 /**
+ * The output rate the local player's chain resamples to, or 0 to follow each file.
+ *
+ * A holder rather than a constructor argument because the processor chain is built
+ * once, when the player is constructed, and this is edited long after. Read at
+ * configure time, so a change applies to the next track - which the setting says.
+ */
+object OutputRate {
+    @Volatile
+    var hz: Int = 0
+}
+
+/**
  * A [DefaultRenderersFactory] that injects the [AudioAnalysisTap] into the
  * audio sink's processor chain. ExoPlayer routes all decoded PCM through the
  * sink's audio processors before it reaches the AudioTrack, so the tap sees
@@ -25,6 +37,8 @@ class TapRenderersFactory(
     context: Context,
     private val tap: AudioAnalysisTap,
     private val lead: AudioLead,
+    /** The local equaliser, ahead of the tap. See [LocalDsp]. */
+    private val dsp: LocalDsp? = null,
 ) : DefaultRenderersFactory(context) {
     override fun buildAudioSink(
         context: Context,
@@ -32,13 +46,35 @@ class TapRenderersFactory(
         enableAudioOutputPlaybackParams: Boolean,
     ): AudioSink {
         val sink = DefaultAudioSink.Builder(context)
-            .setAudioProcessors(arrayOf(tap))
+            // The equaliser goes *before* the tap, so the light show reacts to
+            // what is actually heard rather than to what was on disk. A biquad
+            // cascade adds no latency, so AudioLead's measurement is unaffected.
+            // SignalPathProbe first: it reports the format the decoder actually
+            // handed over, which is the one stage nothing else can see. The
+            // renderer reports what it *asked* the decoder for, and a 24-bit FLAC
+            // decoded by the platform's own MediaCodec arrives as 16-bit PCM with
+            // nothing upstream saying so.
+            // Sonic last, so the probe and the tap both see the decoder's own rate
+            // and the light show is not analysing a resampled copy. Inactive
+            // whenever the requested rate matches the source, which is the default.
+            .setAudioProcessors(
+                listOfNotNull(
+                    SignalPathProbe(),
+                    dsp,
+                    tap,
+                    OutputRate.hz.takeIf { it > 0 }?.let { rate ->
+                        androidx.media3.common.audio.SonicAudioProcessor()
+                            .apply { setOutputSampleRateHz(rate) }
+                    },
+                ).toTypedArray(),
+            )
             .setEnableFloatOutput(enableFloatOutput)
             .setEnableAudioTrackPlaybackParams(enableAudioOutputPlaybackParams)
             .build()
         // Wrapped rather than folded into the processor chain: the lead needs a
         // buffer's presentation time alongside the sink's current position, and
         // an AudioProcessor is given neither.
+        SignalPath.onFloatOutput(enableFloatOutput)
         return AudioLeadProbe(sink, lead)
     }
 }

@@ -68,6 +68,12 @@ fun EffectsScreen(onBack: () -> Unit, viewModel: EffectsViewModel) {
     // Which tile has its controls open. The running one by default, so starting a show
     // reveals its settings without a second tap.
     var expanded by remember { mutableStateOf<String?>(null) }
+    // Failing that, the last effect started - which is what `effectsLast` has always
+    // claimed to be for and, until now, was written for and never read. Guarded on
+    // `expanded == null` so it only ever seeds the first composition: collapsing a
+    // tile by hand must not have it spring back open.
+    val lastEffect by viewModel.lastEffect.collectAsStateWithLifecycle()
+    LaunchedEffect(lastEffect) { if (expanded == null) expanded = lastEffect }
     LaunchedEffect(running) { if (running != null) expanded = running }
 
     var pickingFor by remember { mutableStateOf<AmbienceEffect?>(null) }

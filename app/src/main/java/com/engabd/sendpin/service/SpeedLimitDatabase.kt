@@ -3,14 +3,19 @@ package com.engabd.sendpin.service
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import kotlin.math.cos
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.json.JSONArray
 import java.io.File
+import java.io.FileOutputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Manages the offline speed-limit SQLite database on the device.
@@ -19,24 +24,43 @@ import java.io.File
  * Victoria's open Speed Zones GeoJSON, and contains:
  *  - `speed_zones` — one row per road segment with speed_limit, direction, etc.
  *  - `speed_zones_rtree` — an R-tree virtual table for fast bounding-box lookups
- *  - `segment_coords` — the actual polyline coordinates for nearest-segment matching
+ *  - `segment_coords` — one row per zone, holding all of its polylines packed
+ *    as little-endian int32 microdegree (lon, lat) pairs
  *  - `meta` — version, source, generation date
  *
- * The database is a downloaded asset, not bundled in the APK — it's ~40-80MB
- * after processing (from 454MB GeoJSON). It lives in the app's files directory
- * and is checked for existence + version on first use.
+ * The database **ships with the app**. `app/src/main/assets/speed_zones.sqlite3.gz`
+ * is what is committed, but the asset this code opens is called
+ * `speed_zones.sqlite3`, without the suffix, and arrives already expanded:
+ * **AGP's asset merger gunzips any `.gz` under `assets/` at build time.** So the
+ * gzip is purely a way to keep 78 MB out of the git history - AAPT then deflates
+ * it back down to ~39 MB inside the APK on its own, and neither end needs a
+ * `GZIPInputStream`. Do not "fix" the missing suffix here; the file genuinely is
+ * not there at runtime.
  *
- * Download logic is in [SpeedLimitDownloadManager]; this class only handles
- * opening and querying an already-present database.
+ * It is copied into the app's files directory once, the first time driving mode
+ * actually needs it - not at install time, and never on the main thread. SQLite
+ * cannot open a database inside an APK, which is what the copy is for.
+ *
+ * It used to be described as a downloaded asset, and SpeedLimitDownloadManager was
+ * written to fetch it. Nothing ever instantiated that class and no URL was ever
+ * configured, so `ready` was false on every device that has run this code, and
+ * auto-detect silently fell back to the manually-typed limit while the settings
+ * page promised a monthly-updated download. Bundling is what makes the claim
+ * true; the downloader is gone.
  */
 class SpeedLimitDatabase(context: Context) {
 
+    private val appContext = context.applicationContext
     private val dbFile: File = File(context.filesDir, DB_FILENAME)
 
     private val _ready = MutableStateFlow(false)
     val ready: StateFlow<Boolean> = _ready.asStateFlow()
 
     private var db: SQLiteDatabase? = null
+
+    /** Guards [prepare] so overlapping calls expand the asset once, not twice. */
+    private val expanding = AtomicBoolean(false)
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     /**
      * Open the database read-only if it exists. Safe to call repeatedly.
@@ -62,6 +86,56 @@ class SpeedLimitDatabase(context: Context) {
         } catch (e: Exception) {
             _ready.value = false
             false
+        }
+    }
+
+    /**
+     * Expand the bundled asset if it is not on disk yet, then open it.
+     *
+     * Returns immediately and does the work on IO: the caller is
+     * [OfflineSpeedLimitProvider], constructed on the main thread the moment
+     * driving mode starts listening for locations, and unpacking tens of
+     * megabytes there would drop frames on the one screen where that matters.
+     * Until it finishes [ready] stays false and the alert uses the manual limit,
+     * which is exactly the documented fallback.
+     *
+     * Idempotent, and safe to call when the file is already present.
+     */
+    fun prepare() {
+        if (_ready.value || !expanding.compareAndSet(false, true)) return
+        scope.launch {
+            try {
+                if (!dbFile.exists()) expandAsset()
+                open()
+            } finally {
+                expanding.set(false)
+            }
+        }
+    }
+
+    /**
+     * Copy the shipped asset out to [dbFile], where SQLite can open it.
+     *
+     * A plain stream copy: the asset is stored deflated in the APK and
+     * `AssetManager.open` already inflates it (see the class doc on the `.gz`
+     * suffix disappearing at build time).
+     *
+     * Written to a temp file and renamed, so being killed mid-copy leaves no
+     * half-written database for [open] to find and fail on.
+     */
+    private fun expandAsset() {
+        val tmp = File(dbFile.parentFile, DB_FILENAME + ".tmp")
+        try {
+            tmp.parentFile?.mkdirs()
+            appContext.assets.open(ASSET_NAME).use { input ->
+                FileOutputStream(tmp).use { output -> input.copyTo(output) }
+            }
+            if (!tmp.renameTo(dbFile)) tmp.delete()
+        } catch (e: Exception) {
+            // No asset in this build, no room on the device, a truncated stream:
+            // all of them mean the same thing to the caller, which is that
+            // auto-detect has no data and the manual limit stands.
+            runCatching { tmp.delete() }
         }
     }
 
@@ -114,22 +188,28 @@ class SpeedLimitDatabase(context: Context) {
         val lonDeg = if (cosLat < 1e-6) 0.0
             else maxDistanceMeters / (111_320.0 * cosLat)
 
-        // R-tree query: find all zones whose bounding box intersects our search box
+        // R-tree query: find all zones whose bounding box intersects our search box.
+        //
+        // The bounds are formatted into the SQL rather than bound as parameters.
+        // Android's rawQuery only takes Array<String>, and an R-tree's columns are
+        // REAL - so every bound was arriving as text against a virtual table whose
+        // whole job is numeric range comparison. These four values are our own
+        // arithmetic on a GPS fix, never user input, so there is nothing here to
+        // inject.
+        val minLon = lon - lonDeg
+        val maxLon = lon + lonDeg
+        val minLat = lat - latDeg
+        val maxLat = lat + latDeg
         val candidates = try {
             database.rawQuery(
                 """
                 SELECT sz.id, sz.speed_limit
                 FROM speed_zones_rtree r
                 JOIN speed_zones sz ON sz.id = r.id
-                WHERE r.min_lon <= ? AND r.max_lon >= ?
-                  AND r.min_lat <= ? AND r.max_lat >= ?
+                WHERE r.min_lon <= $maxLon AND r.max_lon >= $minLon
+                  AND r.min_lat <= $maxLat AND r.max_lat >= $minLat
                 """,
-                arrayOf(
-                    (lon + lonDeg).toString(),
-                    (lon - lonDeg).toString(),
-                    (lat + latDeg).toString(),
-                    (lat - latDeg).toString(),
-                ),
+                null,
             ).use { cursor ->
                 val results = mutableListOf<Pair<Int, Int>>()
                 while (cursor.moveToNext()) {
@@ -147,19 +227,15 @@ class SpeedLimitDatabase(context: Context) {
         // Batch-fetch all segment coordinates for all candidate zones in one query,
         // rather than N+1 individual queries. The IN clause is built from the
         // candidate IDs — safe because they come from our own R-tree, not user input.
-        val candidateIds = candidates.map { it.first }
-        val placeholders = candidateIds.joinToString(",") { "?" }
+        val idList = candidates.joinToString(",") { it.first.toString() }
         val allSegmentsByZone: Map<Int, List<List<Pair<Double, Double>>>> = try {
             database.rawQuery(
-                "SELECT zone_id, coords FROM segment_coords WHERE zone_id IN ($placeholders) ORDER BY zone_id, segment_idx",
-                candidateIds.map { it.toString() }.toTypedArray(),
+                "SELECT zone_id, coords FROM segment_coords WHERE zone_id IN ($idList)",
+                null,
             ).use { cursor ->
-                val segsByZone = mutableMapOf<Int, MutableList<List<Pair<Double, Double>>>>()
+                val segsByZone = mutableMapOf<Int, List<List<Pair<Double, Double>>>>()
                 while (cursor.moveToNext()) {
-                    val zoneId = cursor.getInt(0)
-                    val coordsJson = cursor.getString(1)
-                    segsByZone.getOrPut(zoneId) { mutableListOf() }
-                        .add(parseCoords(coordsJson))
+                    segsByZone[cursor.getInt(0)] = parseSegments(cursor.getBlob(1))
                 }
                 segsByZone
             }
@@ -197,114 +273,49 @@ class SpeedLimitDatabase(context: Context) {
         if (bestDistance <= maxDistanceMeters) bestSpeedLimit else null
     }
 
-    /**
-     * Parse a JSON array of [lon, lat] pairs into a list of (lon, lat) pairs.
-     * The coordinates are stored as [[lon, lat], [lon, lat], ...] in the database.
-     */
-    private fun parseCoords(json: String): List<Pair<Double, Double>> {
-        val arr = JSONArray(json)
-        val result = mutableListOf<Pair<Double, Double>>()
-        for (i in 0 until arr.length()) {
-            val point = arr.getJSONArray(i)
-            result.add(point.getDouble(0) to point.getDouble(1)) // (lon, lat)
-        }
-        return result
-    }
-
     companion object {
         private const val DB_FILENAME = "speed_zones.sqlite3"
-    }
-}
 
-/**
- * Downloads the speed-limit SQLite database from a configurable URL.
- *
- * The URL points to a pre-built database file (produced by `build_speed_db.py`
- * and hosted — for now, this can be a GitHub release asset, a Tailscale-served
- * file, or any HTTPS URL). The download streams to a temp file and atomically
- * renames on completion.
- *
- * This is a simple file download, not a complex sync protocol: the database
- * is a static file that's regenerated monthly when Transport Victoria publishes
- * new data. Version checking is by comparing the `meta.version` in the local
- * DB against the remote version string (fetched separately).
- */
-class SpeedLimitDownloadManager(
-    private val context: Context,
-    private val database: SpeedLimitDatabase,
-) {
-
-    /**
-     * Download the database file from [url] to the app's files directory.
-     * Streams to a .tmp file and renames atomically on success.
-     *
-     * @param url  HTTPS URL to the pre-built SQLite database
-     * @param onProgress  callback with bytes downloaded and total (-1 if unknown)
-     * @return true if the file was downloaded and is a valid SQLite database
-     */
-    suspend fun download(
-        url: String,
-        onProgress: (Long, Long) -> Unit = { _, _ -> },
-    ): Boolean = withContext(Dispatchers.IO) {
-        val targetFile = File(context.filesDir, "speed_zones.sqlite3")
-        val tmpFile = File(context.filesDir, "speed_zones.sqlite3.tmp")
-        val backupFile = File(context.filesDir, "speed_zones.sqlite3.bak")
-
-        try {
-            val client = okhttp3.OkHttpClient.Builder()
-                .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-                .readTimeout(120, java.util.concurrent.TimeUnit.SECONDS)
-                .build()
-            val request = okhttp3.Request.Builder().url(url).build()
-            val response = client.newCall(request).execute()
-
-            // Use response.use { } to guarantee the response (and its connection)
-            // is closed on all paths — success, failure, and exception.
-            response.use { resp ->
-                if (!resp.isSuccessful) return@withContext false
-
-                val body = resp.body ?: return@withContext false
-                val totalBytes = body.contentLength()
-
-                tmpFile.parentFile?.mkdirs()
-                body.byteStream().use { input ->
-                    java.io.FileOutputStream(tmpFile).use { output ->
-                        val buffer = ByteArray(8192)
-                        var downloaded = 0L
-                        while (true) {
-                            ensureActive() // cancel the download if the coroutine is cancelled
-                            val read = input.read(buffer)
-                            if (read == -1) break
-                            output.write(buffer, 0, read)
-                            downloaded += read
-                            onProgress(downloaded, totalBytes)
-                        }
-                    }
+        /**
+         * Unpack one zone's polylines.
+         *
+         * Per segment: a uint16 point count, then that many (lon, lat) pairs of
+         * little-endian int32 microdegrees. Written by `tools/build_speed_db.py`'s
+         * `pack()`, and the two have to change together.
+         *
+         * It was JSON text in a row per polyline, which cost twenty-three bytes a
+         * point and put the gzipped asset at 56 MB — a lot of APK for a
+         * Victoria-only driving feature. Microdegrees are ~0.11 m, far finer than
+         * the 30 m this is then matched against.
+         *
+         * A truncated blob stops at the last whole segment rather than throwing.
+         * The caller treats a zone with no usable segments as no match, which is
+         * the right answer for a corrupt row too.
+         */
+        internal fun parseSegments(blob: ByteArray): List<List<Pair<Double, Double>>> {
+            val buf = ByteBuffer.wrap(blob).order(ByteOrder.LITTLE_ENDIAN)
+            val segments = mutableListOf<List<Pair<Double, Double>>>()
+            while (buf.remaining() >= 2) {
+                val count = buf.short.toInt() and 0xFFFF
+                if (buf.remaining() < count * 8) break
+                val points = ArrayList<Pair<Double, Double>>(count)
+                repeat(count) {
+                    // Named rather than `buf.int to buf.int`: that reads correctly only
+                    // if you know the evaluation order, and getting it backwards would
+                    // silently put the driver in the Bass Strait.
+                    val lon = buf.int / 1e6
+                    val lat = buf.int / 1e6
+                    points.add(lon to lat)
                 }
+                if (points.size >= 2) segments.add(points)
             }
-
-            // Safe rename: back up the existing file, then move the new one into
-            // place. If the rename fails, restore the backup — so a failed
-            // download never leaves the user without their existing database.
-            if (targetFile.exists()) {
-                if (backupFile.exists()) backupFile.delete()
-                targetFile.renameTo(backupFile)
-            }
-            if (!tmpFile.renameTo(targetFile)) {
-                // Restore the previous database
-                if (backupFile.exists()) backupFile.renameTo(targetFile)
-                return@withContext false
-            }
-            backupFile.delete()
-
-            // Verify the file is a valid SQLite database
-            database.close()
-            database.open()
-        } catch (e: Exception) {
-            tmpFile.delete()
-            false
+            return segments
         }
-    }
 
-    fun databaseFile(): File = File(context.filesDir, "speed_zones.sqlite3")
+        /**
+         * The database asset as it exists at runtime - no `.gz`, because AGP
+         * expanded it at build time. See the class doc.
+         */
+        const val ASSET_NAME = "speed_zones.sqlite3"
+    }
 }

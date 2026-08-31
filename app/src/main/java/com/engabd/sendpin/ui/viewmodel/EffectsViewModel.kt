@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -70,6 +71,23 @@ class EffectsViewModel(app: Application) : AndroidViewModel(app) {
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
     val sleepMinutes: StateFlow<Int> = settings.effectsSleepMinutes
         .stateIn(viewModelScope, SharingStarted.Eagerly, 60)
+
+    /**
+     * The effect the screen should open on: the last one started.
+     *
+     * `effectsLast` was written on every start and read by nothing, while its own doc
+     * promised the screen "reopens where it was left". This is that promise, and only
+     * that one — the show is **not** resumed. A 60 Hz render loop, a synth, a wake
+     * lock and a foreground service coming back on their own after a glance at another
+     * tab would be the opposite of an ambience feature, which is why the key's doc has
+     * always also said "Not auto-resumed".
+     *
+     * Filtered through [AmbienceEffect.fromWire] so a wire name left behind by a
+     * removed effect opens nothing rather than pointing at a tile that isn't there.
+     */
+    val lastEffect: StateFlow<String?> = settings.effectsLast
+        .map { wire -> wire.takeIf { it.isNotBlank() && AmbienceEffect.fromWire(it) != null } }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     private val _toast = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val toast: SharedFlow<String> = _toast.asSharedFlow()

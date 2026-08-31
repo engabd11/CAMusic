@@ -1,5 +1,7 @@
 package com.engabd.sendpin.ui.screens
 
+import androidx.compose.ui.graphics.rememberGraphicsLayer
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -13,6 +15,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import com.engabd.sendpin.ui.screens.settings.OledButton
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -120,6 +126,13 @@ fun StatsScreen(onBack: () -> Unit = {}, viewModel: StatsViewModel = viewModel()
                 ),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
+                // The recap, first: it is the one thing on this screen someone would
+                // want to show another person, and burying a share action under nine
+                // cards of charts is how it never gets found.
+                if (state.plays > 0) {
+                    item { RecapCard(state) }
+                }
+
                 item {
                     SettingsCard(title = "Overview") {
                         StatusPanel {
@@ -456,5 +469,46 @@ private fun RankedBars(items: List<Pair<String, Int>>, accent: Color, unit: Stri
                 }
             }
         }
+    }
+}
+
+/**
+ * The shareable recap, and the button that shares it.
+ *
+ * The poster is composed for real rather than drawn twice into an offscreen
+ * canvas: what is captured is the layer this composition already recorded, so the
+ * picture that leaves is exactly the one on screen. That also means it can only be
+ * shared once it has been drawn, which is why the button reports rather than
+ * silently doing nothing when the layer is still empty.
+ */
+@Composable
+private fun RecapCard(state: com.engabd.sendpin.ui.viewmodel.StatsViewModel.State) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val accent = com.engabd.sendpin.ui.design.LocalAccent.current
+    val scope = rememberCoroutineScope()
+    val layer = rememberGraphicsLayer()
+    var status by remember { mutableStateOf<String?>(null) }
+
+    SettingsCard(
+        title = "Your recap",
+        lead = "A picture of what you have been listening to, worked out on this phone.",
+        info = "Everything on it comes from this device: the play history it keeps, and " +
+            "the key and tempo its own offline scanner measured. Nothing was logged by a " +
+            "service and nothing is uploaded by sharing it - the share sheet hands one " +
+            "read-only picture to whichever app you pick, and that is the whole of " +
+            "it.\n\nThe key and tempo lines need Listening DNA switched on under " +
+            "Playback & Behavior; without it the rest still works.\n\nTip: change the " +
+            "window at the top of this screen and the recap follows it.",
+    ) {
+        RecapPoster(state = state, layer = layer, modifier = Modifier.fillMaxWidth())
+        Spacer(Modifier.height(10.dp))
+        OledButton("Share this", accent = accent, outline = true) {
+            scope.launch {
+                val bitmap = layer.toShareableBitmap()
+                status = if (bitmap == null) "Give it a moment to draw, then try again"
+                else shareRecap(context, bitmap)
+            }
+        }
+        status?.let { Spacer(Modifier.height(6.dp)); Note(it, warn = true) }
     }
 }

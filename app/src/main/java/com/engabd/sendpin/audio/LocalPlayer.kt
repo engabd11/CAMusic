@@ -47,6 +47,16 @@ data class LocalTrack(
     val durationMs: Long = 0,
     /** Cover art: a remote URL, or a `file://` path for a downloaded cover. */
     val artUrl: String? = null,
+    /**
+     * The track's first genre tag, or null when the library gives none.
+     *
+     * Carried here rather than looked up when wanted because this is the only
+     * description of the playing track that reaches the light-show side of the
+     * app: `MaItem` has the tags, `LocalTrack` is what crosses over. Used by the
+     * genre-to-preset rules in `SendpinApp`; nothing else reads it, and a null
+     * simply means no rule can match.
+     */
+    val genre: String? = null,
     val streamUrl: String? = null,
     val localPath: String? = null,
     /**
@@ -193,6 +203,16 @@ class LocalPlayer(private val context: Context) {
      * copy, not nothing.
      */
     val audioAnalysisTap = AudioAnalysisTap(audioLead)
+
+    /**
+     * The equaliser for audio this phone decodes.
+     *
+     * Held here, not built per player: it sits in the sink's processor chain, and
+     * that chain is fixed when the player is constructed - but the curve is edited
+     * long after. One instance whose config can be replaced at any time is what
+     * lets a slider move take effect on the next buffer instead of the next track.
+     */
+    val localDsp = LocalDsp()
 
     /** The user's own volume, kept apart from the ReplayGain factor multiplied onto it. */
     private var userVolume = 1f
@@ -350,7 +370,7 @@ class LocalPlayer(private val context: Context) {
         // processor chain. It stays in the chain whether or not Light Sync is on,
         // because the sink decides membership once per configuration; the cost
         // when off is a buffer copy per callback and nothing else.
-        val renderers = TapRenderersFactory(context, audioAnalysisTap, audioLead)
+        val renderers = TapRenderersFactory(context, audioAnalysisTap, audioLead, localDsp)
             .setEnableAudioFloatOutput(bitPerfect) as TapRenderersFactory
 
         // The defaults are sized for video-on-mobile-data. This is a lossless file
@@ -405,6 +425,28 @@ class LocalPlayer(private val context: Context) {
                 // sample — which in a 20-minute movement can be seconds away.
                 p.setSeekParameters(SeekParameters.EXACT)
                 p.addListener(playerListener)
+                // The decoder's *input* format - what the file declares. Paired with
+                // SignalPathProbe's report of what the decoder actually handed over,
+                // this is what makes "a 24-bit file arriving as 16-bit PCM" visible
+                // rather than something a listener has to infer from a flat number.
+                p.addAnalyticsListener(object : androidx.media3.exoplayer.analytics.AnalyticsListener {
+                    override fun onAudioInputFormatChanged(
+                        eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
+                        format: androidx.media3.common.Format,
+                        decoderReuseEvaluation: androidx.media3.exoplayer.DecoderReuseEvaluation?,
+                    ) {
+                        SignalPath.onSourceFormat(format)
+                    }
+
+                    override fun onAudioDisabled(
+                        eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
+                        counters: androidx.media3.exoplayer.DecoderCounters,
+                    ) {
+                        // Stop describing a chain that is no longer carrying anything.
+                        SignalPath.clear()
+                    }
+                })
+                SignalPath.onMixerRate(DeviceCapabilities.mixerRateHz())
                 preferredOutput?.let { d -> runCatching { p.setPreferredAudioDevice(d) } }
             }
     }

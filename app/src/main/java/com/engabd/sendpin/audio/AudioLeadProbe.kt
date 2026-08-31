@@ -97,6 +97,22 @@ class AudioLeadProbe(
      */
     private var streamOffsetUs = 0L
 
+    /**
+     * What the sink was configured with, after the processor chain.
+     *
+     * The last format the app can observe before Android takes over, and the one
+     * the Output card compares against the decoder's to answer "am I losing bits
+     * here". Reported rather than acted on - this override changes nothing.
+     */
+    override fun configure(
+        inputFormat: androidx.media3.common.Format,
+        specifiedBufferSize: Int,
+        outputChannels: IntArray?,
+    ) {
+        SignalPath.onSinkFormat(inputFormat)
+        super.configure(inputFormat, specifiedBufferSize, outputChannels)
+    }
+
     override fun setOutputStreamOffsetUs(outputStreamOffsetUs: Long) {
         streamOffsetUs = outputStreamOffsetUs
         super.setOutputStreamOffsetUs(outputStreamOffsetUs)

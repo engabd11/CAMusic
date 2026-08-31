@@ -19,6 +19,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
@@ -254,28 +256,38 @@ fun NowPlayingScreen(
                                     indication = null,
                                 ) { coverSlot = CoverSlot.ART },
                         )
-                        CoverSlot.ART -> AlbumArt(
-                            art = art,
-                            glow = palette.swatch(0),
-                            modifier = Modifier
-                                .fillMaxSize()
-                                // graphicsLayer rather than Modifier.alpha: the State is
-                                // read in the layer block, so easing the dim costs no
-                                // recomposition for the length of the transition.
-                                .graphicsLayer { alpha = artDim.value }
-                                // Tap → the live visualizer takes the cover's place.
-                                // Long-press → quick actions (go to album/artist, share).
-                                .combinedClickable(
-                                    interactionSource = remember { MutableInteractionSource() },
-                                    indication = null,
-                                    onClick = { coverSlot = CoverSlot.VISUALIZER },
-                                    onLongClick = if (favouritable != null) {
-                                        { sheets.actions = true }
-                                    } else null,
-                                ),
-                            glowAlpha = artGlow.value,
-                            placeholder = Icons.AutoMirrored.Filled.QueueMusic,
-                        )
+                        CoverSlot.ART -> Box(Modifier.fillMaxSize()) {
+                            AlbumArt(
+                                art = art,
+                                glow = palette.swatch(0),
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    // graphicsLayer rather than Modifier.alpha: the State is
+                                    // read in the layer block, so easing the dim costs no
+                                    // recomposition for the length of the transition.
+                                    .graphicsLayer { alpha = artDim.value }
+                                    // Tap → the live visualizer takes the cover's place.
+                                    // Long-press → quick actions (go to album/artist, share).
+                                    .combinedClickable(
+                                        interactionSource = remember { MutableInteractionSource() },
+                                        indication = null,
+                                        onClick = { coverSlot = CoverSlot.VISUALIZER },
+                                        onLongClick = if (favouritable != null) {
+                                            { sheets.actions = true }
+                                        } else null,
+                                    ),
+                                glowAlpha = artGlow.value,
+                                placeholder = Icons.AutoMirrored.Filled.QueueMusic,
+                            )
+                            // The cover has been tappable since the visualizer landed and
+                            // has never said so - there is no affordance on it at all, and
+                            // a full-bleed square of artwork does not read as a button.
+                            // This is the smallest thing that fixes that: a glyph in the
+                            // corner for a couple of seconds after the track changes, then
+                            // gone. Long enough to be noticed once, short enough that it is
+                            // never sitting on the artwork while you look at it.
+                            CoverTapHint(trackId = st.currentQueueItemId)
+                        }
                     }
                 }
 
@@ -283,56 +295,75 @@ fun NowPlayingScreen(
 
                 // Secondary actions — track-scoped chips only; the quality badge
                 // has moved to the transport row (between play and the seek bar).
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(19.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    IconChip(Icons.Default.Lyrics, "Lyrics", active = coverSlot == CoverSlot.LYRICS) {
-                        coverSlot = if (coverSlot == CoverSlot.LYRICS) CoverSlot.ART else CoverSlot.LYRICS
-                    }
-                    SleepTimerChip(viewModel)
-                    IconChip(Icons.AutoMirrored.Filled.QueueMusic, "Queue", active = sheets.panel == Panel.QUEUE) {
-                        sheets.panel = if (sheets.panel == Panel.QUEUE) null else Panel.QUEUE
-                    }
-                    IconChip(Icons.Default.Tune, "Player options", active = sheets.options) { sheets.options = !sheets.options }
-                    // Only on the local player: an MA speaker is fed by the server and
-                    // there is no file here to keep. Hidden rather than disabled when
-                    // there is nothing behind the track Navidrome could serve.
-                    DownloadChip(libraryViewModel)
-                    // DSP is Music Assistant's server-side pipeline, configured per MA
-                    // player over `config/players/dsp/*`. The local player decodes on
-                    // this phone and MA has never heard of it, so opening this while
-                    // Navidrome is playing showed — and would have saved — settings for
-                    // a completely different player.
-                    if (!st.isLocalSession) {
-                        IconChip(Icons.Default.GraphicEq, "DSP / Equalizer", active = sheets.panel == Panel.DSP) {
+                //
+                // Scrollable, because this row can hold eight chips: Lyrics, Sleep,
+                // Queue, Options, Download, DSP, Radio and Favourite. As a plain Row
+                // that was a fixed 19.dp apart, the last of them simply fell off a
+                // narrow phone with nothing to say they were there. `widthIn(min =
+                // maxWidth)` is what keeps the common case centred exactly as before:
+                // the Row is at least as wide as the screen when the chips fit, and
+                // grows past it - and scrolls - when they do not.
+                BoxWithConstraints(Modifier.fillMaxWidth()) {
+                    val rowMinWidth = maxWidth
+                    Row(
+                        Modifier
+                            .horizontalScroll(rememberScrollState())
+                            .widthIn(min = rowMinWidth)
+                            .padding(horizontal = 12.dp),
+                        horizontalArrangement =
+                            Arrangement.spacedBy(19.dp, Alignment.CenterHorizontally),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        IconChip(Icons.Default.Lyrics, "Lyrics", active = coverSlot == CoverSlot.LYRICS) {
+                            coverSlot = if (coverSlot == CoverSlot.LYRICS) CoverSlot.ART else CoverSlot.LYRICS
+                        }
+                        SleepTimerChip(viewModel)
+                        IconChip(Icons.AutoMirrored.Filled.QueueMusic, "Queue", active = sheets.panel == Panel.QUEUE) {
+                            sheets.panel = if (sheets.panel == Panel.QUEUE) null else Panel.QUEUE
+                        }
+                        IconChip(Icons.Default.Tune, "Player options", active = sheets.options) { sheets.options = !sheets.options }
+                        // Only on the local player: an MA speaker is fed by the server and
+                        // there is no file here to keep. Hidden rather than disabled when
+                        // there is nothing behind the track Navidrome could serve.
+                        DownloadChip(libraryViewModel)
+                        // Always here now. It used to be hidden on a local session,
+                        // because the only equaliser that existed was Music Assistant's
+                        // server-side pipeline and opening it while Navidrome played
+                        // showed - and would have saved - settings for a completely
+                        // different player. There is a local one now, and the sheet
+                        // routes to whichever engine owns the session.
+                        IconChip(
+                            Icons.Default.GraphicEq,
+                            if (st.isLocalSession) "Equaliser" else "DSP / Equalizer",
+                            active = sheets.panel == Panel.DSP,
+                        ) {
                             sheets.panel = if (sheets.panel == Panel.DSP) null else Panel.DSP
                         }
-                    }
-                    // Radio mode is a parameter of play_media, so it colours what you
-                    // play *next* rather than the queue already running — the toast
-                    // on toggle says so. Hidden on the local player, which has no
-                    // radio generation behind it.
-                    if (!st.isLocalSession) {
+                        // Radio mode is a parameter of play_media, so it colours what you
+                        // play *next* rather than the queue already running — the toast
+                        // on toggle says so. Hidden on the local player, which has no
+                        // radio generation behind it.
+                        if (!st.isLocalSession) {
+                            IconChip(
+                                Icons.Default.Radio,
+                                if (st.radioMode) "Radio mode on" else "Radio mode off",
+                                active = st.radioMode,
+                            ) { viewModel.toggleRadioMode() }
+                        }
+                        // Disabled until MA tells us which library item is playing —
+                        // without an item_id there is nothing to favourite.
                         IconChip(
-                            Icons.Default.Radio,
-                            if (st.radioMode) "Radio mode on" else "Radio mode off",
-                            active = st.radioMode,
-                        ) { viewModel.toggleRadioMode() }
+                            if (favorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                            if (favorite) "Remove from favourites" else "Add to favourites",
+                            active = favorite,
+                            // Gated on `favouritableItem`, not `currentItem`: the
+                            // latter is null for the whole of a local-library session,
+                            // which greyed this out on Navidrome and Jellyfin even though
+                            // both implement starring. See NowPlayingViewModel.
+                            tint = if (favouritable == null) TextFaint else null,
+                            onClick = if (favouritable == null) null else ({ viewModel.toggleFavorite() }),
+                        )
                     }
-                    // Disabled until MA tells us which library item is playing —
-                    // without an item_id there is nothing to favourite.
-                    IconChip(
-                        if (favorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                        if (favorite) "Remove from favourites" else "Add to favourites",
-                        active = favorite,
-                        // Gated on `favouritableItem`, not `currentItem`: the
-                        // latter is null for the whole of a local-library session,
-                        // which greyed this out on Navidrome and Jellyfin even though
-                        // both implement starring. See NowPlayingViewModel.
-                        tint = if (favouritable == null) TextFaint else null,
-                        onClick = if (favouritable == null) null else ({ viewModel.toggleFavorite() }),
-                    )
                 }
 
                 Spacer(Modifier.height(6.dp))
@@ -480,6 +511,60 @@ internal fun TopBar(
 }
 
 /**
+ * A brief "you can tap this" glyph in the corner of the album art.
+ *
+ * Shown for [HINT_MS] after each track change and then faded out. Keyed on the
+ * track rather than shown once per session: the gesture is worth re-offering when
+ * the record changes, and never worth leaving on screen while someone is looking
+ * at a sleeve.
+ *
+ * Not a clickable target of its own - the whole cover already is one, and a second
+ * hit area inside it would only be somewhere the long-press did not work.
+ */
+@Composable
+private fun BoxScope.CoverTapHint(trackId: String?) {
+    var visible by remember { mutableStateOf(true) }
+    LaunchedEffect(trackId) {
+        visible = true
+        kotlinx.coroutines.delay(HINT_MS)
+        visible = false
+    }
+    val alpha by androidx.compose.animation.core.animateFloatAsState(
+        targetValue = if (visible) 0.5f else 0f,
+        animationSpec = Motion.effects(),
+        label = "coverTapHint",
+    )
+    if (alpha <= 0.01f) return
+    Row(
+        Modifier
+            .align(Alignment.BottomEnd)
+            .padding(12.dp)
+            .graphicsLayer { this.alpha = alpha }
+            .clip(RoundedCornerShape(100))
+            .background(Ink.copy(alpha = 0.55f))
+            .padding(horizontal = 9.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        Icon(
+            Icons.Default.GraphicEq,
+            null,
+            tint = TextSecondary,
+            modifier = Modifier.size(12.dp),
+        )
+        Text(
+            "Tap",
+            color = TextSecondary,
+            fontFamily = AppFont,
+            fontWeight = FontWeight.Bold,
+            fontSize = 10.sp,
+        )
+    }
+}
+
+private const val HINT_MS = 2_600L
+
+/**
  * Keep the track that is playing.
  *
  * Downloading used to mean leaving the player, finding the track again in the library
@@ -488,7 +573,7 @@ internal fun TopBar(
  *
  * Absent rather than greyed when there is nothing to download. A chip that can never
  * do anything is worse than no chip: on a Music Assistant speaker there is no file on
- * this phone to keep, and the row is already six chips long.
+ * this phone to keep, and the row is long enough to scroll already.
  */
 @Composable
 fun DownloadChip(libraryViewModel: LibraryViewModel) {

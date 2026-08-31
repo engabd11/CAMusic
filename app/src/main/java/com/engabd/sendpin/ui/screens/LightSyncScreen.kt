@@ -31,6 +31,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.compose.foundation.combinedClickable
+import com.engabd.sendpin.ui.screens.settings.Note
+import com.engabd.sendpin.ui.screens.settings.OledButton
+import com.engabd.sendpin.ui.screens.settings.OledField
 import com.engabd.sendpin.ha.HaMediaPlayer
 import com.engabd.sendpin.ha.LightArea
 import com.engabd.sendpin.ha.LightSyncRepository
@@ -440,6 +444,9 @@ private fun DirectLightSyncScreen(onBack: () -> Unit, onOpenEffects: () -> Unit 
     val phantomStage by settings.phantomStageEnabled.collectAsState(initial = false)
     val stemSeparation by settings.stemSeparation.collectAsState(initial = false)
     val phoneConductor by settings.phoneConductorEnabled.collectAsState(initial = false)
+    val presets by settings.showPresets.collectAsState(initial = emptyList())
+    val genreRules by settings.genrePresetRules.collectAsState(initial = emptyList())
+    val genreAuto by settings.genrePresetsEnabled.collectAsState(initial = false)
     val tunables by settings.lightSyncTunables.collectAsState(initial = emptyMap())
     val bridgeIp by settings.hueBridgeIp.collectAsState(initial = "")
     val configId by settings.hueEntertainmentConfigId.collectAsState(initial = "")
@@ -880,6 +887,54 @@ private fun DirectLightSyncScreen(onBack: () -> Unit, onOpenEffects: () -> Unit 
                     ) { on -> scope.launch { settings.setLightSyncSpatial(on) } }
                 }
 
+                // Saved shows. Above the layers rather than below them, because a
+                // preset is mostly a way of setting those layers and the intensity
+                // and the palette all at once - so it reads as "or just pick one of
+                // these" before the reader starts working through them one by one.
+                Spacer(Modifier.height(22.dp))
+                SavedShows(
+                    presets = presets,
+                    rules = genreRules,
+                    genreAuto = genreAuto,
+                    accent = accent,
+                    onApply = { preset -> scope.launch { settings.applyShowPreset(preset) } },
+                    onSave = { name ->
+                        scope.launch {
+                            val captured = settings.captureShowPreset(name)
+                            settings.saveShowPresets(presets + captured)
+                        }
+                    },
+                    onRename = { preset, name ->
+                        scope.launch {
+                            settings.saveShowPresets(
+                                presets.map { if (it.id == preset.id) it.copy(name = name) else it },
+                            )
+                        }
+                    },
+                    onDelete = { preset ->
+                        scope.launch {
+                            settings.saveShowPresets(presets.filterNot { it.id == preset.id })
+                            // A rule pointing at a deleted preset would silently never
+                            // fire, which looks exactly like the rules being broken.
+                            settings.saveGenrePresetRules(
+                                genreRules.filterNot { it.presetId == preset.id },
+                            )
+                        }
+                    },
+                    onGenreAuto = { on -> scope.launch { settings.setGenrePresetsEnabled(on) } },
+                    onAddRule = { genre, preset ->
+                        scope.launch {
+                            settings.saveGenrePresetRules(
+                                genreRules.filterNot { it.genre.equals(genre, true) } +
+                                    com.engabd.sendpin.hue.GenrePresetRule(genre.trim(), preset.id),
+                            )
+                        }
+                    },
+                    onRemoveRule = { rule ->
+                        scope.launch { settings.saveGenrePresetRules(genreRules - rule) }
+                    },
+                )
+
                 // Four additive light-show layers — see `docs/creative-light-shows.md`.
                 // Outside the Advanced gate, deliberately: these are the
                 // headline features this screen exists to show off, not
@@ -1127,6 +1182,258 @@ private fun EmptyAreas(error: String?, onRetry: () -> Unit) {
             Text("Retry", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
         }
     }
+}
+
+/**
+ * Saved shows: apply one, save the current one, and optionally let the genre of
+ * whatever is playing pick between them.
+ *
+ * A chip per preset rather than a list, because applying one is the common action
+ * by a wide margin and everything else - rename, delete, tie it to a genre - is
+ * rare enough to live behind a long-press.
+ */
+@Composable
+private fun SavedShows(
+    presets: List<com.engabd.sendpin.hue.ShowPreset>,
+    rules: List<com.engabd.sendpin.hue.GenrePresetRule>,
+    genreAuto: Boolean,
+    accent: Color,
+    onApply: (com.engabd.sendpin.hue.ShowPreset) -> Unit,
+    onSave: (String) -> Unit,
+    onRename: (com.engabd.sendpin.hue.ShowPreset, String) -> Unit,
+    onDelete: (com.engabd.sendpin.hue.ShowPreset) -> Unit,
+    onGenreAuto: (Boolean) -> Unit,
+    onAddRule: (String, com.engabd.sendpin.hue.ShowPreset) -> Unit,
+    onRemoveRule: (com.engabd.sendpin.hue.GenrePresetRule) -> Unit,
+) {
+    var saving by remember { mutableStateOf(false) }
+    var editing by remember { mutableStateOf<com.engabd.sendpin.hue.ShowPreset?>(null) }
+    var applied by remember { mutableStateOf<String?>(null) }
+
+    SectionLabel("Saved shows")
+    Spacer(Modifier.height(2.dp))
+    Text(
+        "The whole show - intensity, palette, brightness, layers and tunables - under one " +
+            "name. Applying one never turns the lights on or off, or moves them to another room.",
+        color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 11.sp,
+    )
+    Spacer(Modifier.height(12.dp))
+
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        presets.forEach { preset ->
+            PresetChip(
+                preset = preset,
+                accent = accent,
+                justApplied = applied == preset.id,
+                onClick = { applied = preset.id; onApply(preset) },
+                onLongClick = { editing = preset },
+            )
+        }
+    }
+    Spacer(Modifier.height(10.dp))
+    OledButton("Save this show as\u2026", accent = accent, outline = true) { saving = true }
+    Spacer(Modifier.height(4.dp))
+    Note("Long-press a show to rename it, delete it, or tie it to a genre.")
+
+    Spacer(Modifier.height(14.dp))
+    FeatureRow(
+        title = "Pick a show by genre",
+        gist = "Change the room to match what is playing.",
+        info = "When a track starts, its genre is matched against the rules you have set and " +
+            "that show is applied. First matching rule wins, so the order you add them in " +
+            "is the priority order.\n\nMatching is loose in both directions, because no two " +
+            "servers agree on genre strings: a rule for \"jazz\" catches \"Vocal Jazz\", and a " +
+            "rule for \"Progressive House\" is caught by a track tagged \"house\".\n\nA track " +
+            "with no genre, or one nothing matches, leaves the room exactly as it is - " +
+            "rather than resetting to a default halfway through a record.\n\nTip: two or " +
+            "three broad rules beat a dozen narrow ones. The point is that a quiet album " +
+            "does not light the room like a club.",
+        checked = genreAuto,
+        unavailable = if (rules.isEmpty()) "Add a rule first - long-press a show above." else null,
+    ) { on -> onGenreAuto(on) }
+
+    if (rules.isNotEmpty()) {
+        Spacer(Modifier.height(10.dp))
+        rules.forEach { rule ->
+            val name = presets.firstOrNull { it.id == rule.presetId }?.name ?: "(deleted)"
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "${rule.genre}  \u2192  $name",
+                    color = TextSecondary, fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
+                CircleBtn(Icons.Default.Close, "Remove rule") { onRemoveRule(rule) }
+            }
+        }
+    }
+
+    if (saving) {
+        NamePromptDialog(
+            title = "Save this show",
+            note = "Everything on this screen as it is right now, under a name.",
+            initial = "",
+            confirmLabel = "Save",
+            accent = accent,
+            onDismiss = { saving = false },
+            onConfirm = { name -> saving = false; onSave(name) },
+        )
+    }
+
+    editing?.let { preset ->
+        PresetActionsDialog(
+            preset = preset,
+            presets = presets,
+            accent = accent,
+            onDismiss = { editing = null },
+            onRename = { name -> editing = null; onRename(preset, name) },
+            onDelete = { editing = null; onDelete(preset) },
+            onAddRule = { genre -> editing = null; onAddRule(genre, preset) },
+        )
+    }
+}
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun PresetChip(
+    preset: com.engabd.sendpin.hue.ShowPreset,
+    accent: Color,
+    justApplied: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+) {
+    Column(
+        Modifier
+            .clip(RoundedCornerShape(14.dp))
+            .background(if (justApplied) accent.a(0.16f) else Glass)
+            .border(
+                1.dp,
+                if (justApplied) accent.a(0.45f) else Hairline,
+                RoundedCornerShape(14.dp),
+            )
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .padding(horizontal = 13.dp, vertical = 9.dp),
+    ) {
+        Text(
+            preset.name.ifBlank { "Untitled" },
+            color = if (justApplied) accent else TextPrimary,
+            fontWeight = FontWeight.Bold, fontSize = 13.sp,
+            maxLines = 1, overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            preset.summary(),
+            color = TextFaint, fontWeight = FontWeight.SemiBold, fontSize = 10.sp,
+            maxLines = 1, overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
+private fun NamePromptDialog(
+    title: String,
+    note: String,
+    initial: String,
+    confirmLabel: String,
+    accent: Color,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
+    var name by remember { mutableStateOf(initial) }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Ink2,
+        title = { Text(title, color = TextPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 17.sp) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OledField(name, { name = it }, "Name", "e.g. Dinner", accent)
+                Note(note)
+            }
+        },
+        confirmButton = {
+            androidx.compose.material3.TextButton(
+                onClick = { onConfirm(name.trim()) },
+                enabled = name.isNotBlank(),
+            ) {
+                Text(
+                    confirmLabel,
+                    color = if (name.isBlank()) TextFaint else accent,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+        },
+        dismissButton = {
+            androidx.compose.material3.TextButton(onClick = onDismiss) {
+                Text("Cancel", color = TextMuted)
+            }
+        },
+    )
+}
+
+/**
+ * Rename, delete, or tie a preset to a genre.
+ *
+ * One dialog for all three because they are all rare: a preset is applied dozens of
+ * times for every once it is edited, which is why the chip's tap does the applying
+ * and everything here is behind a long-press.
+ */
+@Composable
+private fun PresetActionsDialog(
+    preset: com.engabd.sendpin.hue.ShowPreset,
+    presets: List<com.engabd.sendpin.hue.ShowPreset>,
+    accent: Color,
+    onDismiss: () -> Unit,
+    onRename: (String) -> Unit,
+    onDelete: () -> Unit,
+    onAddRule: (String) -> Unit,
+) {
+    var name by remember { mutableStateOf(preset.name) }
+    var genre by remember { mutableStateOf("") }
+    var confirmDelete by remember { mutableStateOf(false) }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Ink2,
+        title = { Text(preset.name.ifBlank { "Untitled" }, color = TextPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 17.sp) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OledField(name, { name = it }, "Name", "e.g. Dinner", accent)
+                OledField(genre, { genre = it }, "Use for genre (optional)", "e.g. jazz", accent)
+                Note(preset.summary())
+                OledButton(
+                    if (confirmDelete) "Tap again to delete" else "Delete this show",
+                    accent = accent, danger = true,
+                ) {
+                    if (confirmDelete) onDelete() else confirmDelete = true
+                }
+            }
+        },
+        confirmButton = {
+            androidx.compose.material3.TextButton(
+                onClick = {
+                    // A genre typed here is the reason the dialog was opened; a name
+                    // change alone is the other reason. Both at once is fine.
+                    if (genre.isNotBlank()) onAddRule(genre)
+                    else if (name.trim() != preset.name) onRename(name.trim())
+                    else onDismiss()
+                },
+                enabled = name.isNotBlank(),
+            ) {
+                Text("Done", color = if (name.isBlank()) TextFaint else accent, fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            androidx.compose.material3.TextButton(onClick = onDismiss) {
+                Text("Cancel", color = TextMuted)
+            }
+        },
+    )
 }
 
 @Composable

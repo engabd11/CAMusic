@@ -11,7 +11,6 @@ import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.ma.LibraryViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -37,12 +36,11 @@ internal fun DownloadsSection(
     var bytes by remember { mutableStateOf(0L) }
     LaunchedEffect(downloads) { bytes = withContext(Dispatchers.IO) { vm.downloadBytes() } }
 
-    var wifiOnly by remember { mutableStateOf(false) }
-    var capMb by remember { mutableStateOf(0) }
-    LaunchedEffect(Unit) {
-        wifiOnly = settings.downloadWifiOnly.first()
-        capMb = settings.downloadStorageCapMb.first()
-    }
+    // Collected rather than read once: the storage limit is also what the "On this
+    // phone" panel above reports, so a one-shot read showed the old ceiling beside a
+    // freshly changed one until the screen was rebuilt.
+    val wifiOnly by settings.downloadWifiOnly.collectAsStateWithLifecycle(initialValue = false)
+    val capMb by settings.downloadStorageCapMb.collectAsStateWithLifecycle(initialValue = 0)
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         SettingsCard(
@@ -75,7 +73,7 @@ internal fun DownloadsSection(
                 "Wi-Fi only",
                 "Skip downloads on mobile data rather than spending the allowance on them",
                 wifiOnly, accent,
-            ) { wifiOnly = it; scope.launch { settings.setDownloadWifiOnly(it) } }
+            ) { scope.launch { settings.setDownloadWifiOnly(it) } }
         }
 
         SettingsCard(
@@ -95,7 +93,6 @@ internal fun DownloadsSection(
                 },
             ) { i ->
                 val mb = listOf(0, 1_000, 5_000, 20_000)[i]
-                capMb = mb
                 scope.launch { settings.setDownloadStorageCapMb(mb) }
             }
             Note(

@@ -17,6 +17,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.engabd.sendpin.audio.AudioOutputs
 import com.engabd.sendpin.audio.DeviceCapabilities
 import com.engabd.sendpin.audio.ReplayGain
+import com.engabd.sendpin.audio.SignalPath
 import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.data.rememberIsIgnoringBatteryOptimizations
@@ -27,7 +28,6 @@ import com.engabd.sendpin.ui.theme.TextSecondary
 import com.engabd.sendpin.ui.theme.WarnAmber
 import com.engabd.sendpin.ui.viewmodel.PlayerViewModel
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
@@ -78,12 +78,12 @@ private fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSco
     val am = remember(context) { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
     val outputs = remember { AudioOutputs.list(am) }
 
-    var pinned by remember { mutableStateOf("") }
-    var bitPerfect by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
-        pinned = settings.preferredAudioDeviceId.first()
-        bitPerfect = settings.bitPerfect24Bit.first()
-    }
+    // Collected, not read once with `first()`. Both of these are also settable from
+    // the Music Assistant server's own page, so a one-shot read left whichever copy
+    // of the card you were not standing on showing the value from before the change.
+    // Cheap now that every AppSettings flow is deduped — see AppSettings.pref().
+    val pinned by settings.preferredAudioDeviceId.collectAsStateWithLifecycle(initialValue = "")
+    val bitPerfect by settings.bitPerfect24Bit.collectAsStateWithLifecycle(initialValue = false)
 
     val route = remember(pinned) { DeviceCapabilities.activeRoute(am, pinned) }
     val mixerRate = remember { DeviceCapabilities.mixerRateHz() }
@@ -99,7 +99,6 @@ private fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSco
             val labels = listOf("Automatic") + outputs.map { it.label }
             val ids = listOf("") + outputs.map { it.id }
             SegmentedToggleRow(labels, ids.indexOf(pinned).coerceAtLeast(0)) { i ->
-                pinned = ids[i]
                 scope.launch { settings.setPreferredAudioDeviceId(ids[i]) }
             }
             Note(
@@ -112,30 +111,101 @@ private fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSco
 
         StatusPanel {
             StatusRow("Playing through", route?.label ?: "Unknown")
-            route?.sampleRateLabel?.let { StatusRow("Accepts", it) }
-            route?.bitDepthLabel?.let { StatusRow("Depth", it) }
+            route?.sampleRateLabel?.let { StatusRow("Device accepts", it) }
             if (mixerRate > 0) StatusRow("Mixer output", "${StreamQuality.khz(mixerRate)} kHz")
         }
         route?.bluetoothCodecNote?.let { Note(it) }
 
+        // The chain itself, stage by stage. The row above describes the *device*;
+        // this describes what is actually flowing through it, which is the question
+        // someone reading this card is really asking. See SignalPath.
+        val path by SignalPath.state.collectAsStateWithLifecycle()
+        if (path.source.known || path.decoded.known) {
+            CardDivider()
+            FieldLabel("Signal path")
+            StatusPanel {
+                if (path.source.known) StatusRow("File", path.source.summary())
+                if (path.decoded.known) StatusRow("Decoder output", path.decoded.summary())
+                if (path.sink.known) StatusRow("To Android", path.sink.summary())
+                StatusRow(
+                    "High-resolution output",
+                    if (path.floatOutput) "On" else "Off",
+                )
+            }
+            with(SignalPath) { path.explain(route?.isBluetooth == true) }?.let {
+                Note(it, warn = path.truncating)
+            }
+            Note(
+                "What each line means.",
+                title = "Signal path",
+                info = "**File** is what the container declares.\n\n**Decoder output** is " +
+                    "what the decoder actually handed over, and it is usually the line " +
+                    "that explains a disappointment: a 24-bit FLAC decoded by the phone's " +
+                    "own MediaCodec comes out as 16-bit PCM, and nothing downstream can " +
+                    "put those bits back.\n\n**To Android** is the last thing this app " +
+                    "can see. Past it the platform mixes, resamples if it has to, and on " +
+                    "Bluetooth hands the result to the codec.\n\n**High-resolution " +
+                    "output** is the switch that decides whether the decoder's extra bits " +
+                    "survive: without it Android converts anything above 16-bit down to " +
+                    "16 on the way to the sink.\n\nTip: on Bluetooth the device row above " +
+                    "will always say 16-bit, whatever LDAC is carrying — that is Android " +
+                    "describing the sink it gives apps, not the codec. These lines are " +
+                    "the ones that tell you something.",
+            )
+        }
+
+        CardDivider()
+        FieldLabel("Output sample rate")
+        val outRate by settings.outputSampleRateHz.collectAsStateWithLifecycle(initialValue = 0)
+        val rateOptions = listOf(0) + AppSettings.OUTPUT_RATES
+        SegmentedToggleRow(
+            labels = rateOptions.map { if (it == 0) "Follow file" else StreamQuality.khz(it) },
+            selectedIndex = rateOptions.indexOf(outRate).coerceAtLeast(0),
+        ) { i -> scope.launch { settings.setOutputSampleRateHz(rateOptions[i]) } }
+        Note(
+            if (outRate == 0)
+                "Every file plays at its own rate. Android converts if the output needs it."
+            else
+                "Everything is resampled to ${StreamQuality.khz(outRate)} kHz before it leaves the app.",
+            title = "Output sample rate",
+            info = "Follow file is right almost always: resampling is a loss, and doing " +
+                "it here on top of whatever Android does is two losses instead of one.\n\n" +
+                "Fixing a rate is worth it in one situation - when the output is locked " +
+                "to a rate your files are not. The Mixer output line above says what " +
+                "Android is running at. Matching it means this app resamples once, with " +
+                "a good resampler, instead of the platform doing it on every track.\n\n" +
+                "On Bluetooth the rate the codec negotiated is in Developer options " +
+                "under Bluetooth audio sample rate, and that is the number worth " +
+                "matching.\n\n" +
+                "Applies to the next track rather than the one playing.\n\n" +
+                "Tip: if you do not know, leave it on Follow file. A wrong choice here " +
+                "is audible and a right one usually is not.",
+        )
+
         CardDivider()
         ToggleRow(
-            title = "Bit-perfect (24-bit)",
-            subtitle = "Ask for 24-bit instead of 16",
+            title = "High-resolution output",
+            subtitle = if (route?.isBluetooth == true)
+                "Keeps the decoder's extra bits as far as the Bluetooth codec"
+            else
+                "Carry more than 16 bits to the output",
             checked = bitPerfect,
             accent = accent,
-            info = "Renders whatever depth the decoder reports instead of flattening everything to " +
-                "16 bits. It costs bandwidth, and a phone whose mixer runs at 16-bit gains " +
-                "nothing at all from it.\n\nOn a library this phone plays, it also turns on " +
-                "float output, so a 24-bit file is not requantised to 16 on its way to the " +
-                "sink. That is fixed when the player is built, so it applies the next time the " +
-                "app starts rather than straight away.\n\nIt is off by default because float " +
-                "output is still experimental. It has been heard to distort 44.1 kHz material " +
-                "on phones whose mixer runs at 48.\n\nTip: check the panel above first. If your " +
-                "output says it accepts 16-bit, there is nothing here for you. This is really " +
-                "for a USB DAC, and if you turn it on and hear distortion, turning it back off " +
-                "fixes it immediately.",
-        ) { bitPerfect = it; scope.launch { settings.setBitPerfect24Bit(it) } }
+            info = "Carries whatever depth the decoder produced instead of flattening it to " +
+                "16 bits on the way to the sink.\n\nThis matters on Bluetooth too, which is " +
+                "not obvious: LDAC is lossy, so nothing here is ever bit-perfect over the " +
+                "air — but the codec is fed by Android, and handing it a signal already " +
+                "truncated to 16 bits throws away resolution *before* it encodes. Check " +
+                "Developer options, Bluetooth audio bits per sample: if it says 24 or 32, " +
+                "the codec is ready for more than 16 and this is what supplies it.\n\nIt " +
+                "only helps where the decoder produced more than 16 bits to begin with. " +
+                "The Signal path panel above says whether it did.\n\nThe float path is " +
+                "fixed when the player is built, so a change applies next time the app " +
+                "starts rather than straight away.\n\nTip: if you hear distortion on 44.1 " +
+                "kHz material on a phone whose mixer runs at 48, turn it back off — that " +
+                "combination has been known to misbehave, and switching it off fixes it " +
+                "immediately.",
+        ) { scope.launch { settings.setBitPerfect24Bit(it) } }
     }
 }
 
@@ -150,16 +220,14 @@ private fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSco
  */
 @Composable
 internal fun StreamingCard(settings: AppSettings, accent: Color, scope: CoroutineScope) {
-    var preferHiRes by remember { mutableStateOf(true) }
-    var preferFlac by remember { mutableStateOf(true) }
-    var preferOriginal by remember { mutableStateOf(false) }
-    var bitPerfect by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
-        preferHiRes = settings.preferHiRes.first()
-        preferFlac = settings.preferFlac.first()
-        preferOriginal = settings.preferOriginal.first()
-        bitPerfect = settings.bitPerfect24Bit.first()
-    }
+    // This card is rendered on two pages at once — Playback & audio, and the Music
+    // Assistant server's own page — so reading each value once meant changing
+    // bit-perfect on one and finding the other still showing the old answer. The
+    // initial values are the same defaults AppSettings applies.
+    val preferHiRes by settings.preferHiRes.collectAsStateWithLifecycle(initialValue = true)
+    val preferFlac by settings.preferFlac.collectAsStateWithLifecycle(initialValue = true)
+    val preferOriginal by settings.preferOriginal.collectAsStateWithLifecycle(initialValue = false)
+    val bitPerfect by settings.bitPerfect24Bit.collectAsStateWithLifecycle(initialValue = false)
 
     SettingsCard(
         title = "What to ask Music Assistant for",
@@ -175,12 +243,12 @@ internal fun StreamingCard(settings: AppSettings, accent: Color, scope: Coroutin
             "Offer hi-res rates",
             "Also accept 88.2 and 96 kHz, so hi-res masters aren't downsampled to 48",
             preferHiRes, accent,
-        ) { preferHiRes = it; scope.launch { settings.setPreferHiRes(it) } }
+        ) { scope.launch { settings.setPreferHiRes(it) } }
         ToggleRow(
             "Prefer FLAC over PCM",
             "Lossless either way, FLAC uses about half the bandwidth",
             preferFlac, accent,
-        ) { preferFlac = it; scope.launch { settings.setPreferFlac(it) } }
+        ) { scope.launch { settings.setPreferFlac(it) } }
         ToggleRow(
             title = "Play at original quality",
             subtitle = "Bypass Music Assistant rather than let it resample",
@@ -193,7 +261,7 @@ internal fun StreamingCard(settings: AppSettings, accent: Color, scope: Coroutin
                 "way.\n\nTip: turn it on if you have hi-res files and one listening spot. Leave " +
                 "it off if you group speakers, because a track that goes direct drops out of " +
                 "the group.",
-        ) { preferOriginal = it; scope.launch { settings.setPreferOriginal(it) } }
+        ) { scope.launch { settings.setPreferOriginal(it) } }
         Note(
             "Output is ${if (bitPerfect) "up to 24-bit" else "16-bit"}, see Output above. " +
                 "Reconnect to apply a change here.",
@@ -205,8 +273,7 @@ internal fun StreamingCard(settings: AppSettings, accent: Color, scope: Coroutin
 
 @Composable
 private fun LoudnessCard(settings: AppSettings, accent: Color, scope: CoroutineScope) {
-    var mode by remember { mutableStateOf(ReplayGain.ALBUM) }
-    LaunchedEffect(Unit) { mode = settings.replayGainMode.first() }
+    val mode by settings.replayGainMode.collectAsStateWithLifecycle(initialValue = ReplayGain.ALBUM)
 
     SettingsCard(
         title = "Loudness",
@@ -214,7 +281,6 @@ private fun LoudnessCard(settings: AppSettings, accent: Color, scope: CoroutineS
             "tags in your files to even that out.",
     ) {
         SegmentedToggleRow(ReplayGainLabels, ReplayGainValues.indexOf(mode).coerceAtLeast(0)) {
-            mode = ReplayGainValues[it]
             scope.launch { settings.setReplayGainMode(ReplayGainValues[it]) }
         }
         Note(

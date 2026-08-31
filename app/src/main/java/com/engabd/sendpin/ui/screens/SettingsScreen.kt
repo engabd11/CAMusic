@@ -131,7 +131,7 @@ enum class SettingsSection(
     ),
     BEHAVIOR(
         "Playback & Behavior",
-        "Gestures, Harmonic DJ mode, Listening DNA, and lyrics timing",
+        "The visualizer, gestures, Harmonic DJ mode, Listening DNA, and lyrics timing",
         Icons.Default.Gesture,
     ),
     ABOUT(
@@ -330,6 +330,16 @@ fun SettingsScreen(
  * answer one line of text would be six collectors on the index of a screen the user is
  * usually passing through.
  */
+/**
+ * How many switches [SettingsSection.BEHAVIOR] holds, for its "n of five on" line.
+ *
+ * A constant rather than a count of anything: the flows are collected one by one in
+ * [rememberSettingsOverview], so nothing here can derive the total, and a hard-coded
+ * denominator that drifts from the section is worse than none. Adding a switch to
+ * `BehaviorSettings` means changing this too.
+ */
+private const val BEHAVIOR_TOGGLES = 5
+
 private data class SettingsOverview(
     val servers: Int = 0,
     val activeLibrary: String? = null,
@@ -338,6 +348,9 @@ private data class SettingsOverview(
     val downloadBytes: Long = 0,
     val lightSyncSummary: String? = null,
     val appearanceSummary: String? = null,
+    /** How many of [BEHAVIOR_TOGGLES] switches in Playback & Behavior are on. */
+    val behaviorOn: Int = 0,
+    val behaviorLyricsOffsetMs: Int = 0,
 ) {
     /** The live line for [section], or null to fall back to its written description. */
     fun subtitleFor(section: SettingsSection): String? = when (section) {
@@ -353,11 +366,20 @@ private data class SettingsOverview(
         }
         SettingsSection.LIGHTS -> lightSyncSummary
         SettingsSection.APPEARANCE -> appearanceSummary
+        // Every switch in here is off by default, so the useful thing to say is how
+        // many are not — a written list of the five topics is a definition, and the
+        // reader has already read it once. The lyrics trim is a slider rather than a
+        // switch, so it only earns its half of the line when it has been moved.
+        SettingsSection.BEHAVIOR -> listOfNotNull(
+            if (behaviorOn == 0) "Nothing turned on yet"
+            else "$behaviorOn of $BEHAVIOR_TOGGLES on",
+            behaviorLyricsOffsetMs.takeIf { it != 0 }?.let { "lyrics %+d ms".format(it) },
+        ).joinToString(" · ")
         // Nothing about the audio path or the app itself changes often enough to be
         // worth a live line, and a row that reads "Output: Phone speaker" would be
         // wrong every time headphones are plugged in while this screen is not open.
         SettingsSection.AUDIO, SettingsSection.STATS, SettingsSection.BACKUP,
-        SettingsSection.BEHAVIOR, SettingsSection.ABOUT -> null
+        SettingsSection.ABOUT -> null
     }
 }
 
@@ -377,6 +399,15 @@ private fun rememberSettingsOverview(
     val haAddress by settings.haUrl.collectAsStateWithLifecycle(initialValue = "")
     val themeKey by settings.theme.collectAsStateWithLifecycle(initialValue = ThemeChoice.OLED.key)
     val accentKey by settings.accentSource.collectAsStateWithLifecycle(initialValue = AccentChoice.ALBUM.key)
+    // The five Playback & Behavior switches, for that row's "n of five on" line. All
+    // five are off by default, so an untouched install reads "Nothing turned on yet"
+    // rather than a count nobody has to act on.
+    val showVisualizer by settings.showVisualizer.collectAsStateWithLifecycle(initialValue = false)
+    val swipeToSkip by settings.swipeToSkip.collectAsStateWithLifecycle(initialValue = false)
+    val sensorGestures by settings.sensorGestures.collectAsStateWithLifecycle(initialValue = false)
+    val djMode by settings.djMode.collectAsStateWithLifecycle(initialValue = false)
+    val listeningDna by settings.listeningDna.collectAsStateWithLifecycle(initialValue = false)
+    val lyricsOffset by settings.lyricsOffsetMs.collectAsStateWithLifecycle(initialValue = 0)
 
     // Stat-ing the files is disk work, so it happens off the main thread and only when
     // the index of downloads actually changes.
@@ -404,6 +435,9 @@ private fun rememberSettingsOverview(
             if (haAddress.isNotBlank()) "Home Assistant · $haAddress" else "Home Assistant · not set up"
         },
         appearanceSummary = "${ThemeChoice.from(themeKey).label} · ${AccentChoice.from(accentKey).label}",
+        behaviorOn = listOf(showVisualizer, swipeToSkip, sensorGestures, djMode, listeningDna)
+            .count { it },
+        behaviorLyricsOffsetMs = lyricsOffset,
     )
 }
 

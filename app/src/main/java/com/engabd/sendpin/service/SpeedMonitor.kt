@@ -37,10 +37,12 @@ import kotlinx.coroutines.launch
  *
  * Speed-limit source: when [AppSettings.speedLimitAutoDetect] is enabled, the
  * alert uses [OfflineSpeedLimitProvider] to look up the posted limit from GPS
- * coordinates against a local SQLite database — no internet, no tracking. When
- * auto-detect is off, or the database has no data for the current location, it
- * falls back to the manually-set limit ([AppSettings.drivingSpeedLimitKmh]).
- * The last detected limit is exposed as [detectedLimitKmh] for the UI to display.
+ * coordinates against a local SQLite database that ships in the APK — no
+ * internet, no tracking, and nothing to download. When auto-detect is off, or
+ * the location is outside the data's coverage, it falls back to the manually-set
+ * limit ([AppSettings.drivingSpeedLimitKmh]). The last detected limit is exposed
+ * as [detectedLimitKmh], and what the data itself is doing as [limitDataStatus],
+ * for the UI to display.
  */
 class SpeedMonitor(private val context: Context, private val drivingMode: DrivingMode) {
 
@@ -65,6 +67,18 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
     /** The speed limit currently in effect — detected, or manual if auto-detect is off. */
     private val _activeLimitKmh = MutableStateFlow<Int?>(null)
     val activeLimitKmh: StateFlow<Int?> = _activeLimitKmh.asStateFlow()
+
+    /**
+     * One line about the bundled speed-limit data — unpacking, or ready with its
+     * version and size — or null when nothing is listening for locations.
+     *
+     * Straight from [SpeedLimitProvider.statusDescription], so the settings card
+     * reports the provider's own answer rather than a second guess at it.
+     */
+    private val _limitDataStatus = MutableStateFlow<String?>(null)
+    val limitDataStatus: StateFlow<String?> = _limitDataStatus.asStateFlow()
+
+    private var statusJob: Job? = null
 
     private val locationListener = LocationListener { location -> onLocation(location) }
 
@@ -98,7 +112,14 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
         // Lazily initialise the speed-limit provider. It opens the database if present;
         // if not, it just returns null for all queries until the user downloads the data.
         if (speedLimitProvider == null) {
-            speedLimitProvider = OfflineSpeedLimitProvider(context)
+            val provider = OfflineSpeedLimitProvider(context)
+            speedLimitProvider = provider
+            // Republish the provider's own status line whenever it changes state,
+            // so the settings card can say "unpacking" and then name the data.
+            statusJob?.cancel()
+            statusJob = scope.launch {
+                provider.ready.collect { _limitDataStatus.value = provider.statusDescription() }
+            }
         }
         runCatching {
             locationManager.requestLocationUpdates(
@@ -118,6 +139,9 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
         // Close the speed-limit provider to release the SQLite file handle. It
         // will be re-opened lazily when location updates resume. Keeping it open
         // while driving mode is off wastes a file descriptor for no purpose.
+        statusJob?.cancel()
+        statusJob = null
+        _limitDataStatus.value = null
         speedLimitProvider?.close()
         speedLimitProvider = null
         _speedKmh.value = 0f

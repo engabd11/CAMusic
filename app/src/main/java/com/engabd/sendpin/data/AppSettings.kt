@@ -6,6 +6,9 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.engabd.sendpin.audio.LocalDsp
+import com.engabd.sendpin.hue.GenrePresetRule
+import com.engabd.sendpin.hue.ShowPreset
 import com.engabd.sendpin.library.ServerConfig
 import com.engabd.sendpin.library.ServerKind
 import kotlinx.coroutines.flow.Flow
@@ -144,8 +147,12 @@ class AppSettings(private val context: Context) {
         // location to look up the posted limit from a local offline database, instead
         // of the manually-typed [DRIVING_SPEED_LIMIT_KMH]. The manual value remains as
         // a fallback for areas where the database has no data. See [SpeedMonitor].
+        // There is deliberately no speed_limit_db_version key. It existed to compare
+        // a downloaded database against a remote version string, and the database is
+        // bundled in the APK now — so its version travels with the build, and the
+        // only copy that matters is the one inside the file, which
+        // SpeedLimitDatabase.databaseVersion() reads.
         private val SPEED_LIMIT_AUTO_DETECT = booleanPreferencesKey("speed_limit_auto_detect")
-        private val SPEED_LIMIT_DB_VERSION = stringPreferencesKey("speed_limit_db_version") // last downloaded DB version
 
         // Self-hosted crash reporting
         private val CRASH_GITHUB_REPO = stringPreferencesKey("crash_github_repo") // owner/repo, e.g. engabd11/CAMusic
@@ -192,6 +199,40 @@ class AppSettings(private val context: Context) {
         private val LIGHT_SYNC_ADVANCED = booleanPreferencesKey("light_sync_advanced")
 
         /**
+         * Saved light shows, as a JSON list of [com.engabd.sendpin.hue.ShowPreset].
+         *
+         * Every control that shapes a show lives in one global set of switches, which
+         * is fine until you want two of them. Absent until something is saved, so the
+         * screen can tell "never used this" from "deleted them all".
+         */
+        private val SHOW_PRESETS = stringPreferencesKey("light_show_presets")
+
+        /**
+         * The equaliser for audio this phone decodes, as a JSON
+         * [com.engabd.sendpin.audio.LocalDsp.Config].
+         *
+         * Nothing to do with the Music Assistant DSP: that one is per-MA-player and
+         * lives on the server, configured over its own commands. This one is this
+         * phone's own output, which MA has never heard of.
+         */
+        private val LOCAL_DSP = stringPreferencesKey("local_dsp")
+
+        /**
+         * Resample this phone's own output to a fixed rate. 0 - the default - is
+         * "follow the source", which is the right answer almost always.
+         */
+        private val OUTPUT_SAMPLE_RATE = stringPreferencesKey("output_sample_rate_hz")
+
+        /** The rates the picker offers, beyond "follow the source". */
+        val OUTPUT_RATES = listOf(44_100, 48_000, 88_200, 96_000, 176_400, 192_000)
+
+        /** Genre-to-preset rules, as a JSON list of [com.engabd.sendpin.hue.GenrePresetRule]. */
+        private val GENRE_PRESET_RULES = stringPreferencesKey("light_show_genre_rules")
+
+        /** Whether [GENRE_PRESET_RULES] are applied on a track change at all. */
+        private val GENRE_PRESETS_ENABLED = booleanPreferencesKey("light_show_genre_auto")
+
+        /**
          * Whether tracks are analysed ahead of the show.
          *
          * On by default. Everything the direct path could learn from a live tap
@@ -226,7 +267,12 @@ class AppSettings(private val context: Context) {
         private val MUSIC_DNA_ENABLED = booleanPreferencesKey("music_dna_enabled")
 
         // --- Effects (ambience shows) ---
-        /** Last effect selected, so the screen reopens where it was left. Not auto-resumed. */
+        /**
+         * Last effect started, so the screen reopens with that tile's controls already
+         * open. Read by `EffectsViewModel.lastEffect`. Never auto-resumed: a show holds
+         * a render loop, a wake lock and a foreground service, and none of that should
+         * come back without being asked for.
+         */
         private val EFFECTS_LAST = stringPreferencesKey("effects_last")
         /** Per-effect 0..1, as a JSON object keyed by wire name. Same shape as the tunables. */
         private val EFFECTS_INTENSITY = stringPreferencesKey("effects_intensity")
@@ -269,6 +315,19 @@ class AppSettings(private val context: Context) {
 
         /** Two seconds either way covers every provider disagreement worth fixing. */
         const val MAX_LYRICS_OFFSET_MS = 2_000
+
+        /**
+         * [downloadStorageCapMb] as a byte count, or null for "no limit".
+         *
+         * One definition because there were three. `DownloadManager.enforceStorageCap`
+         * evicted at `capMb * 1_048_576` (MiB) while `LibraryViewModel` refused new
+         * downloads at `capMb * 1_000_000` (MB), so the threshold that deletes and the
+         * threshold that refuses were 4.9% apart — and the Downloads page labels the
+         * stored 1_000 as "1 GB", which is decimal. Decimal wins here because it is the
+         * one of the three the user actually reads.
+         */
+        fun storageCapBytes(capMb: Int): Long? =
+            if (capMb <= 0) null else capMb.toLong() * 1_000_000L
 
         const val MODE_HA = "ha"
         const val MODE_DIRECT = "direct"
@@ -424,10 +483,6 @@ class AppSettings(private val context: Context) {
     // migration: an install that has never touched the setting keeps answering from the
     // global key, and the first write moves it across. No one-shot upgrade pass, so
     // there is no version to get wrong and nothing to re-run if it half-fails.
-
-    /** The configured Music Assistant server, or null when there isn't one. */
-    val maServer: Flow<ServerConfig?> =
-        servers.map { list -> list.firstOrNull { it.kind == ServerKind.MUSIC_ASSISTANT } }
 
     private fun maOption(
         prefs: androidx.datastore.preferences.core.Preferences,
@@ -979,12 +1034,27 @@ class AppSettings(private val context: Context) {
      * The wizard's `finish(skipped)` took this and ignored it, so both paths wrote the
      * same thing and nothing downstream could tell a deliberate "no server, thanks"
      * from an interrupted setup.
+     *
+     * Read by `App.kt`'s wizard gate. Before that it was written and read by nothing,
+     * and the gate used a screen-local `rememberSaveable` instead — which survives a
+     * rotation and a process death but not a force-close, so skipping setup and then
+     * killing the app put the wizard straight back on the next launch.
      */
     val onboardingSkipped: Flow<Boolean> = pref { it[ONBOARDING_SKIPPED] ?: false }
 
     suspend fun setOnboardingSkipped(skipped: Boolean) {
+        bootPrefs.edit().putBoolean("onboarding_skipped", skipped).apply()
         context.dataStore.edit { it[ONBOARDING_SKIPPED] = skipped }
     }
+
+    /**
+     * Synchronous mirror of [onboardingSkipped], for the first frame.
+     *
+     * Same reason the theme and [hasCompletedOnboarding] have one: the wizard gate is
+     * evaluated before DataStore can answer, and seeding the collector with `false`
+     * would show a frame of the wizard to someone who has already dismissed it.
+     */
+    val hasSkippedOnboarding: Boolean get() = bootPrefs.getBoolean("onboarding_skipped", false)
 
     /**
      * Synchronous mirror of [onboardingCompleted], for `MainActivity.onCreate`.
@@ -1387,9 +1457,6 @@ class AppSettings(private val context: Context) {
      */
     val speedLimitAutoDetect: Flow<Boolean> = pref { it[SPEED_LIMIT_AUTO_DETECT] ?: false }
 
-    /** Version string of the last downloaded speed-limit database (e.g. "july_2026"). */
-    val speedLimitDbVersion: Flow<String?> = pref { it[SPEED_LIMIT_DB_VERSION] }
-
     suspend fun setSpeedLimitAlertEnabled(on: Boolean) = context.dataStore.edit { it[SPEED_LIMIT_ALERT_ENABLED] = on }
 
     suspend fun setDrivingSpeedLimitKmh(value: Int) = context.dataStore.edit {
@@ -1403,8 +1470,6 @@ class AppSettings(private val context: Context) {
     suspend fun setSpeedAdaptiveVolume(on: Boolean) = context.dataStore.edit { it[SPEED_ADAPTIVE_VOLUME] = on }
 
     suspend fun setSpeedLimitAutoDetect(on: Boolean) = context.dataStore.edit { it[SPEED_LIMIT_AUTO_DETECT] = on }
-
-    suspend fun setSpeedLimitDbVersion(version: String) = context.dataStore.edit { it[SPEED_LIMIT_DB_VERSION] = version }
 
     suspend fun setDrivingEnabled(on: Boolean) {
         context.dataStore.edit { it[DRIVING_ENABLED] = on }
@@ -1480,6 +1545,125 @@ class AppSettings(private val context: Context) {
 
     suspend fun setLightSyncAdvanced(on: Boolean) {
         context.dataStore.edit { it[LIGHT_SYNC_ADVANCED] = on }
+    }
+
+    // ── Saved light shows ────────────────────────────────────────────────
+
+    /**
+     * Every saved show, seeded with three starters on an install that has none.
+     *
+     * Seeded on *read* rather than written once, the same way the Downloads library
+     * is: a first write that races every other reader is how a migration becomes a
+     * bug, and there is nothing here that cannot be recomputed. The first real edit
+     * persists the list.
+     *
+     * A decode failure falls back to the starters rather than to an empty list —
+     * `ShowPreset.decode` returns null for exactly that case, and treating it as
+     * "no presets" would let the next save overwrite a list that was only unreadable.
+     */
+    val showPresets: Flow<List<ShowPreset>> = pref { prefs ->
+        prefs[SHOW_PRESETS]?.let { ShowPreset.decode(it) } ?: ShowPreset.starters()
+    }
+
+    suspend fun saveShowPresets(list: List<ShowPreset>) {
+        context.dataStore.edit { it[SHOW_PRESETS] = ShowPreset.encode(list) }
+    }
+
+    /**
+     * A fixed output rate for the local player, or 0 to follow each file.
+     *
+     * Zero by default and that default is the honest one: resampling is a loss,
+     * and doing it here only helps when it *replaces* a worse one further down.
+     */
+    val outputSampleRateHz: Flow<Int> = pref { it[OUTPUT_SAMPLE_RATE]?.toIntOrNull() ?: 0 }
+
+    suspend fun setOutputSampleRateHz(rate: Int) {
+        context.dataStore.edit { it[OUTPUT_SAMPLE_RATE] = rate.toString() }
+    }
+
+    /** The local equaliser's curve. Off, and flat, until someone turns it on. */
+    val localDsp: Flow<LocalDsp.Config> = pref { prefs ->
+        prefs[LOCAL_DSP]?.let { LocalDsp.decode(it) } ?: LocalDsp.Config()
+    }
+
+    suspend fun setLocalDsp(config: LocalDsp.Config) {
+        context.dataStore.edit { it[LOCAL_DSP] = LocalDsp.encode(config) }
+    }
+
+    val genrePresetRules: Flow<List<GenrePresetRule>> = pref { prefs ->
+        prefs[GENRE_PRESET_RULES]?.let { GenrePresetRule.decode(it) } ?: emptyList()
+    }
+
+    suspend fun saveGenrePresetRules(list: List<GenrePresetRule>) {
+        context.dataStore.edit { it[GENRE_PRESET_RULES] = GenrePresetRule.encode(list) }
+    }
+
+    /** Off by default: a show that changes itself between tracks has to be asked for. */
+    val genrePresetsEnabled: Flow<Boolean> = pref { it[GENRE_PRESETS_ENABLED] ?: false }
+
+    suspend fun setGenrePresetsEnabled(on: Boolean) {
+        context.dataStore.edit { it[GENRE_PRESETS_ENABLED] = on }
+    }
+
+    /**
+     * Read every show control at once, to save as a preset.
+     *
+     * One snapshot rather than eleven `first()` calls, so a preset cannot capture
+     * half of one show and half of the next if something changes mid-save.
+     */
+    suspend fun captureShowPreset(name: String): ShowPreset {
+        val prefs = context.dataStore.data.first()
+        return ShowPreset(
+            name = name,
+            intensity = prefs[LIGHT_SYNC_INTENSITY] ?: "high",
+            autoLevels = prefs[LIGHT_SYNC_AUTO_LEVELS]
+                ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
+                ?.takeIf { it.isNotEmpty() }
+                ?: listOf("subtle", "medium", "high"),
+            color = prefs[LIGHT_SYNC_COLOR] ?: "album_art_v2",
+            brightness = prefs[LIGHT_SYNC_BRIGHTNESS]?.toIntOrNull() ?: 100,
+            tunables = lightSyncTunables.first(),
+            spatial = prefs[LIGHT_SYNC_SPATIAL] ?: false,
+            musicDna = prefs[MUSIC_DNA_ENABLED] ?: false,
+            emotionalArc = prefs[EMOTIONAL_ARC_ENABLED] ?: false,
+            phantomStage = prefs[PHANTOM_STAGE_ENABLED] ?: false,
+            stemSeparation = prefs[STEM_SEPARATION] ?: false,
+            phoneConductor = prefs[PHONE_CONDUCTOR_ENABLED] ?: false,
+        )
+    }
+
+    /**
+     * Put a preset's show on the room.
+     *
+     * One `edit` for all eleven controls, which matters more than it looks:
+     * DirectLightSync collects several of these and re-picks the show on each, so
+     * writing them one at a time would walk the room through up to eleven
+     * intermediate shows on the way to the one that was asked for.
+     *
+     * Deliberately does **not** touch the master switch, the bridge or the
+     * entertainment area. Applying a preset changes what the show looks like, never
+     * whether there is one or which lamps it runs on.
+     */
+    suspend fun applyShowPreset(preset: ShowPreset) {
+        context.dataStore.edit { prefs ->
+            prefs[LIGHT_SYNC_INTENSITY] = preset.intensity
+            prefs[LIGHT_SYNC_AUTO_LEVELS] = preset.autoLevels.joinToString(",")
+            prefs[LIGHT_SYNC_COLOR] = preset.color
+            prefs[LIGHT_SYNC_BRIGHTNESS] = preset.brightness.coerceIn(5, 100).toString()
+            prefs[LIGHT_SYNC_TUNABLES] = buildJsonObject {
+                for ((k, v) in preset.tunables) {
+                    if (com.engabd.sendpin.hue.SyncoEngine.TUNABLE_KEYS.contains(k)) {
+                        put(k, JsonPrimitive(v.coerceIn(0f, 2f)))
+                    }
+                }
+            }.toString()
+            prefs[LIGHT_SYNC_SPATIAL] = preset.spatial
+            prefs[MUSIC_DNA_ENABLED] = preset.musicDna
+            prefs[EMOTIONAL_ARC_ENABLED] = preset.emotionalArc
+            prefs[PHANTOM_STAGE_ENABLED] = preset.phantomStage
+            prefs[STEM_SEPARATION] = preset.stemSeparation
+            prefs[PHONE_CONDUCTOR_ENABLED] = preset.phoneConductor
+        }
     }
 
     suspend fun setLightSyncTunables(tunables: Map<String, Float>) {
