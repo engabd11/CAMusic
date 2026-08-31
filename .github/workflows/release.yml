@@ -39,7 +39,12 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      # lfs: the bundled speed-zone database is an LFS object. Without this the
+      # runner checks out its pointer file, and mergeAssets fails trying to
+      # gunzip 130 bytes of text: "Not in GZIP format".
       - uses: actions/checkout@v4
+        with:
+          lfs: true
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
