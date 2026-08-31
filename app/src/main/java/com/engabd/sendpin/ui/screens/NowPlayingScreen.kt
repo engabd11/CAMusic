@@ -326,15 +326,18 @@ fun NowPlayingScreen(
                         // there is no file here to keep. Hidden rather than disabled when
                         // there is nothing behind the track Navidrome could serve.
                         DownloadChip(libraryViewModel)
-                        // DSP is Music Assistant's server-side pipeline, configured per MA
-                        // player over `config/players/dsp/*`. The local player decodes on
-                        // this phone and MA has never heard of it, so opening this while
-                        // Navidrome is playing showed — and would have saved — settings for
-                        // a completely different player.
-                        if (!st.isLocalSession) {
-                            IconChip(Icons.Default.GraphicEq, "DSP / Equalizer", active = sheets.panel == Panel.DSP) {
-                                sheets.panel = if (sheets.panel == Panel.DSP) null else Panel.DSP
-                            }
+                        // Always here now. It used to be hidden on a local session,
+                        // because the only equaliser that existed was Music Assistant's
+                        // server-side pipeline and opening it while Navidrome played
+                        // showed - and would have saved - settings for a completely
+                        // different player. There is a local one now, and the sheet
+                        // routes to whichever engine owns the session.
+                        IconChip(
+                            Icons.Default.GraphicEq,
+                            if (st.isLocalSession) "Equaliser" else "DSP / Equalizer",
+                            active = sheets.panel == Panel.DSP,
+                        ) {
+                            sheets.panel = if (sheets.panel == Panel.DSP) null else Panel.DSP
                         }
                         // Radio mode is a parameter of play_media, so it colours what you
                         // play *next* rather than the queue already running — the toast

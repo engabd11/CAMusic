@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.engabd.sendpin.audio.LocalDsp
 import com.engabd.sendpin.hue.GenrePresetRule
 import com.engabd.sendpin.hue.ShowPreset
 import com.engabd.sendpin.library.ServerConfig
@@ -205,6 +206,16 @@ class AppSettings(private val context: Context) {
          * screen can tell "never used this" from "deleted them all".
          */
         private val SHOW_PRESETS = stringPreferencesKey("light_show_presets")
+
+        /**
+         * The equaliser for audio this phone decodes, as a JSON
+         * [com.engabd.sendpin.audio.LocalDsp.Config].
+         *
+         * Nothing to do with the Music Assistant DSP: that one is per-MA-player and
+         * lives on the server, configured over its own commands. This one is this
+         * phone's own output, which MA has never heard of.
+         */
+        private val LOCAL_DSP = stringPreferencesKey("local_dsp")
 
         /** Genre-to-preset rules, as a JSON list of [com.engabd.sendpin.hue.GenrePresetRule]. */
         private val GENRE_PRESET_RULES = stringPreferencesKey("light_show_genre_rules")
@@ -1547,6 +1558,15 @@ class AppSettings(private val context: Context) {
 
     suspend fun saveShowPresets(list: List<ShowPreset>) {
         context.dataStore.edit { it[SHOW_PRESETS] = ShowPreset.encode(list) }
+    }
+
+    /** The local equaliser's curve. Off, and flat, until someone turns it on. */
+    val localDsp: Flow<LocalDsp.Config> = pref { prefs ->
+        prefs[LOCAL_DSP]?.let { LocalDsp.decode(it) } ?: LocalDsp.Config()
+    }
+
+    suspend fun setLocalDsp(config: LocalDsp.Config) {
+        context.dataStore.edit { it[LOCAL_DSP] = LocalDsp.encode(config) }
     }
 
     val genrePresetRules: Flow<List<GenrePresetRule>> = pref { prefs ->

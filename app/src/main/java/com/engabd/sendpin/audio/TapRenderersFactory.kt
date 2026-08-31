@@ -25,6 +25,8 @@ class TapRenderersFactory(
     context: Context,
     private val tap: AudioAnalysisTap,
     private val lead: AudioLead,
+    /** The local equaliser, ahead of the tap. See [LocalDsp]. */
+    private val dsp: LocalDsp? = null,
 ) : DefaultRenderersFactory(context) {
     override fun buildAudioSink(
         context: Context,
@@ -32,7 +34,10 @@ class TapRenderersFactory(
         enableAudioOutputPlaybackParams: Boolean,
     ): AudioSink {
         val sink = DefaultAudioSink.Builder(context)
-            .setAudioProcessors(arrayOf(tap))
+            // The equaliser goes *before* the tap, so the light show reacts to
+            // what is actually heard rather than to what was on disk. A biquad
+            // cascade adds no latency, so AudioLead's measurement is unaffected.
+            .setAudioProcessors(listOfNotNull(dsp, tap).toTypedArray())
             .setEnableFloatOutput(enableFloatOutput)
             .setEnableAudioTrackPlaybackParams(enableAudioOutputPlaybackParams)
             .build()

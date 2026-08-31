@@ -62,7 +62,7 @@ import com.engabd.sendpin.ui.viewmodel.formatListeningTime
  * the album art's place) and sonic similarity moved to the Library, where finding
  * something to play belongs — neither was ever really "the queue button".
  */
-enum class Panel(val label: String) { QUEUE("Queue"), DSP("DSP & Equalizer") }
+enum class Panel(val label: String) { QUEUE("Queue"), DSP("Equaliser") }
 
 /**
  * The DSP view model, scoped to the Activity rather than to the sheet.
@@ -90,6 +90,15 @@ fun BoxScope.NowPlayingSheet(
     viewModel: NowPlayingViewModel,
     /** Which panel is showing. Its label is the sheet's title. */
     panel: Panel = Panel.QUEUE,
+    /**
+     * Whether this phone is doing the decoding.
+     *
+     * Decides which equaliser the DSP panel shows: Music Assistant's server-side
+     * pipeline for a session it owns, this phone's own for one it does not. They
+     * are different engines on different machines, and showing either in the
+     * other's place would edit settings for a player that is not playing.
+     */
+    localSession: Boolean = false,
 ) {
     HideBottomChrome()
     val accent = LocalAccent.current
@@ -120,7 +129,8 @@ fun BoxScope.NowPlayingSheet(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    panel.label, color = TextPrimary, fontFamily = AppFont,
+                    if (panel == Panel.DSP && !localSession) "DSP & Equalizer" else panel.label,
+                    color = TextPrimary, fontFamily = AppFont,
                     fontWeight = FontWeight.ExtraBold, fontSize = 17.sp,
                     modifier = Modifier.weight(1f),
                 )
@@ -135,7 +145,12 @@ fun BoxScope.NowPlayingSheet(
                 // DSP used to be a whole separate destination, which meant leaving the
                 // player — and losing sight of what you were tuning — to move a slider.
                 // Same body as the standalone screen, hung off the player instead.
-                Panel.DSP -> DspBody(dspViewModel(), accent)
+                // Two engines, one chip. Music Assistant's DSP is a server-side
+                // pipeline configured per MA player; the local one is a processor in
+                // this phone's own sink. Neither can describe the other.
+                Panel.DSP ->
+                    if (localSession) LocalEqBody(accent)
+                    else DspBody(dspViewModel(), accent)
             }
         }
     }

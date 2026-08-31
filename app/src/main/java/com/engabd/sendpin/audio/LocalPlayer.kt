@@ -204,6 +204,16 @@ class LocalPlayer(private val context: Context) {
      */
     val audioAnalysisTap = AudioAnalysisTap(audioLead)
 
+    /**
+     * The equaliser for audio this phone decodes.
+     *
+     * Held here, not built per player: it sits in the sink's processor chain, and
+     * that chain is fixed when the player is constructed - but the curve is edited
+     * long after. One instance whose config can be replaced at any time is what
+     * lets a slider move take effect on the next buffer instead of the next track.
+     */
+    val localDsp = LocalDsp()
+
     /** The user's own volume, kept apart from the ReplayGain factor multiplied onto it. */
     private var userVolume = 1f
 
@@ -360,7 +370,7 @@ class LocalPlayer(private val context: Context) {
         // processor chain. It stays in the chain whether or not Light Sync is on,
         // because the sink decides membership once per configuration; the cost
         // when off is a buffer copy per callback and nothing else.
-        val renderers = TapRenderersFactory(context, audioAnalysisTap, audioLead)
+        val renderers = TapRenderersFactory(context, audioAnalysisTap, audioLead, localDsp)
             .setEnableAudioFloatOutput(bitPerfect) as TapRenderersFactory
 
         // The defaults are sized for video-on-mobile-data. This is a lossless file

@@ -365,7 +365,17 @@ fun BoxScope.PlayerOverlays(
                 ) { sheets.closeSheets() }
         )
     }
-    sheets.panel?.let { NowPlayingSheet(onClose = { sheets.panel = null }, viewModel = viewModel, panel = it) }
+    sheets.panel?.let {
+        // The session decides which equaliser the DSP panel shows. Read here rather
+        // than inside the sheet so both layouts - tab and overlay - answer the same.
+        val local = viewModel.state.collectAsStateWithLifecycle().value.isLocalSession
+        NowPlayingSheet(
+            onClose = { sheets.panel = null },
+            viewModel = viewModel,
+            panel = it,
+            localSession = local,
+        )
+    }
     if (sheets.options) PlayerOptionsSheet(onClose = { sheets.options = false }, viewModel = viewModel)
     if (sheets.speakers) SpeakerPickerSheet(onClose = { sheets.speakers = false })
 
