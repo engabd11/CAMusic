@@ -181,17 +181,25 @@ internal fun AboutSection(accent: Color, onOpenStats: () -> Unit = {}) {
     val settings = remember(context) { AppSettings(context) }
     val scope = rememberCoroutineScope()
 
+    // The repo and token are text fields behind a Save button, so they hold what is
+    // being typed. The switch is a switch: it persists on tap, like every other
+    // ToggleRow in Settings. It used to only set local state, so flipping it and
+    // leaving without pressing Save silently did nothing at all.
     var repo by remember { mutableStateOf("engabd11/CAMusic") }
     var token by remember { mutableStateOf("") }
-    var autoUpload by remember { mutableStateOf(false) }
     var showToken by remember { mutableStateOf(false) }
     var lastReport by remember { mutableStateOf<CrashReport?>(null) }
     var uploadResult by remember { mutableStateOf<String?>(null) }
 
+    val autoUpload by settings.crashAutoUpload.collectAsStateWithLifecycle(initialValue = false)
+    // The *stored* token, not the typed one. `SendpinApp` reads the stored value on
+    // the crash path and quietly does nothing without it, so gating the switch on
+    // half-typed text would let it read "on" while nothing could ever be uploaded.
+    val savedToken by settings.crashGitHubToken.collectAsStateWithLifecycle(initialValue = "")
+
     LaunchedEffect(Unit) {
         repo = settings.crashGitHubRepo.first()
         token = settings.crashGitHubToken.first()
-        autoUpload = settings.crashAutoUpload.first()
         lastReport = CrashReporter.lastUnreported()
     }
 
@@ -260,26 +268,28 @@ internal fun AboutSection(accent: Color, onOpenStats: () -> Unit = {}) {
                 onVisibilityChange = { showToken = it },
             )
             Note("With a token, the app can open an issue automatically. Without one, you still get a one-tap share link.")
-            Spacer(Modifier.height(4.dp))
-            ToggleRow(
-                title = "Upload crashes automatically",
-                subtitle = "Needs a token above",
-                checked = autoUpload,
-                accent = accent,
-                enabled = token.isNotBlank(),
-            ) { autoUpload = it }
             Spacer(Modifier.height(8.dp))
             OledButton(
-                text = "Save crash-report settings",
+                text = "Save repository and token",
                 accent = accent,
                 outline = true,
             ) {
                 scope.launch {
                     settings.setCrashGitHubRepo(repo)
                     if (token.isNotBlank()) settings.setCrashGitHubToken(token)
-                    settings.setCrashAutoUpload(autoUpload)
                 }
             }
+            Spacer(Modifier.height(8.dp))
+            // Below the button rather than above it, because it depends on what the
+            // button saved: the switch is only live once a token is actually stored.
+            ToggleRow(
+                title = "Upload crashes automatically",
+                subtitle = if (savedToken.isBlank()) "Save a token above first"
+                    else "Opens an issue on the repository above, without asking",
+                checked = autoUpload && savedToken.isNotBlank(),
+                accent = accent,
+                enabled = savedToken.isNotBlank(),
+            ) { on -> scope.launch { settings.setCrashAutoUpload(on) } }
             if (lastReport != null) {
                 CardDivider()
                 val report: CrashReport = lastReport ?: return@SettingsCard
