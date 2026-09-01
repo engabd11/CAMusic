@@ -29,10 +29,22 @@ object FormatNegotiator {
     const val DEFAULT_BIT_DEPTH = 16
 
     /**
-     * The ceiling when the user turns bit-perfect on. The engine asks the FLAC
-     * decoder for float output and builds the AudioTrack from the depth the
-     * decoder actually reports, so 24-bit sources keep their resolution instead
-     * of being requantised — see [SendspinNativeEngine.bitPerfect].
+     * The ceiling advertised when the user turns high-resolution output on.
+     *
+     * This describes the **local/ExoPlayer** path, where it is real: media3's
+     * float render path (`setEnableAudioFloatOutput`) can carry a decoded
+     * 24-bit sample all the way to the sink instead of it being requantised —
+     * see [SignalPath].
+     *
+     * It does **not** describe the Sendspin/Music Assistant path. The native
+     * Oboe engine renders int16 end to end (see
+     * [SendspinNativeEngine.OUTPUT_BIT_DEPTH]), so advertising this depth
+     * there would only spend Music Assistant's bandwidth on bits the engine
+     * throws away on arrival. That path's caller —
+     * [com.engabd.sendpin.service.Playback.startSendspin], where the format
+     * list is built — is where the engine's own capability is known, so the
+     * cap is applied there rather than in this object, which has no way to
+     * know which engine is asking.
      *
      * Gated on the setting rather than always-on: 24-bit costs real bandwidth,
      * and on a device whose mixer runs at 16-bit the extra bits are resampled
@@ -148,10 +160,13 @@ object FormatNegotiator {
 
     /**
      * The ceiling this phone can actually put out — its mixer's native rate at the
-     * depth [SendspinNativeEngine] renders. This is the honest "playing at" answer
-     * when the file is decoded on the device itself (playing a Navidrome stream
-     * direct) rather than negotiated with Music Assistant, since nothing upstream
-     * gets a say in it.
+     * depth [bitPerfect] can carry on the **local/ExoPlayer** path (see
+     * [HIRES_BIT_DEPTH]'s doc for why that qualifier matters: this is not a claim
+     * about [SendspinNativeEngine], which never carries more than
+     * [SendspinNativeEngine.OUTPUT_BIT_DEPTH]). This is the honest "playing at"
+     * answer when the file is decoded on the device itself (playing a Navidrome
+     * stream direct) rather than negotiated with Music Assistant, since nothing
+     * upstream gets a say in it.
      */
     fun deviceOutputQuality(bitPerfect: Boolean = false): StreamQuality {
         val rate = try {

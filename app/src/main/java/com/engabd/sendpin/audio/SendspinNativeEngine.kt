@@ -125,6 +125,20 @@ class SendspinNativeEngine(
         private const val HEADER_SIZE = 9
         private const val TYPE_PLAYER_AUDIO = 4
 
+        /**
+         * The bit depth this engine actually renders.
+         *
+         * [SendspinNativeOutput] opens its Oboe stream as `oboe::AudioFormat::I16`
+         * over an `int16_t` ring (`sendspin_output_engine.cpp`), so nothing this
+         * app advertises to Music Assistant can carry more than this —
+         * [com.engabd.sendpin.service.Playback.startSendspin] caps the advertised
+         * format list at it. See [FormatNegotiator.HIRES_BIT_DEPTH]'s doc for the
+         * local/ExoPlayer path that constant actually describes, and
+         * [convertPcm24To16] for what happens to anything that arrives wider than
+         * this anyway.
+         */
+        const val OUTPUT_BIT_DEPTH = 16
+
         // Hard memory ceiling for the encoded frame queue. The server streams
         // ahead up to the requested buffer_capacity (~4 MB ~= 30 s of FLAC), so
         // this must stay well above it; it is only a runaway backstop.
@@ -210,6 +224,48 @@ class SendspinNativeEngine(
          * act on.
          */
         private const val MAX_REPORTED_LEAD_US = 4_000_000L
+
+        /**
+         * Downsamples 24-bit little-endian PCM to 16-bit little-endian.
+         *
+         * Only [writeChunk] calls this, and only when `activeBitDepth == 24` —
+         * see [OUTPUT_BIT_DEPTH] for why the format list this engine advertises
+         * no longer asks for that depth, and [FormatNegotiator.HIRES_BIT_DEPTH]'s
+         * doc for where that cap is actually applied. Kept as a defensive
+         * conversion rather than an assertion, since nothing here enforces what
+         * a server actually sends.
+         *
+         * Rounds to the nearest 16-bit value rather than truncating — the
+         * previous version dropped the low byte outright, a consistent bias
+         * toward zero on every sample of a stream. A sample at positive full
+         * scale (0x7FFFFF) rounds up to 0x8000, which does not fit a signed
+         * 16-bit sample; clamped to [Short.MAX_VALUE] rather than left to wrap
+         * around to the most negative value the way a plain truncating cast of
+         * the rounded sum would.
+         *
+         * `internal` rather than `private`, and here in the companion object
+         * rather than on the engine itself, so `Pcm24To16Test` can call it
+         * directly — it touches no instance state.
+         */
+        internal fun convertPcm24To16(data: ByteArray): ByteArray {
+            val sampleCount = data.size / 3
+            val out = ByteArray(sampleCount * 2)
+            var src = 0
+            var dst = 0
+            repeat(sampleCount) {
+                val lsb = data[src].toInt() and 0xFF
+                val mid = data[src + 1].toInt() and 0xFF
+                val msb = data[src + 2].toInt() // sign-extends: the top byte carries the sign
+                val sample24 = (msb shl 16) or (mid shl 8) or lsb
+                val rounded = ((sample24 + 128) shr 8)
+                    .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+                out[dst] = (rounded and 0xFF).toByte()
+                out[dst + 1] = ((rounded shr 8) and 0xFF).toByte()
+                src += 3
+                dst += 2
+            }
+            return out
+        }
     }
 
     // ---- Public state exposed to Playback.kt ----
@@ -1413,18 +1469,6 @@ class SendspinNativeEngine(
             putShort(0)
             put(0)
         }.array()
-
-    private fun convertPcm24To16(data: ByteArray): ByteArray {
-        val out = ByteArray(data.size / 3 * 2)
-        var src = 0
-        var dst = 0
-        while (src + 2 < data.size) {
-            out[dst++] = data[src + 1]
-            out[dst++] = data[src + 2]
-            src += 3
-        }
-        return out
-    }
 
     // ---- Helpers ----
 
