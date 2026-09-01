@@ -9,7 +9,9 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.engabd.sendpin.audio.LocalDsp
 import com.engabd.sendpin.audio.LoFiProcessor
 import com.engabd.sendpin.audio.VinylNoiseProcessor
+import com.engabd.sendpin.hue.AlbumColourOverride
 import com.engabd.sendpin.hue.GenrePresetRule
+import com.engabd.sendpin.hue.Rgb
 import com.engabd.sendpin.hue.ShowPreset
 import com.engabd.sendpin.library.ServerConfig
 import com.engabd.sendpin.library.ServerKind
@@ -237,6 +239,17 @@ class AppSettings(private val context: Context) {
 
         /** Whether [GENRE_PRESET_RULES] are applied on a track change at all. */
         private val GENRE_PRESETS_ENABLED = booleanPreferencesKey("light_show_genre_auto")
+
+        /**
+         * Per-album colour palette overrides, as a JSON [AlbumColourOverride].
+         *
+         * A map from album id to an explicit list of [Rgb] colours, so a listener
+         * can pin a palette when the extractor picks wrong. Same JSON-blob pattern
+         * as [SHOW_PRESETS]: one string key, encoded/decoded through
+         * [AlbumColourOverride], null on decode failure so a corrupted blob is
+         * never mistaken for an intentional empty map.
+         */
+        private val ALBUM_COLOUR_OVERRIDES = stringPreferencesKey("album_colour_overrides")
 
         /**
          * Whether tracks are analysed ahead of the show.
@@ -1629,6 +1642,23 @@ class AppSettings(private val context: Context) {
 
     suspend fun setGenrePresetsEnabled(on: Boolean) {
         context.dataStore.edit { it[GENRE_PRESETS_ENABLED] = on }
+    }
+
+    /**
+     * Per-album colour palette overrides, keyed by album id.
+     *
+     * Empty by default — most albums are fine with the extractor's own palette.
+     * A decode failure also yields an empty map rather than null here, because
+     * unlike presets (where losing them is a data-loss event) the worst case
+     * is the show falls back to extraction for one album. [AlbumColourOverride.decode]
+     * still returns null internally; the flow treats null as "nothing stored".
+     */
+    val albumColourOverrides: Flow<Map<String, List<Rgb>>> = pref { prefs ->
+        prefs[ALBUM_COLOUR_OVERRIDES]?.let { AlbumColourOverride.decode(it) } ?: emptyMap()
+    }
+
+    suspend fun setAlbumColourOverrides(overrides: Map<String, List<Rgb>>) {
+        context.dataStore.edit { it[ALBUM_COLOUR_OVERRIDES] = AlbumColourOverride.encode(overrides) }
     }
 
     /**
