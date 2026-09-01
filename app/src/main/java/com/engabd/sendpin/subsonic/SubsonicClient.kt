@@ -729,6 +729,30 @@ class SubsonicClient(
         )
     }
 
+    /**
+     * Every song on the server, a page at a time.
+     *
+     * Subsonic has no "list all songs" call, so this is `search3` with an **empty
+     * query** — which OpenSubsonic defines as matching everything, and which
+     * Navidrome, Gonic and Airsonic all implement that way. The artist and album
+     * counts are zeroed so the server does the work for songs only.
+     *
+     * A server old enough to insist on a non-empty query answers with an empty result
+     * rather than an error, so the Tracks category is empty on it rather than broken —
+     * which is the failure mode worth having, given that every server this client is
+     * pointed at in practice (Navidrome, Gonic, Airsonic) does support it.
+     */
+    suspend fun allSongs(offset: Int = 0, count: Int = 500): List<MaItem> =
+        get(
+            "search3",
+            mapOf(
+                "query" to "",
+                "artistCount" to "0", "albumCount" to "0",
+                "songCount" to count.toString(), "songOffset" to offset.toString(),
+            ),
+        )["searchResult3"]?.jsonObject?.get("song")?.jsonArray.orEmptyArray()
+            .map { songItem(it.jsonObject) }
+
     suspend fun song(id: String): MaItem? =
         (get("getSong", mapOf("id" to id))["song"] as? JsonObject)?.let { songItem(it) }
 

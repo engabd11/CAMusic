@@ -254,6 +254,21 @@ class LocalPlayer(private val context: Context) {
     /** Emitted each time a track actually begins — what scrobbling hangs off. */
     val started: SharedFlow<LocalTrack> = _started.asSharedFlow()
 
+    private val _exhausted = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    /**
+     * The queue has run out: the last track finished, or a skip found nothing after
+     * it.
+     *
+     * "Keep the music going" tops the queue up two tracks before the end, watching
+     * the play index — which cannot see either of these. A skip from the last track
+     * produces no transition to observe, so pressing next simply left the same song
+     * on screen; and with shuffle on the index is a position in the *list*, not in
+     * the play order, so "two from the end" is not a statement about what is left to
+     * play. This is the player saying it has nothing more, whatever the order, and
+     * it is what [continueAfterEnd] is meant to be answered with.
+     */
+    val exhausted: SharedFlow<Unit> = _exhausted.asSharedFlow()
+
     /** Anything is loaded, so Now Playing should show this player rather than MA. */
     val active: StateFlow<Boolean> get() = _hasSession
     private val _hasSession = MutableStateFlow(false)
@@ -320,6 +335,7 @@ class LocalPlayer(private val context: Context) {
                 stopTicker()
                 _playing.value = false
                 _positionMs.value = _durationMs.value
+                _exhausted.tryEmit(Unit)
             }
         }
 
@@ -602,6 +618,9 @@ class LocalPlayer(private val context: Context) {
 
     fun playAt(position: Int) {
         if (position !in _queue.value.indices) return
+        // A queue that ran to the end left the player idle, and an idle player takes
+        // the seek and then plays nothing — the same reason [resume] prepares.
+        if (player.playbackState == Player.STATE_IDLE) player.prepare()
         player.seekTo(position, C.TIME_UNSET)
         startOutput()
     }
@@ -628,13 +647,66 @@ class LocalPlayer(private val context: Context) {
     fun next() {
         if (player.hasNextMediaItem()) {
             player.seekToNextMediaItem()
-        } else {
-            // Running off the end is the end of the session. Stopping releases audio
-            // focus, which holding would leave every other player on the phone ducked.
-            player.stop()
-            _positionMs.value = 0
-            _playing.value = false
+            return
         }
+        // Nothing after this one. Say so first — with "keep the music going" on, the
+        // library answers by appending more and calling [continueAfterEnd], and
+        // without this the skip was silently swallowed and the same track stayed on
+        // screen looking like a frozen button.
+        _exhausted.tryEmit(Unit)
+        // Then stop: running off the end is the end of the session, and holding audio
+        // focus would leave every other player on the phone ducked.
+        player.stop()
+        _positionMs.value = 0
+        _playing.value = false
+    }
+
+    /**
+     * How many tracks are still to come **in play order**, counted no further than
+     * [limit].
+     *
+     * The caller only ever asks "are there at least this many left", and asking the
+     * timeline is the only way to answer it once shuffle mode is on: ExoPlayer
+     * shuffles the *order* the list is read in and leaves the list alone, so
+     * `queue.size - index` — which is what the radio's top-up used — is a statement
+     * about where a track sits in the list and not about how much is left to hear.
+     * With shuffle on it is wrong in both directions at once.
+     *
+     * Counted with repeat **off** whatever the player's own repeat mode is: under
+     * repeat-all there is always a next track and the honest answer to "how much is
+     * left" would be infinity, which is not a useful thing to tell a radio.
+     */
+    fun upcomingCount(limit: Int): Int {
+        val p = livePlayer ?: return 0
+        val timeline = p.currentTimeline
+        if (timeline.isEmpty) return 0
+        var counted = 0
+        var at = p.currentMediaItemIndex
+        while (counted < limit) {
+            val next = timeline.getNextWindowIndex(at, Player.REPEAT_MODE_OFF, p.shuffleModeEnabled)
+            if (next == C.INDEX_UNSET) break
+            counted++
+            at = next
+        }
+        return counted
+    }
+
+    /**
+     * Carry on into whatever was appended after the queue had already run out.
+     *
+     * Deliberately `seekToNextMediaItem` rather than an index: with shuffle mode on
+     * "the next one" is a question only the player can answer, and doing the
+     * arithmetic here would play the list in order the moment the user shuffled.
+     *
+     * `prepare` first because [next] stops the player when it runs off the end, which
+     * leaves it idle — an idle player accepts the seek and then makes no sound.
+     */
+    fun continueAfterEnd() {
+        if (_queue.value.isEmpty()) return
+        if (player.playbackState == Player.STATE_IDLE) player.prepare()
+        if (!player.hasNextMediaItem()) return
+        player.seekToNextMediaItem()
+        startOutput()
     }
 
     fun seekTo(ms: Long) {

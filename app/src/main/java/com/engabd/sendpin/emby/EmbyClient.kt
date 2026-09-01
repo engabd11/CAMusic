@@ -165,11 +165,15 @@ class EmbyClient(
     private suspend fun get(path: String, params: Map<String, String> = emptyMap()): JsonObject =
         withContext(Dispatchers.IO) { request(Request.Builder().url(url(path, params)).get()) }
 
-    private suspend fun post(path: String, body: JsonObject? = null): JsonObject =
+    private suspend fun post(
+        path: String,
+        body: JsonObject? = null,
+        params: Map<String, String> = emptyMap(),
+    ): JsonObject =
         withContext(Dispatchers.IO) {
             val payload = (body ?: JsonObject(emptyMap())).toString()
                 .toRequestBody("application/json".toMediaType())
-            request(Request.Builder().url(url(path)).post(payload))
+            request(Request.Builder().url(url(path, params)).post(payload))
         }
 
     private suspend fun delete(path: String, params: Map<String, String> = emptyMap()): JsonObject =
@@ -179,7 +183,13 @@ class EmbyClient(
         val body = try {
             http.newCall(builder.header("X-Emby-Authorization", authHeader()).build()).execute().use { resp ->
                 if (!resp.isSuccessful) {
-                    throw EmbyException(explain(resp.code), httpCode = resp.code)
+                    // The server's own reason where it gave one — see the Jellyfin
+                    // client, which carries the same note about why the bare code is
+                    // not enough to act on.
+                    throw EmbyException(
+                        explain(resp.code, runCatching { resp.body?.string() }.getOrNull()),
+                        httpCode = resp.code,
+                    )
                 }
                 resp.body?.string().orEmpty()
             }
@@ -200,11 +210,15 @@ class EmbyClient(
         }
     }
 
-    private fun explain(code: Int): String = when (code) {
-        401 -> "Emby rejected the username or password"
-        403 -> "That account isn't allowed to browse this library"
-        404 -> "Not found on the server, it may have been removed"
-        else -> "Emby returned HTTP $code"
+    private fun explain(code: Int, body: String? = null): String {
+        val base = when (code) {
+            401 -> "Emby rejected the username or password"
+            403 -> "That account isn't allowed to browse this library"
+            404 -> "Not found on the server, it may have been removed"
+            else -> "Emby returned HTTP $code"
+        }
+        val text = body?.trim()?.takeIf { it.isNotEmpty() && !it.startsWith("<") } ?: return base
+        return base + " - " + text.replace(Regex("\\s+"), " ").take(180)
     }
 
     // ── Auth ──────────────────────────────────────────────────────────────
@@ -307,6 +321,10 @@ class EmbyClient(
     suspend fun albums(offset: Int = 0, limit: Int = 200): List<MaItem> =
         items(types = "MusicAlbum", sortBy = "SortName", limit = limit, offset = offset)
 
+    /** Every song in the music library, alphabetically and paged. As Jellyfin's. */
+    suspend fun tracks(offset: Int = 0, limit: Int = 500): List<MaItem> =
+        items(types = "Audio", sortBy = "SortName", limit = limit, offset = offset)
+
     suspend fun recentlyAdded(limit: Int = 200): List<MaItem> =
         items(types = "MusicAlbum", sortBy = "DateCreated", sortOrder = "Descending", limit = limit)
 
@@ -318,6 +336,39 @@ class EmbyClient(
 
     suspend fun randomSongs(size: Int = 100): List<MaItem> =
         items(types = "Audio", sortBy = "Random", limit = size)
+
+    // ── Radio ─────────────────────────────────────────────────────────────
+    //
+    // Emby had no radio generator at all, which is why "keep the music going" was as
+    // silent here as it was on Jellyfin: the ladder fell straight through to the
+    // offline picker over downloaded files, and a library with nothing downloaded
+    // simply stopped at the end of the queue. Emby serves the same two endpoints
+    // Jellyfin does, so it gets the same two rungs.
+
+    /** Emby's own "Instant Mix", seeded with a track, an album or an artist. */
+    suspend fun instantMix(itemId: String, count: Int = 50): List<MaItem> {
+        val params = mapOf(
+            "UserId" to userId,
+            "Limit" to count.toString(),
+            "Fields" to "$BASE_FIELDS,MediaSources",
+            "ImageTypeLimit" to "1",
+        )
+        return get("/Items/$itemId/InstantMix", params)["Items"]?.jsonArray.orEmpty()
+            .mapNotNull { (it as? JsonObject)?.let(::item) }
+    }
+
+    /** The artist's most-played tracks, resolved by name — see Jellyfin's copy. */
+    suspend fun topSongsByArtist(artistName: String, count: Int = 50): List<MaItem> {
+        val artist = items(types = "MusicArtist", searchTerm = artistName, limit = 1)
+            .firstOrNull() ?: return emptyList()
+        return items(
+            types = "Audio",
+            artistIds = artist.itemId,
+            sortBy = "PlayCount",
+            sortOrder = "Descending",
+            limit = count,
+        )
+    }
 
     suspend fun randomAlbums(limit: Int = 12): List<MaItem> =
         items(types = "MusicAlbum", sortBy = "Random", limit = limit)
@@ -419,14 +470,28 @@ class EmbyClient(
         else delete("/Users/$userId/FavoriteItems/$id")
     }
 
+    /**
+     * Create a playlist, and hand back its id.
+     *
+     * Emby's `POST /Playlists` takes its arguments **on the query string** — it never
+     * grew the JSON body Jellyfin later documented — so a body-only request creates a
+     * playlist with no name, or nothing at all. Both forms go out, as they do on the
+     * Jellyfin client; see it for the full reasoning.
+     */
     suspend fun createPlaylist(name: String, songIds: List<String> = emptyList()): String? =
         post(
             "/Playlists",
             buildJsonObject {
                 put("Name", name)
-                put("UserId", userId)
+                if (userId.isNotBlank()) put("UserId", userId)
                 put("MediaType", "Audio")
                 put("Ids", JsonArray(songIds.map { JsonPrimitive(it) }))
+            },
+            params = buildMap {
+                put("Name", name)
+                put("MediaType", "Audio")
+                if (userId.isNotBlank()) put("UserId", userId)
+                if (songIds.isNotEmpty()) put("Ids", songIds.joinToString(","))
             },
         ).str("Id")
 

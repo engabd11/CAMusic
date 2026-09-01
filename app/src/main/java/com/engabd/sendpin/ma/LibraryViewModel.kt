@@ -5,13 +5,14 @@ import androidx.compose.runtime.Immutable
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.engabd.sendpin.SendpinApp
+import com.engabd.sendpin.audio.AlbumContinuation
 import com.engabd.sendpin.audio.Camelot
 import com.engabd.sendpin.audio.FormatNegotiator
+import com.engabd.sendpin.audio.LibraryAlbumWalk
+import com.engabd.sendpin.audio.LibraryRadioSource
 import com.engabd.sendpin.audio.LocalRadio
 import com.engabd.sendpin.audio.LocalTrack
-import com.engabd.sendpin.audio.JellyfinRadioSource
 import com.engabd.sendpin.audio.RadioSource
-import com.engabd.sendpin.audio.SubsonicRadioSource
 import com.engabd.sendpin.audio.TrackScan
 import com.engabd.sendpin.audio.SetBuilder
 import com.engabd.sendpin.data.AppSettings
@@ -114,6 +115,16 @@ data class DiscoverShelf(
     /** Artists read better as circles; everything else as squares. */
     val circular: Boolean,
 )
+
+/**
+ * The provider tag a root-shelf category card carries.
+ *
+ * Not a library at all — a sentinel saying "this row opens a list rather than plays
+ * something". File-level rather than inside the view model's private companion
+ * because the library screen has to recognise one too, and the alternative was the
+ * literal `"__cat__"` written out in both places.
+ */
+internal const val CATEGORY_PROVIDER = "__cat__"
 
 /**
  * On-device library. Two switchable backends:
@@ -220,6 +231,26 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private var source: MusicSource?
         get() = sourceHolder.value
         set(value) { sourceHolder.value = value }
+
+    /**
+     * What the connected library can actually do, for the rows that offer actions.
+     *
+     * The library's list rows decided what to offer by comparing the item's provider
+     * against the string `"subsonic"`, which was the same test as "is this the only
+     * self-hosted library that exists" back when it was. It stopped being that the
+     * day Jellyfin arrived: a Jellyfin track got no download button — on rows or in
+     * the long-press sheet — while the very same screen's "Download all" bar offered
+     * to fetch the whole list, because that one had already been widened. A Plex row
+     * got a favourite heart that calls a `setStarred` Plex has no endpoint for.
+     *
+     * So the rows ask [Capability] instead. Published as a flow rather than read
+     * during composition for the reason `AlbumDetailViewModel.canDownload` gives:
+     * the source is null for a moment around a reconnect, and a getter read at that
+     * instant drops the action and never brings it back.
+     */
+    val sourceCapabilities: StateFlow<Set<Capability>> =
+        sourceHolder.map { it?.capabilities ?: emptySet() }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
 
     /** The active server's stored config, so a connect knows what it is connecting to. */
     private var activeConfig: ServerConfig? = null
@@ -456,8 +487,33 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private val _showCreatePlaylist = MutableStateFlow(false)
     val showCreatePlaylist: StateFlow<Boolean> = _showCreatePlaylist
 
-    fun openCreatePlaylist() { _showCreatePlaylist.value = true }
-    fun closeCreatePlaylist() { _showCreatePlaylist.value = false }
+    /**
+     * What the playlist about to be created should be filled with, or null for the
+     * empty one the Playlists category makes.
+     *
+     * "Create a playlist" and "put this in a new playlist" are the same dialog and
+     * two different intentions, and only the second has anything to seed with — so
+     * the item rides here rather than the dialog growing a second entry point.
+     */
+    private var newPlaylistSeed: MaItem? = null
+
+    fun openCreatePlaylist() { newPlaylistSeed = null; _showCreatePlaylist.value = true }
+    fun closeCreatePlaylist() { newPlaylistSeed = null; _showCreatePlaylist.value = false }
+
+    /**
+     * "New playlist…" from the add-to-playlist sheet: make one and put [item] in it.
+     *
+     * The sheet used to offer nothing but the playlists that already existed, and
+     * told a library with none to "create one from the Playlists list first" — which
+     * meant leaving the album you were looking at, walking to another category, and
+     * coming back. Filing something into a playlist is where wanting a new one
+     * actually happens.
+     */
+    fun createPlaylistFor(item: MaItem) {
+        newPlaylistSeed = item
+        _addingToPlaylist.value = null
+        _showCreatePlaylist.value = true
+    }
 
     /**
      * The item waiting to be filed into a playlist, and the playlists to choose
@@ -494,9 +550,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         _addingToPlaylist.value = null
         viewModelScope.launch {
             try {
-                val tracks =
-                    if (item.mediaType == "track") listOf(item) else childrenOf(item)
-                        .filter { it.mediaType == "track" }
+                val tracks = tracksOf(item)
                 if (tracks.isEmpty()) { _toast.tryEmit("Nothing to add"); return@launch }
                 when {
                     MusicSources.isLocalProvider(playlist.provider) -> {
@@ -517,33 +571,62 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Create a playlist on whichever backend is active. A freshly-created
-     * playlist has no tracks; the user fills it by playing into it or by
-     * using "Add to queue" from the library and then "Save queue as playlist".
+     * Create a playlist on whichever backend is active, seeded with whatever
+     * [createPlaylistFor] left behind.
+     *
+     * Created empty from the Playlists category, and created *with the tracks in it*
+     * when it came from the add-to-playlist sheet — one round trip rather than a
+     * create followed by an add, which is also the only shape Emby's create endpoint
+     * has ever offered.
      */
     fun createPlaylist(name: String) {
         if (name.isBlank()) return
+        val title = name.trim()
+        val seed = newPlaylistSeed
+        newPlaylistSeed = null
         _showCreatePlaylist.value = false
         viewModelScope.launch {
             try {
+                val tracks = seed?.let { tracksOf(it) }.orEmpty()
+                if (seed != null && tracks.isEmpty()) {
+                    _toast.tryEmit("Nothing to add")
+                    return@launch
+                }
                 when (_backend.value) {
                     Backend.MA -> {
-                        maRepo.createPlaylist(name.trim())
-                        _toast.tryEmit("Created \"${name.trim()}\"")
-                        refresh()
+                        val created = maRepo.createPlaylist(title)
+                        // MA identifies playlist members by uri, not by library id.
+                        if (created != null && tracks.isNotEmpty()) {
+                            maRepo.addPlaylistTracks(created, tracks.mapNotNull { it.uri })
+                        }
                     }
                     Backend.SUBSONIC -> {
                         val sc = source ?: throw IllegalStateException("${libraryName()} isn't connected")
-                        sc.createPlaylist(name.trim())
-                        _toast.tryEmit("Created \"${name.trim()}\"")
-                        refresh()
+                        sc.createPlaylist(title, tracks.map { it.itemId })
                     }
                 }
+                _toast.tryEmit(
+                    when {
+                        tracks.isEmpty() -> "Created \"$title\""
+                        tracks.size == 1 -> "Created \"$title\" with 1 track"
+                        else -> "Created \"$title\" with ${tracks.size} tracks"
+                    }
+                )
+                refresh()
             } catch (e: Exception) {
                 _toast.tryEmit(e.message ?: "Couldn't create playlist")
             }
         }
     }
+
+    /**
+     * The tracks [item] stands for: itself if it is one, its contents if it is a
+     * container. Shared by "add to playlist" and "new playlist with this in it",
+     * which mean the same thing about an album.
+     */
+    private suspend fun tracksOf(item: MaItem): List<MaItem> =
+        if (item.mediaType == "track") listOf(item)
+        else childrenOf(item).filter { it.mediaType == "track" }
 
     /**
      * Delete a playlist from whichever backend owns it. The caller passes the
@@ -1197,7 +1280,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     fun open(item: MaItem) {
         when {
-            item.provider == CATEGORY -> openCategory(item.itemId, item.name)
+            item.provider == CATEGORY_PROVIDER -> openCategory(item.itemId, item.name)
             // Opening a result hides the result list but keeps it in memory, so
             // Back returns to the same matches instead of an empty search box.
             item.browsable -> { _searchOpen.value = false; pushNode(item.name) { childrenOf(item) } }
@@ -1646,6 +1729,14 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 )
                 return@launch
             }
+            // A library this phone plays is not automatically one that hands files
+            // over: a folder on the phone is already the file, and has no download to
+            // offer. The list rows ask the same question before showing the button;
+            // this is the backstop for every other way in, the player's chip included.
+            if (!sc.has(Capability.DOWNLOAD)) {
+                replyTo.tryEmit("Those files are already on this phone")
+                return@launch
+            }
             val tracks = try {
                 sc.tracksUnder(item)
             } catch (e: Exception) {
@@ -1679,6 +1770,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     fun downloadAll(items: List<MaItem>) {
         val sc = source
         if (sc == null) { _toast.tryEmit("Connect to a library to download"); return }
+        if (!sc.has(Capability.DOWNLOAD)) { _toast.tryEmit("Those files are already on this phone"); return }
         val tracks = items.filter { it.provider == sc.providerId && it.mediaType == "track" }
         if (tracks.isEmpty()) { _toast.tryEmit("Nothing here to download"); return }
         viewModelScope.launch { runDownload(tracks, sc) }
@@ -1765,7 +1857,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * Now Playing.
      */
     enum class TrackDownload {
-        /** Nothing playing locally, or nothing behind it that Navidrome could serve. */
+        /** Nothing playing locally, or nothing behind it a library could serve. */
         UNAVAILABLE,
         READY,
         IN_FLIGHT,
@@ -1773,21 +1865,25 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * The Navidrome song id behind a locally-playing track, or null when there isn't
-     * one.
+     * The **library** song id behind a locally-playing track, or null when there
+     * isn't one.
      *
-     * `scrobbleId` is already exactly this: it is set for a Navidrome track, for a
-     * download (downloads are Subsonic-only), and for a Music Assistant item being
-     * played through a Navidrome stream by "play at original quality" — where the
-     * item's own id belongs to MA and would name a song Navidrome has never heard of.
-     * Reusing it means the download chip is offered in precisely the cases a download
-     * can actually succeed.
+     * `scrobbleId` is already exactly this: it is set for a track from any library
+     * this phone plays itself, for a download (which carries the id of the server it
+     * came from), and for a Music Assistant item being played through a Navidrome
+     * stream by "play at original quality" — where the item's own id belongs to MA
+     * and would name a song Navidrome has never heard of. Reusing it means the
+     * download chip is offered in precisely the cases a download can succeed.
+     *
+     * It was called `navId` back when Navidrome was the only library that could
+     * answer for one. [LocalTrack.scrobbleProvider] says which library it belongs
+     * to, and that is what [download] resolves a source from.
      */
-    private val LocalTrack.navId: String? get() = scrobbleId
+    private val LocalTrack.libraryId: String? get() = scrobbleId
 
     val currentTrackDownload: StateFlow<TrackDownload> =
         combine(localPlayer.current, downloadedIds, downloadJobs) { track, done, jobs ->
-            val id = track?.navId ?: return@combine TrackDownload.UNAVAILABLE
+            val id = track?.libraryId ?: return@combine TrackDownload.UNAVAILABLE
             when {
                 // Keyed on the index rather than on `track.offline`, which is fixed
                 // when the track is built: deleting the copy left the chip saying
@@ -1812,8 +1908,11 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         val t = localPlayer.current.value
         if (t == null) { _playerToast.tryEmit("Nothing playing"); return }
         if (t.offline) { _playerToast.tryEmit("Already on this phone"); return }
-        val id = t.navId
-        if (id == null) { _playerToast.tryEmit("Only Navidrome tracks can be downloaded"); return }
+        val id = t.libraryId
+        // A Music Assistant stream is the server's to serve, not ours to keep, and a
+        // track with no library behind it has no file to ask anyone for. Whether the
+        // library it *does* have can hand one over is [download]'s to answer.
+        if (id == null) { _playerToast.tryEmit("Only tracks from your own library can be downloaded"); return }
         download(
             MaItem(
                 itemId = id,
@@ -1849,7 +1948,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Remove the offline copy of whatever is playing, from the player. */
     fun deleteCurrentTrackDownload() {
-        val id = localPlayer.current.value?.navId ?: return
+        val id = localPlayer.current.value?.libraryId ?: return
         if (!downloadManager.isDownloaded(id)) return
         viewModelScope.launch {
             downloadManager.delete(id)
@@ -2108,6 +2207,25 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     private val radio = LocalRadio()
 
+    /**
+     * The unshuffled answer: the rest of the record, then the next one.
+     *
+     * Rebuilt whenever the connected library changes — it caches that library's album
+     * order, which is not a fact about any other one.
+     */
+    private var sequential: AlbumContinuation? = null
+    private var sequentialKey: String? = null
+
+    private fun sequentialFor(src: MusicSource): AlbumContinuation {
+        val key = src.providerId + "|" + src.serverUrl
+        val held = sequential
+        if (held != null && sequentialKey == key) return held
+        return AlbumContinuation(LibraryAlbumWalk(src)).also {
+            sequential = it
+            sequentialKey = key
+        }
+    }
+
     /** True while a top-up is in flight, so a burst of transitions asks once. */
     private var radioFetching = false
 
@@ -2119,15 +2237,27 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * so appending while there is still something playing keeps the seam intact.
      * Waiting for the queue to actually empty would mean a silence, a fetch, and then
      * a fresh `prepare`, which is exactly the gap this backend doesn't have.
+     *
+     * That head start is the *only* trigger there used to be, and it cannot see two
+     * cases the listener certainly can. With shuffle on, the index is a position in
+     * the list rather than in the play order, so "two from the end" says nothing
+     * about what is left. And a skip from the last track produces no transition at
+     * all — the player simply stopped, leaving the same song on screen, which is
+     * what "pressing next goes back to the same song" was. So the player's own
+     * [LocalPlayer.exhausted] is collected alongside, and answered by topping up and
+     * carrying on.
      */
     private fun startLocalRadio() {
         viewModelScope.launch {
             combine(localPlayer.index, localPlayer.queue) { at, queue -> at to queue }
                 .collect { (at, queue) ->
-                    if (!settings.radioMode.first()) return@collect
-                    if (_backend.value != Backend.SUBSONIC) return@collect
+                    if (!canTopUp()) return@collect
                     if (queue.isEmpty() || at < 0) return@collect
-                    if (queue.size - at > RADIO_TOPUP_AT) return@collect
+                    // How many are left **in play order** — see
+                    // [LocalPlayer.upcomingCount]. This used to be `queue.size - at`,
+                    // which is a position in the list, so with shuffle on it fired at
+                    // the wrong moment in both directions.
+                    if (localPlayer.upcomingCount(RADIO_TOPUP_AT) >= RADIO_TOPUP_AT) return@collect
                     if (radioFetching) return@collect
                     radioFetching = true
                     try {
@@ -2137,30 +2267,62 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
         }
+        viewModelScope.launch {
+            localPlayer.exhausted.collect {
+                if (!canTopUp()) return@collect
+                val queue = localPlayer.queue.value
+                if (queue.isEmpty()) return@collect
+                if (radioFetching) return@collect
+                radioFetching = true
+                val added = try {
+                    topUpRadio(queue)
+                } finally {
+                    radioFetching = false
+                }
+                // Playback has already stopped by the time this runs, so appending is
+                // not enough on its own — something has to start the next one.
+                if (added) localPlayer.continueAfterEnd()
+            }
+        }
     }
 
-    private suspend fun topUpRadio(queue: List<com.engabd.sendpin.audio.LocalTrack>) {
-        // The seed is what is playing now: the radio should follow where the listener
-        // has got to, not where they started an hour ago.
+    private suspend fun canTopUp(): Boolean =
+        settings.radioMode.first() && _backend.value == Backend.SUBSONIC
+
+    /**
+     * Append the next batch, and say whether anything was actually added.
+     *
+     * **What "next" means depends on the shuffle switch**, which is the whole of
+     * what this decides:
+     *
+     *  - **Shuffled** — a random song from the library. That is what the switch on
+     *    Now Playing has always claimed and never did past the end of the queue:
+     *    ExoPlayer's shuffle mode reorders the list it was given and has nothing to
+     *    say once that list is spent.
+     *  - **Not shuffled** — the next song on the record, then the next record, and
+     *    so on. See [AlbumContinuation]. A listener working through an album means
+     *    the next track by "next", not a genre-matched stranger.
+     *  - **Neither can answer** — the similarity ladder, and offline the picker over
+     *    what is on the phone. A track with no album to walk (a playlist entry, a
+     *    search hit) lands here, and so does a library that will not describe one.
+     *
+     * The seed is what is playing now, not what started the queue: the continuation
+     * should follow where the listener has got to.
+     */
+    private suspend fun topUpRadio(queue: List<com.engabd.sendpin.audio.LocalTrack>): Boolean {
         val playing = localPlayer.current.value
         val seedId = playing?.scrobbleId ?: playing?.id
         val seed = seedId?.let { id -> lastSeeds[id] }
         val exclude = queue.mapNotNull { it.scrobbleId ?: it.id }.toSet()
 
-        // Which generator this library can offer. Each self-hosted backend has its
-        // own — Subsonic's `getSimilarSongs`, Jellyfin's `InstantMix` — and a source
-        // with neither falls back to the offline picker over what is on the phone.
-        //
-        // Jellyfin used to take that fallback, and it was the whole of "keep the
-        // music going doesn't work on Jellyfin": the check asked for a
-        // `SubsonicSource` specifically, so a Jellyfin library with nothing
-        // downloaded picked nothing and the queue ended silently, exactly as if the
-        // setting were off.
-        val generator: RadioSource? = when (val s = source) {
-            is SubsonicSource -> SubsonicRadioSource(s.subsonic)
-            is com.engabd.sendpin.library.JellyfinSource -> JellyfinRadioSource(s.jellyfin)
-            else -> null
-        }
+        val src = source
+        // One generator for every library, built from the `MusicSource` interface.
+        // It used to be a `when (source)` over two concrete client classes — so
+        // Jellyfin, Emby and Plex each fell through to the offline picker over
+        // downloaded files, and on a library with nothing downloaded the queue ended
+        // silently, exactly as if the setting were off. See [LibraryRadioSource].
+        val generator: RadioSource? = src?.let { LibraryRadioSource(it) }
+
         // Harmonic DJ mode needs TrackScanRepository, which only ever has data for
         // files on this phone — there's no server round trip that could carry BPM/key
         // compatibility for the generator-backed rungs. It re-ranks *within* whichever
@@ -2173,16 +2335,26 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         // and what is playing does not change between two of them. A null seed scan
         // means there is nothing to be compatible *with*, so the whole bonus drops
         // out and the ranking is the plain genre/artist (or generator-order) one.
+        //
+        // Not applied to the sequential walk: an album's own running order is not a
+        // thing to re-rank.
         val seedScan = if (settings.djMode.first()) playing?.let { trackScans.peek(it) } else null
         val bonus: (MaItem) -> Int = if (seedScan == null) ({ 0 }) else djBonus(seedScan)
-        val picked = if (_offline.value || generator == null) {
-            radio.offline(downloads.value.map { downloadItem(it) }, seed, RADIO_BATCH, exclude, bonus = bonus)
-        } else {
-            radio.next(generator, seed, RADIO_BATCH, exclude, bonus = bonus)
+
+        val picked = when {
+            _offline.value || src == null || generator == null ->
+                radio.offline(downloads.value.map { downloadItem(it) }, seed, RADIO_BATCH, exclude, bonus = bonus)
+            localPlayer.shuffle.value ->
+                radio.random(generator, RADIO_BATCH, exclude, bonus = bonus)
+                    .ifEmpty { radio.next(generator, seed, RADIO_BATCH, exclude, bonus = bonus) }
+            else ->
+                sequentialFor(src).next(seed, RADIO_BATCH, exclude)
+                    .ifEmpty { radio.next(generator, seed, RADIO_BATCH, exclude, bonus = bonus) }
         }
-        if (picked.isEmpty()) return
+        if (picked.isEmpty()) return false
         rememberSeeds(picked)
         localPlayer.addToQueue(picked.map { localTrack(it) })
+        return true
     }
 
     /**
@@ -2353,6 +2525,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                     // list. Batches are published as they land, so the wall of art
                     // fills in.
                     "albums" -> allAlbums(sc, onPartial)
+                    // Paged and published as the pages land, for the same reason
+                    // albums are — "every song" is the largest list a library has, and
+                    // asking for it in one request is how a big one times out.
+                    "tracks" -> allTracks(sc, onPartial)
                     "newest" -> sc.recentlyAdded(200)
                     "playlists" -> sc.playlists()
                     "genres" -> sc.genres()
@@ -2382,19 +2558,45 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         sc: MusicSource,
         onPartial: (List<MaItem>) -> Unit,
         cap: Int = 20_000,
+    ): List<MaItem> = allPages(onPartial, cap) { offset, limit -> sc.albums(offset, limit) }
+
+    /**
+     * Every track on the server, the same way and for the same reasons.
+     *
+     * The same 20,000 ceiling `MaRepository.allLibraryItems` puts on the Music
+     * Assistant backend's Tracks category, so the two behave alike on a library
+     * larger than anyone scrolls: the first pages are on screen at once and it stops
+     * fetching eventually rather than walking a hundred thousand songs into memory.
+     */
+    private suspend fun allTracks(
+        sc: MusicSource,
+        onPartial: (List<MaItem>) -> Unit,
+        cap: Int = 20_000,
+    ): List<MaItem> = allPages(onPartial, cap) { offset, limit -> sc.tracks(offset, limit) }
+
+    /**
+     * Walk a paged listing to its end, publishing each running batch.
+     *
+     * [cap] backstops a server that ignores the offset and hands back the same page
+     * for ever; so does the id check, which stops the moment a page adds nothing new.
+     */
+    private suspend fun allPages(
+        onPartial: (List<MaItem>) -> Unit,
+        cap: Int,
+        page: suspend (offset: Int, limit: Int) -> List<MaItem>,
     ): List<MaItem> {
         val all = mutableListOf<MaItem>()
         val seen = mutableSetOf<String>()
         var offset = 0
         while (offset < cap) {
-            val page = sc.albums(offset = offset, limit = SUBSONIC_PAGE)
-            if (page.isEmpty()) break
-            val fresh = page.filterNot { it.itemId in seen }
+            val batch = page(offset, SUBSONIC_PAGE)
+            if (batch.isEmpty()) break
+            val fresh = batch.filterNot { it.itemId in seen }
             fresh.forEach { seen += it.itemId }
             if (fresh.isEmpty()) break          // the server is repeating itself
             all += fresh
             onPartial(all.toList())
-            if (page.size < SUBSONIC_PAGE) break
+            if (batch.size < SUBSONIC_PAGE) break
             offset += SUBSONIC_PAGE
         }
         return all
@@ -2786,6 +2988,13 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             else -> {
                 val src = source
                 add(category("artists", "Artists")); add(category("albums", "Albums"))
+                // Songs had a category on the Music Assistant backend and on none of
+                // the self-hosted ones, so on Jellyfin (and Navidrome, and every other
+                // library this phone plays itself) the only routes to a track were
+                // through the album holding it or through search. Gated on the
+                // capability rather than added unconditionally: a source that cannot
+                // enumerate songs would otherwise offer an empty screen.
+                if (src == null || src.has(Capability.TRACKS)) add(category("tracks", "Tracks"))
                 if (src == null || src.has(Capability.PLAYLIST_READ)) add(category("playlists", "Playlists"))
                 if (src == null || src.has(Capability.GENRES)) add(category("genres", "Genres"))
                 if (src == null || src.has(Capability.FAVORITES)) add(category("starred", "Starred"))
@@ -2805,7 +3014,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun category(id: String, name: String) =
-        MaItem(id, CATEGORY, name, null, "category", null, null, null)
+        MaItem(id, CATEGORY_PROVIDER, name, null, "category", null, null, null)
 
     /**
      * Downloads grouped by album and in track order, so a downloaded album reads —
@@ -2829,7 +3038,6 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private companion object {
-        const val CATEGORY = "__cat__"
         const val DOWNLOAD = "__dl__"
         const val DOWNLOADS_TITLE = "Downloads"
 
@@ -2903,7 +3111,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         const val RESUME_MIN_POSITION_MS = 15_000L
 
         /**
-         * Top up while this many tracks are still ahead of the playhead.
+         * Top up once fewer than this many tracks are still ahead of the playhead.
          *
          * Two, not zero: ExoPlayer buffers across a boundary it can already see, so
          * appending early is what keeps the transition gapless. Waiting for the queue

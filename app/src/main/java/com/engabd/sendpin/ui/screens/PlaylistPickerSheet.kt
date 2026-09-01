@@ -11,6 +11,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.MaterialTheme
@@ -32,11 +33,17 @@ import com.engabd.sendpin.ui.design.TitleGap
 import com.engabd.sendpin.ui.theme.*
 
 /**
- * Which playlist to file something into.
+ * Which playlist to file something into — or a new one.
  *
  * Drawn like the other sheets in this app rather than as a `ModalBottomSheet`, and
  * capped in height so a library with two hundred playlists scrolls instead of
  * pushing its own list off the screen.
+ *
+ * [onCreate] is the first row rather than a footer, and it is why this sheet no
+ * longer has an empty state telling the user to go and make a playlist somewhere
+ * else: wanting a new playlist happens *here*, looking at the thing that would go
+ * in it, and sending someone to another category to come back afterwards was the
+ * whole of "playlists can't be created" on a library with none yet.
  */
 @Composable
 fun BoxScope.PlaylistPickerSheet(
@@ -44,6 +51,7 @@ fun BoxScope.PlaylistPickerSheet(
     playlists: List<MaItem>,
     onClose: () -> Unit,
     onPick: (MaItem) -> Unit,
+    onCreate: () -> Unit,
 ) {
     HideBottomChrome()
     BackHandler(onBack = onClose)
@@ -86,9 +94,24 @@ fun BoxScope.PlaylistPickerSheet(
                 )
             }
 
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable { onCreate() }
+                    .padding(horizontal = 18.dp, vertical = 13.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                Icon(Icons.Default.Add, null, tint = accent, modifier = Modifier.size(20.dp))
+                Text(
+                    "New playlist", color = TextPrimary, fontFamily = AppFont,
+                    style = MaterialTheme.typography.titleLarge,
+                )
+            }
+
             if (playlists.isEmpty()) {
                 Text(
-                    "No playlists yet - create one from the Playlists list first.",
+                    "No playlists on this library yet.",
                     color = TextMuted, style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.padding(horizontal = 18.dp, vertical = 18.dp),
                 )

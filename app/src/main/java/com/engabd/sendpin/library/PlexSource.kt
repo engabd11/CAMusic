@@ -37,6 +37,7 @@ class PlexSource(private val client: PlexClient) : MusicSource {
         Capability.SEARCH,
         Capability.GENRES,
         Capability.PLAYLIST_READ,
+        Capability.TRACKS,
         Capability.DOWNLOAD,
         Capability.HISTORY,
         Capability.SCROBBLE,
@@ -53,6 +54,7 @@ class PlexSource(private val client: PlexClient) : MusicSource {
     override suspend fun artistDetail(id: String) = client.artistDetail(id)
     override suspend fun albumDetail(id: String) = client.albumDetail(id)
     override suspend fun playlistTracks(id: String): List<MaItem> = client.playlistTracks(id)
+    override suspend fun tracks(offset: Int, limit: Int): List<MaItem> = client.tracks(offset, limit)
     override suspend fun children(item: MaItem): List<MaItem> = client.children(item)
     override suspend fun tracksUnder(item: MaItem): List<MaItem> = client.tracksUnder(item)
     override suspend fun song(id: String): MaItem? = client.item(id)

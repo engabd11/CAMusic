@@ -58,6 +58,7 @@ class SubsonicSource(
             add(Capability.METADATA)
             add(Capability.SIMILAR)
             add(Capability.SAVED_QUEUE)
+            add(Capability.TRACKS)
             // …and these only where the server said so. `songLyrics` is the
             // OpenSubsonic extension behind `getLyricsBySongId`; without it the app
             // would be offering a pane it can only ever fill with a shrug.
@@ -101,6 +102,7 @@ class SubsonicSource(
     override suspend fun artistDetail(id: String) = client.artistDetail(id)
     override suspend fun albumDetail(id: String) = client.albumDetail(id)
     override suspend fun playlistTracks(id: String): List<MaItem> = client.playlistTracks(id)
+    override suspend fun tracks(offset: Int, limit: Int): List<MaItem> = client.allSongs(offset, limit)
     override suspend fun children(item: MaItem): List<MaItem> = client.children(item)
     override suspend fun tracksUnder(item: MaItem): List<MaItem> = client.tracksUnder(item)
     override suspend fun song(id: String): MaItem? = client.song(id)

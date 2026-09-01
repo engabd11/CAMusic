@@ -67,6 +67,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.engabd.sendpin.ui.design.sharedArt
 import com.engabd.sendpin.download.DownloadJob
+import com.engabd.sendpin.ma.CATEGORY_PROVIDER
 import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ma.LibraryViewModel.Backend
 import com.engabd.sendpin.ma.MaItem
@@ -74,6 +75,7 @@ import com.engabd.sendpin.subsonic.SavedQueue
 import com.engabd.sendpin.subsonic.SubsonicClient
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
+import com.engabd.sendpin.library.Capability
 import com.engabd.sendpin.library.MusicSources
 import com.engabd.sendpin.library.ServerConfig
 import com.engabd.sendpin.library.ServerKind
@@ -133,6 +135,10 @@ fun LibraryScreen(
     val query by viewModel.query.collectAsStateWithLifecycle()
     val refreshing by viewModel.refreshing.collectAsStateWithLifecycle()
     val searching by viewModel.searching.collectAsStateWithLifecycle()
+    // What the connected library can do, for the long-press sheet's Download row.
+    // Collected here as well as in [Browse] because the sheet is a sibling of the
+    // grid rather than a child of it.
+    val capabilities by viewModel.sourceCapabilities.collectAsStateWithLifecycle()
     val showCreatePlaylist by viewModel.showCreatePlaylist.collectAsStateWithLifecycle()
     val addingToPlaylist by viewModel.addingToPlaylist.collectAsStateWithLifecycle()
     val playlistChoices by viewModel.playlistChoices.collectAsStateWithLifecycle()
@@ -230,9 +236,12 @@ fun LibraryScreen(
                 onPlayNow = { viewModel.play(picked, "replace") },
                 onPlayNext = { viewModel.play(picked, "next") },
                 onAddToQueue = { viewModel.play(picked, "add") },
-                // Downloads are a Navidrome feature; the ViewModel says so itself for
-                // an MA item, so the row is only offered where it can work.
-                onDownload = if (picked.provider == SubsonicClient.PROVIDER) {
+                // Offered wherever the library can hand the file over — the same
+                // rule the row's own download button uses, and the same one the
+                // "Download all" bar at the top of the list has used all along.
+                // Hard-coding Navidrome here is what left a Jellyfin track with no
+                // Download in this sheet while the bar above it offered the album.
+                onDownload = if (isDownloadable(picked, capabilities)) {
                     { viewModel.download(picked) }
                 } else null,
                 // Only Music Assistant can generate a queue, and only from something
@@ -268,6 +277,7 @@ fun LibraryScreen(
                 playlists = playlistChoices,
                 onClose = viewModel::closeAddToPlaylist,
                 onPick = viewModel::addToPlaylist,
+                onCreate = { viewModel.createPlaylistFor(pending) },
             )
         }
 
@@ -332,11 +342,11 @@ internal fun itemKey(section: String, index: Int, item: MaItem) =
     "$section:$index:${item.provider}|${item.itemId}"
 
 private val ArtfulTypes = setOf("album", "playlist", "podcast", "audiobook")
-internal val DownloadableTypes = setOf("track", "album", "playlist")
+private val DownloadableTypes = setOf("track", "album", "playlist")
 internal val LongPressableTypes =
     setOf("track", "album", "artist", "playlist", "radio", "podcast", "podcast_episode", "audiobook")
-internal val SubsonicActionTypes = setOf("track", "album", "artist")
-internal val MaActionTypes =
+private val SubsonicActionTypes = setOf("track", "album", "artist")
+private val MaActionTypes =
     setOf("track", "album", "artist", "playlist", "podcast", "podcast_episode", "audiobook")
 
 @Composable
@@ -363,14 +373,17 @@ private fun Browse(
     val jobs by viewModel.downloadJobs.collectAsStateWithLifecycle()
     val offline by viewModel.offline.collectAsStateWithLifecycle()
 
-    // Collected once for the whole grid. These three used to be read *inside* ItemRow
-    // and its children, so every visible row stood up three flow collectors of its
-    // own, each torn down and rebuilt as rows recycled during a scroll. The rows now
-    // take plain booleans, which also lets them skip when nothing about them changed.
+    // Collected once for the whole grid. These used to be read *inside* ItemRow and
+    // its children, so every visible row stood up three flow collectors of its own,
+    // each torn down and rebuilt as rows recycled during a scroll. The rows now take
+    // plain booleans, which also lets them skip when nothing about them changed — and
+    // which action a row offers is decided here too, rather than by each row
+    // comparing the item's provider against a hard-coded string.
     val downloadedIds by viewModel.downloadedIds.collectAsStateWithLifecycle()
     val favorites by viewModel.favorites.collectAsStateWithLifecycle()
     val previewingId by viewModel.previewing.collectAsStateWithLifecycle()
-    val rows = RowState(downloadedIds, favorites, previewingId)
+    val capabilities by viewModel.sourceCapabilities.collectAsStateWithLifecycle()
+    val rows = RowState(downloadedIds, favorites, previewingId, capabilities)
 
     val s = if (searchOpen) search else null
 
@@ -396,13 +409,12 @@ private fun Browse(
         node.items.filter { it.playable && it.mediaType == "track" }
     }
     // Downloading an album one row at a time was never a real answer, so the whole
-    // list is one tap from disk. Any library this phone plays itself qualifies —
-    // hardcoding "subsonic" hid the bar on Jellyfin, and Downloads is excluded for
-    // the obvious reason.
-    val downloadable = remember(tracks) {
-        tracks.filter {
-            MusicSources.isLocalProvider(it.provider) && it.provider != MusicSources.DOWNLOAD_PROVIDER
-        }
+    // list is one tap from disk. The same rule the rows and the long-press sheet use
+    // — see [isDownloadable]. This was the *first* place the "subsonic" test got
+    // widened, and for a while it was the only one, which is how a Jellyfin album
+    // came to offer "Download all" above a list of rows with no download buttons.
+    val downloadable = remember(tracks, capabilities) {
+        tracks.filter { isDownloadable(it, capabilities) }
     }
     // A list that holds more than one kind of thing, split into its kinds. Empty for
     // the ordinary node, which holds one — see [typedGroups].
@@ -629,21 +641,85 @@ private data class RowState(
     val downloadedIds: Set<String>,
     val favorites: Set<String>,
     val previewingId: String?,
+    /** What the connected library can answer — see [LibraryViewModel.sourceCapabilities]. */
+    val capabilities: Set<Capability>,
 ) {
-    /** The three flags as they apply to one item. */
+    /** The flags as they apply to one item. */
     fun of(item: MaItem) = RowFlags(
         onDisk = item.itemId in downloadedIds,
         isFavorite = item.itemId in favorites,
         isPreviewing = previewingId == item.itemId,
+        downloadable = isDownloadable(item, capabilities),
+        favouritable = isFavouritable(item, capabilities),
+        // Auditioning a track in place is a Music Assistant feature; nothing
+        // self-hosted has a preview endpoint. This used to read `provider !=
+        // "subsonic"`, so every Jellyfin, Emby and Plex row grew a headphones button
+        // that `LibraryViewModel.togglePreview` returns straight back out of.
+        previewable = !selfHosted(item) && !isDownload(item) && !isCategory(item) &&
+            item.mediaType == "track",
     )
 }
 
-/** [RowState] resolved for a single row — three booleans, so the row can skip. */
+private fun isCategory(item: MaItem) = item.provider == CATEGORY_PROVIDER
+private fun isDownload(item: MaItem) = item.provider == MusicSources.DOWNLOAD_PROVIDER
+
+/**
+ * An item from a library **this phone plays itself**, rather than a Music Assistant
+ * one — so: something with a server (or a folder) behind it that this app talks to
+ * directly, and not a row that is already a file on disk.
+ *
+ * Folders on the phone count, which is deliberate: they have no preview endpoint
+ * either, and what they cannot do — hand over a file that is already here, hold a
+ * favourite — the capability check below says without this having to name them.
+ */
+private fun selfHosted(item: MaItem) =
+    MusicSources.isLocalProvider(item.provider) &&
+        item.provider != MusicSources.DOWNLOAD_PROVIDER
+
+/**
+ * Whether to offer a download for [item].
+ *
+ * Was `provider == "subsonic"`, which was true of the only self-hosted library there
+ * was when it was written and has been wrong since Jellyfin arrived: the row showed
+ * no button, the long-press sheet showed no Download, and the "Download all" bar at
+ * the top of the very same list offered to fetch the lot — because that one had
+ * already been widened to every library this phone plays. [Capability.DOWNLOAD] is
+ * the question both were reaching for.
+ *
+ * Artists and genres are still left out: they resolve to hundreds of files, and
+ * fetching one by accident from a list row is a nasty surprise rather than a
+ * feature.
+ */
+private fun isDownloadable(item: MaItem, capabilities: Set<Capability>) =
+    selfHosted(item) &&
+        Capability.DOWNLOAD in capabilities &&
+        item.mediaType in DownloadableTypes
+
+/**
+ * Whether to offer a star for [item].
+ *
+ * Gated on the capability so a library without favourites — Plex has a 0–10 rating
+ * and no star — stops showing a heart whose `setStarred` is a no-op. Which *kinds*
+ * of thing can be starred is unchanged: Subsonic's `star` has no playlist parameter,
+ * and everything else takes any item.
+ */
+private fun isFavouritable(item: MaItem, capabilities: Set<Capability>) = when {
+    isCategory(item) || isDownload(item) -> false
+    !selfHosted(item) -> item.mediaType in MaActionTypes
+    Capability.FAVORITES !in capabilities -> false
+    item.provider == SubsonicClient.PROVIDER -> item.mediaType in SubsonicActionTypes
+    else -> item.mediaType in MaActionTypes
+}
+
+/** [RowState] resolved for a single row, so the row itself decides nothing. */
 @Immutable
 internal data class RowFlags(
     val onDisk: Boolean,
     val isFavorite: Boolean,
     val isPreviewing: Boolean,
+    val downloadable: Boolean,
+    val favouritable: Boolean,
+    val previewable: Boolean,
 )
 
 /** One shelf on the library's front page: its label, its contents, its tile shape. */
@@ -823,7 +899,10 @@ private fun androidx.compose.foundation.lazy.grid.LazyGridScope.typedSection(
 
     val playable = list.filter { it.playable && it.mediaType == "track" }
     if (playable.size > 1) {
-        val downloadable = playable.filter { it.provider == "subsonic" }
+        // The Starred section's own bar. It kept the hard-coded `"subsonic"` after the
+        // main list's had been widened, so a starred Jellyfin track was downloadable
+        // from one list and not from the other.
+        val downloadable = playable.filter { isDownloadable(it, rows.capabilities) }
         item(key = "gplayall_$title", span = { full(gridCols) }, contentType = { "playall" }) {
             PlayAllBar(
                 count = playable.size,

@@ -50,6 +50,33 @@ class LocalRadioTest {
     }
 
     @Test
+    fun `shuffled, it goes straight to the bottom rung and asks for nothing else`() = runBlocking {
+        // The transport shuffle is the listener saying they do not want "more like
+        // this", so the ladder — whose whole job is to stay near the seed — is not
+        // the right question. Only `random` should be asked.
+        val source = FakeSource(
+            similarTrack = listOf(track("near")),
+            random = listOf(track("a"), track("b"), track("c")),
+        )
+        val picked = LocalRadio().random(source, count = 3)
+        assertEquals(listOf("random"), source.asked)
+        assertEquals(setOf("a", "b", "c"), picked.map { it.itemId }.toSet())
+    }
+
+    @Test
+    fun `a shuffled pick never repeats the queue or the session`() = runBlocking {
+        val radio = LocalRadio()
+        val source = FakeSource(random = listOf(track("a"), track("b"), track("c"), track("d")))
+        val first = radio.random(source, count = 2, exclude = setOf("a"))
+        assertTrue(first.none { it.itemId == "a" })
+        // Whatever the first call served is history now, so a second call cannot
+        // hand back the same songs — the failure that reads as "it keeps playing the
+        // same five tracks".
+        val second = radio.random(source, count = 2, exclude = setOf("a"))
+        assertTrue(second.none { it.itemId in first.map { t -> t.itemId } })
+    }
+
+    @Test
     fun `the strongest rung answers and the rest are never asked`() = runBlocking {
         val source = FakeSource(similarTrack = listOf(track("a"), track("b")))
         val picked = LocalRadio().next(source, seed = track("seed"), count = 5)

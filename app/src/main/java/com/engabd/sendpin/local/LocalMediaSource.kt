@@ -40,6 +40,7 @@ class LocalMediaSource(
 
     override val capabilities: Set<Capability> = setOf(
         Capability.SEARCH,
+        Capability.TRACKS,
     )
 
     /** Key under which chosen folder URIs are stored in [ServerConfig.options]. */
@@ -222,6 +223,10 @@ class LocalMediaSource(
     override suspend fun setStarred(item: MaItem, starred: Boolean) {}
     override suspend fun scrobble(id: String, completed: Boolean, startedAtMs: Long?, positionMs: Long?) {}
     override suspend fun lyrics(songId: String): MaLyrics? = null
+
+    /** Every file in the picked folders, by title — the phone is the whole library. */
+    override suspend fun tracks(offset: Int, limit: Int): List<MaItem> =
+        reachableTracks().sortedBy { it.name.lowercase() }.drop(offset).take(limit)
 
     // Not supported on local files.
     override suspend fun playlists(): List<MaItem> = emptyList()
