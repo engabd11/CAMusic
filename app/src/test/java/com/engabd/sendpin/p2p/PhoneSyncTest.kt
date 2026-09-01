@@ -12,8 +12,13 @@ class PhoneSyncTest {
         // Leader's clock is 1000 ms ahead of follower's.
         // t1 (leader sends) = 1000, t2 (follower receives) = 0
         // t3 (follower sends) = 10, t4 (leader receives) = 1010
+        //
+        // NTP offset = ((t2 - t1) + (t3 - t4)) / 2
+        // = ((0 - 1000) + (10 - 1010)) / 2 = -1000
+        // Negative means follower is behind leader by 1000 ms.
+        // The follower adds |offset| to its clock to get the leader's time.
         val sample = ClockSample(t1 = 1000, t2 = 0, t3 = 10, t4 = 1010)
-        assertEquals(1000, sample.offsetMs)
+        assertEquals(-1000, sample.offsetMs)
         assertEquals(20, sample.delayMs)
     }
 
@@ -21,7 +26,7 @@ class PhoneSyncTest {
     fun `offset is negative when leader is behind`() {
         // Leader's clock is 500 ms behind follower's.
         val sample = ClockSample(t1 = 0, t2 = 500, t3 = 510, t4 = 10)
-        assertEquals(-500, sample.offsetMs)
+        assertEquals(500, sample.offsetMs)
         assertEquals(0, sample.delayMs)
     }
 

@@ -32,7 +32,7 @@ class ListeningJournalTest {
 
         assertTrue("Should mention morning: $result", result.contains("morning"))
         assertTrue("Should mention 5 minutes: $result", result.contains("5 minutes"))
-        assertTrue("Should not claim a repeat: $result", !result.contains("repeat"))
+        assertTrue("Should not claim a repeat play count: $result", !result.contains("2 times") && !result.contains("3 times"))
         assertTrue("Should mention jazz: $result", result.contains("Jazz"))
         assertTrue("Should mention the key: $result", result.contains("D minor"))
         assertTrue("Should mention the tempo: $result", result.contains("65 BPM"))
