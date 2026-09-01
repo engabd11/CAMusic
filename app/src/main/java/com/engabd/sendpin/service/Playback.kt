@@ -896,11 +896,19 @@ class Playback(private val app: Context) {
             } else {
                 FormatNegotiator.DEFAULT_MAX_RATE
             }
+            // The depth this setting can actually widen on this path is capped at
+            // what SendspinNativeEngine renders: its Oboe ring is int16 end to end
+            // (see OUTPUT_BIT_DEPTH), so advertising 24-bit bought Music Assistant
+            // nothing but bandwidth for bits truncated on arrival — see
+            // convertPcm24To16. The *rate* half of bitPerfect above stays
+            // unconditional: the engine does follow the stream's sample rate, it
+            // only flattens the depth.
+            val engineBitPerfect = bitPerfect && SendspinNativeEngine.OUTPUT_BIT_DEPTH >= FormatNegotiator.HIRES_BIT_DEPTH
             val formats = FormatNegotiator.supportedFormats(
                 preferHiRes = settings.preferHiRes.first(),
                 preferFlac = settings.preferFlac.first(),
                 codec = codec.takeIf { it != "auto" },
-                bitPerfect = bitPerfect,
+                bitPerfect = engineBitPerfect,
                 maxSampleRate = maxRate,
             )
             c.connect(url, playerId, name, deviceInfo, formats, token)

@@ -55,6 +55,16 @@ private const val HANDSHAKE_RETRIES = 6
  */
 private const val POLL_TIMEOUT_MS = 1
 
+/**
+ * Shared receive buffer size for [DtlsPskClient.recv] and [DtlsPskClient.pollAlert].
+ * `DatagramPacket` silently truncates anything longer than the buffer it was given
+ * — no exception, no flag, just the tail dropped — which would hand [DtlsPskClient.splitRecords]
+ * a short buffer that looks exactly like a truncated datagram off the wire. 16 KiB is
+ * comfortably above anything the bridge actually sends (handshake messages and
+ * entertainment frames are both small); this is headroom, not a tight fit.
+ */
+private const val RECV_BUFFER_SIZE = 16384
+
 // ── TLS 1.2 PRF (P_SHA256) ────────────────────────────────────────────────
 
 private fun pHash(secret: ByteArray, seed: ByteArray, length: Int): ByteArray {
@@ -431,15 +441,31 @@ class DtlsPskClient(
 
     // ── Record splitting ──────────────────────────────────────────────────
 
-    private data class Record(val contentType: Byte, val seqBytes: ByteArray, val fragment: ByteArray)
+    internal data class Record(val contentType: Byte, val seqBytes: ByteArray, val fragment: ByteArray)
 
-    private fun splitRecords(data: ByteArray): List<Record> {
+    /**
+     * Splits a raw UDP datagram into the DTLS records packed back-to-back inside it.
+     *
+     * `length` is read straight off the wire. A truncated or malformed datagram can
+     * declare a length that runs past the bytes actually received — that's not a
+     * parse position to clamp to and keep going, it's a record whose body never
+     * arrived. So this checks the declared length against what's left in [data]
+     * before ever slicing it, and if it overruns, stops the loop right there and
+     * returns the complete records already parsed rather than throwing an
+     * `IndexOutOfBoundsException` out of the receive path and taking the
+     * light-sync loop down with it.
+     *
+     * `internal` rather than `private` so [HueDtlsClientTest] can drive it directly
+     * with hand-built short buffers, which a real bridge won't reliably reproduce.
+     */
+    internal fun splitRecords(data: ByteArray): List<Record> {
         val records = mutableListOf<Record>()
         var off = 0
         while (off + 13 <= data.size) {
             val contentType = data[off]
             val seqBytes = data.copyOfRange(off + 3, off + 11)  // epoch(2) + seq(6)
             val length = ((data[off + 11].toInt() and 0xFF) shl 8) or (data[off + 12].toInt() and 0xFF)
+            if (off + 13 + length > data.size) break
             val fragment = data.copyOfRange(off + 13, off + 13 + length)
             records.add(Record(contentType, seqBytes, fragment))
             off += 13 + length
@@ -447,9 +473,18 @@ class DtlsPskClient(
         return records
     }
 
-    private data class HsMessage(val hsType: Byte, val rawMsg: ByteArray, val body: ByteArray)
+    internal data class HsMessage(val hsType: Byte, val rawMsg: ByteArray, val body: ByteArray)
 
-    private fun splitHandshake(fragment: ByteArray): List<HsMessage> {
+    /**
+     * Splits a handshake record's fragment into the individual handshake messages
+     * packed inside it.
+     *
+     * Same reasoning as [splitRecords]: `fragLen` comes straight off the wire, and
+     * a fragment that claims more body than it actually carries is a truncated
+     * datagram, not a length to guess at. Check before slicing, stop at the first
+     * overrun, and return the messages already parsed intact.
+     */
+    internal fun splitHandshake(fragment: ByteArray): List<HsMessage> {
         val messages = mutableListOf<HsMessage>()
         var off = 0
         while (off + 12 <= fragment.size) {
@@ -460,6 +495,7 @@ class DtlsPskClient(
             val fragLen = ((fragment[off + 9].toInt() and 0xFF) shl 16) or
                 ((fragment[off + 10].toInt() and 0xFF) shl 8) or
                 (fragment[off + 11].toInt() and 0xFF)
+            if (off + 12 + fragLen > fragment.size) break
             val body = fragment.copyOfRange(off + 12, off + 12 + fragLen)
             // Canonical single-fragment form for the transcript.
             val raw = fragment.copyOfRange(off, off + 6) + u24(0) + u24(length) + body
@@ -491,7 +527,7 @@ class DtlsPskClient(
 
     private fun recv(): ByteArray {
         val s = socket ?: throw DtlsException("not connected")
-        val buf = ByteArray(4096)
+        val buf = ByteArray(RECV_BUFFER_SIZE)
         val packet = java.net.DatagramPacket(buf, buf.size)
         s.receive(packet)
         return packet.data.copyOfRange(0, packet.length)
@@ -529,7 +565,7 @@ class DtlsPskClient(
         var alert: Pair<Int, Int>? = null
         try {
             while (true) {
-                val buf = ByteArray(4096)
+                val buf = ByteArray(RECV_BUFFER_SIZE)
                 val packet = java.net.DatagramPacket(buf, buf.size)
                 s.receive(packet)
                 val data = packet.data.copyOfRange(0, packet.length)

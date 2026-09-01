@@ -13,9 +13,10 @@ import android.util.Log
  * The output stage runs on a real-time HAL thread inside `SendspinOutputEngine`
  * (C++), so it is immune to JVM/ART GC pauses that stall a JVM-thread AudioTrack
  * writer and punch micro-drops in grouped sync. A deep, server-time-anchored ring
- * sits between the (GC-pausable) Kotlin decode - [OboeRenderer], fed by ExoPlayer -
- * and the native callback; per-chunk timeline re-anchoring happens inside the
- * callback (skip/insert), so playback keeps group sync without a shallow buffer.
+ * sits between the (GC-pausable) Kotlin decode - [SendspinNativeEngine]'s decode
+ * thread, which feeds PCM in through [write] - and the native callback; per-chunk
+ * timeline re-anchoring happens inside the callback (skip/insert), so playback
+ * keeps group sync without a shallow buffer.
  * See `sendspin_output_engine.h` for the full rationale.
  *
  * Threading: [write] is called only from the decode/playback thread (single

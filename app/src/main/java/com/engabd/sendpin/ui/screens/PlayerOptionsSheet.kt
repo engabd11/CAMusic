@@ -22,10 +22,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.engabd.sendpin.audio.ExclusiveOutput
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
@@ -132,6 +134,47 @@ fun BoxScope.PlayerOptionsSheet(onClose: () -> Unit, viewModel: NowPlayingViewMo
                         checked = st.radioMode,
                         onChange = { viewModel.toggleRadioMode() },
                     )
+                }
+
+                // Vinyl and lo-fi both run inside LocalPlayer's own processor
+                // chain (VinylNoiseProcessor / LoFiProcessor), not in anything
+                // Music Assistant streams — same reason "Don't stop the music"
+                // is MA-only above and "Keep the music going" is the local
+                // stand-in for it: offering these on the MA path would be
+                // switches that silently did nothing to the player actually
+                // making the sound, which is the exact mistake the comment on
+                // that branch calls out. Local session only, for the same
+                // reason.
+                if (st.isLocalSession) {
+                    val exclusiveReason = ExclusiveOutput.soundModes.reason
+                    val soundModesDisabled = st.exclusiveOutputOn
+                    val disabledSubtitle = "Exclusive output is on. $exclusiveReason Turn it off in " +
+                        "Settings > Playback & audio > Output to use this again."
+
+                    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                        SoundModeOption(
+                            icon = Icons.Default.Album,
+                            title = "Vinyl",
+                            subtitle = if (soundModesDisabled) disabledSubtitle
+                            else "Crackle, dust and rumble over the top of the music",
+                            enabled = !soundModesDisabled,
+                            checked = st.vinylNoiseConfig.enabled,
+                            intensity = st.vinylNoiseConfig.intensity,
+                            onCheckedChange = viewModel::setVinylNoiseEnabled,
+                            onIntensityChange = viewModel::setVinylNoiseIntensity,
+                        )
+                        SoundModeOption(
+                            icon = Icons.Default.GraphicEq,
+                            title = "Lo-fi",
+                            subtitle = if (soundModesDisabled) disabledSubtitle
+                            else "Bitcrusher, saturation and a low-pass roll-off",
+                            enabled = !soundModesDisabled,
+                            checked = st.loFiConfig.enabled,
+                            intensity = st.loFiConfig.intensity,
+                            onCheckedChange = viewModel::setLoFiEnabled,
+                            onIntensityChange = viewModel::setLoFiIntensity,
+                        )
+                    }
                 }
 
                 Column {
@@ -256,24 +299,95 @@ private fun OptionRow(
     title: String,
     subtitle: String,
     checked: Boolean,
+    enabled: Boolean = true,
     onChange: (Boolean) -> Unit,
 ) {
     val accent = LocalAccent.current
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Icon(icon, null, tint = if (checked) accent else TextMuted, modifier = Modifier.size(17.dp))
+        Icon(
+            icon, null,
+            tint = if (!enabled) TextFaint else if (checked) accent else TextMuted,
+            modifier = Modifier.size(17.dp),
+        )
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
-            Text(title, color = TextPrimary, style = MaterialTheme.typography.titleLarge)
+            Text(title, color = if (enabled) TextPrimary else TextMuted, style = MaterialTheme.typography.titleLarge)
             Text(subtitle, color = TextFaint, style = MaterialTheme.typography.bodySmall)
         }
         Spacer(Modifier.width(10.dp))
         Switch(
-            checked = checked, onCheckedChange = onChange,
+            checked = checked, onCheckedChange = onChange, enabled = enabled,
             colors = SwitchDefaults.colors(
                 checkedThumbColor = Ink, checkedTrackColor = accent, checkedBorderColor = accent,
                 uncheckedThumbColor = TextMuted, uncheckedTrackColor = Glass, uncheckedBorderColor = Hairline,
             ),
         )
+    }
+}
+
+/**
+ * A [OptionRow] toggle plus the intensity slider beneath it, for Vinyl and
+ * Lo-fi in the "Sound modes" block above. Shares the `HSlider` + value-label
+ * idiom the "Playback speed" `Column` below uses, rather than inventing a
+ * second one for two rows that want the same shape.
+ *
+ * The slider stays visible whenever the mode is [checked], even when
+ * [enabled] is false (Exclusive output is on) — same reasoning as
+ * [OptionRow] itself staying visible rather than disappearing: the setting
+ * underneath is still real and still worth showing, it just isn't reaching
+ * the signal right now.
+ *
+ * The drag is held locally and written once on release, the pattern
+ * `EffectsScreen`'s level slider already uses. [onIntensityChange] lands in
+ * DataStore, which is a serialise and a disk write; firing it on every frame
+ * of a drag would spend dozens of those to reach one value the listener
+ * actually wanted. The processors read the stored config on the next buffer
+ * either way, so committing on release costs nothing audible.
+ */
+@Composable
+private fun SoundModeOption(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    subtitle: String,
+    enabled: Boolean,
+    checked: Boolean,
+    intensity: Float,
+    onCheckedChange: (Boolean) -> Unit,
+    onIntensityChange: (Float) -> Unit,
+) {
+    val accent = LocalAccent.current
+    // Null except while a finger is down: the stored value is the truth the rest
+    // of the time, so an intensity changed from anywhere else still shows here.
+    var drag by remember(title) { mutableStateOf<Float?>(null) }
+    val shown = drag ?: intensity
+
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        OptionRow(
+            icon = icon, title = title, subtitle = subtitle,
+            checked = checked, enabled = enabled, onChange = onCheckedChange,
+        )
+        if (checked) {
+            Column(
+                Modifier.padding(start = 29.dp).alpha(if (enabled) 1f else 0.5f),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Intensity", color = TextFaint, fontFamily = AppFont,
+                        style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        "${(shown * 100).roundToInt()}%", color = accent, fontFamily = MonoFont,
+                        fontWeight = FontWeight.Bold, fontSize = 12.sp,
+                    )
+                }
+                HSlider(
+                    value = shown,
+                    onChange = { if (enabled) drag = it },
+                    onCommit = { if (enabled) { drag = null; onIntensityChange(it) } },
+                )
+            }
+        }
     }
 }
 
