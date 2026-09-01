@@ -3,6 +3,7 @@ package com.engabd.sendpin.ui.design
 import androidx.compose.foundation.Image
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.MenuBook
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
@@ -45,6 +46,7 @@ private fun serverKindIcon(kind: ServerKind): ImageVector = when (kind) {
     ServerKind.PCLOUD -> Icons.Default.CloudDone
     ServerKind.LOCAL -> Icons.Default.Smartphone
     ServerKind.DOWNLOADS -> Icons.Default.DownloadDone
+    ServerKind.MPD -> Icons.AutoMirrored.Filled.QueueMusic
 }
 
 /**
@@ -72,7 +74,9 @@ private fun serverKindLogoRes(kind: ServerKind): Int? = when (kind) {
     ServerKind.ONEDRIVE -> R.drawable.ic_logo_onedrive
     ServerKind.DROPBOX -> R.drawable.ic_logo_dropbox
     ServerKind.BOX -> R.drawable.ic_logo_box
-    ServerKind.SMB, ServerKind.WEBDAV, ServerKind.PCLOUD, ServerKind.LOCAL, ServerKind.DOWNLOADS -> null
+    ServerKind.SMB, ServerKind.WEBDAV, ServerKind.PCLOUD, ServerKind.LOCAL, ServerKind.DOWNLOADS,
+    ServerKind.MPD,
+    -> null
 }
 
 /**

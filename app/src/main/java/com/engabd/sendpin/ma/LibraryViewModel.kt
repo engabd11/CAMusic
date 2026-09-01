@@ -839,9 +839,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         // Wire the prepare-playback hook so MPD queues the right track before
         // ExoPlayer opens its constant HTTP stream URL. A no-op for every other
         // provider — MusicSource.preparePlayback defaults to Unit.
-        localPlayer.onPreparePlayback = { track ->
-            val src = source ?: return@let
-            val itemId = track.scrobbleId ?: return@let
+        localPlayer.onPreparePlayback = prepare@{ track ->
+            val src = source ?: return@prepare
+            val itemId = track.scrobbleId ?: return@prepare
             if (src.providerId == track.scrobbleProvider) {
                 runCatching { src.preparePlayback(itemId) }
             }

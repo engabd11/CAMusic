@@ -379,6 +379,14 @@ class LocalPlayer(private val context: Context) {
             fadeFactor = 1f
             applyGain()
             track?.let { _started.tryEmit(it) }
+            // MPD's stream URL never changes — every MediaItem in the queue points
+            // at the same continuous HTTP output, and what's actually audible is
+            // whatever MPD's own server-side queue is playing. ExoPlayer moving to a
+            // new index (skip, gapless advance, seek) is bookkeeping only until MPD
+            // is told to catch up, so every transition re-issues the prepare call,
+            // not just the one setQueue awaits explicitly for the first track. This
+            // is a no-op for every other provider.
+            onPreparePlayback?.let { prepare -> track?.let { t -> scope.launch { runCatching { prepare(t) } } } }
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -568,19 +576,31 @@ class LocalPlayer(private val context: Context) {
         // it, and gapless is the entire reason the list is handed over in one go.
         smoothQueue = tracks.size < 2 || tracks.mapNotNull { it.album }.distinct().size > 1
         fadeFactor = 1f
-        // MPD's HTTP stream is a single URL — prepare the first track before
-        // ExoPlayer opens it. A no-op for every other provider.
+        // MPD's HTTP stream is a single URL — whatever ExoPlayer reads from it is
+        // whatever MPD's own queue is playing right now, so the prepare call has to
+        // land *before* ExoPlayer opens the stream, not merely be started before it.
+        // A fire-and-forget launch here only starts the race, it doesn't win it: MPD's
+        // clear+add+play is three sequential round trips, and ExoPlayer's own
+        // setMediaItems/prepare/play on the next lines would run well ahead of it. So
+        // when a prepare hook is set, the player calls themselves wait on it; every
+        // other provider (no hook) takes the synchronous path, unchanged.
         val firstTrack = tracks[start]
-        onPreparePlayback?.let { prepare ->
+        val prepare = onPreparePlayback
+        if (prepare != null) {
             scope.launch {
                 runCatching { prepare(firstTrack) }
+                // The whole list goes to ExoPlayer at once — that is what lets it
+                // buffer across a track boundary, and so what makes the transition
+                // gapless.
+                player.setMediaItems(tracks.map(::mediaItem), start, C.TIME_UNSET)
+                player.prepare()
+                startOutput()
             }
+        } else {
+            player.setMediaItems(tracks.map(::mediaItem), start, C.TIME_UNSET)
+            player.prepare()
+            startOutput()
         }
-        // The whole list goes to ExoPlayer at once — that is what lets it buffer
-        // across a track boundary, and so what makes the transition gapless.
-        player.setMediaItems(tracks.map(::mediaItem), start, C.TIME_UNSET)
-        player.prepare()
-        startOutput()
     }
 
     /**
@@ -603,15 +623,19 @@ class LocalPlayer(private val context: Context) {
     }
 
     /**
-     * Called before ExoPlayer opens a track's URL.
+     * Called before ExoPlayer opens a track's URL, and again on every later track
+     * change.
      *
      * For every provider except MPD this is a no-op — the URL is per-track, so
      * ExoPlayer opening it is all that's needed. MPD's HTTP stream is a single
      * continuous URL, so [MusicSource.preparePlayback] must queue the right
-     * track in MPD before the stream is opened.
+     * track in MPD before the stream reflects it.
      *
-     * Called from [setQueue] and [playAt] — the two entry points where
-     * ExoPlayer starts reading a new URL.
+     * [setQueue] awaits it directly, since that is the one place playback can be
+     * held off until it lands. Every later change — [playAt], [next], [previous],
+     * a natural gapless boundary — reaches ExoPlayer's own `onMediaItemTransition`
+     * regardless of which of those triggered it, so that is where this is called
+     * for all of them, in one place, rather than at each call site individually.
      */
     var onPreparePlayback: (suspend (LocalTrack) -> Unit)? = null
 
