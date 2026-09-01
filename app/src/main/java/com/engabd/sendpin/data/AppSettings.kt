@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.engabd.sendpin.audio.LocalDsp
 import com.engabd.sendpin.audio.LoFiProcessor
+import com.engabd.sendpin.audio.StemSoloProcessor
 import com.engabd.sendpin.audio.VinylNoiseProcessor
 import com.engabd.sendpin.hue.AlbumColourOverride
 import com.engabd.sendpin.hue.GenrePresetRule
@@ -224,6 +225,7 @@ class AppSettings(private val context: Context) {
         /** Sound modes: vinyl surface noise and lo-fi. */
         private val VINYL_NOISE = stringPreferencesKey("vinyl_noise")
         private val LO_FI = stringPreferencesKey("lo_fi_mode")
+        private val STEM_SOLO = stringPreferencesKey("stem_solo")
 
         /**
          * Resample this phone's own output to a fixed rate. 0 - the default - is
@@ -1627,6 +1629,15 @@ class AppSettings(private val context: Context) {
 
     suspend fun setLoFiConfig(config: LoFiProcessor.Config) {
         context.dataStore.edit { it[LO_FI] = LoFiProcessor.encode(config) }
+    }
+
+    /** Stem-separation solo mode. Off by default. */
+    val stemSoloConfig: Flow<StemSoloProcessor.Config> = pref { prefs ->
+        prefs[STEM_SOLO]?.let { StemSoloProcessor.decode(it) } ?: StemSoloProcessor.Config()
+    }
+
+    suspend fun setStemSoloConfig(config: StemSoloProcessor.Config) {
+        context.dataStore.edit { it[STEM_SOLO] = StemSoloProcessor.encode(config) }
     }
 
     val genrePresetRules: Flow<List<GenrePresetRule>> = pref { prefs ->

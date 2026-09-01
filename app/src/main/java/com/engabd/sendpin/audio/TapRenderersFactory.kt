@@ -53,6 +53,8 @@ class TapRenderersFactory(
     private val vinylNoise: VinylNoiseProcessor? = null,
     /** Lo-fi mode, after vinyl noise. See [LoFiProcessor]. */
     private val loFi: LoFiProcessor? = null,
+    /** Stem solo, after lo-fi. See [StemSoloProcessor]. */
+    private val stemSolo: StemSoloProcessor? = null,
 ) : DefaultRenderersFactory(context) {
     override fun buildAudioSink(
         context: Context,
@@ -66,6 +68,7 @@ class TapRenderersFactory(
                     dsp,
                     vinylNoise,
                     loFi,
+                    stemSolo,
                     tap,
                     OutputRate.hz.takeIf { it > 0 }?.let { rate ->
                         androidx.media3.common.audio.SonicAudioProcessor()
