@@ -12,9 +12,10 @@ import com.engabd.sendpin.ma.MaSearchResults
  *
  * ## What Emby can't do
  *
- * No lyrics endpoint worth relying on, so no [Capability.LYRICS]. No similar-tracks
- * endpoint, so no [Capability.SIMILAR] — radio mode falls back to the local
- * generator, as it does on Jellyfin. No cross-device play queue, so no
+ * No lyrics endpoint worth relying on, so no [Capability.LYRICS]. Similarity comes
+ * from `InstantMix`, the same endpoint Jellyfin's does, so [Capability.SIMILAR] holds
+ * — without it "keep the music going" had no rung to stand on here at all. No
+ * cross-device play queue, so no
  * [Capability.SAVED_QUEUE]. [Capability.RICH_FORMAT] holds unconditionally: Emby's
  * `MediaSources[].MediaStreams[]` carries the same complete format reading
  * Jellyfin's does.
@@ -38,7 +39,11 @@ class EmbySource(private val client: EmbyClient) : MusicSource {
         Capability.FAVORITES,
         Capability.PLAYLIST_READ,
         Capability.PLAYLIST_WRITE,
+        Capability.TRACKS,
         Capability.DOWNLOAD,
+        // As Jellyfin: `InstantMix` is the similarity engine, so the radio ladder
+        // has real rungs here rather than falling through to downloaded files.
+        Capability.SIMILAR,
         Capability.HISTORY,
         Capability.SCROBBLE,
         Capability.RICH_FORMAT,
@@ -55,6 +60,7 @@ class EmbySource(private val client: EmbyClient) : MusicSource {
     override suspend fun artistDetail(id: String) = client.artistDetail(id)
     override suspend fun albumDetail(id: String) = client.albumDetail(id)
     override suspend fun playlistTracks(id: String): List<MaItem> = client.playlistTracks(id)
+    override suspend fun tracks(offset: Int, limit: Int): List<MaItem> = client.tracks(offset, limit)
     override suspend fun children(item: MaItem): List<MaItem> = client.children(item)
     override suspend fun tracksUnder(item: MaItem): List<MaItem> = client.tracksUnder(item)
     override suspend fun song(id: String): MaItem? = client.item(id)
@@ -94,4 +100,11 @@ class EmbySource(private val client: EmbyClient) : MusicSource {
         client.addToPlaylist(playlistId, songIds)
 
     override suspend fun deletePlaylist(id: String) = client.deleteItem(id)
+
+    /** `InstantMix`, exactly as `JellyfinSource.similarSongs` — see it for why. */
+    override suspend fun similarSongs(id: String, count: Int): List<MaItem> =
+        client.instantMix(id, count)
+
+    override suspend fun topSongs(artistName: String, count: Int): List<MaItem> =
+        client.topSongsByArtist(artistName, count)
 }

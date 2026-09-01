@@ -268,6 +268,7 @@ fun LibraryScreen(
                 playlists = playlistChoices,
                 onClose = viewModel::closeAddToPlaylist,
                 onPick = viewModel::addToPlaylist,
+                onCreate = { viewModel.createPlaylistFor(pending) },
             )
         }
 

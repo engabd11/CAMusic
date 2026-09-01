@@ -123,7 +123,12 @@ fun BoxScope.PlayerOptionsSheet(onClose: () -> Unit, viewModel: NowPlayingViewMo
                     OptionRow(
                         icon = Icons.Default.Radio,
                         title = "Keep the music going",
-                        subtitle = "Carry on with similar tracks when the queue runs out",
+                        // Says which of the two it will do, because the shuffle
+                        // button beside the play control is what decides — and a
+                        // switch whose behaviour depends on another control is worth
+                        // naming that control in.
+                        subtitle = if (st.shuffle) "Carry on with random songs from the library"
+                        else "Carry on through the album, then the next one",
                         checked = st.radioMode,
                         onChange = { viewModel.toggleRadioMode() },
                     )

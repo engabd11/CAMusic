@@ -227,11 +227,15 @@ class JellyfinClient(
     private suspend fun get(path: String, params: Map<String, String> = emptyMap()): JsonObject =
         withContext(Dispatchers.IO) { request(Request.Builder().url(url(path, params)).get()) }
 
-    private suspend fun post(path: String, body: JsonObject? = null): JsonObject =
+    private suspend fun post(
+        path: String,
+        body: JsonObject? = null,
+        params: Map<String, String> = emptyMap(),
+    ): JsonObject =
         withContext(Dispatchers.IO) {
             val payload = (body ?: JsonObject(emptyMap())).toString()
                 .toRequestBody("application/json".toMediaType())
-            request(Request.Builder().url(url(path)).post(payload))
+            request(Request.Builder().url(url(path, params)).post(payload))
         }
 
     private suspend fun delete(path: String, params: Map<String, String> = emptyMap()): JsonObject =
@@ -241,7 +245,14 @@ class JellyfinClient(
         val body = try {
             http.newCall(builder.header("Authorization", authHeader()).build()).execute().use { resp ->
                 if (!resp.isSuccessful) {
-                    throw JellyfinException(explain(resp.code), httpCode = resp.code)
+                    // The server's own reason, where it gave one. "Jellyfin returned
+                    // HTTP 400" is true and useless; the validation problem it comes
+                    // with names the field it rejected, which is the difference
+                    // between a bug report and a guess.
+                    throw JellyfinException(
+                        explain(resp.code, runCatching { resp.body?.string() }.getOrNull()),
+                        httpCode = resp.code,
+                    )
                 }
                 resp.body?.string().orEmpty()
             }
@@ -263,11 +274,28 @@ class JellyfinClient(
         }
     }
 
-    private fun explain(code: Int): String = when (code) {
-        401 -> "Jellyfin rejected the username or password"
-        403 -> "That account isn't allowed to browse this library"
-        404 -> "Not found on the server, it may have been removed"
-        else -> "Jellyfin returned HTTP $code"
+    private fun explain(code: Int, body: String? = null): String {
+        val base = when (code) {
+            401 -> "Jellyfin rejected the username or password"
+            403 -> "That account isn't allowed to browse this library"
+            404 -> "Not found on the server, it may have been removed"
+            else -> "Jellyfin returned HTTP $code"
+        }
+        val detail = detailOf(body) ?: return base
+        return "$base - $detail"
+    }
+
+    /**
+     * A short, readable reason out of an error response.
+     *
+     * Bounded and single-lined because this ends up in a snackbar: an ASP.NET
+     * validation problem is a page of JSON, and an unauthenticated reverse proxy
+     * answers with a whole HTML login page. Anything that looks like markup is
+     * dropped rather than shown.
+     */
+    private fun detailOf(body: String?): String? {
+        val text = body?.trim()?.takeIf { it.isNotEmpty() && !it.startsWith("<") } ?: return null
+        return text.replace(Regex("\\s+"), " ").take(180)
     }
 
     // ── Auth ──────────────────────────────────────────────────────────────
@@ -391,6 +419,17 @@ class JellyfinClient(
 
     suspend fun albums(offset: Int = 0, limit: Int = 200): List<MaItem> =
         items(types = "MusicAlbum", sortBy = "SortName", limit = limit, offset = offset)
+
+    /**
+     * Every song in the music library, alphabetically, a page at a time.
+     *
+     * Sorted by `SortName` rather than by album so the list reads the way the
+     * Artists and Albums categories beside it do — a run of names to scroll or jump
+     * through — and paged because "every song" is the one query that is reliably
+     * larger than a server wants to answer in one go.
+     */
+    suspend fun tracks(offset: Int = 0, limit: Int = 500): List<MaItem> =
+        items(types = "Audio", sortBy = "SortName", limit = limit, offset = offset)
 
     suspend fun recentlyAdded(limit: Int = 200): List<MaItem> =
         items(types = "MusicAlbum", sortBy = "DateCreated", sortOrder = "Descending", limit = limit)
@@ -574,14 +613,38 @@ class JellyfinClient(
         else delete("/Users/$userId/FavoriteItems/$id")
     }
 
+    /**
+     * Create a playlist, and hand back its id.
+     *
+     * The parameters go out **twice** — on the query string and in the JSON body —
+     * which looks like belt and braces and is not. `POST /Playlists` has taken its
+     * arguments from the query string since Emby, and Jellyfin has carried both
+     * bindings ever since it forked: the query parameters are marked obsolete but
+     * still win where they are present, and the body is what newer servers document.
+     * Which of the two a given server actually reads depends on its version, and
+     * sending only the body is how "create playlist" fails on a server whose browse,
+     * search and add-to-playlist all work — the query form is the older, wider
+     * contract and costs nothing to include.
+     *
+     * `Ids` is left off the query string when there is nothing to seed with: Jellyfin
+     * reads the body's list only when the query's is empty, and an empty `Ids=` is
+     * exactly that, but omitting it says the same thing to a server that never had
+     * the body binding at all.
+     */
     suspend fun createPlaylist(name: String, songIds: List<String> = emptyList()): String? =
         post(
             "/Playlists",
             buildJsonObject {
                 put("Name", name)
-                put("UserId", userId)
+                if (userId.isNotBlank()) put("UserId", userId)
                 put("MediaType", "Audio")
                 put("Ids", JsonArray(songIds.map { JsonPrimitive(it) }))
+            },
+            params = buildMap {
+                put("Name", name)
+                put("MediaType", "Audio")
+                if (userId.isNotBlank()) put("UserId", userId)
+                if (songIds.isNotEmpty()) put("Ids", songIds.joinToString(","))
             },
         ).str("Id")
 

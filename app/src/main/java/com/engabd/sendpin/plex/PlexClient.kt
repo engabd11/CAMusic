@@ -277,6 +277,18 @@ class PlexClient(
             ),
         ).mapNotNull(::item)
 
+    /** Every track in the music section, alphabetically and paged. */
+    suspend fun tracks(offset: Int = 0, limit: Int = 500): List<MaItem> =
+        entries(
+            container(
+                "/library/sections/$librarySectionKey/all",
+                mapOf(
+                    "type" to TYPE_TRACK, "sort" to "titleSort",
+                    "X-Plex-Container-Start" to offset.toString(), "X-Plex-Container-Size" to limit.toString(),
+                ),
+            ),
+        ).mapNotNull(::item)
+
     suspend fun recentlyAdded(limit: Int = 200): List<MaItem> =
         entries(
             container(

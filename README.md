@@ -102,8 +102,11 @@ Playback is built to be worth good headphones and a good DAC.
   crossfades that align to the beat grid of both tracks when scan data is available.
 - **USB DAC awareness**: connect one and CAMusic tells you what it can do and offers to pin
   the output to it.
-- **Keep the music going** with continuous radio on every path, plus favourites, a version
-  picker that lists every copy of a track across every provider, and cross-device resume.
+- **Keep the music going** on every library the phone plays itself, and the shuffle button
+  decides what "going" means: shuffled, the next track is a random song from the library;
+  unshuffled, it is the next track on the record, then the next record, and so on. Plus
+  favourites, a version picker that lists every copy of a track across every provider, and
+  cross-device resume.
 
 ---
 

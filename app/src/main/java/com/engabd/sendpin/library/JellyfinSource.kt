@@ -17,11 +17,13 @@ import com.engabd.sendpin.ma.MaSearchResults
  *
  * ## What Jellyfin can't do
  *
- * No similar-tracks endpoint, so [Capability.SIMILAR] is absent and the "more like
- * this" shelf is left out rather than shown empty — radio mode on this source falls
- * back to the local generator. No artist biographies through a public endpoint worth
- * relying on, so no [Capability.METADATA]. No cross-device play queue, so no
- * [Capability.SAVED_QUEUE]. Everything else it does *better* than plain Subsonic:
+ * No artist biographies through a public endpoint worth relying on, so no
+ * [Capability.METADATA]. No cross-device play queue, so no
+ * [Capability.SAVED_QUEUE]. [Capability.SIMILAR] *is* here, and used to be absent:
+ * Jellyfin has no `getSimilarSongs`, which was read as having no similarity at all —
+ * so the radio ladder skipped this source and "keep the music going" fell through to
+ * whatever was downloaded. `InstantMix` answers the same question; see
+ * [similarSongs]. Everything else it does *better* than plain Subsonic:
  * its per-track `MediaStreams` carry a full format reading, which is why
  * [Capability.RICH_FORMAT] is unconditional here and probed on Subsonic.
  */
@@ -44,8 +46,13 @@ class JellyfinSource(private val client: JellyfinClient) : MusicSource {
         Capability.FAVORITES,
         Capability.PLAYLIST_READ,
         Capability.PLAYLIST_WRITE,
+        Capability.TRACKS,
         Capability.DOWNLOAD,
         Capability.LYRICS,
+        // `InstantMix` is a similarity engine in every sense the app cares about —
+        // see [similarSongs]. Declaring it is what puts Jellyfin on the same radio
+        // ladder as Navidrome instead of the offline fallback.
+        Capability.SIMILAR,
         Capability.HISTORY,
         Capability.SCROBBLE,
         Capability.RICH_FORMAT,
@@ -62,6 +69,7 @@ class JellyfinSource(private val client: JellyfinClient) : MusicSource {
     override suspend fun artistDetail(id: String) = client.artistDetail(id)
     override suspend fun albumDetail(id: String) = client.albumDetail(id)
     override suspend fun playlistTracks(id: String): List<MaItem> = client.playlistTracks(id)
+    override suspend fun tracks(offset: Int, limit: Int): List<MaItem> = client.tracks(offset, limit)
     override suspend fun children(item: MaItem): List<MaItem> = client.children(item)
     override suspend fun tracksUnder(item: MaItem): List<MaItem> = client.tracksUnder(item)
     override suspend fun song(id: String): MaItem? = client.item(id)
@@ -129,4 +137,17 @@ class JellyfinSource(private val client: JellyfinClient) : MusicSource {
     override suspend fun deletePlaylist(id: String) = client.deleteItem(id)
 
     override suspend fun lyrics(songId: String): MaLyrics? = client.lyrics(songId)
+
+    /**
+     * Jellyfin has no `getSimilarSongs`. It has `InstantMix`, which is the engine
+     * behind the "Instant Mix" button in its own clients and takes a track, an album
+     * or an artist id — so the interface's one similarity question maps onto it
+     * whole, and the radio ladder gets the same answer here it gets from Navidrome's
+     * last.fm data. Better, in fact: it needs no third-party metadata to work.
+     */
+    override suspend fun similarSongs(id: String, count: Int): List<MaItem> =
+        client.instantMix(id, count)
+
+    override suspend fun topSongs(artistName: String, count: Int): List<MaItem> =
+        client.topSongsByArtist(artistName, count)
 }

@@ -83,11 +83,13 @@ internal fun BehaviorSection(settings: AppSettings, accent: Color, scope: Corout
                 checked = djMode,
                 accent = accent,
                 info = "\"Keep the music going\" already ranks the next few tracks by genre and " +
-                    "artist on Navidrome, Subsonic and Jellyfin libraries. DJ mode adds a bonus " +
+                    "artist on every library this phone plays itself. DJ mode adds a bonus " +
                     "on top of that ranking — never instead of it — for tracks whose key sits " +
                     "well against what's playing on the Camelot wheel (the same or relative key, " +
                     "or one step around it) and whose tempo is close, or exactly half or double " +
-                    "time.\n\nApplies whether that library is reached online or from downloads " +
+                    "time. It has nothing to weigh while the queue is carrying on through an " +
+                    "album in order, which is a running order rather than a ranking." +
+                    "\n\nApplies whether that library is reached online or from downloads " +
                     "on this phone. Never Music Assistant, which tops up its own queue " +
                     "server-side with no key or tempo data to weigh. An unscanned track simply " +
                     "keeps its plain genre/artist ranking.",
