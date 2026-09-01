@@ -379,6 +379,29 @@ class LocalPlayer(private val context: Context) {
             fadeFactor = 1f
             applyGain()
             track?.let { _started.tryEmit(it) }
+            // MPD's stream URL never changes — every MediaItem in the queue points
+            // at the same continuous HTTP output, and what's actually audible is
+            // whatever MPD's own server-side queue is playing. ExoPlayer moving to a
+            // new index (skip, gapless advance, seek) is bookkeeping only until MPD
+            // is told to catch up, so every transition re-issues the prepare call,
+            // not just the one setQueue awaits explicitly for the first track. This
+            // is a no-op for every other provider.
+            //
+            // Except the one transition [setQueue] causes itself: it awaits the
+            // prepare and *then* hands the list to ExoPlayer, and handing it over
+            // fires this listener. Preparing again from here would race a second
+            // clear+add+play against the stream ExoPlayer is opening at that moment
+            // — the track restarting under the listener a beat after it began. The
+            // flag is consumed by whichever transition arrives first either way, so
+            // a queue that never produced one cannot leave it standing to swallow a
+            // later skip.
+            val suppressed = skipNextPrepare
+            skipNextPrepare = false
+            if (!suppressed) {
+                onPreparePlayback?.let { prepare ->
+                    track?.let { t -> scope.launch { runCatching { prepare(t) } } }
+                }
+            }
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -568,11 +591,34 @@ class LocalPlayer(private val context: Context) {
         // it, and gapless is the entire reason the list is handed over in one go.
         smoothQueue = tracks.size < 2 || tracks.mapNotNull { it.album }.distinct().size > 1
         fadeFactor = 1f
-        // The whole list goes to ExoPlayer at once — that is what lets it buffer
-        // across a track boundary, and so what makes the transition gapless.
-        player.setMediaItems(tracks.map(::mediaItem), start, C.TIME_UNSET)
-        player.prepare()
-        startOutput()
+        // MPD's HTTP stream is a single URL — whatever ExoPlayer reads from it is
+        // whatever MPD's own queue is playing right now, so the prepare call has to
+        // land *before* ExoPlayer opens the stream, not merely be started before it.
+        // A fire-and-forget launch here only starts the race, it doesn't win it: MPD's
+        // clear+add+play is three sequential round trips, and ExoPlayer's own
+        // setMediaItems/prepare/play on the next lines would run well ahead of it. So
+        // when a prepare hook is set, the player calls themselves wait on it; every
+        // other provider (no hook) takes the synchronous path, unchanged.
+        val firstTrack = tracks[start]
+        val prepare = onPreparePlayback
+        if (prepare != null) {
+            scope.launch {
+                runCatching { prepare(firstTrack) }
+                // Handing the list over fires onMediaItemTransition, and the track it
+                // reports is the one just prepared. See [skipNextPrepare].
+                skipNextPrepare = true
+                // The whole list goes to ExoPlayer at once — that is what lets it
+                // buffer across a track boundary, and so what makes the transition
+                // gapless.
+                player.setMediaItems(tracks.map(::mediaItem), start, C.TIME_UNSET)
+                player.prepare()
+                startOutput()
+            }
+        } else {
+            player.setMediaItems(tracks.map(::mediaItem), start, C.TIME_UNSET)
+            player.prepare()
+            startOutput()
+        }
     }
 
     /**
@@ -593,6 +639,34 @@ class LocalPlayer(private val context: Context) {
         onTakingOutput?.invoke()
         player.play()
     }
+
+    /**
+     * Called before ExoPlayer opens a track's URL, and again on every later track
+     * change.
+     *
+     * Set only for a library that has something to do there — MPD, whose HTTP
+     * stream is one continuous URL carrying whatever MPD itself is playing, so the
+     * track has to be queued in MPD before the stream reflects it. Every other
+     * provider serves a URL per track and leaves this null, which is what keeps
+     * them on the straight path through [setQueue]: this being set is the switch
+     * that makes the player wait before opening anything.
+     *
+     * [setQueue] awaits it directly, since that is the one place playback can be
+     * held off until it lands. Every later change — [playAt], [next], [previous],
+     * a natural gapless boundary — reaches ExoPlayer's own `onMediaItemTransition`
+     * regardless of which of those triggered it, so that is where this is called
+     * for all of them, in one place, rather than at each call site individually.
+     */
+    var onPreparePlayback: (suspend (LocalTrack) -> Unit)? = null
+
+    /**
+     * Set for the single `onMediaItemTransition` that [setQueue] itself causes, so
+     * the track it just awaited a prepare for is not prepared a second time.
+     *
+     * Written and read on the main thread only — [scope] is `Dispatchers.Main` and
+     * so are the player's own callbacks.
+     */
+    private var skipNextPrepare = false
 
     /** Append to the queue, starting playback if nothing is loaded. */
     fun addToQueue(tracks: List<LocalTrack>) {

@@ -6,8 +6,8 @@ CAMusic browses and plays from two kinds of thing:
   never decodes for. It is a mode, not a provider, and does not implement
   `MusicSource`.
 - **Everything else** — a library the *phone itself* plays. Navidrome, Subsonic,
-  Jellyfin, Emby and Plex today; Audiobookshelf, Kodi, a WebDAV share and the cloud
-  drives next. These are all the same shape: list artists and albums, answer a
+  Jellyfin, Emby, Plex and MPD today; Audiobookshelf, Kodi, a WebDAV share and the
+  cloud drives next. These are all the same shape: list artists and albums, answer a
   search, hand out a URL ExoPlayer can open.
 
 That second shape is `library/MusicSource.kt`. Before it existed, Navidrome was a

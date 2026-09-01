@@ -113,6 +113,7 @@ class ServerConfigTest {
                 ServerKind.JELLYFIN,
                 ServerKind.EMBY,
                 ServerKind.PLEX,
+                ServerKind.MPD,
                 ServerKind.LOCAL,
                 ServerKind.DOWNLOADS,
             ),

@@ -160,6 +160,32 @@ interface MusicSource {
     fun coverUrl(id: String?, size: Int = 1000): String?
 
     /**
+     * Prepare the server to stream [id] before ExoPlayer opens [streamUrl].
+     *
+     * Almost every provider serves a per-track URL, so the default is a no-op —
+     * ExoPlayer opens the URL and the right bytes come out. MPD is the
+     * exception: its HTTP output is a continuous stream of *whatever is
+     * playing*, so the track must be added to MPD's queue and playback started
+     * before the URL is opened. Without this call, the stream plays whatever
+     * MPD was already playing (or silence if idle).
+     *
+     * Called by the local player immediately before opening the stream URL.
+     * [id] is the same value passed to [streamUrl] — the track's `itemId`.
+     */
+    suspend fun preparePlayback(id: String) = Unit
+
+    /**
+     * Whether [preparePlayback] does anything — false for every provider but MPD.
+     *
+     * The local player holds the first track back until [preparePlayback] returns,
+     * which is right when the stream depends on it and pointless when it doesn't:
+     * a source that answers false takes the same straight path into ExoPlayer it
+     * always has. So this has to say what [preparePlayback] *is*, not merely
+     * whether it is safe to call.
+     */
+    val needsPreparePlayback: Boolean get() = false
+
+    /**
      * The transcode the user asked for, as a source-specific token.
      *
      * Mutable and not a constructor argument for the same reason it was on

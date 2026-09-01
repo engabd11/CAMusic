@@ -228,9 +228,35 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * same live connection instead of each building a client of their own.
      */
     private val sourceHolder = (app as SendpinApp).musicSource
+
+    /**
+     * Queue the track in the library's own player before this phone opens the
+     * stream, for the one library that needs it.
+     *
+     * MPD's HTTP output is a single continuous URL carrying whatever MPD itself is
+     * playing, so the track has to be put in *MPD's* queue before the stream says
+     * anything about it. Every other provider hands out a URL per track and
+     * `MusicSource.preparePlayback` does nothing for them — which is why the hook
+     * is only installed for a source that says it needs one. `LocalPlayer.setQueue`
+     * branches on the hook being set, and holds playback back until it lands;
+     * leaving it installed for Navidrome would put every library on that path to
+     * wait for a call with nothing in it.
+     */
+    private val preparePlaybackHook: suspend (LocalTrack) -> Unit = hook@{ track ->
+        val src = source ?: return@hook
+        val itemId = track.scrobbleId ?: return@hook
+        if (src.providerId == track.scrobbleProvider) {
+            runCatching { src.preparePlayback(itemId) }
+        }
+    }
+
     private var source: MusicSource?
         get() = sourceHolder.value
-        set(value) { sourceHolder.value = value }
+        set(value) {
+            sourceHolder.value = value
+            (getApplication<Application>() as SendpinApp).localPlayer.onPreparePlayback =
+                if (value?.needsPreparePlayback == true) preparePlaybackHook else null
+        }
 
     /**
      * What the connected library can actually do, for the rows that offer actions.
