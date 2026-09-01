@@ -134,7 +134,7 @@ class LullabyControllerTest {
     }
 
     @Test
-    fun `clamps outside 0..1 without crashing`() {
+    fun `clamps outside 0 to 1 without crashing`() {
         // A timing jitter may produce a progress slightly outside [0,1].
         LullabyController.stepAt(-0.1f)
         LullabyController.stepAt(1.1f)

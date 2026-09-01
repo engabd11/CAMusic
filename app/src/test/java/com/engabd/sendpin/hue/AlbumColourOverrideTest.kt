@@ -62,7 +62,7 @@ class AlbumColourOverrideTest {
     fun `an empty overrides object decodes to an empty map`() {
         // The serialised form of an empty AlbumColourOverride is valid JSON
         // and should decode back to an empty map, not to null.
-        val back = AlbumColourOverride.decode("""{"overrides":{}}"")
+        val back = AlbumColourOverride.decode("{\"overrides\":{}}")
 
         assertNotNull(back)
         assertTrue(back!!.isEmpty())
@@ -74,7 +74,7 @@ class AlbumColourOverrideTest {
     fun `a blob with an unknown key still loads`() {
         // ignoreUnknownKeys: a field added later must not make existing
         // overrides unreadable on a downgrade. Rgb is serialised as "r,g,b" strings.
-        val withExtra = """{"overrides":{"a":["0.1,0.2,0.3"]},"somethingNew":42}"""
+        val withExtra = "{\"overrides\":{\"a\":[\"0.1,0.2,0.3\"]},\"somethingNew\":42}"
 
         val back = AlbumColourOverride.decode(withExtra)
 

@@ -91,7 +91,7 @@ class SunriseAlarmTest {
     }
 
     @Test
-    fun `brightness is always in 0..1`() {
+    fun `brightness is always in 0 to 1`() {
         for (i in 0..100) {
             val b = SunriseAlarm.brightnessAt(i / 100f)
             assertTrue(b in 0f..1f, "brightness out of range at ${i / 100f}: $b")
@@ -145,7 +145,7 @@ class SunriseAlarmTest {
     }
 
     @Test
-    fun `colour clamps outside 0..1 without crashing`() {
+    fun `colour clamps outside 0 to 1 without crashing`() {
         // The receiver may compute a progress slightly outside [0,1] due to timing
         // jitter; the curve must not throw or return NaN.
         SunriseAlarm.colourAt(-0.1f)
