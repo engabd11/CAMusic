@@ -75,6 +75,13 @@ enum class ServerKind(
         urlHint = "http://192.168.0.10:13378",
         auth = AuthStyle.TOKEN,
     ),
+    MPD(
+        "MPD",
+        "Music Player Daemon. Browses the library MPD already scanned and streams over its HTTP output.",
+        supported = true,
+        urlHint = "http://192.168.0.10:6600",
+        auth = AuthStyle.OPTIONAL_USER_PASSWORD,
+    ),
     KODI(
         "Kodi",
         "Talks JSON-RPC rather than REST; browses the library Kodi already scanned.",
@@ -227,5 +234,8 @@ data class ServerConfig(
 
         /** Jellyfin/Emby: which of the server's libraries to browse. Plex: the music section's key. */
         const val OPT_LIBRARY_ID = "libraryId"
+
+        /** MPD: the HTTP streaming output port (default 8000). */
+        const val OPT_MPD_HTTP_PORT = "mpdHttpPort"
     }
 }
