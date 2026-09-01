@@ -222,6 +222,26 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         get() = sourceHolder.value
         set(value) { sourceHolder.value = value }
 
+    /**
+     * What the connected library can actually do, for the rows that offer actions.
+     *
+     * The library's list rows decided what to offer by comparing the item's provider
+     * against the string `"subsonic"`, which was the same test as "is this the only
+     * self-hosted library that exists" back when it was. It stopped being that the
+     * day Jellyfin arrived: a Jellyfin track got no download button — on rows or in
+     * the long-press sheet — while the very same screen's "Download all" bar offered
+     * to fetch the whole list, because that one had already been widened. A Plex row
+     * got a favourite heart that calls a `setStarred` Plex has no endpoint for.
+     *
+     * So the rows ask [Capability] instead. Published as a flow rather than read
+     * during composition for the reason `AlbumDetailViewModel.canDownload` gives:
+     * the source is null for a moment around a reconnect, and a getter read at that
+     * instant drops the action and never brings it back.
+     */
+    val sourceCapabilities: StateFlow<Set<Capability>> =
+        sourceHolder.map { it?.capabilities ?: emptySet() }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+
     /** The active server's stored config, so a connect knows what it is connecting to. */
     private var activeConfig: ServerConfig? = null
         set(value) {
@@ -1699,6 +1719,14 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 )
                 return@launch
             }
+            // A library this phone plays is not automatically one that hands files
+            // over: a folder on the phone is already the file, and has no download to
+            // offer. The list rows ask the same question before showing the button;
+            // this is the backstop for every other way in, the player's chip included.
+            if (!sc.has(Capability.DOWNLOAD)) {
+                replyTo.tryEmit("Those files are already on this phone")
+                return@launch
+            }
             val tracks = try {
                 sc.tracksUnder(item)
             } catch (e: Exception) {
@@ -1732,6 +1760,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     fun downloadAll(items: List<MaItem>) {
         val sc = source
         if (sc == null) { _toast.tryEmit("Connect to a library to download"); return }
+        if (!sc.has(Capability.DOWNLOAD)) { _toast.tryEmit("Those files are already on this phone"); return }
         val tracks = items.filter { it.provider == sc.providerId && it.mediaType == "track" }
         if (tracks.isEmpty()) { _toast.tryEmit("Nothing here to download"); return }
         viewModelScope.launch { runDownload(tracks, sc) }
@@ -1818,7 +1847,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * Now Playing.
      */
     enum class TrackDownload {
-        /** Nothing playing locally, or nothing behind it that Navidrome could serve. */
+        /** Nothing playing locally, or nothing behind it a library could serve. */
         UNAVAILABLE,
         READY,
         IN_FLIGHT,
@@ -1826,21 +1855,25 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * The Navidrome song id behind a locally-playing track, or null when there isn't
-     * one.
+     * The **library** song id behind a locally-playing track, or null when there
+     * isn't one.
      *
-     * `scrobbleId` is already exactly this: it is set for a Navidrome track, for a
-     * download (downloads are Subsonic-only), and for a Music Assistant item being
-     * played through a Navidrome stream by "play at original quality" — where the
-     * item's own id belongs to MA and would name a song Navidrome has never heard of.
-     * Reusing it means the download chip is offered in precisely the cases a download
-     * can actually succeed.
+     * `scrobbleId` is already exactly this: it is set for a track from any library
+     * this phone plays itself, for a download (which carries the id of the server it
+     * came from), and for a Music Assistant item being played through a Navidrome
+     * stream by "play at original quality" — where the item's own id belongs to MA
+     * and would name a song Navidrome has never heard of. Reusing it means the
+     * download chip is offered in precisely the cases a download can succeed.
+     *
+     * It was called `navId` back when Navidrome was the only library that could
+     * answer for one. [LocalTrack.scrobbleProvider] says which library it belongs
+     * to, and that is what [download] resolves a source from.
      */
-    private val LocalTrack.navId: String? get() = scrobbleId
+    private val LocalTrack.libraryId: String? get() = scrobbleId
 
     val currentTrackDownload: StateFlow<TrackDownload> =
         combine(localPlayer.current, downloadedIds, downloadJobs) { track, done, jobs ->
-            val id = track?.navId ?: return@combine TrackDownload.UNAVAILABLE
+            val id = track?.libraryId ?: return@combine TrackDownload.UNAVAILABLE
             when {
                 // Keyed on the index rather than on `track.offline`, which is fixed
                 // when the track is built: deleting the copy left the chip saying
@@ -1865,8 +1898,11 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         val t = localPlayer.current.value
         if (t == null) { _playerToast.tryEmit("Nothing playing"); return }
         if (t.offline) { _playerToast.tryEmit("Already on this phone"); return }
-        val id = t.navId
-        if (id == null) { _playerToast.tryEmit("Only Navidrome tracks can be downloaded"); return }
+        val id = t.libraryId
+        // A Music Assistant stream is the server's to serve, not ours to keep, and a
+        // track with no library behind it has no file to ask anyone for. Whether the
+        // library it *does* have can hand one over is [download]'s to answer.
+        if (id == null) { _playerToast.tryEmit("Only tracks from your own library can be downloaded"); return }
         download(
             MaItem(
                 itemId = id,
@@ -1902,7 +1938,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Remove the offline copy of whatever is playing, from the player. */
     fun deleteCurrentTrackDownload() {
-        val id = localPlayer.current.value?.navId ?: return
+        val id = localPlayer.current.value?.libraryId ?: return
         if (!downloadManager.isDownloaded(id)) return
         viewModelScope.launch {
             downloadManager.delete(id)
