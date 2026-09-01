@@ -270,36 +270,6 @@
              each service's media3 MediaSession directly (see ShadePlayer /
              LocalPlaybackService) - no MediaButtonReceiver or MEDIA_BUTTON
              intent-filter needed for either. -->
-        <!--
-          Sunrise alarm receiver. Not exported: the receiver is only ever fired by
-          the system's AlarmManager on our own PendingIntent, and exporting it would
-          let any app trigger a sunrise by broadcasting the action.
-        -->
-        <receiver
-            android:name=".alarm.AlarmReceiver"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="com.engabd.sendpin.SUNRISE_ALARM" />
-            </intent-filter>
-        </receiver>
-
-        <!--
-          Audio-reactive live wallpaper. Renders a spectrum visualiser driven
-          by the same FFT the light show reads, so the home screen matches the
-          room. BIND_WALLPAPER is the system's guarantee that only the
-          wallpaper picker can bind it.
-        -->
-        <service
-            android:name=".wallpaper.MusicWallpaperService"
-            android:exported="false"
-            android:permission="android.permission.BIND_WALLPAPER">
-            <intent-filter>
-                <action android:name="android.service.wallpaper.WallpaperService" />
-            </intent-filter>
-            <meta-data
-                android:name="android.service.wallpaper"
-                android:resource="@xml/wallpaper" />
-        </service>
 
         <!--
           Hands a generated file to the share sheet without loosening anything:
