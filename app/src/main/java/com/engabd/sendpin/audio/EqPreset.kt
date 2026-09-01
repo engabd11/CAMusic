@@ -74,37 +74,37 @@ data class EqPreset(
         fun starters(): List<EqPreset> = listOf(
             EqPreset(
                 name = "Bass boost",
-                bands = flat().with(62f, +6f).with(125f, +4f),
+                bands = flatBands().with(62f, +6f).with(125f, +4f),
                 autoPreamp = true,
             ),
             EqPreset(
                 name = "Vocal forward",
-                bands = flat().with(125f, -2f).with(1_000f, +3f).with(2_000f, +2f),
+                bands = flatBands().with(125f, -2f).with(1_000f, +3f).with(2_000f, +2f),
                 autoPreamp = true,
             ),
             EqPreset(
                 name = "Flat",
-                bands = flat().bands,
+                bands = flatBands(),
                 autoPreamp = true,
             ),
             EqPreset(
                 name = "Electronic",
-                bands = flat().with(62f, +4f).with(250f, -2f).with(8_000f, +2f),
+                bands = flatBands().with(62f, +4f).with(250f, -2f).with(8_000f, +2f),
                 autoPreamp = true,
             ),
             EqPreset(
                 name = "Classical",
-                bands = flat().with(31f, +2f).with(16_000f, +1f),
+                bands = flatBands().with(31f, +2f).with(16_000f, +1f),
                 autoPreamp = true,
             ),
         )
 
         /** The ten flat bands, for building starter presets without repeating the list. */
-        private fun flat(): EqPreset = EqPreset(bands = LocalDsp.Config.defaultBands())
+        private fun flatBands(): List<LocalDsp.Band> = LocalDsp.Config.defaultBands()
 
-        /** Copy this preset with [freq]'s band gain set to [gainDb], leaving the rest alone. */
-        private fun EqPreset.with(freq: Float, gainDb: Float): EqPreset =
-            copy(bands = bands.map { if (it.frequency == freq) it.copy(gainDb = gainDb) else it })
+        /** Copy a band list with [freq]'s band gain set to [gainDb], leaving the rest alone. */
+        private fun List<LocalDsp.Band>.with(freq: Float, gainDb: Float): List<LocalDsp.Band> =
+            map { if (it.frequency == freq) it.copy(gainDb = gainDb) else it }
 
         private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
