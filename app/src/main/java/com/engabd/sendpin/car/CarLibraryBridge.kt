@@ -19,6 +19,7 @@ import com.engabd.sendpin.ma.MaApiClient
 import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ma.MaRepository
 import com.engabd.sendpin.ma.MaSearchResults
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
@@ -46,7 +47,11 @@ class CarLibraryBridge(private val app: SendpinApp) {
 
     private val settings = AppSettings(app)
     private val maRepo = MaRepository(app.maApi)
-    private val sourceCache = mutableMapOf<String, MusicSource>()
+
+    // Concurrent because [sourceFor] runs on whichever thread the MediaLibraryService
+    // callback landed on, and two browse requests for the same server can be in flight
+    // at once. A plain HashMap resized under that is a corrupted map, not a lost entry.
+    private val sourceCache = ConcurrentHashMap<String, MusicSource>()
 
     // ── Root / browse tree ──────────────────────────────────────────────────
 

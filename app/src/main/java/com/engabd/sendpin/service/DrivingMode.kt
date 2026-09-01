@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.os.Build
 import com.engabd.sendpin.data.AppSettings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -204,14 +205,23 @@ class DrivingMode(private val app: Context) {
         // and returns immediately for any device that is not the nominated one; the
         // alternative — registering and unregistering as the setting changes — has
         // more states to get wrong than it saves work.
+        //
+        // RECEIVER_NOT_EXPORTED here for lint cleanliness and to match the shape
+        // already used at DrivingPip.registerControls, not because this receiver is
+        // otherwise at risk: ACTION_ACL_CONNECTED is a protected system broadcast,
+        // so only the platform can ever send it and an unexported flag closes no
+        // real hole. Same SDK guard either way, since the flag only exists from 33.
         runCatching {
-            app.registerReceiver(
-                carReceiver,
-                IntentFilter().apply {
-                    addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
-                    addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
-                },
-            )
+            val filter = IntentFilter().apply {
+                addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
+                addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                app.registerReceiver(carReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                @Suppress("UnspecifiedRegisterReceiverFlag")
+                app.registerReceiver(carReceiver, filter)
+            }
         }
         // Start and stop the window that actually shows the bar. Which mechanism is
         // in play is read here rather than inside the service, so switching it takes
