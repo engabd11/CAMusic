@@ -54,8 +54,8 @@ import com.engabd.sendpin.ui.theme.*
  *
  * Music Assistant takes an artist, album or playlist uri on `play_media` exactly as
  * it takes a track's, so all three actions mean the same thing whatever [item] is;
- * only the wording changes. On Navidrome the library resolves a container to its
- * tracks first.
+ * only the wording changes. On a library this phone plays itself, the library
+ * resolves a container to its tracks first.
  *
  * Drawn the same way as the other sheets in this app (`NowPlayingSheet`,
  * `PlayerOptionsSheet`) rather than as a `ModalBottomSheet`, so it matches.

@@ -95,6 +95,10 @@ fun AlbumDetailScreen(
     var actionsFor by remember { mutableStateOf<MaItem?>(null) }
 
     LaunchedEffect(Unit) { viewModel.toast.collect { snackbar.showSnackbar(it) } }
+    // The playlist actions on this screen are the *library* model's, so its toasts
+    // are the only report of whether they worked — and they were being spoken into
+    // the Library tab's snackbar, which is not on screen while an album is.
+    LaunchedEffect(Unit) { libraryViewModel.toast.collect { snackbar.showSnackbar(it) } }
     BackHandler { onBack() }
 
     // The album's own palette — the whole screen is tinted by the cover.
@@ -301,6 +305,19 @@ fun AlbumDetailScreen(
                     playlists = playlistChoices,
                     onClose = libraryViewModel::closeAddToPlaylist,
                     onPick = libraryViewModel::addToPlaylist,
+                    onCreate = { libraryViewModel.createPlaylistFor(pending) },
+                )
+            }
+
+            // The naming dialog belongs wherever the sheet that opens it is. It lives
+            // on the Library tab as well, and this screen is drawn over that one
+            // rather than inside it — so without a copy here, "New playlist" from an
+            // album set a flag nothing was composed to read.
+            val showCreatePlaylist by libraryViewModel.showCreatePlaylist.collectAsStateWithLifecycle()
+            if (showCreatePlaylist) {
+                CreatePlaylistDialog(
+                    onDismiss = libraryViewModel::closeCreatePlaylist,
+                    onCreate = libraryViewModel::createPlaylist,
                 )
             }
         }

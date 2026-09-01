@@ -1,8 +1,7 @@
 package com.engabd.sendpin.audio
 
+import com.engabd.sendpin.library.MusicSource
 import com.engabd.sendpin.ma.MaItem
-import com.engabd.sendpin.jellyfin.JellyfinClient
-import com.engabd.sendpin.subsonic.SubsonicClient
 
 /**
  * Where a radio's next batch of tracks can come from.
@@ -19,60 +18,39 @@ interface RadioSource {
     suspend fun random(count: Int): List<MaItem>
 }
 
-/** The real one. Every call is wrapped: a rung that fails is a rung that's skipped. */
-class SubsonicRadioSource(private val client: SubsonicClient) : RadioSource {
-    override suspend fun similarToTrack(trackId: String, count: Int) =
-        runCatching { client.getSimilarSongs(trackId, count) }.getOrDefault(emptyList())
-
-    override suspend fun similarToAlbum(albumId: String, count: Int) =
-        runCatching { client.getSimilarSongs(albumId, count) }.getOrDefault(emptyList())
-
-    override suspend fun topSongs(artistName: String, count: Int) =
-        runCatching { client.getTopSongs(artistName, count) }.getOrDefault(emptyList())
-
-    override suspend fun byGenre(genre: String, count: Int) =
-        runCatching { client.songsByGenre(genre, count) }.getOrDefault(emptyList())
-
-    override suspend fun random(count: Int) =
-        runCatching { client.randomSongs(count) }.getOrDefault(emptyList())
-}
-
 /**
- * The Jellyfin one.
+ * The real one, over whatever library is connected.
  *
- * "Keep the music going" did nothing at all on this backend: the top-up asked for a
- * `SubsonicSource` specifically and, not finding one, fell through to the offline
- * picker over downloaded files — so on a Jellyfin library with nothing downloaded the
- * queue ended silently, exactly as if the setting were off.
+ * Built from [MusicSource] rather than from a client class, which is the whole point
+ * of it. There used to be one of these per backend and a `when (source)` picking
+ * between them — so a backend nobody had written one for (Emby, Plex) fell through to
+ * the offline picker over downloaded files, and "keep the music going" was silently
+ * off on a library with nothing downloaded. The interface already answers all five
+ * questions; a source that cannot answer one returns nothing and the ladder moves on.
  *
- * Jellyfin has no `getSimilarSongs`, so the ladder's top three rungs all land on
- * `InstantMix` — the same suggestion engine behind the "Instant Mix" button in
- * Jellyfin's own clients — seeded with the track, then its album, since the endpoint
- * takes either. That is a better answer than similarity metadata rather than a
- * weaker one: it works on a server with no last.fm data, which most are.
- *
- * Every call is wrapped, like the Subsonic one: a rung that fails is a rung that is
- * skipped, and the ladder falls through to `random` rather than to silence.
+ * Every call is wrapped: a rung that fails is a rung that's skipped, and the ladder
+ * falls through to `random` rather than to silence.
  */
-class JellyfinRadioSource(private val client: JellyfinClient) : RadioSource {
+class LibraryRadioSource(private val source: MusicSource) : RadioSource {
     override suspend fun similarToTrack(trackId: String, count: Int) =
-        runCatching { client.instantMix(trackId, count) }.getOrDefault(emptyList())
+        runCatching { source.similarSongs(trackId, count) }.getOrDefault(emptyList())
 
     override suspend fun similarToAlbum(albumId: String, count: Int) =
-        runCatching { client.instantMix(albumId, count) }.getOrDefault(emptyList())
+        runCatching { source.similarSongs(albumId, count) }.getOrDefault(emptyList())
 
     override suspend fun topSongs(artistName: String, count: Int) =
-        runCatching { client.topSongsByArtist(artistName, count) }.getOrDefault(emptyList())
+        runCatching { source.topSongs(artistName, count) }.getOrDefault(emptyList())
 
     override suspend fun byGenre(genre: String, count: Int) =
-        runCatching { client.songsByGenre(genre, count) }.getOrDefault(emptyList())
+        runCatching { source.songsByGenre(genre, count) }.getOrDefault(emptyList())
 
     override suspend fun random(count: Int) =
-        runCatching { client.randomSongs(count) }.getOrDefault(emptyList())
+        runCatching { source.randomSongs(count) }.getOrDefault(emptyList())
 }
 
 /**
- * Keeps the music going once the queue runs out, on the Navidrome path.
+ * Keeps the music going once the queue runs out, on every library this phone plays
+ * itself.
  *
  * Music Assistant has had this for a while — `radio_mode` on `play_media`, and
  * "don't stop the music" on the queue — but both are *server* features, so the
@@ -161,6 +139,33 @@ class LocalRadio(private val historyLimit: Int = 200) {
             }
         }
         return emptyList()
+    }
+
+    /**
+     * Anything at all, shuffled — the answer when the transport shuffle is on.
+     *
+     * Deliberately not [next]: that ladder's whole job is to stay *near* the seed,
+     * and "shuffle" is the listener saying they don't want that. It asks for a wide
+     * page and shuffles it here rather than trusting a server-side random to differ
+     * between two calls a minute apart, and it shares [history] with the ladder so a
+     * session doesn't circle back on itself either way.
+     */
+    suspend fun random(
+        source: RadioSource,
+        count: Int = 10,
+        exclude: Set<String> = emptySet(),
+        bonus: (MaItem) -> Int = { 0 },
+    ): List<MaItem> {
+        val pool = source.random(count * 5)
+            .filter { it.itemId.isNotBlank() }
+            .filterNot { it.itemId in exclude || it.itemId in history }
+            .distinctBy { it.itemId }
+        if (pool.isEmpty()) return emptyList()
+        // Shuffled first, then ranked, so the bonus decides between equals rather
+        // than pinning the same key-compatible handful to the front every time.
+        val picked = pool.shuffled().sortedByDescending { bonus(it) }.take(count)
+        remember(picked.map { it.itemId })
+        return picked
     }
 
     /**

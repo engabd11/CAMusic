@@ -43,6 +43,8 @@ import coil.compose.AsyncImage
 import com.engabd.sendpin.ui.design.sharedArt
 import com.engabd.sendpin.download.DownloadJob
 import com.engabd.sendpin.ma.LibraryViewModel
+import com.engabd.sendpin.library.MusicSources
+import com.engabd.sendpin.ma.CATEGORY_PROVIDER
 import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
@@ -437,14 +439,13 @@ internal fun ItemRow(
     swipeToQueue: Boolean = false,
 ) {
     val accent = LocalAccent.current
-    val isCategory = item.provider == "__cat__"
-    val isDownload = item.provider == "__dl__"
-    val isSubsonic = item.provider == "subsonic"
-    val isSubsonicTrack = isSubsonic && item.mediaType == "track"
-    // Artists and genres resolve to a lot of files; offering to download one by
-    // accident from a list row would be a nasty surprise, so only the things a
-    // user thinks of as "a download" get the button.
-    val downloadable = isSubsonic && item.mediaType in DownloadableTypes
+    val isCategory = item.provider == CATEGORY_PROVIDER
+    val isDownload = item.provider == MusicSources.DOWNLOAD_PROVIDER
+    // Which actions this row offers is [RowFlags]' business, not this function's. It
+    // used to be decided here by `item.provider == "subsonic"` — a test that meant
+    // "is this the self-hosted library" back when there was only one, and that has
+    // been quietly wrong for every Jellyfin, Emby and Plex row since.
+    val downloadable = flags.downloadable
     val onDisk = flags.onDisk
 
     // A category card opens a list and a download row is already on the phone —
@@ -513,9 +514,9 @@ internal fun ItemRow(
             }
         }
 
-        // MA tracks can be auditioned in place; Navidrome has no preview endpoint.
-        val isMaTrack = !isCategory && !isDownload && !isSubsonic && item.mediaType == "track"
-        if (isMaTrack) {
+        // Music Assistant tracks can be auditioned in place; nothing self-hosted has
+        // a preview endpoint, and `togglePreview` returns straight back out for one.
+        if (flags.previewable) {
             Icon(
                 if (flags.isPreviewing) Icons.Default.StopCircle else Icons.Default.Headphones,
                 if (flags.isPreviewing) "Stop preview" else "Preview",
@@ -527,15 +528,10 @@ internal fun ItemRow(
         // belongs on both backends rather than only one — and on albums and artists
         // as much as tracks. `music/favorites/add_item` takes any media item's uri
         // and Subsonic's `star` has an `albumId`/`artistId` for exactly this; the
-        // heart was gated to MA *tracks* for no reason either server imposed.
-        //
-        // Subsonic's `star` has no playlist parameter, so that one really is
-        // backend-specific.
-        val favouritable = !isCategory && !isDownload && when {
-            isSubsonic -> item.mediaType in SubsonicActionTypes
-            else -> item.mediaType in MaActionTypes
-        }
-        if (favouritable) {
+        // heart was gated to MA *tracks* for no reason either server imposed. Which
+        // kinds each library will star, and whether it has favourites at all, is
+        // [RowFlags.favouritable] — see it.
+        if (flags.favouritable) {
             val isFav = flags.isFavorite
             Icon(
                 if (isFav) Icons.Default.Favorite else Icons.Default.FavoriteBorder,

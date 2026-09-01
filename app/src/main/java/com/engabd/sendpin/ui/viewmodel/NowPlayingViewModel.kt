@@ -1,5 +1,6 @@
 package com.engabd.sendpin.ui.viewmodel
 
+import com.engabd.sendpin.library.Capability
 import com.engabd.sendpin.library.MusicSources
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
@@ -157,6 +158,8 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     private val local = (app as SendpinApp).localPlayer
     /** Offline per-track analysis (bpm, key, sections) — for the Music Map timeline. */
     private val trackScans = (app as SendpinApp).trackScans
+    /** The connected self-hosted library, for the actions that write to it. */
+    private val musicSource = (app as SendpinApp).musicSource
     /** This phone's own Sendspin connection and stream. */
     private val playback = (app as SendpinApp).playback
     /** This phone's own Sendspin stream — the authoritative format when we're the player. */
@@ -1117,18 +1120,26 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
      * thing you play rather than of the queue already running — the toast says so,
      * because a switch that quietly does nothing to what you are hearing is worse than
      * no switch. On the local path there is no server to ask: the app watches its own
-     * queue and appends more like this before the last track ends, which it can do to
-     * the queue that is already going.
+     * queue and appends to it before the last track ends, which it can do to the
+     * queue that is already going.
+     *
+     * *What* it appends is the shuffle button's business, not this one's — a random
+     * song from the library when shuffled, the rest of the record and then the next
+     * record when not. The toast names it, because two switches deciding one
+     * behaviour between them is exactly the arrangement nobody discovers on their
+     * own. See `LibraryViewModel.topUpRadio`.
      */
     fun toggleRadioMode() {
         val local = isLocal
         val next = !_radioMode.value
+        val shuffled = state.value.shuffle
         viewModelScope.launch {
             settings.setRadioMode(next)
             _toast.tryEmit(
                 when {
                     !next -> if (local) "The music will stop at the end of the queue" else "Radio mode off"
-                    local -> "Keeping the music going - more like this when the queue runs out"
+                    local && shuffled -> "Keeping the music going - random songs from the library"
+                    local -> "Keeping the music going - on through the album, then the next one"
                     else -> "Radio mode on - applies to the next thing you play"
                 }
             )
@@ -1374,13 +1385,57 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     private fun localQueueItemId(index: Int, id: String?): String? = id?.let { "$index-$it" }
 
     fun saveQueueAsPlaylist(name: String) {
-        if (isLocal) { _toast.tryEmit("Saving a playlist needs Music Assistant"); return }
         if (name.isBlank()) return
+        if (isLocal) { saveLocalQueueAsPlaylist(name.trim()); return }
         val q = streamQueueId()
         viewModelScope.launch {
             try {
                 repo.saveQueueAsPlaylist(q, name.trim())
                 _toast.tryEmit("Saved \"${name.trim()}\"")
+            } catch (e: Exception) {
+                _toast.tryEmit(e.message ?: "Couldn't save the playlist")
+            }
+        }
+    }
+
+    /**
+     * The same button on the local player, where there is no server-side queue to
+     * ask about — so the queue is read here and written to the connected library as
+     * a new playlist.
+     *
+     * This used to answer "Saving a playlist needs Music Assistant", which was true
+     * of the *command* and not of the capability: Navidrome, Jellyfin and Emby all
+     * take a create-with-track-ids, and it is the same one the library's own "new
+     * playlist" uses. The one genuine limit is which tracks can go in it — a queue
+     * can hold a downloaded file from one library and a stream from another, and a
+     * playlist on a server can only name that server's own songs, so the rest are
+     * skipped and the toast says how many.
+     */
+    private fun saveLocalQueueAsPlaylist(name: String) {
+        val src = musicSource.value
+        if (src == null || !src.has(Capability.PLAYLIST_WRITE)) {
+            _toast.tryEmit("This library can't save playlists")
+            return
+        }
+        val queue = local.queue.value
+        // `scrobbleId` is the *library* id — for a downloaded track it is the id on
+        // the server it came from, which is exactly what a playlist wants.
+        val ids = queue
+            .filter { it.scrobbleProvider == src.providerId }
+            .mapNotNull { it.scrobbleId ?: it.id }
+            .distinct()
+        if (ids.isEmpty()) {
+            _toast.tryEmit("Nothing in the queue belongs to " + src.kind.label)
+            return
+        }
+        viewModelScope.launch {
+            try {
+                src.createPlaylist(name, ids)
+                val skipped = queue.size - ids.size
+                _toast.tryEmit(
+                    if (skipped > 0) "Saved \"$name\" - $skipped track(s) weren't from this library"
+                    else "Saved \"$name\""
+                )
             } catch (e: Exception) {
                 _toast.tryEmit(e.message ?: "Couldn't save the playlist")
             }

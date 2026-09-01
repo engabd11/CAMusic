@@ -81,6 +81,23 @@ interface MusicSource {
 
     suspend fun playlistTracks(id: String): List<MaItem>
 
+    /**
+     * Every track in the library, a page at a time.
+     *
+     * The one browse the interface was missing. Artists, albums, playlists and
+     * starred each had a category on the root shelf and songs did not — so on a
+     * self-hosted library the only ways to reach a track were to open the album
+     * holding it or to search for it by name, while the Music Assistant backend had
+     * had a Tracks category all along.
+     *
+     * Paged for the same reason [albums] is: "every song" is the largest list a
+     * library can produce, and asking for it in one request is how a big library
+     * times out instead of loading. Empty by default, and gated by
+     * [Capability.TRACKS], so a source with no way to enumerate songs leaves the
+     * category out rather than offering an empty screen.
+     */
+    suspend fun tracks(offset: Int = 0, limit: Int = 500): List<MaItem> = emptyList()
+
     /** One level down from [item] — an artist's albums, an album's tracks. */
     suspend fun children(item: MaItem): List<MaItem>
 
@@ -238,6 +255,8 @@ enum class Capability {
     FAVORITES,
     PLAYLIST_READ,
     PLAYLIST_WRITE,
+    /** Every song in the library can be listed — see [MusicSource.tracks]. */
+    TRACKS,
     /** Original files can be fetched for offline playback. */
     DOWNLOAD,
     LYRICS,

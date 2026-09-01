@@ -50,6 +50,7 @@ class DownloadsSource(private val downloads: DownloadManager) : MusicSource {
      */
     override val capabilities: Set<Capability> = setOf(
         Capability.SEARCH,
+        Capability.TRACKS,
         Capability.RICH_FORMAT,
     )
 
@@ -72,6 +73,9 @@ class DownloadsSource(private val downloads: DownloadManager) : MusicSource {
         DownloadsIndex.albumDetail(all(), id)
 
     override suspend fun playlistTracks(id: String): List<MaItem> = emptyList()
+
+    override suspend fun tracks(offset: Int, limit: Int): List<MaItem> =
+        DownloadsIndex.items(all()).drop(offset).take(limit)
 
     override suspend fun children(item: MaItem): List<MaItem> = when (item.mediaType) {
         "artist" -> DownloadsIndex.artistAlbums(all(), item.itemId)
