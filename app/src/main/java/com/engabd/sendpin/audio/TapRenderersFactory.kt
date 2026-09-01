@@ -31,6 +31,16 @@ object OutputRate {
  * processor that declined then can never be added back mid-song. The standing
  * cost of being in the chain is one buffer copy; the analysis itself is gated
  * separately by [AudioAnalysisTap.setActive] and runs on its own thread.
+ *
+ * The processor chain order is:
+ * 1. [SignalPathProbe] — reports the decoder's actual output format.
+ * 2. [LocalDsp] — the equaliser, so the light show reacts to what is heard.
+ * 3. [VinylNoiseProcessor] — surface noise, after EQ so the noise is on the
+ *    equalised signal.
+ * 4. [LoFiProcessor] — bitcrusher/saturation/low-pass, after vinyl noise so
+ *    it can share the crackle stage.
+ * 5. [AudioAnalysisTap] — copies for analysis, sees the treated audio.
+ * 6. Sonic — resamples to the fixed output rate if one is set.
  */
 @OptIn(UnstableApi::class)
 class TapRenderersFactory(
@@ -39,6 +49,10 @@ class TapRenderersFactory(
     private val lead: AudioLead,
     /** The local equaliser, ahead of the tap. See [LocalDsp]. */
     private val dsp: LocalDsp? = null,
+    /** Vinyl surface noise, after the EQ. See [VinylNoiseProcessor]. */
+    private val vinylNoise: VinylNoiseProcessor? = null,
+    /** Lo-fi mode, after vinyl noise. See [LoFiProcessor]. */
+    private val loFi: LoFiProcessor? = null,
 ) : DefaultRenderersFactory(context) {
     override fun buildAudioSink(
         context: Context,
@@ -46,21 +60,12 @@ class TapRenderersFactory(
         enableAudioOutputPlaybackParams: Boolean,
     ): AudioSink {
         val sink = DefaultAudioSink.Builder(context)
-            // The equaliser goes *before* the tap, so the light show reacts to
-            // what is actually heard rather than to what was on disk. A biquad
-            // cascade adds no latency, so AudioLead's measurement is unaffected.
-            // SignalPathProbe first: it reports the format the decoder actually
-            // handed over, which is the one stage nothing else can see. The
-            // renderer reports what it *asked* the decoder for, and a 24-bit FLAC
-            // decoded by the platform's own MediaCodec arrives as 16-bit PCM with
-            // nothing upstream saying so.
-            // Sonic last, so the probe and the tap both see the decoder's own rate
-            // and the light show is not analysing a resampled copy. Inactive
-            // whenever the requested rate matches the source, which is the default.
             .setAudioProcessors(
                 listOfNotNull(
                     SignalPathProbe(),
                     dsp,
+                    vinylNoise,
+                    loFi,
                     tap,
                     OutputRate.hz.takeIf { it > 0 }?.let { rate ->
                         androidx.media3.common.audio.SonicAudioProcessor()
@@ -71,9 +76,6 @@ class TapRenderersFactory(
             .setEnableFloatOutput(enableFloatOutput)
             .setEnableAudioTrackPlaybackParams(enableAudioOutputPlaybackParams)
             .build()
-        // Wrapped rather than folded into the processor chain: the lead needs a
-        // buffer's presentation time alongside the sink's current position, and
-        // an AudioProcessor is given neither.
         SignalPath.onFloatOutput(enableFloatOutput)
         return AudioLeadProbe(sink, lead)
     }

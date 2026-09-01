@@ -7,6 +7,8 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.engabd.sendpin.audio.LocalDsp
+import com.engabd.sendpin.audio.LoFiProcessor
+import com.engabd.sendpin.audio.VinylNoiseProcessor
 import com.engabd.sendpin.hue.GenrePresetRule
 import com.engabd.sendpin.hue.ShowPreset
 import com.engabd.sendpin.library.ServerConfig
@@ -216,6 +218,10 @@ class AppSettings(private val context: Context) {
          * phone's own output, which MA has never heard of.
          */
         private val LOCAL_DSP = stringPreferencesKey("local_dsp")
+
+        /** Sound modes: vinyl surface noise and lo-fi. */
+        private val VINYL_NOISE = stringPreferencesKey("vinyl_noise")
+        private val LO_FI = stringPreferencesKey("lo_fi_mode")
 
         /**
          * Resample this phone's own output to a fixed rate. 0 - the default - is
@@ -1588,6 +1594,26 @@ class AppSettings(private val context: Context) {
 
     suspend fun setLocalDsp(config: LocalDsp.Config) {
         context.dataStore.edit { it[LOCAL_DSP] = LocalDsp.encode(config) }
+    }
+
+    // --- Sound modes: vinyl noise and lo-fi ---
+
+    /** Vinyl surface noise config. Off by default. */
+    val vinylNoiseConfig: Flow<VinylNoiseProcessor.Config> = pref { prefs ->
+        prefs[VINYL_NOISE]?.let { VinylNoiseProcessor.decode(it) } ?: VinylNoiseProcessor.Config()
+    }
+
+    suspend fun setVinylNoiseConfig(config: VinylNoiseProcessor.Config) {
+        context.dataStore.edit { it[VINYL_NOISE] = VinylNoiseProcessor.encode(config) }
+    }
+
+    /** Lo-fi music mode config. Off by default. */
+    val loFiConfig: Flow<LoFiProcessor.Config> = pref { prefs ->
+        prefs[LO_FI]?.let { LoFiProcessor.decode(it) } ?: LoFiProcessor.Config()
+    }
+
+    suspend fun setLoFiConfig(config: LoFiProcessor.Config) {
+        context.dataStore.edit { it[LO_FI] = LoFiProcessor.encode(config) }
     }
 
     val genrePresetRules: Flow<List<GenrePresetRule>> = pref { prefs ->

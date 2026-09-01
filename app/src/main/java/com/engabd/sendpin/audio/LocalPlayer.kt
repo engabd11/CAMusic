@@ -214,8 +214,40 @@ class LocalPlayer(private val context: Context) {
      */
     val localDsp = LocalDsp()
 
+    /**
+     * Vinyl surface noise: crackle, dust pops, and low-end rumble. Sits after
+     * the EQ and before the lo-fi processor in the chain, so both the lo-fi
+     * mode and the light show hear the treated audio.
+     *
+     * One instance for the same reason as [localDsp]: the processor chain is
+     * fixed at player construction, but the intensity slider moves long after.
+     */
+    val vinylNoise = VinylNoiseProcessor()
+
+    /**
+     * Lo-fi music mode: bitcrusher, warm saturation, low-pass. Sits after
+     * vinyl noise so it can share the crackle stage when both are active,
+     * avoiding double-running the noise.
+     */
+    val loFiProcessor = LoFiProcessor()
+
     /** The user's own volume, kept apart from the ReplayGain factor multiplied onto it. */
     private var userVolume = 1f
+
+    /**
+     * When both vinyl noise and lo-fi are active, the lo-fi processor skips
+     * its own crackle stage and lets [VinylNoiseProcessor] handle it. This
+     * avoids double-running the noise: two crackle generators on the same
+     * signal read as a broken record, not a warm one.
+     */
+    private fun updateLoFiSharing() {
+        val vinylOn = vinylNoise.currentConfigSafe().isActive()
+        val loFiOn = loFiProcessor.currentConfigSafe().isActive()
+        val current = loFiProcessor.currentConfigSafe()
+        if (current.shareVinylCrackle != vinylOn) {
+            loFiProcessor.setConfig(current.copy(shareVinylCrackle = vinylOn))
+        }
+    }
 
     private var replayGainMode = ReplayGain.ALBUM
 
@@ -275,6 +307,21 @@ class LocalPlayer(private val context: Context) {
             settings.replayGainMode.collect { mode ->
                 replayGainMode = mode
                 applyGain()
+            }
+        }
+        // Sound modes: vinyl noise and lo-fi. Both are off by default and
+        // take effect on the next buffer, so the listener can toggle them
+        // mid-track without a skip or a gap.
+        scope.launch {
+            settings.vinylNoiseConfig.collect { cfg ->
+                vinylNoise.setConfig(cfg)
+                updateLoFiSharing()
+            }
+        }
+        scope.launch {
+            settings.loFiConfig.collect { cfg ->
+                loFiProcessor.setConfig(cfg)
+                updateLoFiSharing()
             }
         }
     }
@@ -370,7 +417,7 @@ class LocalPlayer(private val context: Context) {
         // processor chain. It stays in the chain whether or not Light Sync is on,
         // because the sink decides membership once per configuration; the cost
         // when off is a buffer copy per callback and nothing else.
-        val renderers = TapRenderersFactory(context, audioAnalysisTap, audioLead, localDsp)
+        val renderers = TapRenderersFactory(context, audioAnalysisTap, audioLead, localDsp, vinylNoise, loFiProcessor)
             .setEnableAudioFloatOutput(bitPerfect) as TapRenderersFactory
 
         // The defaults are sized for video-on-mobile-data. This is a lossless file
