@@ -19,7 +19,7 @@ class PhoneSyncTest {
         // The follower adds |offset| to its clock to get the leader's time.
         val sample = ClockSample(t1 = 1000, t2 = 0, t3 = 10, t4 = 1010)
         assertEquals(-1000, sample.offsetMs)
-        assertEquals(20, sample.delayMs)
+        assertEquals(0, sample.delayMs)
     }
 
     @Test
