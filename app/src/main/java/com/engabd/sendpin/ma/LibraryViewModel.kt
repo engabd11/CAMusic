@@ -835,6 +835,17 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         viewModelScope.launch { localPlayer.errors.collect { _toast.tryEmit(it) } }
+
+        // Wire the prepare-playback hook so MPD queues the right track before
+        // ExoPlayer opens its constant HTTP stream URL. A no-op for every other
+        // provider — MusicSource.preparePlayback defaults to Unit.
+        localPlayer.onPreparePlayback = { track ->
+            val src = source ?: return@let
+            val itemId = track.scrobbleId ?: return@let
+            if (src.providerId == track.scrobbleProvider) {
+                runCatching { src.preparePlayback(itemId) }
+            }
+        }
         // The Downloads shelf is a live view of the index, not a snapshot — a
         // download landing (or a delete) while the user is standing on it has to
         // show up, or the list quietly lies about what is on the phone.

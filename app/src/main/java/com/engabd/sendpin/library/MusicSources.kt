@@ -4,6 +4,7 @@ import com.engabd.sendpin.emby.EmbyClient
 import com.engabd.sendpin.emby.EmbyException
 import com.engabd.sendpin.jellyfin.JellyfinClient
 import com.engabd.sendpin.jellyfin.JellyfinException
+import com.engabd.sendpin.mpd.MpdClient
 import com.engabd.sendpin.plex.PlexClient
 import com.engabd.sendpin.subsonic.SubsonicClient
 
@@ -33,6 +34,7 @@ object MusicSources {
         com.engabd.sendpin.jellyfin.JellyfinClient.PROVIDER,
         EmbyClient.PROVIDER,
         PlexClient.PROVIDER,
+        MpdClient.PROVIDER,
         "local",
     )
 
@@ -100,6 +102,16 @@ object MusicSources {
                 token = config.token,
                 librarySectionKey = config.option(ServerConfig.OPT_LIBRARY_ID).orEmpty(),
                 clientIdentifier = com.engabd.sendpin.discovery.PlayerIdentity.getPlayerId(context),
+            ).apply {
+                streamFormat = config.option(ServerConfig.OPT_STREAM_FORMAT) ?: "raw"
+            },
+        )
+
+        ServerKind.MPD -> MpdSource(
+            MpdClient(
+                address = config.url,
+                password = config.password,
+                httpPort = config.option(ServerConfig.OPT_MPD_HTTP_PORT)?.toIntOrNull() ?: 8000,
             ).apply {
                 streamFormat = config.option(ServerConfig.OPT_STREAM_FORMAT) ?: "raw"
             },
@@ -229,6 +241,19 @@ object MusicSources {
                 }
             }
             updated
+        }
+
+        is MpdSource -> {
+            // MPD needs no sign-in step — a password, if configured, is sent on
+            // every connection. A rejected password surfaces as a SourceAuthException
+            // so the connect form re-prompts; an unreachable host falls through to
+            // the else branch and the error is shown directly.
+            val error = source.mpd.pingResult()
+            if (error != null) {
+                if (error.isAuth) throw SourceAuthException(error.message ?: "MPD refused that password")
+                throw error
+            }
+            config
         }
 
         else -> config
