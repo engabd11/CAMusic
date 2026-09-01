@@ -79,6 +79,30 @@ class MpdClient(
         private const val OK = "OK"
         /** The MPD protocol's error response prefix. */
         private const val ACK = "ACK"
+
+        /**
+         * One `key: value` response line, or null for anything that isn't one.
+         *
+         * The key is lowercased. MPD spells a key the way the tag is spelled —
+         * `Title`, `Artist`, `AlbumArtist`, `Track`, `Date`, `Format` — while
+         * `file`, `directory`, `playlist` and `duration` come back lowercase.
+         * Every parser below looks a key up in one spelling, and this is what
+         * makes that true: reading `m["title"]` off a map keyed `Title` is how
+         * every track arrived titled after its filename, with no artist, no
+         * album, no track number and no format.
+         *
+         * Internal so the parsers can be tested against real MPD output without
+         * a socket. See `MpdParseTest`.
+         */
+        internal fun parseLine(line: String): Pair<String, String>? {
+            val colon = line.indexOf(':')
+            if (colon <= 0) return null
+            return line.substring(0, colon).trim().lowercase() to line.substring(colon + 1).trim()
+        }
+
+        /** [parseLine] over a whole response, for tests and for [command]. */
+        internal fun parseLines(lines: List<String>): List<Pair<String, String>> =
+            lines.mapNotNull(::parseLine)
     }
 
     val serverUrl: String get() = base()
@@ -120,6 +144,8 @@ class MpdClient(
      * Opens a fresh socket, sends the command, reads until `OK` or `ACK`, and
      * closes. The MPD protocol is stateful in theory (playback state persists
      * across connections) but each browse command is self-contained.
+     *
+     * Keys come back lowercased — see [parseLine], which is where that matters.
      */
     private suspend fun command(cmd: String): List<Pair<String, String>> =
         withContext(Dispatchers.IO) {
@@ -162,15 +188,14 @@ class MpdClient(
                         val isAuthError = line.contains("incorrect password")
                         throw MpdException(msg, isAuth = isAuthError)
                     }
-                    val colon = line.indexOf(':')
-                    if (colon > 0) {
-                        val key = line.substring(0, colon).trim()
-                        val value = line.substring(colon + 1).trim()
-                        result.add(key to value)
-                    }
+                    parseLine(line)?.let(result::add)
                 }
                 result
             } catch (e: MpdException) {
+                throw e
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // A cancelled browse is not a server failure. Wrapping it would
+                // surface "the server said no" the moment the user leaves a screen.
                 throw e
             } catch (e: Exception) {
                 throw MpdException(e.message?.takeIf { it.isNotBlank() } ?: "Couldn't reach ${base()}")
@@ -193,6 +218,17 @@ class MpdClient(
             .replace("'", "\\'")
         return "\"$escaped\""
     }
+
+    /**
+     * Several commands over one connection, as an MPD command list.
+     *
+     * MPD executes the whole list before answering, so this is one socket and one
+     * round trip where [command] would be one of each per command. That matters
+     * for [preparePlayback], which runs before playback can start and used to
+     * spend three sequential round trips getting there.
+     */
+    private suspend fun commandList(vararg cmds: String): List<Pair<String, String>> =
+        command((listOf("command_list_begin") + cmds + "command_list_end").joinToString("\n"))
 
     /** Extract a human-readable message from an MPD ACK response. */
     private fun parseAck(line: String): String {
@@ -236,10 +272,17 @@ class MpdClient(
         }
     }
 
-    /** All albums in the library, or albums by a specific artist. */
+    /**
+     * All albums in the library, or albums by a specific artist.
+     *
+     * `list {TYPE} {FILTER} [group {TAG}]` — the filter is a tag/value pair and it
+     * comes *before* the grouping. A quoted artist tacked on after the `group`
+     * clauses is a syntax error, which MPD answers with an ACK, which reached the
+     * artist screen as "MPD error" for every artist there has ever been.
+     */
     suspend fun albums(artist: String? = null, offset: Int = 0, limit: Int = 200): List<MaItem> {
         val cmd = if (artist != null) {
-            "list album group date group albumartist ${quote(artist)}"
+            "list album artist ${quote(artist)} group date group albumartist"
         } else {
             "list album group date group albumartist"
         }
@@ -248,27 +291,33 @@ class MpdClient(
     }
 
     /**
-     * Recently added albums.
+     * Recently added albums — newest file modification time first.
      *
-     * MPD's `list` command doesn't support sorting by last-modified, so this
-     * uses `find modified-since "1900-01-01"` with `sort` on newer MPD versions,
-     * falling back to the unsorted album list on older ones. In practice the
-     * shelf shows the full album list — not truly "recent", but the best MPD
-     * can do without a dedicated sort command.
+     * MPD has no "recently added" of its own, but 0.21+ takes a filter expression
+     * with `sort` and `window`, and sorting by `Last-Modified` descending is as
+     * close as the daemon gets. Older servers answer that with an ACK, so the
+     * plain album list stands behind it: not truly recent, but never empty.
+     *
+     * The command this replaced was not MPD syntax in any version — `window`
+     * takes `START:END`, and `added` is not a filter — so the shelf took an ACK
+     * and the fallback on every single load.
      */
     suspend fun recentlyAdded(limit: Int = 200): List<MaItem> {
-        // Try `search window added "" 0 limit` on MPD 0.24+ which supports
-        // windowed search. Fall back to the plain album list.
+        val filter = quote("(modified-since \"1970-01-01T00:00:00Z\")")
         return try {
-            val response = command("search window added \"\" 0 $limit")
-            parseTracks(response).mapNotNull { it.album }.distinct().map { albumName ->
+            val songs = parseSongs(command("find $filter sort -Last-Modified window 0:$limit"))
+            songs.mapNotNull { m ->
+                val album = m["album"]?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                val artist = (m["albumartist"] ?: m["artist"])?.takeIf { it.isNotBlank() }
+                Triple(buildAlbumId(album, artist), album, artist)
+            }.distinctBy { it.first }.take(limit).map { (id, album, artist) ->
                 MaItem(
-                    itemId = albumName, provider = PROVIDER,
-                    name = albumName, uri = albumName,
-                    mediaType = "album", subtitle = null,
+                    itemId = id, provider = PROVIDER,
+                    name = album, uri = id,
+                    mediaType = "album", subtitle = artist,
                     image = null, duration = null,
                 )
-            }.take(limit)
+            }
         } catch (_: MpdException) {
             albums(offset = 0, limit = limit)
         }
@@ -369,14 +418,22 @@ class MpdClient(
     /**
      * Full search across artists, albums, and tracks.
      *
-     * MPD's `search` command doesn't support `playlist` as a filter type, so
-     * playlist results are fetched via `listplaylists` and filtered client-side.
+     * `search` answers with *songs*, whatever tag was matched on — it is `list`
+     * that returns bare tag values, and only `list` and `count` take `group`. So
+     * the artist and album hits are folded out of the song responses here.
+     * Reading every value of a song response as an artist name is what filled the
+     * Artists row with file paths and durations; asking `search` to `group` is
+     * what made the whole search fail with an ACK.
+     *
+     * MPD has no `playlist` filter either, so playlists are listed and matched
+     * client-side.
      */
     suspend fun search(query: String, limit: Int = 30): MaSearchResults {
         val q = quote(query)
 
-        val artistResults = command("search artist $q")
-            .map { it.second }.filter { it.isNotBlank() }.distinct()
+        val artistResults = parseSongs(command("search artist $q"))
+            .mapNotNull { it["artist"] ?: it["albumartist"] }
+            .filter { it.isNotBlank() }.distinct()
             .take(limit)
             .map { name ->
                 MaItem(
@@ -385,14 +442,25 @@ class MpdClient(
                 )
             }
 
-        // Album search returns album names; we need the compound Album\0Artist id
-        // so albumDetail opens the right album. Run a grouped search to get the
-        // albumartist alongside the album name.
-        val albumResults = command("search album $q group albumartist")
-            .let { resp -> parseAlbumGroups(resp, 0, limit) }
+        // Album hits need the compound Album\u0000AlbumArtist id, or albumDetail has
+        // nothing to open the right album with — two artists' "Greatest Hits" are
+        // one id otherwise.
+        val albumResults = parseSongs(command("search album $q"))
+            .mapNotNull { m ->
+                val album = m["album"]?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                val artist = (m["albumartist"] ?: m["artist"])?.takeIf { it.isNotBlank() }
+                Triple(buildAlbumId(album, artist), album, artist)
+            }
+            .distinctBy { it.first }
+            .take(limit)
+            .map { (id, album, artist) ->
+                MaItem(
+                    itemId = id, provider = PROVIDER, name = album, uri = id,
+                    mediaType = "album", subtitle = artist, image = null, duration = null,
+                )
+            }
 
-        val trackResults = command("search title $q")
-        val tracks = parseTracks(trackResults).take(limit)
+        val tracks = parseTracks(command("search title $q")).take(limit)
 
         // Playlists: MPD has no `search playlist` — list all and filter client-side
         val playlistResults = command("listplaylists")
@@ -427,9 +495,16 @@ class MpdClient(
         }
     }
 
-    suspend fun songsByGenre(genre: String, count: Int = 300): List<MaItem> {
+    /**
+     * Tracks tagged with [genre], a page at a time.
+     *
+     * [offset] is honoured rather than ignored: the genre screen pages by asking
+     * for the next window, and dropping the offset served it the same first page
+     * over and over, appended to itself.
+     */
+    suspend fun songsByGenre(genre: String, count: Int = 300, offset: Int = 0): List<MaItem> {
         val response = command("find genre ${quote(genre)}")
-        return parseTracks(response).take(count)
+        return parseTracks(response).drop(offset).take(count)
     }
 
     // ── Favorites ────────────────────────────────────────────────────────
@@ -484,9 +559,11 @@ class MpdClient(
      * before opening the stream URL.
      */
     suspend fun preparePlayback(file: String) {
-        command("clear")
-        command("add ${quote(file)}")
-        command("play")
+        // One command list, not three commands: MPD runs the lot before answering,
+        // so this is a single round trip. Playback cannot start until it lands, and
+        // three sequential ones over a LAN is long enough to hear the track MPD was
+        // on before this one.
+        commandList("clear", "add ${quote(file)}", "play")
     }
 
     /** Stop playback. */
@@ -503,13 +580,23 @@ class MpdClient(
      * MPD returns flat key-value lines, where each track's metadata is a run
      * of consecutive lines starting with "file:".
      */
-    private fun parseTracks(response: List<Pair<String, String>>): List<MaItem> {
-        val tracks = mutableListOf<MaItem>()
+    internal fun parseTracks(response: List<Pair<String, String>>): List<MaItem> =
+        parseSongs(response).map(::buildTrack)
+
+    /**
+     * The same response, one map per song, before it becomes an [MaItem].
+     *
+     * Search needs the tags an [MaItem] has no room for — `albumartist`, which is
+     * half of an album's id — so the split is here rather than inside
+     * [parseTracks]. Keys are lowercase; see [command].
+     */
+    internal fun parseSongs(response: List<Pair<String, String>>): List<Map<String, String>> {
+        val songs = mutableListOf<Map<String, String>>()
         var current: MutableMap<String, String>? = null
 
         for ((key, value) in response) {
             if (key == "file") {
-                current?.let { tracks.add(buildTrack(it)) }
+                current?.let { songs.add(it) }
                 current = mutableMapOf("file" to value)
             } else {
                 // Skip directory entries from listallinfo — only "file" entries
@@ -519,8 +606,8 @@ class MpdClient(
                 }
             }
         }
-        current?.let { tracks.add(buildTrack(it)) }
-        return tracks
+        current?.let { songs.add(it) }
+        return songs
     }
 
     /** Build a MaItem track from a parsed MPD metadata map. */
@@ -529,24 +616,33 @@ class MpdClient(
         val title = m["title"] ?: file.substringAfterLast('/').substringBeforeLast('.')
         val artist = m["artist"] ?: m["albumartist"] ?: ""
         val album = m["album"] ?: ""
-        val duration = m["duration"]?.toFloatOrNull()?.toInt()
+        // `duration` is MPD 0.20+; `Time` is what older servers send, and both are
+        // seconds. Neither is guaranteed for a stream.
+        val duration = (m["duration"] ?: m["time"])?.toFloatOrNull()?.toInt()
         val trackNumber = m["track"]?.substringBefore('/')?.toIntOrNull()
         val discNumber = m["disc"]?.substringBefore('/')?.toIntOrNull()
         val date = m["date"]?.substringBefore('-')?.toIntOrNull()
         val genre = m["genre"]?.let { listOf(it) } ?: emptyList()
 
-        // Audio format from MPD's format fields. The field is "samplerate:bits:channels"
-        // — three parts, not four; MPD doesn't report a codec name here at all, so it
-        // has to come from the file's own extension instead.
+        // MPD's `Format` is "samplerate:bits:channels" — three parts, and any of
+        // them can be `*` where the decoder hasn't said yet (or `dsd64` in place of
+        // a rate for DSD). `toIntOrNull` rather than `toInt`, or one such track
+        // takes the whole listing down with a NumberFormatException. MPD names no
+        // codec at all, so that comes from the file's own extension.
         val format = m["format"]?.split(':')
-        val sampleRate = m["samplerate"]?.toInt() ?: format?.getOrNull(0)?.toIntOrNull() ?: 0
-        val bitDepth = m["bits"]?.toInt() ?: format?.getOrNull(1)?.toIntOrNull() ?: 0
-        val channels = m["channels"]?.toInt() ?: 2
+        val sampleRate = format?.getOrNull(0)?.toIntOrNull() ?: 0
+        val bitDepth = format?.getOrNull(1)?.toIntOrNull() ?: 0
+        val channels = format?.getOrNull(2)?.toIntOrNull() ?: 2
         val codec = codecFromExtension(file)
 
-        val audioFormat = if (sampleRate > 0 || codec.isNotBlank()) {
+        // No guessing: an unrecognised extension used to be reported as FLAC, which
+        // is exactly the badge lying about the source that the output pass spent
+        // v0.12 stamping out. A rate with no codec name isn't worth a badge either —
+        // `StreamQuality.label` renders that as a leading bullet with nothing before
+        // it — so no codec means no format block.
+        val audioFormat = if (codec.isNotBlank()) {
             MaAudioFormat(
-                codec = codec.ifBlank { "flac" },
+                codec = codec,
                 sampleRate = sampleRate,
                 bitDepth = bitDepth,
                 channels = channels,
@@ -572,79 +668,83 @@ class MpdClient(
         )
     }
 
-    /** The codec implied by a file's extension — MPD's own metadata carries none. */
+    /**
+     * The codec implied by a file's extension — MPD's own metadata carries none.
+     *
+     * The names are the ones [com.engabd.sendpin.audio.StreamQuality] knows, which
+     * is what decides whether a track counts as lossless and so whether the hi-res
+     * badge may light: DSD files map to `dsf`/`dff` rather than a collective "dsd"
+     * for exactly that reason. An extension with no entry is returned as it stands
+     * — "MPC" on the badge is honest, "FLAC" would not be — and a file with no
+     * extension at all gets nothing.
+     *
+     * The extension is read off the last path segment, and only when it looks like
+     * one: `Artist/The 12.5 Sessions/track` has a dot in a *directory* name, and
+     * taking everything after the last dot in the whole path would have put
+     * "5 SESSIONS/TRACK" on the quality badge.
+     */
     private fun codecFromExtension(file: String): String = when (
-        file.substringAfterLast('.', "").lowercase()
+        val ext = file.substringAfterLast('/').substringAfterLast('.', "")
+            .lowercase()
+            .takeIf { it.isNotEmpty() && it.length <= 5 && it.all(Char::isLetterOrDigit) }
+            .orEmpty()
     ) {
-        "flac" -> "flac"
-        "mp3" -> "mp3"
         "ogg", "oga" -> "vorbis"
-        "opus" -> "opus"
-        "m4a", "aac" -> "aac"
-        "wav" -> "wav"
+        "m4a", "m4b", "aac" -> "aac"
         "wv" -> "wavpack"
-        "ape" -> "ape"
-        "alac" -> "alac"
-        "dsf", "dff" -> "dsd"
-        else -> ""
+        "aif", "aiff" -> "aiff"
+        else -> ext
     }
 
     /**
      * Parse a `list album group date group albumartist` response into album items.
      *
-     * The response is grouped runs: "album: Title\ndate: Year\nalbumartist: Artist"
+     * MPD prints a grouped list **header first**: each group's tag values, then the
+     * albums that belong to it, and a header only when a value changes.
+     *
+     * ```
+     * AlbumArtist: Miles Davis
+     * Date: 1959
+     * Album: Kind of Blue
+     * Date: 1970
+     * Album: Bitches Brew
+     * ```
+     *
+     * So an album takes the group values standing at the moment it is printed. The
+     * previous reading had it backwards — album first, then its date and artist —
+     * which paired every album with the *next* one's year and artist.
      */
-    private fun parseAlbumGroups(
+    internal fun parseAlbumGroups(
         response: List<Pair<String, String>>,
         offset: Int = 0,
         limit: Int = 200,
     ): List<MaItem> {
         val albums = mutableListOf<MaItem>()
-        var currentAlbum: String? = null
-        var currentDate: String? = null
-        var currentArtist: String? = null
+        var date: String? = null
+        var artist: String? = null
 
         for ((key, value) in response) {
             when (key) {
-                "album" -> {
-                    if (currentAlbum != null) {
-                        val id = buildAlbumId(currentAlbum!!, currentArtist)
-                        albums.add(
-                            MaItem(
-                                itemId = id, provider = PROVIDER,
-                                name = currentAlbum!!, uri = id,
-                                mediaType = "album",
-                                subtitle = currentArtist,
-                                image = null,
-                                duration = null,
-                                year = currentDate?.substringBefore('-')?.toIntOrNull(),
-                            ),
-                        )
-                    }
-                    currentAlbum = value
-                    currentDate = null
-                    currentArtist = null
+                "date" -> date = value
+                "albumartist" -> artist = value.takeIf { it.isNotBlank() }
+                "album" -> if (value.isNotBlank()) {
+                    val id = buildAlbumId(value, artist)
+                    albums.add(
+                        MaItem(
+                            itemId = id, provider = PROVIDER,
+                            name = value, uri = id,
+                            mediaType = "album",
+                            subtitle = artist,
+                            image = null,
+                            duration = null,
+                            year = date?.substringBefore('-')?.toIntOrNull(),
+                        ),
+                    )
                 }
-                "date" -> currentDate = value
-                "albumartist" -> currentArtist = value
             }
         }
-        if (currentAlbum != null) {
-            val id = buildAlbumId(currentAlbum!!, currentArtist)
-            albums.add(
-                MaItem(
-                    itemId = id, provider = PROVIDER,
-                    name = currentAlbum!!, uri = id,
-                    mediaType = "album",
-                    subtitle = currentArtist,
-                    image = null,
-                    duration = null,
-                    year = currentDate?.substringBefore('-')?.toIntOrNull(),
-                ),
-            )
-        }
 
-        return albums.drop(offset).take(limit)
+        return albums.distinctBy { it.itemId }.drop(offset).take(limit)
     }
 
     /** Build a unique album id from name + artist, using a NUL separator. */

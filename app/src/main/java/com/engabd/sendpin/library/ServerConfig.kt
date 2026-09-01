@@ -68,19 +68,22 @@ enum class ServerKind(
         auth = AuthStyle.LINKED_ACCOUNT,
     ),
 
+    MPD(
+        "MPD",
+        "Music Player Daemon. Browses the library MPD already scanned and streams over its HTTP output.",
+        supported = true,
+        // The protocol port. MPD's audio arrives on a second one — its httpd
+        // output's — which the connect form asks for separately.
+        urlHint = "http://192.168.0.10:6600",
+        auth = AuthStyle.OPTIONAL_USER_PASSWORD,
+    ),
+
     // ── Planned. Listed so the roadmap is visible where it is asked about. ──
     AUDIOBOOKSHELF(
         "Audiobookshelf",
         "Audiobooks and podcasts, with a music library alongside them.",
         urlHint = "http://192.168.0.10:13378",
         auth = AuthStyle.TOKEN,
-    ),
-    MPD(
-        "MPD",
-        "Music Player Daemon. Browses the library MPD already scanned and streams over its HTTP output.",
-        supported = true,
-        urlHint = "http://192.168.0.10:6600",
-        auth = AuthStyle.OPTIONAL_USER_PASSWORD,
     ),
     KODI(
         "Kodi",

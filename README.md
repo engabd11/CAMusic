@@ -27,7 +27,7 @@ it into part of the listening.
 
 | | |
 |---|---|
-| 🎵 **A player** | Navidrome, Subsonic, Jellyfin, Emby, Plex, Music Assistant and on-device files. Gapless playback, a ten band equaliser, high resolution output, ReplayGain and offline downloads. |
+| 🎵 **A player** | Navidrome, Subsonic, Jellyfin, Emby, Plex, MPD, Music Assistant and on-device files. Gapless playback, a ten band equaliser, high resolution output, ReplayGain and offline downloads. |
 | 💡 **A light show** | Philips Hue Entertainment, driven straight to the bridge at 60 frames a second from the audio that is playing. |
 | ✨ **An atmosphere** | Ambience shows with their own sound, ready whenever you want the room without the music. |
 | 🔊 **A speaker** | Music Assistant can stream to this phone as a clock synced player, so it joins a grouped, multi-room setup. |
@@ -70,6 +70,7 @@ can add as many as you like and switch between them freely.
 | **Jellyfin** | ✅ | ✅ | ✅ | ✅ |
 | **Emby** | ✅ | ✅ | ✅ | ✅ |
 | **Plex** | ✅ | ✅ | ✅ | ✅ |
+| **MPD** | ✅ | ✅ | — | — |
 | **Music Assistant** | ✅ | ✅ | n/a | ✅ |
 | **On-device files** | ✅ | ✅ | n/a | n/a |
 
@@ -79,6 +80,13 @@ them, and each server shows its own brand mark everywhere it is listed.
 
 Plex signs in through a plex.tv PIN: tap **Sign in with Plex**, finish it in the browser, and
 your Plex password stays at plex.tv where it belongs.
+
+MPD is browsed over its own protocol on 6600 and *heard* over its `httpd` audio output, which
+is a second port — 8000 unless your `mpd.conf` says otherwise, and the connect form asks for
+it beside the address. Without an `httpd` output block in `mpd.conf` MPD has nothing to send a
+phone, so the library browses and nothing plays. MPD serves one continuous stream rather than
+a file per track, which is why there is no download or scrobble column for it, and why the
+badge reads the tags rather than the stream.
 
 **Continue listening** leads the library with the albums and songs you were last in the
 middle of, including Jellyfin's own resume shelf. Anything can be taken offline for the train,
@@ -234,7 +242,7 @@ variety, streaks, lossless share, and where your music actually came from.
    pressing the button on the bridge when asked.
 3. Start listening. A server address is the whole of it.
 
-**Requirements:** Android 12 or newer. Any Subsonic, Jellyfin, Emby, Plex or Music Assistant
+**Requirements:** Android 12 or newer. Any Subsonic, Jellyfin, Emby, Plex, MPD or Music Assistant
 server for the library, a Hue bridge with an entertainment area for Light Sync, and a Music
 Assistant server for multi-room grouping. Each one is optional and independent of the others.
 

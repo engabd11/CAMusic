@@ -386,7 +386,22 @@ class LocalPlayer(private val context: Context) {
             // is told to catch up, so every transition re-issues the prepare call,
             // not just the one setQueue awaits explicitly for the first track. This
             // is a no-op for every other provider.
-            onPreparePlayback?.let { prepare -> track?.let { t -> scope.launch { runCatching { prepare(t) } } } }
+            //
+            // Except the one transition [setQueue] causes itself: it awaits the
+            // prepare and *then* hands the list to ExoPlayer, and handing it over
+            // fires this listener. Preparing again from here would race a second
+            // clear+add+play against the stream ExoPlayer is opening at that moment
+            // — the track restarting under the listener a beat after it began. The
+            // flag is consumed by whichever transition arrives first either way, so
+            // a queue that never produced one cannot leave it standing to swallow a
+            // later skip.
+            val suppressed = skipNextPrepare
+            skipNextPrepare = false
+            if (!suppressed) {
+                onPreparePlayback?.let { prepare ->
+                    track?.let { t -> scope.launch { runCatching { prepare(t) } } }
+                }
+            }
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -589,6 +604,9 @@ class LocalPlayer(private val context: Context) {
         if (prepare != null) {
             scope.launch {
                 runCatching { prepare(firstTrack) }
+                // Handing the list over fires onMediaItemTransition, and the track it
+                // reports is the one just prepared. See [skipNextPrepare].
+                skipNextPrepare = true
                 // The whole list goes to ExoPlayer at once — that is what lets it
                 // buffer across a track boundary, and so what makes the transition
                 // gapless.
@@ -626,10 +644,12 @@ class LocalPlayer(private val context: Context) {
      * Called before ExoPlayer opens a track's URL, and again on every later track
      * change.
      *
-     * For every provider except MPD this is a no-op — the URL is per-track, so
-     * ExoPlayer opening it is all that's needed. MPD's HTTP stream is a single
-     * continuous URL, so [MusicSource.preparePlayback] must queue the right
-     * track in MPD before the stream reflects it.
+     * Set only for a library that has something to do there — MPD, whose HTTP
+     * stream is one continuous URL carrying whatever MPD itself is playing, so the
+     * track has to be queued in MPD before the stream reflects it. Every other
+     * provider serves a URL per track and leaves this null, which is what keeps
+     * them on the straight path through [setQueue]: this being set is the switch
+     * that makes the player wait before opening anything.
      *
      * [setQueue] awaits it directly, since that is the one place playback can be
      * held off until it lands. Every later change — [playAt], [next], [previous],
@@ -638,6 +658,15 @@ class LocalPlayer(private val context: Context) {
      * for all of them, in one place, rather than at each call site individually.
      */
     var onPreparePlayback: (suspend (LocalTrack) -> Unit)? = null
+
+    /**
+     * Set for the single `onMediaItemTransition` that [setQueue] itself causes, so
+     * the track it just awaited a prepare for is not prepared a second time.
+     *
+     * Written and read on the main thread only — [scope] is `Dispatchers.Main` and
+     * so are the player's own callbacks.
+     */
+    private var skipNextPrepare = false
 
     /** Append to the queue, starting playback if nothing is loaded. */
     fun addToQueue(tracks: List<LocalTrack>) {

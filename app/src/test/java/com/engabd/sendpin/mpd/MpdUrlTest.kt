@@ -1,9 +1,12 @@
 package com.engabd.sendpin.mpd
 
+import com.engabd.sendpin.library.Capability
+import com.engabd.sendpin.library.MpdSource
 import com.engabd.sendpin.library.ServerConfig
 import com.engabd.sendpin.library.ServerKind
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -101,6 +104,25 @@ class MpdUrlTest {
     @Test
     fun `MPD needs an address`() {
         assertTrue(ServerKind.MPD.needsAddress, "MPD needs a host:port to connect to")
+    }
+
+    @Test
+    fun `MPD is the one source that has to prepare playback`() {
+        // The local player installs its prepare hook only for a source that says
+        // this — with the hook set it holds the first track back until MPD has been
+        // told what to play, and every other library keeps the straight path.
+        assertTrue(MpdSource(client("192.168.0.202:6600")).needsPreparePlayback)
+    }
+
+    @Test
+    fun `MPD offers no downloads and no favourites`() {
+        // The HTTP output is a live stream, so there is no file to fetch, and MPD
+        // has no starred concept without stickers. Both are gated on the
+        // capability, so claiming either would put a button on screen that fails.
+        val source = MpdSource(client("192.168.0.202:6600"))
+        assertFalse(source.has(Capability.DOWNLOAD))
+        assertFalse(source.has(Capability.FAVORITES))
+        assertTrue(source.has(Capability.RICH_FORMAT), "tags carry codec, rate and depth")
     }
 
     @Test

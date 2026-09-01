@@ -175,6 +175,17 @@ interface MusicSource {
     suspend fun preparePlayback(id: String) = Unit
 
     /**
+     * Whether [preparePlayback] does anything — false for every provider but MPD.
+     *
+     * The local player holds the first track back until [preparePlayback] returns,
+     * which is right when the stream depends on it and pointless when it doesn't:
+     * a source that answers false takes the same straight path into ExoPlayer it
+     * always has. So this has to say what [preparePlayback] *is*, not merely
+     * whether it is safe to call.
+     */
+    val needsPreparePlayback: Boolean get() = false
+
+    /**
      * The transcode the user asked for, as a source-specific token.
      *
      * Mutable and not a constructor argument for the same reason it was on

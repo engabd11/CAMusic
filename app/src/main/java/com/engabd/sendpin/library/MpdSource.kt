@@ -3,7 +3,6 @@ package com.engabd.sendpin.library
 import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ma.MaSearchResults
 import com.engabd.sendpin.mpd.MpdClient
-import com.engabd.sendpin.mpd.MpdException
 
 /**
  * [MpdClient] as a [MusicSource] — Music Player Daemon as a browsable library
@@ -97,7 +96,7 @@ class MpdSource(private val client: MpdClient) : MusicSource {
 
     override suspend fun genres(): List<MaItem> = client.genres()
     override suspend fun songsByGenre(genre: String, count: Int, offset: Int): List<MaItem> =
-        client.songsByGenre(genre, count)
+        client.songsByGenre(genre, count, offset)
 
     // ── URLs ──────────────────────────────────────────────────────────────
 
@@ -113,4 +112,7 @@ class MpdSource(private val client: MpdClient) : MusicSource {
      * other provider serves a per-track URL. See [MusicSource.preparePlayback].
      */
     override suspend fun preparePlayback(id: String) = client.preparePlayback(id)
+
+    /** The one source that answers true. See [MusicSource.needsPreparePlayback]. */
+    override val needsPreparePlayback: Boolean = true
 }

@@ -404,6 +404,12 @@ private fun ServerDetail(
     var format by remember(config.id) {
         mutableStateOf(config.option(ServerConfig.OPT_STREAM_FORMAT) ?: "raw")
     }
+    // MPD's audio does not come down the protocol connection — it comes from the
+    // `httpd` output, on its own port. Stored per server, because the port is
+    // whatever that server's mpd.conf says.
+    var mpdHttpPort by remember(config.id) {
+        mutableStateOf(config.option(ServerConfig.OPT_MPD_HTTP_PORT) ?: "8000")
+    }
     var confirmRemove by remember(config.id) { mutableStateOf(false) }
 
     val connecting by libraryVm.connecting.collectAsStateWithLifecycle()
@@ -435,7 +441,12 @@ private fun ServerDetail(
             // The folder list stays. It used to be dropped here unconditionally, and
             // only the picker path survived that by passing `customOptions` — so every
             // *other* save of a local library silently wiped the chosen folder.
-            options = config.options.plus(ServerConfig.OPT_STREAM_FORMAT to format),
+            options = config.options
+                .plus(ServerConfig.OPT_STREAM_FORMAT to format)
+                .let {
+                    if (config.kind == ServerKind.MPD) it.plus(ServerConfig.OPT_MPD_HTTP_PORT to mpdHttpPort.trim())
+                    else it
+                },
         )
     }
 
@@ -469,6 +480,23 @@ private fun ServerDetail(
         ) {
             if (config.kind.auth != AuthStyle.NONE) {
                 OledField(url, { url = it }, "Server address", config.kind.urlHint, accent)
+            }
+            // The one field the connect form was missing: without it the HTTP output
+            // port was whatever the code defaulted to, and a server whose mpd.conf
+            // says anything but 8000 connected, browsed, and then played silence.
+            if (config.kind == ServerKind.MPD) {
+                OledField(
+                    mpdHttpPort,
+                    { mpdHttpPort = it.filter(Char::isDigit).take(5) },
+                    "HTTP stream port",
+                    "8000",
+                    accent,
+                )
+                Note(
+                    "The port of MPD's `httpd` audio output — the `port` line in that " +
+                        "output block in mpd.conf, not the 6600 above. MPD must have an " +
+                        "httpd output enabled for this phone to play anything.",
+                )
             }
             when (config.kind.auth) {
                 AuthStyle.USER_PASSWORD, AuthStyle.OPTIONAL_USER_PASSWORD -> {
@@ -585,7 +613,12 @@ private fun ServerDetail(
         }
 
         // Per-server playback options, for the kinds that stream to this phone.
-        if (config.kind.playsLocally && config.kind != ServerKind.LOCAL) {
+        //
+        // Not MPD: its stream is whatever encoder its httpd output is configured
+        // with, decided in mpd.conf and not negotiable per request, so a picker
+        // here would be a setting that changes nothing — the exact dishonesty the
+        // settings audit went through this screen to remove.
+        if (config.kind.playsLocally && config.kind != ServerKind.LOCAL && config.kind != ServerKind.MPD) {
             SettingsCard(
                 title = "Stream quality",
                 lead = "What this server is asked to send. Downloads always take the original " +
