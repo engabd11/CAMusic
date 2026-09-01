@@ -336,6 +336,13 @@ private fun OptionRow(
  * [OptionRow] itself staying visible rather than disappearing: the setting
  * underneath is still real and still worth showing, it just isn't reaching
  * the signal right now.
+ *
+ * The drag is held locally and written once on release, the pattern
+ * `EffectsScreen`'s level slider already uses. [onIntensityChange] lands in
+ * DataStore, which is a serialise and a disk write; firing it on every frame
+ * of a drag would spend dozens of those to reach one value the listener
+ * actually wanted. The processors read the stored config on the next buffer
+ * either way, so committing on release costs nothing audible.
  */
 @Composable
 private fun SoundModeOption(
@@ -349,6 +356,11 @@ private fun SoundModeOption(
     onIntensityChange: (Float) -> Unit,
 ) {
     val accent = LocalAccent.current
+    // Null except while a finger is down: the stored value is the truth the rest
+    // of the time, so an intensity changed from anywhere else still shows here.
+    var drag by remember(title) { mutableStateOf<Float?>(null) }
+    val shown = drag ?: intensity
+
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         OptionRow(
             icon = icon, title = title, subtitle = subtitle,
@@ -365,11 +377,15 @@ private fun SoundModeOption(
                         style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f),
                     )
                     Text(
-                        "${(intensity * 100).roundToInt()}%", color = accent, fontFamily = MonoFont,
+                        "${(shown * 100).roundToInt()}%", color = accent, fontFamily = MonoFont,
                         fontWeight = FontWeight.Bold, fontSize = 12.sp,
                     )
                 }
-                HSlider(intensity, { if (enabled) onIntensityChange(it) })
+                HSlider(
+                    value = shown,
+                    onChange = { if (enabled) drag = it },
+                    onCommit = { if (enabled) { drag = null; onIntensityChange(it) } },
+                )
             }
         }
     }

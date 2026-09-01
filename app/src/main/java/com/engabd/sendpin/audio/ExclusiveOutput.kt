@@ -53,7 +53,9 @@ object ExclusiveOutput {
         ),
         Disabled(
             "Light Sync audio analysis",
-            "The tap is a processor too, so there is nothing left to feed it from.",
+            "The tap is a processor too, so there is nothing left to feed it from. " +
+                "The spectrum on Now Playing reads the same tap, so it sits flat as " +
+                "well — that is this mode working, not the visualiser failing.",
         ),
         soundModes,
         Disabled(

@@ -130,6 +130,31 @@ class SignalPathTest {
     }
 
     @Test
+    fun `a float decode falling to 16-bit integer counts as truncation`() {
+        // A 32-bit float WAV with high-resolution output off: the decoder hands
+        // over float and media3's toInt16PcmAudioProcessor takes it straight down
+        // to 16-bit integer. Real loss, and it used to slip past because the check
+        // bailed out on any float decode.
+        SignalPath.onFloatOutput(false)
+        SignalPath.onDecoderOutput(pcmFormat(96_000, C.ENCODING_PCM_FLOAT))
+
+        val state = SignalPath.state.value
+        assertFalse(state.sink.isFloat)
+        assertEquals(16, state.sink.bitDepth)
+        assertTrue(state.truncating, "float decode down to 16-bit integer is a loss")
+    }
+
+    @Test
+    fun `a float decode reaching a float sink is not truncation`() {
+        SignalPath.onFloatOutput(true)
+        SignalPath.onDecoderOutput(pcmFormat(96_000, C.ENCODING_PCM_FLOAT))
+
+        val state = SignalPath.state.value
+        assertTrue(state.floatEngaged)
+        assertFalse(state.truncating)
+    }
+
+    @Test
     fun `a decode matching the file declares no loss`() {
         SignalPath.onFloatOutput(true)
         SignalPath.onSourceFormat(pcmFormat(96_000, C.ENCODING_PCM_24BIT))

@@ -144,7 +144,14 @@ object SignalPath {
         val truncating: Boolean
             get() {
                 val from = decoded.bitDepth ?: return false
-                if (decoded.isFloat) return false
+                // A float decode counts. This used to bail out here, from when [sink]
+                // was observed rather than derived and a float decode almost always
+                // arrived at a float sink anyway. It no longer does: a 32-bit float
+                // WAV played with high-resolution output off decodes as float and is
+                // converted straight down to 16-bit integer by media3's
+                // `toInt16PcmAudioProcessor`, which is exactly the loss this property
+                // is for. Float only escapes when the sink is carrying float too.
+                if (decoded.isFloat && sink.isFloat) return false
                 val to = if (sink.isFloat) 32 else sink.bitDepth ?: return false
                 return to < from
             }

@@ -270,7 +270,6 @@
              each service's media3 MediaSession directly (see ShadePlayer /
              LocalPlaybackService) - no MediaButtonReceiver or MEDIA_BUTTON
              intent-filter needed for either. -->
-
         <!--
           Hands a generated file to the share sheet without loosening anything:
           the grant is per-URI, read-only and lives only as long as the receiving
