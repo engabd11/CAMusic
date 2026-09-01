@@ -19,8 +19,9 @@ namespace sendspin {
  *
  * This class moves the OUTPUT to an Oboe callback running on a real-time HAL
  * thread (SCHED_FIFO), which is immune to JVM GC pauses. A deep, lock-free
- * SPSC ring sits between the Kotlin decode (producer, via [OboeRenderer]) and
- * this callback (consumer): if the decode JVM thread GC-stalls, the deep ring
+ * SPSC ring sits between the Kotlin decode (producer — SendspinNativeEngine's
+ * decode thread, feeding PCM through SendspinNativeOutput.write()) and this
+ * callback (consumer): if the decode JVM thread GC-stalls, the deep ring
  * absorbs it. Per-chunk sync is preserved by doing the drift correction
  * INSIDE the callback (sample-accurate skip/insert against the group
  * timeline) instead of by keeping the buffer shallow. That is the one design

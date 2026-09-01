@@ -1,5 +1,8 @@
 package com.engabd.sendpin.audio
 
+import androidx.media3.common.C
+import androidx.media3.common.audio.AudioProcessor
+import java.nio.ByteBuffer
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -71,5 +74,60 @@ class VinylNoiseProcessorTest {
     @Test
     fun `decode returns null on garbage`() {
         assertEquals(null, VinylNoiseProcessor.decode("not json"))
+    }
+
+    @Test
+    fun `crackle interval is roughly the same real-time density at 44100 and 96000 Hz`() {
+        // onReset()'s bug fix aside, this pins the sample-rate-scaling fix
+        // itself: before it, crackleInterval counted in raw samples and
+        // ignored sampleRate entirely, so the interval in *milliseconds* at
+        // 96 kHz was half of the 44.1 kHz one for the same intensity - a 96 kHz
+        // file crackled twice as often in real time. Scaled correctly, the two
+        // rates should land within a millisecond of each other.
+        for (intensity in listOf(0f, 0.25f, 0.5f, 0.75f, 1f)) {
+            val at44100 = VinylNoiseProcessor.crackleInterval(intensity, 44_100)
+            val at96000 = VinylNoiseProcessor.crackleInterval(intensity, 96_000)
+            val msAt44100 = at44100 * 1000.0 / 44_100
+            val msAt96000 = at96000 * 1000.0 / 96_000
+            assertTrue(
+                kotlin.math.abs(msAt44100 - msAt96000) < 1.0,
+                "intensity=$intensity: ${msAt44100}ms at 44.1kHz vs ${msAt96000}ms at 96kHz",
+            )
+        }
+    }
+
+    @Test
+    fun `crackle interval at 44100 Hz is unchanged by the sample-rate scaling`() {
+        // The fix must not change the character of existing 44.1 kHz material:
+        // at the reference rate the scaling factor is exactly 1, so this should
+        // match the pre-fix samples-only formula bit for bit.
+        for (intensity in listOf(0f, 0.1f, 0.5f, 0.9f, 1f)) {
+            val base = (4000 - (intensity * 3700f).toInt()).coerceIn(100, 4000)
+            assertEquals(base, VinylNoiseProcessor.crackleInterval(intensity, 44_100))
+        }
+    }
+
+    @Test
+    fun `reset preserves the active config instead of switching the mode off`() {
+        val cfg = VinylNoiseProcessor.Config(enabled = true, intensity = 0.8f)
+        val p = VinylNoiseProcessor().apply {
+            configure(AudioProcessor.AudioFormat(44_100, 2, C.ENCODING_PCM_16BIT))
+            flush()
+            setConfig(cfg)
+        }
+        // Drive one (empty) buffer through so `pending` is consumed into
+        // `active` - queueInput drains `pending` before it looks at whether
+        // there is anything to process, so this mirrors what a track change
+        // does without needing real audio.
+        p.queueInput(ByteBuffer.allocateDirect(0))
+        assertEquals(cfg, p.currentConfigSafe())
+
+        p.reset()
+
+        // Before the fix, onReset() did `active = Config()` - enabled = false -
+        // silently switching vinyl noise off with no settings change left to
+        // ever turn it back on, since AppSettings.pref()'s deduped Flow will not
+        // re-emit an unchanged value.
+        assertEquals(cfg, p.currentConfigSafe())
     }
 }

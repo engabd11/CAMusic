@@ -302,7 +302,17 @@ class LoFiProcessor : BaseAudioProcessor() {
     }
 
     override fun onReset() {
-        active = Config()
+        // `active` is deliberately left alone — see VinylNoiseProcessor.onReset()
+        // for the full reasoning. In short: by the time reset() reaches this
+        // processor, `pending` has already been drained into `active`, and the
+        // deduped settings Flow that refills `pending` (AppSettings.pref()) will
+        // not re-emit unless the user actually changes the mode. Clearing `active`
+        // here would switch lo-fi off for the rest of the session with nothing
+        // left to switch it back on, rather than just for the buffer being reset.
+        // `heldSample` and `lpState` are genuinely derived, not config — sized to
+        // whatever channel count the old format needed — so they still shrink
+        // back here, the same way LocalDsp.onReset() clears `sections`; the next
+        // onConfigure() regrows them if the new format needs more channels.
         heldSample = FloatArray(2)
         lpState = FloatArray(2)
     }

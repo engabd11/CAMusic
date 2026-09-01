@@ -1,5 +1,8 @@
 package com.engabd.sendpin.audio
 
+import androidx.media3.common.C
+import androidx.media3.common.audio.AudioProcessor
+import java.nio.ByteBuffer
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -106,5 +109,43 @@ class LoFiProcessorTest {
     @Test
     fun `decode returns null on garbage`() {
         assertEquals(null, LoFiProcessor.decode("not json"))
+    }
+
+    @Test
+    fun `the crackle interval borrowed from VinylNoiseProcessor scales with sample rate`() {
+        // LoFiProcessor's internal crackle (used when VinylNoiseProcessor isn't
+        // sharing) reuses VinylNoiseProcessor.crackleInterval directly, so the
+        // sample-rate scaling fix covers this path too. Same invariant as
+        // VinylNoiseProcessorTest: the interval in milliseconds should be
+        // roughly the same at 44.1 kHz and 96 kHz, not twice as dense at the
+        // higher rate.
+        for (intensity in listOf(0f, 0.5f, 1f)) {
+            val at44100 = VinylNoiseProcessor.crackleInterval(intensity, 44_100)
+            val at96000 = VinylNoiseProcessor.crackleInterval(intensity, 96_000)
+            val msAt44100 = at44100 * 1000.0 / 44_100
+            val msAt96000 = at96000 * 1000.0 / 96_000
+            assertTrue(abs(msAt44100 - msAt96000) < 1.0)
+        }
+    }
+
+    @Test
+    fun `reset preserves the active config instead of switching lo-fi off`() {
+        val cfg = LoFiProcessor.Config(enabled = true, intensity = 0.6f, shareVinylCrackle = true)
+        val p = LoFiProcessor().apply {
+            configure(AudioProcessor.AudioFormat(44_100, 2, C.ENCODING_PCM_16BIT))
+            flush()
+            setConfig(cfg)
+        }
+        // Drain `pending` into `active`, the same way a track change would.
+        p.queueInput(ByteBuffer.allocateDirect(0))
+        assertEquals(cfg, p.currentConfigSafe())
+
+        p.reset()
+
+        // Before the fix, onReset() did `active = Config()` - enabled = false -
+        // switching lo-fi off with no settings change left to ever turn it back
+        // on, since AppSettings.pref()'s deduped Flow will not re-emit an
+        // unchanged value.
+        assertEquals(cfg, p.currentConfigSafe())
     }
 }

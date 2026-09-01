@@ -258,7 +258,6 @@ class LocalPlayer(private val context: Context) {
      */
     private fun updateLoFiSharing() {
         val vinylOn = vinylNoise.currentConfigSafe().isActive()
-        val loFiOn = loFiProcessor.currentConfigSafe().isActive()
         val current = loFiProcessor.currentConfigSafe()
         if (current.shareVinylCrackle != vinylOn) {
             loFiProcessor.setConfig(current.copy(shareVinylCrackle = vinylOn))

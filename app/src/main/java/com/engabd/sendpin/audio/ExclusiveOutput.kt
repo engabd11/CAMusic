@@ -26,6 +26,21 @@ object ExclusiveOutput {
     data class Disabled(val title: String, val reason: String)
 
     /**
+     * The sound modes' entry, named rather than looked up out of [disables].
+     *
+     * The Now Playing sheet needs this one specifically, to say why its Vinyl
+     * and Lo-fi rows have gone inert. Finding it by matching on its own title
+     * would put a string comparison between a UI screen and a list it does not
+     * own — rename the title and the sheet throws `NoSuchElementException` in a
+     * composable, at the worst possible moment and nowhere near the edit that
+     * caused it. A named reference cannot miss.
+     */
+    val soundModes = Disabled(
+        "Vinyl / Lo-fi sound modes",
+        "Same chain as the equaliser, same reason.",
+    )
+
+    /**
      * What exclusive mode disables, as data rather than a string written out
      * separately in the toggle's own `info` and in every screen that then has
      * to explain why its own control has gone inert (the EQ panel, the
@@ -40,10 +55,7 @@ object ExclusiveOutput {
             "Light Sync audio analysis",
             "The tap is a processor too, so there is nothing left to feed it from.",
         ),
-        Disabled(
-            "Vinyl / Lo-fi sound modes",
-            "Same chain as the equaliser, same reason.",
-        ),
+        soundModes,
         Disabled(
             "ReplayGain",
             "Levelling is a volume multiply applied to the signal before the DAC sees " +

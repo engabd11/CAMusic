@@ -7,8 +7,10 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.audio.FormatNegotiator
+import com.engabd.sendpin.audio.LoFiProcessor
 import com.engabd.sendpin.audio.LocalTrack
 import com.engabd.sendpin.audio.StreamQuality
+import com.engabd.sendpin.audio.VinylNoiseProcessor
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.PlayerIdentity
 import com.engabd.sendpin.local.db.LocalMediaDatabase
@@ -123,6 +125,26 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
          * acts on the level, and the card already says so.
          */
         val loudness: MaLoudness = MaLoudness(),
+        /**
+         * Vinyl surface noise, applied in [com.engabd.sendpin.audio.LocalPlayer]'s
+         * own processor chain — see [com.engabd.sendpin.audio.VinylNoiseProcessor].
+         * Local-session only: on the Music Assistant path this phone is not what is
+         * making the sound, so the config has nothing to act on and is left at its
+         * default. The Now Playing options sheet gates its "Sound modes" block on
+         * [isLocalSession] for exactly that reason.
+         */
+        val vinylNoiseConfig: VinylNoiseProcessor.Config = VinylNoiseProcessor.Config(),
+        /** Lo-fi mode. Same local-session-only scope as [vinylNoiseConfig]. */
+        val loFiConfig: LoFiProcessor.Config = LoFiProcessor.Config(),
+        /**
+         * Whether Exclusive output is on — see
+         * [com.engabd.sendpin.audio.ExclusiveOutput]. `LocalPlayer.buildPlayer` builds
+         * the player with no processors at all while this is on, which is why the
+         * sheet shows [vinylNoiseConfig] and [loFiConfig]'s rows as disabled rather
+         * than hiding them: the setting still edits the stored config, which takes
+         * over again the moment this goes off.
+         */
+        val exclusiveOutputOn: Boolean = false,
     )
 
     /** A panel's load state — the UI has to tell "empty" from "not fetched yet". */
@@ -211,13 +233,35 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         val speed: Float = 1f,
     )
 
+    /**
+     * The settings-derived flags/configs the local-branch [State] needs, bundled
+     * into one value for the same reason [LocalSnap] bundles the local player's
+     * five flows: it spends one slot of the outer combine's 5-flow ceiling on all
+     * four of these instead of one each.
+     */
+    private data class ToggleSnap(
+        val radioMode: Boolean = false,
+        val vinylNoiseConfig: VinylNoiseProcessor.Config = VinylNoiseProcessor.Config(),
+        val loFiConfig: LoFiProcessor.Config = LoFiProcessor.Config(),
+        val exclusiveOutputOn: Boolean = false,
+    )
+
+    // [toggleSnap] itself — the property, not the type above — is declared much
+    // further down, right after the four backing flows it combines. Not here:
+    // property initialisers run in source order, and combine(...) reads those
+    // flows the instant this file's constructor reaches it. Declared here it
+    // would read _radioMode/_vinylNoiseConfig/_loFiConfig/_exclusiveOutputOn
+    // before any of the four exist — the exact class of construction-order bug
+    // [_radioMode]'s own doc comment (and the two init blocks at the bottom of
+    // this file) exist to avoid.
+
     /** Holds the five flows that feed the local-playback state so the 6-way combine stays type-safe. */
     private data class LocalInfo(
         val ma: State,
         val l: LocalSnap,
         val devVol: Float,
         val backend: String,
-        val radio: Boolean,
+        val toggles: ToggleSnap,
     )
 
     private val localSnap: StateFlow<LocalSnap> = combine(
@@ -284,6 +328,38 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
      */
     private val _radioMode = MutableStateFlow(false)
     val radioMode: StateFlow<Boolean> = _radioMode
+
+    /**
+     * Vinyl noise and lo-fi, and whether Exclusive output is on — the same
+     * "declared here, with the other backing flows, not next to the setters
+     * that read more naturally" reasoning as [_radioMode] just above:
+     * [maState] is an eagerly-started `stateIn` on `viewModelScope`
+     * (`Dispatchers.Main.immediate`), so its combine can run *during*
+     * construction, and every property it touches has to already exist.
+     *
+     * All three are settings the sound-mode rows in the Now Playing options
+     * sheet read and write, and — like [_radioMode] — are collected from
+     * [AppSettings] rather than held only as local UI state, so a change
+     * made from the sheet is the same change [com.engabd.sendpin.audio.LocalPlayer]
+     * picks up.
+     */
+    private val _vinylNoiseConfig = MutableStateFlow(VinylNoiseProcessor.Config())
+    val vinylNoiseConfig: StateFlow<VinylNoiseProcessor.Config> = _vinylNoiseConfig
+    private val _loFiConfig = MutableStateFlow(LoFiProcessor.Config())
+    val loFiConfig: StateFlow<LoFiProcessor.Config> = _loFiConfig
+    private val _exclusiveOutputOn = MutableStateFlow(false)
+    val exclusiveOutputOn: StateFlow<Boolean> = _exclusiveOutputOn
+
+    /**
+     * All four backing flows above, bundled into [ToggleSnap] — see that class's
+     * doc for why, and see the placeholder comment left where [LocalSnap] and
+     * [LocalInfo] are declared for why this specific property has to live down
+     * here rather than up there with them.
+     */
+    private val toggleSnap: StateFlow<ToggleSnap> = combine(
+        _radioMode, _vinylNoiseConfig, _loFiConfig, _exclusiveOutputOn,
+    ) { radio, vinyl, loFi, exclusive -> ToggleSnap(radio, vinyl, loFi, exclusive) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, ToggleSnap())
 
     // ── Server-anchored position engine ──────────────────────────────────────
     // The bar is not snapped to whatever the last poll said; it is projected
@@ -513,12 +589,12 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
      * playing something itself or reflecting a player MA owns.
      */
     val state: StateFlow<State> = combine(
-        combine(maState, localSnap, deviceVolume.level, backendPref, _radioMode) { ma, l, devVol, backend, radio ->
-            LocalInfo(ma, l, devVol, backend, radio)
+        combine(maState, localSnap, deviceVolume.level, backendPref, toggleSnap) { ma, l, devVol, backend, toggles ->
+            LocalInfo(ma, l, devVol, backend, toggles)
         },
         activeServerName,
     ) { info, serverName ->
-        val (ma, l, devVol, backend, radio) = info
+        val (ma, l, devVol, backend, toggles) = info
         // Either the local player has a session, or the library is Navidrome and this
         // phone is the only player there is. The second case is the one that was
         // missing: with nothing playing yet it fell through to the MA view.
@@ -578,7 +654,14 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             // to ask, so the app tops the queue up itself (see LibraryViewModel's
             // local radio). The switch for it lives in the player options card, which
             // is why the flag has to reach this side of the state too.
-            radioMode = radio,
+            radioMode = toggles.radioMode,
+            // Vinyl/lo-fi/exclusive-output are only ever meaningful here — the local
+            // branch — since they act on LocalPlayer's own processor chain, which is
+            // exactly why they are left at State()'s defaults on the maState branch
+            // above rather than threaded through there too.
+            vinylNoiseConfig = toggles.vinylNoiseConfig,
+            loFiConfig = toggles.loFiConfig,
+            exclusiveOutputOn = toggles.exclusiveOutputOn,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, State())
 
@@ -1143,6 +1226,40 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                     else -> "Radio mode on - applies to the next thing you play"
                 }
             )
+        }
+    }
+
+    // --- sound modes (vinyl noise, lo-fi) -----------------------------------
+
+    /**
+     * Both live in [com.engabd.sendpin.audio.LocalPlayer]'s own processor
+     * chain, not in anything Music Assistant streams, so — unlike
+     * [toggleRadioMode] — there is only one machine behind each of these, and
+     * the Now Playing sheet only offers them at all while [State.isLocalSession]
+     * is true.
+     *
+     * Each setter reads the current value off the backing flow rather than off
+     * [state], so a rapid intensity drag issues one write per frame against the
+     * config it just wrote rather than against a state snapshot that update
+     * may not have reached yet.
+     */
+    fun setVinylNoiseEnabled(on: Boolean) {
+        viewModelScope.launch { settings.setVinylNoiseConfig(_vinylNoiseConfig.value.copy(enabled = on)) }
+    }
+
+    fun setVinylNoiseIntensity(intensity: Float) {
+        viewModelScope.launch {
+            settings.setVinylNoiseConfig(_vinylNoiseConfig.value.copy(intensity = intensity.coerceIn(0f, 1f)))
+        }
+    }
+
+    fun setLoFiEnabled(on: Boolean) {
+        viewModelScope.launch { settings.setLoFiConfig(_loFiConfig.value.copy(enabled = on)) }
+    }
+
+    fun setLoFiIntensity(intensity: Float) {
+        viewModelScope.launch {
+            settings.setLoFiConfig(_loFiConfig.value.copy(intensity = intensity.coerceIn(0f, 1f)))
         }
     }
 
@@ -1809,6 +1926,9 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         }
         viewModelScope.launch { settings.targetPlayer.collect { _target.value = it } }
         viewModelScope.launch { settings.radioMode.collect { _radioMode.value = it } }
+        viewModelScope.launch { settings.vinylNoiseConfig.collect { _vinylNoiseConfig.value = it } }
+        viewModelScope.launch { settings.loFiConfig.collect { _loFiConfig.value = it } }
+        viewModelScope.launch { settings.exclusiveOutput.collect { _exclusiveOutputOn.value = it } }
         viewModelScope.launch {
             settings.navStreamFormat.collect { navFormat = it.takeIf { f -> f != "raw" } }
         }

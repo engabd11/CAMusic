@@ -87,7 +87,11 @@ class VinylNoiseProcessor : BaseAudioProcessor() {
     // --- One-pole decay envelopes for crackle and pops ---
 
     private var crackleEnv = 0f
+    /** The polarity the current crackle envelope decays with. Set once, at the impulse's trigger. */
+    private var crackleSign = 1f
     private var popEnv = 0f
+    /** The polarity the current pop envelope decays with. Set once, at the impulse's trigger. */
+    private var popSign = 1f
 
     /**
      * Rumble: filtered white noise through a one-pole low-pass at ~50 Hz.
@@ -134,13 +138,21 @@ class VinylNoiseProcessor : BaseAudioProcessor() {
         internal fun rumbleAmplitude(intensity: Float): Float = (intensity * 0.03f).coerceIn(0f, 0.03f)
 
         /**
-         * Average samples between crackle impulses at the given intensity.
-         * Linear interpolation: intensity 0 = one per 4000 samples (sparse),
-         * intensity 1 = one per 300 samples (dense).
+         * Average samples between crackle impulses at the given intensity, scaled
+         * to [sampleRate] so the crackle reads at the same density in real time
+         * whatever the file's rate is. Linear interpolation at the 44.1 kHz
+         * reference: intensity 0 = one per 4000 samples (~90 ms, sparse),
+         * intensity 1 = one per 300 samples (~7 ms, dense).
+         *
+         * This used to ignore [sampleRate] entirely and count in raw samples, so
+         * a 96 kHz file crackled at roughly twice the rate of a 44.1 kHz one at
+         * the same intensity — the same number of samples is half as much time at
+         * double the rate. [popInterval] already scaled by sample rate correctly;
+         * this now matches it, so that asymmetry between the two is gone.
          */
         internal fun crackleInterval(intensity: Float, sampleRate: Int): Int {
-            val base = 4000 - (intensity * 3700f).toInt()
-            return base.coerceIn(100, 4000)
+            val baseAt44100 = (4000 - (intensity * 3700f).toInt()).coerceIn(100, 4000)
+            return (baseAt44100.toLong() * sampleRate / 44_100).toInt().coerceAtLeast(1)
         }
 
         /**
@@ -248,6 +260,11 @@ class VinylNoiseProcessor : BaseAudioProcessor() {
                 crackleThreshold = (crackleInterval(intensity, sampleRate) *
                     (0.5f + rng.nextFloat())).toInt().coerceAtLeast(1)
                 crackleEnv = crackleAmplitude(intensity) * (0.5f + rng.nextFloat() * 0.5f)
+                // Polarity is decided once, here, at the trigger — not re-rolled
+                // every sample of the decay. A coin flip per sample turned each
+                // impulse into a burst of white noise shaped by an exponential
+                // envelope, which reads as static, not as a click.
+                crackleSign = if (rng.nextBoolean()) 1f else -1f
             }
             // One-pole decay: ~3 ms time constant at 44.1 kHz.
             crackleEnv *= 0.92f
@@ -261,6 +278,8 @@ class VinylNoiseProcessor : BaseAudioProcessor() {
                 popThreshold = (popInterval(intensity, sampleRate) *
                     (0.5f + rng.nextFloat())).toInt().coerceAtLeast(1)
                 popEnv = popAmplitude(intensity) * (0.7f + rng.nextFloat() * 0.3f)
+                // Same fix as the crackle above: one polarity for the whole pop.
+                popSign = if (rng.nextBoolean()) 1f else -1f
             }
             // Faster decay than crackle: a pop is a transient.
             popEnv *= 0.80f
@@ -270,14 +289,10 @@ class VinylNoiseProcessor : BaseAudioProcessor() {
         val rumbleAmp = rumbleAmplitude(intensity)
         rumbleState = rumbleCoeff * (rng.nextFloat() * 2f - 1f) + (1f - rumbleCoeff) * rumbleState
 
-        // The crackle sign is random per impulse, not per sample: the envelope
-        // carries the amplitude and a coin flip at the trigger decides polarity.
-        // Here we approximate by letting the envelope decay carry the sign from
-        // the RNG at trigger time, which is already how crackleEnv was set.
-        val crackleSign = if (crackleEnv > 0f) (if (rng.nextBoolean()) 1f else -1f) * crackleEnv else 0f
-        val popSign = if (popEnv > 0f) (if (rng.nextBoolean()) 1f else -1f) * popEnv else 0f
+        val crackleSigned = if (crackleEnv > 0f) crackleSign * crackleEnv else 0f
+        val popSigned = if (popEnv > 0f) popSign * popEnv else 0f
 
-        return crackleSign + popSign + rumbleState * rumbleAmp
+        return crackleSigned + popSigned + rumbleState * rumbleAmp
     }
 
     override fun onFlush() {
@@ -289,6 +304,20 @@ class VinylNoiseProcessor : BaseAudioProcessor() {
     }
 
     override fun onReset() {
-        active = Config()
+        // `active` is deliberately left alone. reset() reaches this processor from
+        // DecoderAudioRenderer.onDisabled() — a track change, a stop, a release —
+        // by which point `pending` has already been drained into `active` inside
+        // queueInput. AppSettings.pref() dedupes the settings Flow that refills
+        // `pending`, so unless the user actually changes the mode in the meantime
+        // nothing re-emits: wiping `active` back to `Config()` here would switch
+        // the mode off with no event left to switch it back on, for the rest of
+        // the session. LocalDsp.onReset() draws the same line for the same
+        // reason — only state derived *from* the config resets on a reset, never
+        // the config itself. There is nothing else to do here: the thresholds and
+        // the rumble coefficient are rebuilt unconditionally by the next
+        // onConfigure()/queueInput() pair, and the running envelopes are zeroed
+        // by the flush() that DefaultAudioSink always runs before real use
+        // resumes after a reset (setupAudioProcessors() → audioProcessingPipeline
+        // .flush()), so nothing here would outlive being silent anyway.
     }
 }
