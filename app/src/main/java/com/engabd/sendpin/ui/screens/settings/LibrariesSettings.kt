@@ -404,12 +404,6 @@ private fun ServerDetail(
     var format by remember(config.id) {
         mutableStateOf(config.option(ServerConfig.OPT_STREAM_FORMAT) ?: "raw")
     }
-    // MPD's audio does not come down the protocol connection — it comes from the
-    // `httpd` output, on its own port. Stored per server, because the port is
-    // whatever that server's mpd.conf says.
-    var mpdHttpPort by remember(config.id) {
-        mutableStateOf(config.option(ServerConfig.OPT_MPD_HTTP_PORT) ?: "8000")
-    }
     var confirmRemove by remember(config.id) { mutableStateOf(false) }
 
     val connecting by libraryVm.connecting.collectAsStateWithLifecycle()
@@ -441,12 +435,7 @@ private fun ServerDetail(
             // The folder list stays. It used to be dropped here unconditionally, and
             // only the picker path survived that by passing `customOptions` — so every
             // *other* save of a local library silently wiped the chosen folder.
-            options = config.options
-                .plus(ServerConfig.OPT_STREAM_FORMAT to format)
-                .let {
-                    if (config.kind == ServerKind.MPD) it.plus(ServerConfig.OPT_MPD_HTTP_PORT to mpdHttpPort.trim())
-                    else it
-                },
+            options = config.options.plus(ServerConfig.OPT_STREAM_FORMAT to format),
         )
     }
 
@@ -481,21 +470,12 @@ private fun ServerDetail(
             if (config.kind.auth != AuthStyle.NONE) {
                 OledField(url, { url = it }, "Server address", config.kind.urlHint, accent)
             }
-            // The one field the connect form was missing: without it the HTTP output
-            // port was whatever the code defaulted to, and a server whose mpd.conf
-            // says anything but 8000 connected, browsed, and then played silence.
             if (config.kind == ServerKind.MPD) {
-                OledField(
-                    mpdHttpPort,
-                    { mpdHttpPort = it.filter(Char::isDigit).take(5) },
-                    "HTTP stream port",
-                    "8000",
-                    accent,
-                )
                 Note(
-                    "The port of MPD's httpd audio output — the port line in that output " +
-                        "block in mpd.conf, not the 6600 above. MPD needs an httpd output " +
-                        "enabled for this phone to play anything.",
+                    "MPD plays this itself, through whatever output its own config names — " +
+                        "the point of running it on a box with a DAC. This phone browses the " +
+                        "library and works the transport: play, pause, seek, skip and the " +
+                        "queue. Nothing streams to the phone, so nothing plays out of it.",
                 )
             }
             when (config.kind.auth) {

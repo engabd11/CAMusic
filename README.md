@@ -81,12 +81,14 @@ them, and each server shows its own brand mark everywhere it is listed.
 Plex signs in through a plex.tv PIN: tap **Sign in with Plex**, finish it in the browser, and
 your Plex password stays at plex.tv where it belongs.
 
-MPD is browsed over its own protocol on 6600 and *heard* over its `httpd` audio output, which
-is a second port — 8000 unless your `mpd.conf` says otherwise, and the connect form asks for
-it beside the address. Without an `httpd` output block in `mpd.conf` MPD has nothing to send a
-phone, so the library browses and nothing plays. MPD serves one continuous stream rather than
-a file per track, which is why there is no download or scrobble column for it, and why the
-badge reads the tags rather than the stream.
+MPD is the one library that plays its own music. Every other server hands out a URL per track
+and the phone decodes it; MPD is already a player, usually on the box the DAC is plugged into,
+so the sound stays there and the phone becomes the remote — play, pause, seek, skip, the queue,
+shuffle and repeat, all of it addressing MPD. Point it at the protocol port (6600) and that is
+the whole setup: no `httpd` output, no stream, nothing to configure twice. ReplayGain is MPD's
+own, set from the loudness control in the Now Playing options sheet. Covers come down the
+protocol socket, embedded art first and a folder cover behind it. There is no download column
+because MPD has no endpoint that hands a file over.
 
 **Continue listening** leads the library with the albums and songs you were last in the
 middle of, including Jellyfin's own resume shelf. Anything can be taken offline for the train,

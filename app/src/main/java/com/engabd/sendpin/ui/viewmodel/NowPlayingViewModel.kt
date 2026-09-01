@@ -9,6 +9,7 @@ import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.audio.FormatNegotiator
 import com.engabd.sendpin.audio.LoFiProcessor
 import com.engabd.sendpin.audio.LocalTrack
+import com.engabd.sendpin.audio.ReplayGain
 import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.audio.VinylNoiseProcessor
 import com.engabd.sendpin.data.AppSettings
@@ -145,6 +146,25 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
          * over again the moment this goes off.
          */
         val exclusiveOutputOn: Boolean = false,
+        /**
+         * The library is playing this itself and the phone is its remote — MPD.
+         *
+         * Still a local session: [isLocalSession] is about which *player object*
+         * Now Playing reads, and that is still `LocalPlayer`. This is about where
+         * the sound is, and the controls that differ are the ones addressing this
+         * phone rather than the music — the phone's volume is not the DAC's, and
+         * there is no processor chain here to run a sound mode or a rate through.
+         */
+        val serverPlayer: Boolean = false,
+        /**
+         * The ReplayGain mode in force: `off`, `track` or `album`.
+         *
+         * On the player options sheet for [serverPlayer], where the server applies
+         * it and it is the one level control on that sheet still reaching the
+         * sound. For this phone's own playback it stays in Settings, beside the
+         * rest of the output chain.
+         */
+        val replayGain: String = ReplayGain.ALBUM,
     )
 
     /** A panel's load state — the UI has to tell "empty" from "not fetched yet". */
@@ -244,6 +264,18 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         val vinylNoiseConfig: VinylNoiseProcessor.Config = VinylNoiseProcessor.Config(),
         val loFiConfig: LoFiProcessor.Config = LoFiProcessor.Config(),
         val exclusiveOutputOn: Boolean = false,
+        val server: ServerPlayback = ServerPlayback(),
+    )
+
+    /**
+     * Whether the library plays its own music, and how it is levelling it.
+     *
+     * Paired into one value because [ToggleSnap] is already spending a slot of
+     * `combine`'s five-flow ceiling, and these two are always read together.
+     */
+    private data class ServerPlayback(
+        val active: Boolean = false,
+        val replayGain: String = ReplayGain.ALBUM,
     )
 
     // [toggleSnap] itself — the property, not the type above — is declared much
@@ -356,9 +388,14 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
      * [LocalInfo] are declared for why this specific property has to live down
      * here rather than up there with them.
      */
+    private val serverPlayback: StateFlow<ServerPlayback> =
+        combine(local.remoteActive, settings.replayGainMode) { active, gain ->
+            ServerPlayback(active, gain)
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, ServerPlayback())
+
     private val toggleSnap: StateFlow<ToggleSnap> = combine(
-        _radioMode, _vinylNoiseConfig, _loFiConfig, _exclusiveOutputOn,
-    ) { radio, vinyl, loFi, exclusive -> ToggleSnap(radio, vinyl, loFi, exclusive) }
+        _radioMode, _vinylNoiseConfig, _loFiConfig, _exclusiveOutputOn, serverPlayback,
+    ) { radio, vinyl, loFi, exclusive, server -> ToggleSnap(radio, vinyl, loFi, exclusive, server) }
         .stateIn(viewModelScope, SharingStarted.Eagerly, ToggleSnap())
 
     // ── Server-anchored position engine ──────────────────────────────────────
@@ -662,6 +699,8 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             vinylNoiseConfig = toggles.vinylNoiseConfig,
             loFiConfig = toggles.loFiConfig,
             exclusiveOutputOn = toggles.exclusiveOutputOn,
+            serverPlayer = toggles.server.active,
+            replayGain = toggles.server.replayGain,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, State())
 
@@ -1025,6 +1064,16 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
 
     // --- transport (act on the selected player) ---------------------------
 
+    /**
+     * Level the loudness of what the server is playing.
+     *
+     * Written to [AppSettings] rather than pushed at the player directly: it is the
+     * app's one ReplayGain preference, the same one Settings shows, and
+     * `LocalPlayer` already follows that flow — so it reaches the server from
+     * there whichever screen changed it.
+     */
+    fun setReplayGain(mode: String) = act { settings.setReplayGainMode(mode) }
+
     fun playPause() {
         if (isLocal) { local.toggle(); return }
         act { if (state.value.isPlaying) repo.pause(targetId()) else repo.play(targetId()) }
@@ -1155,7 +1204,17 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         // inside the player. ExoPlayer's own volume is left alone because ReplayGain
         // rides on it, and mixing the two would make a quiet album read as a
         // turned-down phone.
-        if (isLocal) { deviceVolume.set(level01.coerceIn(0f, 1f)); return }
+        if (isLocal) {
+            // The phone's own volume is the wrong knob when the music is coming out
+            // of a DAC across the room: `LocalPlayer.setVolume` passes it to the
+            // player making the sound. Where that player has no mixer of its own — a
+            // bit-perfect output, which is the usual reason to run one — it simply
+            // refuses, which is honest and better than moving this phone's volume
+            // while the music carries on unchanged.
+            if (local.remoteActive.value) local.setVolume(level01.coerceIn(0f, 1f))
+            else deviceVolume.set(level01.coerceIn(0f, 1f))
+            return
+        }
         val lvl = (level01 * 100).toInt().coerceIn(0, 100)
         // When *this phone* is the Music Assistant player, its player volume is the
         // phone's media volume — see `Playback.applyUserVolume`. Setting it here as

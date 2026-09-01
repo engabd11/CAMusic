@@ -336,6 +336,10 @@ class LocalPlayer(private val context: Context) {
         scope.launch {
             settings.replayGainMode.collect { mode ->
                 replayGainMode = mode
+                // A remote player levels its own output — the scalar below acts on a
+                // signal this phone isn't carrying — so the preference goes out to it
+                // instead. See RemotePlayback.setReplayGain.
+                remote?.let { r -> remoteCall { r.setReplayGain(mode) } }
                 applyGain()
             }
         }
@@ -379,29 +383,6 @@ class LocalPlayer(private val context: Context) {
             fadeFactor = 1f
             applyGain()
             track?.let { _started.tryEmit(it) }
-            // MPD's stream URL never changes — every MediaItem in the queue points
-            // at the same continuous HTTP output, and what's actually audible is
-            // whatever MPD's own server-side queue is playing. ExoPlayer moving to a
-            // new index (skip, gapless advance, seek) is bookkeeping only until MPD
-            // is told to catch up, so every transition re-issues the prepare call,
-            // not just the one setQueue awaits explicitly for the first track. This
-            // is a no-op for every other provider.
-            //
-            // Except the one transition [setQueue] causes itself: it awaits the
-            // prepare and *then* hands the list to ExoPlayer, and handing it over
-            // fires this listener. Preparing again from here would race a second
-            // clear+add+play against the stream ExoPlayer is opening at that moment
-            // — the track restarting under the listener a beat after it began. The
-            // flag is consumed by whichever transition arrives first either way, so
-            // a queue that never produced one cannot leave it standing to swallow a
-            // later skip.
-            val suppressed = skipNextPrepare
-            skipNextPrepare = false
-            if (!suppressed) {
-                onPreparePlayback?.let { prepare ->
-                    track?.let { t -> scope.launch { runCatching { prepare(t) } } }
-                }
-            }
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -577,6 +558,153 @@ class LocalPlayer(private val context: Context) {
     }
 
 
+    // --- a player that isn't this phone -----------------------------------
+
+    // Declared above `remote`, whose setter writes it: property initialisers run
+    // in source order, and the other way round the setter would be reading a field
+    // that does not exist yet. The same trap `playerListener`'s comment describes.
+    private val _remoteActive = MutableStateFlow(false)
+
+    /**
+     * The library plays its own music and this player is its remote. Null for
+     * every library that hands out a URL per track, which is all of them but MPD.
+     *
+     * Everything above this class is written against [LocalPlayer] — Now Playing,
+     * the queue sheet, the mini bar, scrobbling — so a second player was never
+     * going to be a second set of screens. It is this: the transport calls go out
+     * to [RemotePlayback] instead of to ExoPlayer, and the state flows are filled
+     * from what it reports back rather than from what ExoPlayer is doing. The
+     * screens cannot tell the difference, and do not have to.
+     *
+     * Setting it stops whatever this phone was playing. The two cannot both be
+     * running: they would be two players, in two rooms, both holding the queue.
+     */
+    var remote: RemotePlayback? = null
+        set(value) {
+            if (field === value) return
+            field = value
+            _remoteActive.value = value != null
+            stopRemoteLoop()
+            // `livePlayer`, not `player`: the latter builds an ExoPlayer on demand,
+            // and building one in order to stop it is how switching *to* a remote
+            // library would leave an audio engine behind for nothing.
+            livePlayer?.let { p -> runCatching { p.clearMediaItems(); p.stop() } }
+            // The session, not `clear()`: clearing would go out to the player that
+            // was just attached and empty a queue this app did not put there. MPD
+            // may well have been playing before the app opened.
+            resetSession()
+            // The loudness setting has to be re-stated to the new player: it was
+            // applied to this phone's output, which is not where the music is now.
+            value?.let { r -> remoteCall { r.setReplayGain(replayGainMode) } }
+        }
+
+    /**
+     * Whether the library is playing this itself.
+     *
+     * The screens need it for the few controls that are about *this phone* rather
+     * than about playback: the volume slider moves the phone's own output, which
+     * is the wrong knob entirely when the sound is coming out of a DAC across the
+     * room.
+     */
+    val remoteActive: StateFlow<Boolean> = _remoteActive
+
+    private var remoteJob: Job? = null
+
+    /** Fire and forget, with the failure kept off the screen. See [RemotePlayback]. */
+    private fun remoteCall(block: suspend () -> Unit) {
+        scope.launch { runCatching { block() } }
+    }
+
+    /**
+     * Follow the remote player: poll it, and fill in between the polls.
+     *
+     * A poll is a round trip, so it runs once a second and the position is carried
+     * forward by hand on the ticks in between. Polling four times a second for a
+     * smooth scrub bar would be four connections a second to a machine that is
+     * also decoding audio; interpolating costs nothing and is right to within the
+     * tick, because a playing track's position advances at exactly one second per
+     * second.
+     */
+    private fun startRemoteLoop() {
+        stopRemoteLoop()
+        val r = remote ?: return
+        remoteJob = scope.launch {
+            var sincePoll = REMOTE_POLL_MS
+            while (isActive) {
+                if (sincePoll >= REMOTE_POLL_MS) {
+                    sincePoll = 0
+                    val state = runCatching { r.poll() }.getOrNull()
+                    if (state != null) applyRemoteState(state)
+                } else if (_playing.value) {
+                    // Between polls, and while a poll is failing: the music has not
+                    // stopped just because the Wi-Fi dropped a packet.
+                    _positionMs.value += POSITION_TICK_MS
+                }
+                delay(POSITION_TICK_MS)
+                sincePoll += POSITION_TICK_MS
+            }
+        }
+    }
+
+    private fun stopRemoteLoop() { remoteJob?.cancel(); remoteJob = null }
+
+    /** Put one reading of the remote player onto the flows the screens read. */
+    private fun applyRemoteState(state: RemoteState) {
+        val queue = _queue.value
+        val wasPlaying = _playing.value
+        _playing.value = state.playing
+
+        if (state.index in queue.indices && state.index != _index.value) {
+            showRemoteIndex(state.index)
+        }
+        _positionMs.value = state.positionMs
+        // The player's own duration is the true one; a track's tag is the fallback
+        // for the moment before it starts, when MPD reports none.
+        _durationMs.value = state.durationMs.takeIf { it > 0 }
+            ?: _current.value?.durationMs
+            ?: 0L
+
+        // The queue ran out: MPD stops rather than sitting paused at the end, and
+        // "keep the music going" is listening for exactly this.
+        if (state.stopped && wasPlaying && queue.isNotEmpty()) {
+            _positionMs.value = _durationMs.value
+            _exhausted.tryEmit(Unit)
+        }
+    }
+
+    /**
+     * Move the screens to [at] — the index, the track, the title, and the scrobble.
+     *
+     * The same bookkeeping `onMediaItemTransition` does for this phone's own
+     * playback, for the same reasons, minus everything about gain and fades: those
+     * are about a signal this player isn't carrying.
+     */
+    private fun showRemoteIndex(at: Int) {
+        val track = _queue.value.getOrNull(at) ?: return
+        _index.value = at
+        _current.value = track
+        _titleFlow.value = track.title
+        _positionMs.value = 0
+        _durationMs.value = track.durationMs
+        _started.tryEmit(track)
+    }
+
+    /**
+     * Show what the remote player is already playing, and change nothing about it.
+     *
+     * The counterpart to [setQueue]: same bookkeeping, no commands. MPD does not
+     * stop when the app is closed, so on connecting the app adopts what is there
+     * rather than presenting an empty player beside music the user can hear.
+     */
+    fun adoptRemoteQueue(tracks: List<LocalTrack>, at: Int) {
+        if (remote == null || tracks.isEmpty()) return
+        _queue.value = tracks
+        _hasSession.value = true
+        smoothQueue = true
+        showRemoteIndex(at.coerceIn(0, tracks.lastIndex))
+        startRemoteLoop()
+    }
+
     // --- queue ------------------------------------------------------------
 
     /** Replace the queue and start at [startIndex]. */
@@ -591,34 +719,24 @@ class LocalPlayer(private val context: Context) {
         // it, and gapless is the entire reason the list is handed over in one go.
         smoothQueue = tracks.size < 2 || tracks.mapNotNull { it.album }.distinct().size > 1
         fadeFactor = 1f
-        // MPD's HTTP stream is a single URL — whatever ExoPlayer reads from it is
-        // whatever MPD's own queue is playing right now, so the prepare call has to
-        // land *before* ExoPlayer opens the stream, not merely be started before it.
-        // A fire-and-forget launch here only starts the race, it doesn't win it: MPD's
-        // clear+add+play is three sequential round trips, and ExoPlayer's own
-        // setMediaItems/prepare/play on the next lines would run well ahead of it. So
-        // when a prepare hook is set, the player calls themselves wait on it; every
-        // other provider (no hook) takes the synchronous path, unchanged.
-        val firstTrack = tracks[start]
-        val prepare = onPreparePlayback
-        if (prepare != null) {
-            scope.launch {
-                runCatching { prepare(firstTrack) }
-                // Handing the list over fires onMediaItemTransition, and the track it
-                // reports is the one just prepared. See [skipNextPrepare].
-                skipNextPrepare = true
-                // The whole list goes to ExoPlayer at once — that is what lets it
-                // buffer across a track boundary, and so what makes the transition
-                // gapless.
-                player.setMediaItems(tracks.map(::mediaItem), start, C.TIME_UNSET)
-                player.prepare()
-                startOutput()
-            }
-        } else {
-            player.setMediaItems(tracks.map(::mediaItem), start, C.TIME_UNSET)
-            player.prepare()
-            startOutput()
+        remote?.let { r ->
+            // Nothing goes to ExoPlayer: the remote player decodes this queue, and a
+            // second copy of it playing here is the "same album out of two rooms"
+            // the httpd stream produced. The index and the track are set now rather
+            // than waited for, so the screen fills the moment the user taps.
+            showRemoteIndex(start)
+            // Optimistically playing, for the second before the first poll answers:
+            // a play button that shows "paused" after a tap reads as a dropped tap.
+            _playing.value = true
+            remoteCall { r.setQueue(tracks, start) }
+            startRemoteLoop()
+            return
         }
+        // The whole list goes to ExoPlayer at once — that is what lets it buffer
+        // across a track boundary, and so what makes the transition gapless.
+        player.setMediaItems(tracks.map(::mediaItem), start, C.TIME_UNSET)
+        player.prepare()
+        startOutput()
     }
 
     /**
@@ -640,34 +758,6 @@ class LocalPlayer(private val context: Context) {
         player.play()
     }
 
-    /**
-     * Called before ExoPlayer opens a track's URL, and again on every later track
-     * change.
-     *
-     * Set only for a library that has something to do there — MPD, whose HTTP
-     * stream is one continuous URL carrying whatever MPD itself is playing, so the
-     * track has to be queued in MPD before the stream reflects it. Every other
-     * provider serves a URL per track and leaves this null, which is what keeps
-     * them on the straight path through [setQueue]: this being set is the switch
-     * that makes the player wait before opening anything.
-     *
-     * [setQueue] awaits it directly, since that is the one place playback can be
-     * held off until it lands. Every later change — [playAt], [next], [previous],
-     * a natural gapless boundary — reaches ExoPlayer's own `onMediaItemTransition`
-     * regardless of which of those triggered it, so that is where this is called
-     * for all of them, in one place, rather than at each call site individually.
-     */
-    var onPreparePlayback: (suspend (LocalTrack) -> Unit)? = null
-
-    /**
-     * Set for the single `onMediaItemTransition` that [setQueue] itself causes, so
-     * the track it just awaited a prepare for is not prepared a second time.
-     *
-     * Written and read on the main thread only — [scope] is `Dispatchers.Main` and
-     * so are the player's own callbacks.
-     */
-    private var skipNextPrepare = false
-
     /** Append to the queue, starting playback if nothing is loaded. */
     fun addToQueue(tracks: List<LocalTrack>) {
         if (tracks.isEmpty()) return
@@ -676,6 +766,17 @@ class LocalPlayer(private val context: Context) {
         // Appending something from off the record — a radio top-up, a queued track —
         // means this is no longer one album, so the fade applies again.
         if (!wasEmpty && _queue.value.mapNotNull { it.album }.distinct().size > 1) smoothQueue = true
+        remote?.let { r ->
+            if (wasEmpty) {
+                _hasSession.value = true
+                showRemoteIndex(0)
+                remoteCall { r.setQueue(_queue.value, 0) }
+                startRemoteLoop()
+            } else {
+                remoteCall { r.addToQueue(tracks) }
+            }
+            return
+        }
         player.addMediaItems(tracks.map(::mediaItem))
         if (wasEmpty) {
             _hasSession.value = true
@@ -690,6 +791,10 @@ class LocalPlayer(private val context: Context) {
         if (_queue.value.isEmpty()) { setQueue(tracks); return }
         val at = (_index.value + 1).coerceIn(0, _queue.value.size)
         _queue.value = _queue.value.toMutableList().apply { addAll(at, tracks) }
+        remote?.let { r ->
+            remoteCall { r.playNext(tracks, _index.value) }
+            return
+        }
         player.addMediaItems(at, tracks.map(::mediaItem))
     }
 
@@ -698,6 +803,13 @@ class LocalPlayer(private val context: Context) {
         if (position !in list.indices) return
         _queue.value = list.toMutableList().apply { removeAt(position) }
         if (_queue.value.isEmpty()) { clear(); return }
+        remote?.let { r ->
+            remoteCall { r.removeAt(position) }
+            // The entry that was playing may have been the one removed; the next
+            // poll reports where the player actually landed.
+            if (position < _index.value) _index.value = _index.value - 1
+            return
+        }
         // ExoPlayer moves to the next item itself when the current one is removed.
         player.removeMediaItem(position)
         _index.value = player.currentMediaItemIndex
@@ -714,6 +826,10 @@ class LocalPlayer(private val context: Context) {
         if (to == from) return
         list.add(to, list.removeAt(from))
         _queue.value = list
+        remote?.let { r ->
+            remoteCall { r.move(from, to) }
+            return
+        }
         player.moveMediaItem(from, to)
         _index.value = player.currentMediaItemIndex
     }
@@ -739,6 +855,14 @@ class LocalPlayer(private val context: Context) {
         val head = list.subList(0, from)
         val tail = list.subList(from, list.size).shuffled()
         _queue.value = head + tail
+        remote?.let { r ->
+            // Sent as a queue replacement rather than as the player's own shuffle:
+            // MPD's `shuffle` would reorder its queue behind this list, and the two
+            // are addressed by index. The list on screen has to be the list the
+            // player holds.
+            remoteCall { r.setQueue(_queue.value, _index.value.coerceAtLeast(0)) }
+            return
+        }
         // One removal and one insertion rather than a move per track: ExoPlayer
         // recomputes the timeline on every edit, and n moves is n timeline updates
         // the UI would animate through.
@@ -749,6 +873,12 @@ class LocalPlayer(private val context: Context) {
 
     fun clear() {
         stopTicker()
+        remote?.let { r ->
+            stopRemoteLoop()
+            remoteCall { r.clear() }
+            resetSession()
+            return
+        }
         // The session flags below are what Now Playing switches on, and they must be
         // cleared even if the player itself refuses — ExoPlayer throws when touched
         // off its own thread, and an exception here used to leave `_hasSession` true
@@ -759,6 +889,11 @@ class LocalPlayer(private val context: Context) {
             player.clearMediaItems()
             player.stop()
         }
+        resetSession()
+    }
+
+    /** Everything the screens read, back to "nothing is loaded". */
+    private fun resetSession() {
         _queue.value = emptyList()
         _index.value = -1
         _current.value = null
@@ -778,6 +913,13 @@ class LocalPlayer(private val context: Context) {
 
     fun playAt(position: Int) {
         if (position !in _queue.value.indices) return
+        remote?.let { r ->
+            showRemoteIndex(position)
+            _playing.value = true
+            remoteCall { r.playAt(position) }
+            startRemoteLoop()
+            return
+        }
         // A queue that ran to the end left the player idle, and an idle player takes
         // the seek and then plays nothing — the same reason [resume] prepares.
         if (player.playbackState == Player.STATE_IDLE) player.prepare()
@@ -785,10 +927,23 @@ class LocalPlayer(private val context: Context) {
         startOutput()
     }
 
-    fun pause() = player.pause()
+    fun pause() {
+        remote?.let { r ->
+            _playing.value = false
+            remoteCall { r.pause() }
+            return
+        }
+        player.pause()
+    }
 
     fun resume() {
         if (_queue.value.isEmpty()) return
+        remote?.let { r ->
+            _playing.value = true
+            remoteCall { r.resume() }
+            startRemoteLoop()
+            return
+        }
         // A playlist that ran to the end, or one an error tore down, needs preparing
         // again before it will make sound.
         if (player.playbackState == Player.STATE_IDLE) player.prepare()
@@ -802,9 +957,33 @@ class LocalPlayer(private val context: Context) {
      * it restarts the track rather than jumping back one. That threshold is
      * `maxSeekToPreviousPositionMs`, set when the player is built.
      */
-    fun previous() = player.seekToPrevious()
+    fun previous() {
+        remote?.let { r ->
+            // The same convention the local player follows, decided here because the
+            // remote player has its own idea of it: past the opening seconds,
+            // "previous" restarts the track rather than leaving it.
+            // The same threshold ExoPlayer is built with, applied by hand because
+            // a remote player has its own idea of what "previous" means.
+            if (_positionMs.value > RESTART_THRESHOLD_MS) {
+                seekTo(0)
+            } else {
+                remoteCall { r.previous() }
+            }
+            return
+        }
+        player.seekToPrevious()
+    }
 
     fun next() {
+        remote?.let { r ->
+            // The end of the queue is the remote player's to report — it is the one
+            // holding the queue — so unlike the local path this does not decide for
+            // itself that there is nothing next. The poll sees the stop and emits
+            // [exhausted] then.
+            if (_index.value >= _queue.value.lastIndex) _exhausted.tryEmit(Unit)
+            remoteCall { r.next() }
+            return
+        }
         if (player.hasNextMediaItem()) {
             player.seekToNextMediaItem()
             return
@@ -863,6 +1042,14 @@ class LocalPlayer(private val context: Context) {
      */
     fun continueAfterEnd() {
         if (_queue.value.isEmpty()) return
+        remote?.let { r ->
+            val next = (_index.value + 1).coerceIn(0, _queue.value.lastIndex)
+            showRemoteIndex(next)
+            _playing.value = true
+            remoteCall { r.playAt(next) }
+            startRemoteLoop()
+            return
+        }
         if (player.playbackState == Player.STATE_IDLE) player.prepare()
         if (!player.hasNextMediaItem()) return
         player.seekToNextMediaItem()
@@ -872,12 +1059,22 @@ class LocalPlayer(private val context: Context) {
     fun seekTo(ms: Long) {
         val max = _durationMs.value.takeIf { it > 0 } ?: ms
         val target = ms.coerceIn(0, max)
-        player.seekTo(target)
+        // Moved on screen before it is asked for, on both paths: a scrub bar that
+        // springs back to where it was until a round trip lands reads as a failure.
         _positionMs.value = target
+        remote?.let { r ->
+            remoteCall { r.seekTo(target) }
+            return
+        }
+        player.seekTo(target)
     }
 
     fun setVolume(v: Float) {
         userVolume = v.coerceIn(0f, 1f)
+        remote?.let { r ->
+            remoteCall { r.setVolume(userVolume) }
+            return
+        }
         applyGain()
     }
 
@@ -886,12 +1083,23 @@ class LocalPlayer(private val context: Context) {
      * exposes, so the option doesn't quietly do nothing on this backend.
      */
     fun setSpeed(value: Float) {
+        // MPD has no playback rate of its own, and there is no signal here to
+        // resample — the phone is not decoding. Left alone rather than moved to a
+        // number that describes nothing.
+        if (remote != null) {
+            _error.tryEmit("The server's player has no speed control")
+            return
+        }
         _speed.value = value.coerceIn(0.5f, 3f)
         player.setPlaybackSpeed(_speed.value)
     }
 
     fun setShuffle(on: Boolean) {
         _shuffle.value = on
+        remote?.let { r ->
+            remoteCall { r.setShuffle(on) }
+            return
+        }
         // ExoPlayer shuffles the *play order* and leaves the list alone, which is
         // what the queue UI wants: the list stays as the user built it.
         player.shuffleModeEnabled = on
@@ -902,6 +1110,10 @@ class LocalPlayer(private val context: Context) {
             "off" -> "all"
             "all" -> "one"
             else -> "off"
+        }
+        remote?.let { r ->
+            remoteCall { r.setRepeat(_repeatMode.value) }
+            return
         }
         player.repeatMode = when (_repeatMode.value) {
             "all" -> Player.REPEAT_MODE_ALL
@@ -1124,5 +1336,15 @@ class LocalPlayer(private val context: Context) {
          * own tick so both players feel the same.
          */
         const val POSITION_TICK_MS = 250L
+
+        /**
+         * How often a remote player is asked what it is doing.
+         *
+         * One second, with the position carried forward on the 250ms ticks in
+         * between — see [startRemoteLoop]. Each poll is a connection to a machine
+         * that is also decoding audio, so this is as often as is polite and as
+         * rarely as a scrub bar can bear.
+         */
+        const val REMOTE_POLL_MS = 1000L
     }
 }

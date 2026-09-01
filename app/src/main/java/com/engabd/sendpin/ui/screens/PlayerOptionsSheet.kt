@@ -28,10 +28,21 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.engabd.sendpin.audio.ExclusiveOutput
+import com.engabd.sendpin.audio.ReplayGain
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
 import kotlin.math.roundToInt
+
+/**
+ * The three ReplayGain modes, in the order they read as a choice: nothing, every
+ * track to the same loudness, or the album kept in proportion with itself.
+ */
+private val ReplayGainModes = listOf(
+    ReplayGain.OFF to "Off",
+    ReplayGain.TRACK to "Track",
+    ReplayGain.ALBUM to "Album",
+)
 
 /** Speeds worth having a one-tap button for; the slider covers everything else. */
 private val SpeedPresets = listOf(0.75f, 1f, 1.25f, 1.5f, 2f)
@@ -177,6 +188,53 @@ fun BoxScope.PlayerOptionsSheet(onClose: () -> Unit, viewModel: NowPlayingViewMo
                     }
                 }
 
+                // Loudness levelling, for a library that plays its own music.
+                //
+                // On this phone's own playback ReplayGain is a scalar on the output
+                // volume and lives in Settings with the rest of the output chain. When
+                // the server is the player that implementation has nothing to act on —
+                // no signal passes through this phone at all — so the preference is
+                // handed to the server, which reads the same tags off the same files
+                // and applies them in its own mixer. It is on this sheet because this
+                // is where the controls that reach *that* player live, and because a
+                // level control two screens away from the player it governs is how the
+                // setting came to be describing something that wasn't happening.
+                if (st.serverPlayer) {
+                    Column {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.VolumeUp, null, tint = TextMuted,
+                                modifier = Modifier.size(17.dp),
+                            )
+                            Spacer(Modifier.width(12.dp))
+                            Text(
+                                "Loudness", color = TextPrimary, fontFamily = AppFont,
+                                style = MaterialTheme.typography.titleLarge,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            ReplayGainModes.forEach { (mode, label) ->
+                                ToggleChip(label, st.replayGain == mode) {
+                                    viewModel.setReplayGain(mode)
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "ReplayGain, applied by the server as it decodes. Album keeps a " +
+                                "record's own quiet and loud tracks in proportion; track levels " +
+                                "every song to the same loudness.",
+                            color = TextFaint, fontFamily = AppFont, fontSize = 11.sp,
+                        )
+                    }
+                }
+
+                // No playback rate where the server is the player: there is no signal
+                // on this phone to resample, and MPD has no rate control of its own.
+                // Hidden rather than shown doing nothing.
+                if (!st.serverPlayer) {
                 Column {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.Speed, null, tint = TextMuted, modifier = Modifier.size(17.dp))
@@ -209,6 +267,7 @@ fun BoxScope.PlayerOptionsSheet(onClose: () -> Unit, viewModel: NowPlayingViewMo
                         "Applies to this player's queue - useful for audiobooks and podcasts.",
                         color = TextFaint, fontFamily = AppFont, fontSize = 11.sp,
                     )
+                }
                 }
             }
         }

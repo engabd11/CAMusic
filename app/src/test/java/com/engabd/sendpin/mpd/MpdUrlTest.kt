@@ -2,11 +2,11 @@ package com.engabd.sendpin.mpd
 
 import com.engabd.sendpin.library.Capability
 import com.engabd.sendpin.library.MpdSource
-import com.engabd.sendpin.library.ServerConfig
 import com.engabd.sendpin.library.ServerKind
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -40,41 +40,32 @@ class MpdUrlTest {
     }
 
     @Test
-    fun `the stream URL uses the configured HTTP port`() {
-        val c = client("192.168.0.202:6600")
-        c.httpPort = 8000
-        assertEquals("http://192.168.0.202:8000", c.streamUrl("any/file.flac"))
+    fun `there is no stream URL, because nothing streams`() {
+        // MPD plays its own queue to its own outputs and this phone drives it, so
+        // there is no URL for anything here to open. It used to answer with MPD's
+        // httpd stream — one URL for every track, carrying whatever MPD happened
+        // to be playing — which played the music a second time out of the phone,
+        // a second behind the DAC, with a scrub bar that could not move.
+        val source = MpdSource(client("192.168.0.202:6600"))
+        assertEquals("", source.streamUrl("any/file.flac"))
+        assertEquals("", source.streamUrl("another/file.flac"))
     }
 
     @Test
-    fun `the stream URL is independent of the track id`() {
-        // MPD's HTTP output is a continuous stream — the URL doesn't change per
-        // track. The track is selected by adding it to MPD's queue, not by URL.
-        val c = client("192.168.0.202:6600")
-        val url1 = c.streamUrl("track1.flac")
-        val url2 = c.streamUrl("track2.flac")
-        assertEquals(url1, url2)
+    fun `there is nothing to download either`() {
+        // MPD serves audio to its own outputs; it has no endpoint that hands a
+        // file over, which is why DOWNLOAD is not among its capabilities.
+        assertEquals("", MpdSource(client("192.168.0.202:6600")).downloadUrl("file.flac"))
     }
 
     @Test
-    fun `the download URL is the same as the stream URL`() {
-        // MPD's HTTP output serves the original file — no transcode endpoint.
-        val c = client("192.168.0.202:6600")
-        assertEquals(c.streamUrl("file.flac"), c.downloadUrl("file.flac"))
-    }
-
-    @Test
-    fun `cover URL is null`() {
-        // MPD doesn't serve cover art — the UI handles this with a placeholder.
-        assertEquals(null, client("192.168.0.202:6600").coverUrl("anything"))
-        assertEquals(null, client("192.168.0.202:6600").coverUrl(null))
-    }
-
-    @Test
-    fun `a custom HTTP port is used when configured`() {
-        val c = client("192.168.0.202:6600")
-        c.httpPort = 8080
-        assertEquals("http://192.168.0.202:8080", c.streamUrl("file.flac"))
+    fun `cover art has a URL of its own scheme`() {
+        // MPD does serve artwork — down the protocol socket, not over HTTP — so
+        // items carry an mpd-art URL and the image loader is taught to fetch it.
+        // Returning null here is what left the whole library drawing placeholders.
+        val url = MpdSource(client("192.168.0.202:6600")).coverUrl("Miles/Kind of Blue/01.flac")
+        assertEquals("mpd-art://cover/Miles%2FKind+of+Blue%2F01.flac", url)
+        assertEquals(null, MpdSource(client("192.168.0.202:6600")).coverUrl(null))
     }
 
     @Test
@@ -107,11 +98,11 @@ class MpdUrlTest {
     }
 
     @Test
-    fun `MPD is the one source that has to prepare playback`() {
-        // The local player installs its prepare hook only for a source that says
-        // this — with the hook set it holds the first track back until MPD has been
-        // told what to play, and every other library keeps the straight path.
-        assertTrue(MpdSource(client("192.168.0.202:6600")).needsPreparePlayback)
+    fun `MPD is the one source that plays its own music`() {
+        // The player attaches whatever a source hands back here and drives that
+        // instead of decoding: transport out, status back. Every other library
+        // answers null and this phone keeps playing the music itself.
+        assertNotNull(MpdSource(client("192.168.0.202:6600")).remotePlayback())
     }
 
     @Test
@@ -123,11 +114,5 @@ class MpdUrlTest {
         assertFalse(source.has(Capability.DOWNLOAD))
         assertFalse(source.has(Capability.FAVORITES))
         assertTrue(source.has(Capability.RICH_FORMAT), "tags carry codec, rate and depth")
-    }
-
-    @Test
-    fun `OPT_MPD_HTTP_PORT is defined for the HTTP streaming port`() {
-        // The setting key exists so the HTTP port can be stored per-server.
-        assertEquals("mpdHttpPort", ServerConfig.OPT_MPD_HTTP_PORT)
     }
 }

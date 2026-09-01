@@ -6,13 +6,58 @@ CAMusic browses and plays from two kinds of thing:
   never decodes for. It is a mode, not a provider, and does not implement
   `MusicSource`.
 - **Everything else** — a library the *phone itself* plays. Navidrome, Subsonic,
-  Jellyfin, Emby, Plex and MPD today; Audiobookshelf, Kodi, a WebDAV share and the
-  cloud drives next. These are all the same shape: list artists and albums, answer a
-  search, hand out a URL ExoPlayer can open.
+  Jellyfin, Emby and Plex today; Audiobookshelf, Kodi, a WebDAV share and the
+  cloud drives next.
+  These are all the same shape: list artists and albums, answer a search, hand out
+  a URL ExoPlayer can open.
+- **MPD**, which is a `MusicSource` for browsing and neither of the above for
+  playing: it plays its own music and the phone drives it. See below.
 
 That second shape is `library/MusicSource.kt`. Before it existed, Navidrome was a
 `SubsonicClient?` field with `when (backend)` around forty call sites, and a third
 server could not be added without touching all of them.
+
+---
+
+## A provider that plays its own music
+
+MPD is the exception the interface had to grow a seam for, and it is worth knowing
+why before adding anything shaped like it (Kodi will be, and so is any UPnP
+renderer).
+
+MPD is not a library with a stream endpoint — it is a *player* with a library
+attached. Its only way to send audio somewhere else is the `httpd` output, which
+is one live stream of whatever it is currently playing: no duration, no position,
+no seek, and the same URL for every track. The first cut of this provider streamed
+that, and everything downstream of the decision was wrong. The music came out of
+the DAC MPD was configured for *and* out of the phone, a second apart. The scrub
+bar had nothing to scrub. Pause paused the phone while MPD played on.
+
+So the transport goes the other way:
+
+- `MusicSource.remotePlayback()` returns a `RemotePlayback` for a source that
+  plays itself, and null — the default — for every other one.
+- `LocalPlayer.remote` holds it. Every transport method delegates to it instead of
+  to ExoPlayer, and the state flows are filled by polling it once a second rather
+  than from ExoPlayer's callbacks. Nothing above `LocalPlayer` changes: Now
+  Playing, the queue sheet, the mini bar and scrobbling all read the same flows
+  they always did.
+- `MusicSource.serverQueue()` / `serverQueueIndex()` let the app adopt what the
+  player is already doing when it connects, since MPD does not stop because a
+  phone was closed.
+
+What follows from it, and is worth copying rather than rediscovering:
+
+- **The app's queue and the player's queue are one list.** Every command addresses
+  a track by index, so a queue edit is sent as the same edit on both sides.
+- **Settings that act on this phone's output are meaningless.** The volume slider,
+  playback speed, the sound modes and the app's own ReplayGain all operate on a
+  signal that isn't here. Hand what the player supports to the player (MPD has
+  `replay_gain_mode`, and the Now Playing options sheet drives it), and hide the
+  rest rather than leaving a control that silently does nothing.
+- **Cover art need not be a URL.** MPD's is binary down the protocol socket, so
+  the items carry an `mpd-art://` URL and a Coil fetcher resolves it. Everything
+  in between goes on treating art as a string.
 
 ---
 
