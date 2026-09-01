@@ -8,6 +8,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
@@ -53,6 +54,11 @@ fun ColumnScope.LocalEqBody(accent: Color) {
     val settings = remember(context) { AppSettings(context) }
     val scope = rememberCoroutineScope()
     val config by settings.localDsp.collectAsStateWithLifecycle(initialValue = LocalDsp.Config())
+    // Exclusive output builds the player with no processors at all — see
+    // TapRenderersFactory and ExclusiveOutput — so this curve has nothing to run
+    // on while it's on. Kept visible rather than hidden: it still edits the
+    // stored config, which takes over again the moment the toggle goes off.
+    val exclusiveOutput by settings.exclusiveOutput.collectAsStateWithLifecycle(initialValue = false)
 
     fun update(next: LocalDsp.Config) {
         scope.launch { settings.setLocalDsp(next) }
@@ -66,11 +72,26 @@ fun ColumnScope.LocalEqBody(accent: Color) {
             .padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
+        if (exclusiveOutput) {
+            Text(
+                "Exclusive output is on, so nothing of this app's — including this " +
+                    "curve — is running on what's playing. Turn it off under Settings > " +
+                    "Playback & audio > Output to use the equaliser again.",
+                color = WarnAmber,
+                fontFamily = AppFont,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+
         ToggleRow(
             title = "Equaliser",
-            subtitle = "Ten bands, applied to music this phone plays itself",
+            subtitle = if (exclusiveOutput)
+                "Inert while Exclusive output is on — see the note above"
+            else
+                "Ten bands, applied to music this phone plays itself",
             checked = config.enabled,
             accent = accent,
+            enabled = !exclusiveOutput,
             info = "Covers this library and your downloads - everything this phone " +
                 "decodes.\n\nIt is not applied to anything Music Assistant streams to a " +
                 "speaker: that has its own DSP running on the server, and doing it here " +
@@ -85,11 +106,13 @@ fun ColumnScope.LocalEqBody(accent: Color) {
         // The sliders. Vertical would look more like a rack, and would give each
         // band about eighteen pixels of travel on a phone — so they are horizontal
         // rows, which is also what makes the frequency and the gain readable.
+        // Still drawn while Exclusive output is on - see the note at the top of
+        // this column - just disabled, same as the toggle above.
         config.bands.forEachIndexed { i, band ->
             BandRow(
                 band = band,
                 accent = accent,
-                enabled = config.enabled,
+                enabled = config.enabled && !exclusiveOutput,
                 onGain = { db ->
                     update(config.copy(bands = config.bands.toMutableList().also {
                         it[i] = band.copy(gainDb = db)
@@ -108,6 +131,7 @@ fun ColumnScope.LocalEqBody(accent: Color) {
             },
             checked = config.autoPreamp,
             accent = accent,
+            enabled = !exclusiveOutput,
             info = "A boosted band has to come from somewhere. Digital audio has a hard " +
                 "ceiling, and material mastered anywhere near it is already at that " +
                 "ceiling - so lifting a band pushes it through, which is heard as " +

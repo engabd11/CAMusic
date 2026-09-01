@@ -98,18 +98,29 @@ class AudioLeadProbe(
     private var streamOffsetUs = 0L
 
     /**
-     * What the sink was configured with, after the processor chain.
+     * The decoder's real output — before any part of the processor chain runs.
      *
-     * The last format the app can observe before Android takes over, and the one
-     * the Output card compares against the decoder's to answer "am I losing bits
-     * here". Reported rather than acted on - this override changes nothing.
+     * This is *not* "after the processor chain", whatever an earlier version of
+     * this comment claimed. [AudioLeadProbe] wraps the [AudioSink] that
+     * [TapRenderersFactory.buildAudioSink] builds, so this override sees exactly
+     * what the renderer decided to hand that sink: [inputFormat] is the
+     * renderer's own `audioSinkInputFormat`, before `DefaultAudioSink`'s
+     * `toInt16PcmAudioProcessor` (or the float path) or any processor of ours has
+     * touched a sample.
+     *
+     * That makes this the only place left that can report the decoder's true
+     * resolution. The processor that used to do this ([SignalPathProbe], now
+     * deleted) sat *inside* the chain [DefaultAudioSink.Builder.setAudioProcessors]
+     * configures — behind media3's own 16-bit converter — so whatever it saw had
+     * already been flattened to 16 bits, whatever the file held. Reported rather
+     * than acted on - this override changes nothing.
      */
     override fun configure(
         inputFormat: androidx.media3.common.Format,
         specifiedBufferSize: Int,
         outputChannels: IntArray?,
     ) {
-        SignalPath.onSinkFormat(inputFormat)
+        SignalPath.onDecoderOutput(inputFormat)
         super.configure(inputFormat, specifiedBufferSize, outputChannels)
     }
 

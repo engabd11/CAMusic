@@ -235,6 +235,22 @@ class LocalPlayer(private val context: Context) {
     private var userVolume = 1f
 
     /**
+     * [ExclusiveOutput] is on for the player currently held in [livePlayer].
+     *
+     * Read once, in [buildPlayer], for the same reason [bitPerfect] is there:
+     * this also governs the renderer factory, which is fixed at construction, so
+     * there is no later moment a change could take effect anyway — see
+     * [com.engabd.sendpin.data.AppSettings.bootExclusiveOutput]. [applyGain] and
+     * [startTicker] read it to know that volume no longer belongs to this app:
+     * with nothing of ours in the chain, the one thing left that would still
+     * touch the signal is the AudioTrack gain `player.volume` applies, so that
+     * is fixed at unity here and the fade/speed-adaptive arithmetic that would
+     * otherwise feed it is skipped rather than computed and thrown away.
+     */
+    @Volatile
+    private var exclusiveOutput = false
+
+    /**
      * When both vinyl noise and lo-fi are active, the lo-fi processor skips
      * its own crackle stage and lets [VinylNoiseProcessor] handle it. This
      * avoids double-running the noise: two crackle generators on the same
@@ -426,15 +442,38 @@ class LocalPlayer(private val context: Context) {
         // factory option, fixed when the player is constructed, so there is no later
         // moment to apply it. A change therefore takes effect on the next player build
         // — Settings says so.
-        val bitPerfect = AppSettings(context).bootBitPerfect
+        //
+        // Exclusive output stacks on top of this rather than replacing it: it forces
+        // the same float path bit-perfect asks for (see `shouldUseFloatOutput` in
+        // SignalPath's class doc) regardless of whether the listener also turned
+        // bit-perfect on, and on top of that strips every processor of ours out of
+        // the chain and leaves OutputRate unreached — see ExclusiveOutput for exactly
+        // what that trades away, and why the ceiling on what it can promise is
+        // AudioFlinger, not the DAC.
+        val settings = AppSettings(context)
+        val bitPerfect = settings.bootBitPerfect
+        val exclusive = settings.bootExclusiveOutput
+        exclusiveOutput = exclusive
 
         // The Light Sync audio analysis tap is injected via TapRenderersFactory,
         // which overrides buildAudioSink to install the tap in the audio sink's
         // processor chain. It stays in the chain whether or not Light Sync is on,
         // because the sink decides membership once per configuration; the cost
         // when off is a buffer copy per callback and nothing else.
-        val renderers = TapRenderersFactory(context, audioAnalysisTap, audioLead, localDsp, vinylNoise, loFiProcessor)
-            .setEnableAudioFloatOutput(bitPerfect) as TapRenderersFactory
+        //
+        // Exclusive mode passes null for the tap and every processor instead: with
+        // nothing of ours between the decoder and the DAC, a 16-bit file must not
+        // keep the equaliser running just because float output only bypasses
+        // processors media3 itself decided to skip.
+        val renderers = TapRenderersFactory(
+            context = context,
+            tap = if (exclusive) null else audioAnalysisTap,
+            lead = audioLead,
+            dsp = if (exclusive) null else localDsp,
+            vinylNoise = if (exclusive) null else vinylNoise,
+            loFi = if (exclusive) null else loFiProcessor,
+            exclusive = exclusive,
+        ).setEnableAudioFloatOutput(bitPerfect || exclusive) as TapRenderersFactory
 
         // The defaults are sized for video-on-mobile-data. This is a lossless file
         // over a LAN, where the sensible trade is a deeper buffer: a 24/96 FLAC is
@@ -489,9 +528,10 @@ class LocalPlayer(private val context: Context) {
                 p.setSeekParameters(SeekParameters.EXACT)
                 p.addListener(playerListener)
                 // The decoder's *input* format - what the file declares. Paired with
-                // SignalPathProbe's report of what the decoder actually handed over,
-                // this is what makes "a 24-bit file arriving as 16-bit PCM" visible
-                // rather than something a listener has to infer from a flat number.
+                // AudioLeadProbe.configure's report of what the decoder actually
+                // handed over (SignalPath.onDecoderOutput), this is what makes "a
+                // 24-bit file arriving as 16-bit PCM" visible rather than something
+                // a listener has to infer from a flat number.
                 p.addAnalyticsListener(object : androidx.media3.exoplayer.analytics.AnalyticsListener {
                     override fun onAudioInputFormatChanged(
                         eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
@@ -853,8 +893,17 @@ class LocalPlayer(private val context: Context) {
      * Set the output volume to the user's level, scaled by the current track's
      * ReplayGain. Re-run whenever either half changes, or a track boundary makes the
      * gain stale.
+     *
+     * In [exclusiveOutput] mode this is unity and nothing else: `player.volume` is
+     * an AudioTrack gain media3 applies, which is exactly the kind of thing
+     * exclusive output promises to remove from the signal. Volume belongs to the
+     * device or the DAC now, not this app — see [ExclusiveOutput].
      */
     private fun applyGain() {
+        if (exclusiveOutput) {
+            player.volume = 1f
+            return
+        }
         val factor = ReplayGain.factor(_current.value?.sourceQuality, replayGainMode)
         player.volume = (userVolume * factor * fadeFactor * speedGainFactor).coerceIn(0f, 1f)
     }
@@ -956,18 +1005,23 @@ class LocalPlayer(private val context: Context) {
             while (isActive) {
                 val pos = player.currentPosition.coerceAtLeast(0)
                 _positionMs.value = pos
-                if (fadeSeconds > 0 && smoothQueue) {
-                    val next = fadeAt(pos, _durationMs.value)
-                    if (kotlin.math.abs(next - fadeFactor) > 0.001f) {
-                        fadeFactor = next
+                // In exclusive mode applyGain() is a fixed 1f whatever these compute,
+                // so there is nothing to converge toward — skip the arithmetic rather
+                // than spend it on a gain that is thrown away every tick.
+                if (!exclusiveOutput) {
+                    if (fadeSeconds > 0 && smoothQueue) {
+                        val next = fadeAt(pos, _durationMs.value)
+                        if (kotlin.math.abs(next - fadeFactor) > 0.001f) {
+                            fadeFactor = next
+                            applyGain()
+                        }
+                    }
+                    // Steps a quarter of the remaining gap per 250ms tick — about a
+                    // second to converge on a new target, never an instant jump.
+                    if (kotlin.math.abs(speedGainTarget - speedGainFactor) > 0.001f) {
+                        speedGainFactor += (speedGainTarget - speedGainFactor) * 0.25f
                         applyGain()
                     }
-                }
-                // Steps a quarter of the remaining gap per 250ms tick — about a
-                // second to converge on a new target, never an instant jump.
-                if (kotlin.math.abs(speedGainTarget - speedGainFactor) > 0.001f) {
-                    speedGainFactor += (speedGainTarget - speedGainFactor) * 0.25f
-                    applyGain()
                 }
                 delay(POSITION_TICK_MS)
             }

@@ -118,6 +118,7 @@ class AppSettings(private val context: Context) {
         private val SENDSPIN_CODEC = stringPreferencesKey("sendspin_codec")     // "auto" | "flac" | "pcm" | "opus"
         private val NAV_STREAM_FORMAT = stringPreferencesKey("nav_stream_format") // Subsonic `format=` ("raw" = original)
         private val BIT_PERFECT = booleanPreferencesKey("bit_perfect_24bit")     // 24-bit AudioTrack path when available
+        private val EXCLUSIVE_OUTPUT = booleanPreferencesKey("exclusive_output")  // no processors, no in-app volume — the source's own bits
         // "sendspin_exoplayer" and "sendspin_oboe" were here and are deliberately
         // not replaced. The native Oboe engine is the only MA engine now, so a
         // stored `false` from a tester's earlier install must not keep silencing
@@ -775,13 +776,42 @@ class AppSettings(private val context: Context) {
     val navStreamFormat: Flow<String> = pref { it[NAV_STREAM_FORMAT] ?: "raw" }
 
     /**
-     * Whether to request 24-bit bit-perfect playback from the AudioTrack path.
-     * When true and the device supports `ENCODING_PCM_24BIT_PACKED` (API 31+,
-     * which is our minSdk), [SendspinNativeEngine] builds a 24-bit AudioTrack
-     * instead of truncating to 16-bit. The server must also be sending 24-bit
-     * — see [FormatNegotiator.MAX_BIT_DEPTH], which is now 24.
+     * Whether to keep more than 16 bits per sample instead of letting the
+     * pipeline flatten it, where that pipeline can actually carry more.
+     *
+     * The two backends do different things with it, and it is worth being exact
+     * about which:
+     *  - **Local/ExoPlayer.** Turns on `setEnableAudioFloatOutput`, media3's
+     *    float render path. Without it, media3's own converter flattens
+     *    anything above 16-bit down to 16 before the sink ever sees it,
+     *    whatever the file holds; with it, a 24-bit FLAC keeps its resolution
+     *    as far as the DAC. See [SignalPath] for what that trades away — on
+     *    that path the equaliser and the Light Sync tap stop running.
+     *  - **Sendspin/Music Assistant.** Does *not* widen the advertised bit
+     *    depth any more. The native Oboe engine is int16 end to end (see
+     *    [SendspinNativeEngine.OUTPUT_BIT_DEPTH]), so advertising 24-bit there
+     *    only cost Music Assistant bandwidth for bits truncated on arrival —
+     *    see the cap applied in
+     *    [com.engabd.sendpin.service.Playback.startSendspin]. What this
+     *    setting still widens on that path is the *rate* list Music Assistant
+     *    may choose from, because the engine does follow the stream's sample
+     *    rate even though it flattens its depth.
      */
     val bitPerfect24Bit: Flow<Boolean> = pref { it[BIT_PERFECT] ?: false }
+
+    /**
+     * Whether the local player should run in [ExclusiveOutput] mode: float
+     * output forced on, none of this app's processors in the chain, output
+     * resampling unreached, and in-app volume fixed at unity — see that object
+     * for exactly what it turns off, what it pins, and the honest limit on what
+     * "exclusive" can mean on Android.
+     *
+     * Mirrored into [bootExclusiveOutput] for the same reason [bitPerfect24Bit]
+     * is mirrored into [bootBitPerfect]: [LocalPlayer.buildPlayer] needs the
+     * answer before it builds the renderer factory, which happens before this
+     * Flow could possibly have emitted its first value.
+     */
+    val exclusiveOutput: Flow<Boolean> = pref { it[EXCLUSIVE_OUTPUT] ?: false }
 
     /**
      * Ask other apps to duck for a Home Assistant announcement, rather than taking
@@ -1116,6 +1146,17 @@ class AppSettings(private val context: Context) {
         context.dataStore.edit { it[BIT_PERFECT] = value }
     }
 
+    /**
+     * Takes effect on the next player build — the renderer factory is fixed when
+     * the player is constructed, same as [setBitPerfect24Bit]. See
+     * [bootExclusiveOutput] for why this is also mirrored into the synchronous
+     * store rather than left as a Flow alone.
+     */
+    suspend fun setExclusiveOutput(value: Boolean) {
+        bootPrefs.edit().putBoolean("exclusive_output", value).apply()
+        context.dataStore.edit { it[EXCLUSIVE_OUTPUT] = value }
+    }
+
     /** Clamped to the range the slider offers, so a bad write cannot desync the show. */
     suspend fun setLightSyncSpeakerOffsetMs(value: Int) {
         context.dataStore.edit {
@@ -1143,6 +1184,13 @@ class AppSettings(private val context: Context) {
      * answer synchronously at build time, which is what this is for.
      */
     val bootBitPerfect: Boolean get() = bootPrefs.getBoolean("bit_perfect", false)
+
+    /**
+     * Exclusive output, readable without a coroutine — see [bootBitPerfect] for
+     * why [LocalPlayer.buildPlayer] needs this synchronously rather than from
+     * [exclusiveOutput]'s Flow.
+     */
+    val bootExclusiveOutput: Boolean get() = bootPrefs.getBoolean("exclusive_output", false)
 
     /** Takes effect on the next stream/start or track open. */
     suspend fun setPreferredAudioDeviceId(value: String) {

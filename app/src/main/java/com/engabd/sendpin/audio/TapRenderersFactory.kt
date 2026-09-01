@@ -33,19 +33,35 @@ object OutputRate {
  * separately by [AudioAnalysisTap.setActive] and runs on its own thread.
  *
  * The processor chain order is:
- * 1. [SignalPathProbe] — reports the decoder's actual output format.
- * 2. [LocalDsp] — the equaliser, so the light show reacts to what is heard.
- * 3. [VinylNoiseProcessor] — surface noise, after EQ so the noise is on the
+ * 1. [LocalDsp] — the equaliser, so the light show reacts to what is heard.
+ * 2. [VinylNoiseProcessor] — surface noise, after EQ so the noise is on the
  *    equalised signal.
- * 4. [LoFiProcessor] — bitcrusher/saturation/low-pass, after vinyl noise so
+ * 3. [LoFiProcessor] — bitcrusher/saturation/low-pass, after vinyl noise so
  *    it can share the crackle stage.
- * 5. [AudioAnalysisTap] — copies for analysis, sees the treated audio.
- * 6. Sonic — resamples to the fixed output rate if one is set.
+ * 4. [AudioAnalysisTap] — copies for analysis, sees the treated audio.
+ * 5. Sonic — resamples to the fixed output rate if one is set.
+ *
+ * The decoder's own output used to be read here too, first in the list above
+ * ([SignalPathProbe], now deleted). It never actually could: a processor only
+ * sees whatever media3 hands it, and media3 runs its own
+ * `toInt16PcmAudioProcessor` ahead of every processor in this chain (see
+ * `DefaultAudioSink.configure`), so whatever a processor reported had already
+ * been flattened to 16-bit, whatever the file held. [AudioLeadProbe], which
+ * wraps the sink [buildAudioSink] returns, sees the format one layer further
+ * out — the renderer's own `audioSinkInputFormat`, before media3's converter
+ * runs at all — which is the only place left that format is visible. See
+ * [SignalPath.onDecoderOutput].
+ *
+ * [tap], [dsp], [vinylNoise] and [loFi] are all nullable so [LocalPlayer] can
+ * build this chain empty for [ExclusiveOutput]: nothing of this app's between
+ * the decoder and the DAC, which for a 16-bit file media3 would not otherwise
+ * guarantee on its own (float only bypasses processors when the *decode*
+ * happens to be high-resolution — see `SignalPath.State.floatEngaged`).
  */
 @OptIn(UnstableApi::class)
 class TapRenderersFactory(
     context: Context,
-    private val tap: AudioAnalysisTap,
+    private val tap: AudioAnalysisTap?,
     private val lead: AudioLead,
     /** The local equaliser, ahead of the tap. See [LocalDsp]. */
     private val dsp: LocalDsp? = null,
@@ -53,6 +69,12 @@ class TapRenderersFactory(
     private val vinylNoise: VinylNoiseProcessor? = null,
     /** Lo-fi mode, after vinyl noise. See [LoFiProcessor]. */
     private val loFi: LoFiProcessor? = null,
+    /**
+     * [ExclusiveOutput] is on: leave the fixed-output-rate Sonic resampler out
+     * of the chain too, explicitly, rather than trusting [OutputRate.hz] to
+     * happen to be 0 — the two are set independently, by different settings.
+     */
+    private val exclusive: Boolean = false,
 ) : DefaultRenderersFactory(context) {
     override fun buildAudioSink(
         context: Context,
@@ -62,12 +84,11 @@ class TapRenderersFactory(
         val sink = DefaultAudioSink.Builder(context)
             .setAudioProcessors(
                 listOfNotNull(
-                    SignalPathProbe(),
                     dsp,
                     vinylNoise,
                     loFi,
                     tap,
-                    OutputRate.hz.takeIf { it > 0 }?.let { rate ->
+                    (if (exclusive) null else OutputRate.hz.takeIf { it > 0 })?.let { rate ->
                         androidx.media3.common.audio.SonicAudioProcessor()
                             .apply { setOutputSampleRateHz(rate) }
                     },
@@ -77,6 +98,7 @@ class TapRenderersFactory(
             .setEnableAudioTrackPlaybackParams(enableAudioOutputPlaybackParams)
             .build()
         SignalPath.onFloatOutput(enableFloatOutput)
+        SignalPath.onExclusive(exclusive)
         return AudioLeadProbe(sink, lead)
     }
 }
