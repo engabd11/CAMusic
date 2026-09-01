@@ -109,7 +109,7 @@ class AudioLeadProbe(
      * touched a sample.
      *
      * That makes this the only place left that can report the decoder's true
-     * resolution. The processor that used to do this ([SignalPathProbe], now
+     * resolution. The processor that used to do this (`SignalPathProbe`, now
      * deleted) sat *inside* the chain [DefaultAudioSink.Builder.setAudioProcessors]
      * configures — behind media3's own 16-bit converter — so whatever it saw had
      * already been flattened to 16 bits, whatever the file held. Reported rather

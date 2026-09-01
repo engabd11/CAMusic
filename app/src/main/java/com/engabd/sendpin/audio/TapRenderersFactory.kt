@@ -42,7 +42,7 @@ object OutputRate {
  * 5. Sonic — resamples to the fixed output rate if one is set.
  *
  * The decoder's own output used to be read here too, first in the list above
- * ([SignalPathProbe], now deleted). It never actually could: a processor only
+ * (`SignalPathProbe`, now deleted). It never actually could: a processor only
  * sees whatever media3 hands it, and media3 runs its own
  * `toInt16PcmAudioProcessor` ahead of every processor in this chain (see
  * `DefaultAudioSink.configure`), so whatever a processor reported had already

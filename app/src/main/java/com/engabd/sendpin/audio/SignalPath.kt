@@ -25,7 +25,7 @@ import kotlinx.coroutines.flow.asStateFlow
  *  2. **[decoded]** — what the decoder handed over, read from
  *     [AudioLeadProbe.configure], the sink wrapper's own `configure()` override.
  *     This used to be read one layer further in, from a processor
- *     ([SignalPathProbe], now deleted) sitting inside `DefaultAudioSink`'s chain —
+ *     (`SignalPathProbe`, now deleted) sitting inside `DefaultAudioSink`'s chain —
  *     which is *behind* media3's own 16-bit converter (see
  *     `DefaultAudioSink.configure`'s `toInt16PcmAudioProcessor`), so whatever a
  *     processor saw had already been flattened to 16-bit, whatever the file held.
