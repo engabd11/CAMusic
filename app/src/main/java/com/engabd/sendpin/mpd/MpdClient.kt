@@ -530,17 +530,19 @@ class MpdClient(
         val artist = m["artist"] ?: m["albumartist"] ?: ""
         val album = m["album"] ?: ""
         val duration = m["duration"]?.toFloatOrNull()?.toInt()
-        val trackNumber = m["track"]?.substringBefore('/').toIntOrNull()
-        val discNumber = m["disc"]?.substringBefore('/').toIntOrNull()
+        val trackNumber = m["track"]?.substringBefore('/')?.toIntOrNull()
+        val discNumber = m["disc"]?.substringBefore('/')?.toIntOrNull()
         val date = m["date"]?.substringBefore('-')?.toIntOrNull()
         val genre = m["genre"]?.let { listOf(it) } ?: emptyList()
 
-        // Audio format from MPD's format fields
+        // Audio format from MPD's format fields. The field is "samplerate:bits:channels"
+        // — three parts, not four; MPD doesn't report a codec name here at all, so it
+        // has to come from the file's own extension instead.
         val format = m["format"]?.split(':')
         val sampleRate = m["samplerate"]?.toInt() ?: format?.getOrNull(0)?.toIntOrNull() ?: 0
         val bitDepth = m["bits"]?.toInt() ?: format?.getOrNull(1)?.toIntOrNull() ?: 0
         val channels = m["channels"]?.toInt() ?: 2
-        val codec = m["format"]?.split(':')?.getOrNull(3) ?: ""
+        val codec = codecFromExtension(file)
 
         val audioFormat = if (sampleRate > 0 || codec.isNotBlank()) {
             MaAudioFormat(
@@ -568,6 +570,23 @@ class MpdClient(
             album = album.ifBlank { null },
             parentId = album.ifBlank { null },
         )
+    }
+
+    /** The codec implied by a file's extension — MPD's own metadata carries none. */
+    private fun codecFromExtension(file: String): String = when (
+        file.substringAfterLast('.', "").lowercase()
+    ) {
+        "flac" -> "flac"
+        "mp3" -> "mp3"
+        "ogg", "oga" -> "vorbis"
+        "opus" -> "opus"
+        "m4a", "aac" -> "aac"
+        "wav" -> "wav"
+        "wv" -> "wavpack"
+        "ape" -> "ape"
+        "alac" -> "alac"
+        "dsf", "dff" -> "dsd"
+        else -> ""
     }
 
     /**
