@@ -146,24 +146,11 @@ class StemSoloProcessor : BaseAudioProcessor() {
             sections = emptyArray()
             return
         }
-        val cascade = buildCascade(stem, sampleRate)
+        // Each channel needs its own Biquad instances: a Biquad is stateful
+        // (carries filter history), so sharing one across channels would
+        // corrupt the filter state. buildCascade returns fresh instances.
         sections = Array(channelCount.coerceAtLeast(1)) {
-            cascade.map { b ->
-                Biquad().apply {
-                    // Copy the coefficients from the template biquad. We can't
-                    // share stateful biquads across channels, so each channel
-                    // gets its own copy of the same coefficients.
-                    val template = b
-                    // Re-derive from the stem rather than trying to copy internals.
-                    // buildCascade is cheap and returns fresh biquads.
-                }
-            }.toTypedArray()
-        }.also { _ ->
-            // Actually rebuild from buildCascade directly per channel, since
-            // the template approach above does not copy coefficients.
-            sections = Array(channelCount.coerceAtLeast(1)) {
-                buildCascade(stem, sampleRate).toTypedArray()
-            }
+            buildCascade(stem, sampleRate).toTypedArray()
         }
     }
 

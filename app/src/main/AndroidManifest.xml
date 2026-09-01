@@ -284,6 +284,24 @@
         </receiver>
 
         <!--
+          Audio-reactive live wallpaper. Renders a spectrum visualiser driven
+          by the same FFT the light show reads, so the home screen matches the
+          room. BIND_WALLPAPER is the system's guarantee that only the
+          wallpaper picker can bind it.
+        -->
+        <service
+            android:name=".wallpaper.MusicWallpaperService"
+            android:exported="false"
+            android:permission="android.permission.BIND_WALLPAPER">
+            <intent-filter>
+                <action android:name="android.service.wallpaper.WallpaperService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.service.wallpaper"
+                android:resource="@xml/wallpaper" />
+        </service>
+
+        <!--
           Hands a generated file to the share sheet without loosening anything:
           the grant is per-URI, read-only and lives only as long as the receiving
           activity. Scoped to one cache subdirectory - see res/xml/shared_files.xml.
