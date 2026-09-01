@@ -67,6 +67,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.engabd.sendpin.ui.design.sharedArt
 import com.engabd.sendpin.download.DownloadJob
+import com.engabd.sendpin.ma.CATEGORY_PROVIDER
 import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ma.LibraryViewModel.Backend
 import com.engabd.sendpin.ma.MaItem
@@ -659,7 +660,7 @@ private data class RowState(
     )
 }
 
-private fun isCategory(item: MaItem) = item.provider == LibraryViewModel.CATEGORY
+private fun isCategory(item: MaItem) = item.provider == CATEGORY_PROVIDER
 private fun isDownload(item: MaItem) = item.provider == MusicSources.DOWNLOAD_PROVIDER
 
 /**

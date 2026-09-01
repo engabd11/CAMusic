@@ -43,6 +43,8 @@ import coil.compose.AsyncImage
 import com.engabd.sendpin.ui.design.sharedArt
 import com.engabd.sendpin.download.DownloadJob
 import com.engabd.sendpin.ma.LibraryViewModel
+import com.engabd.sendpin.library.MusicSources
+import com.engabd.sendpin.ma.CATEGORY_PROVIDER
 import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
@@ -437,8 +439,8 @@ internal fun ItemRow(
     swipeToQueue: Boolean = false,
 ) {
     val accent = LocalAccent.current
-    val isCategory = item.provider == "__cat__"
-    val isDownload = item.provider == "__dl__"
+    val isCategory = item.provider == CATEGORY_PROVIDER
+    val isDownload = item.provider == MusicSources.DOWNLOAD_PROVIDER
     // Which actions this row offers is [RowFlags]' business, not this function's. It
     // used to be decided here by `item.provider == "subsonic"` — a test that meant
     // "is this the self-hosted library" back when there was only one, and that has

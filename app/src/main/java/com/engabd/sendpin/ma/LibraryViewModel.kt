@@ -117,6 +117,16 @@ data class DiscoverShelf(
 )
 
 /**
+ * The provider tag a root-shelf category card carries.
+ *
+ * Not a library at all — a sentinel saying "this row opens a list rather than plays
+ * something". File-level rather than inside the view model's private companion
+ * because the library screen has to recognise one too, and the alternative was the
+ * literal `"__cat__"` written out in both places.
+ */
+internal const val CATEGORY_PROVIDER = "__cat__"
+
+/**
  * On-device library. Two switchable backends:
  *  - **Music Assistant** (`/ws` API): browse/search and play to a target player,
  *    defaulting to THIS phone (its MA queue id == our Sendspin client id).
@@ -1270,7 +1280,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     fun open(item: MaItem) {
         when {
-            item.provider == CATEGORY -> openCategory(item.itemId, item.name)
+            item.provider == CATEGORY_PROVIDER -> openCategory(item.itemId, item.name)
             // Opening a result hides the result list but keeps it in memory, so
             // Back returns to the same matches instead of an empty search box.
             item.browsable -> { _searchOpen.value = false; pushNode(item.name) { childrenOf(item) } }
@@ -3004,7 +3014,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun category(id: String, name: String) =
-        MaItem(id, CATEGORY, name, null, "category", null, null, null)
+        MaItem(id, CATEGORY_PROVIDER, name, null, "category", null, null, null)
 
     /**
      * Downloads grouped by album and in track order, so a downloaded album reads —
@@ -3028,7 +3038,6 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private companion object {
-        const val CATEGORY = "__cat__"
         const val DOWNLOAD = "__dl__"
         const val DOWNLOADS_TITLE = "Downloads"
 
