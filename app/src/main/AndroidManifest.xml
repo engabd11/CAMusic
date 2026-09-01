@@ -271,6 +271,19 @@
              LocalPlaybackService) - no MediaButtonReceiver or MEDIA_BUTTON
              intent-filter needed for either. -->
         <!--
+          Sunrise alarm receiver. Not exported: the receiver is only ever fired by
+          the system's AlarmManager on our own PendingIntent, and exporting it would
+          let any app trigger a sunrise by broadcasting the action.
+        -->
+        <receiver
+            android:name=".alarm.AlarmReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.engabd.sendpin.SUNRISE_ALARM" />
+            </intent-filter>
+        </receiver>
+
+        <!--
           Hands a generated file to the share sheet without loosening anything:
           the grant is per-URI, read-only and lives only as long as the receiving
           activity. Scoped to one cache subdirectory - see res/xml/shared_files.xml.
