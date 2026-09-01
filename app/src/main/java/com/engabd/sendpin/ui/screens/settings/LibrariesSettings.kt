@@ -493,9 +493,9 @@ private fun ServerDetail(
                     accent,
                 )
                 Note(
-                    "The port of MPD's `httpd` audio output — the `port` line in that " +
-                        "output block in mpd.conf, not the 6600 above. MPD must have an " +
-                        "httpd output enabled for this phone to play anything.",
+                    "The port of MPD's httpd audio output — the port line in that output " +
+                        "block in mpd.conf, not the 6600 above. MPD needs an httpd output " +
+                        "enabled for this phone to play anything.",
                 )
             }
             when (config.kind.auth) {
