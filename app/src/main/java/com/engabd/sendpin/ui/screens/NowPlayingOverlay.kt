@@ -16,8 +16,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.shape.CircleShape
@@ -404,25 +402,20 @@ fun NowPlayingOverlay(
                             // Box: one surface, one movement, nothing to fall out of step.
                             // The bar's thumbnail simply cross-fades, which is what a
                             // control that is being replaced should do.
-                            Box(Modifier.fillMaxSize()) {
-                                AlbumArt(
-                                    art = art,
-                                    glow = palette.swatch(0),
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .graphicsLayer { alpha = artDim.value }
-                                        // Tap → the live visualizer takes the cover's place.
-                                        .clickable(
-                                            interactionSource = remember { MutableInteractionSource() },
-                                            indication = null,
-                                        ) { coverSlot = CoverSlot.VISUALIZER },
-                                    glowAlpha = artGlow.value,
-                                    placeholder = Icons.AutoMirrored.Filled.QueueMusic,
-                                )
-                                // The same affordance the tab layout got. This cover has
-                                // been tappable just as long and said so just as little.
-                                CoverTapHint(trackId = st.currentQueueItemId)
-                            }
+                            AlbumArt(
+                                art = art,
+                                glow = palette.swatch(0),
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .graphicsLayer { alpha = artDim.value }
+                                    // Tap → the live visualizer takes the cover's place.
+                                    .clickable(
+                                        interactionSource = remember { MutableInteractionSource() },
+                                        indication = null,
+                                    ) { coverSlot = CoverSlot.VISUALIZER },
+                                glowAlpha = artGlow.value,
+                                placeholder = Icons.AutoMirrored.Filled.QueueMusic,
+                            )
                     }
                 }
 
@@ -432,52 +425,40 @@ fun NowPlayingOverlay(
                 // tab layout puts them, so switching layouts does not move the controls.
                 // Below the transport they also fell below the fold on shorter phones,
                 // which is a poor home for the queue and the lyrics.
-                BoxWithConstraints(Modifier.fillMaxWidth()) {
-                    val rowMinWidth = maxWidth
-                    Row(
-                        Modifier
-                            .horizontalScroll(rememberScrollState())
-                            .widthIn(min = rowMinWidth)
-                            .padding(horizontal = 10.dp),
-                        horizontalArrangement =
-                            Arrangement.spacedBy(9.dp, Alignment.CenterHorizontally),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        // Favourite
-                        IconChip(
-                            if (favorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                            if (favorite) "Remove from favourites" else "Add to favourites",
-                            active = favorite,
-                            // Gated on `favouritableItem`, not `currentItem`: the
-                            // latter is null for the whole of a local-library session,
-                            // which greyed this out on Navidrome and Jellyfin even though
-                            // both implement starring. See NowPlayingViewModel.
-                            tint = if (favouritable == null) TextFaint else null,
-                            onClick = if (favouritable == null) null else ({ viewModel.toggleFavorite() }),
-                        )
-                        // Sleep timer
-                        SleepTimerChip(viewModel)
-                        // Lyrics — swaps the cover for the words, in place.
-                        IconChip(Icons.Default.Lyrics, "Lyrics", active = coverSlot == CoverSlot.LYRICS) {
-                            coverSlot = if (coverSlot == CoverSlot.LYRICS) CoverSlot.ART else CoverSlot.LYRICS
-                        }
-                        // Queue
-                        IconChip(Icons.AutoMirrored.Filled.QueueMusic, "Queue", active = sheets.panel == Panel.QUEUE) {
-                            sheets.panel = if (sheets.panel == Panel.QUEUE) null else Panel.QUEUE
-                        }
-                        // Playback speed + player options
-                        IconChip(Icons.Default.Tune, "Player options", active = sheets.options) { sheets.options = !sheets.options }
-                        // Local-player only: see the note on the same chip in NowPlayingScreen.
-                        DownloadChip(libraryViewModel)
-                        // Both engines: see the note on the same chip in NowPlayingScreen.
-                        // This layout kept the old MA-only gate after the local equaliser
-                        // landed, so Navidrome and Jellyfin had no equaliser here at all
-                        // while the tab layout had one.
-                        IconChip(
-                            Icons.Default.GraphicEq,
-                            if (st.isLocalSession) "Equaliser" else "DSP / Equalizer",
-                            active = sheets.panel == Panel.DSP,
-                        ) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(9.dp, Alignment.CenterHorizontally),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    // Favourite
+                    IconChip(
+                        if (favorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                        if (favorite) "Remove from favourites" else "Add to favourites",
+                        active = favorite,
+                        // Gated on `favouritableItem`, not `currentItem`: the
+                        // latter is null for the whole of a local-library session,
+                        // which greyed this out on Navidrome and Jellyfin even though
+                        // both implement starring. See NowPlayingViewModel.
+                        tint = if (favouritable == null) TextFaint else null,
+                        onClick = if (favouritable == null) null else ({ viewModel.toggleFavorite() }),
+                    )
+                    // Sleep timer
+                    SleepTimerChip(viewModel)
+                    // Lyrics — swaps the cover for the words, in place.
+                    IconChip(Icons.Default.Lyrics, "Lyrics", active = coverSlot == CoverSlot.LYRICS) {
+                        coverSlot = if (coverSlot == CoverSlot.LYRICS) CoverSlot.ART else CoverSlot.LYRICS
+                    }
+                    // Queue
+                    IconChip(Icons.AutoMirrored.Filled.QueueMusic, "Queue", active = sheets.panel == Panel.QUEUE) {
+                        sheets.panel = if (sheets.panel == Panel.QUEUE) null else Panel.QUEUE
+                    }
+                    // Playback speed + player options
+                    IconChip(Icons.Default.Tune, "Player options", active = sheets.options) { sheets.options = !sheets.options }
+                    // Local-player only: see the note on the same chip in NowPlayingScreen.
+                    DownloadChip(libraryViewModel)
+                    // MA-only: see the note on the same chip in NowPlayingScreen.
+                    if (!st.isLocalSession) {
+                        IconChip(Icons.Default.GraphicEq, "DSP / Equalizer", active = sheets.panel == Panel.DSP) {
                             sheets.panel = if (sheets.panel == Panel.DSP) null else Panel.DSP
                         }
                     }
