@@ -2,7 +2,6 @@ package com.engabd.sendpin.mpd
 
 import com.engabd.sendpin.ma.MaAudioFormat
 import com.engabd.sendpin.ma.MaItem
-import com.engabd.sendpin.ma.MaLyrics
 import com.engabd.sendpin.ma.MaSearchResults
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -12,8 +11,6 @@ import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.net.InetSocketAddress
 import java.net.Socket
-import java.net.URLEncoder
-import java.util.UUID
 
 /**
  * An exception from the MPD protocol client.
@@ -57,16 +54,15 @@ class MpdException(message: String, val isAuth: Boolean = false) : Exception(mes
  * ```
  *
  * The stream URL is then `http://<host>:8000`, a continuous FLAC stream of
- * whatever MPD is playing. To play a specific track, CAMusic adds it to MPD's
- * queue and starts playback — the HTTP stream follows. See [streamUrl].
+ * whatever MPD is playing. To play a specific track, [preparePlayback] adds it
+ * to MPD's queue and starts playback before ExoPlayer opens the stream URL.
+ * See [streamUrl].
  *
  * ## What MPD has and doesn't have
  *
  * MPD's metadata comes entirely from file tags, so `MaAudioFormat` is rich
  * (codec, sample rate, bit depth, bitrate) but there are no artist biographies,
- * no lyrics, no similar-track suggestions, no artwork URLs. Cover art is
- * handled by reading the album directory's `cover.jpg` over HTTP if MPD's
- * web server or a companion file server is configured — see [coverUrl].
+ * no lyrics, no similar-track suggestions, no artwork URLs.
  */
 class MpdClient(
     /** The MPD server address, e.g. `192.168.0.202:6600`. */
@@ -124,10 +120,6 @@ class MpdClient(
      * Opens a fresh socket, sends the command, reads until `OK` or `ACK`, and
      * closes. The MPD protocol is stateful in theory (playback state persists
      * across connections) but each browse command is self-contained.
-     *
-     * Quotes arguments per MPD's quoting rules: double quotes and backslashes
-     * inside the argument are escaped, and the whole argument is wrapped in
-     * double quotes if it contains spaces.
      */
     private suspend fun command(cmd: String): List<Pair<String, String>> =
         withContext(Dispatchers.IO) {
@@ -187,9 +179,18 @@ class MpdClient(
             }
         }
 
-    /** Quote a string per MPD's quoting rules. */
+    /**
+     * Quote a string per MPD's quoting rules.
+     *
+     * Backslashes and double quotes are escaped; single quotes are escaped as
+     * `\'` per the MPD protocol spec. The whole argument is wrapped in double
+     * quotes.
+     */
     private fun quote(s: String): String {
-        val escaped = s.replace("\\", "\\\\").replace("\"", "\\\"")
+        val escaped = s
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("'", "\\'")
         return "\"$escaped\""
     }
 
@@ -220,11 +221,8 @@ class MpdClient(
 
     /** All artists in the library. */
     suspend fun artists(): List<MaItem> {
-        val response = command("list artist group albumartist")
-        // MPD returns "artist: Name" lines. With group, also "albumartist: Name".
-        // We want unique artist names.
-        val names = response.map { it.second }.filter { it.isNotBlank() }.distinct()
-        return names.map { name ->
+        val response = command("list artist")
+        return response.map { it.second }.filter { it.isNotBlank() }.distinct().map { name ->
             MaItem(
                 itemId = name,
                 provider = PROVIDER,
@@ -241,28 +239,45 @@ class MpdClient(
     /** All albums in the library, or albums by a specific artist. */
     suspend fun albums(artist: String? = null, offset: Int = 0, limit: Int = 200): List<MaItem> {
         val cmd = if (artist != null) {
-            "list album group date group albumartist ${quoteArtist(artist)}"
+            "list album group date group albumartist ${quote(artist)}"
         } else {
             "list album group date group albumartist"
         }
         val response = command(cmd)
-        // Parse the grouped response: "album: Title\ndate: Year\nalbumartist: Artist"
         return parseAlbumGroups(response, offset, limit)
     }
 
-    /** Recently added albums, sorted by last-modified. */
+    /**
+     * Recently added albums.
+     *
+     * MPD's `list` command doesn't support sorting by last-modified, so this
+     * uses `find modified-since "1900-01-01"` with `sort` on newer MPD versions,
+     * falling back to the unsorted album list on older ones. In practice the
+     * shelf shows the full album list — not truly "recent", but the best MPD
+     * can do without a dedicated sort command.
+     */
     suspend fun recentlyAdded(limit: Int = 200): List<MaItem> {
-        // MPD doesn't have a "recent" command, but we can sort by Last-Modified
-        val response = command("list album group date group albumartist")
-        val all = parseAlbumGroups(response, 0, Int.MAX_VALUE)
-        // We don't have modification time from list; use find with sorting
-        return all.take(limit)
+        // Try `search window added "" 0 limit` on MPD 0.24+ which supports
+        // windowed search. Fall back to the plain album list.
+        return try {
+            val response = command("search window added \"\" 0 $limit")
+            parseTracks(response).mapNotNull { it.album }.distinct().map { albumName ->
+                MaItem(
+                    itemId = albumName, provider = PROVIDER,
+                    name = albumName, uri = albumName,
+                    mediaType = "album", subtitle = null,
+                    image = null, duration = null,
+                )
+            }.take(limit)
+        } catch (_: MpdException) {
+            albums(offset = 0, limit = limit)
+        }
     }
 
-    /** Recently played — MPD tracks play counts via the sticker database. */
+    /** Recently played — not implemented (MPD has no play history without stickers). */
     suspend fun recentlyPlayed(limit: Int = 200): List<MaItem> = emptyList()
 
-    /** Most played — would need sticker database queries. */
+    /** Most played — not implemented (MPD has no play counts without stickers). */
     suspend fun mostPlayed(limit: Int = 200): List<MaItem> = emptyList()
 
     /** Artist detail: the artist's albums. */
@@ -277,7 +292,7 @@ class MpdClient(
 
     /** Album detail: the album's tracks. */
     suspend fun albumDetail(id: String): Pair<MaItem?, List<MaItem>> {
-        // id is "Album|AlbumArtist" — parse it
+        // id is "Album\0AlbumArtist" — parse it
         val parts = id.split("\u0000", limit = 2)
         val albumName = parts.getOrNull(0) ?: id
         val albumArtist = parts.getOrNull(1)
@@ -293,7 +308,7 @@ class MpdClient(
             itemId = id, provider = PROVIDER, name = albumName, uri = id,
             mediaType = "album",
             subtitle = albumArtist,
-            image = coverUrl(id),
+            image = null,
             duration = tracks.sumOf { it.duration ?: 0 }.takeIf { it > 0 },
         )
         return albumItem to tracks
@@ -302,7 +317,6 @@ class MpdClient(
     /** All playlists. */
     suspend fun playlists(): List<MaItem> {
         val response = command("listplaylists")
-        // Response: "playlist: Name\n" per playlist, optionally "last-modified: ..."
         val names = response.filter { it.first == "playlist" }.map { it.second }.distinct()
         return names.map { name ->
             MaItem(
@@ -312,49 +326,55 @@ class MpdClient(
         }
     }
 
-    /** Tracks in a stored playlist. */
+    /**
+     * Tracks in a stored playlist, with full metadata.
+     *
+     * Uses `listplaylistinfo` (not `listplaylist`) so each track carries its
+     * title, artist, album, duration and format — the same metadata a `find`
+     * response returns.
+     */
     suspend fun playlistTracks(id: String): List<MaItem> {
-        val response = command("listplaylist ${quote(id)}")
-        return response.filter { it.first == "file" }.map { file ->
-            // We need to fetch the metadata for each file — for now return a basic item
-            MaItem(
-                itemId = file.second, provider = PROVIDER,
-                name = file.second.substringAfterLast('/'),
-                uri = file.second, mediaType = "track",
-                subtitle = null, image = null, duration = null,
-            )
-        }
+        val response = command("listplaylistinfo ${quote(id)}")
+        return parseTracks(response)
     }
 
     /** A single song by file path. */
     suspend fun song(id: String): MaItem? {
         val response = command("find file ${quote(id)}")
-        val tracks = parseTracks(response)
-        return tracks.firstOrNull()
+        return parseTracks(response).firstOrNull()
     }
 
-    /** All tracks, paginated. */
+    /**
+     * All tracks, paginated.
+     *
+     * Uses `listallinfo` which returns every song with full metadata including
+     * file paths. The entire response is received and then paginated client-side
+     * — MPD doesn't support pagination on `listallinfo`. For very large libraries
+     * (10k+ tracks) this is a known limitation; the first page is as expensive
+     * as the last.
+     */
     suspend fun tracks(offset: Int = 0, limit: Int = 500): List<MaItem> {
-        val response = command("list title group artist group album")
-        return parseTrackList(response, offset, limit)
+        val response = command("listallinfo")
+        return parseTracks(response).drop(offset).take(limit)
     }
 
-    /** Random songs. */
+    /** Random songs — shuffles the full track list. */
     suspend fun randomSongs(size: Int = 100): List<MaItem> {
-        // MPD doesn't have a random search; we can use "find" with no filter
-        // and shuffle, or use the "playlistadd" with random. For simplicity,
-        // return a slice of all tracks.
-        val response = command("list title group artist group album")
-        val all = parseTrackList(response, 0, Int.MAX_VALUE)
-        return all.shuffled().take(size)
+        val response = command("listallinfo")
+        return parseTracks(response).shuffled().take(size)
     }
 
     // ── Search ───────────────────────────────────────────────────────────
 
-    /** Full search across artists, albums, and tracks. */
+    /**
+     * Full search across artists, albums, and tracks.
+     *
+     * MPD's `search` command doesn't support `playlist` as a filter type, so
+     * playlist results are fetched via `listplaylists` and filtered client-side.
+     */
     suspend fun search(query: String, limit: Int = 30): MaSearchResults {
         val q = quote(query)
-        // MPD search is per-type; run all three in sequence
+
         val artistResults = command("search artist $q")
             .map { it.second }.filter { it.isNotBlank() }.distinct()
             .take(limit)
@@ -365,21 +385,20 @@ class MpdClient(
                 )
             }
 
-        val albumResults = command("search album $q")
-            .map { it.second }.filter { it.isNotBlank() }.distinct()
-            .take(limit)
-            .map { name ->
-                MaItem(
-                    itemId = name, provider = PROVIDER, name = name, uri = name,
-                    mediaType = "album", subtitle = null, image = null, duration = null,
-                )
-            }
+        // Album search returns album names; we need the compound Album\0Artist id
+        // so albumDetail opens the right album. Run a grouped search to get the
+        // albumartist alongside the album name.
+        val albumResults = command("search album $q group albumartist")
+            .let { resp -> parseAlbumGroups(resp, 0, limit) }
 
         val trackResults = command("search title $q")
         val tracks = parseTracks(trackResults).take(limit)
 
-        val playlistResults = command("search playlist $q")
-            .map { it.second }.filter { it.isNotBlank() }.distinct()
+        // Playlists: MPD has no `search playlist` — list all and filter client-side
+        val playlistResults = command("listplaylists")
+            .filter { it.first == "playlist" }
+            .map { it.second }
+            .filter { it.contains(query, ignoreCase = true) }
             .take(limit)
             .map { name ->
                 MaItem(
@@ -388,7 +407,12 @@ class MpdClient(
                 )
             }
 
-        return MaSearchResults(artists = artistResults, albums = albumResults, tracks = tracks, playlists = playlistResults)
+        return MaSearchResults(
+            artists = artistResults,
+            albums = albumResults,
+            tracks = tracks,
+            playlists = playlistResults,
+        )
     }
 
     // ── Genres ────────────────────────────────────────────────────────────
@@ -412,8 +436,7 @@ class MpdClient(
 
     /**
      * Favorites via MPD stickers. MPD has no built-in "starred" concept;
-     * stickers are a generic key-value store per song. This returns empty
-     * unless a sticker "starred" has been set.
+     * stickers are a generic key-value store per song. Returns empty.
      */
     suspend fun favorites(): MaSearchResults = MaSearchResults(
         artists = emptyList(), albums = emptyList(), tracks = emptyList(), playlists = emptyList(),
@@ -425,45 +448,46 @@ class MpdClient(
      * The HTTP stream URL for ExoPlayer to open.
      *
      * MPD's HTTP output is a single continuous stream of whatever MPD is
-     * currently playing. To play a specific track, the caller must:
-     * 1. Clear MPD's queue (`MpdClient.clearQueue()`)
-     * 2. Add the track (`MpdClient.addToQueue(file)`)
-     * 3. Start playback (`MpdClient.play()`)
-     * 4. Open this URL in ExoPlayer
+     * currently playing. The URL is `http://<host>:<httpPort>` — it has no
+     * track id in it because MPD's stream is always "whatever is playing now",
+     * not a per-track URL.
      *
-     * The URL is `http://<host>:<httpPort>` — it has no track id in it because
-     * MPD's stream is always "whatever is playing now", not a per-track URL.
-     * The [id] parameter is the file path, used only for the queue-add flow.
+     * [preparePlayback] must be called before ExoPlayer opens this URL — it
+     * clears MPD's queue, adds the track, and starts playback. Without that
+     * call, the stream plays whatever MPD was already playing (or silence).
      */
     fun streamUrl(id: String, format: String = streamFormat): String {
-        val (_, port) = hostPort
-        val (httpHost, _) = hostPort
-        return "http://$httpHost:$httpPort"
+        val (host, _) = hostPort
+        return "http://$host:$httpPort"
     }
 
     /** Same as streamUrl — MPD serves the original file through its HTTP output. */
     fun downloadUrl(id: String): String = streamUrl(id)
 
     /**
-     * Cover art URL. MPD itself doesn't serve cover art, but if a companion
-     * HTTP server (or MPD's own web server if configured) serves the music
-     * directory, we can try `cover.jpg` in the album's directory.
+     * Cover art URL. MPD itself doesn't serve cover art.
      *
-     * Returns null when no cover URL can be derived — the UI handles this
-     * gracefully with a placeholder.
+     * Returns null — the UI handles this gracefully with a placeholder.
      */
     fun coverUrl(id: String?, size: Int = 1000): String? = null
 
-    // ── Queue control ─────────────────────────────────────────────────────
+    // ── Playback (queue control) ──────────────────────────────────────────
 
-    /** Clear MPD's play queue. */
-    suspend fun clearQueue() { command("clear") }
-
-    /** Add a file to MPD's play queue. */
-    suspend fun addToQueue(file: String) { command("add ${quote(file)}") }
-
-    /** Start playback. */
-    suspend fun play() { command("play") }
+    /**
+     * Prepare MPD to play [file] so its HTTP stream outputs that track.
+     *
+     * Clears the queue, adds the file, and starts playback. This must be called
+     * before ExoPlayer opens [streamUrl] — otherwise the stream plays whatever
+     * MPD was already playing (or silence if idle).
+     *
+     * Called by [MpdSource.preparePlayback], which the player service invokes
+     * before opening the stream URL.
+     */
+    suspend fun preparePlayback(file: String) {
+        command("clear")
+        command("add ${quote(file)}")
+        command("play")
+    }
 
     /** Stop playback. */
     suspend fun stop() { command("stop") }
@@ -471,18 +495,10 @@ class MpdClient(
     /** Set the volume (0-100). */
     suspend fun setVolume(volume: Int) { command("setvol $volume") }
 
-    // ── Scrobble ────────────────────────────────────────────────────────
-
-    /** Increment play count via stickers. */
-    suspend fun scrobble(file: String) {
-        // MPD stickers can track play count: sticker set "play_count" <file> "N"
-        // For now, a no-op — MPD doesn't scrobble to last.fm natively.
-    }
-
     // ── Parsing helpers ──────────────────────────────────────────────────
 
     /**
-     * Parse a `find` or `search` response into a list of tracks.
+     * Parse a `find`, `search`, or `listallinfo` response into a list of tracks.
      *
      * MPD returns flat key-value lines, where each track's metadata is a run
      * of consecutive lines starting with "file:".
@@ -496,7 +512,11 @@ class MpdClient(
                 current?.let { tracks.add(buildTrack(it)) }
                 current = mutableMapOf("file" to value)
             } else {
-                current?.put(key, value)
+                // Skip directory entries from listallinfo — only "file" entries
+                // have audio metadata. "directory" entries are just paths.
+                if (key != "directory") {
+                    current?.put(key, value)
+                }
             }
         }
         current?.let { tracks.add(buildTrack(it)) }
@@ -568,7 +588,6 @@ class MpdClient(
         for ((key, value) in response) {
             when (key) {
                 "album" -> {
-                    // Emit the previous album if any
                     if (currentAlbum != null) {
                         val id = buildAlbumId(currentAlbum!!, currentArtist)
                         albums.add(
@@ -577,7 +596,7 @@ class MpdClient(
                                 name = currentAlbum!!, uri = id,
                                 mediaType = "album",
                                 subtitle = currentArtist,
-                                image = coverUrl(id),
+                                image = null,
                                 duration = null,
                                 year = currentDate?.substringBefore('-')?.toIntOrNull(),
                             ),
@@ -591,7 +610,6 @@ class MpdClient(
                 "albumartist" -> currentArtist = value
             }
         }
-        // Emit the last album
         if (currentAlbum != null) {
             val id = buildAlbumId(currentAlbum!!, currentArtist)
             albums.add(
@@ -600,7 +618,7 @@ class MpdClient(
                     name = currentAlbum!!, uri = id,
                     mediaType = "album",
                     subtitle = currentArtist,
-                    image = coverUrl(id),
+                    image = null,
                     duration = null,
                     year = currentDate?.substringBefore('-')?.toIntOrNull(),
                 ),
@@ -613,61 +631,4 @@ class MpdClient(
     /** Build a unique album id from name + artist, using a NUL separator. */
     private fun buildAlbumId(album: String, artist: String?): String =
         if (artist != null) "$album\u0000$artist" else album
-
-    /** Quote an artist name for an MPD command argument. */
-    private fun quoteArtist(name: String): String = quote(name)
-
-    /**
-     * Parse a `list title group artist group album` response into track items.
-     */
-    private fun parseTrackList(
-        response: List<Pair<String, String>>,
-        offset: Int = 0,
-        limit: Int = 500,
-    ): List<MaItem> {
-        // This is a flat list of "title: X\nartist: Y\nalbum: Z" runs.
-        // We don't have file paths here, so we use title as the id.
-        val tracks = mutableListOf<MaItem>()
-        var currentTitle: String? = null
-        var currentArtist: String? = null
-        var currentAlbum: String? = null
-
-        for ((key, value) in response) {
-            when (key) {
-                "title" -> {
-                    if (currentTitle != null) {
-                        tracks.add(
-                            MaItem(
-                                itemId = currentTitle!!, provider = PROVIDER,
-                                name = currentTitle!!, uri = currentTitle,
-                                mediaType = "track",
-                                subtitle = currentArtist,
-                                image = null, duration = null,
-                                album = currentAlbum,
-                            ),
-                        )
-                    }
-                    currentTitle = value
-                    currentArtist = null
-                    currentAlbum = null
-                }
-                "artist" -> currentArtist = value
-                "album" -> currentAlbum = value
-            }
-        }
-        if (currentTitle != null) {
-            tracks.add(
-                MaItem(
-                    itemId = currentTitle!!, provider = PROVIDER,
-                    name = currentTitle!!, uri = currentTitle,
-                    mediaType = "track",
-                    subtitle = currentArtist,
-                    image = null, duration = null,
-                    album = currentAlbum,
-                ),
-            )
-        }
-
-        return tracks.drop(offset).take(limit)
-    }
 }

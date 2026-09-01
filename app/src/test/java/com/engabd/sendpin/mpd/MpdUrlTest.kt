@@ -4,7 +4,6 @@ import com.engabd.sendpin.library.ServerConfig
 import com.engabd.sendpin.library.ServerKind
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -76,8 +75,8 @@ class MpdUrlTest {
     }
 
     @Test
-    fun `the default port is 6600 when no port is given`() {
-        // The MPD protocol port defaults to 6600.
+    fun `serverUrl has no port when none is given`() {
+        // The serverUrl is for display; the TCP port defaults to 6600 internally.
         val c = client("192.168.0.202")
         assertEquals("http://192.168.0.202", c.serverUrl)
     }

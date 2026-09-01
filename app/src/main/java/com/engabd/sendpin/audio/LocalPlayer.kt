@@ -568,6 +568,14 @@ class LocalPlayer(private val context: Context) {
         // it, and gapless is the entire reason the list is handed over in one go.
         smoothQueue = tracks.size < 2 || tracks.mapNotNull { it.album }.distinct().size > 1
         fadeFactor = 1f
+        // MPD's HTTP stream is a single URL — prepare the first track before
+        // ExoPlayer opens it. A no-op for every other provider.
+        val firstTrack = tracks[start]
+        onPreparePlayback?.let { prepare ->
+            scope.launch {
+                runCatching { prepare(firstTrack) }
+            }
+        }
         // The whole list goes to ExoPlayer at once — that is what lets it buffer
         // across a track boundary, and so what makes the transition gapless.
         player.setMediaItems(tracks.map(::mediaItem), start, C.TIME_UNSET)
@@ -593,6 +601,19 @@ class LocalPlayer(private val context: Context) {
         onTakingOutput?.invoke()
         player.play()
     }
+
+    /**
+     * Called before ExoPlayer opens a track's URL.
+     *
+     * For every provider except MPD this is a no-op — the URL is per-track, so
+     * ExoPlayer opening it is all that's needed. MPD's HTTP stream is a single
+     * continuous URL, so [MusicSource.preparePlayback] must queue the right
+     * track in MPD before the stream is opened.
+     *
+     * Called from [setQueue] and [playAt] — the two entry points where
+     * ExoPlayer starts reading a new URL.
+     */
+    var onPreparePlayback: (suspend (LocalTrack) -> Unit)? = null
 
     /** Append to the queue, starting playback if nothing is loaded. */
     fun addToQueue(tracks: List<LocalTrack>) {

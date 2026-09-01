@@ -12,7 +12,7 @@ import com.engabd.sendpin.mpd.MpdException
  * MPD is the same shape of thing as Navidrome or Jellyfin: it lists artists and
  * albums, answers a search, and hands out a URL ExoPlayer can open. The
  * difference is that the "URL" is MPD's continuous HTTP output stream — to
- * play a specific track, the source adds it to MPD's queue and starts
+ * play a specific track, [preparePlayback] adds it to MPD's queue and starts
  * playback, then ExoPlayer opens the stream URL. See [MpdClient.streamUrl].
  *
  * ## What MPD can't do
@@ -23,7 +23,8 @@ import com.engabd.sendpin.mpd.MpdException
  * [Capability.RICH_FORMAT] *is* here — MPD reports codec, sample rate and bit
  * depth per track. No [Capability.FAVORITES] (MPD has no starred concept
  * natively), no [Capability.DOWNLOAD] (the HTTP stream is real-time, not
- * seekable for downloads).
+ * seekable for downloads), no [Capability.HISTORY] (MPD has no play history
+ * without stickers).
  */
 class MpdSource(private val client: MpdClient) : MusicSource {
 
@@ -43,7 +44,6 @@ class MpdSource(private val client: MpdClient) : MusicSource {
         Capability.GENRES,
         Capability.PLAYLIST_READ,
         Capability.TRACKS,
-        Capability.HISTORY,
         Capability.RICH_FORMAT,
     )
 
@@ -85,8 +85,6 @@ class MpdSource(private val client: MpdClient) : MusicSource {
     // ── Shelves ───────────────────────────────────────────────────────────
 
     override suspend fun recentlyAdded(limit: Int): List<MaItem> = client.recentlyAdded(limit)
-    override suspend fun recentlyPlayed(limit: Int): List<MaItem> = client.recentlyPlayed(limit)
-    override suspend fun mostPlayed(limit: Int): List<MaItem> = client.mostPlayed(limit)
     override suspend fun favorites(): MaSearchResults = client.favorites()
     override suspend fun randomSongs(size: Int): List<MaItem> = client.randomSongs(size)
 
@@ -106,4 +104,13 @@ class MpdSource(private val client: MpdClient) : MusicSource {
     override fun streamUrl(id: String, format: String): String = client.streamUrl(id, format)
     override fun downloadUrl(id: String): String = client.downloadUrl(id)
     override fun coverUrl(id: String?, size: Int): String? = client.coverUrl(id, size)
+
+    /**
+     * Clear MPD's queue, add this track, and start playback so the HTTP stream
+     * outputs the right track when ExoPlayer opens [streamUrl].
+     *
+     * This is the one provider where [preparePlayback] is not a no-op — every
+     * other provider serves a per-track URL. See [MusicSource.preparePlayback].
+     */
+    override suspend fun preparePlayback(id: String) = client.preparePlayback(id)
 }
