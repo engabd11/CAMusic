@@ -522,7 +522,7 @@ internal fun TopBar(
  * hit area inside it would only be somewhere the long-press did not work.
  */
 @Composable
-private fun BoxScope.CoverTapHint(trackId: String?) {
+internal fun BoxScope.CoverTapHint(trackId: String?) {
     var visible by remember { mutableStateOf(true) }
     LaunchedEffect(trackId) {
         visible = true
@@ -562,7 +562,7 @@ private fun BoxScope.CoverTapHint(trackId: String?) {
     }
 }
 
-private const val HINT_MS = 2_600L
+internal const val HINT_MS = 2_600L
 
 /**
  * Keep the track that is playing.
