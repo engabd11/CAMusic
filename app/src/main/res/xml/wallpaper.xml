@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Live wallpaper metadata for the system's wallpaper picker.
+
+  Registered in AndroidManifest.xml as a service with the
+  "android.service.wallpaper.WallpaperService" action, which makes it appear
+  in the system wallpaper selection screen under the label below.
+
+  The thumbnail is a simple drawable; a proper screenshot would be generated
+  by the system the first time the wallpaper is shown.
+-->
+<wallpaper
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:label="@string/app_name"
+    android:settingsActivity="com.engabd.sendpin.MainActivity"
+    android:thumbnail="@mipmap/ic_launcher" />
