@@ -38,39 +38,30 @@ class MpdException(message: String, val isAuth: Boolean = false) : Exception(mes
  * one socket per command — simpler than pooling, and MPD's lightweight protocol
  * makes the connection overhead negligible on a LAN.
  *
- * ## Streaming
+ * ## Playing
  *
  * MPD does not hand out URLs the way Subsonic or Jellyfin do — it plays audio
- * itself. To stream to this phone's ExoPlayer, MPD's `httpd` output must be
- * enabled in `mpd.conf`:
+ * itself, to whatever output its own config names, which on the kind of box
+ * people run MPD on is a DAC. So this client does not fetch audio at all: it
+ * puts the app's queue into MPD's queue and works the transport — `play`,
+ * `pause`, `seekcur`, `next` — while `status` says where the playhead is. See
+ * [MpdRemote] and [com.engabd.sendpin.audio.RemotePlayback].
  *
- * ```
- * audio_output {
- *     type "httpd"
- *     name "MPD HTTP Stream"
- *     port "8000"
- *     encoder "flac"
- * }
- * ```
- *
- * The stream URL is then `http://<host>:8000`, a continuous FLAC stream of
- * whatever MPD is playing. To play a specific track, [preparePlayback] adds it
- * to MPD's queue and starts playback before ExoPlayer opens the stream URL.
- * See [streamUrl].
+ * The `httpd` output this once required is no longer needed for anything.
  *
  * ## What MPD has and doesn't have
  *
- * MPD's metadata comes entirely from file tags, so `MaAudioFormat` is rich
- * (codec, sample rate, bit depth, bitrate) but there are no artist biographies,
- * no lyrics, no similar-track suggestions, no artwork URLs.
+ * Metadata comes entirely from file tags, so `MaAudioFormat` is rich (codec,
+ * sample rate, bit depth) and there are no artist biographies, no lyrics and no
+ * similar-track suggestions. Artwork it does have, embedded or beside the file —
+ * see [coverArt] — and its own ReplayGain, which [setReplayGainMode] hands the
+ * app's preference to.
  */
 class MpdClient(
     /** The MPD server address, e.g. `192.168.0.202:6600`. */
     private val address: String,
     /** Optional password for MPD servers configured with a password. */
     @Volatile var password: String = "",
-    /** The HTTP streaming port, for [streamUrl]. Default 8000. */
-    @Volatile var httpPort: Int = 8000,
 ) {
     companion object {
         const val PROVIDER = "mpd"
@@ -79,6 +70,11 @@ class MpdClient(
         private const val OK = "OK"
         /** The MPD protocol's error response prefix. */
         private const val ACK = "ACK"
+
+        /** Refuse a cover past this — a phone's art view is not worth 20 MB of heap. */
+        private const val MAX_ART_BYTES = 20 * 1024 * 1024
+        /** MPD hands art over in chunks; this bounds a server that never finishes. */
+        private const val MAX_ART_CHUNKS = 4096
 
         /**
          * One `key: value` response line, or null for anything that isn't one.
@@ -103,6 +99,33 @@ class MpdClient(
         /** [parseLine] over a whole response, for tests and for [command]. */
         internal fun parseLines(lines: List<String>): List<Pair<String, String>> =
             lines.mapNotNull(::parseLine)
+
+        /**
+         * A `status` response as [MpdStatus]. Pure, so it can be tested against
+         * what a real daemon sends without one being there.
+         *
+         * Every field has a fallback, and none of them throws: a server that
+         * answers oddly is polled once a second, and once a second is a bad rate
+         * for an exception.
+         */
+        internal fun readStatus(response: List<Pair<String, String>>): MpdStatus {
+            val m = response.toMap()
+            return MpdStatus(
+                state = m["state"] ?: "stop",
+                songIndex = m["song"]?.toIntOrNull() ?: -1,
+                elapsedMs = m["elapsed"].toMillis(),
+                durationMs = m["duration"].toMillis(),
+                volume = m["volume"]?.toIntOrNull() ?: -1,
+                repeat = m["repeat"] == "1",
+                single = m["single"] == "1",
+                random = m["random"] == "1",
+                playlistLength = m["playlistlength"]?.toIntOrNull() ?: 0,
+            )
+        }
+
+        /** Seconds as MPD writes them — `245.320` — in milliseconds. */
+        private fun String?.toMillis(): Long =
+            this?.toFloatOrNull()?.let { (it * 1000).toLong() }?.coerceAtLeast(0L) ?: 0L
     }
 
     val serverUrl: String get() = base()
@@ -224,8 +247,10 @@ class MpdClient(
      *
      * MPD executes the whole list before answering, so this is one socket and one
      * round trip where [command] would be one of each per command. That matters
-     * for [preparePlayback], which runs before playback can start and used to
-     * spend three sequential round trips getting there.
+     * for [playQueue], which is a clear, an add per track and a play, and which
+     * a listener is waiting on: a queue swap sent as one command list is a queue
+     * swap, where the same commands sent one connection at a time are an audible
+     * gap with the old track still going during it.
      */
     private suspend fun commandList(vararg cmds: String): List<Pair<String, String>> =
         command((listOf("command_list_begin") + cmds + "command_list_end").joinToString("\n"))
@@ -315,7 +340,7 @@ class MpdClient(
                     itemId = id, provider = PROVIDER,
                     name = album, uri = id,
                     mediaType = "album", subtitle = artist,
-                    image = null, duration = null,
+                    image = MpdArt.url(id), duration = null,
                 )
             }
         } catch (_: MpdException) {
@@ -357,7 +382,7 @@ class MpdClient(
             itemId = id, provider = PROVIDER, name = albumName, uri = id,
             mediaType = "album",
             subtitle = albumArtist,
-            image = null,
+            image = MpdArt.url(id),
             duration = tracks.sumOf { it.duration ?: 0 }.takeIf { it > 0 },
         )
         return albumItem to tracks
@@ -456,7 +481,7 @@ class MpdClient(
             .map { (id, album, artist) ->
                 MaItem(
                     itemId = id, provider = PROVIDER, name = album, uri = id,
-                    mediaType = "album", subtitle = artist, image = null, duration = null,
+                    mediaType = "album", subtitle = artist, image = MpdArt.url(id), duration = null,
                 )
             }
 
@@ -520,57 +545,277 @@ class MpdClient(
     // ── URLs ──────────────────────────────────────────────────────────────
 
     /**
-     * The HTTP stream URL for ExoPlayer to open.
+     * Cover art, as a URL the image loader knows how to fetch. See [MpdArt].
      *
-     * MPD's HTTP output is a single continuous stream of whatever MPD is
-     * currently playing. The URL is `http://<host>:<httpPort>` — it has no
-     * track id in it because MPD's stream is always "whatever is playing now",
-     * not a per-track URL.
-     *
-     * [preparePlayback] must be called before ExoPlayer opens this URL — it
-     * clears MPD's queue, adds the track, and starts playback. Without that
-     * call, the stream plays whatever MPD was already playing (or silence).
+     * MPD has artwork and this provider used to say it didn't, so every album,
+     * every row and every player screen drew a placeholder square. It comes down
+     * the protocol socket rather than over HTTP, which is why it needs a scheme of
+     * its own rather than a link.
      */
-    fun streamUrl(id: String, format: String = streamFormat): String {
-        val (host, _) = hostPort
-        return "http://$host:$httpPort"
-    }
+    fun coverUrl(id: String?, size: Int = 1000): String? = MpdArt.url(id)
 
-    /** Same as streamUrl — MPD serves the original file through its HTTP output. */
-    fun downloadUrl(id: String): String = streamUrl(id)
+    // ── Playback: MPD is the player ───────────────────────────────────────
 
     /**
-     * Cover art URL. MPD itself doesn't serve cover art.
+     * What MPD is doing right now, as `status` and `currentsong` report it.
      *
-     * Returns null — the UI handles this gracefully with a placeholder.
+     * This is the whole reason MPD is driven rather than streamed. MPD's httpd
+     * output is a live stream: it has no duration, no position and no seek, so a
+     * phone rendering it can only ever show a spinning clock and a dead scrub bar
+     * — which is exactly what it did. MPD, on the other hand, knows the elapsed
+     * seconds, the duration, which entry of its queue is playing and whether it
+     * is paused, and it takes `seekcur`. So the phone asks it.
      */
-    fun coverUrl(id: String?, size: Int = 1000): String? = null
-
-    // ── Playback (queue control) ──────────────────────────────────────────
+    data class MpdStatus(
+        /** `play`, `pause` or `stop`. */
+        val state: String,
+        /** Index into MPD's queue, or -1 when stopped with nothing selected. */
+        val songIndex: Int,
+        val elapsedMs: Long,
+        /** From `status`, which reports it for the playing entry only. 0 when unknown. */
+        val durationMs: Long,
+        val volume: Int,
+        val repeat: Boolean,
+        val single: Boolean,
+        val random: Boolean,
+        /** How many entries MPD's own queue holds. */
+        val playlistLength: Int,
+    ) {
+        val playing: Boolean get() = state == "play"
+        val stopped: Boolean get() = state == "stop"
+    }
 
     /**
-     * Prepare MPD to play [file] so its HTTP stream outputs that track.
+     * [MpdStatus], or null when MPD couldn't be reached.
      *
-     * Clears the queue, adds the file, and starts playback. This must be called
-     * before ExoPlayer opens [streamUrl] — otherwise the stream plays whatever
-     * MPD was already playing (or silence if idle).
-     *
-     * Called by [MpdSource.preparePlayback], which the player service invokes
-     * before opening the stream URL.
+     * Null is "no answer", never "stopped": this is polled once a second while
+     * anything is playing, and one dropped packet must not blank the screen or
+     * look like the queue ending.
      */
-    suspend fun preparePlayback(file: String) {
-        // One command list, not three commands: MPD runs the lot before answering,
-        // so this is a single round trip. Playback cannot start until it lands, and
-        // three sequential ones over a LAN is long enough to hear the track MPD was
-        // on before this one.
-        commandList("clear", "add ${quote(file)}", "play")
+    suspend fun status(): MpdStatus? = try {
+        readStatus(command("status"))
+    } catch (_: MpdException) {
+        null
     }
+
+    /**
+     * MPD's own queue, in order, with the metadata a browse response carries.
+     *
+     * Read on connecting, so a phone that opens while MPD is already halfway
+     * through a record shows that record rather than an empty player and a
+     * transport that appears to control nothing. MPD kept playing while the app
+     * was shut; it is the app that has to catch up.
+     */
+    suspend fun queueTracks(): List<MaItem> = parseTracks(command("playlistinfo"))
+
+    /** The file MPD is playing, or null when it is playing nothing. */
+    suspend fun currentSong(): MaItem? = parseTracks(command("currentsong")).firstOrNull()
+
+    /**
+     * Replace MPD's queue with [files] and start at [startIndex].
+     *
+     * One command list, so MPD sees a queue swap rather than a clear followed by
+     * an audible gap while each track is added over its own connection.
+     */
+    suspend fun playQueue(files: List<String>, startIndex: Int = 0) {
+        if (files.isEmpty()) {
+            commandList("clear")
+            return
+        }
+        val at = startIndex.coerceIn(0, files.lastIndex)
+        commandList(
+            *buildList {
+                add("clear")
+                files.forEach { add("add ${quote(it)}") }
+                add("play $at")
+            }.toTypedArray(),
+        )
+    }
+
+    /** Append [files] to MPD's queue, leaving what is playing alone. */
+    suspend fun enqueue(files: List<String>) {
+        if (files.isEmpty()) return
+        commandList(*files.map { "add ${quote(it)}" }.toTypedArray())
+    }
+
+    /** Insert [files] directly after the playing entry. */
+    suspend fun enqueueNext(files: List<String>, after: Int) {
+        if (files.isEmpty()) return
+        // `add uri position` is MPD 0.23+. On an older server the ACK leaves the
+        // queue untouched, and the caller's append is the honest fallback.
+        val at = (after + 1).coerceAtLeast(0)
+        try {
+            commandList(*files.mapIndexed { i, f -> "add ${quote(f)} ${at + i}" }.toTypedArray())
+        } catch (_: MpdException) {
+            enqueue(files)
+        }
+    }
+
+    suspend fun playAt(index: Int) { command("play $index") }
+    suspend fun resume() { command("pause 0") }
+    suspend fun pause() { command("pause 1") }
+    suspend fun next() { command("next") }
+    suspend fun previous() { command("previous") }
+
+    /** Seek within the playing entry. MPD takes seconds, with decimals. */
+    suspend fun seekMs(ms: Long) {
+        command("seekcur %.3f".format(java.util.Locale.US, (ms.coerceAtLeast(0L) / 1000.0)))
+    }
+
+    suspend fun removeAt(index: Int) { command("delete $index") }
+    suspend fun moveInQueue(from: Int, to: Int) { command("move $from $to") }
+    suspend fun shuffleQueue() { command("shuffle") }
+    suspend fun clearQueue() { command("clear") }
+    suspend fun setRandom(on: Boolean) { command("random ${if (on) 1 else 0}") }
+
+    /**
+     * Repeat and repeat-one, which MPD spells as two flags: `single` on top of
+     * `repeat` is "this track for ever", `repeat` alone is "the queue for ever".
+     */
+    suspend fun setRepeat(mode: String) {
+        val repeat = mode != "off"
+        val single = mode == "one"
+        commandList("repeat ${if (repeat) 1 else 0}", "single ${if (single) 1 else 0}")
+    }
+
+    /**
+     * MPD's own ReplayGain, set to the app's preference.
+     *
+     * MPD reads the ReplayGain tags off the file it is decoding and applies them
+     * in its own mixer — `off`, `track`, `album` and `auto`, the first three
+     * spelled exactly as this app spells them, so the setting passes straight
+     * through. This is the only way the preference can mean anything here: the
+     * phone's implementation is a scalar on the phone's output, and when MPD is
+     * the player the phone's output carries no music to scale.
+     */
+    suspend fun setReplayGainMode(mode: String) {
+        val m = when (mode) {
+            "track", "album", "auto" -> mode
+            else -> "off"
+        }
+        command("replay_gain_mode $m")
+    }
+
+    /** What MPD says its ReplayGain is set to, or null if it wouldn't say. */
+    suspend fun replayGainMode(): String? =
+        runCatching { command("replay_gain_status").toMap()["replay_gain_mode"] }.getOrNull()
 
     /** Stop playback. */
     suspend fun stop() { command("stop") }
 
     /** Set the volume (0-100). */
-    suspend fun setVolume(volume: Int) { command("setvol $volume") }
+    suspend fun setVolume(volume: Int) { command("setvol ${volume.coerceIn(0, 100)}") }
+
+    // ── Cover art ─────────────────────────────────────────────────────────
+
+    /**
+     * The cover for [file], as bytes, or null when MPD has none.
+     *
+     * MPD does serve artwork, in two flavours, and the provider shipped claiming
+     * it doesn't: `readpicture` returns the picture embedded in the file's own
+     * tags, `albumart` a cover file sitting beside it in the directory. Embedded
+     * is tried first because it is per-track correct on a compilation, where one
+     * folder cover is wrong for most of the album.
+     *
+     * Both answer in chunks — `binary: N` then N raw bytes — so this reads until
+     * the reported size is complete. Binary is why it cannot go through
+     * [command]: that decodes the socket as UTF-8, which mangles every byte above
+     * 0x7F, which is most of a JPEG.
+     */
+    suspend fun coverArt(file: String): ByteArray? =
+        binaryCommand("readpicture", file) ?: binaryCommand("albumart", file)
+
+    /**
+     * A song under [albumId] — the `Album\u0000AlbumArtist` id the browse screens
+     * carry — so an album's cover can be asked for by album.
+     *
+     * MPD's art commands take a *song* uri and nothing else: there is no such
+     * thing as asking it for "the cover of this album", so one of the album's
+     * songs stands for it.
+     */
+    suspend fun anySongIn(albumId: String): String? =
+        albumDetail(albumId).second.firstOrNull()?.itemId
+
+    /**
+     * One chunked binary command (`albumart` / `readpicture`), over one socket.
+     *
+     * Returns null when MPD answers ACK — no picture for this song, or a server
+     * too old for the command — which is a normal answer, not a failure.
+     */
+    private suspend fun binaryCommand(cmd: String, uri: String): ByteArray? =
+        withContext(Dispatchers.IO) {
+            val (host, port) = hostPort
+            val socket = Socket()
+            try {
+                socket.connect(InetSocketAddress(host, port), 5000)
+                socket.soTimeout = 10000
+                val input = java.io.BufferedInputStream(socket.getInputStream())
+                val out = java.io.BufferedWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8))
+
+                if (readAsciiLine(input)?.startsWith("OK") != true) return@withContext null
+                if (password.isNotBlank()) {
+                    out.write("password ${quote(password)}\n"); out.flush()
+                    if (readAsciiLine(input)?.startsWith(OK) != true) return@withContext null
+                }
+
+                val buffer = java.io.ByteArrayOutputStream()
+                var size = -1
+                var guard = 0
+                while (guard++ < MAX_ART_CHUNKS) {
+                    out.write("$cmd ${quote(uri)} ${buffer.size()}\n"); out.flush()
+
+                    var chunk = -1
+                    while (true) {
+                        val line = readAsciiLine(input) ?: return@withContext null
+                        if (line.startsWith(ACK)) return@withContext null
+                        if (line == OK) break
+                        val (key, value) = parseLine(line) ?: continue
+                        when (key) {
+                            "size" -> size = value.toIntOrNull() ?: -1
+                            "binary" -> {
+                                chunk = value.toIntOrNull() ?: return@withContext null
+                                if (size > MAX_ART_BYTES || chunk < 0) return@withContext null
+                                val bytes = ByteArray(chunk)
+                                var read = 0
+                                while (read < chunk) {
+                                    val n = input.read(bytes, read, chunk - read)
+                                    if (n < 0) return@withContext null
+                                    read += n
+                                }
+                                buffer.write(bytes)
+                                input.read()  // the newline MPD writes after the payload
+                            }
+                        }
+                    }
+                    // A zero-length chunk means MPD has no more to give; without this
+                    // an art command that answers OK with no binary line would spin.
+                    if (chunk <= 0 || size < 0 || buffer.size() >= size) break
+                }
+                buffer.toByteArray().takeIf { it.isNotEmpty() }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            } finally {
+                try { socket.close() } catch (_: Exception) {}
+            }
+        }
+
+    /**
+     * One protocol line off a raw stream, read byte by byte.
+     *
+     * A `BufferedReader` cannot be used on a connection that also carries binary:
+     * it would buffer past the header and eat the front of the picture.
+     */
+    private fun readAsciiLine(input: java.io.InputStream): String? {
+        val line = StringBuilder()
+        while (true) {
+            val b = input.read()
+            if (b < 0) return if (line.isEmpty()) null else line.toString()
+            if (b == '\n'.code) return line.toString()
+            line.append(b.toChar())
+        }
+    }
 
     // ── Parsing helpers ──────────────────────────────────────────────────
 
@@ -656,7 +901,7 @@ class MpdClient(
             uri = file,
             mediaType = "track",
             subtitle = artist.ifBlank { null },
-            image = null,
+            image = MpdArt.url(file),
             duration = duration,
             audioFormat = audioFormat,
             year = date,
@@ -735,7 +980,7 @@ class MpdClient(
                             name = value, uri = id,
                             mediaType = "album",
                             subtitle = artist,
-                            image = null,
+                            image = MpdArt.url(id),
                             duration = null,
                             year = date?.substringBefore('-')?.toIntOrNull(),
                         ),

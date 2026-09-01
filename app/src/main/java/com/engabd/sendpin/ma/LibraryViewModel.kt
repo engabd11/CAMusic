@@ -229,33 +229,15 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      */
     private val sourceHolder = (app as SendpinApp).musicSource
 
-    /**
-     * Queue the track in the library's own player before this phone opens the
-     * stream, for the one library that needs it.
-     *
-     * MPD's HTTP output is a single continuous URL carrying whatever MPD itself is
-     * playing, so the track has to be put in *MPD's* queue before the stream says
-     * anything about it. Every other provider hands out a URL per track and
-     * `MusicSource.preparePlayback` does nothing for them — which is why the hook
-     * is only installed for a source that says it needs one. `LocalPlayer.setQueue`
-     * branches on the hook being set, and holds playback back until it lands;
-     * leaving it installed for Navidrome would put every library on that path to
-     * wait for a call with nothing in it.
-     */
-    private val preparePlaybackHook: suspend (LocalTrack) -> Unit = hook@{ track ->
-        val src = source ?: return@hook
-        val itemId = track.scrobbleId ?: return@hook
-        if (src.providerId == track.scrobbleProvider) {
-            runCatching { src.preparePlayback(itemId) }
-        }
-    }
-
     private var source: MusicSource?
         get() = sourceHolder.value
         set(value) {
             sourceHolder.value = value
-            (getApplication<Application>() as SendpinApp).localPlayer.onPreparePlayback =
-                if (value?.needsPreparePlayback == true) preparePlaybackHook else null
+            // A library that plays its own music takes the player over: the phone
+            // stops decoding and drives it instead. See LocalPlayer.remote — and
+            // note this is the *only* place it is set, so switching away from such a
+            // library hands playback back to this phone by setting it to null.
+            (getApplication<Application>() as SendpinApp).localPlayer.remote = value?.remotePlayback()
         }
 
     /**
@@ -1101,6 +1083,23 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Take over what the library's own player is already playing.
+     *
+     * Only for a library that plays itself — MPD — and only when this phone has
+     * nothing of its own loaded, so opening the app during an album shows that
+     * album, while a queue the user built here is never quietly replaced by
+     * whatever the server had in it.
+     */
+    private suspend fun adoptServerQueue(src: MusicSource) {
+        if (src.remotePlayback() == null) return
+        if (localPlayer.queue.value.isNotEmpty()) return
+        val items = runCatching { src.serverQueue() }.getOrNull().orEmpty()
+        if (items.isEmpty()) return
+        val at = runCatching { src.serverQueueIndex() }.getOrNull() ?: 0
+        localPlayer.adoptRemoteQueue(items.map { localTrack(it) }, at)
+    }
+
     fun connect() {
         _connError.value = null
         _offline.value = false
@@ -1188,6 +1187,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                     // device puts something down, and this is when that becomes
                     // knowable.
                     loadSavedQueue()
+                    adoptServerQueue(next)
                 } else {
                     _ready.value = false
                     goOfflineIfPossible(err)

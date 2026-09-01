@@ -107,15 +107,9 @@ object MusicSources {
             },
         )
 
-        ServerKind.MPD -> MpdSource(
-            MpdClient(
-                address = config.url,
-                password = config.password,
-                httpPort = config.option(ServerConfig.OPT_MPD_HTTP_PORT)?.toIntOrNull() ?: 8000,
-            ).apply {
-                streamFormat = config.option(ServerConfig.OPT_STREAM_FORMAT) ?: "raw"
-            },
-        )
+        // No stream settings: MPD plays its own music to its own outputs, and
+        // this app drives it. There is nothing here for a transcode to apply to.
+        ServerKind.MPD -> MpdSource(MpdClient(address = config.url, password = config.password))
 
         // Decoded with the same helper that encodes it. This used to `split("|")` a
         // string the settings screen wrote as a JSON array, and `Uri.parse` never

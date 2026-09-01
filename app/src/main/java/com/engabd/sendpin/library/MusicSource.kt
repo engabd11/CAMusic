@@ -160,30 +160,33 @@ interface MusicSource {
     fun coverUrl(id: String?, size: Int = 1000): String?
 
     /**
-     * Prepare the server to stream [id] before ExoPlayer opens [streamUrl].
+     * This library plays its own music, and the phone is its remote.
      *
-     * Almost every provider serves a per-track URL, so the default is a no-op —
-     * ExoPlayer opens the URL and the right bytes come out. MPD is the
-     * exception: its HTTP output is a continuous stream of *whatever is
-     * playing*, so the track must be added to MPD's queue and playback started
-     * before the URL is opened. Without this call, the stream plays whatever
-     * MPD was already playing (or silence if idle).
+     * False for every provider that hands out a URL per track, which is all of
+     * them but MPD: MPD *is* a player, its only route to another device is a live
+     * stream with neither position nor seek, and it is usually running on the box
+     * the DAC is plugged into. So the sound stays there and the transport goes the
+     * other way — see [com.engabd.sendpin.audio.RemotePlayback].
      *
-     * Called by the local player immediately before opening the stream URL.
-     * [id] is the same value passed to [streamUrl] — the track's `itemId`.
+     * Answered by handing over the transport rather than by a flag: a source that
+     * plays its own music has a [com.engabd.sendpin.audio.RemotePlayback] to
+     * drive, and one that doesn't has nothing to say. Nothing else about browsing
+     * changes either way.
      */
-    suspend fun preparePlayback(id: String) = Unit
+    fun remotePlayback(): com.engabd.sendpin.audio.RemotePlayback? = null
 
     /**
-     * Whether [preparePlayback] does anything — false for every provider but MPD.
+     * What that player is holding in its queue right now, in its own order.
      *
-     * The local player holds the first track back until [preparePlayback] returns,
-     * which is right when the stream depends on it and pointless when it doesn't:
-     * a source that answers false takes the same straight path into ExoPlayer it
-     * always has. So this has to say what [preparePlayback] *is*, not merely
-     * whether it is safe to call.
+     * Empty for every library the phone plays itself — the queue is then this
+     * app's, and asking a server about it is meaningless. For one that plays
+     * itself it is how the app shows an album already in progress when it opens,
+     * rather than an empty player next to audible music.
      */
-    val needsPreparePlayback: Boolean get() = false
+    suspend fun serverQueue(): List<MaItem> = emptyList()
+
+    /** Which entry of [serverQueue] is playing, or 0 when the player is stopped. */
+    suspend fun serverQueueIndex(): Int = 0
 
     /**
      * The transcode the user asked for, as a source-specific token.

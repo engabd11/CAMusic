@@ -746,6 +746,10 @@ class SendpinApp : Application(), ImageLoaderFactory {
             .cache(null)
             .build()
         return ImageLoader.Builder(this)
+            // MPD's covers don't come from a URL at all — they come back down its
+            // protocol socket — so the loader is taught the scheme the MPD items
+            // carry. See MpdArt.
+            .components { add(com.engabd.sendpin.mpd.MpdArtFetcher.Factory()) }
             .bitmapConfig(Bitmap.Config.ARGB_8888)
             .allowRgb565(false)
             .crossfade(true)

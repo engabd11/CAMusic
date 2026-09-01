@@ -2,17 +2,22 @@ package com.engabd.sendpin.library
 
 import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ma.MaSearchResults
+import com.engabd.sendpin.audio.RemotePlayback
+import com.engabd.sendpin.mpd.MpdArt
 import com.engabd.sendpin.mpd.MpdClient
+import com.engabd.sendpin.mpd.MpdRemote
 
 /**
- * [MpdClient] as a [MusicSource] — Music Player Daemon as a browsable library
- * that this phone plays via ExoPlayer over MPD's HTTP output stream.
+ * [MpdClient] as a [MusicSource] — Music Player Daemon as a browsable library,
+ * and, alone among the providers, as the thing that plays what it browses.
  *
- * MPD is the same shape of thing as Navidrome or Jellyfin: it lists artists and
- * albums, answers a search, and hands out a URL ExoPlayer can open. The
- * difference is that the "URL" is MPD's continuous HTTP output stream — to
- * play a specific track, [preparePlayback] adds it to MPD's queue and starts
- * playback, then ExoPlayer opens the stream URL. See [MpdClient.streamUrl].
+ * For browsing it is the same shape as Navidrome or Jellyfin: artists, albums, a
+ * search, a track list. For playing it is the opposite of them. They hand out a
+ * URL per track and this phone decodes it; MPD is already a player, and its only
+ * way to send audio elsewhere is a live stream with no duration, no position and
+ * no seek. So it hands over a player of its own ([remotePlayback]) and the phone
+ * drives that instead of decoding — see
+ * [com.engabd.sendpin.audio.RemotePlayback] for the whole of that argument.
  *
  * ## What MPD can't do
  *
@@ -21,9 +26,9 @@ import com.engabd.sendpin.mpd.MpdClient
  * ([Capability.SIMILAR]). MPD's metadata comes entirely from file tags, so
  * [Capability.RICH_FORMAT] *is* here — MPD reports codec, sample rate and bit
  * depth per track. No [Capability.FAVORITES] (MPD has no starred concept
- * natively), no [Capability.DOWNLOAD] (the HTTP stream is real-time, not
- * seekable for downloads), no [Capability.HISTORY] (MPD has no play history
- * without stickers).
+ * natively), no [Capability.HISTORY] (no play history without stickers), and no
+ * [Capability.DOWNLOAD]: MPD serves audio to its own outputs and has no endpoint
+ * that hands a file over.
  */
 class MpdSource(private val client: MpdClient) : MusicSource {
 
@@ -100,19 +105,30 @@ class MpdSource(private val client: MpdClient) : MusicSource {
 
     // ── URLs ──────────────────────────────────────────────────────────────
 
-    override fun streamUrl(id: String, format: String): String = client.streamUrl(id, format)
-    override fun downloadUrl(id: String): String = client.downloadUrl(id)
-    override fun coverUrl(id: String?, size: Int): String? = client.coverUrl(id, size)
+    /**
+     * There is no URL for this phone to open, and the interface requires one, so
+     * it answers with the empty string.
+     *
+     * Not MPD's httpd stream, which is what this used to return: that URL is the
+     * same for every track and plays whatever MPD is playing, so a phone opening
+     * it played the music a second time, a second behind, out of a second set of
+     * speakers — with a scrub bar that could not move because a live stream has
+     * nowhere to move to. MPD plays its own queue now; nothing here opens a URL.
+     */
+    override fun streamUrl(id: String, format: String): String = ""
+
+    /** Nothing to download: MPD has no endpoint that hands a file over. */
+    override fun downloadUrl(id: String): String = ""
+
+    override fun coverUrl(id: String?, size: Int): String? = MpdArt.url(id)
 
     /**
-     * Clear MPD's queue, add this track, and start playback so the HTTP stream
-     * outputs the right track when ExoPlayer opens [streamUrl].
-     *
-     * This is the one provider where [preparePlayback] is not a no-op — every
-     * other provider serves a per-track URL. See [MusicSource.preparePlayback].
+     * The one source that answers with a player. See [MusicSource.remotePlayback].
      */
-    override suspend fun preparePlayback(id: String) = client.preparePlayback(id)
+    override fun remotePlayback(): RemotePlayback = MpdRemote(client)
 
-    /** The one source that answers true. See [MusicSource.needsPreparePlayback]. */
-    override val needsPreparePlayback: Boolean = true
+    override suspend fun serverQueue(): List<MaItem> = client.queueTracks()
+
+    override suspend fun serverQueueIndex(): Int =
+        client.status()?.songIndex?.coerceAtLeast(0) ?: 0
 }

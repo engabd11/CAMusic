@@ -72,8 +72,6 @@ enum class ServerKind(
         "MPD",
         "Music Player Daemon. Browses the library MPD already scanned and streams over its HTTP output.",
         supported = true,
-        // The protocol port. MPD's audio arrives on a second one — its httpd
-        // output's — which the connect form asks for separately.
         urlHint = "http://192.168.0.10:6600",
         auth = AuthStyle.OPTIONAL_USER_PASSWORD,
     ),
@@ -238,7 +236,5 @@ data class ServerConfig(
         /** Jellyfin/Emby: which of the server's libraries to browse. Plex: the music section's key. */
         const val OPT_LIBRARY_ID = "libraryId"
 
-        /** MPD: the HTTP streaming output port (default 8000). */
-        const val OPT_MPD_HTTP_PORT = "mpdHttpPort"
     }
 }
