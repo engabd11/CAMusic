@@ -37,22 +37,38 @@ enum class AmbienceEffect(
      *
      * Only the synthesised path is an [AudioSink][com.engabd.sendpin.hue.ambience.AudioSink],
      * and only an AudioSink can be the show clock — a recording runs on its own
-     * clock and free-wheels against the light script. For most effects that is
-     * fine, because nothing in them has to land on a specific frame. For a storm
-     * it is the entire premise: the delay between a flash and its thunder *is*
-     * the effect, and Philips' own guidance is that people spot desync instantly.
-     * Thunderstorm II is the recorded-bed variant for anyone who wants the
-     * fidelity instead.
+     * clock and free-wheels against the light script.
+     *
+     * That is fine for an effect made of *texture*: a fire, the sea, a room tone.
+     * Nothing in those has to land on a frame, so a real recording is strictly
+     * better than anything synthesis can do and the free-wheeling costs nothing.
+     *
+     * It is ruinous for an effect made of *events*. A storm and a firework display
+     * are nothing but transients, and their whole grammar is a cause you see
+     * followed by a consequence you hear: the flash then the crack, the whistle
+     * then the burst. Play a recording under that and the room is flashing to one
+     * storm while the speaker plays a different one — two shows at once, which is
+     * exactly what a listener reports as "they don't feel like one effect".
+     * A recorded thunderclap cannot be made to land on a scripted flash, because
+     * nothing in the file knows the flash happened.
+     *
+     * So the rule is the shape of the effect, not the tile: every event-driven
+     * effect generates, and every texture-driven one plays its bed. The two
+     * Thunderstorm and Fireworks tiles differ by seed, palette and distance —
+     * which is what their own blurbs promise — rather than by one being the
+     * out-of-sync recording of the other.
      */
     val defaultSoundIsGenerated: Boolean = false,
 ) {
     FIREWORKS(
         "fireworks", "Fireworks",
         "Shells climb, burst overhead and crackle away into the dark.",
+        defaultSoundIsGenerated = true,
     ),
     FIREWORKS_2(
         "fireworks_2", "Fireworks II",
         "The same sky, burning white and gold instead of colour.",
+        defaultSoundIsGenerated = true,
     ),
     THUNDERSTORM(
         "thunderstorm", "Thunderstorm",
@@ -62,6 +78,7 @@ enum class AmbienceEffect(
     THUNDERSTORM_2(
         "thunderstorm_2", "Thunderstorm II",
         "A warmer, further-off storm — more sky than roof.",
+        defaultSoundIsGenerated = true,
     ),
     UNDERWATER(
         "underwater", "Underwater",
@@ -134,6 +151,14 @@ data class Envelope(
  *   the single number that keeps the two media telling the same story.
  * @param seed deterministic per-event noise, so a re-render of the same event is
  *   identical and the scripts are testable.
+ * @param leadS how long **before** [startS] this event is already audible. A shell
+ *   whistles on the way up, so its sound begins nearly a second before the sky lights
+ *   up; without this the timeline would not hand the event to the audio block until
+ *   the burst, and the whistle could never be rendered at all.
+ * @param soundS how long **after** [startS] this event is still audible. Almost always
+ *   longer than the light — a strike is over as light in under a second and still
+ *   rolling as sound twenty seconds later, because the flash and the thunder are
+ *   separated by the propagation delay the event exists to express.
  */
 class AmbienceEvent(
     val kind: Int,
@@ -145,13 +170,44 @@ class AmbienceEvent(
     val colour: Rgb,
     val timbre: Float = 0f,
     val seed: Long = 0L,
+    val leadS: Float = 0f,
+    val soundS: Float = 0f,
 ) {
+    /**
+     * How long after [startS] this event still matters to *either* medium.
+     *
+     * The light envelope alone is not it, and assuming it was is what silenced the
+     * storm. [AmbienceTimeline] collects an event as soon as nothing can still be
+     * reading it, and the audio reads far later than the lights do: a strike 2 km out
+     * flashes for 0.8 s and thunders at 5.8 s, so an event retired on its light
+     * envelope was already gone by the time its own sound came due. Every strike
+     * beyond a couple of hundred metres was simply never heard.
+     *
+     * So the span is the union of what both media need, and the script that knows the
+     * delay is the one that declares it.
+     */
+    val spanS: Float = maxOf(env.lifetimeS, soundS)
+
     fun ageAt(t: Double): Float = (t - startS).toFloat()
     fun levelAt(t: Double): Float = gain * env.at(ageAt(t))
+
+    /** True while anything — light or sound — can still be reading this event. */
     fun aliveAt(t: Double): Boolean {
         val age = ageAt(t)
-        return age >= 0f && age < env.lifetimeS
+        return age >= -leadS && age < spanS
     }
+
+    /**
+     * True if the event is alive anywhere in `[fromS, toS)`.
+     *
+     * The audio path asks this rather than [aliveAt], because a block is a span and an
+     * event that begins inside one is not alive at its first sample. Gating a block on
+     * its start instant threw away the leading edge of every event that did not happen
+     * to begin on a block boundary — which is precisely the attack transient, the part
+     * that carries the crack.
+     */
+    fun aliveOver(fromS: Double, toS: Double): Boolean =
+        toS > startS - leadS && fromS < startS + spanS
 
     companion object {
         // Shared kind tags. Scripts only ever see their own, but keeping them in one
@@ -180,6 +236,23 @@ data class AmbienceParams(
  */
 interface AmbienceScript {
     val effect: AmbienceEffect
+
+    /**
+     * How far past the block being rendered this script needs its events scheduled.
+     *
+     * Zero for a script whose events are silent until they start, which is most of
+     * them: the generator already schedules a block immediately before rendering it,
+     * so an event is always published before anything asks about it.
+     *
+     * Not zero for a script with [AmbienceEvent.leadS]. A shell's whistle is rendered
+     * at *negative* age, and an event is only scheduled when the block containing its
+     * `startS` comes up — by which time the block that should have carried the whistle
+     * was rendered and written nearly a second ago. Declaring the lead here moves the
+     * scheduling horizon out far enough that the event exists before its own sound
+     * begins, which is the difference between the climb being audible and it being
+     * dead code, as it was.
+     */
+    val lookaheadS: Float get() = 0f
 
     /** Called once before the first [schedule], with the room this show will run in. */
     fun bind(room: RoomModel, params: AmbienceParams)

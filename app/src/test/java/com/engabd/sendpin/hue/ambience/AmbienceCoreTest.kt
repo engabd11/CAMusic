@@ -138,6 +138,70 @@ class AmbienceTimelineTest {
         try { AmbienceTimeline(10) } catch (_: IllegalArgumentException) { threw = true }
         assertTrue(threw)
     }
+
+    @Test
+    fun `an event is kept for as long as its sound needs, not just its light`() {
+        // The bug this whole area had: a strike was retired when its *flash* ended, so
+        // the thunder — due seconds later — was asked for after the event had already
+        // been dropped, and simply never played.
+        val t = AmbienceTimeline(16)
+        val strike = AmbienceEvent(
+            kind = AmbienceEvent.STRIKE,
+            startS = 0.0,
+            env = Envelope(0.01f, 0f, 0.05f),        // light over well inside a second
+            gain = 1f,
+            origin = Vec3(0.5f, 0.5f, 0.5f),
+            azimuth = 0f,
+            colour = com.engabd.sendpin.hue.Rgb(1f, 1f, 1f),
+            soundS = 8f,                              // still rolling eight seconds out
+        )
+        t.append(strike)
+        assertTrue(strike.env.lifetimeS < 1f, "precondition: the light is short")
+        assertTrue(strike.aliveAt(6.0), "retired before its own thunder was due")
+        assertEquals(1, t.windowAt(6.0, arrayOfNulls(8)))
+        assertEquals(0, t.windowAt(9.0, arrayOfNulls(8)), "never collected")
+    }
+
+    @Test
+    fun `an event is handed over before it starts when it leads with sound`() {
+        // A firework whistles on the way up: its sound begins nearly a second before
+        // there is anything to see, and it is rendered at negative age.
+        val t = AmbienceTimeline(16)
+        val shell = AmbienceEvent(
+            kind = AmbienceEvent.BURST,
+            startS = 5.0,
+            env = Envelope(0.05f, 0.05f, 0.2f),
+            gain = 1f,
+            origin = Vec3(0.5f, 0.5f, 0.5f),
+            azimuth = 0f,
+            colour = com.engabd.sendpin.hue.Rgb(1f, 1f, 1f),
+            leadS = 0.9f,
+        )
+        t.append(shell)
+        assertEquals(1, t.windowAt(4.5, arrayOfNulls(8)), "the climb was never rendered")
+        assertEquals(0, t.windowAt(4.0, arrayOfNulls(8)), "audible before it was launched")
+    }
+
+    @Test
+    fun `a window over a block catches an event that starts inside it`() {
+        // What the audio path asks. An event beginning mid-block is not alive at the
+        // block's first sample, so asking windowAt(blockStart) withheld it for a whole
+        // buffer — which for a 1 ms attack is the entire transient.
+        val t = AmbienceTimeline(16)
+        t.append(event(1.0105))
+        val blockStart = 1.0
+        val blockEnd = 1.0 + 1024.0 / 48_000.0      // ~21 ms
+        assertEquals(0, t.windowAt(blockStart, arrayOfNulls(8)), "precondition")
+        assertEquals(1, t.windowOver(blockStart, blockEnd, arrayOfNulls(8)))
+    }
+
+    @Test
+    fun `a window over a block excludes events either side of it`() {
+        val t = AmbienceTimeline(16)
+        t.append(event(0.0))        // long over
+        t.append(event(50.0))       // not for a long while
+        assertEquals(0, t.windowOver(10.0, 10.5, arrayOfNulls(8)))
+    }
 }
 
 class RoomModelTest {

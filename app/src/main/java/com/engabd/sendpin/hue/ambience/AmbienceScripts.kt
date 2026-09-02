@@ -25,11 +25,20 @@ fun scriptFor(effect: AmbienceEffect): AmbienceScript = when (effect) {
         shellColours = FireworksAmbienceScript.WHITE_HOT_SHELLS,
     )
     AmbienceEffect.THUNDERSTORM -> ThunderstormScript()
+    // "A warmer, further-off storm — more sky than roof", which is now what it
+    // actually is rather than what its blurb said while it played a recording. The
+    // strikes sit further out, so their thunder arrives later and as rumble rather
+    // than crack; the rain is mostly open-air hiss with little of the low thud of
+    // drops on a roof overhead.
     AmbienceEffect.THUNDERSTORM_2 -> ThunderstormScript(
         AmbienceEffect.THUNDERSTORM_2,
         seed = 0x9C_44_1E_07L,
         nearBolt = Rgb(0.95f, 0.86f, 0.72f),
         farBolt = Rgb(0.72f, 0.62f, 0.85f),
+        minDistKm = 0.7f,
+        maxDistKm = 3.4f,
+        roofMix = 0.22f,
+        rain = Rgb(0.52f, 0.54f, 0.74f),
     )
     AmbienceEffect.UNDERWATER -> UnderwaterScript()
     AmbienceEffect.FIREPLACE -> FireplaceScript()

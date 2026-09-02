@@ -160,14 +160,19 @@ out in advance and followed against the server's playhead.
 ## Ambience Effects
 
 Shows with their own sound, ready without any music playing: **fireworks, thunderstorm,
-underwater, fireplace, light train and aurora**, each with a bundled recorded bed.
+underwater, fireplace, light train and aurora**.
 
 Where the sound has to land with the light, both come from one event rather than from two
 things kept in step. A lightning strike is a single object: the room reads it as it happens,
 and the speaker reads it after the propagation delay its own distance implies, so the thunder
-lands with the flash at any intensity on any hardware. That audio is synthesised on the phone,
-so it keeps evolving rather than looping. Any effect can take an audio file of your own as its
-bed instead.
+lands with the flash at any intensity on any hardware. A firework is the same object three
+times over — an ember climbing while the shell whistles, the burst, then embers twinkling out
+while the crackle reaches you. That audio is synthesised on the phone, so it keeps evolving
+rather than looping.
+
+The effects made of *texture* rather than events — the fire, the sea, the aurora — play a
+bundled recording instead, which is better than anything synthesis can do and has nothing that
+needs to land on a particular frame. Any effect can take an audio file of your own as its bed.
 
 ---
 

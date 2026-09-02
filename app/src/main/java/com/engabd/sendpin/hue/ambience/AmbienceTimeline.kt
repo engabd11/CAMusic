@@ -16,10 +16,12 @@ package com.engabd.sendpin.hue.ambience
  *    happening *now*, everything it could need was published a fifth of a second ago.
  *    There is no window in which lights can outrun scheduling.
  *
- * Fixed capacity, overwriting oldest. That is safe precisely because [Envelope.lifetimeS]
- * is finite: an event older than the longest lifetime in play cannot be alive, so
- * overwriting it loses nothing. [windowAt] still checks, rather than trusting the
- * arithmetic.
+ * Fixed capacity, overwriting oldest. That is safe precisely because
+ * [AmbienceEvent.spanS] is finite: an event older than the longest span in play cannot
+ * be alive in either medium, so overwriting it loses nothing. The span, not the light
+ * envelope — a strike stops being a flash long before it stops being thunder, and a
+ * ring sized on the light alone would recycle a slot the audio was still due to read.
+ * [windowAt] still checks, rather than trusting the arithmetic.
  */
 class AmbienceTimeline(capacity: Int = 512) {
 
@@ -54,14 +56,30 @@ class AmbienceTimeline(capacity: Int = 512) {
      * that dense is already past what the room can express, and dropping the oldest few
      * is far better than allocating on the audio thread.
      */
-    fun windowAt(tS: Double, into: Array<AmbienceEvent?>): Int {
+    fun windowAt(tS: Double, into: Array<AmbienceEvent?>): Int =
+        fill(into) { it.aliveAt(tS) }
+
+    /**
+     * Fill [into] with the events alive anywhere in `[fromS, toS)` and return how many.
+     *
+     * What the audio path wants, and [windowAt] is not it. A block is a span of about
+     * 21 ms, and an event that starts inside that span is not alive at its first
+     * sample — so gating a block on its start instant silently dropped the leading
+     * edge of every event whose `startS` did not land exactly on a block boundary.
+     * For a thunder crack, whose whole envelope is a 1 ms attack and a 50 ms tail,
+     * that leading edge *is* the sound.
+     */
+    fun windowOver(fromS: Double, toS: Double, into: Array<AmbienceEvent?>): Int =
+        fill(into) { it.aliveOver(fromS, toS) }
+
+    private inline fun fill(into: Array<AmbienceEvent?>, keep: (AmbienceEvent) -> Boolean): Int {
         val h = head          // volatile read: acquires every slot written before it
         var n = 0
         var i = h - 1
         val floor = maxOf(0L, h - slots.size)
         while (i >= floor && n < into.size) {
             val e = slots[(i and mask).toInt()]
-            if (e != null && e.aliveAt(tS)) into[n++] = e
+            if (e != null && keep(e)) into[n++] = e
             i--
         }
         // Stale entries past n are never read — callers are handed the count — but
