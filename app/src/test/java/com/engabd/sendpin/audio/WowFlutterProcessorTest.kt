@@ -31,13 +31,40 @@ class WowFlutterProcessorTest {
 
     @Test
     fun `peak modulation stays a small fraction of the base delay`() {
-        // The base delay is 128 samples (see WowFlutterProcessor's private
-        // baseDelaySamples) - the ring buffer only avoids over/underrun if
-        // wow + flutter's combined peak deviation stays well under that,
-        // independent of the processor's own internal constant.
+        // The delay line only avoids the read pointer crossing the write
+        // pointer if wow + flutter's combined peak deviation stays well under
+        // the nominal delay. At CD rate the raw depths already do, with room
+        // to spare - nothing is being scaled here.
         val total = WowFlutterProcessor.wowDepthSamples(1f, 44_100) +
             WowFlutterProcessor.flutterDepthSamples(1f, 44_100)
         assertTrue(total < 64f, "combined peak modulation ($total samples) should leave generous headroom")
+    }
+
+    @Test
+    fun `depth is scaled to fit the delay line at high sample rates`() {
+        // Depth in *samples* is proportional to the sample rate, so a hi-res
+        // stream is where the raw figures stop fitting: at 384 kHz they come
+        // to more than the whole nominal delay, which would have the read
+        // pointer reading samples that had not been written yet.
+        val base = WowFlutterProcessor.BASE_DELAY_SAMPLES
+        val room = base * WowFlutterProcessor.MAX_MOD_FRACTION
+
+        val raw384 = WowFlutterProcessor.wowDepthSamples(1f, 384_000) +
+            WowFlutterProcessor.flutterDepthSamples(1f, 384_000)
+        assertTrue(raw384 > base, "the unscaled depth at 384 kHz ($raw384) should be the case that needs fitting")
+
+        for (rate in intArrayOf(44_100, 48_000, 96_000, 192_000, 384_000)) {
+            val (wow, flutter) = WowFlutterProcessor.fittedDepths(1f, rate, base)
+            assertTrue(wow + flutter <= room + 0.001f, "fitted depth at $rate Hz should stay inside the delay line")
+            assertTrue(wow > 0f && flutter > 0f, "fitting should scale both components, not drop one")
+        }
+
+        // Below the ceiling nothing is touched, and the wow-to-flutter balance
+        // survives the ones above it.
+        val (wow44, flutter44) = WowFlutterProcessor.fittedDepths(1f, 44_100, base)
+        assertEquals(WowFlutterProcessor.wowDepthSamples(1f, 44_100), wow44, 0.0001f)
+        val (wow384, flutter384) = WowFlutterProcessor.fittedDepths(1f, 384_000, base)
+        assertEquals(wow44 / flutter44, wow384 / flutter384, 0.001f)
     }
 
     private fun wowFlutter(config: WowFlutterProcessor.Config) = WowFlutterProcessor().apply {

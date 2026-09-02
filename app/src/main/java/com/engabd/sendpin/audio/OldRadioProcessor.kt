@@ -65,6 +65,16 @@ class OldRadioProcessor : BaseAudioProcessor() {
     private var staticThreshold = 44_100
     private var staticBurstSamplesLeft = 0
     private var staticBurstAmp = 0f
+    /**
+     * Whether this frame is inside a static burst, decided once per frame in
+     * [advanceFrame].
+     *
+     * The countdown itself is per-frame, not per-sample, so it cannot be run
+     * from [processSample] without picking a channel to run it on — and the
+     * channel that ran it would then get one burst sample the others did not,
+     * which is a burst that is not quite the same event in both ears.
+     */
+    private var staticBurstActive = false
 
     // --- Carrier warble: a slow tremolo shared across channels ---
     private var phaseSamples = 0L
@@ -161,13 +171,19 @@ class OldRadioProcessor : BaseAudioProcessor() {
         val remaining = inputBuffer.remaining()
         if (remaining == 0) return
 
+        val order = inputBuffer.order()
         val out = replaceOutputBuffer(remaining)
+        // The output buffer comes back in native order; the bytes copied into it
+        // are the input's. Carrying the input's order across means a pass-through
+        // reads back as the same samples, not as byte-swapped ones — the active
+        // paths below already do this, and the two disagreeing is what a
+        // big-endian caller would see as silent corruption.
+        out.order(order)
         if (!active.isActive()) {
             out.put(inputBuffer).flip()
             return
         }
 
-        val order = inputBuffer.order()
         when (encoding) {
             C.ENCODING_PCM_FLOAT -> processFloat(inputBuffer, out, order)
             else -> processShort(inputBuffer, out, order)
@@ -212,6 +228,8 @@ class OldRadioProcessor : BaseAudioProcessor() {
             staticBurstSamplesLeft = staticBurstSamples(intensity, sampleRate)
             staticBurstAmp = staticBurstAmplitude(intensity) * (0.6f + rng.nextFloat() * 0.4f)
         }
+        staticBurstActive = staticBurstSamplesLeft > 0
+        if (staticBurstActive) staticBurstSamplesLeft--
 
         phaseSamples++
         val t = phaseSamples.toDouble() / sampleRate
@@ -228,8 +246,7 @@ class OldRadioProcessor : BaseAudioProcessor() {
         val b = bands[channel.coerceIn(0, bands.lastIndex)]
 
         var withStatic = x + hissFloorAmplitude(intensity) * (rng.nextFloat() * 2f - 1f)
-        if (staticBurstSamplesLeft > 0) {
-            if (channel == 0) staticBurstSamplesLeft--
+        if (staticBurstActive) {
             withStatic += staticBurstAmp * (rng.nextFloat() * 2f - 1f)
         }
 
@@ -245,6 +262,7 @@ class OldRadioProcessor : BaseAudioProcessor() {
         }
         staticCounter = 0
         staticBurstSamplesLeft = 0
+        staticBurstActive = false
         staticBurstAmp = 0f
         phaseSamples = 0
         warbleGain = 1f

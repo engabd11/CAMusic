@@ -197,13 +197,19 @@ class LoFiProcessor : BaseAudioProcessor() {
         val remaining = inputBuffer.remaining()
         if (remaining == 0) return
 
+        val order = inputBuffer.order()
         val out = replaceOutputBuffer(remaining)
+        // The output buffer comes back in native order; the bytes copied into it
+        // are the input's. Carrying the input's order across means a pass-through
+        // reads back as the same samples, not as byte-swapped ones — the active
+        // paths below already do this, and the two disagreeing is what a
+        // big-endian caller would see as silent corruption.
+        out.order(order)
         if (!active.isActive()) {
             out.put(inputBuffer).flip()
             return
         }
 
-        val order = inputBuffer.order()
         when (encoding) {
             C.ENCODING_PCM_FLOAT -> processFloat(inputBuffer, out, order)
             else -> processShort(inputBuffer, out, order)

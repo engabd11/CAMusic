@@ -20,24 +20,6 @@ object OutputRate {
 }
 
 /**
- * The vari-speed ratio Lo-fi's slow-down applies, or 1 for none.
- *
- * Same shape and the same trade-off as [OutputRate]: read once when
- * [TapRenderersFactory.buildAudioSink] builds the chain, so a change from the
- * Lo-fi intensity slider applies from the start of the next track rather than
- * live mid-track. [LoFiProcessor]'s own bitcrush/saturation and
- * [WowFlutterProcessor]'s wobble both update live via `setConfig()`; only
- * this persistent-speed component shares [OutputRate]'s slower path, because
- * it needs its own [androidx.media3.common.audio.SonicAudioProcessor]
- * instance built fresh into the chain rather than a coefficient recomputed
- * inside an already-running processor.
- */
-object LoFiSpeed {
-    @Volatile
-    var ratio: Float = 1f
-}
-
-/**
  * A [DefaultRenderersFactory] that injects the [AudioAnalysisTap] into the
  * audio sink's processor chain. ExoPlayer routes all decoded PCM through the
  * sink's audio processors before it reaches the AudioTrack, so the tap sees
@@ -54,15 +36,22 @@ object LoFiSpeed {
  * 1. [LocalDsp] — the equaliser, so the light show reacts to what is heard.
  * 2. [VinylNoiseProcessor] — surface noise, after EQ so the noise is on the
  *    equalised signal.
- * 3. [WowFlutterProcessor] — pitch wobble, and 4. a dedicated Sonic instance
- *    for [LoFiSpeed]'s persistent slow-down — both ride Lo-fi's own toggle
- *    (see [LoFiSpeed]) and sit before the bitcrusher so it crushes the
- *    already-wobbly, already-slowed signal, the way a real transport feeds a
- *    tape head before anything saturates.
- * 5. [LoFiProcessor] — bitcrusher/saturation/low-pass, after vinyl noise so
+ * 3. [WowFlutterProcessor] — pitch wobble, riding Lo-fi's own toggle and
+ *    sitting before the bitcrusher so it crushes the already-wobbly signal,
+ *    the way a real transport feeds a tape head before anything saturates.
+ * 4. [LoFiProcessor] — bitcrusher/saturation/low-pass, after vinyl noise so
  *    it can share the crackle stage.
+ * 5. [OldRadioProcessor] — the last coloration stage before the tap.
  * 6. [AudioAnalysisTap] — copies for analysis, sees the treated audio.
  * 7. Sonic — resamples to the fixed output rate if one is set.
+ *
+ * Lo-fi's persistent vari-speed slow-down is deliberately *not* a processor
+ * here. A speed-changing Sonic dropped into this list would change how many
+ * samples come out without `DefaultAudioSink` knowing, so every position the
+ * player reported would drift from the audio; and this list is fixed when the
+ * player is built, so the slow-down would not arrive until the next one. It
+ * goes through `ExoPlayer.setPlaybackParameters` instead — see
+ * `LocalPlayer.applyPlaybackParameters`.
  *
  * The decoder's own output used to be read here too, first in the list above
  * (`SignalPathProbe`, now deleted). It never actually could: a processor only
@@ -115,10 +104,6 @@ class TapRenderersFactory(
                     dsp,
                     vinylNoise,
                     wowFlutter,
-                    (if (exclusive) null else LoFiSpeed.ratio.takeIf { it < 0.999f })?.let { ratio ->
-                        androidx.media3.common.audio.SonicAudioProcessor()
-                            .apply { setSpeed(ratio); setPitch(ratio) }
-                    },
                     loFi,
                     oldRadio,
                     tap,

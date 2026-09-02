@@ -83,18 +83,32 @@ class MpdRemote(private val client: MpdClient) : RemotePlayback {
      */
     @Volatile
     private var cachedOutputName: String? = null
+
+    /**
+     * When the last `outputs` attempt landed, succeed or fail, or 0 for never.
+     *
+     * The freshness question is "have we asked recently", not "do we have a
+     * name": a server with no output enabled — or one whose outputs it does not
+     * report — answers with no name at all, and keying the cache on the name
+     * being null would send a second connection alongside every one-second
+     * `status` poll, forever, to be told the same nothing again. A failed
+     * attempt counts for the same reason, and leaves the last good name up.
+     */
     @Volatile
     private var outputNameFetchedAt: Long = 0
 
     private suspend fun outputName(): String? {
         val now = System.currentTimeMillis()
-        if (cachedOutputName == null || now - outputNameFetchedAt > OUTPUT_NAME_TTL_MS) {
+        if (outputNameFetchedAt == 0L || now - outputNameFetchedAt > OUTPUT_NAME_TTL_MS) {
             try {
                 cachedOutputName = client.outputs().firstOrNull { it.enabled }?.name
                 outputNameFetchedAt = now
             } catch (_: MpdException) {
                 // Leave the last known name in place — a dropped `outputs` call is
-                // not a reason to blank a label that was correct a moment ago.
+                // not a reason to blank a label that was correct a moment ago, and
+                // not a reason to retry it every poll either: the next TTL window
+                // asks again.
+                outputNameFetchedAt = now
             }
         }
         return cachedOutputName

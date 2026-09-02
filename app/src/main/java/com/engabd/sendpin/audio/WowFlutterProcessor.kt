@@ -58,7 +58,7 @@ class WowFlutterProcessor : BaseAudioProcessor() {
      * memory (a few KB per channel at most).
      */
     private val bufferSize = 512
-    private val baseDelaySamples = 128f
+    private val baseDelaySamples = BASE_DELAY_SAMPLES
 
     private var buffers: Array<FloatArray> = Array(2) { FloatArray(bufferSize) }
     private var writePos = 0
@@ -73,6 +73,13 @@ class WowFlutterProcessor : BaseAudioProcessor() {
     }
 
     companion object {
+        /**
+         * Nominal delay the modulation swings either side of, in samples. The
+         * ring buffer is several times this, so what has to fit is the
+         * modulation inside the delay, not the delay inside the buffer.
+         */
+        internal const val BASE_DELAY_SAMPLES = 128f
+
         /** Slow component: turntable/platter/tape-transport eccentricity. */
         private const val WOW_HZ = 0.6f
         /** Fast component: motor/capstan jitter. */
@@ -105,6 +112,39 @@ class WowFlutterProcessor : BaseAudioProcessor() {
 
         internal fun flutterDepthSamples(intensity: Float, sampleRate: Int): Float =
             depthSamples(intensity.coerceIn(0f, 1f) * MAX_FLUTTER_RATE_DEPTH, FLUTTER_HZ, sampleRate)
+
+        /**
+         * How much of the nominal delay the combined wow+flutter peak may use.
+         * Half leaves the read pointer a wide margin either side of its nominal
+         * position — see [fittedDepths].
+         */
+        internal const val MAX_MOD_FRACTION = 0.5f
+
+        /**
+         * The two modulation depths for an intensity and rate, scaled down
+         * together if their combined peak would not fit inside [baseDelay].
+         *
+         * [depthSamples] is proportional to the sample rate, so a high-rate
+         * stream pushes the peak deviation up while the nominal delay stays
+         * put: at 192 kHz the pair alone comes to ~80 samples against a
+         * 128-sample delay, and at anything higher the read pointer would cross
+         * the write pointer and start reading samples that have not been
+         * written yet. Scaling both by the same factor keeps their ratio — the
+         * wow-to-flutter balance is the character of the effect — and costs
+         * depth only at rates where there was none to spare.
+         */
+        internal fun fittedDepths(
+            intensity: Float,
+            sampleRate: Int,
+            baseDelay: Float,
+        ): Pair<Float, Float> {
+            val wow = wowDepthSamples(intensity, sampleRate)
+            val flutter = flutterDepthSamples(intensity, sampleRate)
+            val total = wow + flutter
+            val room = baseDelay * MAX_MOD_FRACTION
+            val scale = if (total > room && total > 0f) room / total else 1f
+            return wow * scale to flutter * scale
+        }
     }
 
     override fun onConfigure(
@@ -124,9 +164,11 @@ class WowFlutterProcessor : BaseAudioProcessor() {
         else -> AudioProcessor.AudioFormat.NOT_SET
     }
 
+    /** Cache the depths for the live intensity and rate — see [fittedDepths]. */
     private fun recomputeDepths() {
-        wowDepthSamples = wowDepthSamples(active.intensity, sampleRate)
-        flutterDepthSamples = flutterDepthSamples(active.intensity, sampleRate)
+        val (wow, flutter) = fittedDepths(active.intensity, sampleRate, baseDelaySamples)
+        wowDepthSamples = wow
+        flutterDepthSamples = flutter
     }
 
     override fun queueInput(inputBuffer: ByteBuffer) {
@@ -139,13 +181,19 @@ class WowFlutterProcessor : BaseAudioProcessor() {
         val remaining = inputBuffer.remaining()
         if (remaining == 0) return
 
+        val order = inputBuffer.order()
         val out = replaceOutputBuffer(remaining)
+        // The output buffer comes back in native order; the bytes copied into it
+        // are the input's. Carrying the input's order across means a pass-through
+        // reads back as the same samples, not as byte-swapped ones — the active
+        // paths below already do this, and the two disagreeing is what a
+        // big-endian caller would see as silent corruption.
+        out.order(order)
         if (!active.isActive()) {
             out.put(inputBuffer).flip()
             return
         }
 
-        val order = inputBuffer.order()
         when (encoding) {
             C.ENCODING_PCM_FLOAT -> processFloat(inputBuffer, out, order)
             else -> processShort(inputBuffer, out, order)

@@ -10,6 +10,7 @@ import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
@@ -350,6 +351,16 @@ class LocalPlayer(private val context: Context) {
     val title: StateFlow<String> get() = _titleFlow
     private val _titleFlow = MutableStateFlow("")
 
+    /**
+     * Lo-fi's persistent vari-speed slow-down, as a rate multiplier (1 = none).
+     *
+     * Kept apart from [_speed], which is the listener's own audiobook/podcast
+     * rate: the two multiply, but only this one also drags the pitch down with
+     * it, and only this one is a property of a sound mode rather than of the
+     * transport. See [MAX_LO_FI_SLOWDOWN].
+     */
+    private var loFiSpeedRatio = 1f
+
     init {
         val settings = com.engabd.sendpin.data.AppSettings(context)
         // Both preferences are process-wide, so this player follows them itself
@@ -384,13 +395,12 @@ class LocalPlayer(private val context: Context) {
                 loFiProcessor.setConfig(cfg)
                 updateLoFiSharing()
                 // Wow/flutter rides the same toggle and updates live, same as
-                // the bitcrush/saturation above. The persistent slow-down
-                // shares OutputRate's "applies to the next track" trade-off —
-                // see LoFiSpeed's doc comment — since it needs its own Sonic
-                // instance built fresh into the chain, not a coefficient this
-                // processor can recompute while already running.
+                // the bitcrush/saturation above. So does the persistent
+                // slow-down, which is playback parameters rather than a
+                // processor — see applyPlaybackParameters for why.
                 wowFlutter.setConfig(WowFlutterProcessor.Config(cfg.enabled, cfg.intensity))
-                LoFiSpeed.ratio = if (cfg.isActive()) 1f - cfg.intensity * MAX_LO_FI_SLOWDOWN else 1f
+                loFiSpeedRatio = if (cfg.isActive()) 1f - cfg.intensity * MAX_LO_FI_SLOWDOWN else 1f
+                applyPlaybackParameters()
             }
         }
         scope.launch {
@@ -594,6 +604,10 @@ class LocalPlayer(private val context: Context) {
                 })
                 SignalPath.onMixerRate(DeviceCapabilities.mixerRateHz())
                 preferredOutput?.let { d -> runCatching { p.setPreferredAudioDevice(d) } }
+                // A rate chosen before this player existed — a Lo-fi toggle while
+                // nothing was playing, or a speed left over from the last track —
+                // has to land on the new one, or it silently reverts to 1.
+                applyPlaybackParameters(p)
             }
     }
 
@@ -1139,7 +1153,39 @@ class LocalPlayer(private val context: Context) {
             return
         }
         _speed.value = value.coerceIn(0.5f, 3f)
-        player.setPlaybackSpeed(_speed.value)
+        applyPlaybackParameters(player)
+    }
+
+    /**
+     * Push [_speed] and [loFiSpeedRatio] onto the player together.
+     *
+     * Speed *and* pitch, not `setPlaybackSpeed`: a tape or a turntable running
+     * slow drops the pitch with the tempo, and pitch-preserved time-stretching
+     * is exactly the artefact Lo-fi is trying not to sound like. The listener's
+     * own speed control keeps its pitch, so it multiplies into the tempo and
+     * leaves the pitch to the mode.
+     *
+     * Through the player rather than a [androidx.media3.common.audio.SonicAudioProcessor]
+     * of our own in [TapRenderersFactory]'s chain, for two reasons: media3
+     * accounts for its own playback parameters when it reports a position, and
+     * would not account for ours — a 4.5% slow-down would put every reported
+     * position, and so the scrub bar and the light show, that far out by the end
+     * of a track; and that chain is fixed when the player is built, so a mode
+     * toggled mid-session would not be heard until the next player. Both are
+     * live here.
+     *
+     * [exclusiveOutput] is the one case that opts out: it exists to put nothing
+     * of this app's between the decoder and the DAC, and a resample is very much
+     * something. The sound modes are already hidden in that mode for the same
+     * reason.
+     *
+     * @param target the player to write to, for the one caller that has a player
+     *   in hand but has not published it as [livePlayer] yet ([buildPlayer]).
+     */
+    private fun applyPlaybackParameters(target: ExoPlayer? = livePlayer) {
+        val p = target ?: return
+        val ratio = if (exclusiveOutput) 1f else loFiSpeedRatio
+        p.playbackParameters = PlaybackParameters(_speed.value * ratio, ratio)
     }
 
     fun setShuffle(on: Boolean) {
