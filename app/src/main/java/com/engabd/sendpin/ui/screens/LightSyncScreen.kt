@@ -413,7 +413,13 @@ private fun DirectLightSyncScreen(onBack: () -> Unit, onOpenEffects: () -> Unit 
     // remote speaker — where this phone decodes nothing at all — reported "Reacting to
     // the beat" over a room full of idle lamps.
     val framesFresh by direct.framesFresh.collectAsStateWithLifecycle()
-    val scanState by app.scanFrameSource.state.collectAsStateWithLifecycle()
+    val maScanState by app.scanFrameSource.state.collectAsStateWithLifecycle()
+    val mpdScanState by app.mpdScanFrameSource.state.collectAsStateWithLifecycle()
+    // Whichever of the two is actually doing something. The two are exclusive in
+    // practice — MPD driving and a remote MA speaker playing can't both be the
+    // active local session at once — so this only ever falls back to the MA
+    // reading, which is what it always showed before MPD had a scan source too.
+    val scanState = if (mpdScanState != com.engabd.sendpin.hue.ScanFeedState.IDLE) mpdScanState else maScanState
     // Collected, not read through `derivedStateOf`. That form reads a StateFlow's
     // `.value`, which is not snapshot state, so the derivation had no dependencies to
     // invalidate on: it computed the feed once on first composition and never again.
@@ -432,6 +438,12 @@ private fun DirectLightSyncScreen(onBack: () -> Unit, onOpenEffects: () -> Unit 
     val feed = lightSource.feed
     val maNow by app.maNowPlaying.now.collectAsStateWithLifecycle()
     val remoteSpeaker = maNow?.takeIf { !it.isSelf }?.playerName
+    // Same "who is this playing on" line MPD's own Now Playing pill uses (see
+    // NowPlayingViewModel.State.playerName) - MPD's configured output name where
+    // it said one, else just "MPD", rather than "another speaker".
+    val mpdRemoteActive by app.localPlayer.remoteActive.collectAsStateWithLifecycle()
+    val mpdOutputName by app.localPlayer.remoteOutputDeviceName.collectAsStateWithLifecycle()
+    val speakerLabel = remoteSpeaker ?: (mpdOutputName ?: "MPD").takeIf { mpdRemoteActive }
     val enabled by settings.lightSyncEnabled.collectAsState(initial = false)
     val intensity by settings.lightSyncIntensity.collectAsState(initial = "high")
     val autoLevels by settings.lightSyncAutoLevels.collectAsState(initial = listOf("subtle", "medium", "high"))
@@ -507,7 +519,7 @@ private fun DirectLightSyncScreen(onBack: () -> Unit, onOpenEffects: () -> Unit 
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
                             Text("Sync lights to music", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
                             Text(
-                                showStatusText(showStatus, remoteSpeaker),
+                                showStatusText(showStatus, speakerLabel),
                                 color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
                             )
                         }

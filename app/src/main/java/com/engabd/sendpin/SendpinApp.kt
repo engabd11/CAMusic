@@ -176,13 +176,15 @@ class SendpinApp : Application(), ImageLoaderFactory {
         combine(
             localPlayer.current, playback.artworkUrl, playbackOwner.state,
             scanFrameSource.driving, com.engabd.sendpin.capture.PlaybackCapture.running,
+            mpdScanFrameSource.driving,
         ) { values ->
             @Suppress("UNCHECKED_CAST")
             val localTrack = values[0] as com.engabd.sendpin.audio.LocalTrack?
             val maArtUrl = values[1] as String?
             val owner = values[2] as PlaybackOwner.State
-            val scanDriving = values[3] as Boolean
+            val maScanDriving = values[3] as Boolean
             val captureRunning = values[4] as Boolean
+            val mpdScanDriving = values[5] as Boolean
             val maTap = owner.sendspinTap
             // The precedence lives in one pure function now — see
             // [com.engabd.sendpin.hue.LightSyncFeedPicker]. It used to be an `if` here
@@ -191,9 +193,15 @@ class SendpinApp : Application(), ImageLoaderFactory {
             val feed = com.engabd.sendpin.hue.LightSyncFeedPicker.pick(
                 sendspinPlayingHere = owner.soundOwner == PlaybackOwner.Who.SENDSPIN,
                 hasSendspinTap = maTap != null,
-                localPlaying = owner.soundOwner == PlaybackOwner.Who.LOCAL,
+                // Not just `soundOwner == LOCAL`: that is true for MPD too, whose PCM
+                // is not real — see `PlaybackOwner.State.soundIsReadable`. Without the
+                // second half of this, MPD's genuinely-playing LocalPlayer always won
+                // the precedence check ahead of `scanDriving`, so `mpdScanFrameSource`
+                // could adopt a scan and start driving frames that this picker then
+                // never selected.
+                localPlaying = owner.soundOwner == PlaybackOwner.Who.LOCAL && owner.soundIsReadable,
                 captureRunning = captureRunning,
-                scanDriving = scanDriving,
+                scanDriving = maScanDriving || mpdScanDriving,
             )
             when (feed) {
                 com.engabd.sendpin.hue.LightSyncFeed.SENDSPIN_PCM ->
@@ -212,12 +220,16 @@ class SendpinApp : Application(), ImageLoaderFactory {
                         artUrl = null, scanTrack = null, feed = feed,
                     )
                 // Nothing audible reaches this phone, so the tap is a placeholder and
-                // the frames come from [scanFrameSource] instead. The artwork is still
-                // MA's, because the *colours* do not need audio.
+                // the frames come from [scanFrameSource]/[mpdScanFrameSource] instead.
+                // The artwork still names whichever of the two is actually driving,
+                // because the *colours* do not need audio — MA's when a remote MA
+                // speaker is playing, this phone's own local track (already correct
+                // for MPD — see `LocalPlayer.showRemoteIndex`) when MPD is.
                 com.engabd.sendpin.hue.LightSyncFeed.SCAN_REMOTE ->
                     com.engabd.sendpin.hue.ActiveLightSyncSource(
                         tap = localPlayer.audioAnalysisTap, lead = localPlayer.audioLead,
-                        artUrl = maArtUrl, scanTrack = null, feed = feed,
+                        artUrl = if (mpdScanDriving) localTrack?.artUrl else maArtUrl,
+                        scanTrack = null, feed = feed,
                     )
                 else ->
                     com.engabd.sendpin.hue.ActiveLightSyncSource(
@@ -294,6 +306,22 @@ class SendpinApp : Application(), ImageLoaderFactory {
         com.engabd.sendpin.hue.ScanFrameSource(
             scans = trackScans,
             nowPlaying = maNowPlaying,
+            downloads = downloads,
+            settings = com.engabd.sendpin.data.AppSettings(this),
+            musicSource = { musicSource.value },
+            sink = { frame, grid, scan, pos -> scanFrameSink?.invoke(frame, grid, scan, pos) },
+        )
+    }
+
+    /**
+     * The light show for a library playing itself, with this phone as its remote —
+     * MPD. Same idea as [scanFrameSource], driven by [localPlayer]'s own state
+     * instead of [maNowPlaying]. See [com.engabd.sendpin.hue.MpdScanFrameSource].
+     */
+    val mpdScanFrameSource: com.engabd.sendpin.hue.MpdScanFrameSource by lazy {
+        com.engabd.sendpin.hue.MpdScanFrameSource(
+            scans = trackScans,
+            local = localPlayer,
             downloads = downloads,
             settings = com.engabd.sendpin.data.AppSettings(this),
             musicSource = { musicSource.value },
@@ -574,10 +602,12 @@ class SendpinApp : Application(), ImageLoaderFactory {
                         // Follows the same switch, for the same reason: what it costs
                         // while nothing is playing remotely is one idle collector.
                         scanFrameSource.start()
+                        mpdScanFrameSource.start()
                     } else if (started) {
                         started = false
                         directLightSync.stop()
                         scanFrameSource.stop()
+                        mpdScanFrameSource.stop()
                         // Capture holds a foreground service and an ongoing
                         // notification; leaving it running for a show that is switched
                         // off would be a microphone-shaped permission doing nothing

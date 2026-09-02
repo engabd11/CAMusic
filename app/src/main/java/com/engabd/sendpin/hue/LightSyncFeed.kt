@@ -16,10 +16,13 @@ enum class LightSyncFeed {
     SENDSPIN_PCM,
 
     /**
-     * A Music Assistant queue playing on a *remote* speaker.
+     * A Music Assistant queue playing on a *remote* speaker, or a library — MPD —
+     * playing itself with this phone only as its remote.
      *
      * No audio is decoded here at all, so the frames are synthesised from the track's
-     * offline analysis — see [com.engabd.sendpin.audio.ScanFrameSynth].
+     * offline analysis — see [com.engabd.sendpin.audio.ScanFrameSynth],
+     * [com.engabd.sendpin.hue.ScanFrameSource] and
+     * [com.engabd.sendpin.hue.MpdScanFrameSource].
      */
     SCAN_REMOTE,
 
