@@ -440,6 +440,7 @@ private fun DjRadioSettingsCard(settings: AppSettings, scope: CoroutineScope) {
         .collectAsStateWithLifecycle(initialValue = AppSettings.DEFAULT_DJ_CROSSFADE_S)
     val similarity by settings.djRadioSimilarity
         .collectAsStateWithLifecycle(initialValue = AppSettings.DEFAULT_DJ_SIMILARITY)
+    val smartFade by settings.djRadioSmartFade.collectAsStateWithLifecycle(initialValue = true)
 
     SettingsCard(
         title = "DJ Radio",
@@ -449,18 +450,53 @@ private fun DjRadioSettingsCard(settings: AppSettings, scope: CoroutineScope) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            FieldLabel("Crossfade")
+            FieldLabel("How it joins")
+            InfoChip(
+                "Smart or Standard",
+                "Standard overlaps the last few seconds of the file, by the clock. That is " +
+                    "a fact about the file rather than about the music, and it is why a " +
+                    "crossfade can be several seconds long and still sound like a cut: if the " +
+                    "outgoing track has already faded out, or ends on a couple of seconds of " +
+                    "silence, the \"mix\" is the new song coming up under nothing at " +
+                    "all.\n\nSmart reads the same offline scan Light Sync uses and plans " +
+                    "the join instead. It finds where the music actually stops rather than " +
+                    "where the file does, starts the overlap on a downbeat so the two grids " +
+                    "meet in time, sizes it in whole bars, and drops the needle past any dead " +
+                    "air at the front of the next track.\n\nNeeds the track scanned. Where it " +
+                    "has not been, Smart quietly does exactly what Standard does, so there is " +
+                    "nothing lost by leaving it on.\n\nTip: run a sweep under Settings, Light " +
+                    "Sync, Track analysis and far more of your library gets the good join.",
+                Modifier.heightIn(0.dp),
+            )
+        }
+        SegmentedToggleRow(FadeModeLabels, if (smartFade) 0 else 1) { i ->
+            scope.launch { settings.setDjRadioSmartFade(i == 0) }
+        }
+        Note(
+            if (smartFade) "Bars and downbeats, from the scan. Falls back to the time below."
+            else "Purely by the clock: the last seconds of one track over the first of the next.",
+        )
+
+        Spacer(Modifier.height(6.dp))
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            FieldLabel(if (smartFade) "About this long" else "Crossfade")
             InfoChip(
                 "DJ Radio crossfade",
                 "How long the two tracks overlap. Unlike Smooth transitions above, this is a " +
                     "real crossfade: the outgoing track keeps playing on a second deck while " +
                     "the next one comes up under it, so the room is never quiet between " +
-                    "songs.\n\nAt 0 the tracks simply run into each other gapless, which is " +
-                    "still no silence — just no overlap.\n\nOnly ever applied while DJ Radio " +
-                    "is running. Ordinary playback and albums keep the settings above " +
-                    "untouched.\n\nTip: four to eight seconds is a mix you hear as a mix. " +
-                    "Past ten, a short track can be arriving before the last one has said " +
-                    "what it came to say.",
+                    "songs.\n\nOn Smart this is a target rather than the answer — the overlap " +
+                    "is rounded to the whole number of bars nearest it, because a bar and a " +
+                    "half of overlap is the stumble that one or two bars is not. Two seconds " +
+                    "is exactly one bar at 120 BPM in 4/4.\n\nAt 0 the tracks simply run into " +
+                    "each other gapless, which is still no silence — just no " +
+                    "overlap.\n\nOnly ever applied while DJ Radio is running. Ordinary " +
+                    "playback and albums keep the settings above untouched.\n\nTip: past four " +
+                    "or five seconds a transition stops reading as one song arriving and " +
+                    "starts reading as two playing at once.",
                 Modifier.heightIn(0.dp),
             )
         }
@@ -520,3 +556,6 @@ private fun DjRadioSettingsCard(settings: AppSettings, scope: CoroutineScope) {
         )
     }
 }
+
+/** Smart first, because it is the default and the one that answers the complaint. */
+private val FadeModeLabels = listOf("Smart", "Standard")

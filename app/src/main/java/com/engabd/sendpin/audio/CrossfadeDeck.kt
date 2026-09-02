@@ -6,6 +6,7 @@ import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
@@ -20,8 +21,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.math.abs
-import kotlin.math.cos
-import kotlin.math.sin
 
 /**
  * The second deck: a throwaway player that carries the *outgoing* track's last few
@@ -58,11 +57,13 @@ import kotlin.math.sin
  *
  * ## The pre-roll, and why it is not optional
  *
- * The deck is armed [PREROLL_MS] before the swap and starts playing *at volume zero*,
- * seeked to wherever the main player is. Starting it at the swap instead would mean
- * paying decoder and `AudioTrack` start latency at the exact moment the outgoing
- * track is supposed to be at full volume — a hole a hundred-odd milliseconds wide,
- * in the one place this whole class exists to remove one.
+ * The deck is armed seconds before the swap (see [SmartCrossfade.prerollFor]) and
+ * starts playing *at volume zero*, seeked to wherever the main player is. Starting it
+ * at the swap instead would mean paying decoder and `AudioTrack` start latency at the
+ * exact moment the outgoing track is supposed to be at full volume — a hole a
+ * hundred-odd milliseconds wide, in the one place this whole class exists to remove
+ * one. And a head start is not a guarantee, which is what [ready] is for: the swap
+ * waits on the deck genuinely making sound rather than on a stopwatch.
  *
  * Rolling early costs a drift instead: two independent decoders on one file do not
  * agree to the sample. [align] takes one measurement of that drift and, if it is
@@ -90,6 +91,22 @@ class CrossfadeDeck(
 
     /** True from [start] until the fade finishes or something cancels it. */
     val active: Boolean get() = player != null
+
+    /**
+     * The deck is actually making sound, not still opening a connection.
+     *
+     * The gate on the whole hand-over, and the fix for the failure that made a
+     * crossfade sound like a cut: [start] returning true only means a player was
+     * built and told to play. A track streamed from a server across the house can
+     * still be filling its first buffer seconds later, and swapping to a deck in
+     * that state left the outgoing side silent for the length of the mix — a cut,
+     * plus a slow fade-in on the new track, which is precisely what was reported.
+     *
+     * `isPlaying` rather than `playbackState == READY` alone, because READY with
+     * `playWhenReady` still pending is a deck that is ready to start and has not.
+     */
+    val ready: Boolean
+        get() = player?.let { it.playbackState == Player.STATE_READY && it.isPlaying } ?: false
 
     /**
      * Roll the tail of [source] silently from [positionMs], ready to be brought up
@@ -180,7 +197,7 @@ class CrossfadeDeck(
             for (i in 0..steps) {
                 if (!isActive) break
                 val x = i.toFloat() / steps
-                runCatching { p.volume = targetGain * cos(x * HALF_PI) }
+                runCatching { p.volume = targetGain * SmartCrossfade.fadeOutAt(x) }
                 delay(RAMP_TICK_MS)
             }
             // Not [cancel]: that cancels `ramp`, which is this coroutine, and a
@@ -251,16 +268,6 @@ class CrossfadeDeck(
 
     companion object {
         /**
-         * How long the deck rolls silently before the swap.
-         *
-         * Long enough to cover a cold decoder and one [align] correction; short
-         * enough that a listener skipping tracks quickly does not leave a string of
-         * these behind. Two seconds is roughly four ticks of [LocalPlayer]'s
-         * position loop.
-         */
-        const val PREROLL_MS = 2_000L
-
-        /**
          * Drift worth spending [align]'s one correction on.
          *
          * A fifth of a second is where a jump inside the outgoing track stops being
@@ -274,59 +281,6 @@ class CrossfadeDeck(
 
         private const val MAX_WINDOW_S = 15f
 
-        private const val HALF_PI = (Math.PI / 2).toFloat()
-
         private val USER_AGENT: String = "CAMusic/${BuildConfig.VERSION_NAME} (Android)"
-    }
-}
-
-/**
- * When a DJ Radio crossfade should start, and how loud each side of it should be.
- *
- * Split out from [CrossfadeDeck] because it is arithmetic and arithmetic can be
- * tested: the deck needs an Android `Context` and a live decoder, and none of the
- * decisions below need either.
- */
-object CrossfadeSchedule {
-
-    /**
-     * Whether a track running [positionMs] into [durationMs] should be handed over
-     * now, for a [seconds]-long crossfade.
-     *
-     * A track shorter than three windows is left alone: at four seconds of fade a
-     * ten-second interlude would spend most of its life in a transition, and the
-     * same guard already governs the sequential fade in [LocalPlayer.fadeAt].
-     */
-    fun shouldHandOver(positionMs: Long, durationMs: Long, seconds: Int): Boolean {
-        if (seconds <= 0 || durationMs <= 0) return false
-        val window = seconds * 1000L
-        if (durationMs < window * 3) return false
-        val remaining = durationMs - positionMs
-        return remaining in 0..window
-    }
-
-    /** Whether the tail deck should be rolled up now, ahead of [shouldHandOver]. */
-    fun shouldArm(positionMs: Long, durationMs: Long, seconds: Int): Boolean {
-        if (seconds <= 0 || durationMs <= 0) return false
-        val window = seconds * 1000L
-        if (durationMs < window * 3) return false
-        val remaining = durationMs - positionMs
-        return remaining in 0..(window + CrossfadeDeck.PREROLL_MS)
-    }
-
-    /**
-     * The incoming track's level [positionMs] into it, for a [seconds] crossfade.
-     *
-     * `sin` against the tail's `cos`, so the two sum to constant power — see
-     * [CrossfadeDeck.handOver]. Unlike the sequential fade this has no fade-*out*
-     * half at all: the outgoing track is a different player's problem now, and the
-     * main player leaves its track early rather than riding it down.
-     */
-    fun fadeInAt(positionMs: Long, seconds: Int): Float {
-        if (seconds <= 0) return 1f
-        val window = seconds * 1000f
-        if (positionMs >= window) return 1f
-        val x = (positionMs.coerceAtLeast(0) / window).coerceIn(0f, 1f)
-        return sin(x * (Math.PI / 2).toFloat()).coerceIn(0f, 1f)
     }
 }

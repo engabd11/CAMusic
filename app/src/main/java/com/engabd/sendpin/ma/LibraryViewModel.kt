@@ -837,6 +837,12 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 if (_djRadio.value) localPlayer.djCrossfadeSeconds = it
             }
         }
+        // Smart fade is safe to leave set at all times: the player only consults it
+        // while [LocalPlayer.djCrossfadeSeconds] is non-zero, which is only while a
+        // set is running.
+        viewModelScope.launch {
+            settings.djRadioSmartFade.collect { localPlayer.djSmartFade = it }
+        }
         // A local track that actually started is a play worth reporting, so
         // Navidrome's play counts and its "recently played" shelf stay honest.
         //
@@ -2287,6 +2293,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * selection has anywhere to happen. Offering a button there that quietly did
      * something else would be worse than not offering one.
      */
+    /** Whether the card says "smart mix" or a number of seconds. */
+    val djRadioSmartFade: StateFlow<Boolean> =
+        settings.djRadioSmartFade.stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
     val djRadioAvailable: StateFlow<Boolean> =
         _backend.map { it == Backend.SUBSONIC }
             .stateIn(viewModelScope, SharingStarted.Eagerly, false)
@@ -2323,13 +2333,20 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                     count = RADIO_BATCH,
                     generator = source?.takeIf { !_offline.value }?.let { LibraryRadioSource(it) },
                 )
-                if (picks.isEmpty()) {
-                    _toast.tryEmit("DJ Radio on - nothing to mix in yet")
-                    return@launch
+                if (picks.isNotEmpty()) {
+                    rememberSeeds(picks)
+                    localPlayer.replaceUpcoming(picks.map { localTrack(it) })
                 }
-                rememberSeeds(picks)
-                localPlayer.replaceUpcoming(picks.map { localTrack(it) })
-                _toast.tryEmit("DJ Radio - mixing on from ${playing.title}")
+                // **And then play.** "Already listening" was doing all its work off
+                // `current`, which survives a pause and survives a queue running off
+                // its end — so pressing DJ Radio with a paused or finished player
+                // built a set behind a track nobody was hearing and started nothing.
+                // The button says music will happen; music has to happen.
+                val sounding = startOrResume()
+                _toast.tryEmit(
+                    if (sounding) "DJ Radio - mixing on from ${playing.title}"
+                    else "DJ Radio on - nothing to mix in yet",
+                )
                 return@launch
             }
 
@@ -2342,6 +2359,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             }
             stopMaPlayback()
             rememberSeeds(opener)
+            // setQueue starts playback itself; nothing else here needs to.
             localPlayer.setQueue(opener.map { localTrack(it) })
             // [setQueue] decides smoothQueue from the album spread, and a set drawn
             // from one album would come out sequenced — which is right for a record
@@ -2351,15 +2369,48 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Back to ordinary playback: the queue stands, the crossfade stops. */
+    /**
+     * Stop the set: the music stops and the queue goes with it.
+     *
+     * Not a pause. Pause is on the transport and means "hold this where it is" — the
+     * queue survives it and Resume picks the same set back up. This is the listener
+     * closing the set down, and a queue of a hundred algorithmically chosen tracks
+     * left sitting behind a stopped player is not something anybody asked to keep:
+     * the next thing they play would land on top of it, and Now Playing would go on
+     * offering a set that is over.
+     */
     fun stopDjRadio() {
         if (!_djRadio.value) return
         _djRadio.value = false
         localPlayer.djCrossfadeSeconds = 0
+        localPlayer.clear()
         _toast.tryEmit("DJ Radio off")
     }
 
     fun toggleDjRadio() = if (_djRadio.value) stopDjRadio() else startDjRadio()
+
+    /**
+     * Make sure sound is actually coming out, whatever state the player was left in.
+     *
+     * Three states look identical through [LocalPlayer.current] and are not: playing
+     * (do nothing), paused (resume), and run off the end of the queue (the player is
+     * idle, and resuming an idle player at a spent index plays nothing — it has to be
+     * pointed at a track). Only the first of those was handled.
+     */
+    private fun startOrResume(): Boolean {
+        if (localPlayer.playing.value) return true
+        if (!localPlayer.stopped) {
+            // Paused mid-track. Carry on from where the listener left it — restarting
+            // the track would be a different, ruder thing than the button promised.
+            localPlayer.resume()
+            return true
+        }
+        // Spent. Resuming would sit on a track that has already finished, so move
+        // into whatever is next — which is the set that was just built behind it.
+        if (localPlayer.upcomingCount(1) < 1) return false
+        localPlayer.continueAfterEnd()
+        return true
+    }
 
     /**
      * The listener has started something of their own, so the set is over.

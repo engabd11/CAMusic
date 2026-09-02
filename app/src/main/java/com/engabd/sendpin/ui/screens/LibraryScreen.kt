@@ -390,6 +390,7 @@ private fun Browse(
     val djRadio by viewModel.djRadio.collectAsStateWithLifecycle()
     val djRadioAvailable by viewModel.djRadioAvailable.collectAsStateWithLifecycle()
     val djCrossfade by viewModel.djRadioCrossfadeSeconds.collectAsStateWithLifecycle()
+    val djSmartFade by viewModel.djRadioSmartFade.collectAsStateWithLifecycle()
 
     val s = if (searchOpen) search else null
 
@@ -543,6 +544,7 @@ private fun Browse(
                     DjRadioCard(
                         running = djRadio,
                         crossfadeSeconds = djCrossfade,
+                        smartFade = djSmartFade,
                         onStart = viewModel::startDjRadio,
                         onStop = viewModel::stopDjRadio,
                         modifier = Modifier.padding(bottom = 4.dp),

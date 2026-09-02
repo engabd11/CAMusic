@@ -307,6 +307,7 @@ class AppSettings(private val context: Context) {
         private val DJ_MODE = booleanPreferencesKey("dj_mode")
         private val DJ_RADIO_CROSSFADE = stringPreferencesKey("dj_radio_crossfade_s")  // overlapping crossfade, DJ Radio only
         private val DJ_RADIO_SIMILARITY = stringPreferencesKey("dj_radio_similarity")  // 0 loose .. 1 tight
+        private val DJ_RADIO_SMART_FADE = booleanPreferencesKey("dj_radio_smart_fade")  // plan the join off the scan
         private val SENSOR_GESTURES = booleanPreferencesKey("sensor_gestures")
         private val LISTENING_DNA = booleanPreferencesKey("listening_dna")
         private val STEM_SEPARATION = booleanPreferencesKey("stem_separation")
@@ -337,8 +338,17 @@ class AppSettings(private val context: Context) {
          */
         const val MAX_DJ_CROSSFADE_S = 15
 
-        /** Long enough to hear as a mix, short enough not to bury the new track's intro. */
-        const val DEFAULT_DJ_CROSSFADE_S = 6
+        /**
+         * The default overlap.
+         *
+         * Two seconds, which at 120 BPM in 4/4 is exactly one bar — so on the most
+         * common tempo in recorded music the default setting and the musically
+         * correct answer are the same number. Short enough that the incoming track's
+         * first bar is heard rather than buried, which a longer one is not: six
+         * seconds of overlap reads as two songs playing at once rather than as one
+         * arriving.
+         */
+        const val DEFAULT_DJ_CROSSFADE_S = 2
 
         /**
          * Where the similarity slider starts.
@@ -798,6 +808,27 @@ class AppSettings(private val context: Context) {
 
     suspend fun setDjRadioSimilarity(value: Float) = context.dataStore.edit {
         it[DJ_RADIO_SIMILARITY] = value.coerceIn(0f, 1f).toString()
+    }
+
+    /**
+     * Smart fade: plan each DJ Radio transition off the offline scan rather than off
+     * the clock. On by default.
+     *
+     * The difference is what the crossfade is measured *against*. Standard overlaps
+     * the last N seconds of the file, which is a fact about the file; smart reads
+     * where the music actually stops, snaps the join to a downbeat, sizes the
+     * overlap in bars and drops the needle past the next track's own dead air — all
+     * from data [com.engabd.sendpin.audio.TrackScan] already carries for Light Sync.
+     * See [com.engabd.sendpin.audio.SmartCrossfade].
+     *
+     * Defaulted on rather than off, unlike the other scan-fed settings: it degrades
+     * to exactly the standard behaviour on a track with no scan, so there is no
+     * state in which having it on is worse than having it off.
+     */
+    val djRadioSmartFade: Flow<Boolean> = pref { it[DJ_RADIO_SMART_FADE] ?: true }
+
+    suspend fun setDjRadioSmartFade(value: Boolean) = context.dataStore.edit {
+        it[DJ_RADIO_SMART_FADE] = value
     }
 
     /** Shake to skip, flip face-down to pause, double-tap to play/pause. Off by default. */

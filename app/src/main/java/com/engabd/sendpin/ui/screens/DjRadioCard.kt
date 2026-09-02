@@ -72,6 +72,8 @@ internal fun DjRadioCard(
     running: Boolean,
     /** Seconds of overlap between tracks, for the line that says what this will do. */
     crossfadeSeconds: Int,
+    /** The join is planned off the track analysis rather than off the clock. */
+    smartFade: Boolean,
     onStart: () -> Unit,
     onStop: () -> Unit,
     modifier: Modifier = Modifier,
@@ -100,6 +102,15 @@ internal fun DjRadioCard(
         ).value
     } else {
         0f
+    }
+
+    // What the button is about to do, in three words. "Smart mix" says the join comes
+    // from the analysis; a number says it comes from the clock. Both are more use
+    // than the word "crossfade", which does not distinguish them.
+    val mixLabel = when {
+        smartFade -> "smart mix"
+        crossfadeSeconds > 0 -> "${crossfadeSeconds}s crossfade"
+        else -> "straight in"
     }
 
     val glow by animateFloatAsState(
@@ -160,12 +171,8 @@ internal fun DjRadioCard(
                 )
                 Text(
                     when {
-                        running && crossfadeSeconds > 0 ->
-                            "Mixing on · ${crossfadeSeconds}s crossfade · tap to stop"
-                        running -> "Mixing on · tap to stop"
-                        crossfadeSeconds > 0 ->
-                            "One tap, one mood, no gaps · ${crossfadeSeconds}s crossfade"
-                        else -> "One tap, one mood, straight into the next"
+                        running -> "Mixing on · $mixLabel · tap to stop"
+                        else -> "One tap, one mood, no gaps · $mixLabel"
                     },
                     color = TextMuted,
                     fontFamily = AppFont,
