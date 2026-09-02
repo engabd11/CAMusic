@@ -142,6 +142,50 @@ class LocalRadio(private val historyLimit: Int = 200) {
     }
 
     /**
+     * Everything the ladder can find near [seed], merged rather than laddered.
+     *
+     * The opposite arrangement to [next], and deliberately so. That one stops at the
+     * first rung that answers, because its job is to make one decision — the
+     * strongest available claim about "more like this" — and hand it over. DJ Radio
+     * makes its own decision (see [DjSetBuilder]) and what it needs from here is
+     * *breadth*: a hundred candidates it can rank on mood and rhythm beats ten it
+     * cannot choose between.
+     *
+     * `random` is only reached when the named rungs come up short, so a library with
+     * real similarity data never has its set diluted by arbitrary tracks, and one
+     * without still fills a queue.
+     *
+     * Does **not** [remember] what it returns: this is a pool of candidates, most of
+     * which will not be played, and putting them all in the history would exclude
+     * them from every later batch for the rest of the session.
+     */
+    suspend fun pool(
+        source: RadioSource,
+        seed: MaItem?,
+        want: Int,
+        exclude: Set<String> = emptySet(),
+    ): List<MaItem> {
+        val each = (want / 2).coerceAtLeast(20)
+        val found = LinkedHashMap<String, MaItem>()
+
+        suspend fun gather(rung: suspend () -> List<MaItem>) {
+            rung()
+                .filter { it.itemId.isNotBlank() }
+                .filterNot { it.itemId in exclude || it.itemId in history }
+                .forEach { found.putIfAbsent(it.itemId, it) }
+        }
+
+        seed?.itemId?.takeIf { it.isNotBlank() }?.let { gather { source.similarToTrack(it, each) } }
+        seed?.parentId?.takeIf { it.isNotBlank() }?.let { gather { source.similarToAlbum(it, each) } }
+        seed?.genres?.firstOrNull()?.takeIf { it.isNotBlank() }?.let { gather { source.byGenre(it, each) } }
+        seed?.subtitle?.substringBefore(",")?.trim()?.takeIf { it.isNotBlank() }
+            ?.let { gather { source.topSongs(it, each) } }
+        if (found.size < want) gather { source.random(want) }
+
+        return found.values.toList()
+    }
+
+    /**
      * Anything at all, shuffled — the answer when the transport shuffle is on.
      *
      * Deliberately not [next]: that ladder's whole job is to stay *near* the seed,

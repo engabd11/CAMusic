@@ -50,6 +50,7 @@ internal fun AudioSection(
         OutputCard(settings, accent, scope)
         LoudnessCard(settings, accent, scope)
         ContinuousPlayCard(settings, accent, scope)
+        DjRadioSettingsCard(settings, scope)
         // Here rather than in a section of its own: it is about how playback is
         // *controlled* on this device, which is what this section already is, and a
         // top-level entry for one card is the shape the "CAMusic player" section
@@ -416,6 +417,106 @@ private fun ContinuousPlayCard(settings: AppSettings, accent: Color, scope: Coro
                 "the options chip under the artwork on Now Playing, next to the queue it " +
                 "governs.\n\nThat is also where you choose whether the player carries on with " +
                 "similar tracks when the queue empties, or simply stops.",
+        )
+    }
+}
+
+
+// ── DJ Radio ──────────────────────────────────────────────────────────────
+
+/**
+ * The two numbers behind the button on the library's front page.
+ *
+ * Beside "Between tracks" rather than inside it, because they are not the same
+ * setting under a different name. That card's fade is *sequential* and off by
+ * default because an album must not be faded; this one puts two tracks in the air
+ * at once and is on by default, because that overlap is the whole of what DJ Radio
+ * was asked for. Sharing one number would have meant either fading albums or
+ * shipping a DJ mode with a gap in it.
+ */
+@Composable
+private fun DjRadioSettingsCard(settings: AppSettings, scope: CoroutineScope) {
+    val crossfade by settings.djRadioCrossfadeSeconds
+        .collectAsStateWithLifecycle(initialValue = AppSettings.DEFAULT_DJ_CROSSFADE_S)
+    val similarity by settings.djRadioSimilarity
+        .collectAsStateWithLifecycle(initialValue = AppSettings.DEFAULT_DJ_SIMILARITY)
+
+    SettingsCard(
+        title = "DJ Radio",
+        lead = "The button on the library's front page: one tap, and it keeps choosing.",
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            FieldLabel("Crossfade")
+            InfoChip(
+                "DJ Radio crossfade",
+                "How long the two tracks overlap. Unlike Smooth transitions above, this is a " +
+                    "real crossfade: the outgoing track keeps playing on a second deck while " +
+                    "the next one comes up under it, so the room is never quiet between " +
+                    "songs.\n\nAt 0 the tracks simply run into each other gapless, which is " +
+                    "still no silence — just no overlap.\n\nOnly ever applied while DJ Radio " +
+                    "is running. Ordinary playback and albums keep the settings above " +
+                    "untouched.\n\nTip: four to eight seconds is a mix you hear as a mix. " +
+                    "Past ten, a short track can be arriving before the last one has said " +
+                    "what it came to say.",
+                Modifier.heightIn(0.dp),
+            )
+        }
+        SliderRow(
+            value = crossfade / AppSettings.MAX_DJ_CROSSFADE_S.toFloat(),
+            format = { if (crossfade == 0) "Gapless" else "${crossfade}s" },
+            onChange = { f ->
+                scope.launch {
+                    settings.setDjRadioCrossfadeSeconds(
+                        Math.round(f * AppSettings.MAX_DJ_CROSSFADE_S),
+                    )
+                }
+            },
+        )
+
+        Spacer(Modifier.height(6.dp))
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            FieldLabel("How similar")
+            InfoChip(
+                "How similar",
+                "How close the next track has to be to the last one.\n\nCloseness is measured " +
+                    "on the genre tags your library carries and on the offline track analysis " +
+                    "— how hard the song goes, how bright it is, and what tempo it really runs " +
+                    "at, folded at half and double time the way a DJ hears it. A track that " +
+                    "has not been analysed is still eligible; it is just ranked on its tags " +
+                    "alone, and sits behind the ones that have been.\n\nNothing ever stalls " +
+                    "here: if nothing clears the bar, the bar comes down until something " +
+                    "does. Loose is a wider net, not a worse one.\n\nTip: run a sweep under " +
+                    "Settings, Light Sync, Track analysis. Every scanned track is one more " +
+                    "the set can actually listen to before choosing it.",
+                Modifier.heightIn(0.dp),
+            )
+        }
+        SliderRow(
+            value = similarity,
+            format = {
+                when {
+                    similarity < 0.25f -> "Wander"
+                    similarity < 0.5f -> "Loose"
+                    similarity < 0.75f -> "Close"
+                    else -> "Tight"
+                }
+            },
+            onChange = { f -> scope.launch { settings.setDjRadioSimilarity(f) } },
+        )
+        Note(
+            "Harmonic DJ mode adds key matching on top.",
+            title = "Key matching",
+            info = "With Harmonic DJ mode on — under Behaviour — DJ Radio also weighs whether " +
+                "the two tracks sit well together on the Camelot wheel, so a transition is in " +
+                "key as well as in tempo and in mood.\n\nIt needs both tracks scanned to say " +
+                "anything, and contributes nothing where either has not been. Off by default, " +
+                "and DJ Radio works without it.",
         )
     }
 }
