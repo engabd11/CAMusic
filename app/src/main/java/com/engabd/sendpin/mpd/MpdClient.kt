@@ -120,13 +120,74 @@ class MpdClient(
                 single = m["single"] == "1",
                 random = m["random"] == "1",
                 playlistLength = m["playlistlength"]?.toIntOrNull() ?: 0,
+                audioFormat = m["audio"],
+                bitrateKbps = m["bitrate"]?.toIntOrNull() ?: 0,
             )
         }
 
         /** Seconds as MPD writes them — `245.320` — in milliseconds. */
         private fun String?.toMillis(): Long =
             this?.toFloatOrNull()?.let { (it * 1000).toLong() }?.coerceAtLeast(0L) ?: 0L
+
+        /**
+         * [MpdStatus.audioFormat] as (sample rate Hz, bit depth, channels), the
+         * same `"rate:bits:channels"` shape and the same tolerant parsing
+         * [buildTrack] already uses for a track's own `Format` tag — any part can
+         * be `*` (not decided yet) or non-numeric (`dsd64` in place of a rate for
+         * DSD, `f` in place of bit depth for MPD's internal float pipeline), and
+         * `toIntOrNull` turns any of those into 0 rather than failing the whole
+         * reading over one odd field.
+         */
+        internal fun parseAudioFormat(raw: String?): Triple<Int, Int, Int>? {
+            val parts = raw?.split(':') ?: return null
+            val sampleRate = parts.getOrNull(0)?.toIntOrNull() ?: 0
+            val bitDepth = parts.getOrNull(1)?.toIntOrNull() ?: 0
+            val channels = parts.getOrNull(2)?.toIntOrNull() ?: 0
+            return Triple(sampleRate, bitDepth, channels)
+        }
+
+        /**
+         * MPD's `outputs` response as a list of [MpdOutput].
+         *
+         * The response is repeated blocks, each starting at `outputid` — so a new
+         * output starts whenever that key is seen again, the same way a listing
+         * of tracks would be split on `file`.
+         */
+        internal fun parseOutputs(response: List<Pair<String, String>>): List<MpdOutput> {
+            val outputs = mutableListOf<MpdOutput>()
+            var id: Int? = null
+            var name = ""
+            var enabled = false
+            fun flush() {
+                id?.let { outputs.add(MpdOutput(it, name, enabled)) }
+            }
+            for ((key, value) in response) {
+                if (key == "outputid") {
+                    flush()
+                    id = value.toIntOrNull()
+                    name = ""
+                    enabled = false
+                } else when (key) {
+                    "outputname" -> name = value
+                    "outputenabled" -> enabled = value == "1"
+                }
+            }
+            flush()
+            return outputs
+        }
     }
+
+    /** One of MPD's configured audio outputs, from the `outputs` command. */
+    data class MpdOutput(val id: Int, val name: String, val enabled: Boolean)
+
+    /**
+     * MPD's configured outputs — the ALSA/DAC device names its own config
+     * names, not anything this phone can see. Fetched on demand rather than
+     * polled alongside [status]: the set essentially never changes while an
+     * app session runs, so [MpdRemote] caches this rather than sending it
+     * once a second next to a `status` that does change that often.
+     */
+    suspend fun outputs(): List<MpdOutput> = parseOutputs(command("outputs"))
 
     val serverUrl: String get() = base()
 
@@ -580,6 +641,16 @@ class MpdClient(
         val random: Boolean,
         /** How many entries MPD's own queue holds. */
         val playlistLength: Int,
+        /**
+         * `status`'s `audio` line — the format MPD is decoding to *right now*,
+         * e.g. `"44100:16:2"`. Distinct from a track's own tagged `Format`
+         * (see [buildTrack]): a resample, DoP or DSD passthrough can differ
+         * from what the file itself claims, and this is what is actually
+         * reaching the DAC. Null when MPD is stopped or didn't say.
+         */
+        val audioFormat: String? = null,
+        /** `status`'s `bitrate` line, in kbit/s. 0 when unknown. */
+        val bitrateKbps: Int = 0,
     ) {
         val playing: Boolean get() = state == "play"
         val stopped: Boolean get() = state == "stop"

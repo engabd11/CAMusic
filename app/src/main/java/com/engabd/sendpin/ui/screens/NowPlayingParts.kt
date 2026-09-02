@@ -386,6 +386,7 @@ fun BoxScope.PlayerOverlays(
         onDismiss = { sheets.quality = false },
         provider = state.streamProvider,
         localSession = state.isLocalSession,
+        serverPlayer = state.serverPlayer,
         dsp = state.dsp,
         loudness = state.loudness,
         artworkUrl = state.artworkUrl,
@@ -396,6 +397,9 @@ fun BoxScope.PlayerOverlays(
         visible = sheets.device,
         onDismiss = { sheets.device = false },
         playingRateHz = state.quality?.sampleRateHz ?: 0,
+        serverPlayer = state.serverPlayer,
+        serverOutputDeviceName = state.serverOutputDeviceName,
+        serverOutputFormat = state.serverOutputFormat,
     )
 }
 

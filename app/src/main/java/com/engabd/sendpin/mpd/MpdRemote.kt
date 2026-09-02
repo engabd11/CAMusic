@@ -1,6 +1,7 @@
 package com.engabd.sendpin.mpd
 
 import com.engabd.sendpin.audio.LocalTrack
+import com.engabd.sendpin.audio.RemoteAudioFormat
 import com.engabd.sendpin.audio.RemotePlayback
 import com.engabd.sendpin.audio.RemoteState
 
@@ -73,8 +74,35 @@ class MpdRemote(private val client: MpdClient) : RemotePlayback {
     override suspend fun shuffleQueue() = client.shuffleQueue()
     override suspend fun clear() = client.clearQueue()
 
+    /**
+     * The name of MPD's enabled output, cached rather than fetched every
+     * [poll] — the set of outputs essentially never changes while an app
+     * session runs, so asking once every second next to a `status` poll that
+     * does change that often would be one extra round trip a second for
+     * nothing. Refreshed at most every [OUTPUT_NAME_TTL_MS].
+     */
+    @Volatile
+    private var cachedOutputName: String? = null
+    @Volatile
+    private var outputNameFetchedAt: Long = 0
+
+    private suspend fun outputName(): String? {
+        val now = System.currentTimeMillis()
+        if (cachedOutputName == null || now - outputNameFetchedAt > OUTPUT_NAME_TTL_MS) {
+            try {
+                cachedOutputName = client.outputs().firstOrNull { it.enabled }?.name
+                outputNameFetchedAt = now
+            } catch (_: MpdException) {
+                // Leave the last known name in place — a dropped `outputs` call is
+                // not a reason to blank a label that was correct a moment ago.
+            }
+        }
+        return cachedOutputName
+    }
+
     override suspend fun poll(): RemoteState? {
         val s = client.status() ?: return null
+        val (rate, bits, channels) = MpdClient.parseAudioFormat(s.audioFormat) ?: Triple(0, 0, 0)
         return RemoteState(
             playing = s.playing,
             stopped = s.stopped,
@@ -86,6 +114,14 @@ class MpdRemote(private val client: MpdClient) : RemotePlayback {
             // like this is set up. Null so the app leaves the control alone
             // rather than showing a slider pinned at nothing.
             volume = s.volume.takeIf { it >= 0 }?.let { it / 100f },
+            outputFormat = s.audioFormat?.let {
+                RemoteAudioFormat(rate, bits, channels, s.bitrateKbps)
+            },
+            outputDeviceName = outputName(),
         )
+    }
+
+    private companion object {
+        const val OUTPUT_NAME_TTL_MS = 20_000L
     }
 }

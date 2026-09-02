@@ -54,6 +54,8 @@ class MpdStatusTest {
         assertEquals(245_320, s.durationMs)
         assertEquals(42, s.volume)
         assertEquals(9, s.playlistLength)
+        assertEquals("44100:16:2", s.audioFormat, "the live decode format, not just a track's own tag")
+        assertEquals(1024, s.bitrateKbps)
     }
 
     @Test
@@ -91,6 +93,76 @@ class MpdStatusTest {
         assertEquals("stop", s.state)
         assertEquals(0L, s.elapsedMs)
         assertEquals(-1, s.songIndex)
+        assertNull(s.audioFormat, "stopped, or a server that said nothing about it")
+        assertEquals(0, s.bitrateKbps)
+    }
+
+    // ── live output format ───────────────────────────────────────────────
+
+    @Test
+    fun `audio format parses rate, bit depth and channels`() {
+        val (rate, bits, channels) = MpdClient.parseAudioFormat("44100:16:2")!!
+        assertEquals(44_100, rate)
+        assertEquals(16, bits)
+        assertEquals(2, channels)
+    }
+
+    @Test
+    fun `a null audio line parses to null`() {
+        assertNull(MpdClient.parseAudioFormat(null))
+    }
+
+    @Test
+    fun `MPD's float pipeline and DSD forms degrade gracefully rather than throw`() {
+        // "f" in place of bit depth (MPD's internal float pipeline) and "dsd64" in
+        // place of a rate both fail toIntOrNull, same as an unrecognised track
+        // Format tag already does in buildTrack - the missing part becomes 0
+        // rather than taking the whole reading down.
+        val (rate, bits, _) = MpdClient.parseAudioFormat("44100:f:2")!!
+        assertEquals(44_100, rate)
+        assertEquals(0, bits)
+
+        val (dsdRate, _, dsdChannels) = MpdClient.parseAudioFormat("dsd64:1:2")!!
+        assertEquals(0, dsdRate)
+        assertEquals(2, dsdChannels)
+    }
+
+    @Test
+    fun `a malformed audio line degrades instead of throwing`() {
+        val (rate, bits, channels) = MpdClient.parseAudioFormat("garbage")!!
+        assertEquals(0, rate)
+        assertEquals(0, bits)
+        assertEquals(0, channels)
+    }
+
+    // ── outputs ───────────────────────────────────────────────────────────
+
+    @Test
+    fun `outputs parses one block into one output`() {
+        val outputs = MpdClient.parseOutputs(
+            response("outputid: 0", "outputname: USB DAC", "outputenabled: 1", "plugin: alsa"),
+        )
+        assertEquals(1, outputs.size)
+        assertEquals(MpdClient.MpdOutput(0, "USB DAC", true), outputs.single())
+    }
+
+    @Test
+    fun `outputs splits repeated blocks on outputid`() {
+        val outputs = MpdClient.parseOutputs(
+            response(
+                "outputid: 0", "outputname: USB DAC", "outputenabled: 1",
+                "outputid: 1", "outputname: Bluetooth", "outputenabled: 0",
+            ),
+        )
+        assertEquals(
+            listOf(MpdClient.MpdOutput(0, "USB DAC", true), MpdClient.MpdOutput(1, "Bluetooth", false)),
+            outputs,
+        )
+    }
+
+    @Test
+    fun `an empty outputs response parses to an empty list`() {
+        assertTrue(MpdClient.parseOutputs(emptyList()).isEmpty())
     }
 
     @Test

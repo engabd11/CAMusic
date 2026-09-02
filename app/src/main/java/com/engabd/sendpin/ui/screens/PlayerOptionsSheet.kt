@@ -183,12 +183,23 @@ fun BoxScope.PlayerOptionsSheet(onClose: () -> Unit, viewModel: NowPlayingViewMo
                             icon = Icons.Default.GraphicEq,
                             title = "Lo-fi",
                             subtitle = if (soundModesDisabled) disabledSubtitle
-                            else "Bitcrusher, saturation and a low-pass roll-off",
+                            else "Slowed with wow and flutter, bitcrusher, saturation and a low-pass roll-off",
                             enabled = !soundModesDisabled,
                             checked = st.loFiConfig.enabled,
                             intensity = st.loFiConfig.intensity,
                             onCheckedChange = viewModel::setLoFiEnabled,
                             onIntensityChange = viewModel::setLoFiIntensity,
+                        )
+                        SoundModeOption(
+                            icon = Icons.Default.SettingsInputAntenna,
+                            title = "Old Radio",
+                            subtitle = if (soundModesDisabled) disabledSubtitle
+                            else "Telephone-band EQ, static and a warble, like a distant broadcast",
+                            enabled = !soundModesDisabled,
+                            checked = st.oldRadioConfig.enabled,
+                            intensity = st.oldRadioConfig.intensity,
+                            onCheckedChange = viewModel::setOldRadioEnabled,
+                            onIntensityChange = viewModel::setOldRadioIntensity,
                         )
                     }
                 }

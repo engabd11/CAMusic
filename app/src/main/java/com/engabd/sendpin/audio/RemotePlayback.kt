@@ -89,4 +89,26 @@ data class RemoteState(
     val durationMs: Long,
     /** 0..1, or null where the player has no volume of its own to report. */
     val volume: Float?,
+    /**
+     * The format the player is decoding to right now, or null when it didn't
+     * say. Distinct from a track's own tagged format: this is what is
+     * actually reaching the player's own output, which a resample or a
+     * passthrough mode can make differ from the file.
+     */
+    val outputFormat: RemoteAudioFormat? = null,
+    /**
+     * The player's own output/device name — its configured DAC or ALSA
+     * output, say — or null when it has none to report or didn't say. Never
+     * this phone's own audio route: the whole reason [RemotePlayback]
+     * exists is that the phone is not what is making the sound.
+     */
+    val outputDeviceName: String? = null,
+)
+
+/** The live output format a [RemotePlayback] reports as part of [RemoteState]. */
+data class RemoteAudioFormat(
+    val sampleRateHz: Int = 0,
+    val bitDepth: Int = 0,
+    val channels: Int = 0,
+    val bitrateKbps: Int = 0,
 )
