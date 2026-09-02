@@ -112,6 +112,14 @@ Playback is built to be worth good headphones and a good DAC.
   crossfades that align to the beat grid of both tracks when scan data is available.
 - **USB DAC awareness**: connect one and CAMusic tells you what it can do and offers to pin
   the output to it.
+- **DJ Radio** — one button on the library's front page, and the room has a set on. It picks
+  what plays next by how the music actually sounds, not just by what it is filed under: the
+  genre tags your library carries, plus the energy, tempo and spectral balance the offline
+  scan already measured, folded at half and double time the way a DJ hears it. Tracks
+  **overlap** rather than fading through silence — the outgoing one keeps playing on a second
+  deck while the next comes up under it — so there is no quiet moment between songs. The
+  crossfade length and how close the next track has to be are both yours to set; Harmonic DJ
+  mode adds key matching on top.
 - **Keep the music going** on every library the phone plays itself, and the shuffle button
   decides what "going" means: shuffled, the next track is a random song from the library;
   unshuffled, it is the next track on the record, then the next record, and so on. Plus
@@ -208,7 +216,9 @@ CAMusic scans the tempo, key and per-section energy of your local tracks, and th
 Builder** puts that to work. Pick a shape (warm-up, peak, wind-down or arc) and a length, and it
 orders the tracks in front of you into that curve, choosing keys and tempos that mix wherever
 there is a choice between equals. **Harmonic DJ mode** does the same job continuously for the
-auto-queue. Both state their scan coverage up front, so you always know what the ordering had
+auto-queue, and **DJ Radio** takes the whole decision — it chooses each next track on genre,
+energy, tempo and brightness together, and mixes into it rather than fading to nothing first.
+All of them state their scan coverage up front, so you always know what the ordering had
 to work with.
 
 ---

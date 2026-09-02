@@ -385,6 +385,12 @@ private fun Browse(
     val capabilities by viewModel.sourceCapabilities.collectAsStateWithLifecycle()
     val rows = RowState(downloadedIds, favorites, previewingId, capabilities)
 
+    // DJ Radio's button sits at the very top of the root, above the categories —
+    // see [DjRadioCard] for why it looks nothing like the rest of the page.
+    val djRadio by viewModel.djRadio.collectAsStateWithLifecycle()
+    val djRadioAvailable by viewModel.djRadioAvailable.collectAsStateWithLifecycle()
+    val djCrossfade by viewModel.djRadioCrossfadeSeconds.collectAsStateWithLifecycle()
+
     val s = if (searchOpen) search else null
 
     // Everything derived from the node's item list is computed once here, keyed on the
@@ -527,6 +533,22 @@ private fun Browse(
         }
 
         if (depth == 0) {
+            // Above the categories, because it is the one thing here that answers
+            // "I want music" rather than "I want to find something" — and a listener
+            // who wanted to browse is already scrolling past it either way. Hidden
+            // on Music Assistant, which builds and decodes its queue server-side and
+            // so can do neither half of this — see [LibraryViewModel.djRadioAvailable].
+            if (djRadioAvailable) {
+                item(key = "dj_radio", span = { full(gridCols) }, contentType = { "dj" }) {
+                    DjRadioCard(
+                        running = djRadio,
+                        crossfadeSeconds = djCrossfade,
+                        onStart = viewModel::startDjRadio,
+                        onStop = viewModel::stopDjRadio,
+                        modifier = Modifier.padding(bottom = 4.dp),
+                    )
+                }
+            }
             // Root shelf: the category grid, then dynamic shelves of content.
             itemsIndexed(
                 node.items,

@@ -305,6 +305,8 @@ class AppSettings(private val context: Context) {
         private val SWIPE_TO_SKIP = booleanPreferencesKey("swipe_to_skip")
         private val SHOW_VISUALIZER = booleanPreferencesKey("show_visualizer")
         private val DJ_MODE = booleanPreferencesKey("dj_mode")
+        private val DJ_RADIO_CROSSFADE = stringPreferencesKey("dj_radio_crossfade_s")  // overlapping crossfade, DJ Radio only
+        private val DJ_RADIO_SIMILARITY = stringPreferencesKey("dj_radio_similarity")  // 0 loose .. 1 tight
         private val SENSOR_GESTURES = booleanPreferencesKey("sensor_gestures")
         private val LISTENING_DNA = booleanPreferencesKey("listening_dna")
         private val STEM_SEPARATION = booleanPreferencesKey("stem_separation")
@@ -324,6 +326,29 @@ class AppSettings(private val context: Context) {
 
         /** Two seconds either way covers every provider disagreement worth fixing. */
         const val MAX_LYRICS_OFFSET_MS = 2_000
+
+        /**
+         * The longest DJ Radio crossfade on offer.
+         *
+         * Fifteen seconds is a long mix by any standard and about where a transition
+         * stops reading as one song arriving and starts reading as two songs on at
+         * once. The ceiling is also what [com.engabd.sendpin.audio.CrossfadeDeck]
+         * clamps its own ramp to, so the two cannot drift apart.
+         */
+        const val MAX_DJ_CROSSFADE_S = 15
+
+        /** Long enough to hear as a mix, short enough not to bury the new track's intro. */
+        const val DEFAULT_DJ_CROSSFADE_S = 6
+
+        /**
+         * Where the similarity slider starts.
+         *
+         * Toward the tight end on purpose: the complaint DJ Radio answers is music
+         * that "sounds random", and a default in the middle would reproduce it on
+         * the first listen. The picker relaxes when nothing clears the bar, so
+         * starting strict costs a listener with a sparse library nothing.
+         */
+        const val DEFAULT_DJ_SIMILARITY = 0.68f
 
         /**
          * [downloadStorageCapMb] as a byte count, or null for "no limit".
@@ -733,6 +758,48 @@ class AppSettings(private val context: Context) {
      * its own queue server-side. Off by default.
      */
     val djMode: Flow<Boolean> = pref { it[DJ_MODE] ?: false }
+
+    /**
+     * Seconds of **overlapping** crossfade for DJ Radio, 0 (straight gapless) to 15.
+     *
+     * A separate number from [navFadeSeconds] rather than a reuse of it, because
+     * they are not the same mechanism and they want opposite defaults. That one is a
+     * *sequential* fade — down, then up — and is off by default because an album
+     * must not be faded at all; this one puts two tracks in the air at once and is
+     * on by default, because a DJ set with no overlap is the exact thing it exists
+     * to replace. Six seconds is a long enough mix to hear as a mix and short enough
+     * not to bury the front of the incoming track.
+     *
+     * Only ever applied while DJ Radio is running — see
+     * [com.engabd.sendpin.audio.LocalPlayer.djCrossfadeSeconds].
+     */
+    val djRadioCrossfadeSeconds: Flow<Int> = pref {
+        it[DJ_RADIO_CROSSFADE]?.toIntOrNull()?.coerceIn(0, MAX_DJ_CROSSFADE_S) ?: DEFAULT_DJ_CROSSFADE_S
+    }
+
+    suspend fun setDjRadioCrossfadeSeconds(value: Int) = context.dataStore.edit {
+        it[DJ_RADIO_CROSSFADE] = value.coerceIn(0, MAX_DJ_CROSSFADE_S).toString()
+    }
+
+    /**
+     * How close DJ Radio's next track has to be to the last one: 0 is "anything from
+     * this library", 1 is "the same genre, the same tempo, the same energy".
+     *
+     * A float rather than three named presets because the honest answer depends on
+     * the library rather than on taste — 0.8 on a well-tagged, fully-scanned
+     * collection is a tight set, and on a library of untagged rips it is a
+     * constraint nothing can satisfy. The picker relaxes rather than stalling when
+     * nothing clears the bar (see [com.engabd.sendpin.audio.DjSetBuilder]), so the
+     * setting reads as a preference and never as a way to make the music stop.
+     */
+    val djRadioSimilarity: Flow<Float> = pref {
+        it[DJ_RADIO_SIMILARITY]?.toFloatOrNull()?.coerceIn(0f, 1f) ?: DEFAULT_DJ_SIMILARITY
+    }
+
+    suspend fun setDjRadioSimilarity(value: Float) = context.dataStore.edit {
+        it[DJ_RADIO_SIMILARITY] = value.coerceIn(0f, 1f).toString()
+    }
+
     /** Shake to skip, flip face-down to pause, double-tap to play/pause. Off by default. */
     val sensorGestures: Flow<Boolean> = pref { it[SENSOR_GESTURES] ?: false }
     /** Captures bpm/key/energy per play for the Stats screen's DNA section. Off by default. */

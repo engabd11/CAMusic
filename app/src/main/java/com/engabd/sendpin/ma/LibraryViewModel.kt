@@ -7,6 +7,8 @@ import androidx.lifecycle.viewModelScope
 import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.audio.AlbumContinuation
 import com.engabd.sendpin.audio.Camelot
+import com.engabd.sendpin.audio.DjProfile
+import com.engabd.sendpin.audio.DjSetBuilder
 import com.engabd.sendpin.audio.FormatNegotiator
 import com.engabd.sendpin.audio.LibraryAlbumWalk
 import com.engabd.sendpin.audio.LibraryRadioSource
@@ -54,6 +56,8 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
 import kotlin.math.roundToInt
 
 /**
@@ -305,6 +309,13 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     val downloads: StateFlow<List<DownloadedTrack>> get() = downloadManager.downloads
 
     private val _backend = MutableStateFlow(Backend.MA); val backend: StateFlow<Backend> = _backend
+    /**
+     * Declared up here with the rest of the session state rather than beside the DJ
+     * Radio methods that own it, because `init` runs before any property declared
+     * below it — and `canTopUp`, which the collectors started there reach, reads this
+     * first thing.
+     */
+    private val _djRadio = MutableStateFlow(false)
     private val _ready = MutableStateFlow(false); val ready: StateFlow<Boolean> = _ready
     /** Settings have been read, so a blank server URL now means "really not set up". */
     private val _booted = MutableStateFlow(false); val booted: StateFlow<Boolean> = _booted
@@ -817,6 +828,15 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         // that is already running.
         viewModelScope.launch { settings.navFadeSeconds.collect { localPlayer.fadeSeconds = it } }
         viewModelScope.launch { settings.beatMatchedCrossfade.collect { localPlayer.beatMatchedFade = it } }
+        // The DJ crossfade is only ever pushed at the player while a set is running,
+        // so an ordinary album keeps exactly the fade behaviour it had — but a drag
+        // of the slider mid-set has to be audible on the next transition rather than
+        // the next session, which is what this collector is for.
+        viewModelScope.launch {
+            settings.djRadioCrossfadeSeconds.collect {
+                if (_djRadio.value) localPlayer.djCrossfadeSeconds = it
+            }
+        }
         // A local track that actually started is a play worth reporting, so
         // Navidrome's play counts and its "recently played" shelf stay honest.
         //
@@ -1348,6 +1368,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * server going away mid-album.
      */
     fun play(item: MaItem, option: String = "replace") {
+        if (option == "replace") leaveDjRadio()
         viewModelScope.launch {
             try {
                 when {
@@ -1636,6 +1657,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * the other player or reset the queue; adding to what's playing is the whole point.
      */
     fun playAll(items: List<MaItem>, option: String = "replace") {
+        if (option == "replace") leaveDjRadio()
         val tracks = items.filter { it.playable || it.provider == DOWNLOAD }
         if (tracks.isEmpty()) return
         val replacing = option == "replace"
@@ -1691,6 +1713,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * no key or tempo data to weigh, exactly as Harmonic DJ mode already documents.
      */
     fun buildSet(items: List<MaItem>, curve: SetBuilder.Curve, minutes: Int) {
+        leaveDjRadio()
         viewModelScope.launch {
             val playable = items.filter { it.playable || it.provider == DOWNLOAD }
             val byId = playable.associateBy { it.itemId }
@@ -2185,6 +2208,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Pick up where the other device left off. */
     fun resumeSavedQueue() {
+        leaveDjRadio()
         val saved = _savedQueue.value ?: return
         _savedQueue.value = null
         viewModelScope.launch {
@@ -2228,6 +2252,249 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 }
         }
     }
+
+    // --- DJ Radio ---------------------------------------------------------
+
+    /**
+     * DJ Radio is running: the queue tops itself up by musical similarity rather
+     * than by the plain ladder, and the player crossfades between tracks with two
+     * of them audible at once.
+     *
+     * Deliberately session state rather than a setting. "Keep the music going"
+     * (`radioMode`) is a preference about what should happen when a queue runs out
+     * and is remembered across restarts; DJ Radio is something the listener *starts*,
+     * the way you start a record, and having it survive a restart would mean opening
+     * the app tomorrow into a mix nobody asked for.
+     */
+    val djRadio: StateFlow<Boolean> = _djRadio
+
+    /**
+     * The crossfade the button promises, so the card can say what pressing it will
+     * do rather than making the listener go and look.
+     */
+    val djRadioCrossfadeSeconds: StateFlow<Int> =
+        settings.djRadioCrossfadeSeconds
+            .stateIn(viewModelScope, SharingStarted.Eagerly, AppSettings.DEFAULT_DJ_CROSSFADE_S)
+
+    /**
+     * The button is worth offering here.
+     *
+     * Every library this phone plays itself qualifies — Navidrome, Subsonic,
+     * Jellyfin, Emby, Plex, MPD and the downloads on this phone all arrive as
+     * [Backend.SUBSONIC] and all play through [localPlayer], which is what owns both
+     * halves of DJ Radio. Music Assistant is the one that cannot: its queue is built
+     * and decoded on the server, so neither the crossfade nor the scan-based
+     * selection has anywhere to happen. Offering a button there that quietly did
+     * something else would be worse than not offering one.
+     */
+    val djRadioAvailable: StateFlow<Boolean> =
+        _backend.map { it == Backend.SUBSONIC }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /**
+     * Start a DJ set — from what is playing if anything is, and from the library
+     * itself if not.
+     *
+     * Seeding from the current track is the case that matters: the listener has
+     * found something they like and is asking for an hour more of it, which is a
+     * far better brief than any cold start can be. With nothing playing, the seed
+     * is the best-analysed track a wide random page turns up, because a seed with a
+     * scan behind it gives every pick after it something real to be similar to.
+     */
+    fun startDjRadio() {
+        if (_backend.value != Backend.SUBSONIC) {
+            _toast.tryEmit("DJ Radio needs a library this phone plays itself")
+            return
+        }
+        viewModelScope.launch {
+            _djRadio.value = true
+            applyDjCrossfade()
+
+            val playing = localPlayer.current.value
+            if (playing != null && localPlayer.queue.value.isNotEmpty()) {
+                // Already listening: this track is the brief. It keeps playing and
+                // the set is built behind it — see [LocalPlayer.replaceUpcoming] for
+                // why neither appending nor replacing the queue is right here.
+                val seedId = playing.scrobbleId ?: playing.id
+                val picks = djPicks(
+                    seed = lastSeeds[seedId],
+                    seedScan = trackScans.cached(playing),
+                    exclude = setOf(seedId),
+                    count = RADIO_BATCH,
+                    generator = source?.takeIf { !_offline.value }?.let { LibraryRadioSource(it) },
+                )
+                if (picks.isEmpty()) {
+                    _toast.tryEmit("DJ Radio on - nothing to mix in yet")
+                    return@launch
+                }
+                rememberSeeds(picks)
+                localPlayer.replaceUpcoming(picks.map { localTrack(it) })
+                _toast.tryEmit("DJ Radio - mixing on from ${playing.title}")
+                return@launch
+            }
+
+            val opener = coldStart()
+            if (opener.isEmpty()) {
+                _djRadio.value = false
+                applyDjCrossfade()
+                _toast.tryEmit("Nothing to start a DJ set from")
+                return@launch
+            }
+            stopMaPlayback()
+            rememberSeeds(opener)
+            localPlayer.setQueue(opener.map { localTrack(it) })
+            // [setQueue] decides smoothQueue from the album spread, and a set drawn
+            // from one album would come out sequenced — which is right for a record
+            // and wrong for the thing the listener just pressed "DJ Radio" on.
+            localPlayer.smoothQueue = true
+            _toast.tryEmit("DJ Radio - ${opener.first().name}")
+        }
+    }
+
+    /** Back to ordinary playback: the queue stands, the crossfade stops. */
+    fun stopDjRadio() {
+        if (!_djRadio.value) return
+        _djRadio.value = false
+        localPlayer.djCrossfadeSeconds = 0
+        _toast.tryEmit("DJ Radio off")
+    }
+
+    fun toggleDjRadio() = if (_djRadio.value) stopDjRadio() else startDjRadio()
+
+    /**
+     * The listener has started something of their own, so the set is over.
+     *
+     * Silent, unlike [stopDjRadio]: they did not ask to turn DJ Radio off, they
+     * asked to play an album, and a toast saying the thing they did not do has
+     * stopped is noise. Every path that *replaces* the queue calls this — a set is
+     * defined by the queue it built, and once that queue is gone there is nothing
+     * left of it to keep running.
+     */
+    private fun leaveDjRadio() {
+        if (!_djRadio.value) return
+        _djRadio.value = false
+        localPlayer.djCrossfadeSeconds = 0
+    }
+
+    /**
+     * Push the crossfade length at the player, or take it away.
+     *
+     * Called when the set starts and whenever the setting moves under a running one,
+     * so dragging the slider is audible on the next transition rather than the next
+     * session.
+     */
+    private suspend fun applyDjCrossfade() {
+        localPlayer.djCrossfadeSeconds =
+            if (_djRadio.value) settings.djRadioCrossfadeSeconds.first() else 0
+    }
+
+    /**
+     * The opening run of a set started with nothing playing: a seed, then the first
+     * batch mixed off it.
+     */
+    private suspend fun coldStart(): List<MaItem> {
+        val src = source
+        val generator = if (_offline.value || src == null) null else LibraryRadioSource(src)
+        val page = when {
+            generator == null -> downloads.value.map { downloadItem(it) }
+            else -> generator.random(COLD_START_PAGE).ifEmpty {
+                downloads.value.map { downloadItem(it) }
+            }
+        }.filter { it.itemId.isNotBlank() }
+        if (page.isEmpty()) return emptyList()
+
+        // Prefer an opener that has been analysed. Everything downstream of the seed
+        // is scored against it, so a seed with no scan spends the first few
+        // transitions of the set choosing on tags alone.
+        val scans = scansFor(page)
+        val seed = page.firstOrNull { scans[it.itemId] != null } ?: page.first()
+        val rest = djPicks(
+            seed = seed,
+            seedScan = scans[seed.itemId],
+            exclude = setOf(seed.itemId),
+            count = RADIO_BATCH,
+            generator = generator,
+        )
+        return listOf(seed) + rest
+    }
+
+    /**
+     * DJ Radio's answer to "what plays next", for either path — a connected library
+     * through [generator], or the downloads on this phone when there isn't one.
+     *
+     * The pool is gathered wide and the choosing is done here rather than by the
+     * ladder: see [LocalRadio.pool] for why those are different questions.
+     */
+    private suspend fun djPicks(
+        seed: MaItem?,
+        seedScan: TrackScan?,
+        exclude: Set<String>,
+        count: Int,
+        generator: RadioSource?,
+    ): List<MaItem> {
+        val strictness = settings.djRadioSimilarity.first()
+        val harmonic = settings.djMode.first()
+        val want = DjSetBuilder.poolSizeFor(count, strictness)
+
+        val pool = if (generator == null) {
+            downloads.value.map { downloadItem(it) }
+                .filter { it.itemId.isNotBlank() && it.itemId !in exclude }
+                .shuffled()
+                .take(want)
+        } else {
+            radio.pool(generator, seed, want, exclude)
+        }
+        if (pool.isEmpty()) return emptyList()
+
+        val scans = scansFor(pool)
+        val picked = DjSetBuilder.build(
+            seed = seed?.let { DjProfile.profileOf(it, seedScan) },
+            pool = pool,
+            profileOf = { item -> DjProfile.profileOf(item, scans[item.itemId]) },
+            count = count,
+            strictness = strictness,
+            harmonic = harmonic,
+            recentArtists = recentArtists(),
+        )
+        // Only what is actually served goes in the history — the rest of the pool is
+        // still fair game next time. See [LocalRadio.pool].
+        radio.remember(picked.map { it.itemId })
+        return picked
+    }
+
+    /**
+     * The scans behind [items], by item id, for the ones that have been analysed.
+     *
+     * `store.load`, not `store.peek`: this runs on a background top-up two tracks
+     * before the queue ends, not inside a sort comparator, so it can afford the disk
+     * — and it is exactly the difference between DJ Radio working on a library
+     * scanned last week and only on the handful of tracks Light Sync happens to have
+     * touched this session. (That constraint is why Harmonic DJ mode's own
+     * [djBonus] still uses `peek`; it really is called per comparison.)
+     *
+     * Keyed by `itemId` for the same reason [djBonus] is: that is what
+     * `TrackScanRepository.keyFor` resolves a local track to.
+     */
+    private suspend fun scansFor(items: List<MaItem>): Map<String, TrackScan> =
+        withContext(Dispatchers.IO) {
+            items.mapNotNull { item ->
+                trackScans.store.load(item.itemId)?.let { item.itemId to it }
+            }.toMap()
+        }
+
+    /**
+     * The tail of the queue, oldest first — who will have just played by the time
+     * this batch starts.
+     *
+     * So that an artist run begun in the previous batch is not extended by this one.
+     * Read off the queue rather than off a play history because that is the list the
+     * new tracks are being appended to, and it is right even when the listener has
+     * not reached the end of it yet.
+     */
+    private fun recentArtists(): List<String> =
+        localPlayer.queue.value.takeLast(ARTIST_RUN_WINDOW).mapNotNull {
+            it.artist?.substringBefore(",")?.trim()?.takeIf { name -> name.isNotBlank() }
+        }
 
     // --- continuous play (local) ------------------------------------------
 
@@ -2313,7 +2580,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun canTopUp(): Boolean =
-        settings.radioMode.first() && _backend.value == Backend.SUBSONIC
+        (_djRadio.value || settings.radioMode.first()) && _backend.value == Backend.SUBSONIC
 
     /**
      * Append the next batch, and say whether anything was actually added.
@@ -2348,6 +2615,34 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         // downloaded files, and on a library with nothing downloaded the queue ended
         // silently, exactly as if the setting were off. See [LibraryRadioSource].
         val generator: RadioSource? = src?.let { LibraryRadioSource(it) }
+
+        // DJ Radio takes the whole decision instead of the ladder's, on either path,
+        // and takes it before the Harmonic-DJ ranking below is even worked out —
+        // that bonus re-orders whatever rung answered first, and a DJ set has no
+        // rung to re-order.
+        //
+        // Not a re-rank of what the ladder chose, either: the ladder answers with
+        // the first rung that has anything at all, which on most libraries is
+        // "similar to this track" — a fine answer that has never once looked at how
+        // the two songs actually sound. That is the difference the listener asked
+        // for.
+        //
+        // The seed's scan is read from disk here rather than peeked: `peek` is
+        // memory-only by design, so on a library scanned last week it would come
+        // back null for the very track that is playing.
+        if (_djRadio.value) {
+            val djPicked = djPicks(
+                seed = seed,
+                seedScan = playing?.let { trackScans.cached(it) },
+                exclude = exclude,
+                count = RADIO_BATCH,
+                generator = if (_offline.value) null else generator,
+            )
+            if (djPicked.isEmpty()) return false
+            rememberSeeds(djPicked)
+            localPlayer.addToQueue(djPicked.map { localTrack(it) })
+            return true
+        }
 
         // Harmonic DJ mode needs TrackScanRepository, which only ever has data for
         // files on this phone — there's no server round trip that could carry BPM/key
@@ -3147,5 +3442,16 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
         /** How many to add each time. Enough to cover a fetch failing next round. */
         const val RADIO_BATCH = 10
+
+        /**
+         * How wide a random page a cold-started DJ set picks its opener from.
+         *
+         * Wide enough that a library with only some of it analysed still turns up a
+         * scanned track to open on, and small enough to be one request.
+         */
+        const val COLD_START_PAGE = 60
+
+        /** How far back DJ Radio looks for an artist run it should not extend. */
+        const val ARTIST_RUN_WINDOW = 4
     }
 }

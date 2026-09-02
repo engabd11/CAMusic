@@ -424,11 +424,27 @@ class LocalPlayer(private val context: Context) {
             _positionMs.value = 0
             _durationMs.value = track?.durationMs ?: 0
             perTrackFadeSeconds = computeBeatAlignedFadeSeconds(track)
+            // Which track a DJ Radio fade-in belongs to is decided here, because this
+            // is the one place that knows which track actually arrived. A hand-over
+            // set [fadeInPending] a moment ago and this consumes it; a transition
+            // that was a skip, or the end of a track, clears it instead — arriving
+            // somewhere is not the same as being mixed into, and a track the listener
+            // skipped to must start at full volume.
+            fadeInFor = if (fadeInPending) track?.id else null
+            fadeInPending = false
+            // A new track gets its own attempt at a hand-over. Keyed on the id
+            // rather than left to differ by itself, because under repeat-all a
+            // one-track queue transitions back into the same id and would otherwise
+            // get exactly one crossfade for the life of the session.
+            crossfadeFor = null
             // The gain belongs to the track, so it has to be re-applied at every
             // boundary — including the gapless ones, where nothing else happens. The
             // fade resets with it, or a track entered mid-ramp would start quiet and
-            // stay there until the next tick noticed.
-            fadeFactor = 1f
+            // stay there until the next tick noticed. Except at the top of a
+            // crossfade, where 1f is exactly wrong: the incoming track is supposed to
+            // be silent for this instant, and a full-volume frame before the first
+            // tick catches up is heard as a click.
+            fadeFactor = if (fadeInFor != null) 0f else 1f
             applyGain()
             track?.let { _started.tryEmit(it) }
         }
@@ -780,6 +796,7 @@ class LocalPlayer(private val context: Context) {
         // that is one album is a sequenced record: fading between its tracks damages
         // it, and gapless is the entire reason the list is handed over in one go.
         smoothQueue = tracks.size < 2 || tracks.mapNotNull { it.album }.distinct().size > 1
+        dropCrossfade()
         fadeFactor = 1f
         remote?.let { r ->
             // Nothing goes to ExoPlayer: the remote player decodes this queue, and a
@@ -860,6 +877,36 @@ class LocalPlayer(private val context: Context) {
         player.addMediaItems(at, tracks.map(::mediaItem))
     }
 
+    /**
+     * Keep what is playing and replace everything queued behind it with [tracks].
+     *
+     * What "start DJ Radio" means when a record is already on. Appending would have
+     * the listener sit through the rest of that album before hearing a single thing
+     * the set chose, and replacing the whole queue would restart the very track that
+     * told the set what to look for. Neither is what the button says.
+     *
+     * The current item is left untouched — not removed and re-added — so playback
+     * does not so much as blink: ExoPlayer only has to edit the timeline behind the
+     * window it is playing.
+     */
+    fun replaceUpcoming(tracks: List<LocalTrack>) {
+        val list = _queue.value
+        if (list.isEmpty()) { setQueue(tracks); return }
+        val at = _index.value.coerceIn(0, list.lastIndex)
+        _queue.value = list.take(at + 1) + tracks
+        // A queue drawn from across the library is not a record, whatever the one
+        // album it happened to be a moment ago.
+        smoothQueue = true
+        remote?.let { r ->
+            remoteCall { r.setQueue(_queue.value, at) }
+            return
+        }
+        val tail = list.size - (at + 1)
+        if (tail > 0) player.removeMediaItems(at + 1, list.size)
+        if (tracks.isNotEmpty()) player.addMediaItems(tracks.map(::mediaItem))
+        _index.value = player.currentMediaItemIndex
+    }
+
     fun removeAt(position: Int) {
         val list = _queue.value
         if (position !in list.indices) return
@@ -935,6 +982,7 @@ class LocalPlayer(private val context: Context) {
 
     fun clear() {
         stopTicker()
+        dropCrossfade()
         remote?.let { r ->
             stopRemoteLoop()
             remoteCall { r.clear() }
@@ -975,6 +1023,7 @@ class LocalPlayer(private val context: Context) {
 
     fun playAt(position: Int) {
         if (position !in _queue.value.indices) return
+        dropCrossfade()
         remote?.let { r ->
             showRemoteIndex(position)
             _playing.value = true
@@ -990,6 +1039,9 @@ class LocalPlayer(private val context: Context) {
     }
 
     fun pause() {
+        // A tail left running under a pause is the one thing worse than a gap: the
+        // room keeps playing a song the listener has just stopped.
+        dropCrossfade()
         remote?.let { r ->
             _playing.value = false
             remoteCall { r.pause() }
@@ -1020,6 +1072,7 @@ class LocalPlayer(private val context: Context) {
      * `maxSeekToPreviousPositionMs`, set when the player is built.
      */
     fun previous() {
+        dropCrossfade()
         remote?.let { r ->
             // The same convention the local player follows, decided here because the
             // remote player has its own idea of it: past the opening seconds,
@@ -1037,6 +1090,7 @@ class LocalPlayer(private val context: Context) {
     }
 
     fun next() {
+        dropCrossfade()
         remote?.let { r ->
             // The end of the queue is the remote player's to report — it is the one
             // holding the queue — so unlike the local path this does not decide for
@@ -1119,6 +1173,7 @@ class LocalPlayer(private val context: Context) {
     }
 
     fun seekTo(ms: Long) {
+        dropCrossfade()
         val max = _durationMs.value.takeIf { it > 0 } ?: ms
         val target = ms.coerceIn(0, max)
         // Moved on screen before it is asked for, on both paths: a scrub bar that
@@ -1251,6 +1306,12 @@ class LocalPlayer(private val context: Context) {
      */
     fun release() {
         stopTicker()
+        // The tail deck holds a decoder and a mixer client of its own, and neither
+        // is reachable through [livePlayer] — releasing only the main player would
+        // leave a second one playing into a process that thinks it has stopped.
+        deck.cancel()
+        crossfadeArmed = false
+        crossfadeFor = null
         runCatching { livePlayer?.release() }
         livePlayer = null
     }
@@ -1349,6 +1410,160 @@ class LocalPlayer(private val context: Context) {
     @Volatile
     var beatMatchedFade: Boolean = false
 
+    /**
+     * The second deck, built once and reused: it holds no decoder between
+     * transitions (see [CrossfadeDeck.cancel]) so an idle one costs an object.
+     */
+    private val deck = CrossfadeDeck(context, scope)
+
+    /**
+     * Seconds of **overlapping** crossfade, or 0 for none. DJ Radio's, and only
+     * DJ Radio's.
+     *
+     * The difference from [fadeSeconds] is not the number, it is that two tracks
+     * are audible at once: the outgoing one moves to a second player ([deck]) and
+     * keeps playing while this player has already started the next. That is what
+     * removes the hole in the middle of a sequential fade — see [CrossfadeDeck].
+     *
+     * Set while DJ Radio is running and cleared when it stops, so ordinary
+     * playback keeps exactly the fade behaviour it had. When this is non-zero it
+     * supersedes [fadeSeconds] rather than stacking with it, or a track would be
+     * ridden down by one mechanism while being cut away from by the other.
+     */
+    @Volatile
+    var djCrossfadeSeconds: Int = 0
+        set(value) {
+            field = value.coerceIn(0, AppSettings.MAX_DJ_CROSSFADE_S)
+            // Turning it off has to take the deck with it, or a set stopped
+            // mid-transition leaves a tail playing with nothing driving its ramp.
+            if (field == 0) dropCrossfade()
+        }
+
+    /** The tail deck is rolling silently, waiting for its hand-over. */
+    @Volatile
+    private var crossfadeArmed = false
+
+    /**
+     * The track a hand-over has already been attempted for.
+     *
+     * Set whether or not the deck actually built, which is the point of it: a
+     * second player that failed to construct once will fail again 250 ms later, and
+     * without this the ticker would try — and throw away — a decoder on every tick
+     * for the whole length of the window.
+     *
+     * Cleared by [onMediaItemTransition], so the next track gets its own attempt.
+     */
+    @Volatile
+    private var crossfadeFor: String? = null
+
+    /** A hand-over has just fired; the track arriving next is being mixed into. */
+    @Volatile
+    private var fadeInPending = false
+
+    /**
+     * The track the fade-*in* half of a crossfade applies to, or null.
+     *
+     * A track this player merely *arrived at* — the listener pressed next, or the
+     * first track of a queue — must start at full volume. Only one that a
+     * hand-over cut away to is coming up under an outgoing tail, and only that one
+     * should ramp. Resolved in [onMediaItemTransition] rather than guessed here,
+     * because that is the one place that knows which track actually arrived.
+     */
+    @Volatile
+    private var fadeInFor: String? = null
+
+    /**
+     * A DJ Radio crossfade is running or armed on this track.
+     *
+     * Read by [fadeAt] to know it must ramp *in* only: the outgoing track is the
+     * deck's job now, and this player leaves its track early rather than riding it
+     * down to nothing.
+     */
+    private val crossfading: Boolean get() = djCrossfadeSeconds > 0
+
+    /**
+     * Whatever the tail deck was doing, stop it.
+     *
+     * Called from every transport command that invalidates the transition in
+     * progress — a skip, a seek, a pause, a new queue. The alternative is a tail
+     * that keeps playing a song the listener has already left, which is the one
+     * failure mode of a crossfade nobody forgives.
+     */
+    private fun dropCrossfade() {
+        // Cleared unconditionally, ahead of the cheap exit below: a fade-in still
+        // running with the deck already gone would otherwise keep the incoming
+        // track quiet after the listener had asked for something else.
+        fadeInPending = false
+        fadeInFor = null
+        if (!crossfadeArmed && !deck.active) {
+            if (fadeFactor != 1f) { fadeFactor = 1f; applyGain() }
+            return
+        }
+        deck.cancel()
+        crossfadeArmed = false
+        crossfadeFor = null
+        fadeFactor = 1f
+        applyGain()
+    }
+
+    /**
+     * Roll the tail deck up, and hand over to it when the window arrives.
+     *
+     * Runs off the position ticker rather than a scheduled callback, because the
+     * thing it is timing against — the playhead — is what the ticker already reads,
+     * and a 250 ms granularity on a four-second fade is a 6% error in a number the
+     * listener chose by dragging a slider.
+     *
+     * Every early return here is a case where a crossfade would be wrong rather
+     * than merely unavailable:
+     *
+     *  - **no next track** — there is nothing to cross *into*; the track ends.
+     *  - **repeat one** — skipping forward is the opposite of what was asked.
+     *  - **exclusive output** — the whole point of that mode is that nothing of
+     *    ours touches the signal, and this is two gain stages and a second mixer
+     *    client. See [ExclusiveOutput].
+     *  - **not smooth** — the queue is one album, which is sequenced, and mixing
+     *    a record into itself is vandalism.
+     */
+    private fun stepCrossfade(positionMs: Long, durationMs: Long) {
+        val seconds = djCrossfadeSeconds
+        if (seconds <= 0 || exclusiveOutput || !smoothQueue || remote != null) return
+        val p = livePlayer ?: return
+        if (!_playing.value) return
+        val track = _current.value ?: return
+        if (p.repeatMode == Player.REPEAT_MODE_ONE || !p.hasNextMediaItem()) {
+            if (crossfadeArmed) dropCrossfade()
+            return
+        }
+
+        if (!crossfadeArmed) {
+            if (crossfadeFor == track.id) return
+            if (!CrossfadeSchedule.shouldArm(positionMs, durationMs, seconds)) return
+            crossfadeFor = track.id
+            val source = sourceOf(track) ?: return
+            val gain = (userVolume * ReplayGain.factor(track.sourceQuality, replayGainMode))
+                .coerceIn(0f, 1f)
+            crossfadeArmed = deck.start(source, positionMs, gain, preferredOutput, _speed.value)
+            return
+        }
+
+        if (!CrossfadeSchedule.shouldHandOver(positionMs, durationMs, seconds)) {
+            // Still in the pre-roll: keep the two copies together while it is free
+            // to do so — see [CrossfadeDeck.align].
+            deck.align(positionMs)
+            return
+        }
+
+        // The swap. The deck comes up as this player leaves; [fadeAt] takes the
+        // incoming track up from zero off its own playhead, which is about to be 0.
+        deck.handOver(seconds.toFloat())
+        crossfadeArmed = false
+        fadeInPending = true
+        fadeFactor = 0f
+        applyGain()
+        p.seekToNextMediaItem()
+    }
+
     /** This track's fade window if [beatMatchedFade] found a scan; null uses [fadeSeconds] as-is. */
     @Volatile
     private var perTrackFadeSeconds: Int? = null
@@ -1381,6 +1596,23 @@ class LocalPlayer(private val context: Context) {
      * division.
      */
     private fun fadeAt(positionMs: Long, durationMs: Long): Float {
+        // DJ Radio's overlapping crossfade owns the ramp outright when it is on —
+        // it does not stack with [fadeSeconds], it replaces it. Both at once is not
+        // a longer fade, it is two mechanisms disagreeing: the sequential one starts
+        // riding the outgoing track down at its own window, and the hand-over then
+        // passes a track already at a third of its volume to a deck that comes up at
+        // full.
+        //
+        // What is left is a fade-*in* and only on the track a hand-over actually cut
+        // away to. Everything else plays at full: its tail is the deck's job, not a
+        // ramp here.
+        if (crossfading && smoothQueue) {
+            return if (fadeInFor != null && fadeInFor == _current.value?.id) {
+                CrossfadeSchedule.fadeInAt(positionMs, djCrossfadeSeconds)
+            } else {
+                1f
+            }
+        }
         val secs = perTrackFadeSeconds ?: fadeSeconds
         if (secs <= 0 || !smoothQueue || durationMs <= 0) return 1f
         val window = secs * 1000L
@@ -1402,7 +1634,8 @@ class LocalPlayer(private val context: Context) {
                 // so there is nothing to converge toward — skip the arithmetic rather
                 // than spend it on a gain that is thrown away every tick.
                 if (!exclusiveOutput) {
-                    if (fadeSeconds > 0 && smoothQueue) {
+                    stepCrossfade(pos, _durationMs.value)
+                    if ((fadeSeconds > 0 || crossfading) && smoothQueue) {
                         val next = fadeAt(pos, _durationMs.value)
                         if (kotlin.math.abs(next - fadeFactor) > 0.001f) {
                             fadeFactor = next
