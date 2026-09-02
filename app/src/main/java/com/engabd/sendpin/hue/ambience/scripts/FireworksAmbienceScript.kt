@@ -2,19 +2,23 @@ package com.engabd.sendpin.hue.ambience.scripts
 
 import com.engabd.sendpin.hue.Rgb
 import com.engabd.sendpin.hue.Vec3
+import com.engabd.sendpin.hue.ambience.AmbienceBedTrack
 import com.engabd.sendpin.hue.ambience.AmbienceEffect
 import com.engabd.sendpin.hue.ambience.AmbienceEvent
 import com.engabd.sendpin.hue.ambience.AmbienceParams
 import com.engabd.sendpin.hue.ambience.AmbienceScript
+import com.engabd.sendpin.hue.ambience.BedOnset
+import com.engabd.sendpin.hue.ambience.BedSample
 import com.engabd.sendpin.hue.ambience.BrownNoise
 import com.engabd.sendpin.hue.ambience.Envelope
 import com.engabd.sendpin.hue.ambience.GrainCloud
 import com.engabd.sendpin.hue.ambience.OnePole
 import com.engabd.sendpin.hue.ambience.PinkNoise
-import com.engabd.sendpin.hue.ambience.RoomModel
 import com.engabd.sendpin.hue.ambience.Rng
+import com.engabd.sendpin.hue.ambience.RoomModel
 import com.engabd.sendpin.hue.ambience.Svf
 import com.engabd.sendpin.hue.ambience.VoicePool
+import com.engabd.sendpin.hue.ambience.azimuthOfPan
 import com.engabd.sendpin.hue.ambience.panGains
 import kotlin.math.PI
 import kotlin.math.exp
@@ -106,6 +110,16 @@ class FireworksAmbienceScript(
     private var acc = FloatArray(0)
     private var voiced = false
 
+    /** The recording, when one is playing. Null on the synthesised path. */
+    @Volatile private var recording: AmbienceBedTrack? = null
+
+    /** Scratch for the light tick's read of the bed. Render thread only. */
+    private val bedNow = BedSample()
+
+    /** Reaction state. Analysis thread only. */
+    private var lastBurstS = Double.NaN
+    private val reactRng = Rng(seed xor 0x5EED_B005L)
+
     override fun bind(room: RoomModel, params: AmbienceParams) {
         this.room = room
         this.params = params
@@ -113,6 +127,63 @@ class FireworksAmbienceScript(
     }
 
     override fun retune(params: AmbienceParams) { this.params = params }
+
+    // ---- Reacting to a recording -----------------------------------------
+
+    /** A display is its bangs. With a recording of one playing, they are the show. */
+    override val eventsComeFromAudio: Boolean get() = true
+
+    override fun bindBed(bed: AmbienceBedTrack?) { this.recording = bed }
+
+    /**
+     * A bang in the recording becomes a shell breaking over the room.
+     *
+     * Read out of the sound rather than invented: **where** from the stereo field,
+     * **how hard** from how far the bang went over the display's own recent level, and
+     * **how big** from how much of it is bottom end — a large shell is felt as much as
+     * heard, and that is a spectral fact about the recording rather than a guess.
+     *
+     * No climb. The whistle is genuinely there in a good recording and genuinely not
+     * findable: a rising tone under two other shells still crackling is beyond what a
+     * broadband onset detector can honestly claim, and a climbing ember that fired at
+     * the wrong moments would be worse than none. It stays on the synthesised path,
+     * which knows when its own shells were launched because it launched them.
+     */
+    override fun react(sample: BedSample, onset: BedOnset, emit: (AmbienceEvent) -> Unit) {
+        if (!onset.broadband && !onset.low) return
+        if (!lastBurstS.isNaN() && sample.tS - lastBurstS < BURST_REFRACTORY_S) return
+        lastBurstS = sample.tS
+
+        val strength = maxOf(onset.broadbandStrength, onset.lowStrength * 0.9f)
+        val az = azimuthOfPan(onset.pan)
+        // Bigger shells sit further out and higher; small ones are closer in. Keeps a
+        // barrage of small bangs from all landing on the same lamps.
+        val size = (0.35f + 0.75f * onset.lowShare).coerceIn(0.3f, 1f)
+        val radius = 0.55f + 0.40f * size
+        val origin = Vec3(
+            0.5f + radius * kotlin.math.cos(2f * PI.toFloat() * az),
+            0.5f + radius * sin(2f * PI.toFloat() * az),
+            0.75f + 0.25f * size,
+        )
+        emit(
+            AmbienceEvent(
+                kind = AmbienceEvent.BURST,
+                // Where the bang began; see BedOnset.atS.
+                startS = onset.atS,
+                env = Envelope(attackS = 0.05f, holdS = 0.05f, decayTauS = 0.55f),
+                gain = (0.40f + 0.60f * strength).coerceIn(0.15f, 1f),
+                origin = origin,
+                azimuth = az,
+                colour = shellColours[reactRng.nextInt(shellColours.size)],
+                timbre = size,
+                seed = reactRng.nextLong(),
+                // The recording is the sound, so there is nothing to lead into and
+                // nothing left to play afterwards. See ThunderstormScript.react.
+                leadS = 0f,
+                soundS = 0f,
+            ),
+        )
+    }
 
     /**
      * A shell has to exist before it starts whistling.
@@ -176,12 +247,17 @@ class FireworksAmbienceScript(
         if (acc.size < ids.size * 3) acc = FloatArray(ids.size * 3)
         val intensity = params.intensity.coerceIn(0f, 1f)
 
-        // Night sky between bursts — not black, or the room looks switched off.
+        // Night sky between bursts — not black, or the room looks switched off. Lifted a
+        // little by whatever the recording is doing, so the sky over a busy stretch of
+        // the display sits brighter than the sky over a lull.
+        val r = recording
+        val haveBed = r != null && r.sampleAt(tS, bedNow)
+        val sky = if (haveBed) 1f + 2.5f * bedNow.level else 1f
         var j = 0
         while (j < ids.size) {
-            acc[j * 3] = NIGHT.first
-            acc[j * 3 + 1] = NIGHT.second
-            acc[j * 3 + 2] = NIGHT.third
+            acc[j * 3] = NIGHT.first * sky
+            acc[j * 3 + 1] = NIGHT.second * sky
+            acc[j * 3 + 2] = NIGHT.third * sky
             j++
         }
 
@@ -247,9 +323,13 @@ class FireworksAmbienceScript(
             // the whole reason the delayed boom reads as distance rather than as the
             // audio being out of step. Each lamp twinkles on its own seeded phase, so
             // it is a scatter of sparks rather than the room breathing.
-            val crackleAge = age - airDelayOf(radiusOf(e))
+            // With a recording playing there is no air delay to wait out — the crackle
+            // is audible *now* — and its brightness is the recording's own top end
+            // rather than a modelled decay, so the embers die when the crackle does.
+            val crackleAge = if (haveBed) age else age - airDelayOf(radiusOf(e))
             if (crackleAge > 0f && crackleAge < CRACKLE_S) {
-                val fade = exp(-crackleAge / 0.85f) * e.gain * SPARKLE
+                val heard = if (haveBed) (0.25f + 0.85f * bedNow.rain).coerceIn(0f, 1f) else 1f
+                val fade = exp(-crackleAge / 0.85f) * heard * e.gain * SPARKLE
                 var i = 0
                 while (i < ids.size) {
                     val ph = (e.seed ushr (i % 32)).toFloat() * 0.61803f + ids[i] * 0.31f
@@ -363,7 +443,7 @@ class FireworksAmbienceScript(
             //    being thrown, before there is anything to see at all.
             val mortarAge = rel + LAUNCH_S.toFloat()
             if (mortarAge > 0f && mortarAge < mortarEnv.lifetimeS) {
-                s += v.mortar.lp(v.crackle.bipolar()) * mortarEnv.at(mortarAge) * e.gain * 0.34f
+                s += v.mortar.lp(v.crackle.bipolar()) * mortarEnv.at(mortarAge) * e.gain * 0.24f
             }
 
             // 2. Whistle on the way up: a rising band-pass, ending exactly at the burst.
@@ -371,21 +451,21 @@ class FireworksAmbienceScript(
                 val climb = 1f + rel / LAUNCH_S.toFloat()   // 0 at launch, 1 at burst
                 v.whistle.set(500f + 1500f * climb, 9f, sampleRate)
                 val fade = climb * climb
-                s += v.whistle.bp(v.crackle.bipolar()) * fade * 0.10f * e.gain
+                s += v.whistle.bp(v.crackle.bipolar()) * fade * 0.075f * e.gain
             }
 
             // 3. The burst itself: a band the ear hears and a thump it does not.
             if (rel >= 0f) {
                 val be = boomEnv.at(rel)
-                if (be > 0f) s += v.boomLp.lp(v.boom.next()) * be * boomAmp * 0.62f
+                if (be > 0f) s += v.boomLp.lp(v.boom.next()) * be * boomAmp * 0.44f
                 val te = thumpEnv.at(rel)
-                if (te > 0f) s += v.thumpLp.lp(v.boom.next()) * te * e.gain * 0.40f
+                if (te > 0f) s += v.thumpLp.lp(v.boom.next()) * te * e.gain * 0.28f
             }
 
             // 4. The crackle that falls out of it, thinning as it goes.
             if (rel > 0.05f && rel < CRACKLE_S.toFloat()) {
                 val decay = exp(-(rel - 0.05f) / 0.7f)
-                s += v.sparkle.next(70f * decay + 4f, 4200f, 3.5f) * decay * e.gain * 0.24f
+                s += v.sparkle.next(70f * decay + 4f, 4200f, 3.5f) * decay * e.gain * 0.18f
             }
 
             if (s != 0f) {
@@ -422,6 +502,17 @@ class FireworksAmbienceScript(
 
         /** How long the crackle carries on after. */
         const val CRACKLE_S = 2.4
+
+        /**
+         * Shortest gap between two shells, in seconds.
+         *
+         * Far shorter than the storm's, and it has to be: the finale of a display is
+         * three bangs a second and every one of them should light the room. Short
+         * enough not to lose any of them, long enough that one bang's own decay does
+         * not read as a second shell.
+         */
+        const val BURST_REFRACTORY_S = 0.12
+
 
         /** Brightness the climbing ember is allowed, and how tightly it is focused. */
         const val TRACER = 0.30f

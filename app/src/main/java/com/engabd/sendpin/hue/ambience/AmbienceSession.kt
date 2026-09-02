@@ -69,6 +69,15 @@ interface FocusGate {
  * to exist before the block carrying that sound is rendered, which is earlier than the
  * block its `startS` falls in. [AmbienceScript.lookaheadS] is how a script says so, and
  * [generatorLoop] schedules out to it.
+ *
+ * ## None of which happens when a recording is playing
+ *
+ * All of the above is the *synthesised* path, which is now the fallback rather than the
+ * norm. With a recording — a bundled bed, or the listener's own clip — there is no
+ * generator, no synth and no scheduler. [onAnalysisFrame] runs instead, on the analysis
+ * thread, turning what the speaker is actually playing into this effect's events; the
+ * clock becomes the recording's own position in the file; and the room reacts to a real
+ * storm rather than performing one alongside it. See [AmbienceAudioAnalysis].
  */
 class AmbienceSession(
     val script: AmbienceScript,
@@ -78,6 +87,16 @@ class AmbienceSession(
     params: AmbienceParams,
     /** Called once if the audio path dies, so the UI can say so rather than going quiet. */
     private val onAudioFailed: (String) -> Unit = {},
+    /**
+     * The recording this show reacts to, when one is playing.
+     *
+     * Mutually exclusive with [sink]: a show either generates its sound, in which case
+     * the synth's playhead is the clock and the script invents the events, or it plays a
+     * recording, in which case the recording's own position is the clock and the
+     * recording is the event source. Never both — there is only one room, and two
+     * storms in it was the whole problem.
+     */
+    private val analysis: AmbienceAudioAnalysis? = null,
 ) {
 
     /**
@@ -99,6 +118,43 @@ class AmbienceSession(
     val safety = FieldSafety(calmGated = false)
 
     private val timeline = AmbienceTimeline()
+
+    /**
+     * What the recording is doing, for the scripts whose beds follow it.
+     *
+     * Written by the analysis thread and read by the light tick, on the same
+     * single-writer/volatile-head terms as [timeline].
+     */
+    private val bed = AmbienceBedTrack()
+
+    /** Onset detection over the recording. Analysis thread only. */
+    private val bedAnalyser = AmbienceBedAnalyser()
+
+    /** Media position of the last analysed frame, for spotting a loop or a seek. */
+    private var lastAnalysedS = Double.NaN
+
+    /**
+     * True when the recording is the event source, so the analysis thread is the
+     * timeline's writer and [renderLights] must not schedule.
+     *
+     * [AmbienceTimeline] is single-writer by construction, and which thread that writer
+     * is depends on this. Reacting, the analysis thread appends and the render loop only
+     * reads; scripted, the render loop appends and the analysis thread only fills the
+     * bed. Both are one writer — but only because [schedule] is suppressed in the first
+     * case and [AmbienceScript.react] is a no-op in the second, which is a load-bearing
+     * pairing rather than a coincidence.
+     */
+    private val reactive: Boolean = analysis != null && script.eventsComeFromAudio
+
+    /**
+     * Set by the analysis thread when the recording jumps, and acted on by the render
+     * thread, for scripts the render thread schedules.
+     *
+     * The clears themselves have to happen on whichever thread owns the timeline, or the
+     * single-writer property the whole lock-free design rests on is lost at exactly the
+     * moment — a loop point — when the room is most likely to be showing something.
+     */
+    @Volatile private var rescheduleFromS = Double.NaN
 
     /**
      * Each reader owns its scratch array, so the two never touch the same memory.
@@ -146,6 +202,17 @@ class AmbienceSession(
      * until it recovers.
      */
     fun nowS(): Double {
+        // A recording's own position, when there is one. Not the wall clock and not a
+        // synth playhead: the show's events are stamped where their sound sits in the
+        // file, so the only clock that can line them up is the file's.
+        analysis?.let { a ->
+            if (paused) return pausedAtS
+            val media = a.heardMediaS()
+            if (!media.isNaN()) return media
+            // Before the first buffer, and for a moment across a track change. The
+            // room carrying on matters more than a few milliseconds of drift.
+            return (System.nanoTime() - startedNanos) / 1e9
+        }
         val s = sink ?: return (System.nanoTime() - startedNanos) / 1e9
         if (paused) return pausedAtS
         val played = s.playedFrames()
@@ -172,9 +239,44 @@ class AmbienceSession(
             return false
         }
         script.bind(room, params)
+        script.bindBed(if (analysis != null) bed else null)
         running = true
+        analysis?.onFrame(::onAnalysisFrame)
         if (sink != null) genJob = scope.launch(genDispatcher) { generatorLoop() }
         return true
+    }
+
+    /**
+     * One analysis hop of the recording, on the analysis thread.
+     *
+     * The whole of the reactive path: describe the moment, notice whether anything
+     * happened in it, and let the script say what that means for this effect. Both
+     * objects handed to the script are reused, which is why [AmbienceBedTrack.append]
+     * copies rather than stores.
+     *
+     * @param atS media position of the audio this frame describes — where it sits in
+     *   the file, not when it was analysed. Events are stamped with it, and the light
+     *   tick renders against the position being heard, so the two meet without either
+     *   side knowing about the other.
+     */
+    private fun onAnalysisFrame(frame: com.engabd.sendpin.audio.AnalysisFrame, atS: Double) {
+        if (!running) return
+        // The bed looped, or the listener seeked. Everything scheduled describes a part
+        // of the file that is no longer playing, and a strike still flashing from before
+        // the loop would be a flash with nothing under it.
+        val jumped = !lastAnalysedS.isNaN() &&
+            (atS < lastAnalysedS - DISCONTINUITY_S || atS > lastAnalysedS + DISCONTINUITY_S)
+        if (jumped) {
+            bed.clear()
+            bedAnalyser.reset()
+            // Only touch the timeline on the thread that writes it. See [reactive].
+            if (reactive) timeline.clear() else rescheduleFromS = atS
+        }
+        lastAnalysedS = atS
+
+        val (sample, onset) = bedAnalyser.consume(frame, atS)
+        bed.append(sample)
+        script.react(sample, onset) { timeline.append(it) }
     }
 
     fun retune(p: AmbienceParams) {
@@ -209,6 +311,7 @@ class AmbienceSession(
 
     fun stop() {
         running = false
+        analysis?.onFrame(null)
         genJob?.cancel(); genJob = null
         sink?.release()
         focus?.abandon()
@@ -228,7 +331,22 @@ class AmbienceSession(
         // A silent show still needs its events, and with no sink there is no generator
         // coroutine to schedule them. Cheap: the scripts' schedule() is a handful of
         // arithmetic per event, and this only runs when there is no audio thread.
-        if (sink == null) {
+        //
+        // Suppressed outright when the recording is the event source: running the
+        // scheduler as well would put an invented storm in the room alongside the
+        // audible one. Scripts that are texture with decoration on top keep scheduling
+        // either way — see [AmbienceScript.eventsComeFromAudio].
+        if (sink == null && !reactive) {
+            // The recording looped or was seeked while this script was scheduling
+            // against its position. Everything already scheduled describes a stretch of
+            // the file that is not playing any more, and `generatedToS` is now far ahead
+            // of the clock — left alone, the effect would schedule nothing ever again.
+            val resume = rescheduleFromS
+            if (!resume.isNaN()) {
+                rescheduleFromS = Double.NaN
+                timeline.clear()
+                generatedToS = resume
+            }
             // At least as far as the script's own lead, or an effect whose events are
             // visible before they start — a firework's climbing ember — would have
             // nothing to show until the moment it burst.
@@ -307,5 +425,15 @@ class AmbienceSession(
 
         /** A playhead frozen this long is an underrun; fall forward on wall time. */
         const val STALL_S = 0.1
+
+        /**
+         * A jump in the recording's position bigger than this is a loop or a seek.
+         *
+         * Generous, because analysis hops do not arrive perfectly evenly and the
+         * penalty for calling an ordinary gap a discontinuity — dropping the events in
+         * flight — is a visible stutter, while the penalty for missing a real one is
+         * one stale flash.
+         */
+        const val DISCONTINUITY_S = 0.5
     }
 }

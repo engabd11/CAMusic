@@ -902,6 +902,13 @@ class DirectLightSync(
         focus: com.engabd.sendpin.hue.ambience.FocusGate?,
         params: com.engabd.sendpin.hue.ambience.AmbienceParams,
         onAudioFailed: (String) -> Unit = {},
+        /**
+         * The recording the show should react to, when it is playing one.
+         *
+         * Null for a synthesised or silent show. Mutually exclusive with [sink]; see
+         * the note on `AmbienceSession`'s own parameter.
+         */
+        analysis: com.engabd.sendpin.hue.ambience.AmbienceAudioAnalysis? = null,
     ): Boolean = withContext(Dispatchers.IO) {
         stopAmbience()
         if (!running.get()) {
@@ -922,6 +929,7 @@ class DirectLightSync(
             focus = focus,
             params = params,
             onAudioFailed = onAudioFailed,
+            analysis = analysis,
         )
         if (!session.start(scope)) {
             if (ambienceOwnsSession) { ambienceOwnsSession = false; stop() }
@@ -1268,9 +1276,13 @@ class DirectLightSync(
                 }
                 if (painted != null) {
                     // The delay queue and the layer chain are both skipped here.
-                    // The queue's delay tracks a *music* sink's AudioLead, which
-                    // means nothing for a show whose sound this app is generating
-                    // itself — and whose clock is already the speaker's playhead.
+                    // The queue's delay tracks the *music* sink's AudioLead, which
+                    // is not this show's: an effect is either generating its own
+                    // sound, and clocked on that synth's playhead, or reacting to
+                    // its own recording, and clocked on that recording's position
+                    // with the light pipeline already allowed for inside
+                    // `AmbienceMediaClock`. Either way the correction has been made
+                    // upstream, against the right audio.
                     // The layers all read an AnalysisFrame, a track scan or live
                     // structure, none of which exist. Safety and the rate limiter
                     // are kept, and the session brings its own limiter so the

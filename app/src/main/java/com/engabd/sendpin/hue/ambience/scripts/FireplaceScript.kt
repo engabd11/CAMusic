@@ -1,16 +1,20 @@
 package com.engabd.sendpin.hue.ambience.scripts
 
 import com.engabd.sendpin.hue.Rgb
+import com.engabd.sendpin.hue.Vec3
+import com.engabd.sendpin.hue.ambience.AmbienceBedTrack
 import com.engabd.sendpin.hue.ambience.AmbienceEffect
 import com.engabd.sendpin.hue.ambience.AmbienceEvent
 import com.engabd.sendpin.hue.ambience.AmbienceParams
 import com.engabd.sendpin.hue.ambience.AmbienceScript
+import com.engabd.sendpin.hue.ambience.BedOnset
+import com.engabd.sendpin.hue.ambience.BedSample
 import com.engabd.sendpin.hue.ambience.Envelope
 import com.engabd.sendpin.hue.ambience.GrainCloud
 import com.engabd.sendpin.hue.ambience.OnePole
 import com.engabd.sendpin.hue.ambience.PinkNoise
-import com.engabd.sendpin.hue.ambience.RoomModel
 import com.engabd.sendpin.hue.ambience.Rng
+import com.engabd.sendpin.hue.ambience.RoomModel
 import com.engabd.sendpin.hue.ambience.Svf
 import com.engabd.sendpin.hue.ambience.VoicePool
 import com.engabd.sendpin.hue.ambience.panGains
@@ -71,6 +75,16 @@ class FireplaceScript : AmbienceScript {
     private val pan = FloatArray(2)
     private var voiced = false
 
+    /** The recording, when one is playing. Null on the synthesised path. */
+    @Volatile private var recording: AmbienceBedTrack? = null
+
+    /** Scratch for the light tick's read of the bed. Render thread only. */
+    private val bedNow = BedSample()
+
+    /** Reaction state. Analysis thread only. */
+    private var lastPopS = Double.NaN
+    private val reactRng = Rng(0x1F1AEL)
+
     override fun bind(room: RoomModel, params: AmbienceParams) {
         this.room = room
         this.params = params
@@ -90,6 +104,54 @@ class FireplaceScript : AmbienceScript {
     }
 
     override fun retune(params: AmbienceParams) { this.params = params }
+
+    // ---- Reacting to a recording -----------------------------------------
+
+    /**
+     * A recorded fire already pops; inventing more on top would be two fires.
+     *
+     * This effect was the one that always looked right, and the reason is worth
+     * stating: a fire has no structure to be out of step *with*. Nothing in it has to
+     * land on a frame, so a scripted flicker over a recording read as one fire by
+     * luck. Reacting is still better — the room now surges on the surges that are
+     * actually audible and sparks on the spits that actually happen — but this is the
+     * effect with the least to gain, not the most.
+     */
+    override val eventsComeFromAudio: Boolean get() = true
+
+    override fun bindBed(bed: AmbienceBedTrack?) { this.recording = bed }
+
+    /** A spit in the recording throws a spark off the embers. */
+    override fun react(sample: BedSample, onset: BedOnset, emit: (AmbienceEvent) -> Unit) {
+        if (!onset.high) return
+        if (!lastPopS.isNaN() && sample.tS - lastPopS < POP_REFRACTORY_S) return
+        lastPopS = sample.tS
+        val hp = room.positions[hearth] ?: room.centre()
+        // Scattered around the hearth, as the scheduled ones are: a fire's crackles do
+        // not all come from one point, and a spark that always lit the same lamp would
+        // read as a fault rather than as a fire.
+        val spread = 0.10f
+        emit(
+            AmbienceEvent(
+                kind = AmbienceEvent.POP,
+                startS = onset.atS,
+                // The same deliberately slow attack the scheduled pops use: a 4 ms
+                // attack is a strobe on a lamp and would engage the flash limiter.
+                env = Envelope(attackS = 0.020f, holdS = 0.006f, decayTauS = 0.09f),
+                gain = (0.25f + 0.75f * onset.highStrength).coerceIn(0.1f, 1f),
+                origin = Vec3(
+                    hp.x + spread * reactRng.bipolar(),
+                    hp.y + spread * reactRng.bipolar(),
+                    hp.z + spread * reactRng.bipolar(),
+                ),
+                azimuth = room.azimuth[hearth] ?: 0.25f,
+                colour = EMBER,
+                timbre = (0.4f + 0.6f * onset.highStrength).coerceIn(0.2f, 1f),
+                seed = reactRng.nextLong(),
+                soundS = 0f,
+            ),
+        )
+    }
 
     override fun schedule(fromS: Double, toS: Double, emit: (AmbienceEvent) -> Unit) {
         if (nextPopS < fromS) nextPopS = fromS
@@ -148,9 +210,18 @@ class FireplaceScript : AmbienceScript {
             coupled[i] = acc
         }
 
+        // How hard the fire is burning, from the recording when there is one. A log
+        // catching is a real surge in the low-mid, and the room lifting with it is the
+        // difference between a fire and a flickering lamp.
+        val r = recording
+        val haveBed = r != null && r.sampleAt(tS, bedNow)
+        val roarLevel = if (haveBed) {
+            (0.78f + 0.55f * bedNow.level).coerceIn(0.6f, 1.4f)
+        } else 1f
+
         for ((i, id) in room.ids.withIndex()) {
             val flick = 0.55f + 0.45f * coupled[i]
-            val level = (0.20f + 0.55f * intensity) * flick * hearthFalloff[i]
+            val level = (0.20f + 0.55f * intensity) * flick * hearthFalloff[i] * roarLevel
             // Hotter at the heart, redder at the edges — a fire is not one colour.
             val heat = (hearthFalloff[i] * flick).coerceIn(0f, 1f)
             var r = lerp(EMBER.first, FLAME.first, heat) * level
@@ -238,6 +309,16 @@ class FireplaceScript : AmbienceScript {
     private fun lerp(a: Float, b: Float, t: Float) = a + (b - a) * t
 
     private companion object {
+        /**
+         * Shortest gap between two sparks, in seconds.
+         *
+         * Very short: a fire crackles many times a second and each one is real. The
+         * light each throws is small enough (see POP_LIGHT) that a dense run of them
+         * reads as a fire catching rather than as a strobe.
+         */
+        const val POP_REFRACTORY_S = 0.07
+
+
         /** How much of a lamp a single pop may claim. */
         const val POP_LIGHT = 0.40f
 

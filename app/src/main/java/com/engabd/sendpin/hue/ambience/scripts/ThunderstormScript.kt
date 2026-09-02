@@ -2,18 +2,22 @@ package com.engabd.sendpin.hue.ambience.scripts
 
 import com.engabd.sendpin.hue.Rgb
 import com.engabd.sendpin.hue.Vec3
+import com.engabd.sendpin.hue.ambience.AmbienceBedTrack
 import com.engabd.sendpin.hue.ambience.AmbienceEffect
 import com.engabd.sendpin.hue.ambience.AmbienceEvent
 import com.engabd.sendpin.hue.ambience.AmbienceParams
 import com.engabd.sendpin.hue.ambience.AmbienceScript
+import com.engabd.sendpin.hue.ambience.BedOnset
+import com.engabd.sendpin.hue.ambience.BedSample
 import com.engabd.sendpin.hue.ambience.BrownNoise
 import com.engabd.sendpin.hue.ambience.Envelope
 import com.engabd.sendpin.hue.ambience.OnePole
 import com.engabd.sendpin.hue.ambience.PinkNoise
-import com.engabd.sendpin.hue.ambience.RoomModel
 import com.engabd.sendpin.hue.ambience.Rng
+import com.engabd.sendpin.hue.ambience.RoomModel
 import com.engabd.sendpin.hue.ambience.Svf
 import com.engabd.sendpin.hue.ambience.VoicePool
+import com.engabd.sendpin.hue.ambience.azimuthOfPan
 import com.engabd.sendpin.hue.ambience.panGains
 import kotlin.math.PI
 import kotlin.math.abs
@@ -116,6 +120,16 @@ class ThunderstormScript(
     /** Per-lamp light accumulator, so [renderLights] can loop events outside lamps. */
     private var acc = FloatArray(0)
 
+    /** The recording, when one is playing. Null on the synthesised path. */
+    @Volatile private var recording: AmbienceBedTrack? = null
+
+    /** Scratch for the light tick's read of the bed. Render thread only. */
+    private val bedNow = BedSample()
+
+    /** Reaction state. Analysis thread only. */
+    private var lastStrikeS = Double.NaN
+    private val reactRng = Rng(seed xor 0x5EED_1E55L)
+
     override fun bind(room: RoomModel, params: AmbienceParams) {
         this.room = room
         this.params = params
@@ -123,6 +137,82 @@ class ThunderstormScript(
     }
 
     override fun retune(params: AmbienceParams) { this.params = params }
+
+    // ---- Reacting to a recording -----------------------------------------
+
+    /**
+     * A storm *is* its thunder, so when there is a recording of one playing, that
+     * recording is the show and inventing a second one alongside it is the bug.
+     */
+    override val eventsComeFromAudio: Boolean get() = true
+
+    override fun bindBed(bed: AmbienceBedTrack?) { this.recording = bed }
+
+    /**
+     * A thunderclap in the recording becomes a strike in the room.
+     *
+     * The event is stamped at the media position of the audio that caused it and given
+     * **no propagation delay at all** — which looks like a betrayal of this script's
+     * whole premise and is the opposite. The scripted path had to model the delay
+     * because it was inventing a strike that had not happened yet; here the strike
+     * already happened, several kilometres away, some seconds ago, and what the room is
+     * being asked to do is react to the sound now arriving. Adding a delay on top would
+     * hold the flash back from the clap it belongs to for a second time.
+     *
+     * Everything the scripted path made up is instead read out of the sound:
+     *
+     * - **how far** — from [BedOnset.lowShare]. Air strips the treble out of a distant
+     *   strike, so a clap that arrives with any crack left in it was close and one that
+     *   is all rumble was not. The same physics the synth applied on the way out, run
+     *   backwards on the way in.
+     * - **where** — from the stereo field, so a clap on the left lights the left.
+     * - **how hard** — from how far over the storm's own recent level it went, which is
+     *   the only honest measure when a recording's absolute level is whatever the
+     *   listener set the volume to.
+     */
+    override fun react(sample: BedSample, onset: BedOnset, emit: (AmbienceEvent) -> Unit) {
+        if (!onset.low) return
+        if (!lastStrikeS.isNaN() && sample.tS - lastStrikeS < STRIKE_REFRACTORY_S) return
+        lastStrikeS = sample.tS
+
+        val far = ((onset.lowShare - NEAR_SHARE) / (FAR_SHARE - NEAR_SHARE)).coerceIn(0f, 1f)
+        val distKm = minDistKm + (maxDistKm - minDistKm) * far
+        val az = azimuthOfPan(onset.pan)
+        val origin = Vec3(
+            0.5f + 1.6f * cos(2f * PI.toFloat() * az),
+            0.5f + 1.6f * sin(2f * PI.toFloat() * az),
+            1f,
+        )
+        val colour = lerpRgb(nearBolt, farBolt, (distKm / 8f).coerceIn(0f, 1f))
+        val gain = (0.35f + 0.65f * onset.lowStrength).coerceIn(0.1f, 1f)
+        // A close strike re-strikes its channel; a distant sheet does not. Deterministic
+        // in the reaction rng so the same recording lights the room the same way twice.
+        val flickers = if (far < 0.35f) 1 + reactRng.nextInt(2) else 1
+        var k = 0
+        while (k < flickers) {
+            emit(
+                AmbienceEvent(
+                    kind = AmbienceEvent.STRIKE,
+                    // Where the clap began, not where it was confirmed — the detector
+                    // measures its own delay and hands it back (see BedOnset.atS), so
+                    // the flash lands on the attack rather than three hops behind it.
+                    startS = onset.atS + k * (0.03 + 0.05 * reactRng.f01()),
+                    env = Envelope(attackS = 0.012f, holdS = 0.02f, decayTauS = 0.11f),
+                    gain = gain * (1f - 0.25f * k),
+                    origin = origin,
+                    azimuth = az,
+                    colour = colour,
+                    timbre = distKm,
+                    seed = reactRng.nextLong(),
+                    // The recording is the sound. Nothing here has to be synthesised,
+                    // and an event claiming otherwise would keep a voice alive for a
+                    // strike the synth is never asked to play.
+                    soundS = 0f,
+                ),
+            )
+            k++
+        }
+    }
 
     // ---- Scheduling ------------------------------------------------------
 
@@ -202,10 +292,20 @@ class ThunderstormScript(
         if (acc.size < ids.size * 3) acc = FloatArray(ids.size * 3)
         val intensity = params.intensity.coerceIn(0f, 1f)
 
-        // 1. The rain bed: a dark, faintly restless blue-grey, breathing with the same
-        //    gust contour that drives the rain's level in the mix. Per-lamp phase on top
-        //    so the room shimmers rather than pulsing as one panel.
-        val gust = gustAt(tS)
+        // 1. The rain bed: a dark, faintly restless blue-grey, breathing with the rain.
+        //
+        //    With a recording playing, "the rain" means the rain that is audible — the
+        //    mid and upper bands of the very samples reaching the speaker — so a squall
+        //    gathering in the file brightens the room as it arrives and eases as it
+        //    passes. That is the whole of what was being asked for, at the level below
+        //    the thunder: the bed is not a loop running alongside the sound, it is the
+        //    sound.
+        //
+        //    Without one it falls back to [gustAt], the synthesised path's own contour,
+        //    which drives the rain's level in the mix identically.
+        val r = recording
+        val haveBed = r != null && r.sampleAt(tS, bedNow)
+        val gust = if (haveBed) rainOf(bedNow) else gustAt(tS)
         var i = 0
         while (i < ids.size) {
             val id = ids[i]
@@ -261,29 +361,59 @@ class ThunderstormScript(
                 }
             }
 
-            // 2b. The roll, seen as well as heard.
-            //
-            // The same envelope the audio is playing at this instant, so the room swells
-            // while the thunder rolls and settles as it dies. Added rather than maxed —
-            // it is a wash under the storm, not a flash competing with one — and slow by
-            // construction, so it costs nothing against the flash budget. The bias
-            // towards the strike's own azimuth is what stops it reading as the room
-            // simply getting brighter: rumble from the left glows on the left.
-            val rollLvl = rollEnvelopeFor(distKm).at(age - distKm / SPEED_KM_PER_S)
-            if (rollLvl > 0f) {
-                // The same slow, seeded contour that makes the audible roll wax and wane
-                // rather than decay smoothly — one storm, described twice.
-                val swell = rollLvl * rollContour(e, age) * e.gain * ROLL_GLOW
+            // 2b. The roll, seen as well as heard — but only where the roll is being
+            //     synthesised. With a recording playing, the rumble the listener can
+            //     actually hear is measured rather than modelled, below.
+            if (!haveBed) {
+                val rollLvl = rollEnvelopeFor(distKm).at(age - distKm / SPEED_KM_PER_S)
+                if (rollLvl > 0f) {
+                    // The same slow, seeded contour that makes the audible roll wax and
+                    // wane rather than decay smoothly — one storm, described twice.
+                    val swell = rollLvl * rollContour(e, age) * e.gain * ROLL_GLOW
+                    var j = 0
+                    while (j < ids.size) {
+                        val id = ids[j]
+                        val off = turns(room.azimuth[id] ?: 0f, e.azimuth)
+                        val side = 0.55f + 0.45f * cos(2f * PI.toFloat() * off)
+                        val v = swell * side
+                        val o = j * 3
+                        acc[o] += e.colour.first * v
+                        acc[o + 1] += e.colour.second * v
+                        acc[o + 2] += e.colour.third * v
+                        j++
+                    }
+                }
+            }
+        }
+
+        // 3. The rumble the recording is playing right now, straight off its low end.
+        //
+        // The flash above answers the *attack* of a clap; this answers the eight seconds
+        // of rolling that follow it, which is most of what a storm actually is and what
+        // the room used to sit through doing nothing. Measured, not modelled: there is
+        // no envelope to get wrong, no distance to guess and nothing to drift, because
+        // the number being drawn is the level of the audio in the speaker at the instant
+        // it is drawn.
+        //
+        // Slow and added rather than maxed — a wash under the storm, not a flash
+        // competing with one — so it costs nothing against the flash budget. Leaning
+        // towards the side the rumble is coming from is what stops it reading as the
+        // room simply getting brighter.
+        if (haveBed) {
+            val swell = ((bedNow.rumble - RUMBLE_FLOOR) / (1f - RUMBLE_FLOOR)).coerceIn(0f, 1f)
+            if (swell > 0f) {
+                val az = azimuthOfPan(bedNow.pan)
+                // Colder as it gets louder: a big roll is a lot of sky lighting up.
+                val col = lerpRgb(farBolt, nearBolt, swell)
+                val amp = swell * swell * ROLL_GLOW
                 var j = 0
                 while (j < ids.size) {
-                    val id = ids[j]
-                    val off = turns(room.azimuth[id] ?: 0f, e.azimuth)
-                    val side = 0.55f + 0.45f * cos(2f * PI.toFloat() * off)
-                    val v = swell * side
+                    val off = turns(room.azimuth[ids[j]] ?: 0f, az)
+                    val v = amp * (0.6f + 0.4f * cos(2f * PI.toFloat() * off))
                     val o = j * 3
-                    acc[o] += e.colour.first * v
-                    acc[o + 1] += e.colour.second * v
-                    acc[o + 2] += e.colour.third * v
+                    acc[o] += col.first * v
+                    acc[o + 1] += col.second * v
+                    acc[o + 2] += col.third * v
                     j++
                 }
             }
@@ -417,11 +547,11 @@ class ThunderstormScript(
                 val ce = c0 + (c1 - c0) * f
                 val re = r0 + (r1 - r0) * f
                 val white = v.noise.bipolar()
-                var s = v.crack.bp(white) * ce * crackAmp * 0.7f
-                if (sizzleAmp > 1e-4f) s += v.sizzle.bp(white) * ce * ce * sizzleAmp * 0.5f
+                var s = v.crack.bp(white) * ce * crackAmp * 0.52f
+                if (sizzleAmp > 1e-4f) s += v.sizzle.bp(white) * ce * ce * sizzleAmp * 0.36f
                 val brown = v.roll.next()
-                s += v.rollLp.lp(brown) * re * rollAmp * 0.62f
-                s += v.bodyLp.lp(brown) * re * rollAmp * 0.44f
+                s += v.rollLp.lp(brown) * re * rollAmp * 0.40f
+                s += v.bodyLp.lp(brown) * re * rollAmp * 0.28f
                 val idx = (i + j) * 2
                 out[idx] += s * pan[0]
                 out[idx + 1] += s * pan[1]
@@ -459,6 +589,17 @@ class ThunderstormScript(
         a.second + (b.second - a.second) * t,
         a.third + (b.third - a.third) * t,
     )
+
+    /**
+     * How hard it is raining, 0..1, from the recording.
+     *
+     * The upper bands, because that is where rain lives, normalised against how hard it
+     * has been raining lately rather than against the analyzer's minute-long AGC — see
+     * [BedSample.rain]. Broadband energy would do here instead and should not: it would
+     * brighten the room on every thunderclap, which is the flash's job, and count it
+     * twice.
+     */
+    private fun rainOf(s: BedSample): Float = s.rain
 
     /** Shortest signed separation between two azimuths, in turns: -0.5..0.5. */
     private fun turns(a: Float, b: Float): Float {
@@ -498,6 +639,36 @@ class ThunderstormScript(
 
         /** How much of the room's brightness the audible roll is allowed to move. */
         const val ROLL_GLOW = 0.16f
+
+        /**
+         * How much of a rumble there has to be before the room answers it.
+         *
+         * Rain has a low end of its own, so without a floor the room would carry a
+         * permanent glow that never resolved into anything.
+         */
+        const val RUMBLE_FLOOR = 0.25f
+
+        /**
+         * Shortest gap between two flashes, in seconds.
+         *
+         * A clap is not one transient — it is an attack and then several seconds of
+         * peaks as different parts of the channel arrive — and every one of those peaks
+         * is a genuine onset. Flashing on all of them is a strobe, not lightning. The
+         * detector's own rising floor does most of the suppression; this catches the
+         * rest.
+         */
+        const val STRIKE_REFRACTORY_S = 0.6
+
+
+        /**
+         * Low-energy share at which a clap reads as overhead, and as far off.
+         *
+         * A close strike arrives broadband — the crack still has treble in it — so its
+         * low share is only a little over half. By a few kilometres the air has taken
+         * everything above a few hundred hertz and almost all of what is left is low.
+         */
+        const val NEAR_SHARE = 0.45f
+        const val FAR_SHARE = 0.88f
 
         val RAIN = Rgb(0.42f, 0.52f, 0.80f)
         val NEAR_BOLT = Rgb(0.70f, 0.80f, 1.00f)

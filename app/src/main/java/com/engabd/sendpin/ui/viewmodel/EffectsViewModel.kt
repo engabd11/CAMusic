@@ -145,12 +145,16 @@ class EffectsViewModel(app: Application) : AndroidViewModel(app) {
      * The sound backend for [effect] given the current `effectsSoundMode`, or null for
      * a silent show ("Off", or a failed clip/synth with nothing left to fall back to).
      *
-     * "My Clip" plays the user's own file as a bed with no further fallback beyond the
-     * synthesised sound — the effect's script drives the lights either way, never the
-     * file (see the copy in `EffectsScreen`). "Default" prefers a bundled real-recording
-     * bed for [effect] when one ships as an app asset, and otherwise plays exactly the
-     * synthesised sound this mode has always played — effects with no bundled asset yet
-     * are unaffected by this change.
+     * "Default" plays the bundled real-recording bed for [effect] when one ships as an
+     * app asset, and falls back to the synthesised sound only when none does. Every
+     * effect ships one today, so the synth is the fallback rather than the norm — which
+     * is the right way round: a storm recorded by a microphone is better than anything
+     * this app can synthesise, and now that the lights are driven by *analysis* of
+     * whatever is playing, keeping the recording costs the show nothing.
+     *
+     * "My Clip" plays the user's own file instead, on exactly the same terms. The
+     * lights follow that file too — the script reacts to the audio it is given, not to
+     * the one it expected — which is what the Effects screen now says.
      */
     private suspend fun buildActiveAudio(
         app: SendpinApp,
@@ -181,11 +185,7 @@ class EffectsViewModel(app: Application) : AndroidViewModel(app) {
             "clip" -> settings.effectsClips.first()[effect.wire]
                 ?.let { runCatching { Uri.parse(it) }.getOrNull() }
                 ?.let { clip(it) } ?: synth()
-            // A recorded bed cannot be the show clock, so effects whose sound has
-            // to line up with their lights generate it instead. See
-            // AmbienceEffect.defaultSoundIsGenerated.
-            else -> if (effect.defaultSoundIsGenerated) synth()
-            else AmbienceAssets.bedAssetPath(app, effect)
+            else -> AmbienceAssets.bedAssetPath(app, effect)
                 ?.let { clip(Uri.parse("asset:///$it")) } ?: synth()
         }
     }
@@ -236,10 +236,15 @@ class EffectsViewModel(app: Application) : AndroidViewModel(app) {
                 onDuck = { ducking -> audio.setVolume(if (ducking) vol * 0.2f else vol) },
             )
 
-            // Only a Synth backend is a real AudioSink the show clock can read; a
-            // Clip backend runs in parallel with sink = null, which falls the
-            // light-side clock back to wall time (see AmbienceSession.nowS()).
+            // Exactly one of these is ever non-null, and which one decides what the
+            // show is clocked on and where its events come from.
+            //
+            // A Synth backend is a real AudioSink: its playhead is the clock and the
+            // script invents the events. A Clip backend is a recording being analysed:
+            // its own position in the file is the clock and the recording is the event
+            // source. A silent show has neither and falls back to wall time.
             val sink = audio.sink
+            val analysis = audio.analysis
 
             // startAmbience self-opens the bridge session if sync is off, but
             // never told the master switch that — so the switch stayed visually
@@ -267,6 +272,7 @@ class EffectsViewModel(app: Application) : AndroidViewModel(app) {
                     brightness = settings.lightSyncBrightness.first() / 100f,
                 ),
                 onAudioFailed = { msg -> _toast.tryEmit(msg) },
+                analysis = analysis,
             )
             if (!ok) {
                 audio.release()

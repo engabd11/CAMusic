@@ -284,7 +284,14 @@ class AmbienceTimelinePathTest {
         // Three minutes of storm, and three of fireworks. If the transients are being
         // withheld from the audio block, what is left is the rain — and the peak never
         // rises meaningfully above the bed.
-        for (effect in AmbienceEffect.entries.filter { it.defaultSoundIsGenerated }) {
+        // The effects that are nothing but transients. When one of these plays its
+        // recording the lights react to that instead; this is the fallback path, for a
+        // clip that failed to open or an effect with nothing bundled.
+        val eventDriven = listOf(
+            AmbienceEffect.THUNDERSTORM, AmbienceEffect.THUNDERSTORM_2,
+            AmbienceEffect.FIREWORKS, AmbienceEffect.FIREWORKS_2,
+        )
+        for (effect in eventDriven) {
             val bed = bedPeak(effect)
             val peaks = blockPeaks(effect, 180.0)
             val loud = peaks.count { it > bed * 2.5f }
@@ -297,13 +304,15 @@ class AmbienceTimelinePathTest {
     }
 
     @Test
-    fun `no effect drives the output into the soft clipper's hard cap`() {
-        // softClip() saturates gently below 1.5 and is a flat ceiling above it. A near
-        // lightning crack is allowed to be the loudest thing in the show; it is not
-        // allowed to arrive as a flat-topped square.
+    fun `no effect leans on the soft clipper at all`() {
+        // Under unity, not merely under softClip's hard cap at 1.5. An earlier version
+        // of the synthesised storm ran to 1.36 and left the clipper holding it, which is
+        // audible as exactly the grit it was reported as: the loudest moments of a storm
+        // are the ones that matter, and rounding their tops off is not a rescue.
+        // Nothing here should be asking the clipper for help.
         for (effect in AmbienceEffect.entries) {
             val peak = blockPeaks(effect, 180.0).max()
-            assertTrue(peak < 1.5f, "${effect.wire}: peaked at $peak through the timeline")
+            assertTrue(peak < 1.0f, "${effect.wire}: peaked at $peak through the timeline")
         }
     }
 
