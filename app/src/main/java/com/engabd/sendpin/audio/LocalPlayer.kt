@@ -10,6 +10,7 @@ import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
@@ -225,11 +226,24 @@ class LocalPlayer(private val context: Context) {
     val vinylNoise = VinylNoiseProcessor()
 
     /**
+     * Lo-fi's pitch wobble — see [WowFlutterProcessor]. Rides Lo-fi's own
+     * toggle rather than a setting of its own; see the `loFiConfig`
+     * collector below.
+     */
+    val wowFlutter = WowFlutterProcessor()
+
+    /**
      * Lo-fi music mode: bitcrusher, warm saturation, low-pass. Sits after
      * vinyl noise so it can share the crackle stage when both are active,
      * avoiding double-running the noise.
      */
     val loFiProcessor = LoFiProcessor()
+
+    /**
+     * Old Radio mode: telephone-band EQ, light saturation, AM static and
+     * warble. Sits after lo-fi, the last coloration stage before the tap.
+     */
+    val oldRadio = OldRadioProcessor()
 
     /** The user's own volume, kept apart from the ReplayGain factor multiplied onto it. */
     private var userVolume = 1f
@@ -293,6 +307,20 @@ class LocalPlayer(private val context: Context) {
     private val _speed = MutableStateFlow(1f)
     val speed: StateFlow<Float> = _speed
 
+    /**
+     * The remote player's own live output format and device name — see
+     * [RemotePlayback]/[RemoteState] — or both null when nothing remote is
+     * active, or the remote didn't say. Only ever set from [applyRemoteState];
+     * this phone's own local-decode playback has no remote to ask and leaves
+     * these at their defaults, same as every other `RemoteState`-sourced flow
+     * here.
+     */
+    private val _remoteOutputFormat = MutableStateFlow<RemoteAudioFormat?>(null)
+    val remoteOutputFormat: StateFlow<RemoteAudioFormat?> = _remoteOutputFormat
+
+    private val _remoteOutputDeviceName = MutableStateFlow<String?>(null)
+    val remoteOutputDeviceName: StateFlow<String?> = _remoteOutputDeviceName
+
     private val _error = MutableSharedFlow<String>(extraBufferCapacity = 4)
     /** Playback failures worth telling the user about (a missing file, a dead server). */
     val errors: SharedFlow<String> = _error.asSharedFlow()
@@ -322,6 +350,16 @@ class LocalPlayer(private val context: Context) {
 
     val title: StateFlow<String> get() = _titleFlow
     private val _titleFlow = MutableStateFlow("")
+
+    /**
+     * Lo-fi's persistent vari-speed slow-down, as a rate multiplier (1 = none).
+     *
+     * Kept apart from [_speed], which is the listener's own audiobook/podcast
+     * rate: the two multiply, but only this one also drags the pitch down with
+     * it, and only this one is a property of a sound mode rather than of the
+     * transport. See [MAX_LO_FI_SLOWDOWN].
+     */
+    private var loFiSpeedRatio = 1f
 
     init {
         val settings = com.engabd.sendpin.data.AppSettings(context)
@@ -356,7 +394,17 @@ class LocalPlayer(private val context: Context) {
             settings.loFiConfig.collect { cfg ->
                 loFiProcessor.setConfig(cfg)
                 updateLoFiSharing()
+                // Wow/flutter rides the same toggle and updates live, same as
+                // the bitcrush/saturation above. So does the persistent
+                // slow-down, which is playback parameters rather than a
+                // processor — see applyPlaybackParameters for why.
+                wowFlutter.setConfig(WowFlutterProcessor.Config(cfg.enabled, cfg.intensity))
+                loFiSpeedRatio = if (cfg.isActive()) 1f - cfg.intensity * MAX_LO_FI_SLOWDOWN else 1f
+                applyPlaybackParameters()
             }
+        }
+        scope.launch {
+            settings.oldRadioConfig.collect { cfg -> oldRadio.setConfig(cfg) }
         }
     }
 
@@ -474,7 +522,9 @@ class LocalPlayer(private val context: Context) {
             lead = audioLead,
             dsp = if (exclusive) null else localDsp,
             vinylNoise = if (exclusive) null else vinylNoise,
+            wowFlutter = if (exclusive) null else wowFlutter,
             loFi = if (exclusive) null else loFiProcessor,
+            oldRadio = if (exclusive) null else oldRadio,
             exclusive = exclusive,
         ).setEnableAudioFloatOutput(bitPerfect || exclusive) as TapRenderersFactory
 
@@ -554,6 +604,10 @@ class LocalPlayer(private val context: Context) {
                 })
                 SignalPath.onMixerRate(DeviceCapabilities.mixerRateHz())
                 preferredOutput?.let { d -> runCatching { p.setPreferredAudioDevice(d) } }
+                // A rate chosen before this player existed — a Lo-fi toggle while
+                // nothing was playing, or a speed left over from the last track —
+                // has to land on the new one, or it silently reverts to 1.
+                applyPlaybackParameters(p)
             }
     }
 
@@ -584,6 +638,12 @@ class LocalPlayer(private val context: Context) {
             if (field === value) return
             field = value
             _remoteActive.value = value != null
+            if (value == null) {
+                // Stale MPD output info must not linger once this phone (or a
+                // different remote) takes over — see remoteOutputFormat's doc.
+                _remoteOutputFormat.value = null
+                _remoteOutputDeviceName.value = null
+            }
             stopRemoteLoop()
             // `livePlayer`, not `player`: the latter builds an ExoPlayer on demand,
             // and building one in order to stop it is how switching *to* a remote
@@ -653,6 +713,8 @@ class LocalPlayer(private val context: Context) {
         val queue = _queue.value
         val wasPlaying = _playing.value
         _playing.value = state.playing
+        _remoteOutputFormat.value = state.outputFormat
+        _remoteOutputDeviceName.value = state.outputDeviceName
 
         if (state.index in queue.indices && state.index != _index.value) {
             showRemoteIndex(state.index)
@@ -1091,7 +1153,39 @@ class LocalPlayer(private val context: Context) {
             return
         }
         _speed.value = value.coerceIn(0.5f, 3f)
-        player.setPlaybackSpeed(_speed.value)
+        applyPlaybackParameters(player)
+    }
+
+    /**
+     * Push [_speed] and [loFiSpeedRatio] onto the player together.
+     *
+     * Speed *and* pitch, not `setPlaybackSpeed`: a tape or a turntable running
+     * slow drops the pitch with the tempo, and pitch-preserved time-stretching
+     * is exactly the artefact Lo-fi is trying not to sound like. The listener's
+     * own speed control keeps its pitch, so it multiplies into the tempo and
+     * leaves the pitch to the mode.
+     *
+     * Through the player rather than a [androidx.media3.common.audio.SonicAudioProcessor]
+     * of our own in [TapRenderersFactory]'s chain, for two reasons: media3
+     * accounts for its own playback parameters when it reports a position, and
+     * would not account for ours — a 4.5% slow-down would put every reported
+     * position, and so the scrub bar and the light show, that far out by the end
+     * of a track; and that chain is fixed when the player is built, so a mode
+     * toggled mid-session would not be heard until the next player. Both are
+     * live here.
+     *
+     * [exclusiveOutput] is the one case that opts out: it exists to put nothing
+     * of this app's between the decoder and the DAC, and a resample is very much
+     * something. The sound modes are already hidden in that mode for the same
+     * reason.
+     *
+     * @param target the player to write to, for the one caller that has a player
+     *   in hand but has not published it as [livePlayer] yet ([buildPlayer]).
+     */
+    private fun applyPlaybackParameters(target: ExoPlayer? = livePlayer) {
+        val p = target ?: return
+        val ratio = if (exclusiveOutput) 1f else loFiSpeedRatio
+        p.playbackParameters = PlaybackParameters(_speed.value * ratio, ratio)
     }
 
     fun setShuffle(on: Boolean) {
@@ -1332,6 +1426,16 @@ class LocalPlayer(private val context: Context) {
     private companion object {
         /** Past this into a track, Previous restarts it instead of going back one. */
         const val RESTART_THRESHOLD_MS = 4_000L
+
+        /**
+         * Lo-fi's persistent slow-down at full intensity: up to 4.5% slower,
+         * speed and pitch together — a physically slower playback, the way a
+         * tape or turntable actually running slow sounds, not a pitch-
+         * preserved time-stretch. Tasteful end of what "slowed" mixes
+         * typically use (commonly cited from the low single digits up to
+         * ~8%).
+         */
+        const val MAX_LO_FI_SLOWDOWN = 0.045f
 
         /**
          * What the media path calls itself to a server.

@@ -9,13 +9,10 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import kotlin.math.abs
-import kotlin.math.exp
-import kotlin.math.min
 import kotlin.random.Random
 
 /**
- * Vinyl surface noise: crackle, dust pops, and low-end rumble added to digital
+ * Vinyl surface noise: crackle, dust pops, rumble and hiss added to digital
  * playback so a clean file can sound like a record.
  *
  * Sits in the same `DefaultAudioSink` processor chain as [LocalDsp] and
@@ -35,6 +32,23 @@ import kotlin.random.Random
  * buffer. A different seed each session is fine — the point is that within
  * one playback the noise is stable, not that it is reproducible across
  * plays.
+ *
+ * Four components, summed:
+ * - **Crackle**: sparse impulses, independent per channel so left and right
+ *   are not mirror images of each other — real vinyl surface noise is not
+ *   perfectly correlated between channels, and mono-doubled noise reads as
+ *   "processed" rather than as a record.
+ * - **Dust pops**: the same mechanism, rarer, louder, faster decay.
+ * - **Rumble**: continuous low-passed white noise, felt more than heard.
+ * - **Surface hiss**: continuous, band-limited broadband noise around
+ *   3-9 kHz, independent per channel. The texture between the clicks —
+ *   without it the effect reads as "clicky" rather than "surface".
+ *
+ * Crackle and pop impulses also vary in decay time from one impulse to the
+ * next (real grit is not all the same size), and their overall rate breathes
+ * slowly over time via [densityMultiplier] rather than firing at a constant
+ * statistical rate — real groove wear clusters into scratched or dusty runs
+ * instead of spreading evenly across a side.
  */
 @OptIn(UnstableApi::class)
 class VinylNoiseProcessor : BaseAudioProcessor() {
@@ -49,7 +63,7 @@ class VinylNoiseProcessor : BaseAudioProcessor() {
     @Serializable
     data class Config(
         val enabled: Boolean = false,
-        /** 0..1. Controls crackle rate, pop frequency, and rumble level. */
+        /** 0..1. Controls crackle rate, pop frequency, rumble and hiss level. */
         val intensity: Float = 0.5f,
     ) {
         /** True when the processor should actually do work. */
@@ -67,42 +81,49 @@ class VinylNoiseProcessor : BaseAudioProcessor() {
     /** Session-stable RNG so the crackle pattern does not re-randomise per buffer. */
     private val rng = Random(System.nanoTime())
 
-    // --- Crackle: sparse Poisson-distributed impulses with one-pole decay ---
+    /**
+     * Per-channel crackle/pop/hiss state, so left and right run independent
+     * impulse trains rather than the same event mirrored on both channels.
+     */
+    private class ChannelNoise {
+        var crackleCounter = 0
+        var crackleThreshold = 800
+        var crackleEnv = 0f
+        /** Polarity, chosen once at the impulse's trigger — see the class doc. */
+        var crackleSign = 1f
+        /** This impulse's decay coefficient, varied per-impulse for grain size. */
+        var crackleDecay = 0.92f
+
+        var popCounter = 0
+        var popThreshold = 20_000
+        var popEnv = 0f
+        var popSign = 1f
+        var popDecay = 0.80f
+
+        /** Two cascaded one-pole low-passes: hiss = fast(9kHz) - slow(3kHz). */
+        var hissFast = 0f
+        var hissSlow = 0f
+    }
+
+    private var channels: Array<ChannelNoise> = Array(2) { ChannelNoise() }
 
     /**
-     * Average samples between crackle impulses at full intensity. Scales
-     * inversely with intensity: more intensity means more frequent crackle.
-     *
-     * At 44.1 kHz, 800 samples is roughly one crackle every 18 ms, which is
-     * dense enough to read as surface noise rather than isolated clicks.
+     * Slow multiplier on crackle/pop rate, one-pole-smoothed toward a target
+     * re-rolled every few seconds — the "breathing" density of a scratched or
+     * dusty patch, rather than a perfectly uniform statistical rate.
      */
-    private var crackleCounter = 0
-    private var crackleThreshold = 800
+    private var densityMultiplier = 1f
+    private var densityTarget = 1f
+    private var densityCounter = 0
+    private var densityRerollPeriod = 44_100 * 2
+    private var densitySmoothCoeff = 0.00002f
 
-    // --- Dust pops: less frequent, sharper, faster decay ---
-
-    private var popCounter = 0
-    private var popThreshold = 20_000
-
-    // --- One-pole decay envelopes for crackle and pops ---
-
-    private var crackleEnv = 0f
-    /** The polarity the current crackle envelope decays with. Set once, at the impulse's trigger. */
-    private var crackleSign = 1f
-    private var popEnv = 0f
-    /** The polarity the current pop envelope decays with. Set once, at the impulse's trigger. */
-    private var popSign = 1f
-
-    /**
-     * Rumble: filtered white noise through a one-pole low-pass at ~50 Hz.
-     *
-     * The filter is a simple `y[n] = a*x[n] + (1-a)*y[n-1]` where `a` is
-     * derived from the cutoff and the sample rate. At 44.1 kHz the
-     * coefficient is ~0.0035, which puts the -3 dB point near 50 Hz.
-     * Quiet: at most 3% of full scale at max intensity.
-     */
     private var rumbleState = 0f
     private var rumbleCoeff = 0.0035f
+
+    /** Cutoffs for the two-stage hiss band-pass approximation. */
+    private var hissFastCoeff = 1f
+    private var hissSlowCoeff = 1f
 
     fun setConfig(config: Config) {
         pending = config
@@ -136,6 +157,12 @@ class VinylNoiseProcessor : BaseAudioProcessor() {
          * rumble is felt more than heard.
          */
         internal fun rumbleAmplitude(intensity: Float): Float = (intensity * 0.03f).coerceIn(0f, 0.03f)
+
+        /**
+         * Surface hiss amplitude: quieter still than rumble. A texture, not
+         * a hiss loud enough to mask the music.
+         */
+        internal fun hissAmplitude(intensity: Float): Float = (intensity * 0.015f).coerceIn(0f, 0.015f)
 
         /**
          * Average samples between crackle impulses at the given intensity, scaled
@@ -182,7 +209,14 @@ class VinylNoiseProcessor : BaseAudioProcessor() {
             sampleRate = inputAudioFormat.sampleRate
             channelCount = inputAudioFormat.channelCount
             encoding = inputAudioFormat.encoding
+            if (channelCount > channels.size) {
+                channels = Array(channelCount) { ChannelNoise() }
+            }
             rumbleCoeff = lowPassCoeff(50f, sampleRate)
+            hissFastCoeff = lowPassCoeff(9_000f, sampleRate)
+            hissSlowCoeff = lowPassCoeff(3_000f, sampleRate)
+            // ~1s smoothing time constant for the density walk, at this sample rate.
+            densitySmoothCoeff = lowPassCoeff(0.3f, sampleRate)
             pending = active
             inputAudioFormat
         }
@@ -192,22 +226,34 @@ class VinylNoiseProcessor : BaseAudioProcessor() {
     override fun queueInput(inputBuffer: ByteBuffer) {
         pending?.let {
             active = it
-            // Recompute thresholds when intensity changes.
-            crackleThreshold = crackleInterval(it.intensity, sampleRate)
-            popThreshold = popInterval(it.intensity, sampleRate)
+            // Recompute base thresholds when intensity changes. Per-channel
+            // thresholds are re-derived from these the next time each
+            // channel's impulse fires, same as before.
+            val base = crackleInterval(it.intensity, sampleRate)
+            val popBase = popInterval(it.intensity, sampleRate)
+            for (c in channels) {
+                c.crackleThreshold = base
+                c.popThreshold = popBase
+            }
             pending = null
         }
 
         val remaining = inputBuffer.remaining()
         if (remaining == 0) return
 
+        val order = inputBuffer.order()
         val out = replaceOutputBuffer(remaining)
+        // The output buffer comes back in native order; the bytes copied into it
+        // are the input's. Carrying the input's order across means a pass-through
+        // reads back as the same samples, not as byte-swapped ones — the active
+        // paths below already do this, and the two disagreeing is what a
+        // big-endian caller would see as silent corruption.
+        out.order(order)
         if (!active.isActive()) {
             out.put(inputBuffer).flip()
             return
         }
 
-        val order = inputBuffer.order()
         when (encoding) {
             C.ENCODING_PCM_FLOAT -> processFloat(inputBuffer, out, order)
             else -> processShort(inputBuffer, out, order)
@@ -239,68 +285,95 @@ class VinylNoiseProcessor : BaseAudioProcessor() {
         while (input.hasRemaining()) out.put(input.get())
     }
 
+    /** Advances [densityMultiplier] toward a periodically re-rolled target. Once per frame. */
+    private fun updateDensity() {
+        densityCounter++
+        if (densityCounter >= densityRerollPeriod) {
+            densityCounter = 0
+            densityTarget = 0.6f + rng.nextFloat() * 1.2f
+            densityRerollPeriod = (sampleRate * (1f + rng.nextFloat() * 2f)).toInt()
+        }
+        densityMultiplier += (densityTarget - densityMultiplier) * densitySmoothCoeff
+    }
+
     /**
-     * One sample of vinyl noise: crackle + pop + rumble.
+     * One sample of vinyl noise on [channel]: crackle + pop + rumble + hiss.
      *
-     * Only channel 0 advances the crackle/pop counters, so the rate is
-     * per-sample-pair, not per-channel. The rumble runs on every channel
-     * independently because it is a continuous filter, not a discrete event.
+     * Crackle, pop and hiss run independently per channel — see
+     * [ChannelNoise]. Rumble stays a single shared filter: it is felt more
+     * than heard, and its state already differs sample-to-sample regardless
+     * of channel, so a second copy would add cost without adding anything
+     * audible. [updateDensity] only needs to run once per frame, so it is
+     * gated on channel 0.
      */
     private fun generateNoise(channel: Int): Float {
         val intensity = active.intensity
+        val ch = channels[channel.coerceIn(0, channels.lastIndex)]
 
-        // --- Crackle: Poisson-distributed impulses ---
-        if (channel == 0) {
-            crackleCounter++
-            if (crackleCounter >= crackleThreshold) {
-                crackleCounter = 0
-                // Randomise the next threshold around the mean so the
-                // crackle is not periodic. Exponential distribution: the
-                // natural model for independent random arrivals.
-                crackleThreshold = (crackleInterval(intensity, sampleRate) *
-                    (0.5f + rng.nextFloat())).toInt().coerceAtLeast(1)
-                crackleEnv = crackleAmplitude(intensity) * (0.5f + rng.nextFloat() * 0.5f)
-                // Polarity is decided once, here, at the trigger — not re-rolled
-                // every sample of the decay. A coin flip per sample turned each
-                // impulse into a burst of white noise shaped by an exponential
-                // envelope, which reads as static, not as a click.
-                crackleSign = if (rng.nextBoolean()) 1f else -1f
-            }
-            // One-pole decay: ~3 ms time constant at 44.1 kHz.
-            crackleEnv *= 0.92f
+        if (channel == 0) updateDensity()
+
+        // --- Crackle: Poisson-distributed impulses, independent per channel ---
+        ch.crackleCounter++
+        if (ch.crackleCounter >= ch.crackleThreshold) {
+            ch.crackleCounter = 0
+            // Randomise the next threshold around the mean, scaled by the slow
+            // density walk, so the crackle is neither periodic nor a constant
+            // statistical rate.
+            ch.crackleThreshold = (crackleInterval(intensity, sampleRate) * densityMultiplier *
+                (0.5f + rng.nextFloat())).toInt().coerceAtLeast(1)
+            ch.crackleEnv = crackleAmplitude(intensity) * (0.5f + rng.nextFloat() * 0.5f)
+            // Polarity is decided once, here, at the trigger — not re-rolled
+            // every sample of the decay. A coin flip per sample turned each
+            // impulse into a burst of white noise shaped by an exponential
+            // envelope, which reads as static, not as a click.
+            ch.crackleSign = if (rng.nextBoolean()) 1f else -1f
+            // Decay varies per impulse too: real grit is not all the same size.
+            ch.crackleDecay = 0.88f + rng.nextFloat() * 0.07f
         }
+        ch.crackleEnv *= ch.crackleDecay
 
         // --- Dust pops: rarer, sharper, faster decay ---
-        if (channel == 0) {
-            popCounter++
-            if (popCounter >= popThreshold) {
-                popCounter = 0
-                popThreshold = (popInterval(intensity, sampleRate) *
-                    (0.5f + rng.nextFloat())).toInt().coerceAtLeast(1)
-                popEnv = popAmplitude(intensity) * (0.7f + rng.nextFloat() * 0.3f)
-                // Same fix as the crackle above: one polarity for the whole pop.
-                popSign = if (rng.nextBoolean()) 1f else -1f
-            }
-            // Faster decay than crackle: a pop is a transient.
-            popEnv *= 0.80f
+        ch.popCounter++
+        if (ch.popCounter >= ch.popThreshold) {
+            ch.popCounter = 0
+            ch.popThreshold = (popInterval(intensity, sampleRate) * densityMultiplier *
+                (0.5f + rng.nextFloat())).toInt().coerceAtLeast(1)
+            ch.popEnv = popAmplitude(intensity) * (0.7f + rng.nextFloat() * 0.3f)
+            ch.popSign = if (rng.nextBoolean()) 1f else -1f
+            ch.popDecay = 0.65f + rng.nextFloat() * 0.20f
         }
+        ch.popEnv *= ch.popDecay
 
-        // --- Rumble: continuous low-pass-filtered white noise ---
+        // --- Rumble: continuous low-pass-filtered white noise, shared filter ---
         val rumbleAmp = rumbleAmplitude(intensity)
         rumbleState = rumbleCoeff * (rng.nextFloat() * 2f - 1f) + (1f - rumbleCoeff) * rumbleState
 
-        val crackleSigned = if (crackleEnv > 0f) crackleSign * crackleEnv else 0f
-        val popSigned = if (popEnv > 0f) popSign * popEnv else 0f
+        // --- Surface hiss: band-limited noise, independent per channel ---
+        val hissAmp = hissAmplitude(intensity)
+        val hissNoise = rng.nextFloat() * 2f - 1f
+        ch.hissFast = hissFastCoeff * hissNoise + (1f - hissFastCoeff) * ch.hissFast
+        ch.hissSlow = hissSlowCoeff * ch.hissFast + (1f - hissSlowCoeff) * ch.hissSlow
+        val hissBand = ch.hissFast - ch.hissSlow
 
-        return crackleSigned + popSigned + rumbleState * rumbleAmp
+        val crackleSigned = if (ch.crackleEnv > 0f) ch.crackleSign * ch.crackleEnv else 0f
+        val popSigned = if (ch.popEnv > 0f) ch.popSign * ch.popEnv else 0f
+
+        return crackleSigned + popSigned + rumbleState * rumbleAmp + hissBand * hissAmp
     }
 
     override fun onFlush() {
-        crackleCounter = 0
-        popCounter = 0
-        crackleEnv = 0f
-        popEnv = 0f
+        for (c in channels) {
+            c.crackleCounter = 0
+            c.popCounter = 0
+            c.crackleEnv = 0f
+            c.popEnv = 0f
+            c.hissFast = 0f
+            c.hissSlow = 0f
+        }
         rumbleState = 0f
+        densityMultiplier = 1f
+        densityTarget = 1f
+        densityCounter = 0
     }
 
     override fun onReset() {
@@ -313,11 +386,10 @@ class VinylNoiseProcessor : BaseAudioProcessor() {
         // the mode off with no event left to switch it back on, for the rest of
         // the session. LocalDsp.onReset() draws the same line for the same
         // reason — only state derived *from* the config resets on a reset, never
-        // the config itself. There is nothing else to do here: the thresholds and
-        // the rumble coefficient are rebuilt unconditionally by the next
-        // onConfigure()/queueInput() pair, and the running envelopes are zeroed
-        // by the flush() that DefaultAudioSink always runs before real use
-        // resumes after a reset (setupAudioProcessors() → audioProcessingPipeline
-        // .flush()), so nothing here would outlive being silent anyway.
+        // the config itself. `channels` is genuinely derived, not config — sized
+        // to whatever channel count the old format needed — so it still shrinks
+        // back here, the same way LoFiProcessor.onReset() clears its per-channel
+        // arrays; the next onConfigure() regrows it if the new format needs more.
+        channels = Array(2) { ChannelNoise() }
     }
 }

@@ -108,6 +108,69 @@ class VinylNoiseProcessorTest {
     }
 
     @Test
+    fun `hiss amplitude scales with intensity and is capped`() {
+        assertEquals(0f, VinylNoiseProcessor.hissAmplitude(0f))
+        assertEquals(0.015f, VinylNoiseProcessor.hissAmplitude(1f))
+        assertTrue(VinylNoiseProcessor.hissAmplitude(0.5f) < VinylNoiseProcessor.hissAmplitude(1f))
+    }
+
+    @Test
+    fun `hiss is quieter than rumble at the same intensity`() {
+        // A texture between the clicks, not a second rumble.
+        for (i in listOf(0.25f, 0.5f, 0.75f, 1f)) {
+            assertTrue(VinylNoiseProcessor.hissAmplitude(i) < VinylNoiseProcessor.rumbleAmplitude(i))
+        }
+    }
+
+    @Test
+    fun `left and right channels decorrelate at full intensity`() {
+        // The whole point of per-channel crackle/pop state: two channels driven
+        // from independent impulse trains should not produce identical output
+        // even though both draw from the same session RNG.
+        val p = VinylNoiseProcessor().apply {
+            configure(AudioProcessor.AudioFormat(44_100, 2, C.ENCODING_PCM_FLOAT))
+            flush()
+            setConfig(VinylNoiseProcessor.Config(enabled = true, intensity = 1f))
+        }
+        val frames = 20_000
+        val input = ByteBuffer.allocateDirect(frames * 2 * 4)
+        repeat(frames) { input.putFloat(0f); input.putFloat(0f) }
+        input.flip()
+        p.queueInput(input)
+        val raw = p.output
+        val out = raw.duplicate().order(raw.order())
+        var identical = 0
+        var total = 0
+        while (out.remaining() >= 8) {
+            val l = out.float
+            val r = out.float
+            if (l == r) identical++
+            total++
+        }
+        assertTrue(total > 0)
+        assertTrue(
+            identical < total,
+            "left and right should not be identical on every frame once decorrelated",
+        )
+    }
+
+    @Test
+    fun `output frame count matches input frame count`() {
+        // A noise-adding processor must stay 1:1 - it is not a resampler.
+        val p = VinylNoiseProcessor().apply {
+            configure(AudioProcessor.AudioFormat(44_100, 2, C.ENCODING_PCM_16BIT))
+            flush()
+            setConfig(VinylNoiseProcessor.Config(enabled = true, intensity = 0.8f))
+        }
+        val frames = 1000
+        val input = ByteBuffer.allocateDirect(frames * 2 * 2)
+        repeat(frames * 2) { input.putShort(0) }
+        input.flip()
+        p.queueInput(input)
+        assertEquals(frames * 2 * 2, p.output.remaining())
+    }
+
+    @Test
     fun `reset preserves the active config instead of switching the mode off`() {
         val cfg = VinylNoiseProcessor.Config(enabled = true, intensity = 0.8f)
         val p = VinylNoiseProcessor().apply {

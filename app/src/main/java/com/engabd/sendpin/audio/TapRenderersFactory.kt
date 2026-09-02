@@ -36,10 +36,22 @@ object OutputRate {
  * 1. [LocalDsp] — the equaliser, so the light show reacts to what is heard.
  * 2. [VinylNoiseProcessor] — surface noise, after EQ so the noise is on the
  *    equalised signal.
- * 3. [LoFiProcessor] — bitcrusher/saturation/low-pass, after vinyl noise so
+ * 3. [WowFlutterProcessor] — pitch wobble, riding Lo-fi's own toggle and
+ *    sitting before the bitcrusher so it crushes the already-wobbly signal,
+ *    the way a real transport feeds a tape head before anything saturates.
+ * 4. [LoFiProcessor] — bitcrusher/saturation/low-pass, after vinyl noise so
  *    it can share the crackle stage.
- * 4. [AudioAnalysisTap] — copies for analysis, sees the treated audio.
- * 5. Sonic — resamples to the fixed output rate if one is set.
+ * 5. [OldRadioProcessor] — the last coloration stage before the tap.
+ * 6. [AudioAnalysisTap] — copies for analysis, sees the treated audio.
+ * 7. Sonic — resamples to the fixed output rate if one is set.
+ *
+ * Lo-fi's persistent vari-speed slow-down is deliberately *not* a processor
+ * here. A speed-changing Sonic dropped into this list would change how many
+ * samples come out without `DefaultAudioSink` knowing, so every position the
+ * player reported would drift from the audio; and this list is fixed when the
+ * player is built, so the slow-down would not arrive until the next one. It
+ * goes through `ExoPlayer.setPlaybackParameters` instead — see
+ * `LocalPlayer.applyPlaybackParameters`.
  *
  * The decoder's own output used to be read here too, first in the list above
  * (`SignalPathProbe`, now deleted). It never actually could: a processor only
@@ -52,8 +64,9 @@ object OutputRate {
  * runs at all — which is the only place left that format is visible. See
  * [SignalPath.onDecoderOutput].
  *
- * [tap], [dsp], [vinylNoise] and [loFi] are all nullable so [LocalPlayer] can
- * build this chain empty for [ExclusiveOutput]: nothing of this app's between
+ * [tap], [dsp], [vinylNoise], [wowFlutter], [loFi] and [oldRadio] are all
+ * nullable so [LocalPlayer] can build this chain empty for [ExclusiveOutput]:
+ * nothing of this app's between
  * the decoder and the DAC, which for a 16-bit file media3 would not otherwise
  * guarantee on its own (float only bypasses processors when the *decode*
  * happens to be high-resolution — see `SignalPath.State.floatEngaged`).
@@ -67,8 +80,12 @@ class TapRenderersFactory(
     private val dsp: LocalDsp? = null,
     /** Vinyl surface noise, after the EQ. See [VinylNoiseProcessor]. */
     private val vinylNoise: VinylNoiseProcessor? = null,
+    /** Lo-fi's pitch wobble, ahead of the bitcrusher. See [WowFlutterProcessor]. */
+    private val wowFlutter: WowFlutterProcessor? = null,
     /** Lo-fi mode, after vinyl noise. See [LoFiProcessor]. */
     private val loFi: LoFiProcessor? = null,
+    /** Old Radio mode, the last coloration stage before the tap. See [OldRadioProcessor]. */
+    private val oldRadio: OldRadioProcessor? = null,
     /**
      * [ExclusiveOutput] is on: leave the fixed-output-rate Sonic resampler out
      * of the chain too, explicitly, rather than trusting [OutputRate.hz] to
@@ -86,7 +103,9 @@ class TapRenderersFactory(
                 listOfNotNull(
                     dsp,
                     vinylNoise,
+                    wowFlutter,
                     loFi,
+                    oldRadio,
                     tap,
                     (if (exclusive) null else OutputRate.hz.takeIf { it > 0 })?.let { rate ->
                         androidx.media3.common.audio.SonicAudioProcessor()

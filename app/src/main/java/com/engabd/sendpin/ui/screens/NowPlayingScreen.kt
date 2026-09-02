@@ -57,6 +57,7 @@ import coil.compose.AsyncImage
 import kotlinx.coroutines.launch
 import com.engabd.sendpin.audio.DeviceCapabilities
 import com.engabd.sendpin.audio.FormatNegotiator
+import com.engabd.sendpin.audio.RemoteAudioFormat
 import com.engabd.sendpin.audio.ReplayGain
 import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.data.AppSettings
@@ -660,6 +661,15 @@ fun BoxScope.QualityDetailOverlay(
     provider: String? = null,
     /** This phone is decoding, so its ReplayGain setting is the one in effect. */
     localSession: Boolean = false,
+    /**
+     * MPD (or another remote player) is decoding, not this phone — even
+     * though [localSession] is also true for that case (see
+     * [NowPlayingViewModel.State.serverPlayer]'s doc). Gates the notes that
+     * are specifically about this phone's own decode chain (bit-perfect,
+     * mixer resample), which describe nothing when nothing is being decoded
+     * here.
+     */
+    serverPlayer: Boolean = false,
     /** What MA's per-player DSP did to this stream; null on the local path. */
     dsp: MaDspDetails? = null,
     loudness: MaLoudness = MaLoudness(),
@@ -705,6 +715,7 @@ fun BoxScope.QualityDetailOverlay(
                 source = source,
                 provider = provider,
                 localSession = localSession,
+                serverPlayer = serverPlayer,
                 dsp = dsp,
                 loudness = loudness,
                 artworkUrl = artworkUrl,
@@ -729,6 +740,7 @@ private fun QualityDetailCard(
     source: StreamQuality?,
     provider: String? = null,
     localSession: Boolean = false,
+    serverPlayer: Boolean = false,
     dsp: MaDspDetails? = null,
     loudness: MaLoudness = MaLoudness(),
     artworkUrl: String? = null,
@@ -818,10 +830,11 @@ private fun QualityDetailCard(
             // and — on a Music Assistant player — whether MA's DSP chain ran.
             val deviceRate = remember(bitPerfect) { FormatNegotiator.deviceOutputQuality(bitPerfect) }
             val dspState = dsp?.state
-            val showOutput = localSession || dspState != null
+            val decodingHere = localSession && !serverPlayer
+            val showOutput = decodingHere || dspState != null
             if (showOutput) {
                 QualityBlock("Output") {
-                    if (localSession) {
+                    if (decodingHere) {
                         QualityNote(if (bitPerfect) "Bit-perfect on - 24-bit requested where the source has it" else "Bit-perfect off - 16-bit output")
                         MixerNote(playingRateHz = playing?.sampleRateHz ?: 0, mixerRateHz = deviceRate.sampleRateHz)
                     }
@@ -917,6 +930,17 @@ fun BoxScope.DeviceDetailOverlay(
     onDismiss: () -> Unit,
     /** The rate actually being decoded, so the card can say if the mixer resamples it. */
     playingRateHz: Int = 0,
+    /**
+     * MPD, not this phone, is decoding — see
+     * [NowPlayingViewModel.State.serverPlayer]'s doc. Switches the whole card
+     * to the server's own output rather than this phone's `AudioManager`,
+     * which has nothing to do with where the sound is actually going.
+     */
+    serverPlayer: Boolean = false,
+    /** MPD's configured output name, when it said. */
+    serverOutputDeviceName: String? = null,
+    /** MPD's live decode format, when it said. */
+    serverOutputFormat: RemoteAudioFormat? = null,
 ) {
     if (visible) BackHandler { onDismiss() }
 
@@ -947,7 +971,14 @@ fun BoxScope.DeviceDetailOverlay(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
             ) { }
-        ) { DeviceDetailCard(playingRateHz = playingRateHz) }
+        ) {
+            DeviceDetailCard(
+                playingRateHz = playingRateHz,
+                serverPlayer = serverPlayer,
+                serverOutputDeviceName = serverOutputDeviceName,
+                serverOutputFormat = serverOutputFormat,
+            )
+        }
     }
 }
 
@@ -961,20 +992,14 @@ fun BoxScope.DeviceDetailOverlay(
  * picker makes.
  */
 @Composable
-private fun DeviceDetailCard(playingRateHz: Int) {
+private fun DeviceDetailCard(
+    playingRateHz: Int,
+    serverPlayer: Boolean = false,
+    serverOutputDeviceName: String? = null,
+    serverOutputFormat: RemoteAudioFormat? = null,
+) {
     val accent = LocalAccent.current
     val palette = LocalPalette.current
-    val context = LocalContext.current
-    val settings = remember(context) { AppSettings(context) }
-    val bitPerfect by settings.bitPerfect24Bit.collectAsState(initial = false)
-    val preferredId by settings.preferredAudioDeviceId.collectAsState(initial = "")
-
-    val am = remember(context) { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
-    // Keyed on the pinned id so choosing a different output in Settings is reflected
-    // the next time the card is opened rather than the next time the app is started.
-    val route = remember(preferredId) { DeviceCapabilities.activeRoute(am, preferredId) }
-    val mixerRate = remember { DeviceCapabilities.mixerRateHz() }
-    val frames = remember { DeviceCapabilities.framesPerBuffer(am) }
 
     val shape = RoundedCornerShape(20.dp)
     Box(Modifier.padding(24.dp)) {
@@ -988,71 +1013,159 @@ private fun DeviceDetailCard(playingRateHz: Int) {
                 .padding(18.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                Icon(
-                    if (route?.isUsb == true) Icons.Default.Usb
-                    else if (route?.isBluetooth == true) Icons.Default.Bluetooth
-                    else Icons.Default.Smartphone,
-                    null, tint = accent, modifier = Modifier.size(20.dp),
-                )
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
-                    Text(
-                        "This phone", color = TextPrimary, fontFamily = AppFont,
-                        fontWeight = FontWeight.Bold, fontSize = 13.sp,
-                    )
-                    Text(
-                        android.os.Build.MODEL, color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-
-            if (route == null) {
-                // The platform declined to list its outputs. Saying so is better than
-                // an empty card that reads as a failure to load.
-                QualityBlock("Output") {
-                    QualityNote("Android didn't report an output device.", warn = true)
-                }
+            if (serverPlayer) {
+                ServerDeviceDetail(accent, serverOutputDeviceName, serverOutputFormat)
             } else {
-                // ── Playing through ───────────────────────────────────────
-                QualityBlock("Playing through") {
-                    QualityRow("Output", route.label, accent, lit = true)
-                    QualityNote(
-                        if (route.pinned) "Pinned to this output in Settings"
-                        else "Chosen by Android - normally the last thing you plugged in",
-                    )
-                }
-
-                // ── What it accepts ───────────────────────────────────────
-                // The whole reason this card exists: the phone's own speaker and a
-                // USB DAC are different instruments, and until now nothing said so.
-                val accepts = listOfNotNull(
-                    route.sampleRateLabel,
-                    route.bitDepthLabel,
-                    route.channelLabel,
-                )
-                if (accepts.isNotEmpty()) {
-                    QualityBlock("What it accepts") {
-                        route.sampleRateLabel?.let { QualityRow("Rates", it, accent) }
-                        route.bitDepthLabel?.let { QualityRow("Depth", it, accent) }
-                        route.channelLabel?.let { QualityRow("Channels", it, accent) }
-                    }
-                }
-
-                // ── Right now ─────────────────────────────────────────────
-                QualityBlock("Right now") {
-                    MixerNote(playingRateHz = playingRateHz, mixerRateHz = mixerRate)
-                    QualityNote(
-                        if (bitPerfect) "Bit-perfect on - 24-bit requested where the source has it"
-                        else "Bit-perfect off - 16-bit output",
-                    )
-                    frames?.let { QualityNote("Mixer buffer $it frames") }
-                    route.bluetoothCodecNote?.let { QualityNote(it) }
-                }
+                LocalDeviceDetail(accent, playingRateHz)
             }
+        }
+    }
+}
+
+/**
+ * The card's content when MPD, not this phone, is decoding: MPD's own
+ * configured output name and live format — read from the server, never from
+ * this phone's `AudioManager`, which has nothing to do with where the sound
+ * is actually going. See [DeviceDetailCard.serverPlayer].
+ */
+@Composable
+private fun ServerDeviceDetail(
+    accent: Color,
+    outputDeviceName: String?,
+    format: RemoteAudioFormat?,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Icon(Icons.Default.Dns, null, tint = accent, modifier = Modifier.size(20.dp))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+            Text(
+                outputDeviceName ?: "MPD", color = TextPrimary, fontFamily = AppFont,
+                fontWeight = FontWeight.Bold, fontSize = 13.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                "MPD server", color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+
+    QualityBlock("Playing through") {
+        QualityRow("Output", outputDeviceName ?: "MPD's configured output", accent, lit = true)
+        QualityNote("Reported by the MPD server, not this phone")
+    }
+
+    if (format != null && (format.sampleRateHz > 0 || format.bitDepth > 0 || format.channels > 0)) {
+        QualityBlock("Right now") {
+            if (format.sampleRateHz > 0 && format.bitDepth > 0) {
+                QualityRow("Format", "${StreamQuality.khz(format.sampleRateHz)}/${format.bitDepth}", accent)
+            } else if (format.sampleRateHz > 0) {
+                QualityRow("Rate", "${StreamQuality.khz(format.sampleRateHz)}kHz", accent)
+            }
+            format.channels.takeIf { it > 0 }?.let {
+                QualityRow("Channels", remoteChannelLabel(it), accent)
+            }
+            format.bitrateKbps.takeIf { it > 0 }?.let { QualityRow("Bitrate", "$it kb/s", accent) }
+        }
+    } else {
+        QualityBlock("Right now") {
+            QualityNote("MPD didn't report a live format.", warn = true)
+        }
+    }
+}
+
+/** Same channel-count wording as [StreamQuality.channelLabel], for a raw count with no format to attach it to. */
+private fun remoteChannelLabel(channels: Int): String = when (channels) {
+    1 -> "Mono"
+    2 -> "Stereo"
+    6 -> "5.1"
+    8 -> "7.1"
+    else -> "$channels channels"
+}
+
+/**
+ * The card's content when this phone itself is decoding — the original
+ * card, unchanged in behaviour.
+ */
+@Composable
+private fun LocalDeviceDetail(accent: Color, playingRateHz: Int) {
+    val context = LocalContext.current
+    val settings = remember(context) { AppSettings(context) }
+    val bitPerfect by settings.bitPerfect24Bit.collectAsState(initial = false)
+    val preferredId by settings.preferredAudioDeviceId.collectAsState(initial = "")
+
+    val am = remember(context) { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
+    // Keyed on the pinned id so choosing a different output in Settings is reflected
+    // the next time the card is opened rather than the next time the app is started.
+    val route = remember(preferredId) { DeviceCapabilities.activeRoute(am, preferredId) }
+    val mixerRate = remember { DeviceCapabilities.mixerRateHz() }
+    val frames = remember { DeviceCapabilities.framesPerBuffer(am) }
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Icon(
+            if (route?.isUsb == true) Icons.Default.Usb
+            else if (route?.isBluetooth == true) Icons.Default.Bluetooth
+            else Icons.Default.Smartphone,
+            null, tint = accent, modifier = Modifier.size(20.dp),
+        )
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+            Text(
+                "This phone", color = TextPrimary, fontFamily = AppFont,
+                fontWeight = FontWeight.Bold, fontSize = 13.sp,
+            )
+            Text(
+                android.os.Build.MODEL, color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+
+    if (route == null) {
+        // The platform declined to list its outputs. Saying so is better than
+        // an empty card that reads as a failure to load.
+        QualityBlock("Output") {
+            QualityNote("Android didn't report an output device.", warn = true)
+        }
+    } else {
+        // ── Playing through ───────────────────────────────────────
+        QualityBlock("Playing through") {
+            QualityRow("Output", route.label, accent, lit = true)
+            QualityNote(
+                if (route.pinned) "Pinned to this output in Settings"
+                else "Chosen by Android - normally the last thing you plugged in",
+            )
+        }
+
+        // ── What it accepts ───────────────────────────────────────
+        // The whole reason this card exists: the phone's own speaker and a
+        // USB DAC are different instruments, and until now nothing said so.
+        val accepts = listOfNotNull(
+            route.sampleRateLabel,
+            route.bitDepthLabel,
+            route.channelLabel,
+        )
+        if (accepts.isNotEmpty()) {
+            QualityBlock("What it accepts") {
+                route.sampleRateLabel?.let { QualityRow("Rates", it, accent) }
+                route.bitDepthLabel?.let { QualityRow("Depth", it, accent) }
+                route.channelLabel?.let { QualityRow("Channels", it, accent) }
+            }
+        }
+
+        // ── Right now ─────────────────────────────────────────────
+        QualityBlock("Right now") {
+            MixerNote(playingRateHz = playingRateHz, mixerRateHz = mixerRate)
+            QualityNote(
+                if (bitPerfect) "Bit-perfect on - 24-bit requested where the source has it"
+                else "Bit-perfect off - 16-bit output",
+            )
+            frames?.let { QualityNote("Mixer buffer $it frames") }
+            route.bluetoothCodecNote?.let { QualityNote(it) }
         }
     }
 }

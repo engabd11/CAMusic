@@ -9,6 +9,8 @@ import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.audio.FormatNegotiator
 import com.engabd.sendpin.audio.LoFiProcessor
 import com.engabd.sendpin.audio.LocalTrack
+import com.engabd.sendpin.audio.OldRadioProcessor
+import com.engabd.sendpin.audio.RemoteAudioFormat
 import com.engabd.sendpin.audio.ReplayGain
 import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.audio.VinylNoiseProcessor
@@ -137,6 +139,8 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         val vinylNoiseConfig: VinylNoiseProcessor.Config = VinylNoiseProcessor.Config(),
         /** Lo-fi mode. Same local-session-only scope as [vinylNoiseConfig]. */
         val loFiConfig: LoFiProcessor.Config = LoFiProcessor.Config(),
+        /** Old Radio mode. Same local-session-only scope as [vinylNoiseConfig]. */
+        val oldRadioConfig: OldRadioProcessor.Config = OldRadioProcessor.Config(),
         /**
          * Whether Exclusive output is on — see
          * [com.engabd.sendpin.audio.ExclusiveOutput]. `LocalPlayer.buildPlayer` builds
@@ -156,6 +160,19 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
          * there is no processor chain here to run a sound mode or a rate through.
          */
         val serverPlayer: Boolean = false,
+        /**
+         * [serverPlayer]'s live output format — sample rate, bit depth,
+         * channels, bitrate — read from MPD's `status`, or null when it
+         * didn't say. This is what is actually reaching the server's DAC
+         * right now, distinct from [sourceQuality]'s file tags.
+         */
+        val serverOutputFormat: RemoteAudioFormat? = null,
+        /**
+         * [serverPlayer]'s own output/device name — MPD's configured ALSA
+         * output, say — or null when it has none to report. Never this
+         * phone's own audio route.
+         */
+        val serverOutputDeviceName: String? = null,
         /**
          * The ReplayGain mode in force: `off`, `track` or `album`.
          *
@@ -251,6 +268,16 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         val shuffle: Boolean = false,
         val repeat: String = "off",
         val speed: Float = 1f,
+        /**
+         * MPD's (or any [com.engabd.sendpin.audio.RemotePlayback]'s) live output
+         * format — see [com.engabd.sendpin.audio.LocalPlayer.remoteOutputFormat].
+         */
+        val outputFormat: RemoteAudioFormat? = null,
+        /**
+         * MPD's (or any [com.engabd.sendpin.audio.RemotePlayback]'s) own output
+         * name — see [com.engabd.sendpin.audio.LocalPlayer.remoteOutputDeviceName].
+         */
+        val outputDeviceName: String? = null,
     )
 
     /**
@@ -263,8 +290,20 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         val radioMode: Boolean = false,
         val vinylNoiseConfig: VinylNoiseProcessor.Config = VinylNoiseProcessor.Config(),
         val loFiConfig: LoFiProcessor.Config = LoFiProcessor.Config(),
+        val oldRadioConfig: OldRadioProcessor.Config = OldRadioProcessor.Config(),
         val exclusiveOutputOn: Boolean = false,
         val server: ServerPlayback = ServerPlayback(),
+    )
+
+    /**
+     * [_loFiConfig] and [_oldRadioConfig] bundled into one flow so adding Old
+     * Radio didn't need a sixth slot in [toggleSnap]'s combine — see
+     * [ServerPlayback] just below for the same trick played on the other two
+     * flows the ceiling didn't have room for.
+     */
+    private data class LoFiSnap(
+        val loFi: LoFiProcessor.Config = LoFiProcessor.Config(),
+        val oldRadio: OldRadioProcessor.Config = OldRadioProcessor.Config(),
     )
 
     /**
@@ -298,9 +337,12 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
 
     private val localSnap: StateFlow<LocalSnap> = combine(
         local.active, local.current, local.playing, local.durationMs,
-        combine(local.queue, local.index, local.shuffle, local.repeatMode, local.speed) { q, i, s, r, sp ->
-            LocalSnap(queueSize = q.size, index = i, shuffle = s, repeat = r, speed = sp)
-        },
+        combine(
+            combine(local.queue, local.index, local.shuffle, local.repeatMode, local.speed) { q, i, s, r, sp ->
+                LocalSnap(queueSize = q.size, index = i, shuffle = s, repeat = r, speed = sp)
+            },
+            combine(local.remoteOutputFormat, local.remoteOutputDeviceName) { fmt, name -> fmt to name },
+        ) { snap, remote -> snap.copy(outputFormat = remote.first, outputDeviceName = remote.second) },
     ) { active, track, playing, dur, queue ->
         queue.copy(active = active, track = track, playing = playing, durationMs = dur)
     }.stateIn(viewModelScope, SharingStarted.Eagerly, LocalSnap())
@@ -379,11 +421,13 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     val vinylNoiseConfig: StateFlow<VinylNoiseProcessor.Config> = _vinylNoiseConfig
     private val _loFiConfig = MutableStateFlow(LoFiProcessor.Config())
     val loFiConfig: StateFlow<LoFiProcessor.Config> = _loFiConfig
+    private val _oldRadioConfig = MutableStateFlow(OldRadioProcessor.Config())
+    val oldRadioConfig: StateFlow<OldRadioProcessor.Config> = _oldRadioConfig
     private val _exclusiveOutputOn = MutableStateFlow(false)
     val exclusiveOutputOn: StateFlow<Boolean> = _exclusiveOutputOn
 
     /**
-     * All four backing flows above, bundled into [ToggleSnap] — see that class's
+     * All five backing flows above, bundled into [ToggleSnap] — see that class's
      * doc for why, and see the placeholder comment left where [LocalSnap] and
      * [LocalInfo] are declared for why this specific property has to live down
      * here rather than up there with them.
@@ -393,10 +437,16 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             ServerPlayback(active, gain)
         }.stateIn(viewModelScope, SharingStarted.Eagerly, ServerPlayback())
 
+    /** See [LoFiSnap]'s doc — this is the slot-saving trick that makes room for Old Radio. */
+    private val loFiSnap: StateFlow<LoFiSnap> =
+        combine(_loFiConfig, _oldRadioConfig) { loFi, oldRadio -> LoFiSnap(loFi, oldRadio) }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, LoFiSnap())
+
     private val toggleSnap: StateFlow<ToggleSnap> = combine(
-        _radioMode, _vinylNoiseConfig, _loFiConfig, _exclusiveOutputOn, serverPlayback,
-    ) { radio, vinyl, loFi, exclusive, server -> ToggleSnap(radio, vinyl, loFi, exclusive, server) }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, ToggleSnap())
+        _radioMode, _vinylNoiseConfig, loFiSnap, _exclusiveOutputOn, serverPlayback,
+    ) { radio, vinyl, loFi, exclusive, server ->
+        ToggleSnap(radio, vinyl, loFi.loFi, loFi.oldRadio, exclusive, server)
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, ToggleSnap())
 
     // ── Server-anchored position engine ──────────────────────────────────────
     // The bar is not snapped to whatever the last poll said; it is projected
@@ -638,7 +688,11 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         if (!l.active && backend != "subsonic") return@combine ma
         val t = l.track
         State(
-            playerName = "This phone",
+            // MPD is the one library that plays itself, with this phone as its
+            // remote (toggles.server.active) — the sound is coming out of its
+            // own configured output, not this phone's, so the name has to say
+            // so rather than defaulting to what every other backend here means.
+            playerName = if (toggles.server.active) (l.outputDeviceName ?: "MPD") else "This phone",
             isSelf = true,
             title = t?.title.orEmpty(),
             artist = t?.artist.orEmpty(),
@@ -698,8 +752,11 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             // above rather than threaded through there too.
             vinylNoiseConfig = toggles.vinylNoiseConfig,
             loFiConfig = toggles.loFiConfig,
+            oldRadioConfig = toggles.oldRadioConfig,
             exclusiveOutputOn = toggles.exclusiveOutputOn,
             serverPlayer = toggles.server.active,
+            serverOutputFormat = l.outputFormat,
+            serverOutputDeviceName = l.outputDeviceName,
             replayGain = toggles.server.replayGain,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, State())
@@ -1288,10 +1345,10 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    // --- sound modes (vinyl noise, lo-fi) -----------------------------------
+    // --- sound modes (vinyl noise, lo-fi, old radio) ------------------------
 
     /**
-     * Both live in [com.engabd.sendpin.audio.LocalPlayer]'s own processor
+     * All three live in [com.engabd.sendpin.audio.LocalPlayer]'s own processor
      * chain, not in anything Music Assistant streams, so — unlike
      * [toggleRadioMode] — there is only one machine behind each of these, and
      * the Now Playing sheet only offers them at all while [State.isLocalSession]
@@ -1319,6 +1376,16 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     fun setLoFiIntensity(intensity: Float) {
         viewModelScope.launch {
             settings.setLoFiConfig(_loFiConfig.value.copy(intensity = intensity.coerceIn(0f, 1f)))
+        }
+    }
+
+    fun setOldRadioEnabled(on: Boolean) {
+        viewModelScope.launch { settings.setOldRadioConfig(_oldRadioConfig.value.copy(enabled = on)) }
+    }
+
+    fun setOldRadioIntensity(intensity: Float) {
+        viewModelScope.launch {
+            settings.setOldRadioConfig(_oldRadioConfig.value.copy(intensity = intensity.coerceIn(0f, 1f)))
         }
     }
 
@@ -1987,6 +2054,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { settings.radioMode.collect { _radioMode.value = it } }
         viewModelScope.launch { settings.vinylNoiseConfig.collect { _vinylNoiseConfig.value = it } }
         viewModelScope.launch { settings.loFiConfig.collect { _loFiConfig.value = it } }
+        viewModelScope.launch { settings.oldRadioConfig.collect { _oldRadioConfig.value = it } }
         viewModelScope.launch { settings.exclusiveOutput.collect { _exclusiveOutputOn.value = it } }
         viewModelScope.launch {
             settings.navStreamFormat.collect { navFormat = it.takeIf { f -> f != "raw" } }

@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.engabd.sendpin.audio.LocalDsp
 import com.engabd.sendpin.audio.LoFiProcessor
+import com.engabd.sendpin.audio.OldRadioProcessor
 import com.engabd.sendpin.audio.VinylNoiseProcessor
 import com.engabd.sendpin.hue.GenrePresetRule
 import com.engabd.sendpin.hue.ShowPreset
@@ -220,9 +221,10 @@ class AppSettings(private val context: Context) {
          */
         private val LOCAL_DSP = stringPreferencesKey("local_dsp")
 
-        /** Sound modes: vinyl surface noise and lo-fi. */
+        /** Sound modes: vinyl surface noise, lo-fi and old radio. */
         private val VINYL_NOISE = stringPreferencesKey("vinyl_noise")
         private val LO_FI = stringPreferencesKey("lo_fi_mode")
+        private val OLD_RADIO = stringPreferencesKey("old_radio_mode")
 
         /**
          * Resample this phone's own output to a fixed rate. 0 - the default - is
@@ -1662,6 +1664,15 @@ class AppSettings(private val context: Context) {
 
     suspend fun setLoFiConfig(config: LoFiProcessor.Config) {
         context.dataStore.edit { it[LO_FI] = LoFiProcessor.encode(config) }
+    }
+
+    /** Old Radio mode config. Off by default. */
+    val oldRadioConfig: Flow<OldRadioProcessor.Config> = pref { prefs ->
+        prefs[OLD_RADIO]?.let { OldRadioProcessor.decode(it) } ?: OldRadioProcessor.Config()
+    }
+
+    suspend fun setOldRadioConfig(config: OldRadioProcessor.Config) {
+        context.dataStore.edit { it[OLD_RADIO] = OldRadioProcessor.encode(config) }
     }
 
     val genrePresetRules: Flow<List<GenrePresetRule>> = pref { prefs ->

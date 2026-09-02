@@ -83,6 +83,14 @@ class PlaybackOwner(
         val localActive: Boolean,
         /** [LocalPlayer] is producing sound. */
         val localPlaying: Boolean,
+        /**
+         * [LocalPlayer] is fronting a remote player — MPD — rather than decoding
+         * itself. See [LocalPlayer.remoteActive]. `localPlaying` stays true either
+         * way: MPD is still what the app is playing. This is the second question,
+         * the one [soundIsReadable] needs — "is there real PCM behind that" — same
+         * shape as [sendspinTap] answering it for the Sendspin side.
+         */
+        val localRemoteActive: Boolean,
         /** Music Assistant has a track loaded on this phone. Paused counts. */
         val sendspinActive: Boolean,
         /** Music Assistant is streaming to this phone right now. */
@@ -107,10 +115,15 @@ class PlaybackOwner(
         /**
          * Sound is coming from a source Light Sync can actually read.
          *
-         * The Sendspin half needs [sendspinTap]; the local half always has one.
+         * The Sendspin half needs [sendspinTap]; the local half needs the queue to
+         * really be decoding here rather than fronting MPD — see [localRemoteActive].
+         * Either way, a `false` here is not "nothing is playing": it is "the *real*
+         * show can't run", which is exactly the question the scan-driven feeds
+         * ([com.engabd.sendpin.hue.ScanFrameSource],
+         * [com.engabd.sendpin.hue.MpdScanFrameSource]) exist to answer instead.
          */
         val soundIsReadable: Boolean get() = when (soundOwner) {
-            Who.LOCAL -> true
+            Who.LOCAL -> !localRemoteActive
             Who.SENDSPIN -> sendspinTap != null
             Who.NONE -> false
         }
@@ -119,17 +132,28 @@ class PlaybackOwner(
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
     /**
+     * [LocalPlayer]'s three flags, bundled into one value for the same reason
+     * [State] itself exists: `combine` only has typed overloads up to five flows,
+     * and [state] below already needs four slots for the Sendspin side.
+     */
+    private data class LocalFlags(val active: Boolean, val playing: Boolean, val remoteActive: Boolean)
+
+    private val localFlags: StateFlow<LocalFlags> = combine(
+        local.active, local.playing, local.remoteActive,
+    ) { active, playing, remote -> LocalFlags(active, playing, remote) }
+        .stateIn(scope, SharingStarted.Eagerly, LocalFlags(active = false, playing = false, remoteActive = false))
+
+    /**
      * `Eagerly`, not `Lazily`: callers read `.value` synchronously (the audio-focus
      * arbitration below runs on a system callback and cannot suspend), so this has
      * to have emitted before anything can ask.
      */
     val state: StateFlow<State> = combine(
-        local.active,
-        local.playing,
+        localFlags,
         sendspin.trackTitle,
         sendspin.isPlaying,
         sendspin.maAudioSource,
-    ) { localActive, localPlaying, maTitle, maPlaying, maTap ->
+    ) { flags, maTitle, maPlaying, maTap ->
         // A *track loaded*, not `isPlaying` — the MA equivalent of
         // `LocalPlayer.active`. `Playback` clears the title on disconnect and on
         // `stream/end` with nothing following, so this goes false exactly when the
@@ -142,7 +166,7 @@ class PlaybackOwner(
                 // more than a round trip, but if it does, this is the order the app
                 // has always used and there is no reason to flip it here.
                 maPlaying -> Who.SENDSPIN
-                localPlaying -> Who.LOCAL
+                flags.playing -> Who.LOCAL
                 else -> Who.NONE
             },
             sessionOwner = when {
@@ -152,12 +176,13 @@ class PlaybackOwner(
                 // win here or both services would post and the phone would carry two
                 // media notifications — which is what `MaNowPlaying.now` returning
                 // null under a local session has always been for.
-                localActive -> Who.LOCAL
+                flags.active -> Who.LOCAL
                 sendspinActive -> Who.SENDSPIN
                 else -> Who.NONE
             },
-            localActive = localActive,
-            localPlaying = localPlaying,
+            localActive = flags.active,
+            localPlaying = flags.playing,
+            localRemoteActive = flags.remoteActive,
             sendspinActive = sendspinActive,
             sendspinPlaying = maPlaying,
             sendspinTap = maTap,
@@ -170,6 +195,7 @@ class PlaybackOwner(
             sessionOwner = Who.NONE,
             localActive = false,
             localPlaying = false,
+            localRemoteActive = false,
             sendspinActive = false,
             sendspinPlaying = false,
             sendspinTap = null,
