@@ -28,6 +28,15 @@ class AmbienceAudioHolder {
     /** The show clock, when this backend can be one. Null for a clip or for silence. */
     val sink: AudioTrackSink? get() = (current as? Backend.Synth)?.sink
 
+    /**
+     * The analysed recording, when a clip is what is playing.
+     *
+     * The clip backend's counterpart to [sink]: where a synth hands the show a playhead
+     * to run on, a recording hands it a position *and* a stream of what it is doing, and
+     * the show reacts to that instead of inventing events of its own.
+     */
+    val analysis: AmbienceAudioAnalysis? get() = (current as? Backend.Clip)?.player?.analysis
+
     /** Replace the backend, releasing whatever it displaces. */
     fun install(next: Backend?) {
         current?.release()

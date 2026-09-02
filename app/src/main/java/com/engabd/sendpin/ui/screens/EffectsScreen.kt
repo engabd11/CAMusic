@@ -111,10 +111,10 @@ fun EffectsScreen(onBack: () -> Unit, viewModel: EffectsViewModel) {
                 }
 
                 Text(
-                    "Each effect drives the lights from a script. Storms and fireworks " +
-                        "generate their sound from that same script, so the thunder lands " +
-                        "with its flash and the whistle ends when the shell breaks. The " +
-                        "calmer effects play a recorded bed underneath.",
+                    "Each effect plays a real recording and lights the room from it. The " +
+                        "app listens to the sound it is playing, so the flash lands on the " +
+                        "thunderclap, from the side it came from, and a far-off rumble " +
+                        "washes the room instead of cracking it.",
                     color = TextMuted, fontSize = 12.sp, lineHeight = 17.sp,
                 )
                 Spacer(Modifier.height(16.dp))
@@ -190,12 +190,15 @@ fun EffectsScreen(onBack: () -> Unit, viewModel: EffectsViewModel) {
                                         if (clip != null) Pill("Clear", false) { viewModel.setClip(e, null) }
                                     }
                                     Spacer(Modifier.height(6.dp))
-                                    // Said plainly: the show clock is the synth's own
-                                    // playhead, and a file the app did not generate has
-                                    // no events to line the lights up against.
+                                    // This used to have to say the opposite — that the
+                                    // lights followed the script and not the file — because
+                                    // a clip ran on its own clock with nothing analysing
+                                    // it. Now the same tap the music show uses is on this
+                                    // player too, so any file the listener picks drives
+                                    // the room.
                                     Text(
-                                        "A clip plays underneath as a bed. The lights follow " +
-                                            "the effect's own script, not the file.",
+                                        "Your clip plays as the bed, and the lights follow it — " +
+                                            "the effect reacts to whatever it can hear.",
                                         color = TextFaint, fontSize = 11.sp, lineHeight = 15.sp,
                                     )
                                 }

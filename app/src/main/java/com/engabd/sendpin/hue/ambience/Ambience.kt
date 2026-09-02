@@ -23,62 +23,47 @@ import kotlin.math.ln
  * skip to another effect — the relationship holds, because neither medium stores a copy
  * of anything.
  *
- * This is deliberately not the same thing as the main reactive engine's music-driven
- * render: that engine has one clock — the analysis frame — and nothing to say when
- * there is no music. Ambience has its own clock, no music, and sound of its own.
+ * ## Where the cause comes from
+ *
+ * Both, depending on what is making the sound, and the difference is smaller than it
+ * looks. When the show plays its bundled recording — which is the normal case, because a
+ * real storm recorded by a real microphone beats anything synthesised here — the
+ * recording is the cause: [AmbienceBedAnalyser] hears a thunderclap and the script turns
+ * it into a STRIKE, stamped at the media position of the audio that produced it. When
+ * there is no recording to play, the script invents its own events on its own clock, as
+ * it always did.
+ *
+ * Either way the light tick renders events against the clock the sound is on, and either
+ * way an event remains a cause rather than a light or a sound. The reactive path is not
+ * a second architecture bolted alongside the scripted one; it is the same architecture
+ * with a microphone at the front instead of a random number generator.
+ *
+ * This is still not the same thing as the main reactive engine's music-driven render.
+ * That engine paints straight from an analysis frame; here a frame becomes an *event*,
+ * which then has a life of its own — a strike keeps flashing across the room for most of
+ * a second after the frame that caused it has gone, and it lights the near lamps before
+ * the far ones. A rain shower has no beats to paint.
  */
 enum class AmbienceEffect(
     val wire: String,
     val title: String,
     val blurb: String,
-    /**
-     * Whether "Default" should generate this effect's sound rather than play a
-     * recorded bed for it.
-     *
-     * Only the synthesised path is an [AudioSink][com.engabd.sendpin.hue.ambience.AudioSink],
-     * and only an AudioSink can be the show clock — a recording runs on its own
-     * clock and free-wheels against the light script.
-     *
-     * That is fine for an effect made of *texture*: a fire, the sea, a room tone.
-     * Nothing in those has to land on a frame, so a real recording is strictly
-     * better than anything synthesis can do and the free-wheeling costs nothing.
-     *
-     * It is ruinous for an effect made of *events*. A storm and a firework display
-     * are nothing but transients, and their whole grammar is a cause you see
-     * followed by a consequence you hear: the flash then the crack, the whistle
-     * then the burst. Play a recording under that and the room is flashing to one
-     * storm while the speaker plays a different one — two shows at once, which is
-     * exactly what a listener reports as "they don't feel like one effect".
-     * A recorded thunderclap cannot be made to land on a scripted flash, because
-     * nothing in the file knows the flash happened.
-     *
-     * So the rule is the shape of the effect, not the tile: every event-driven
-     * effect generates, and every texture-driven one plays its bed. The two
-     * Thunderstorm and Fireworks tiles differ by seed, palette and distance —
-     * which is what their own blurbs promise — rather than by one being the
-     * out-of-sync recording of the other.
-     */
-    val defaultSoundIsGenerated: Boolean = false,
 ) {
     FIREWORKS(
         "fireworks", "Fireworks",
         "Shells climb, burst overhead and crackle away into the dark.",
-        defaultSoundIsGenerated = true,
     ),
     FIREWORKS_2(
         "fireworks_2", "Fireworks II",
         "The same sky, burning white and gold instead of colour.",
-        defaultSoundIsGenerated = true,
     ),
     THUNDERSTORM(
         "thunderstorm", "Thunderstorm",
         "Rain on the roof, and lightning that arrives before its thunder.",
-        defaultSoundIsGenerated = true,
     ),
     THUNDERSTORM_2(
         "thunderstorm_2", "Thunderstorm II",
         "A warmer, further-off storm — more sky than roof.",
-        defaultSoundIsGenerated = true,
     ),
     UNDERWATER(
         "underwater", "Underwater",
@@ -254,8 +239,46 @@ interface AmbienceScript {
      */
     val lookaheadS: Float get() = 0f
 
+    /**
+     * Whether a recording, when one is playing, replaces this script's own scheduler.
+     *
+     * True for the effects that *are* their events — a storm is thunder, a display is
+     * bangs — where running the scheduler alongside an analysed recording would put two
+     * unrelated storms in one room, which is precisely the complaint the reactive path
+     * exists to answer.
+     *
+     * False for the effects that are texture with decoration on top. An underwater
+     * show's swells and a light train's clacks are not in the recording in any form a
+     * detector could find, and suppressing them would leave the effect poorer rather
+     * than more honest. Those scripts keep scheduling, and merely read the bed for how
+     * bright the room should be.
+     */
+    val eventsComeFromAudio: Boolean get() = false
+
     /** Called once before the first [schedule], with the room this show will run in. */
     fun bind(room: RoomModel, params: AmbienceParams)
+
+    /**
+     * The recording this show is running over, or null when it is generating its own.
+     *
+     * Held rather than passed to [renderLights] so the 60 Hz signature stays the shape
+     * it is. A script that ignores the bed — most of them — needs no code at all.
+     */
+    fun bindBed(bed: AmbienceBedTrack?) {}
+
+    /**
+     * The recording did something; turn it into this effect's events.
+     *
+     * Called on the analysis thread once per hop, with [sample] describing that moment
+     * and [onset] saying what, if anything, crossed a threshold in it. Both are reused
+     * between calls: read them, emit, and keep neither.
+     *
+     * Detection is shared and generic (see [AmbienceBedAnalyser]); interpretation is
+     * not, and lives here. Only this script knows that a loud, dull, low onset is a
+     * strike three kilometres out that should wash the room in dim blue rather than
+     * crack it white.
+     */
+    fun react(sample: BedSample, onset: BedOnset, emit: (AmbienceEvent) -> Unit) {}
 
     /** Live parameter change. Takes effect on the next scheduled window. */
     fun retune(params: AmbienceParams)

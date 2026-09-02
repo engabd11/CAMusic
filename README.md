@@ -160,19 +160,25 @@ out in advance and followed against the server's playhead.
 ## Ambience Effects
 
 Shows with their own sound, ready without any music playing: **fireworks, thunderstorm,
-underwater, fireplace, light train and aurora**.
+underwater, fireplace, light train and aurora**, each with a bundled recording.
 
-Where the sound has to land with the light, both come from one event rather than from two
-things kept in step. A lightning strike is a single object: the room reads it as it happens,
-and the speaker reads it after the propagation delay its own distance implies, so the thunder
-lands with the flash at any intensity on any hardware. A firework is the same object three
-times over — an ember climbing while the shell whistles, the burst, then embers twinkling out
-while the crackle reaches you. That audio is synthesised on the phone, so it keeps evolving
-rather than looping.
+**The room reacts to the recording.** The same analysis tap Light Sync uses for music runs
+on the effect's own player, so the lights are driven by the sound actually reaching the
+speaker rather than by a script running alongside it. A thunderclap flashes the room as it
+lands, from the side of the field it came from, and how *far away* it reads is taken from the
+clap's own timbre — air strips the treble out of a distant strike, so one that arrives with a
+crack left in it lights the room white and one that is all rumble washes it dim blue. The roll
+that follows swells the room for as long as it is audible; the rain's own gusts set the
+shimmer between strikes. Fireworks work the same way, a burst to a bang.
 
-The effects made of *texture* rather than events — the fire, the sea, the aurora — play a
-bundled recording instead, which is better than anything synthesis can do and has nothing that
-needs to land on a particular frame. Any effect can take an audio file of your own as its bed.
+Timing is measured rather than tuned. The tap knows the exact position in the file of every
+frame it analyses and the sink knows the position being heard, so an event is stamped where
+its sound is and the lights are rendered a Hue pipeline ahead of the ear — no offset slider,
+nothing to calibrate.
+
+Any effect can take an audio file of your own as its bed, and the lights follow that too.
+Where there is no recording to play, the effect falls back to synthesising its own sound and
+scripting its own events on that synth's playhead.
 
 ---
 
