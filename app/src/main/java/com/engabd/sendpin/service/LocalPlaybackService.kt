@@ -11,8 +11,10 @@ import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.os.Build
 import android.os.IBinder
+import android.os.Looper
 import androidx.core.app.NotificationCompat
 import androidx.core.graphics.drawable.toBitmap
+import androidx.media3.common.Player
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaStyleNotificationHelper
 import androidx.annotation.OptIn
@@ -26,6 +28,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 
 /**
@@ -42,6 +45,11 @@ import kotlinx.coroutines.launch
  * ExoPlayer, replacing the deprecated `MediaSessionCompat` / `PlaybackStateCompat` /
  * `MediaMetadataCompat` stack. The session reads playback state, position and
  * metadata from the player directly — no manual state pushing needed.
+ *
+ * That ExoPlayer is only the session's player some of the time, though: while
+ * [com.engabd.sendpin.audio.LocalPlayer.remoteActive] is true — MPD, not this
+ * phone, is decoding the queue — ExoPlayer sits idle and empty, and the session
+ * wraps [RemoteSessionPlayer] instead. See [rebuildSession].
  */
 @OptIn(UnstableApi::class)
 class LocalPlaybackService : Service() {
@@ -73,23 +81,67 @@ class LocalPlaybackService : Service() {
     private val player get() = SendpinApp.instance.localPlayer
 
     private var mediaSession: MediaSession? = null
+    private var remoteSessionPlayer: RemoteSessionPlayer? = null
+    private var remoteActiveJob: Job? = null
     private var artwork: Bitmap? = null
     private var loadedArtUrl: String? = null
 
     override fun onCreate() {
         super.onCreate()
         createChannel()
-        // Wrap the LocalPlayer's ExoPlayer in a media3 MediaSession. The session
-        // reads play state, position and metadata from the player directly, so the
-        // lock screen, Bluetooth head units and Android Auto all stay in sync
-        // without us pushing state manually.
-        //
-        // The id must be distinct from SendspinService's session id — a media3
-        // MediaSession's id is unique *per process*, and both services used to leave
-        // it unset (defaulting to the same empty string), so whichever session was
-        // built second threw IllegalStateException("Session ID must be unique") and
-        // crashed the whole process, on-device, repeatedly.
-        mediaSession = MediaSession.Builder(this, player.exoPlayer).setId("local").build()
+        rebuildSession(player.remoteActive.value)
+        // remoteActive can flip while this service is alive — MPD isn't the only
+        // library LocalPlayer will ever hold a queue for, and the listener can
+        // switch to Navidrome/Jellyfin/a download mid-session. Watching it and
+        // rebuilding is what keeps the lock screen, Bluetooth and the output
+        // switcher pointed at whichever player is actually decoding something.
+        remoteActiveJob = scope.launch {
+            // drop(1): the first value StateFlow.collect delivers is always the
+            // current one, already handled by the synchronous rebuildSession() call
+            // above — collecting it again would tear the session down and rebuild
+            // the identical one for nothing.
+            player.remoteActive.drop(1).collect { active -> rebuildSession(active) }
+        }
+    }
+
+    /**
+     * Point the session at [RemoteSessionPlayer] (MPD driving its own transport) or
+     * the real ExoPlayer (everything else), releasing whichever session already
+     * holds the id first.
+     *
+     * Order matters: a media3 MediaSession's id is unique *per process*, and this
+     * service and [SendspinService] once both left it unset — defaulting to the
+     * same empty string — so whichever session was built second threw
+     * IllegalStateException("Session ID must be unique") and crashed the whole
+     * process, on-device, repeatedly. Building the replacement before releasing the
+     * one already holding "local" is that same crash again, this time between two
+     * sessions in this one service instead of between the two services.
+     */
+    private fun rebuildSession(remote: Boolean) {
+        mediaSession?.release()
+        mediaSession = null
+        remoteSessionPlayer?.stop()
+        remoteSessionPlayer = null
+
+        // The session reads play state, position and metadata from whichever
+        // Player it wraps directly, so the lock screen, Bluetooth head units and
+        // Android Auto stay in sync without this service pushing state manually —
+        // true of RemoteSessionPlayer here exactly as it was already true of
+        // ExoPlayer.
+        val target: Player = if (remote) {
+            RemoteSessionPlayer(Looper.getMainLooper(), player, scope).also {
+                remoteSessionPlayer = it
+                it.start()
+            }
+        } else {
+            player.exoPlayer
+        }
+        mediaSession = MediaSession.Builder(this, target).setId("local").build()
+        // The posted notification carries this session's token inside its
+        // MediaStyle, so one built against the session just released would leave the
+        // shade's own transport addressing a dead session until the next track
+        // change happened to rebuild it. Re-post it against the new one now.
+        if (observing) updateNotification()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -222,6 +274,9 @@ class LocalPlaybackService : Service() {
 
     override fun onDestroy() {
         artworkJob?.cancel()
+        remoteActiveJob?.cancel()
+        remoteSessionPlayer?.stop()
+        remoteSessionPlayer = null
         mediaSession?.release()
         mediaSession = null
         scope.cancel()

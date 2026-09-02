@@ -1105,17 +1105,31 @@ class LocalPlayer(private val context: Context) {
         player.shuffleModeEnabled = on
     }
 
-    fun cycleRepeat() {
-        _repeatMode.value = when (_repeatMode.value) {
+    fun cycleRepeat() = setRepeatMode(
+        when (_repeatMode.value) {
             "off" -> "all"
             "all" -> "one"
             else -> "off"
-        }
+        },
+    )
+
+    /**
+     * Set repeat mode directly, rather than stepping through [cycleRepeat]'s
+     * three-tap cycle.
+     *
+     * Added for [RemoteSessionPlayer]'s `handleSetRepeatMode`: the OS's own
+     * transport (a lock-screen repeat button, Android Auto) names the mode it
+     * wants outright, and without this the only way to reach it was calling
+     * [cycleRepeat] up to twice — issuing one or two throwaway `setRepeat` RPCs to
+     * MPD before the one that actually mattered.
+     */
+    fun setRepeatMode(mode: String) {
+        _repeatMode.value = mode
         remote?.let { r ->
-            remoteCall { r.setRepeat(_repeatMode.value) }
+            remoteCall { r.setRepeat(mode) }
             return
         }
-        player.repeatMode = when (_repeatMode.value) {
+        player.repeatMode = when (mode) {
             "all" -> Player.REPEAT_MODE_ALL
             "one" -> Player.REPEAT_MODE_ONE
             else -> Player.REPEAT_MODE_OFF
