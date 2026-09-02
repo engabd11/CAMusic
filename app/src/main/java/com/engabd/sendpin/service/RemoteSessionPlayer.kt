@@ -134,8 +134,15 @@ class RemoteSessionPlayer(
         }
     }
 
-    /** Stop reflecting [localPlayer]. Call when the session wrapping this is torn down. */
-    fun stop() {
+    /**
+     * Stop reflecting [localPlayer]. Call when the session wrapping this is torn
+     * down.
+     *
+     * Deliberately not `stop()`: that is [Player.stop] — a transport command, and
+     * one this facade implements as [handleStop], where it means "stop the music".
+     * A lifecycle teardown sharing that name would have hidden it.
+     */
+    fun detach() {
         collectJob?.cancel(); collectJob = null
         artworkJob?.cancel(); artworkJob = null
     }

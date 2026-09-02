@@ -120,7 +120,7 @@ class LocalPlaybackService : Service() {
     private fun rebuildSession(remote: Boolean) {
         mediaSession?.release()
         mediaSession = null
-        remoteSessionPlayer?.stop()
+        remoteSessionPlayer?.detach()
         remoteSessionPlayer = null
 
         // The session reads play state, position and metadata from whichever
@@ -275,7 +275,7 @@ class LocalPlaybackService : Service() {
     override fun onDestroy() {
         artworkJob?.cancel()
         remoteActiveJob?.cancel()
-        remoteSessionPlayer?.stop()
+        remoteSessionPlayer?.detach()
         remoteSessionPlayer = null
         mediaSession?.release()
         mediaSession = null
