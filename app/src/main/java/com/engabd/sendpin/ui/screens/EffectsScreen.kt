@@ -111,9 +111,10 @@ fun EffectsScreen(onBack: () -> Unit, viewModel: EffectsViewModel) {
                 }
 
                 Text(
-                    "Each effect drives the lights from a script. Most play a recorded " +
-                        "bed underneath; Thunderstorm generates its sound from the same " +
-                        "script as the lights, so its thunder always lands with the flash.",
+                    "Each effect drives the lights from a script. Storms and fireworks " +
+                        "generate their sound from that same script, so the thunder lands " +
+                        "with its flash and the whistle ends when the shell breaks. The " +
+                        "calmer effects play a recorded bed underneath.",
                     color = TextMuted, fontSize = 12.sp, lineHeight = 17.sp,
                 )
                 Spacer(Modifier.height(16.dp))

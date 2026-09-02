@@ -120,7 +120,11 @@ class AmbienceCoherenceTest {
         val room = RoomModel(linearRoom(6))
         val script = ThunderstormScript()
         script.bind(room, AmbienceParams(intensity = 1f))
-        val events = collect(script, 60.0).filter { it.kind == AmbienceEvent.STRIKE }
+        // Only the strikes that carry thunder. A near strike re-strikes its channel two
+        // or three times milliseconds apart; those extra flickers are inside the first
+        // one's crack and deliberately carry no roll of their own.
+        val events = collect(script, 60.0)
+            .filter { it.kind == AmbienceEvent.STRIKE && it.soundS > 0f }
         assertTrue(events.isNotEmpty(), "no strikes scheduled")
 
         for (e in events.take(20)) {
@@ -203,6 +207,230 @@ class AmbienceCoherenceTest {
             blockStart += frames.toDouble() / SR
         }
         return Float.MAX_VALUE
+    }
+}
+
+/**
+ * The scripts driven the way `AmbienceSession` drives them, through a real
+ * [AmbienceTimeline].
+ *
+ * Everything else in this file hands `renderAudio` an event directly, which is a fine
+ * way to test a script and a **terrible** way to find out whether the app makes any
+ * sound. It cannot: it bypasses the one component that decides which events the audio
+ * block is allowed to see. That gap hid the effect's worst bug for its whole life —
+ * the coherence test above passed, proving thunder followed its flash by exactly the
+ * right delay, while in the running app the timeline had retired the strike on its
+ * *light* envelope seconds before the thunder was due, and two storms in three were
+ * silent from end to end.
+ *
+ * So these tests own the seam. They schedule into a real timeline and pull each block's
+ * live set out of it exactly as the generator loop does.
+ */
+class AmbienceTimelinePathTest {
+
+    /** One block of the generator loop, verbatim: schedule, then window, then render. */
+    private fun blockPeaks(
+        effect: AmbienceEffect,
+        seconds: Double,
+        intensity: Float = 1f,
+        frames: Int = 1024,
+    ): FloatArray {
+        val script = scriptFor(effect)
+        script.bind(RoomModel(linearRoom(6)), AmbienceParams(intensity))
+        val timeline = AmbienceTimeline()
+        val scratch = arrayOfNulls<AmbienceEvent>(160)
+        val block = FloatArray(frames * 2)
+        val blocks = (seconds * SR).toInt() / frames
+        val peaks = FloatArray(blocks)
+        var written = 0L
+        var generatedToS = 0.0
+        for (b in 0 until blocks) {
+            val startS = written.toDouble() / SR
+            val endS = startS + frames.toDouble() / SR
+            val horizon = endS + script.lookaheadS
+            if (horizon > generatedToS) {
+                script.schedule(generatedToS, horizon) { timeline.append(it) }
+                generatedToS = horizon
+            }
+            java.util.Arrays.fill(block, 0f)
+            val n = timeline.windowOver(startS, endS, scratch)
+            script.renderAudio(block, frames, startS, SR, scratch, n)
+            var p = 0f
+            for (v in block) p = maxOf(p, kotlin.math.abs(v))
+            peaks[b] = p
+            written += frames
+        }
+        return peaks
+    }
+
+    /** The bed alone — the floor a transient has to clear to be a transient. */
+    private fun bedPeak(effect: AmbienceEffect, seconds: Double = 20.0): Float {
+        val script = scriptFor(effect)
+        script.bind(RoomModel(linearRoom(6)), AmbienceParams(intensity = 1f))
+        val block = FloatArray(1024 * 2)
+        var peak = 0f
+        var t = 0.0
+        while (t < seconds) {
+            java.util.Arrays.fill(block, 0f)
+            script.renderAudio(block, 1024, t, SR, arrayOfNulls(1), 0)
+            for (v in block) peak = maxOf(peak, kotlin.math.abs(v))
+            t += 1024.0 / SR
+        }
+        return peak
+    }
+
+    @Test
+    fun `an event-driven effect is more than its bed once it runs for real`() {
+        // Three minutes of storm, and three of fireworks. If the transients are being
+        // withheld from the audio block, what is left is the rain — and the peak never
+        // rises meaningfully above the bed.
+        for (effect in AmbienceEffect.entries.filter { it.defaultSoundIsGenerated }) {
+            val bed = bedPeak(effect)
+            val peaks = blockPeaks(effect, 180.0)
+            val loud = peaks.count { it > bed * 2.5f }
+            assertTrue(
+                loud > peaks.size / 20,
+                "${effect.wire}: only $loud of ${peaks.size} blocks rose above its own bed — " +
+                    "the transients are not reaching the output",
+            )
+        }
+    }
+
+    @Test
+    fun `no effect drives the output into the soft clipper's hard cap`() {
+        // softClip() saturates gently below 1.5 and is a flat ceiling above it. A near
+        // lightning crack is allowed to be the loudest thing in the show; it is not
+        // allowed to arrive as a flat-topped square.
+        for (effect in AmbienceEffect.entries) {
+            val peak = blockPeaks(effect, 180.0).max()
+            assertTrue(peak < 1.5f, "${effect.wire}: peaked at $peak through the timeline")
+        }
+    }
+
+    @Test
+    fun `an event that leads with sound is rendered during its lead-in`() {
+        // The second half of the same bug, and the one the event's own span cannot fix.
+        // A shell was only scheduled when the block containing its `startS` came up, so
+        // however long its declared lead, the blocks that should have carried the
+        // whistle had already been rendered and written. The climb was never once
+        // rendered in the app's life; this is the test that says so.
+        for (effect in AmbienceEffect.entries) {
+            val script = scriptFor(effect)
+            script.bind(RoomModel(linearRoom(6)), AmbienceParams(intensity = 0.6f))
+            val leads = collect(script, 30.0).any { it.leadS > 0f }
+            if (!leads) continue
+
+            val timeline = AmbienceTimeline()
+            val scratch = arrayOfNulls<AmbienceEvent>(160)
+            val frames = 1024
+            var written = 0L
+            var generatedToS = 0.0
+            var duringClimb = 0
+            repeat((60.0 * SR).toInt() / frames) {
+                val startS = written.toDouble() / SR
+                val endS = startS + frames.toDouble() / SR
+                val horizon = endS + script.lookaheadS
+                if (horizon > generatedToS) {
+                    script.schedule(generatedToS, horizon) { timeline.append(it) }
+                    generatedToS = horizon
+                }
+                val n = timeline.windowOver(startS, endS, scratch)
+                // Blocks that end before the event even starts: pure lead-in.
+                for (i in 0 until n) if (endS <= scratch[i]!!.startS) duringClimb++
+                written += frames
+            }
+            assertTrue(
+                duringClimb > 0,
+                "${effect.wire}: never rendered a single block of an event's lead-in",
+            )
+        }
+    }
+
+    @Test
+    fun `every scheduled event is still in the timeline when its own sound is due`() {
+        for (effect in AmbienceEffect.entries) {
+            val script = scriptFor(effect)
+            script.bind(RoomModel(linearRoom(6)), AmbienceParams(intensity = 1f))
+            for (e in collect(script, 120.0)) {
+                if (e.soundS > 0f) {
+                    assertTrue(
+                        e.aliveAt(e.startS + e.soundS * 0.99),
+                        "${effect.wire}: retired before the end of its own sound",
+                    )
+                }
+                if (e.leadS > 0f) {
+                    assertTrue(
+                        e.aliveAt(e.startS - e.leadS * 0.99),
+                        "${effect.wire}: not published until after its sound had begun",
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The other half of coherence: what the *room* does while the sound is happening.
+ *
+ * Getting the delay right is not the same as making one effect out of two media. A
+ * flash, six seconds of a room doing nothing, and then thunder is physically correct
+ * and still reads as a light show with an unrelated recording under it — which is
+ * exactly the complaint these effects drew. So each script owes the ear something to
+ * look at: the room swells while the thunder rolls, and an ember climbs while the shell
+ * whistles.
+ */
+class AmbienceAnswerTest {
+
+    private fun totalBrightness(
+        script: AmbienceScript, tS: Double, events: List<AmbienceEvent>,
+    ): Float {
+        val out = HashMap<Int, Rgb>()
+        val arr = arrayOfNulls<AmbienceEvent>(maxOf(events.size, 1))
+        events.forEachIndexed { i, e -> arr[i] = e }
+        script.renderLights(tS, arr, events.size, out)
+        return out.values.fold(0f) { a, c -> a + c.first + c.second + c.third }
+    }
+
+    @Test
+    fun `the room answers the thunder while it rolls, and not before it arrives`() {
+        val room = RoomModel(ringRoom(8))
+        val script = ThunderstormScript()
+        script.bind(room, AmbienceParams(intensity = 1f))
+        val e = collect(script, 200.0).first {
+            it.kind == AmbienceEvent.STRIKE && it.soundS > 0f && it.timbre > 1.2f
+        }
+        val propS = e.timbre / 0.343f
+
+        // Mid-roll: the room is lifted by the same envelope the speaker is playing.
+        val rolling = e.startS + propS + 1.5
+        val lift = totalBrightness(script, rolling, listOf(e)) -
+            totalBrightness(script, rolling, emptyList())
+        assertTrue(lift > 0.02f, "the room ignores the thunder it is playing ($lift)")
+
+        // Well before the sound could have crossed the distance: nothing but the flash,
+        // which is long over. Anticipating the thunder would be worse than ignoring it.
+        val quiet = e.startS + propS * 0.4
+        val early = totalBrightness(script, quiet, listOf(e)) -
+            totalBrightness(script, quiet, emptyList())
+        assertTrue(early < lift * 0.35f, "the room glowed before the thunder arrived ($early)")
+    }
+
+    @Test
+    fun `an ember climbs while the shell whistles`() {
+        val room = RoomModel(ringRoom(8))
+        val script = scriptFor(AmbienceEffect.FIREWORKS)
+        script.bind(room, AmbienceParams(intensity = 0.6f))
+        val e = collect(script, 60.0).first { it.kind == AmbienceEvent.BURST }
+        assertTrue(e.leadS > 0.5f, "the shell claims no climb")
+
+        val dark = totalBrightness(script, e.startS - 0.5, emptyList())
+        val early = totalBrightness(script, e.startS - 0.80, listOf(e)) - dark
+        val late = totalBrightness(script, e.startS - 0.10, listOf(e)) - dark
+        assertTrue(late > early, "the ember does not climb ($early then $late)")
+        assertTrue(late > 0.01f, "the ember is invisible ($late)")
+        // ...and it is an ember, not a second firework.
+        val burst = totalBrightness(script, e.startS + 0.1, listOf(e)) - dark
+        assertTrue(late < burst, "the climb outshone the burst")
     }
 }
 

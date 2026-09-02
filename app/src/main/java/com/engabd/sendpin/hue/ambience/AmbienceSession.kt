@@ -63,6 +63,12 @@ interface FocusGate {
  * That lead is doing two jobs at once. It is the underrun margin against a GC pause on a
  * JVM thread, and it is the guarantee that every event the light tick could ask about
  * was published to the timeline before the tick could reach it.
+ *
+ * The buffer's own lead is not, however, the whole of the scheduling horizon. An event
+ * that makes sound *before* its own `startS` — a firework whistling on the way up — has
+ * to exist before the block carrying that sound is rendered, which is earlier than the
+ * block its `startS` falls in. [AmbienceScript.lookaheadS] is how a script says so, and
+ * [generatorLoop] schedules out to it.
  */
 class AmbienceSession(
     val script: AmbienceScript,
@@ -94,9 +100,19 @@ class AmbienceSession(
 
     private val timeline = AmbienceTimeline()
 
-    /** Each reader owns its scratch array, so the two never touch the same memory. */
-    private val lightScratch = arrayOfNulls<AmbienceEvent>(96)
-    private val genScratch = arrayOfNulls<AmbienceEvent>(96)
+    /**
+     * Each reader owns its scratch array, so the two never touch the same memory.
+     *
+     * Sized for the worst honest case rather than the typical one. An event now lives
+     * in the timeline for as long as *either* medium can still read it, and for a storm
+     * that is dominated by the audio: a distant strike is still rolling twenty seconds
+     * after its flash, so a wild storm can have a dozen strikes overlapping where the
+     * light alone would have had one. Overflow is silent by design — see
+     * [AmbienceTimeline.windowAt] — and it would drop the oldest, which is exactly the
+     * strike whose thunder is arriving now.
+     */
+    private val lightScratch = arrayOfNulls<AmbienceEvent>(160)
+    private val genScratch = arrayOfNulls<AmbienceEvent>(160)
 
     private val frame = HashMap<Int, Rgb>(room.count * 2)
 
@@ -213,9 +229,13 @@ class AmbienceSession(
         // coroutine to schedule them. Cheap: the scripts' schedule() is a handful of
         // arithmetic per event, and this only runs when there is no audio thread.
         if (sink == null) {
-            if (t > generatedToS) {
-                script.schedule(generatedToS, t + SILENT_LOOKAHEAD_S) { timeline.append(it) }
-                generatedToS = t + SILENT_LOOKAHEAD_S
+            // At least as far as the script's own lead, or an effect whose events are
+            // visible before they start — a firework's climbing ember — would have
+            // nothing to show until the moment it burst.
+            val horizon = t + maxOf(SILENT_LOOKAHEAD_S, script.lookaheadS.toDouble())
+            if (horizon > generatedToS) {
+                script.schedule(generatedToS, horizon) { timeline.append(it) }
+                generatedToS = horizon
             }
         }
         val n = timeline.windowAt(t, lightScratch)
@@ -244,11 +264,27 @@ class AmbienceSession(
             val endS = startS + BLOCK_FRAMES.toDouble() / sr
             // Schedule *before* rendering, always. This ordering is what guarantees the
             // light tick can never ask about an event that has not been published.
-            script.schedule(generatedToS, endS) { timeline.append(it) }
-            generatedToS = endS
+            //
+            // Out to the script's own horizon, not merely to the end of this block.
+            // Scheduling to `endS` publishes an event exactly when the block containing
+            // its `startS` comes up, which is in time for anything that begins when the
+            // event does — and far too late for anything that begins *before* it. A
+            // shell whistles for most of a second on the way up, so by the time
+            // scheduling reached it the blocks carrying its climb had already been
+            // rendered and written: the launch was scheduled, rendered by nobody, and
+            // silent. See [AmbienceScript.lookaheadS].
+            val horizon = endS + script.lookaheadS
+            if (horizon > generatedToS) {
+                script.schedule(generatedToS, horizon) { timeline.append(it) }
+                generatedToS = horizon
+            }
 
             java.util.Arrays.fill(block, 0f)
-            val n = timeline.windowAt(startS, genScratch)
+            // Over the block, not at its start. An event beginning mid-block is not
+            // alive at the block's first sample, and asking `windowAt(startS)` therefore
+            // withheld it for a whole buffer — clipping the attack off every transient
+            // that did not happen to start on a boundary.
+            val n = timeline.windowOver(startS, endS, genScratch)
             script.renderAudio(block, BLOCK_FRAMES, startS, sr, genScratch, n)
             for (i in block.indices) block[i] = softClip(block[i])
 
