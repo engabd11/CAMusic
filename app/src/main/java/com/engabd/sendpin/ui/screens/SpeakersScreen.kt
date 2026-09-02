@@ -97,15 +97,24 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
                         Text("${joined.size} active", color = accent, fontWeight = FontWeight.Bold, fontSize = 11.sp)
                     }
                 }
+                // Joining and unjoining move a speaker between this list and the one
+                // below, and because both are keyed on the same player id the lazy list
+                // sees that as one row changing place rather than one disappearing and
+                // another appearing. `animateItem` is what makes it look like that: the
+                // card travels from "available" up into the group, which is a picture of
+                // what the tap did. Without it the two lists simply redrew, and the only
+                // evidence a speaker had joined was that it was now somewhere else.
                 items(joined, key = { it.id }) { p ->
-                    JoinedCard(
-                        p,
-                        onSelect = { viewModel.selectPlayer(p.id) },
-                        onUnjoin = { viewModel.unjoin(p.id) },
-                        onVol = { viewModel.setPlayerVolume(p.id, it) },
-                        onOffset = { viewModel.changeOffset(p.id, it) },
-                    )
-                    Spacer(Modifier.height(12.dp))
+                    Column(Modifier.animateItem(placementSpec = Motion.itemPlacement())) {
+                        JoinedCard(
+                            p,
+                            onSelect = { viewModel.selectPlayer(p.id) },
+                            onUnjoin = { viewModel.unjoin(p.id) },
+                            onVol = { viewModel.setPlayerVolume(p.id, it) },
+                            onOffset = { viewModel.changeOffset(p.id, it) },
+                        )
+                        Spacer(Modifier.height(12.dp))
+                    }
                 }
 
                 if (available.isNotEmpty()) {
@@ -121,15 +130,17 @@ fun SpeakersScreen(onBack: () -> Unit = {}, viewModel: SpeakersViewModel = viewM
                         }
                     }
                     items(available, key = { it.id }) { p ->
-                        FreeCard(
-                            p,
-                            canJoin = canGroup,
-                            canMoveMusic = somethingPlaying,
-                            onPlayHere = { viewModel.selectPlayer(p.id) },
-                            onJoin = { viewModel.join(p.id) },
-                            onMoveMusic = { viewModel.transferQueueTo(p.id) },
-                        )
-                        Spacer(Modifier.height(12.dp))
+                        Column(Modifier.animateItem(placementSpec = Motion.itemPlacement())) {
+                            FreeCard(
+                                p,
+                                canJoin = canGroup,
+                                canMoveMusic = somethingPlaying,
+                                onPlayHere = { viewModel.selectPlayer(p.id) },
+                                onJoin = { viewModel.join(p.id) },
+                                onMoveMusic = { viewModel.transferQueueTo(p.id) },
+                            )
+                            Spacer(Modifier.height(12.dp))
+                        }
                     }
                 }
 

@@ -48,9 +48,22 @@ val LocalNavAnimatedScope = compositionLocalOf<AnimatedVisibilityScope?> { null 
  *
  * When either scope is missing (preview, sheet, unmounted), this is a no-op —
  * the modifier is returned unchanged.
+ *
+ * ## Reduced motion
+ *
+ * Also a no-op when the listener has asked for less motion, and this is one of the
+ * cases [LocalReducedMotion] was written for rather than an incidental use of it. A
+ * shared element is not the same motion made faster: the cover is lifted out of the
+ * screen it belongs to, drawn in the transition layout's own overlay, and flown
+ * across on its own spring. Under a zero duration scale that flight collapses to a
+ * single frame in which the cover is drawn *outside* both screens, which reads as
+ * the artwork blinking somewhere else on its way. Left alone, the tile and the hero
+ * are simply two ordinary images and the screen change fades between them, which is
+ * what "no motion" should look like here.
  */
 @Composable
 fun Modifier.sharedArt(key: String): Modifier {
+    if (LocalReducedMotion.current) return this
     val shared = LocalSharedTransitionScope.current ?: return this
     val animated = LocalNavAnimatedScope.current ?: return this
     return with(shared) {

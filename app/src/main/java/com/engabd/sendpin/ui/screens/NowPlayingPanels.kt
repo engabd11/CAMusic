@@ -26,7 +26,10 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.animation.core.animate
 import androidx.compose.runtime.*
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -251,15 +254,41 @@ private fun ColumnScope.QueueList(
     // A server refresh mid-drag would yank the row out from under the finger.
     LaunchedEffect(items) { if (draggingId == null) order = items }
 
+    val scope = rememberCoroutineScope()
+    /**
+     * The drop animation, held so a new drag can cancel it.
+     *
+     * Without this handle the settle below would still be writing [dragOffset] when
+     * the next press zeroes it, and the newly grabbed row would start out already
+     * displaced by whatever was left of the previous row's journey home.
+     */
+    var settleJob by remember { mutableStateOf<Job?>(null) }
+
     fun endDrag() {
         val id = draggingId ?: return
         val from = dragStartIndex
         val to = order.indexOfFirst { it.queueItemId == id }
-        draggingId = null
-        dragOffset = 0f
         dragStartIndex = -1
         if (to >= 0 && from >= 0 && to != from) {
             items.firstOrNull { it.queueItemId == id }?.let { viewModel.moveQueueItem(it, to - from) }
+        }
+        // The row lands, rather than vanishing from under the finger and reappearing
+        // in its slot. `dragOffset` is how far the row sits from the slot it now
+        // occupies, and on release that was simply assigned 0 — so a row dropped
+        // mid-swap jumped up to half a row's height in one frame, at the exact moment
+        // the gesture ended and the eye was still on it.
+        //
+        // [draggingId] is deliberately still set for the length of this: it is what
+        // keeps `translationY` applied to the row and keeps it drawn above its
+        // neighbours, so the row settles *over* the list and then becomes part of it.
+        settleJob = scope.launch {
+            animate(
+                initialValue = dragOffset,
+                targetValue = 0f,
+                animationSpec = Motion.spatialOffsetPx(),
+            ) { value, _ -> dragOffset = value }
+            dragOffset = 0f
+            draggingId = null
         }
     }
 
@@ -278,12 +307,31 @@ private fun ColumnScope.QueueList(
                 playing = item.queueItemId == currentId,
                 dragging = dragging,
                 modifier = Modifier
+                    // The neighbours a dragged row displaces used to *teleport*. The
+                    // swap below rewrites `order` the moment the row has travelled half
+                    // of one row's height, and without a placement animation the row
+                    // being passed simply appeared in its new slot on the next frame —
+                    // so the one row under the finger moved smoothly and the list it
+                    // was moving through jumped around it.
+                    //
+                    // `placementSpec = null` for the dragged row itself, which is the
+                    // part that has to be opted out rather than tuned: its position is
+                    // already being driven by `translationY` below, and animating its
+                    // placement as well would have the row chasing a slot the finger
+                    // has already left. Removals from the queue keep the default fades.
+                    .animateItem(
+                        placementSpec = if (dragging) null else Motion.itemPlacement(),
+                    )
                     .zIndex(if (dragging) 1f else 0f)
                     .graphicsLayer { translationY = if (dragging) dragOffset else 0f }
                     .onSizeChanged { if (it.height > 0) rowHeight = it.height },
                 onPlay = { viewModel.playQueueItem(item) },
                 onRemove = { viewModel.removeQueueItem(item) },
                 onDragStart = {
+                    // Whatever the last row was still doing on its way home, it stops
+                    // now — the settle writes `dragOffset`, and this press owns it.
+                    settleJob?.cancel()
+                    settleJob = null
                     draggingId = item.queueItemId
                     dragStartIndex = order.indexOfFirst { r -> r.queueItemId == item.queueItemId }
                     dragOffset = 0f

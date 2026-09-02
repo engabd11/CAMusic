@@ -538,7 +538,7 @@ private fun Browse(
                 // Assistant adds Radio and Podcasts, switching away removes them —
                 // and without this they popped in and out. Same modifier the shelves
                 // below already use.
-                CategoryCard(cat, Modifier.animateItem()) { viewModel.open(cat) }
+                CategoryCard(cat, Modifier.animateItem(placementSpec = Motion.itemPlacement())) { viewModel.open(cat) }
             }
             val openItem: (MaItem) -> Unit = { item ->
                 when (item.mediaType) {
@@ -793,7 +793,7 @@ private fun androidx.compose.foundation.lazy.grid.LazyGridScope.shelfCarousel(
                     // arrive, then recently-added, then the rest. Keyed items make
                     // that a move rather than a redraw, and animateItem is what turns
                     // the move into something you can follow.
-                    Box(Modifier.animateItem()) {
+                    Box(Modifier.animateItem(placementSpec = Motion.itemPlacement())) {
                         ShelfTile(
                             entry,
                             circular = spec.circular,
@@ -998,7 +998,7 @@ private fun androidx.compose.foundation.lazy.grid.LazyGridScope.downloadJobsSect
     ) { job ->
         // Jobs appear and vanish as downloads finish, so this list is the one that
         // most obviously popped without an animation.
-        Box(Modifier.animateItem()) { DownloadJobRow(job, viewModel) }
+        Box(Modifier.animateItem(placementSpec = Motion.itemPlacement())) { DownloadJobRow(job, viewModel) }
     }
 }
 

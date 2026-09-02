@@ -20,6 +20,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.engabd.sendpin.data.AppSettings
@@ -149,6 +150,48 @@ object Motion {
     fun screenSlide(): FiniteAnimationSpec<IntOffset> = spring(
         dampingRatio = 0.9f,
         stiffness = 380f,
+        visibilityThreshold = IntOffset.VisibilityThreshold,
+    )
+
+    /**
+     * Spatial motion for a container growing or shrinking to fit its content — the
+     * album notes and the artist biography unclamping from a few lines to all of them.
+     *
+     * The third member of the family [screenSlide] and [spatialOffsetPx] belong to, and
+     * it is here for the same reason they are: a `spring<IntSize>()` written without an
+     * explicit threshold falls back to [Spring.DefaultDisplacementThreshold] (0.01f),
+     * which is tuned for a 0f..1f range and is being asked to judge a height in pixels.
+     * A biography opening adds several hundred of them, so the spring spends a visible
+     * stretch past the end of the motion correcting hundredths of a pixel while the
+     * content below it is still nominally in flight.
+     *
+     * [IntSize.VisibilityThreshold] is the platform's own answer — one pixel, which is
+     * the smallest layout change there is — and is what `animateContentSize` uses in
+     * its own default spec. The damping and stiffness stay [spatial]'s, so a panel
+     * opening carries the same weight as everything else that moves.
+     */
+    fun contentSize(): FiniteAnimationSpec<IntSize> = spring(
+        dampingRatio = 0.8f,
+        stiffness = 380f,
+        visibilityThreshold = IntSize.VisibilityThreshold,
+    )
+
+    /**
+     * A row moving to a new place in a list it is already in.
+     *
+     * `Modifier.animateItem`'s placement spec. Its own default is a bare
+     * `spring(stiffness = StiffnessMediumLow)` — softer than anything else in this
+     * file, so a reordering list drifts while the rest of the app springs. This is
+     * [spatial]'s physics with the [IntOffset.VisibilityThreshold] that a pixel-scale
+     * offset needs, for the reason [screenSlide] gives.
+     *
+     * Slightly stiffer than [spatial] (`k = 450`), and the queue is why. A row that is
+     * following a finger has to get out of the way *before* the finger reaches where
+     * it was, or the drag overtakes its own animation and the list reads as lagging.
+     */
+    fun itemPlacement(): FiniteAnimationSpec<IntOffset> = spring(
+        dampingRatio = 0.85f,
+        stiffness = 450f,
         visibilityThreshold = IntOffset.VisibilityThreshold,
     )
 

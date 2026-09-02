@@ -1,5 +1,10 @@
 package com.engabd.sendpin.ui.screens.settings
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -32,6 +37,7 @@ import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.hue.DiscoveredBridge
 import com.engabd.sendpin.hue.LinkButtonNotPressed
 import com.engabd.sendpin.ui.design.MeterBar
+import com.engabd.sendpin.ui.design.Motion
 import com.engabd.sendpin.ui.design.Pill
 import com.engabd.sendpin.ui.design.SegmentedToggle
 import com.engabd.sendpin.ui.design.TitleGap
@@ -622,7 +628,15 @@ private fun FailureList(
             color = WarnAmber, fontFamily = AppFont, fontSize = 12.sp,
             modifier = Modifier.clickable(onClick = onToggle),
         )
-        if (expanded) {
+        // The label above says "tap to see them", so the panel should be seen to
+        // arrive. As a bare `if` it did not: the list of failures — which can be long —
+        // appeared between two frames and shoved everything below it down the screen
+        // with no indication that the tap was what did it.
+        AnimatedVisibility(
+            visible = expanded,
+            enter = expandVertically(Motion.contentSize()) + fadeIn(Motion.effects()),
+            exit = shrinkVertically(Motion.contentSize()) + fadeOut(Motion.effects()),
+        ) {
             StatusPanel {
                 failures.forEach { failure ->
                     Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {

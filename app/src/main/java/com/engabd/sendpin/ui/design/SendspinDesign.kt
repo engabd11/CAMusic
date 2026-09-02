@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Icon
@@ -446,6 +447,64 @@ fun Modifier.pressScale(press: PressScale) = graphicsLayer {
     scaleY = s
 }
 
+/**
+ * The chevron on a row that opens and closes.
+ *
+ * One composable rather than the three hand-rolled versions this replaces, which had
+ * drifted into two different behaviours that were wrong in the same way: the chevron
+ * was the only part of a disclosure that did not animate. Two of them swapped the
+ * glyph outright — `if (open) ExpandLess else ExpandMore` — which is a hard cut
+ * between two different drawings; the third rotated on
+ * `Modifier.rotate(if (expanded) 180f else 0f)`, which snaps the arrow through half
+ * a turn in one frame. In all three the panel below glided open on a spring while
+ * the arrow that opened it jumped, and a control that moves less smoothly than the
+ * thing it controls reads as the control having been missed.
+ *
+ * Not for the two dropdown indicators in `DspScreen` that use the same glyph. Those
+ * open a `DropdownMenu` in its own window rather than disclosing anything in place,
+ * so there is nothing below them for the arrow to be out of step with, and they
+ * never pointed the other way to begin with.
+ *
+ * So: always [Icons.Default.ExpandMore], turned. The glyph never changes, which is
+ * what makes the rotation legible as the *same* arrow pointing the other way.
+ *
+ * On a spatial spec, because a rotation is a movement — see [Motion]. The overshoot
+ * is the point: the arrow settles a few degrees past 180° and comes back, which is
+ * what makes a half-turn read as a flick rather than a servo.
+ *
+ * `graphicsLayer` rather than `Modifier.rotate` so the angle is read at draw time.
+ * `rotate` is `graphicsLayer` underneath, but it takes the angle by value, so it is
+ * read during composition and every frame of the turn recomposes this Icon. Read in
+ * the lambda instead, the same turn costs one layer invalidation per frame and no
+ * recomposition at all.
+ *
+ * Under reduced motion the spec still applies and Compose's duration scale collapses
+ * it to a single frame, which lands the arrow at the correct angle immediately —
+ * this is finite motion, so it needs no [LocalReducedMotion] handling of its own.
+ */
+@Composable
+fun DisclosureChevron(
+    expanded: Boolean,
+    modifier: Modifier = Modifier,
+    tint: Color = TextMuted,
+    size: Dp = 20.dp,
+    contentDescription: String? = null,
+) {
+    val turn by animateFloatAsState(
+        targetValue = if (expanded) 180f else 0f,
+        animationSpec = Motion.spatial(),
+        label = "chevron",
+    )
+    Icon(
+        Icons.Default.ExpandMore,
+        contentDescription,
+        tint = tint,
+        modifier = modifier
+            .size(size)
+            .graphicsLayer { rotationZ = turn },
+    )
+}
+
 // --- text helpers ---------------------------------------------------------
 
 @Composable
@@ -581,17 +640,30 @@ fun Modifier.dismissOnDragDown(onDismiss: () -> Unit, threshold: Dp = 110.dp): M
                         if (offsetY.value > thresholdPx) {
                             // Slide it the rest of the way out before the caller drops
                             // it, so the sheet leaves rather than blinking away.
-                            offsetY.animateTo(height, Motion.spatial())
+                            //
+                            // On [Motion.dismissOffsetPx], not `spatial()`, and for both
+                            // of the reasons that spec exists. `onDismiss()` waits on
+                            // this call returning, and a generic `spring<Float>()`
+                            // settles against a 0.01px threshold — over a travel of the
+                            // sheet's whole height that is a long tail spent correcting
+                            // error nobody can see, with the caller still holding a
+                            // sheet that has visibly gone. And a dismissal should not
+                            // overshoot: `spatial()`'s ζ = 0.8 walks the sheet back up
+                            // toward the viewer on its way out.
+                            offsetY.animateTo(height, Motion.dismissOffsetPx())
                             onDismiss()
                         } else {
                             // Springs back rather than easing back: the sheet has just
                             // been thrown by a finger, and a spring is what carries the
-                            // momentum of that gesture into the settle.
-                            offsetY.animateTo(0f, Motion.spatial())
+                            // momentum of that gesture into the settle. Overshoot is
+                            // right here — the sheet is arriving, not leaving — so this
+                            // is [Motion.spatialOffsetPx] rather than the dismissal
+                            // spec, but it needs the same pixel-scale threshold.
+                            offsetY.animateTo(0f, Motion.spatialOffsetPx())
                         }
                     }
                 },
-                onDragCancel = { scope.launch { offsetY.animateTo(0f, Motion.spatial()) } },
+                onDragCancel = { scope.launch { offsetY.animateTo(0f, Motion.spatialOffsetPx()) } },
                 onVerticalDrag = { change, dy ->
                     change.consume()
                     scope.launch { offsetY.snapTo((offsetY.value + dy).coerceAtLeast(0f)) }
