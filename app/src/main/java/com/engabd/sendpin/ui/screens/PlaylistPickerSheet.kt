@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.sp
 import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ui.design.HideBottomChrome
 import com.engabd.sendpin.ui.design.LocalAccent
+import com.engabd.sendpin.ui.design.Motion
 import com.engabd.sendpin.ui.design.dismissOnDragDown
 import com.engabd.sendpin.ui.design.systemNavInset
 import com.engabd.sendpin.ui.design.TitleGap
@@ -117,9 +118,14 @@ fun BoxScope.PlaylistPickerSheet(
                 )
             } else {
                 LazyColumn(Modifier.fillMaxWidth().heightIn(max = 320.dp)) {
+                    // Keyed on the playlist's own identity rather than its position, so
+                    // the row a newly created playlist takes is a genuine insertion —
+                    // it fades in where it belongs and the list opens up for it, rather
+                    // than the whole sheet redrawing one row longer.
                     items(playlists, key = { it.provider + "|" + it.itemId }) { pl ->
                         Row(
                             Modifier
+                                .animateItem(placementSpec = Motion.itemPlacement())
                                 .fillMaxWidth()
                                 .clickable { onPick(pl) }
                                 .padding(horizontal = 18.dp, vertical = 13.dp),

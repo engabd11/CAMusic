@@ -2,6 +2,7 @@ package com.engabd.sendpin.ui.screens
 
 import android.app.Application
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -119,6 +120,10 @@ private fun Biography(text: String) {
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier
                 .fillMaxWidth()
+                // A biography runs to several paragraphs, so the jump from four lines
+                // to all of them is the largest instant layout change on the screen.
+                // See the same note on the album's own notes block.
+                .animateContentSize(Motion.contentSize())
                 .clickable { expanded = !expanded }
                 .padding(horizontal = 20.dp, vertical = 4.dp),
         )

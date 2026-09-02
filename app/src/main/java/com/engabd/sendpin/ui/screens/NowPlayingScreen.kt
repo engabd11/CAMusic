@@ -87,6 +87,16 @@ fun NowPlayingScreen(
      * the Library tab writes.
      */
     libraryViewModel: LibraryViewModel,
+    /**
+     * The cover on show and how far through a page turn it is, owned by `App`.
+     *
+     * Built here once, which was fine while the sleeve and the wash behind it were
+     * the only things painted from it. The album *palette* is painted from it too,
+     * and that is computed above this screen — so the holder has to be created above
+     * this screen as well, or the colour changes on the raw url while this screen is
+     * still turning the old sleeve over. See `rememberAlbumPalette`.
+     */
+    art: SettledArt,
     onBrowse: () -> Unit = {},
     /** Long-press the album art → "Go to album"/"Go to artist". No-op if unset. */
     onAlbumClick: (MaItem) -> Unit = {},
@@ -143,11 +153,12 @@ fun NowPlayingScreen(
 
     val scrubber = rememberScrubber(viewModel)
 
-    // Hoisted, because the artwork is painted twice on this screen: as the sleeve and
-    // as the wash behind it. Sharing one holder is what keeps the two on the same
-    // clock through a page turn, and what stops either of them reloading when two
-    // tracks of one record arrive with different urls for the same picture.
-    val art = rememberSettledArt(st.artworkUrl, albumFlipKey(st))
+    // `art` is a parameter now, hoisted all the way to `App`. It is painted three
+    // times, not twice: as the sleeve, as the wash behind it, and — a level above
+    // this screen — as the palette the whole app is tinted with. One holder keeps
+    // all three on the same clock through a page turn, and stops any of them
+    // reloading when two tracks of one record arrive with different urls for the
+    // same picture.
     val artDim = idleFade(st.idle, 0.55f)
     val artGlow = idleFade(st.idle, 0.18f, 0.45f)
     val washDim = idleFade(st.idle, 0.5f)

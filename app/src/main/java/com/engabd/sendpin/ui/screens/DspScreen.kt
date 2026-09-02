@@ -25,7 +25,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -181,11 +180,9 @@ private fun ExpandableSection(
                 )
             }
 
-            Icon(
-                Icons.Default.ExpandMore,
-                if (expanded) "Collapse" else "Expand",
-                tint = TextMuted,
-                modifier = Modifier.size(20.dp).rotate(if (expanded) 180f else 0f),
+            DisclosureChevron(
+                expanded = expanded,
+                contentDescription = if (expanded) "Collapse" else "Expand",
             )
         }
 

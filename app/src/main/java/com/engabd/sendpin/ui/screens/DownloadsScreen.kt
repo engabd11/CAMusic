@@ -1,6 +1,10 @@
 package com.engabd.sendpin.ui.screens
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -151,12 +155,20 @@ fun DownloadsScreen(
                 // ── In flight ────────────────────────────────────────────
                 if (jobs.isNotEmpty()) {
                     item("jobs-header") { SectionLabel("In progress") }
+                    // Every list on this screen empties itself while it is being looked
+                    // at — a job finishes and leaves, a track is deleted, the sort or
+                    // the search box reorders what is left. Each of those was a redraw:
+                    // the row vanished and everything below it was somewhere new on the
+                    // next frame. `animateItem` gives all three the same treatment —
+                    // the row fades where it stood, and the rest close the gap.
                     items(jobs, key = { "job-${it.id}" }) { job ->
-                        JobRow(
-                            job = job,
-                            onRetry = { viewModel.retryDownload(job.id) },
-                            onDismiss = { viewModel.dismissDownload(job.id) },
-                        )
+                        Box(Modifier.animateItem(placementSpec = Motion.itemPlacement())) {
+                            JobRow(
+                                job = job,
+                                onRetry = { viewModel.retryDownload(job.id) },
+                                onDismiss = { viewModel.dismissDownload(job.id) },
+                            )
+                        }
                     }
                     item("jobs-gap") { Spacer(Modifier.height(14.dp)) }
                 }
@@ -184,29 +196,33 @@ fun DownloadsScreen(
                             )
                         }
                         items(album.tracks, key = { it.id }, contentType = { "track" }) { track ->
-                            TrackRow(
-                                track = track,
-                                sizeBytes = sizes[track.id] ?: 0L,
-                                showTrackNumber = true,
-                                // Rebuilt as a library item so it routes through the download play
-                                // context, which plays from disk rather than reaching for a
-                                // server that may not be there.
-                                onPlay = { viewModel.playDownload(track) },
-                                onDelete = { viewModel.deleteDownload(track.id) },
-                            )
+                            Box(Modifier.animateItem(placementSpec = Motion.itemPlacement())) {
+                                TrackRow(
+                                    track = track,
+                                    sizeBytes = sizes[track.id] ?: 0L,
+                                    showTrackNumber = true,
+                                    // Rebuilt as a library item so it routes through the download play
+                                    // context, which plays from disk rather than reaching for a
+                                    // server that may not be there.
+                                    onPlay = { viewModel.playDownload(track) },
+                                    onDelete = { viewModel.deleteDownload(track.id) },
+                                )
+                            }
                         }
                         item(key = "album-gap-${album.key}") { Spacer(Modifier.height(16.dp)) }
                     }
                 } else {
                     items(shown, key = { it.id }, contentType = { "track" }) { track ->
-                        TrackRow(
-                            track = track,
-                            sizeBytes = sizes[track.id] ?: 0L,
-                            showTrackNumber = false,
-                            subtitleAlbum = true,
-                            onPlay = { viewModel.playDownload(track) },
-                            onDelete = { viewModel.deleteDownload(track.id) },
-                        )
+                        Box(Modifier.animateItem(placementSpec = Motion.itemPlacement())) {
+                            TrackRow(
+                                track = track,
+                                sizeBytes = sizes[track.id] ?: 0L,
+                                showTrackNumber = false,
+                                subtitleAlbum = true,
+                                onPlay = { viewModel.playDownload(track) },
+                                onDelete = { viewModel.deleteDownload(track.id) },
+                            )
+                        }
                     }
                 }
 
@@ -664,13 +680,20 @@ private fun StorageSection(
                 style = MaterialTheme.typography.labelLarge,
                 modifier = Modifier.weight(1f),
             )
-            Icon(
-                if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                if (expanded) "Hide the breakdown" else "Show the breakdown",
-                tint = TextMuted, modifier = Modifier.size(20.dp),
+            DisclosureChevron(
+                expanded = expanded,
+                contentDescription = if (expanded) "Hide the breakdown" else "Show the breakdown",
             )
         }
-        AnimatedVisibility(expanded) {
+        // Spelled out rather than left to AnimatedVisibility's defaults, which are
+        // `expandIn`/`shrinkOut` on a generic tween: the breakdown only ever grows
+        // downward, and the app's own spatial spring is what every other panel on
+        // this screen opens on.
+        AnimatedVisibility(
+            visible = expanded,
+            enter = expandVertically(Motion.contentSize()) + fadeIn(Motion.effects()),
+            exit = shrinkVertically(Motion.contentSize()) + fadeOut(Motion.effects()),
+        ) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 byAlbum.forEach { (album, albumBytes) ->
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {

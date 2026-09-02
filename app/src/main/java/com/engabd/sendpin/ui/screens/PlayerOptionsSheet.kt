@@ -1,5 +1,10 @@
 package com.engabd.sendpin.ui.screens
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -315,37 +320,49 @@ private fun VersionPicker(viewModel: NowPlayingViewModel) {
                     color = TextFaint, style = MaterialTheme.typography.bodySmall,
                 )
             }
-            Icon(
-                if (open) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                null, tint = TextMuted, modifier = Modifier.size(18.dp),
-            )
+            DisclosureChevron(expanded = open, size = 18.dp)
         }
 
-        if (open) {
-            (load as? NowPlayingViewModel.Load.Ready)?.value?.forEach { version ->
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(11.dp))
-                        .background(Glass)
-                        .clickable { viewModel.playVersion(version) }
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
-                        Text(
-                            // The provider is the useful identity here — the name is
-                            // the same on every row by definition.
-                            version.providerDomains.firstOrNull()?.replaceFirstChar { it.uppercase() }
-                                ?: version.name,
-                            color = TextPrimary, fontFamily = AppFont,
-                            fontWeight = FontWeight.Bold, fontSize = 13.sp,
-                        )
-                        version.audioFormat?.quality?.label?.let {
-                            Text(it, color = TextMuted, fontFamily = MonoFont, fontSize = 11.sp)
+        // The list grows out of the row that asked for it rather than appearing whole.
+        // It used to be a bare `if (open)`, which puts several rows on screen between
+        // two frames — and because this list is fetched, "open" and "arrived" are
+        // different moments, so the sheet also jumped a second time when the versions
+        // came back. Expanding covers both: the panel takes its height smoothly on the
+        // way open and again when the rows land.
+        AnimatedVisibility(
+            visible = open,
+            enter = expandVertically(Motion.contentSize()) + fadeIn(Motion.effects()),
+            exit = shrinkVertically(Motion.contentSize()) + fadeOut(Motion.effects()),
+        ) {
+            // The enclosing Column's `spacedBy` reaches its own children, and this
+            // whole block is now one of them — so the gaps between version rows have
+            // to be restated here or they collapse to nothing.
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                (load as? NowPlayingViewModel.Load.Ready)?.value?.forEach { version ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(11.dp))
+                            .background(Glass)
+                            .clickable { viewModel.playVersion(version) }
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+                            Text(
+                                // The provider is the useful identity here — the name is
+                                // the same on every row by definition.
+                                version.providerDomains.firstOrNull()?.replaceFirstChar { it.uppercase() }
+                                    ?: version.name,
+                                color = TextPrimary, fontFamily = AppFont,
+                                fontWeight = FontWeight.Bold, fontSize = 13.sp,
+                            )
+                            version.audioFormat?.quality?.label?.let {
+                                Text(it, color = TextMuted, fontFamily = MonoFont, fontSize = 11.sp)
+                            }
                         }
+                        Icon(Icons.Default.PlayArrow, "Play this version", tint = accent, modifier = Modifier.size(18.dp))
                     }
-                    Icon(Icons.Default.PlayArrow, "Play this version", tint = accent, modifier = Modifier.size(18.dp))
                 }
             }
         }

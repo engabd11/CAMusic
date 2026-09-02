@@ -65,12 +65,14 @@ import com.engabd.sendpin.ui.design.LocalNavAnimatedScope
 import com.engabd.sendpin.ui.design.NavTab
 import com.engabd.sendpin.ui.design.SendspinNavBar
 import com.engabd.sendpin.ui.design.rememberAlbumPalette
+import com.engabd.sendpin.ui.design.rememberSettledArt
 import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.library.MusicSources
 import com.engabd.sendpin.ui.viewmodel.LightSyncViewModel
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
 import com.engabd.sendpin.ui.screens.AlbumDetailScreen
+import com.engabd.sendpin.ui.screens.albumFlipKey
 import com.engabd.sendpin.ui.screens.EffectsScreen
 import com.engabd.sendpin.ui.screens.DownloadsScreen
 import com.engabd.sendpin.ui.screens.ArtistDetailScreen
@@ -342,7 +344,28 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
         // local Sendspin stream meant that casting to a speaker left every screen
         // but Now Playing on the default accent.
         val npState by nowPlayingVm.state.collectAsStateWithLifecycle()
-        val appPalette = rememberAlbumPalette(npState.artworkUrl ?: localArt)
+        // The cover, hoisted one level further than it used to be.
+        //
+        // `SettledArt` already existed so that the sleeve and the blurred wash behind
+        // it stayed on one clock through a page turn. The palette is the third thing
+        // painted from this same artwork, and it was the one left out — keyed on the
+        // raw url, it relit the whole app in the new album's colour while the old
+        // sleeve was still turning. It is computed here, above the palette and above
+        // both player layouts, because this is the highest point all three can share.
+        //
+        // The cost, stated plainly: the app's tint now waits for the half-turn even on
+        // screens where no page is turning — settle on the Library tab and the accent
+        // follows the new album about 280ms later than it used to. That is worth one
+        // clock for the whole app rather than two that agree only by accident, and at
+        // that duration, on a colour most surfaces wear at 12% alpha, nobody is
+        // reading it as a delay.
+        val npArt = rememberSettledArt(npState.artworkUrl, albumFlipKey(npState))
+        val appPalette = rememberAlbumPalette(
+            url = npState.artworkUrl ?: localArt,
+            // Worked out from the incoming url, but not adopted until the turn has
+            // carried that artwork onto the screen. See `rememberAlbumPalette`.
+            shownUrl = npArt.url ?: localArt,
+        )
         // Only the album-art source lets the artwork drive the accent. On the other two
         // the user asked for one colour that does not move, so the palette is still
         // extracted (its companion swatches feed avatars and blooms) but the accent
@@ -541,6 +564,7 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                             NowPlayingScreen(
                                 viewModel = nowPlayingVm,
                                 libraryViewModel = libraryVm,
+                                art = npArt,
                                 onBrowse = { go("library") },
                                 onAlbumClick = { navToItem("album", it) },
                                 onArtistClick = { navToItem("artist", it) },
@@ -822,6 +846,7 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                             NowPlayingOverlay(
                                 viewModel = nowPlayingVm,
                                 libraryViewModel = libraryVm,
+                                art = npArt,
                                 onBrowse = { overlayExpanded = false; go("library") },
                                 expanded = overlayExpanded,
                                 onCollapse = { overlayExpanded = false },

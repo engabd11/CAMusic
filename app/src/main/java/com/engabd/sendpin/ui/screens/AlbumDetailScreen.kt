@@ -2,6 +2,7 @@ package com.engabd.sendpin.ui.screens
 
 import android.app.Application
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -669,6 +670,13 @@ private fun AlbumNotes(text: String) {
         overflow = TextOverflow.Ellipsis,
         modifier = Modifier
             .fillMaxWidth()
+            // Changing `maxLines` re-measures the Text to its full height in one
+            // frame, so notes that run to a dozen lines used to shove the rest of the
+            // screen down instantly — with the track list below it, that reads as the
+            // page having jumped rather than the notes having opened.
+            // `animateContentSize` animates the measured size instead, so the block
+            // grows to its new height and the content below travels with it.
+            .animateContentSize(Motion.contentSize())
             .clickable { expanded = !expanded }
             .padding(horizontal = 20.dp, vertical = 8.dp),
     )

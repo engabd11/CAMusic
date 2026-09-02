@@ -21,6 +21,16 @@ import androidx.compose.runtime.setValue
  * past recognition. Fed the raw url it changed at t=0 while the cover only revealed
  * the new sleeve at the half-turn, so for a quarter of a second the room was lit by
  * one album and the sleeve was still the other one.
+ *
+ * There is a third painter, and finding it moved this holder again — all the way up
+ * to `App`. The album *palette* is derived from the same artwork and tints the whole
+ * app, and it had exactly the bug described above: keyed on the raw url, the accent
+ * and every bloom drawn from it went to the new record's colour while the old sleeve
+ * was still face-on. Extraction is fast on a warm cache and the accent eases in about
+ * 165ms, so between two albums of very different colours the room had finished
+ * relighting before the new cover was shown at all. `rememberAlbumPalette` now takes
+ * the url it should *extract* from and the url actually *on screen* separately, and
+ * this is what tells it the second one.
  */
 @Stable
 class SettledArt internal constructor(
