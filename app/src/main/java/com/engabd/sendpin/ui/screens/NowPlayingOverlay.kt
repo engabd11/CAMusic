@@ -86,6 +86,8 @@ fun NowPlayingOverlay(
     viewModel: NowPlayingViewModel = viewModel(),
     /** The shared instance — see the same parameter on [NowPlayingScreen]. */
     libraryViewModel: LibraryViewModel,
+    /** The cover on show — see the same parameter on [NowPlayingScreen]. */
+    art: SettledArt,
     onBrowse: () -> Unit = {},
     expanded: Boolean,
     onCollapse: () -> Unit,
@@ -132,8 +134,8 @@ fun NowPlayingOverlay(
 
     val scrubber = rememberScrubber(viewModel)
 
-    // One holder for the sleeve and the wash behind it — see NowPlayingScreen.
-    val art = rememberSettledArt(st.artworkUrl, albumFlipKey(st))
+    // One holder for the sleeve, the wash behind it and the app's palette — a
+    // parameter now, owned by App.kt. See NowPlayingScreen.
     val artDim = idleFade(st.idle, 0.55f)
     val artGlow = idleFade(st.idle, 0.18f, 0.45f)
     val washDim = idleFade(st.idle, 0.5f)

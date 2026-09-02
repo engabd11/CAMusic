@@ -702,14 +702,43 @@ private fun liftOne(rgb: FloatArray, minL: Float, maxL: Float, achromatic: Boole
     return oklchColor(targetL, lch[1].coerceIn(ceiling * MIN_ACCENT_C_FRACTION, ceiling), hue)
 }
 
-/** Load [url] and derive the album's [AlbumPalette]. Falls back to the amber default. */
+/**
+ * Load [url] and derive the album's [AlbumPalette]. Falls back to the amber default.
+ *
+ * ## Why extracting and publishing are two different moments
+ *
+ * [shownUrl] is the artwork **actually on screen right now**, which is not always
+ * [url]. The Now Playing cover turns over like a page when the album changes, and it
+ * only reveals the new sleeve at the half-turn — see [rememberSettledArt], which
+ * exists to hold the painted url steady until then.
+ *
+ * The colour had no such holder. It was keyed on the raw url, so on a change of album
+ * everything the palette tints — the accent, the blooms, the wash behind the player —
+ * began moving to the new record's colour at t=0, while the old sleeve was still
+ * face-on and turning. Extraction is quick on a warm cache and the accent eases over
+ * about 165ms, so on two albums with very different colours the room had finished
+ * relighting before the new cover was shown at all. The picture followed the colour
+ * instead of the other way round.
+ *
+ * Splitting the two fixes it without making anyone wait. Extraction still starts the
+ * instant [url] is known, off the main thread, so the answer is ready early; it is
+ * only *published* once [shownUrl] says that artwork is the one being painted. On the
+ * default ([shownUrl] == [url]) this is exactly the old behaviour, which is what every
+ * caller outside the player wants — nothing else in the app turns a page.
+ *
+ * The previous palette is held while a new one is pending, rather than falling back to
+ * the default: a cold cache would otherwise flash the amber default between two albums.
+ */
 @Composable
-fun rememberAlbumPalette(url: String?): AlbumPalette {
+fun rememberAlbumPalette(url: String?, shownUrl: String? = url): AlbumPalette {
     val ctx = LocalContext.current
-    var palette by remember { mutableStateOf(AlbumPalette()) }
+    /** The most recent extraction, paired with the url it was taken from. */
+    var extracted by remember { mutableStateOf<Pair<String?, AlbumPalette>?>(null) }
+    var published by remember { mutableStateOf(AlbumPalette()) }
+
     LaunchedEffect(url) {
-        if (url.isNullOrBlank()) { palette = AlbumPalette(); return@LaunchedEffect }
-        val extracted = withContext(Dispatchers.IO) {
+        if (url.isNullOrBlank()) { extracted = null to AlbumPalette(); return@LaunchedEffect }
+        val palette = withContext(Dispatchers.IO) {
             val bmp = try {
                 val res = ctx.imageLoader.execute(
                     ImageRequest.Builder(ctx).data(url).allowHardware(false).size(128).build()
@@ -718,9 +747,17 @@ fun rememberAlbumPalette(url: String?): AlbumPalette {
             } catch (_: Exception) { null } ?: return@withContext null
             try { paletteOf(bmp) } catch (_: Exception) { null }
         }
-        palette = extracted ?: AlbumPalette()
+        extracted = url to (palette ?: AlbumPalette())
     }
-    return palette
+
+    // Re-checked when either side moves: the extraction landing, or the cover
+    // reaching the half-turn and adopting the url this palette was taken from.
+    // Whichever happens second is when the colour changes.
+    LaunchedEffect(extracted, shownUrl) {
+        val (from, palette) = extracted ?: return@LaunchedEffect
+        if (from == shownUrl) published = palette
+    }
+    return published
 }
 
 /** The album's accent alone, for callers that don't need the companion swatches. */
