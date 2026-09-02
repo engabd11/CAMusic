@@ -431,6 +431,7 @@ class LocalPlayer(private val context: Context) {
             // somewhere is not the same as being mixed into, and a track the listener
             // skipped to must start at full volume.
             fadeInFor = if (fadeInPending) track?.id else null
+            if (!fadeInPending) { fadeInFromMs = 0L; fadeInWindowS = 0f }
             fadeInPending = false
             // A new track gets its own attempt at a hand-over. Keyed on the id
             // rather than left to differ by itself, because under repeat-all a
@@ -446,6 +447,8 @@ class LocalPlayer(private val context: Context) {
             // tick catches up is heard as a click.
             fadeFactor = if (fadeInFor != null) 0f else 1f
             applyGain()
+            // A whole track's notice for the two scans the next transition needs.
+            prefetchScans(track)
             track?.let { _started.tryEmit(it) }
         }
 
@@ -1050,6 +1053,20 @@ class LocalPlayer(private val context: Context) {
         player.pause()
     }
 
+    /**
+     * Nothing is loaded to resume: the queue ran off its end, or an error tore the
+     * player down, or there has never been one.
+     *
+     * The distinction [resume] cannot make for its caller. Resuming a *paused* player
+     * carries on where it was, which is right; resuming a *spent* one sits on a track
+     * that has already finished, and the caller has to point it at something instead
+     * — see `LibraryViewModel.startOrResume`.
+     */
+    val stopped: Boolean
+        get() = livePlayer?.playbackState.let {
+            it == null || it == Player.STATE_IDLE || it == Player.STATE_ENDED
+        }
+
     fun resume() {
         if (_queue.value.isEmpty()) return
         remote?.let { r ->
@@ -1456,9 +1473,37 @@ class LocalPlayer(private val context: Context) {
     @Volatile
     private var crossfadeFor: String? = null
 
+    /**
+     * Plan the join off the offline analysis rather than off the clock — see
+     * [SmartCrossfade]. Pushed down from `AppSettings.djRadioSmartFade` while a set
+     * is running; with it off the transition is the plain "overlap the last N
+     * seconds" one.
+     */
+    @Volatile
+    var djSmartFade: Boolean = true
+
+    /**
+     * The transition this track is going to make, worked out once when the deck is
+     * armed rather than re-derived on every tick.
+     *
+     * Null until then, and null again the moment the hand-over fires or is dropped.
+     * Holding it is what lets the *incoming* side know where its own ramp starts —
+     * a smart plan can drop the needle past a silent lead-in, and a fade measured
+     * from zero would be over before the first note.
+     */
+    @Volatile
+    private var mixPlan: MixPlan? = null
+
     /** A hand-over has just fired; the track arriving next is being mixed into. */
     @Volatile
     private var fadeInPending = false
+
+    /** The window and entry point [fadeAt] ramps the incoming track over. */
+    @Volatile
+    private var fadeInFromMs: Long = 0L
+
+    @Volatile
+    private var fadeInWindowS: Float = 0f
 
     /**
      * The track the fade-*in* half of a crossfade applies to, or null.
@@ -1482,6 +1527,20 @@ class LocalPlayer(private val context: Context) {
     private val crossfading: Boolean get() = djCrossfadeSeconds > 0
 
     /**
+     * A transition is armed, running, or still ramping in.
+     *
+     * The position loop runs four times a second, which is right for a scrub bar and
+     * far too coarse for a two-second fade: eight steps of 12% each is heard as
+     * stepping, and a hand-over that can land up to 250 ms off its planned downbeat
+     * has thrown away the alignment [SmartCrossfade] just worked out. While this is
+     * true the loop runs at [CROSSFADE_TICK_MS] instead — the same rate the deck's
+     * own ramp uses, so the two halves of the mix move together.
+     */
+    private val crossfadeBusy: Boolean
+        get() = crossfading &&
+            (crossfadeArmed || deck.active || (fadeInFor != null && fadeFactor < 0.999f))
+
+    /**
      * Whatever the tail deck was doing, stop it.
      *
      * Called from every transport command that invalidates the transition in
@@ -1495,6 +1554,7 @@ class LocalPlayer(private val context: Context) {
         // track quiet after the listener had asked for something else.
         fadeInPending = false
         fadeInFor = null
+        mixPlan = null
         if (!crossfadeArmed && !deck.active) {
             if (fadeFactor != 1f) { fadeFactor = 1f; applyGain() }
             return
@@ -1504,6 +1564,22 @@ class LocalPlayer(private val context: Context) {
         crossfadeFor = null
         fadeFactor = 1f
         applyGain()
+    }
+
+    /**
+     * Give up on this track's transition without offering to try again.
+     *
+     * The difference from [dropCrossfade] is one field: that one clears
+     * [crossfadeFor], because a listener who skipped or seeked has changed what the
+     * transition would even be and deserves a fresh attempt. This is the other case
+     * — the attempt was made and did not come good — and clearing it there would
+     * have the ticker build a second deck seconds from the end of the track, then a
+     * third, each one later and more likely to hand over past the end.
+     */
+    private fun abandonCrossfade() {
+        val attempted = crossfadeFor
+        dropCrossfade()
+        crossfadeFor = attempted
     }
 
     /**
@@ -1538,30 +1614,101 @@ class LocalPlayer(private val context: Context) {
 
         if (!crossfadeArmed) {
             if (crossfadeFor == track.id) return
-            if (!CrossfadeSchedule.shouldArm(positionMs, durationMs, seconds)) return
-            crossfadeFor = track.id
             val source = sourceOf(track) ?: return
+            val local = track.offline
+            val plan = planFor(track, p, durationMs) ?: return
+            if (!SmartCrossfade.shouldArm(positionMs, plan, SmartCrossfade.prerollFor(local))) return
+            crossfadeFor = track.id
+            mixPlan = plan
             val gain = (userVolume * ReplayGain.factor(track.sourceQuality, replayGainMode))
                 .coerceIn(0f, 1f)
             crossfadeArmed = deck.start(source, positionMs, gain, preferredOutput, _speed.value)
+            if (!crossfadeArmed) mixPlan = null
             return
         }
 
-        if (!CrossfadeSchedule.shouldHandOver(positionMs, durationMs, seconds)) {
+        val plan = mixPlan ?: run { abandonCrossfade(); return }
+        if (!SmartCrossfade.shouldHandOver(positionMs, plan)) {
             // Still in the pre-roll: keep the two copies together while it is free
             // to do so — see [CrossfadeDeck.align].
             deck.align(positionMs)
             return
         }
 
-        // The swap. The deck comes up as this player leaves; [fadeAt] takes the
-        // incoming track up from zero off its own playhead, which is about to be 0.
-        deck.handOver(seconds.toFloat())
+        // The deck was told to play seconds ago and may still be opening a
+        // connection. Swapping to one that is not making sound yet is the failure
+        // this whole mechanism exists to avoid: the outgoing side goes silent for
+        // the length of the mix, which is a cut with a slow fade-in after it. So
+        // wait — and if it is still not ready by the deadline, abandon the
+        // transition and let the boundary play out gapless, which is a worse mix
+        // and a perfectly good join.
+        if (!deck.ready) {
+            if (positionMs >= SmartCrossfade.handOverDeadlineMs(plan)) abandonCrossfade()
+            return
+        }
+
+        // The swap. The deck comes up as this player leaves, and the incoming track
+        // enters where the plan says its music actually starts.
+        deck.handOver(plan.windowS)
         crossfadeArmed = false
+        mixPlan = null
         fadeInPending = true
+        fadeInFromMs = plan.incomingStartMs
+        fadeInWindowS = plan.windowS
         fadeFactor = 0f
         applyGain()
-        p.seekToNextMediaItem()
+        if (plan.incomingStartMs > 0) {
+            // One seek rather than a skip and then a seek: two operations at a track
+            // boundary is two chances for ExoPlayer to make a sound between them.
+            p.seekTo(p.nextMediaItemIndex, plan.incomingStartMs)
+        } else {
+            p.seekToNextMediaItem()
+        }
+    }
+
+    /**
+     * How this boundary should be crossed, or null if it should not be crossfaded.
+     *
+     * Both scans come from [TrackScanStore.peek] — memory only, never disk, because
+     * this runs on the position ticker. What makes that workable rather than a
+     * lottery is [prefetchScans], which pulls both into memory a whole track ahead.
+     * A scan that still is not there simply gets the fixed plan, which is what the
+     * transition was before any of this.
+     */
+    private fun planFor(track: LocalTrack, p: ExoPlayer, durationMs: Long): MixPlan? {
+        if (!djSmartFade) return SmartCrossfade.standardPlan(durationMs, djCrossfadeSeconds)
+        val scans = SendpinApp.instance.trackScans.store
+        val outgoing = scans.peek(TrackScanRepository.keyFor(track))
+        val next = _queue.value.getOrNull(p.nextMediaItemIndex)
+        val incoming = next?.let { scans.peek(TrackScanRepository.keyFor(it)) }
+        return SmartCrossfade.plan(outgoing, incoming, durationMs, djCrossfadeSeconds, smart = true)
+    }
+
+    /**
+     * Warm the scans for what is playing and what is next.
+     *
+     * The whole of what makes smart fades work in practice. [planFor] runs on the
+     * position ticker and so cannot touch the disk; without this it would `peek` two
+     * scans that are only resident if Light Sync happened to load them, which on a
+     * library scanned last week is neither of them. Reading them a track ahead —
+     * minutes of slack — turns "smart when you are lucky" into "smart whenever the
+     * track has been scanned".
+     *
+     * Deliberately fire-and-forget and deliberately silent: a scan that is missing
+     * or fails to load is a transition that falls back to the fixed plan, not an
+     * error anybody needs to hear about.
+     */
+    private fun prefetchScans(current: LocalTrack?) {
+        if (!crossfading || !djSmartFade) return
+        val next = livePlayer?.let { p ->
+            p.nextMediaItemIndex.takeIf { it >= 0 }?.let { _queue.value.getOrNull(it) }
+        }
+        val wanted = listOfNotNull(current, next)
+        if (wanted.isEmpty()) return
+        scope.launch(Dispatchers.IO) {
+            val repo = SendpinApp.instance.trackScans
+            wanted.forEach { runCatching { repo.cached(it) } }
+        }
     }
 
     /** This track's fade window if [beatMatchedFade] found a scan; null uses [fadeSeconds] as-is. */
@@ -1608,7 +1755,7 @@ class LocalPlayer(private val context: Context) {
         // ramp here.
         if (crossfading && smoothQueue) {
             return if (fadeInFor != null && fadeInFor == _current.value?.id) {
-                CrossfadeSchedule.fadeInAt(positionMs, djCrossfadeSeconds)
+                SmartCrossfade.fadeInAt(positionMs, fadeInFromMs, fadeInWindowS)
             } else {
                 1f
             }
@@ -1649,7 +1796,7 @@ class LocalPlayer(private val context: Context) {
                         applyGain()
                     }
                 }
-                delay(POSITION_TICK_MS)
+                delay(if (crossfadeBusy) CROSSFADE_TICK_MS else POSITION_TICK_MS)
             }
         }
     }
@@ -1687,6 +1834,17 @@ class LocalPlayer(private val context: Context) {
          * own tick so both players feel the same.
          */
         const val POSITION_TICK_MS = 250L
+
+        /**
+         * How often the loop runs while a DJ Radio transition is in flight.
+         *
+         * 25 steps a second, matching [CrossfadeDeck]'s own ramp. It is what makes
+         * the incoming fade a curve rather than a staircase, and it is also the
+         * resolution of the hand-over itself — at 250 ms the swap could land a
+         * quarter of a second off the downbeat [SmartCrossfade] chose for it, which
+         * is most of a beat at any club tempo.
+         */
+        const val CROSSFADE_TICK_MS = 40L
 
         /**
          * How often a remote player is asked what it is doing.

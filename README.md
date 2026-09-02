@@ -117,9 +117,12 @@ Playback is built to be worth good headphones and a good DAC.
   genre tags your library carries, plus the energy, tempo and spectral balance the offline
   scan already measured, folded at half and double time the way a DJ hears it. Tracks
   **overlap** rather than fading through silence — the outgoing one keeps playing on a second
-  deck while the next comes up under it — so there is no quiet moment between songs. The
-  crossfade length and how close the next track has to be are both yours to set; Harmonic DJ
-  mode adds key matching on top.
+  deck while the next comes up under it — so there is no quiet moment between songs. **Smart
+  fade** plans each join off the scan rather than the clock: it leaves where the music actually
+  stops rather than where the file does, starts the overlap on a downbeat, sizes it in whole
+  bars, and skips any dead air at the front of the next track. Fade mode, crossfade length and
+  how close the next track has to be are all yours to set; Harmonic DJ mode adds key matching
+  on top.
 - **Keep the music going** on every library the phone plays itself, and the shuffle button
   decides what "going" means: shuffled, the next track is a random song from the library;
   unshuffled, it is the next track on the record, then the next record, and so on. Plus
