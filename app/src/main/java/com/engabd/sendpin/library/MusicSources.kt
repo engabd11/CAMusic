@@ -1,5 +1,6 @@
 package com.engabd.sendpin.library
 
+import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.emby.EmbyClient
 import com.engabd.sendpin.emby.EmbyException
 import com.engabd.sendpin.jellyfin.JellyfinClient
@@ -7,6 +8,7 @@ import com.engabd.sendpin.jellyfin.JellyfinException
 import com.engabd.sendpin.mpd.MpdClient
 import com.engabd.sendpin.plex.PlexClient
 import com.engabd.sendpin.subsonic.SubsonicClient
+import kotlinx.coroutines.flow.first
 
 /**
  * Turns a stored [ServerConfig] into a live [MusicSource].
@@ -252,4 +254,53 @@ object MusicSources {
 
         else -> config
     }
+
+    /** Every configured local-play server, read once from [AppSettings]. */
+    suspend fun allLocal(context: android.content.Context): List<MusicSource> {
+        val settings = AppSettings(context)
+        val list = settings.servers.first()
+        return buildList {
+            for (config in list) {
+                if (!config.kind.playsLocally) continue
+                val source = create(context, config) ?: continue
+                add(source)
+            }
+        }
+    }
+
+    /**
+     * Recover a [MaItem] from the stable scan key used by [TrackScanRepository].
+     * Returns null when the source is not connected or the track no longer exists.
+     */
+    suspend fun findByKey(context: android.content.Context, key: String): MaItem? {
+        if (key.isBlank()) return null
+        // Try every local source. This is not fast, but it is only used for the
+        // handful of similar-track results shown on the Now Playing panel.
+        for (source in allLocal(context)) {
+            try {
+                // Direct id match first — most keys are library ids.
+                source.song(key)?.let { return it }
+                // If that fails, page through tracks looking for the id/path/url.
+                var offset = 0
+                while (true) {
+                    val page = source.tracks(offset = offset, limit = 500)
+                    if (page.isEmpty()) break
+                    for (track in page) {
+                        if (scanKey(track) == key) return track
+                    }
+                    offset += page.size
+                    if (page.size < 500) break
+                }
+            } catch (_: Exception) {
+                continue
+            }
+        }
+        return null
+    }
+
+    /** The same key shape used by the scan store, derived from whatever id the item carries. */
+    fun scanKey(item: MaItem): String =
+        item.itemId.takeIf { it.isNotBlank() }
+            ?: item.uri?.takeIf { it.isNotBlank() }
+            ?: "${item.artist.orEmpty()}|${item.name}|${item.album.orEmpty()}"
 }

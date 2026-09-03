@@ -340,7 +340,26 @@ class SendpinApp : Application(), ImageLoaderFactory {
      * worth keeping long after that particular show ended.
      */
     val trackScans: com.engabd.sendpin.audio.TrackScanRepository by lazy {
-        com.engabd.sendpin.audio.TrackScanRepository(this)
+        com.engabd.sendpin.audio.TrackScanRepository(
+            this,
+            onScanComplete = { key ->
+                runCatching {
+                    trackScans.store.load(key)?.let { scan ->
+                        val item = com.engabd.sendpin.library.MusicSources.findByKey(this, key)
+                        if (item != null) localSonicIndex.update(item, scan)
+                    }
+                }
+            },
+        )
+    }
+
+    /**
+     * In-memory sonic-similarity index for local tracks.
+     * Rebuilt after library scans so the Similar panel has something to show
+     * when Music Assistant has no sonic data for the active track.
+     */
+    val localSonicIndex: com.engabd.sendpin.audio.LocalSonicIndex by lazy {
+        com.engabd.sendpin.audio.LocalSonicIndex(this, trackScans.store)
     }
 
     /**
