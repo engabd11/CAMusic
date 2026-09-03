@@ -14,6 +14,7 @@ import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.LibraryAdd
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Radio
 import androidx.compose.material.icons.filled.PlayArrow

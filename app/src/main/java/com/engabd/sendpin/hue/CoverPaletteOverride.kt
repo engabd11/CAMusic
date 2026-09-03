@@ -26,6 +26,28 @@ data class CoverPaletteOverride(
     companion object {
         /** Empty helper used when an id has no override. */
         val EMPTY = CoverPaletteOverride(emptyList())
+
+        /**
+         * The keys an override for this album could be filed under, best first.
+         *
+         * The editor saves under the first of these; the engine tries each in
+         * turn, because what it knows about a playing track is not always what
+         * the editor knew. Album-and-artist leads because it survives per-track
+         * artwork URL churn and a backend handover. The artwork URL is what the
+         * Music Assistant feed falls back to: it carries no `LocalTrack`, so
+         * there is no album name to read. The track id is the last resort, and
+         * pins the override to that one song.
+         */
+        fun keysFor(
+            album: String?,
+            artist: String?,
+            coverUrl: String?,
+            trackId: String?,
+        ): List<String> = listOfNotNull(
+            album?.takeIf { it.isNotBlank() }?.let { "$it|${artist.orEmpty()}" },
+            coverUrl?.takeIf { it.isNotBlank() },
+            trackId?.takeIf { it.isNotBlank() },
+        )
     }
 }
 

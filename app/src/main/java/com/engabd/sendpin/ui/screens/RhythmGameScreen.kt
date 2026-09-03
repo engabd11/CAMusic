@@ -29,14 +29,14 @@ import com.engabd.sendpin.game.NoteKind
 import com.engabd.sendpin.ui.design.LocalAccent
 import com.engabd.sendpin.ui.viewmodel.RhythmGameViewModel
 import kotlinx.coroutines.flow.filterNotNull
-import kotlinx.coroutines.flow.sample
+import kotlinx.coroutines.flow.flatMapLatest
 import androidx.compose.ui.unit.IntSize
 
 /**
  * A four-lane rhythm tiles game that follows the music and flashes the Hue room
  * when the player hits notes accurately.
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 @Composable
 fun RhythmGameScreen(
     onBack: () -> Unit,
@@ -46,8 +46,8 @@ fun RhythmGameScreen(
     val density = LocalDensity.current
     val view = LocalView.current
     var boardSize by remember { mutableStateOf(IntSize.Zero) }
-    val boardWidthPx = with(density) { boardSize.width.toDp() }
-    val boardHeightPx = with(density) { boardSize.height.toDp() }
+    val boardWidth = with(density) { boardSize.width.toDp() }
+    val boardHeight = with(density) { boardSize.height.toDp() }
 
     // Keep the screen on while playing.
     DisposableEffect(Unit) {
@@ -59,15 +59,28 @@ fun RhythmGameScreen(
     // Subscribe to the active audio analysis tap so notes are generated from
     // whatever is currently playing on this phone.
     val app = context.applicationContext as SendpinApp
-    val frame by remember {
-        app.activeLightSyncSource.map { it.tap.frames }.collectAsStateWithLifecycle(
-            initialValue = null,
-        )
+    // The active feed can change mid-game when a different player takes over,
+    // so follow the source rather than latching onto whichever tap was live at
+    // composition time.
+    LaunchedEffect(app) {
+        app.activeLightSyncSource
+            .flatMapLatest { it.tap.frames }
+            .filterNotNull()
+            .collect { f ->
+                val pos = app.activeLightSyncSource.value.lead.positionMs
+                    ?: System.currentTimeMillis()
+                viewModel.onFrame(f, pos)
+            }
     }
-    LaunchedEffect(frame) {
-        val f = frame ?: return@LaunchedEffect
-        val pos = (app.activeLightSyncSource.value.lead.positionMs ?: System.currentTimeMillis())
-        viewModel.onFrame(f, pos)
+
+    var nowMs by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(app) {
+        while (true) {
+            withFrameMillis {
+                nowMs = app.activeLightSyncSource.value.lead.positionMs
+                    ?: System.currentTimeMillis()
+            }
+        }
     }
 
     val notes by viewModel.notes.collectAsStateWithLifecycle()
@@ -89,7 +102,7 @@ fun RhythmGameScreen(
             )
         },
         containerColor = Color.Black,
-    ) { insets -
+    ) { insets ->
         Column(
             Modifier
                 .fillMaxSize()
@@ -125,7 +138,7 @@ fun RhythmGameScreen(
                             .width(1.dp)
                             .alpha(0.2f)
                             .background(Color.White)
-                            .offset(x = boardWidthPx * (i / laneCount.toFloat()))
+                            .offset(x = boardWidth * (i / laneCount.toFloat()))
                     )
                 }
                 // Hit line.
@@ -135,23 +148,26 @@ fun RhythmGameScreen(
                         .height(2.dp)
                         .alpha(0.6f)
                         .background(accent)
-                        .offset(y = boardHeightPx * hitLine)
+                        .offset(y = boardHeight * hitLine)
                 )
 
                 // Notes.
                 notes.forEach { note ->
                     val laneWidth = 1f / laneCount
                     val x = note.lane * laneWidth
-                    val travel = ((note.triggerTimeMs - System.currentTimeMillis()) / 2000f).coerceIn(0f, 1f)
-                    val y = travel * hitLine
+                    // 0 when the note is a full lookahead away, 1 as it lands: notes
+                    // fall from the top of the board down onto the hit line.
+                    val fallen = (1f - (note.triggerTimeMs - nowMs) / LOOK_AHEAD_MS)
+                        .coerceIn(0f, 1f)
+                    val y = fallen * hitLine
                     val color = noteColor(note.kind, accent)
                     Box(
                         Modifier
                             .fillMaxWidth(laneWidth * 0.8f)
                             .height(32.dp)
                             .offset(
-                                x = boardWidthPx * (x + laneWidth * 0.1f),
-                                y = boardHeightPx * y,
+                                x = boardWidth * (x + laneWidth * 0.1f),
+                                y = boardHeight * y,
                             )
                             .clip(RoundedCornerShape(8.dp))
                             .background(color)
@@ -166,10 +182,7 @@ fun RhythmGameScreen(
                                 .weight(1f)
                                 .fillMaxHeight()
                                 .pointerInput(Unit) {
-                                    detectTapGestures {
-                                        val pos = app.activeLightSyncSource.value.lead.positionMs ?: System.currentTimeMillis()
-                                        viewModel.tap(lane, pos)
-                                    }
+                                    detectTapGestures { viewModel.tap(lane, nowMs) }
                                 }
                         )
                     }
@@ -194,6 +207,9 @@ private fun ScoreColumn(label: String, value: String) {
         Text(value, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 24.sp)
     }
 }
+
+/** Matches [com.engabd.sendpin.game.NoteGenerator]'s default lookahead. */
+private const val LOOK_AHEAD_MS = 2000f
 
 private fun noteColor(kind: NoteKind, accent: Color): Color = when (kind) {
     NoteKind.KICK -> Color(0xFFFF5252)

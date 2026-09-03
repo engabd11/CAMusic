@@ -173,7 +173,6 @@ private fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSco
             }
         }
 
-
         if (advanced) {
             CardDivider()
             FieldLabel("Output sample rate")

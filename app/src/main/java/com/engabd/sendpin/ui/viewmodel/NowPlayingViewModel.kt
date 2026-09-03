@@ -1814,11 +1814,8 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
                 if (maSimilar.isNotEmpty()) {
                     Load.Ready(maSimilar)
                 } else {
-                    val local = (app as SendpinApp).localSonicIndex.findSimilar(item, limit = 20)
-                        .map { (track, distance) ->
-                            (app as SendpinApp).localSonicIndex.toMaSimilarTrack(track to (1f - distance))
-                        }
-                    Load.Ready(local)
+                    val app = getApplication<Application>() as SendpinApp
+                    Load.Ready(app.localSonicIndex.similarTo(item, limit = 20))
                 }
             } catch (e: Exception) {
                 Load.Failed(e.message ?: "Couldn't find similar tracks")

@@ -48,8 +48,6 @@ import java.io.File
 class TrackScanRepository(
     private val context: Context,
     private val settings: AppSettings = AppSettings(context),
-    /** Optional hook called when a single scan lands. Used to update the sonic index. */
-    private val onScanComplete: suspend (String) -> Unit = {},
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -425,7 +423,6 @@ class TrackScanRepository(
                     synchronized(failedRequests) { failedRequests.remove(request.key) }
                     store.save(request.key, result.scan)
                     _completed.tryEmit(request.key)
-                    onScanComplete(request.key)
                 }
                 is ScanResult.Failed -> noteFailure(request, describe(result), result.reason)
             }

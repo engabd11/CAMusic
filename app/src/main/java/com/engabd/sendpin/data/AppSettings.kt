@@ -26,6 +26,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.floatOrNull
+import com.engabd.sendpin.hue.CoverPaletteOverride
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -88,6 +89,7 @@ class AppSettings(private val context: Context) {
          * Values: "auto" | "internal" | "projection".
          */
         private val PHONE_AUDIO_FEED = stringPreferencesKey("phone_audio_feed")
+        private val PHONE_AUDIO_FEED_VALUES = setOf("auto", "internal", "projection")
         private val MOTION_MODE = stringPreferencesKey("motion_mode")
 
         /** Follow Android's own "remove animations" setting. The default. */
@@ -1210,30 +1212,30 @@ class AppSettings(private val context: Context) {
         parseCoverPaletteOverrides(it[COVER_PALETTE_OVERRIDES] ?: "{}")
     }
 
+    /** A null or empty [override] removes the entry, so saving nothing is clearing. */
     suspend fun setCoverPaletteOverride(id: String, override: CoverPaletteOverride?) {
-        context.dataStore.edit {
-            val current = parseCoverPaletteOverrides(it[COVER_PALETTE_OVERRIDES] ?: "{}")
-            val next = if (override == null || override.colors.isEmpty()) current - id else current + (id to override)
-            it[COVER_PALETTE_OVERRIDES] = JSONObject(next.mapValues { (_, o) ->
-                JSONObject(mapOf(
-                    "colors" to JSONArray(o.colors),
-                    "mode" to o.mode.name,
-                ))
-            } as Map<String, Any>).toString()
+        context.dataStore.edit { prefs ->
+            val current = parseCoverPaletteOverrides(prefs[COVER_PALETTE_OVERRIDES] ?: "{}")
+            val next =
+                if (override == null || override.colors.isEmpty()) current - id
+                else current + (id to override)
+            prefs[COVER_PALETTE_OVERRIDES] = encodeCoverPaletteOverrides(next)
         }
     }
 
-    suspend fun clearCoverPaletteOverride(id: String) {
-        context.dataStore.edit {
-            val current = parseCoverPaletteOverrides(it[COVER_PALETTE_OVERRIDES] ?: "{}")
-            val next = current - id
-            it[COVER_PALETTE_OVERRIDES] = JSONObject(next.mapValues { (_, o) ->
-                JSONObject(mapOf(
-                    "colors" to JSONArray(o.colors),
-                    "mode" to o.mode.name,
-                ))
-            } as Map<String, Any>).toString()
+    suspend fun clearCoverPaletteOverride(id: String) = setCoverPaletteOverride(id, null)
+
+    private fun encodeCoverPaletteOverrides(overrides: Map<String, CoverPaletteOverride>): String {
+        val obj = JSONObject()
+        for ((id, o) in overrides) {
+            obj.put(
+                id,
+                JSONObject()
+                    .put("colors", JSONArray(o.colors))
+                    .put("mode", o.mode.name),
+            )
         }
+        return obj.toString()
     }
 
     private fun parseCoverPaletteOverrides(json: String): Map<String, CoverPaletteOverride> = runCatching {
@@ -1242,7 +1244,8 @@ class AppSettings(private val context: Context) {
             val o = obj.getJSONObject(key)
             val arr = o.getJSONArray("colors")
             val colors = (0 until arr.length()).map { arr.getInt(it) }
-            val mode = runCatching { CoverPaletteOverride.Mode.valueOf(o.getString("mode")) }.getOrDefault(CoverPaletteOverride.Mode.OVERRIDE)
+            val mode = runCatching { CoverPaletteOverride.Mode.valueOf(o.getString("mode")) }
+                .getOrDefault(CoverPaletteOverride.Mode.OVERRIDE)
             CoverPaletteOverride(colors, mode)
         }
     }.getOrDefault(emptyMap())
@@ -1352,10 +1355,6 @@ class AppSettings(private val context: Context) {
 
     suspend fun setPhoneAudioFeed(value: String) {
         context.dataStore.edit { it[PHONE_AUDIO_FEED] = value.takeIf { it in PHONE_AUDIO_FEED_VALUES } ?: "auto" }
-    }
-
-    companion object {
-        private val PHONE_AUDIO_FEED_VALUES = setOf("auto", "internal", "projection")
     }
 
     suspend fun setDuckAnnouncements(value: Boolean) {

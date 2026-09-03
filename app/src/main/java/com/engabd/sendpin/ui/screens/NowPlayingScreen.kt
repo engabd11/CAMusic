@@ -1,7 +1,6 @@
 package com.engabd.sendpin.ui.screens
 
 import android.content.Context
-import android.content.Intent
 import android.media.AudioManager
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -61,7 +60,6 @@ import com.engabd.sendpin.audio.RemoteAudioFormat
 import com.engabd.sendpin.audio.ReplayGain
 import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.data.AppSettings
-import com.engabd.sendpin.hue.CoverPaletteOverride
 import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ma.MaDspDetails
 import com.engabd.sendpin.ma.MaItem
@@ -110,7 +108,6 @@ fun NowPlayingScreen(
     val currentItem by viewModel.currentItem.collectAsStateWithLifecycle()
     val favouritable by viewModel.favouritableItem.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     val settings = remember(context) { AppSettings(context) }
     val visualizerByDefault by settings.showVisualizer.collectAsStateWithLifecycle<Boolean?>(initialValue = null)
 

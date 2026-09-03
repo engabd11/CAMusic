@@ -166,8 +166,8 @@ internal fun AppearanceSection(settings: AppSettings, accent: Color, scope: Coro
                     info = "Spinners, shimmers and the wave seek bar come to rest in a still state " +
                         "instead of freezing wherever they happened to be. An animation that is " +
                         "merely suspended looks broken rather than calm, which is what a plain " +
-                        "speed reduction gives you.\\n\\nTransitions that carry something from one " +
-                        "place to another still run, just without the flourish.\\n\\nTip: this " +
+                        "speed reduction gives you.\n\nTransitions that carry something from one " +
+                        "place to another still run, just without the flourish.\n\nTip: this " +
                         "follows the system setting on its own. Set it here only if you want the " +
                         "app to differ from the rest of the phone.",
                 )

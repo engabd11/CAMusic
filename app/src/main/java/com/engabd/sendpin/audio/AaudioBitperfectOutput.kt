@@ -13,6 +13,7 @@ import androidx.media3.common.Format
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.audio.AudioSink
+import com.engabd.sendpin.data.AppSettings
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -177,7 +178,7 @@ class AaudioBitperfectOutput(
 
         lead.mediaTimeUs = presentationTimeUs
         val writtenFrames = nativeWrite(p, scratch, 0, remaining)
-        val bytesAccepted = (writtenFrames * bytesPerFrame).coerceIn(0, remaining)
+        val bytesAccepted = (writtenFrames * bytesPerFrame).coerceIn(0L, remaining.toLong()).toInt()
 
         if (bytesAccepted < remaining) {
             buffer.position(startPosition + bytesAccepted)
@@ -281,8 +282,6 @@ class AaudioBitperfectOutput(
     override fun handleDiscontinuity() {
         // No internal timeline state to reset beyond what the renderer already manages.
     }
-
-    override fun supportsReset(): Boolean = true
 
     private fun preferredDeviceId(): Int {
         return try {

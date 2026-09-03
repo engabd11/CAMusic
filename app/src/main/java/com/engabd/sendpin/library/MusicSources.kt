@@ -5,6 +5,7 @@ import com.engabd.sendpin.emby.EmbyClient
 import com.engabd.sendpin.emby.EmbyException
 import com.engabd.sendpin.jellyfin.JellyfinClient
 import com.engabd.sendpin.jellyfin.JellyfinException
+import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.mpd.MpdClient
 import com.engabd.sendpin.plex.PlexClient
 import com.engabd.sendpin.subsonic.SubsonicClient
@@ -269,38 +270,16 @@ object MusicSources {
     }
 
     /**
-     * Recover a [MaItem] from the stable scan key used by [TrackScanRepository].
-     * Returns null when the source is not connected or the track no longer exists.
+     * What a track's analysis is filed under, for an item that came from a
+     * library listing rather than the player.
+     *
+     * Deliberately the same shape as `TrackScanRepository.keyFor`, which sees the
+     * `LocalTrack` side of the same song: library id first, then the stream url,
+     * then the title. A key derived any other way would simply never match a
+     * stored scan.
      */
-    suspend fun findByKey(context: android.content.Context, key: String): MaItem? {
-        if (key.isBlank()) return null
-        // Try every local source. This is not fast, but it is only used for the
-        // handful of similar-track results shown on the Now Playing panel.
-        for (source in allLocal(context)) {
-            try {
-                // Direct id match first — most keys are library ids.
-                source.song(key)?.let { return it }
-                // If that fails, page through tracks looking for the id/path/url.
-                var offset = 0
-                while (true) {
-                    val page = source.tracks(offset = offset, limit = 500)
-                    if (page.isEmpty()) break
-                    for (track in page) {
-                        if (scanKey(track) == key) return track
-                    }
-                    offset += page.size
-                    if (page.size < 500) break
-                }
-            } catch (_: Exception) {
-                continue
-            }
-        }
-        return null
-    }
-
-    /** The same key shape used by the scan store, derived from whatever id the item carries. */
     fun scanKey(item: MaItem): String =
         item.itemId.takeIf { it.isNotBlank() }
             ?: item.uri?.takeIf { it.isNotBlank() }
-            ?: "${item.artist.orEmpty()}|${item.name}|${item.album.orEmpty()}"
+            ?: item.name
 }

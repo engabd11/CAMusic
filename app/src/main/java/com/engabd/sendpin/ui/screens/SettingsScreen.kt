@@ -5,16 +5,19 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.SizeTransform
@@ -37,6 +40,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ui.design.Bloom
+import com.engabd.sendpin.ui.design.GlassCard
+import com.engabd.sendpin.ui.design.TitleGap
+import com.engabd.sendpin.ui.design.a
 import com.engabd.sendpin.ui.design.LocalAccent
 import com.engabd.sendpin.ui.design.LocalPalette
 import com.engabd.sendpin.ui.design.Motion
@@ -242,7 +248,7 @@ fun SettingsScreen(
                     // knows what "Downloads" means; what they do not know is whether
                     // theirs are taking a gigabyte or whether the bridge ever paired.
                     item(key = "advanced-toggle") {
-                        AdvancedToggleCard(advanced, accent, scope)
+                        AdvancedToggleCard(advanced, settings, accent, scope)
                     }
                     items(SettingsSection.entries, key = { it.name }, contentType = { "category" }) { s ->
                         // Each row takes its own swatch from the album palette, the same
@@ -594,9 +600,9 @@ private fun BackupSection(settings: AppSettings, accent: Color, scope: Coroutine
 @Composable
 private fun AdvancedToggleCard(
     advanced: Boolean,
+    settings: AppSettings,
     accent: Color,
     scope: CoroutineScope,
-    settings: AppSettings = LocalContext.current.let { remember(it) { AppSettings(it) } },
 ) {
     GlassCard(radius = 16.dp) {
         Row(

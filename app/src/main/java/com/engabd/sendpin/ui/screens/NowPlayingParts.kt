@@ -393,44 +393,43 @@ fun BoxScope.PlayerOverlays(
     if (sheets.options) PlayerOptionsSheet(onClose = { sheets.options = false }, viewModel = viewModel)
     if (sheets.speakers) SpeakerPickerSheet(onClose = { sheets.speakers = false })
 
-    sheets.actions.let { open ->
-        if (open) {
-            val context = LocalContext.current
-            val scope = rememberCoroutineScope()
-            val settings = remember(context) { AppSettings(context) }
-            favouritable?.let { item ->
-                MediaActionsSheet(
-                    item = item,
-                    onClose = { sheets.actions = false },
-                    onPlayNow = {},
-                    onPlayNext = {},
-                    onAddToQueue = {},
-                    onGoToAlbum = {
-                        scope.launch {
-                            viewModel.resolveAlbum(state.album)?.let(onAlbumClick)
-                        }
-                    },
-                    onGoToArtist = {
-                        scope.launch {
-                            viewModel.resolveArtist(state.artist)?.let(onArtistClick)
-                        }
-                    },
-                    onShare = {
-                        val text = listOf(item.name, state.artist, state.album)
-                            .filter { it.isNotBlank() }
-                            .joinToString(", ")
-                        val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                            type = "text/plain"
-                            putExtra(android.content.Intent.EXTRA_TEXT, text)
-                        }
-                        context.startActivity(android.content.Intent.createChooser(send, "Share"))
-                    },
-                    onEditLightSyncColours = {
-                        sheets.actions = false
-                        sheets.palette = true
-                    },
-                )
-            }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val settings = remember(context) { AppSettings(context) }
+
+    if (sheets.actions) {
+        favouritable?.let { item ->
+            MediaActionsSheet(
+                item = item,
+                onClose = { sheets.actions = false },
+                onPlayNow = {},
+                onPlayNext = {},
+                onAddToQueue = {},
+                onGoToAlbum = {
+                    scope.launch {
+                        viewModel.resolveAlbum(state.album)?.let(onAlbumClick)
+                    }
+                },
+                onGoToArtist = {
+                    scope.launch {
+                        viewModel.resolveArtist(state.artist)?.let(onArtistClick)
+                    }
+                },
+                onShare = {
+                    val text = listOf(item.name, state.artist, state.album)
+                        .filter { it.isNotBlank() }
+                        .joinToString(", ")
+                    val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(android.content.Intent.EXTRA_TEXT, text)
+                    }
+                    context.startActivity(android.content.Intent.createChooser(send, "Share"))
+                },
+                onEditLightSyncColours = {
+                    sheets.actions = false
+                    sheets.palette = true
+                },
+            )
         }
     }
 
@@ -440,17 +439,18 @@ fun BoxScope.PlayerOverlays(
             artistName = state.artist.takeIf { it.isNotBlank() } ?: favouritable?.subtitle,
             coverUrl = coverUrl,
             onSave = { override ->
-                scope.launch {
-                    val key = state.album.takeIf { it.isNotBlank() }
-                        ?.let { "$it|${state.artist}" }
-                        ?: favouritable?.itemId ?: ""
-                    if (override == null || override.colors.isEmpty() || key.isBlank()) {
-                        if (key.isNotBlank()) settings.clearCoverPaletteOverride(key)
-                    } else {
-                        settings.setCoverPaletteOverride(key, override)
-                    }
-                    sheets.palette = false
+                // The same key the light-sync engine will look under, from the same
+                // helper — see CoverPaletteOverride.keysFor.
+                val key = CoverPaletteOverride.keysFor(
+                    album = state.album,
+                    artist = state.artist,
+                    coverUrl = coverUrl,
+                    trackId = favouritable?.itemId,
+                ).firstOrNull()
+                if (key != null) {
+                    scope.launch { settings.setCoverPaletteOverride(key, override) }
                 }
+                sheets.palette = false
             },
             onClose = { sheets.palette = false },
         )

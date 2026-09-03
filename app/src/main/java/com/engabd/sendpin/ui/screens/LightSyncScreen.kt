@@ -400,7 +400,11 @@ private fun HaLightSyncScreen(onBack: () -> Unit, viewModel: LightSyncViewModel)
  * "Auto" pill that silently resolved to High would be worse than no pill.
  */
 @Composable
-private fun DirectLightSyncScreen(onBack: () -> Unit, onOpenEffects: () -> Unit = {}) {
+private fun DirectLightSyncScreen(
+    onBack: () -> Unit,
+    onOpenEffects: () -> Unit = {},
+    onOpenRhythmGame: () -> Unit = {},
+) {
     val accent = LocalAccent.current
     val context = androidx.compose.ui.platform.LocalContext.current
     val app = context.applicationContext as com.engabd.sendpin.SendpinApp
@@ -1373,11 +1377,6 @@ private fun PresetChip(
     }
 }
 
-private fun DirectLightSyncScreen(
-    onBack: () -> Unit,
-    onOpenEffects: () -> Unit = {},
-    onOpenRhythmGame: () -> Unit = {},
-) {
 @Composable
 private fun NamePromptDialog(
     title: String,

@@ -176,7 +176,8 @@ class SendpinApp : Application(), ImageLoaderFactory {
         combine(
             localPlayer.current, playback.artworkUrl, playbackOwner.state,
             scanFrameSource.driving, com.engabd.sendpin.capture.PlaybackCapture.running,
-            mpdScanFrameSource.driving, settings.phoneAudioFeed,
+            mpdScanFrameSource.driving,
+            com.engabd.sendpin.data.AppSettings(this).phoneAudioFeed,
         ) { values ->
             @Suppress("UNCHECKED_CAST")
             val localTrack = values[0] as com.engabd.sendpin.audio.LocalTrack?
@@ -340,23 +341,14 @@ class SendpinApp : Application(), ImageLoaderFactory {
      * worth keeping long after that particular show ended.
      */
     val trackScans: com.engabd.sendpin.audio.TrackScanRepository by lazy {
-        com.engabd.sendpin.audio.TrackScanRepository(
-            this,
-            onScanComplete = { key ->
-                runCatching {
-                    trackScans.store.load(key)?.let { scan ->
-                        val item = com.engabd.sendpin.library.MusicSources.findByKey(this, key)
-                        if (item != null) localSonicIndex.update(item, scan)
-                    }
-                }
-            },
-        )
+        com.engabd.sendpin.audio.TrackScanRepository(this)
     }
 
     /**
-     * In-memory sonic-similarity index for local tracks.
-     * Rebuilt after library scans so the Similar panel has something to show
-     * when Music Assistant has no sonic data for the active track.
+     * Sonic-similarity matching over the local libraries' offline scans.
+     *
+     * Read only when Music Assistant has no similar tracks for what is playing;
+     * it indexes itself on that first call. See [com.engabd.sendpin.audio.LocalSonicIndex].
      */
     val localSonicIndex: com.engabd.sendpin.audio.LocalSonicIndex by lazy {
         com.engabd.sendpin.audio.LocalSonicIndex(this, trackScans.store)

@@ -1,11 +1,10 @@
 #include <jni.h>
 #include <android/log.h>
 #include <aaudio/AAudio.h>
+#include <algorithm>
 #include <cstring>
 #include <atomic>
-#include <thread>
 #include <mutex>
-#include <condition_variable>
 #include <queue>
 #include <vector>
 
@@ -52,9 +51,7 @@ struct AaudioOutput {
     std::atomic<int64_t> framesRead{0};
     std::atomic<float> volume{1.0f};
     std::mutex mutex;
-    std::condition_variable cv;
     std::queue<std::vector<uint8_t>> chunks;
-    bool running = false;
     int sampleRate = 48000;
     int channels = 2;
     int bytesPerFrame = 4;
@@ -128,13 +125,22 @@ Java_com_engabd_sendpin_audio_AaudioBitperfectOutput_nativeOpenStream(
         return 0;
     }
 
+    // The callback's userData is what it writes into, and AAudio only accepts it
+    // on the builder - there is no setter for an already-open stream - so the
+    // output has to exist before the stream does.
+    auto* out = new AaudioOutput();
+    out->sampleRate = sampleRate;
+    out->channels = channels;
+    out->format = format;
+    out->bytesPerFrame = channels * bytesPerSampleOf(format);
+
     AAudioStreamBuilder_setDirection(builder, AAUDIO_DIRECTION_OUTPUT);
     AAudioStreamBuilder_setSharingMode(builder, AAUDIO_SHARING_MODE_EXCLUSIVE);
     AAudioStreamBuilder_setPerformanceMode(builder, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
     AAudioStreamBuilder_setSampleRate(builder, sampleRate);
     AAudioStreamBuilder_setChannelCount(builder, channels);
     AAudioStreamBuilder_setFormat(builder, format);
-    AAudioStreamBuilder_setDataCallback(builder, AaudioOutput::callback, nullptr);
+    AAudioStreamBuilder_setDataCallback(builder, AaudioOutput::callback, out);
     if (deviceId > 0) {
         AAudioStreamBuilder_setDeviceId(builder, deviceId);
     }
@@ -144,19 +150,25 @@ Java_com_engabd_sendpin_audio_AaudioBitperfectOutput_nativeOpenStream(
     AAudioStreamBuilder_delete(builder);
     if (result != AAUDIO_OK || stream == nullptr) {
         LOGE("AAudioStreamBuilder_openStream failed: %d", result);
+        delete out;
         return 0;
     }
-
-    auto* out = new AaudioOutput();
     out->stream = stream;
-    out->sampleRate = sampleRate;
-    out->channels = channels;
-    out->format = format;
-    out->bytesPerFrame = channels * bytesPerSampleOf(format);
-    out->running = true;
 
-    // Set the callback userdata now that `out` is valid.
-    AAudioStream_setCallback(stream, AaudioOutput::callback, out);
+    // AAudio is free to hand back a stream in a different format, rate or channel
+    // count to the one asked for. Accepting one would mean feeding it bytes laid
+    // out for something else - noise, and noise presented as bit-perfect. Refusing
+    // is the whole point: the Kotlin side then falls back to DefaultAudioSink.
+    const aaudio_format_t gotFormat = AAudioStream_getFormat(stream);
+    const int32_t gotRate = AAudioStream_getSampleRate(stream);
+    const int32_t gotChannels = AAudioStream_getChannelCount(stream);
+    if (gotFormat != format || gotRate != sampleRate || gotChannels != channels) {
+        LOGE("AAudio opened %dHz/%dch/fmt=%d, asked for %dHz/%dch/fmt=%d - declining",
+             gotRate, gotChannels, gotFormat, sampleRate, channels, format);
+        AAudioStream_close(stream);
+        delete out;
+        return 0;
+    }
 
     result = AAudioStream_requestStart(stream);
     if (result != AAUDIO_OK) {

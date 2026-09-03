@@ -68,7 +68,7 @@ class AudioLead {
  * for whatever is left. On-device both numbers are available, in the same clock,
  * on the same thread, on every buffer:
  *
- * - `presentationTimeUs` — the media time of the audio being queued *now`
+ * - `presentationTimeUs` — the media time of the audio being queued *now*
  * - `getCurrentPositionUs` — the media time being *heard* now
  *
  * Their difference is the lead, exactly, with no estimation and nothing for the

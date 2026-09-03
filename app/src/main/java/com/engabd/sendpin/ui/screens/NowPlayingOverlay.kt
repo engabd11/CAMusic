@@ -55,7 +55,6 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.data.AppSettings
-import com.engabd.sendpin.hue.CoverPaletteOverride
 import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ui.design.titleMarquee
 import com.engabd.sendpin.ui.design.*

@@ -38,11 +38,13 @@ import coil.request.ImageRequest
 import coil.request.SuccessResult
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.hue.CoverPaletteOverride
+import com.engabd.sendpin.ui.design.HSlider
 import com.engabd.sendpin.ui.design.HideBottomChrome
 import com.engabd.sendpin.ui.design.LocalAccent
 import com.engabd.sendpin.ui.design.dismissOnDragDown
 import com.engabd.sendpin.ui.design.systemNavInset
 import com.engabd.sendpin.ui.design.TitleGap
+import com.engabd.sendpin.ui.design.a
 import com.engabd.sendpin.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -214,7 +216,9 @@ private fun extractPreviewColors(bmp: Bitmap): List<Color> {
     if (scaled !== bmp) scaled.recycle()
 
     // Group by hue bucket, then pick the most vivid colour in each bucket.
-    val buckets = Array(4) { mutableListOf<Triple<Float, Float, Int>>() }
+    // Each entry is (vividness, ARGB pixel) — vividness only orders the bucket,
+    // the pixel is what the swatch shows.
+    val buckets = Array(4) { mutableListOf<Pair<Float, Int>>() }
     for (p in px) {
         val r = ((p shr 16) and 0xFF) / 255f
         val g = ((p shr 8) and 0xFF) / 255f
@@ -224,13 +228,11 @@ private fun extractPreviewColors(bmp: Bitmap): List<Color> {
         val sat = if (max > 0f) (max - min) / max else 0f
         val hue = rgbHue(r, g, b)
         val bucket = ((hue / 360f) * 4).toInt().coerceIn(0, 3)
-        buckets[bucket].add(Triple(sat * max, max, p))
+        buckets[bucket].add((sat * max) to p)
     }
 
     return buckets.map { list ->
-        if (list.isEmpty()) return@map Color.DarkGray
-        val chosen = list.maxByOrNull { it.first }?.second
-            ?: list.first().second
+        val chosen = list.maxByOrNull { it.first }?.second ?: return@map Color.DarkGray
         Color(chosen)
     }
 }

@@ -68,8 +68,6 @@ object LightSyncFeedPicker {
          */
         phoneAudioFeed: String = "auto",
     ): LightSyncFeed {
-        val internalAvailable = sendspinPlayingHere && hasSendspinTap || localPlaying
-        val projectionAvailable = captureRunning || phoneAudioFeed == "projection"
         return when (phoneAudioFeed) {
             "internal" -> when {
                 sendspinPlayingHere && hasSendspinTap -> LightSyncFeed.SENDSPIN_PCM

@@ -1,8 +1,5 @@
 package com.engabd.sendpin.audio
 
-import com.engabd.sendpin.audio.KeyDetection.MusicalKey
-import com.engabd.sendpin.audio.KeyDetection.MusicalMode
-
 /**
  * A normalised fingerprint for comparing two tracks by their offline scans.
  *
@@ -21,10 +18,9 @@ data class SonicFingerprint(
         /** Best-effort fingerprint from a completed scan. Missing or empty fields degrade gracefully. */
         fun from(scan: TrackScan): SonicFingerprint {
             val key = scan.key
-            val bpm = scan.bpm
             val profile = scan.intensity
             return SonicFingerprint(
-                bpm = bpm?.takeIf { it > 0f } ?: 120f,
+                bpm = scan.bpm.takeIf { it > 0f } ?: 120f,
                 keyTonic = key?.tonic,
                 keyMode = key?.mode?.name,
                 energy = profile?.character?.coerceIn(0f, 1f) ?: 0.5f,
