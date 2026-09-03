@@ -144,6 +144,9 @@ fun LibraryScreen(
     val playlistChoices by viewModel.playlistChoices.collectAsStateWithLifecycle()
     val activeServerConfig by viewModel.activeServerConfig.collectAsStateWithLifecycle()
     val allServers by viewModel.allServers.collectAsStateWithLifecycle()
+    // DJ Radio's opening choice. Collected here rather than in [Browse] for the same
+    // reason `capabilities` is: the sheet is a sibling of the grid, not a child.
+    val djPicker by viewModel.djPicker.collectAsStateWithLifecycle()
     // Only for the switcher's Downloads subtitle. The set is already collected for
     // the row badges deeper in, but that is inside [Browse] and this is not.
     val downloadCount by viewModel.downloadedIds
@@ -281,6 +284,21 @@ fun LibraryScreen(
             )
         }
 
+        // DJ Radio's opening choice — six songs and a brief, before a set starts.
+        // Drawn here in the screen's root Box for the same reason every other sheet
+        // is: an overlay sibling cannot change a sibling's measured size, and there
+        // is no second window to have opinions about focus or insets.
+        djPicker?.let { picker ->
+            DjRadioPickerSheet(
+                state = picker,
+                onClose = viewModel::closeDjPicker,
+                onMood = viewModel::pickDjMood,
+                onReroll = viewModel::rerollDjSeeds,
+                onPick = { seed -> viewModel.startDjRadio(seed = seed, mood = picker.mood) },
+                onSurprise = { viewModel.startDjRadio(seed = null, mood = picker.mood) },
+            )
+        }
+
         // Library switch overlay — triggered by tapping the library badge.
         if (showLibrarySwitch) {
             LibrarySwitchOverlay(
@@ -391,6 +409,7 @@ private fun Browse(
     val djRadioAvailable by viewModel.djRadioAvailable.collectAsStateWithLifecycle()
     val djCrossfade by viewModel.djRadioCrossfadeSeconds.collectAsStateWithLifecycle()
     val djSmartFade by viewModel.djRadioSmartFade.collectAsStateWithLifecycle()
+    val djMood by viewModel.djRadioMood.collectAsStateWithLifecycle()
 
     val s = if (searchOpen) search else null
 
@@ -545,7 +564,10 @@ private fun Browse(
                         running = djRadio,
                         crossfadeSeconds = djCrossfade,
                         smartFade = djSmartFade,
-                        onStart = viewModel::startDjRadio,
+                        moodTitle = djMood?.title,
+                        // The tap opens the choice rather than making it — see
+                        // [DjRadioPickerSheet]. Stop is still one tap.
+                        onStart = viewModel::openDjPicker,
                         onStop = viewModel::stopDjRadio,
                         modifier = Modifier.padding(bottom = 4.dp),
                     )

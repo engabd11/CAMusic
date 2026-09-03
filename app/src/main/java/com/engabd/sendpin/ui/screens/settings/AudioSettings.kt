@@ -14,6 +14,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.audio.AudioOutputs
 import com.engabd.sendpin.audio.DeviceCapabilities
 import com.engabd.sendpin.audio.ExclusiveOutput
@@ -93,11 +94,49 @@ private fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSco
     val route = remember(pinned) { DeviceCapabilities.activeRoute(am, pinned) }
     val mixerRate = remember { DeviceCapabilities.mixerRateHz() }
 
+    // MPD is the one library that plays its own music, with this phone as its
+    // remote. Everything below describes *this phone's* output chain, and on that
+    // library not one line of it is carrying a note: the sound is coming out of the
+    // server's own configured ALSA output, across the room. The card used to say
+    // "Playing through: Earpiece" while a DAC on the other side of the house was
+    // doing the work — the same reading the badge at the top of Now Playing has
+    // always got right. Same three flows it reads.
+    val app = context.applicationContext as SendpinApp
+    val serverPlayer by app.localPlayer.remoteActive.collectAsStateWithLifecycle()
+    val serverOutput by app.localPlayer.remoteOutputDeviceName.collectAsStateWithLifecycle()
+    val serverFormat by app.localPlayer.remoteOutputFormat.collectAsStateWithLifecycle()
+
     SettingsCard(
         title = "Output",
-        lead = "Where this phone sends audio it decodes itself, and what that output can " +
-            "actually accept.",
+        lead = if (serverPlayer)
+            "The library is playing its own music and this phone is its remote, so " +
+                "the output that matters is the server's."
+        else
+            "Where this phone sends audio it decodes itself, and what that output can " +
+                "actually accept.",
     ) {
+        if (serverPlayer) {
+            StatusPanel {
+                StatusRow("Playing through", serverOutput ?: "MPD's configured output")
+                serverFormat?.let { f ->
+                    if (f.sampleRateHz > 0 && f.bitDepth > 0) {
+                        StatusRow("Right now", "${StreamQuality.khz(f.sampleRateHz)} kHz / ${f.bitDepth}-bit")
+                    } else if (f.sampleRateHz > 0) {
+                        StatusRow("Right now", "${StreamQuality.khz(f.sampleRateHz)} kHz")
+                    }
+                    f.channels.takeIf { it > 0 }?.let { StatusRow("Channels", remoteChannels(it)) }
+                    f.bitrateKbps.takeIf { it > 0 }?.let { StatusRow("Bitrate", "$it kb/s") }
+                }
+            }
+            Note(
+                "Reported by the server, not this phone. The settings below still " +
+                    "apply to anything this phone decodes itself — a download played " +
+                    "offline, or another library.",
+            )
+            CardDivider()
+            FieldLabel("This phone")
+        }
+
         // Nothing to choose between on a phone with only its own speaker.
         if (outputs.size >= 2) {
             FieldLabel("Output device")
@@ -353,6 +392,18 @@ internal fun StreamingCard(settings: AppSettings, accent: Color, scope: Coroutin
                 "this one.",
         )
     }
+}
+
+/**
+ * Channel count in the same words [StreamQuality.channelLabel] uses, for a raw
+ * count with no format object to hang it off — the shape MPD reports.
+ */
+private fun remoteChannels(channels: Int): String = when (channels) {
+    1 -> "Mono"
+    2 -> "Stereo"
+    6 -> "5.1"
+    8 -> "7.1"
+    else -> "$channels channels"
 }
 
 // ── Loudness ──────────────────────────────────────────────────────────────

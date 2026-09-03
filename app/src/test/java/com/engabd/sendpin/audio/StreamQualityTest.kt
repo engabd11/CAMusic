@@ -3,6 +3,7 @@ package com.engabd.sendpin.audio
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class StreamQualityTest {
@@ -139,5 +140,64 @@ class StreamQualityTest {
         // Subsonic servers without the OpenSubsonic fields send no channel count, and
         // claiming stereo on their behalf would be a guess dressed as a reading.
         assertEquals(null, StreamQuality("flac").channelLabel)
+    }
+
+    // ─── The live reading, when the library is its own player ────────────────
+
+    @Test
+    fun `a live reading keeps the codec the tags name`() {
+        val tagged = StreamQuality("flac", 44_100, 16)
+        val live = StreamQuality.live(tagged, RemoteAudioFormat(44_100, 16, 2, bitrateKbps = 1_007))
+        assertNotNull(live)
+        assertEquals("FLAC", live.codec)
+        // The whole point: the number that moves while the track plays.
+        assertEquals(1_007, live.bitrateKbps)
+        assertEquals("FLAC • 44.1/16 • 1 Mb/s", live.label)
+    }
+
+    @Test
+    fun `the server's own rate wins over the tags`() {
+        // MPD resampling a 44.1 file to 48 is exactly the case the badge existed
+        // to catch, and the tags cannot see it.
+        val tagged = StreamQuality("flac", 44_100, 16)
+        val live = StreamQuality.live(tagged, RemoteAudioFormat(48_000, 24, 2, bitrateKbps = 2_300))
+        assertNotNull(live)
+        assertEquals(48_000, live.sampleRateHz)
+        assertEquals(24, live.bitDepth)
+    }
+
+    @Test
+    fun `a field the server declined to report falls back to the tags`() {
+        // MPD writes `f` for its own float pipeline, which parses as 0.
+        val tagged = StreamQuality("flac", 44_100, 16, channels = 2)
+        val live = StreamQuality.live(tagged, RemoteAudioFormat(44_100, 0, 0, bitrateKbps = 900))
+        assertNotNull(live)
+        assertEquals(16, live.bitDepth)
+        assertEquals(2, live.channels)
+    }
+
+    @Test
+    fun `nothing live leaves the tags exactly as they were`() {
+        val tagged = StreamQuality("flac", 44_100, 16)
+        assertEquals(tagged, StreamQuality.live(tagged, null))
+        assertEquals(tagged, StreamQuality.live(tagged, RemoteAudioFormat()))
+    }
+
+    @Test
+    fun `a live reading with no tags behind it is still named`() {
+        val live = StreamQuality.live(null, RemoteAudioFormat(44_100, 16, 2, bitrateKbps = 1_411))
+        assertNotNull(live)
+        assertEquals("PCM", live.codec)
+        assertTrue(live.lossless)
+    }
+
+    @Test
+    fun `a stale bitrate is never carried into a live reading`() {
+        // The badge promises a live number. A tagged one that stopped moving is
+        // worse than none, so a server that reports no bitrate reports none.
+        val tagged = StreamQuality("mp3", 44_100, 0, bitrateKbps = 320)
+        val live = StreamQuality.live(tagged, RemoteAudioFormat(44_100, 0, 2, bitrateKbps = 0))
+        assertNotNull(live)
+        assertEquals(0, live.bitrateKbps)
     }
 }

@@ -7,7 +7,9 @@ import androidx.lifecycle.viewModelScope
 import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.audio.AlbumContinuation
 import com.engabd.sendpin.audio.Camelot
+import com.engabd.sendpin.audio.DjMood
 import com.engabd.sendpin.audio.DjProfile
+import com.engabd.sendpin.audio.DjSeeds
 import com.engabd.sendpin.audio.DjSetBuilder
 import com.engabd.sendpin.audio.FormatNegotiator
 import com.engabd.sendpin.audio.LibraryAlbumWalk
@@ -2301,6 +2303,145 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         _backend.map { it == Backend.SUBSONIC }
             .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
+    // --- DJ Radio: session bookkeeping ------------------------------------
+
+    /**
+     * Which set is the current one.
+     *
+     * Incremented by every start, every stop and every queue the listener replaces
+     * it with. Building a set is several round trips and a scan read per candidate,
+     * so there is always a window in which the answer arrives for a set that is
+     * over — and the queue edit at the end of that work is audible. Every one of
+     * those edits re-checks this first; see [djStillRunning].
+     */
+    private var djSession = 0
+
+    /** The set's own coroutine, so a stop cancels the work rather than only ignoring it. */
+    private var djJob: Job? = null
+
+    private val _djRadioMood = MutableStateFlow<DjMood?>(null)
+
+    /** The running set's brief, for the card to name it. Null when there is none. */
+    val djRadioMood: StateFlow<DjMood?> = _djRadioMood
+
+    /**
+     * The brief the running set is being held to, or null for "follow the seed".
+     *
+     * Session state, like [_djRadio] itself and for the same reason: a mood is
+     * something the listener chooses when they start a set, not a preference about
+     * every set they will ever start. Kept in the flow rather than beside it so the
+     * card cannot show a brief the top-up is no longer applying.
+     */
+    private var djMood: DjMood?
+        get() = _djRadioMood.value
+        set(value) { _djRadioMood.value = value }
+
+    // --- DJ Radio: the opening choice -------------------------------------
+
+    /**
+     * One of the six songs the button offers to start from.
+     *
+     * [note] is what makes the six read as six *different* songs rather than six
+     * titles — see [DjSeeds.note]. Null when the library knows nothing about the
+     * track beyond its name.
+     */
+    @Immutable
+    data class DjSeed(val item: MaItem, val note: String?)
+
+    /**
+     * The overlay behind the DJ Radio button, or null when it is closed.
+     *
+     * The button used to start a set from whatever a random page handed back
+     * first, which is a coin toss dressed up as a decision — and then the *same*
+     * coin toss on the next press, because the set that was already running was
+     * simply carried on. A set is defined by the track it is seeded from, and
+     * choosing that is the one part of this the listener is better at than any
+     * amount of analysis.
+     */
+    @Immutable
+    data class DjPicker(
+        val loading: Boolean = true,
+        val mood: DjMood = DjMood.ANYTHING,
+        val seeds: List<DjSeed> = emptyList(),
+    )
+
+    private val _djPicker = MutableStateFlow<DjPicker?>(null)
+    val djPicker: StateFlow<DjPicker?> = _djPicker
+
+    /** The seed fetch in flight, so changing mood twice quickly does not race itself. */
+    private var djSeedJob: Job? = null
+
+    /** Open the picker. What the card's tap does when no set is running. */
+    fun openDjPicker() {
+        if (_backend.value != Backend.SUBSONIC) {
+            _toast.tryEmit("DJ Radio needs a library this phone plays itself")
+            return
+        }
+        if (_djRadio.value) return
+        _djPicker.value = DjPicker(loading = true)
+        loadDjSeeds(DjMood.ANYTHING)
+    }
+
+    fun closeDjPicker() {
+        djSeedJob?.cancel()
+        djSeedJob = null
+        _djPicker.value = null
+    }
+
+    /** Re-brief the picker: same six slots, filled from what answers [mood]. */
+    fun pickDjMood(mood: DjMood) {
+        val open = _djPicker.value ?: return
+        _djPicker.value = open.copy(mood = mood, loading = true)
+        loadDjSeeds(mood)
+    }
+
+    /** Six more, same brief — for when none of these six is the one. */
+    fun rerollDjSeeds() {
+        val open = _djPicker.value ?: return
+        _djPicker.value = open.copy(loading = true)
+        loadDjSeeds(open.mood)
+    }
+
+    /**
+     * Fill the picker's six slots.
+     *
+     * `collectLatest`-style: the previous fetch is cancelled rather than allowed to
+     * land on top of the newer brief, which is what tapping two moods in a second
+     * would otherwise do.
+     */
+    private fun loadDjSeeds(mood: DjMood) {
+        djSeedJob?.cancel()
+        djSeedJob = viewModelScope.launch {
+            val pool = djSeedPool()
+            // The scans are read once, here, and used for both the choosing and the
+            // line under each row — see [scansFor] for why the disk is affordable
+            // on this path and not inside a sort comparator.
+            val scans = scansFor(pool)
+            val profileOf = { item: MaItem -> DjProfile.profileOf(item, scans[item.itemId]) }
+            val picked = DjSeeds.pick(
+                pool = pool,
+                profileOf = profileOf,
+                count = DJ_SEED_CHOICES,
+                mood = mood,
+            )
+            val seeds = picked.map { DjSeed(it, DjSeeds.note(profileOf(it))) }
+            _djPicker.update { it?.copy(loading = false, seeds = seeds, mood = mood) }
+        }
+    }
+
+    /** A wide page to choose the six from — the library's, or the phone's when offline. */
+    private suspend fun djSeedPool(): List<MaItem> {
+        val src = source
+        val fromLibrary = if (_offline.value || src == null) {
+            emptyList<MaItem>()
+        } else {
+            runCatching { src.randomSongs(DJ_SEED_POOL) }.getOrDefault(emptyList())
+        }
+        return fromLibrary.ifEmpty { downloads.value.map { downloadItem(it) } }
+            .filter { it.itemId.isNotBlank() }
+            .distinctBy { it.itemId }
+    }
+
     /**
      * Start a DJ set — from what is playing if anything is, and from the library
      * itself if not.
@@ -2311,11 +2452,23 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * is the best-analysed track a wide random page turns up, because a seed with a
      * scan behind it gives every pick after it something real to be similar to.
      */
-    fun startDjRadio() {
+    fun startDjRadio(seed: MaItem? = null, mood: DjMood? = null) {
         if (_backend.value != Backend.SUBSONIC) {
             _toast.tryEmit("DJ Radio needs a library this phone plays itself")
             return
         }
+        closeDjPicker()
+        // Every set gets a number, and every queue edit made on its behalf carries
+        // that number with it — see [djStillRunning]. Building a set is several
+        // seconds of network and disk, and until this existed a Stop pressed during
+        // that window was simply overtaken: the fill landed on the queue the stop
+        // had just cleared, `LocalPlayer.addToQueue` treated an empty queue as a
+        // fresh session and started playing, and the listener got "I stopped it and
+        // a different song started". Pressing the button again then found a loaded
+        // queue and carried on with that same ghost track, which is the other half
+        // of what was reported.
+        val session = ++djSession
+        djMood = mood?.takeIf { !it.open }
         // Set outside the coroutine so the card lights on the same frame as the tap.
         _djRadio.value = true
         // Claimed before anything is queued. The top-up collectors watch the queue
@@ -2323,16 +2476,20 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         // immediately — so without this the set would be built twice, once here and
         // once by [startLocalRadio], and the listener would get twenty tracks.
         radioFetching = true
-        viewModelScope.launch {
+        djJob?.cancel()
+        djJob = viewModelScope.launch {
             try {
                 val playing = localPlayer.current.value
-                if (playing != null && localPlayer.queue.value.isNotEmpty()) {
+                // A named seed is the listener's own brief, chosen a moment ago in
+                // the picker, and it outranks whatever happened to be on: they did
+                // not pick a song in order to keep hearing a different one.
+                if (seed == null && playing != null && localPlayer.queue.value.isNotEmpty()) {
                     // Already loaded: this track is the brief, and it can be heard
                     // *now*. Sound first, set afterwards — see [fillBehind].
                     val sounding = startOrResume()
                     applyDjCrossfade()
-                    _toast.tryEmit("DJ Radio - mixing on from ${playing.title}")
-                    fillBehind(playing)
+                    _toast.tryEmit(startedMessage(mood, playing.title, mixingOn = true))
+                    fillBehind(playing, session)
                     // A queue that had run to its end had nothing to move into until
                     // the set existed. Now it does.
                     if (!sounding && !startOrResume()) {
@@ -2341,16 +2498,23 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                     return@launch
                 }
 
-                val opener = pickOpener()
+                val opener = seed ?: pickOpener(mood)
                 if (opener == null) {
-                    _djRadio.value = false
-                    applyDjCrossfade()
-                    _toast.tryEmit("Nothing to start a DJ set from")
+                    // Only stand this set down if it is still the one running: a
+                    // newer start that overtook this fetch must not be switched off
+                    // by the older one giving up.
+                    if (djStillRunning(session)) {
+                        _djRadio.value = false
+                        djMood = null
+                        applyDjCrossfade()
+                        _toast.tryEmit("Nothing to start a DJ set from")
+                    }
                     return@launch
                 }
                 stopMaPlayback()
                 rememberSeeds(listOf(opener))
                 val openerTrack = localTrack(opener)
+                if (!djStillRunning(session)) return@launch
                 // setQueue starts playback itself; nothing else here needs to.
                 localPlayer.setQueue(listOf(openerTrack))
                 // [setQueue] decides smoothQueue from the album spread, and a set
@@ -2359,13 +2523,32 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 // "DJ Radio" on.
                 localPlayer.smoothQueue = true
                 applyDjCrossfade()
-                _toast.tryEmit("DJ Radio - ${opener.name}")
-                fillBehind(openerTrack)
+                _toast.tryEmit(startedMessage(mood, opener.name, mixingOn = false))
+                fillBehind(openerTrack, session)
             } finally {
-                radioFetching = false
+                // Only the set that still owns the flag may clear it. A stop, or a
+                // second start landing on top of this one, has already taken it.
+                if (session == djSession) radioFetching = false
             }
         }
     }
+
+    /** The one line the toast gets: what started, and under what brief. */
+    private fun startedMessage(mood: DjMood?, name: String, mixingOn: Boolean): String {
+        val brief = mood?.takeIf { !it.open }?.let { " · ${it.title}" }.orEmpty()
+        return if (mixingOn) "DJ Radio - mixing on from $name$brief" else "DJ Radio - $name$brief"
+    }
+
+    /**
+     * This set is still the set: it was not stopped, and no newer one has taken
+     * over, while the work being guarded was in the air.
+     *
+     * Checked immediately before every queue edit a DJ set makes. The edits are
+     * the only thing the listener can hear, so guarding them is enough — an
+     * abandoned fetch that finishes and then does nothing costs nothing.
+     */
+    private fun djStillRunning(session: Int): Boolean =
+        _djRadio.value && session == djSession
 
     /**
      * The cheapest track that can be playing in the next moment.
@@ -2385,18 +2568,37 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * informs what comes *after* it, and [fillBehind] reads that one scan itself for
      * a single disk hit rather than sixty.
      */
-    private suspend fun pickOpener(): MaItem? {
+    private suspend fun pickOpener(mood: DjMood? = null): MaItem? {
         val src = source
+        // A brief needs something to choose *between*: the first of eight random
+        // tracks is as likely to be a thrash record as a lullaby, and "before
+        // sleep" opening on the thrash record is the button lying. So a mood asks
+        // for a wider page and picks the best answer to it — one extra page, on the
+        // one path where the listener has said what they want.
+        val want = if (mood != null && !mood.open) DJ_SEED_POOL else FAST_START_PAGE
         val fromLibrary = if (_offline.value || src == null) {
             emptyList<MaItem>()
         } else {
-            runCatching { src.randomSongs(FAST_START_PAGE) }.getOrDefault(emptyList())
+            runCatching { src.randomSongs(want) }.getOrDefault(emptyList())
         }
         val page = fromLibrary.ifEmpty { downloads.value.map { downloadItem(it) } }
+            .filter { it.itemId.isNotBlank() }
+        if (page.isEmpty()) return null
         // Shuffled locally as well as server-side: a Subsonic `random` is not
-        // guaranteed to differ between two calls a few seconds apart, and opening on
-        // the same song every time reads as a broken button.
-        return page.filter { it.itemId.isNotBlank() }.shuffled().firstOrNull()
+        // guaranteed to differ between two calls a few seconds apart, and opening
+        // on the same song every time reads as a broken button. With a brief, the
+        // shuffle also breaks the ties that a library with nothing scanned produces
+        // — every fit there is the same number, and `maxBy` on an unshuffled page
+        // would pin the same opener to the button for ever.
+        val shuffled = page.shuffled()
+        if (mood == null || mood.open) return shuffled.firstOrNull()
+        // Only a slice of the page is scanned. This is still the one thing standing
+        // between the tap and the music (see the note above), and a scan read per
+        // candidate over a whole page is exactly the several seconds of nothing the
+        // fast start exists to avoid.
+        val considered = shuffled.take(MOOD_OPENER_PAGE)
+        val scans = scansFor(considered)
+        return considered.maxByOrNull { mood.fit(DjProfile.profileOf(it, scans[it.itemId])) }
     }
 
     /**
@@ -2412,7 +2614,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * in effect, and on a queue that was already loaded it is what keeps the current
      * track and drops the rest.
      */
-    private suspend fun fillBehind(seed: LocalTrack) {
+    private suspend fun fillBehind(seed: LocalTrack, session: Int) {
         val seedId = seed.scrobbleId ?: seed.id
         val picks = djPicks(
             seed = lastSeeds[seedId],
@@ -2420,8 +2622,13 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             exclude = setOf(seedId),
             count = RADIO_BATCH,
             generator = source?.takeIf { !_offline.value }?.let { LibraryRadioSource(it) },
+            mood = djMood,
         )
         if (picks.isEmpty()) return
+        // Several seconds of network and disk have passed since the tap. See
+        // [djStillRunning] — without this the set lands behind a queue that Stop
+        // already emptied, and the room starts playing again.
+        if (!djStillRunning(session)) return
         rememberSeeds(picks)
         localPlayer.replaceUpcoming(picks.map { localTrack(it) })
     }
@@ -2438,6 +2645,14 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun stopDjRadio() {
         if (!_djRadio.value) return
+        // The number moves before anything else does, so a fill or a top-up already
+        // in the air is a no-op by the time it lands rather than a queue that
+        // rebuilds itself behind a stopped player.
+        djSession++
+        djJob?.cancel()
+        djJob = null
+        djMood = null
+        radioFetching = false
         _djRadio.value = false
         localPlayer.djCrossfadeSeconds = 0
         localPlayer.clear()
@@ -2480,6 +2695,14 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun leaveDjRadio() {
         if (!_djRadio.value) return
+        // Same bookkeeping as [stopDjRadio] minus the clear and the toast: the
+        // listener has already replaced the queue with something of their own, and a
+        // top-up still in the air would otherwise append the old set's next ten
+        // tracks to the album they just put on.
+        djSession++
+        djJob?.cancel()
+        djJob = null
+        djMood = null
         _djRadio.value = false
         localPlayer.djCrossfadeSeconds = 0
     }
@@ -2509,10 +2732,16 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         exclude: Set<String>,
         count: Int,
         generator: RadioSource?,
+        /** The brief this set is being held to, or null for "follow the seed". */
+        mood: DjMood? = null,
     ): List<MaItem> {
         val strictness = settings.djRadioSimilarity.first()
         val harmonic = settings.djMode.first()
+        // A brief rejects most of what comes back, so it needs more of it — the same
+        // argument [DjSetBuilder.poolSizeFor] makes about strictness, applied to the
+        // other thing that narrows a set.
         val want = DjSetBuilder.poolSizeFor(count, strictness)
+            .let { if (mood != null && !mood.open) (it * 2).coerceAtMost(240) else it }
 
         val pool = if (generator == null) {
             downloads.value.map { downloadItem(it) }
@@ -2533,6 +2762,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             strictness = strictness,
             harmonic = harmonic,
             recentArtists = recentArtists(),
+            mood = mood,
         )
         // Only what is actually served goes in the history — the rest of the pool is
         // still fair game next time. See [LocalRadio.pool].
@@ -2709,14 +2939,17 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         // memory-only by design, so on a library scanned last week it would come
         // back null for the very track that is playing.
         if (_djRadio.value) {
+            val session = djSession
             val djPicked = djPicks(
                 seed = seed,
                 seedScan = playing?.let { trackScans.cached(it) },
                 exclude = exclude,
                 count = RADIO_BATCH,
                 generator = if (_offline.value) null else generator,
+                mood = djMood,
             )
             if (djPicked.isEmpty()) return false
+            if (!djStillRunning(session) || queueGone()) return false
             rememberSeeds(djPicked)
             localPlayer.addToQueue(djPicked.map { localTrack(it) })
             return true
@@ -2751,10 +2984,24 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                     .ifEmpty { radio.next(generator, seed, RADIO_BATCH, exclude, bonus = bonus) }
         }
         if (picked.isEmpty()) return false
+        if (queueGone()) return false
         rememberSeeds(picked)
         localPlayer.addToQueue(picked.map { localTrack(it) })
         return true
     }
+
+    /**
+     * The queue this top-up was for is gone: stopped, or replaced by something the
+     * listener started while the fetch was in the air.
+     *
+     * The check exists because appending to an empty queue is not an append.
+     * [com.engabd.sendpin.audio.LocalPlayer.addToQueue] reads an empty queue as a
+     * fresh session and *starts playing* — so a top-up that outlived its queue did
+     * not top anything up, it started a song nobody asked for. That is exactly what
+     * "I stopped DJ Radio and another song started instead" was, and it could
+     * happen on the plain "keep the music going" path too.
+     */
+    private fun queueGone(): Boolean = localPlayer.queue.value.isEmpty()
 
     /**
      * Harmonic DJ mode's ranking bonus for one candidate, against the scan of what
@@ -3533,5 +3780,32 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
         /** How far back DJ Radio looks for an artist run it should not extend. */
         const val ARTIST_RUN_WINDOW = 4
+
+        /**
+         * How many songs the opening picker offers.
+         *
+         * Six: enough that the six are genuinely different from each other (see
+         * [DjSeeds]), and few enough to read without scrolling on the smallest
+         * phone this runs on.
+         */
+        const val DJ_SEED_CHOICES = 6
+
+        /**
+         * How wide a page the six are chosen from, and the page a mood opens on.
+         *
+         * Big enough that a brief as narrow as "before sleep" has something to
+         * find in a library that is mostly not that, and small enough to be one
+         * request and one pass of scans off disk.
+         */
+        const val DJ_SEED_POOL = 120
+
+        /**
+         * How many of that page a mood's opener is actually weighed against.
+         *
+         * A scan is a file read, and the opener is the one piece of work the
+         * listener is waiting on — see [pickOpener]. Forty is enough for a brief
+         * to find something it likes and few enough to stay under the tap.
+         */
+        const val MOOD_OPENER_PAGE = 40
     }
 }

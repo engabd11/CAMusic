@@ -709,6 +709,33 @@ class MpdClient(
         commandList(*files.map { "add ${quote(it)}" }.toTypedArray())
     }
 
+    /**
+     * Drop everything after [after] and put [files] there instead, leaving the
+     * entry at [after] playing untouched.
+     *
+     * The edit DJ Radio makes when it starts over a record that is already on,
+     * and the one a tail shuffle makes. Sent as a `delete` of the range and a
+     * run of `add`s rather than as [playQueue], which ends in `play` and so
+     * restarts the song the listener is in the middle of — see
+     * [com.engabd.sendpin.audio.RemotePlayback.replaceUpcoming].
+     *
+     * The length is read first because `delete START:END` is an error when
+     * there is nothing in the range, and an error aborts the whole command
+     * list — so a queue of one track (a DJ set's opener) would have had its
+     * `add`s silently thrown away with it. A server that will not answer
+     * `status` gets the appends alone, which is the harmless half.
+     */
+    suspend fun replaceAfter(files: List<String>, after: Int) {
+        val from = (after + 1).coerceAtLeast(0)
+        val length = status()?.playlistLength ?: 0
+        val cmds = buildList {
+            if (length > from) add("delete $from:$length")
+            files.forEach { add("add ${quote(it)}") }
+        }
+        if (cmds.isEmpty()) return
+        commandList(*cmds.toTypedArray())
+    }
+
     /** Insert [files] directly after the playing entry. */
     suspend fun enqueueNext(files: List<String>, after: Int) {
         if (files.isEmpty()) return

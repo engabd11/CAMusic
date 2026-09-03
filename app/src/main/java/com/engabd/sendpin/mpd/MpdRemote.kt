@@ -49,6 +49,13 @@ class MpdRemote(private val client: MpdClient) : RemotePlayback {
     override suspend fun playNext(tracks: List<LocalTrack>, afterIndex: Int) =
         client.enqueueNext(files(tracks), afterIndex)
 
+    /**
+     * The tail, edited in place. See [MpdClient.replaceAfter] for why this is
+     * not the interface's default of "send the whole queue again".
+     */
+    override suspend fun replaceUpcoming(tracks: List<LocalTrack>, afterIndex: Int) =
+        client.replaceAfter(files(tracks), afterIndex)
+
     override suspend fun playAt(index: Int) = client.playAt(index)
     override suspend fun pause() = client.pause()
     override suspend fun resume() = client.resume()

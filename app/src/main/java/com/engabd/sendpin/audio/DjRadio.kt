@@ -289,6 +289,20 @@ object DjSetBuilder {
     private const val ARTIST_RUN_PENALTY = 0.25f
 
     /**
+     * How much of a pick's score a [DjMood] is allowed to be worth.
+     *
+     * A third, not all of it. A mood is a brief for the *set* — "keep it slow and
+     * dark" — and the thing that makes a set a set rather than a filtered playlist
+     * is still that each track follows the one before it. Weighted higher, the
+     * builder simply plays the library in order of mood fit and every transition
+     * inside it is a coin toss; weighted lower, the brief is decoration. At a third
+     * the mood decides which corner of the library the set lives in and similarity
+     * decides the running order inside it, which is the division of labour
+     * [DjMood] is written around.
+     */
+    private const val MOOD_WEIGHT = 0.34f
+
+    /**
      * Up to [count] tracks to play after [seed], best-first and in playing order.
      *
      * [pool] is whatever the ladder in [LocalRadio] managed to find; [profileOf]
@@ -304,6 +318,11 @@ object DjSetBuilder {
         strictness: Float,
         harmonic: Boolean,
         recentArtists: List<String> = emptyList(),
+        /**
+         * The brief the whole set is being held to, or null for "follow the seed",
+         * which is what this has always done. See [DjMood].
+         */
+        mood: DjMood? = null,
     ): List<MaItem> {
         if (pool.isEmpty() || count <= 0) return emptyList()
         // By id, not by item: the ladder can hand back the same track under two
@@ -321,7 +340,7 @@ object DjSetBuilder {
         var current = seed
 
         while (picked.size < count && remaining.isNotEmpty()) {
-            val next = choose(current, remaining, profiles, strictness, harmonic, artistRun) ?: break
+            val next = choose(current, remaining, profiles, strictness, harmonic, artistRun, mood) ?: break
             remaining.remove(next)
             picked.add(next)
             val profile = profiles.getValue(next.itemId)
@@ -342,13 +361,28 @@ object DjSetBuilder {
         strictness: Float,
         harmonic: Boolean,
         artistRun: List<String>,
+        mood: DjMood?,
     ): MaItem? {
-        if (current == null) return remaining.firstOrNull()
+        // Null unless there is a brief with something to say — [DjMood.ANYTHING] is
+        // the listener declining to give one, and folding it away here means the
+        // whole of the rest of this method is the code that ran before moods
+        // existed, unchanged.
+        val brief = mood?.takeIf { !it.open }
+        // With no track to be similar *to* yet, the brief is the only thing there is
+        // to answer — so the opener is the best answer to it rather than whatever
+        // the pool handed back first.
+        if (current == null) {
+            if (brief == null) return remaining.firstOrNull()
+            return remaining.maxByOrNull { brief.fit(profiles.getValue(it.itemId)) }
+        }
         val trailing = trailingRun(artistRun)
         val ranked = remaining
             .map { item ->
                 val profile = profiles.getValue(item.itemId)
                 var s = DjSimilarity.score(current, profile, harmonic)
+                if (brief != null) {
+                    s = (1f - MOOD_WEIGHT) * s + MOOD_WEIGHT * brief.fit(profile)
+                }
                 if (trailing != null && profile.artist.equals(trailing, ignoreCase = true)) {
                     s -= ARTIST_RUN_PENALTY
                 }

@@ -61,6 +61,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
@@ -863,6 +864,10 @@ fun QualityPill(
             style = if (compact) TextStyle(fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 9.sp)
                     else MaterialTheme.typography.labelMedium,
             maxLines = 1,
+            // The label grew a live bitrate on the MPD path, where it moves from
+            // second to second. Clipping the tail of a long one is the right
+            // failure on a narrow phone; pushing the transport icons apart is not.
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }
