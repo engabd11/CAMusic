@@ -93,6 +93,8 @@ fun LightSyncScreen(
     viewModel: LightSyncViewModel = viewModel(),
     /** Opens the ambience Effects screen. Only offered on the direct-to-bridge path. */
     onOpenEffects: () -> Unit = {},
+    /** Opens the rhythm game. Only offered on the direct-to-bridge path. */
+    onOpenRhythmGame: () -> Unit = {},
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val settings = remember(context) {
@@ -104,7 +106,7 @@ fun LightSyncScreen(
         // Effects drives the bridge's entertainment stream directly, which is what the
         // direct path already owns. The Home Assistant path talks to HA's own light
         // service and has no per-frame stream to script, so it does not offer them.
-        "direct" -> DirectLightSyncScreen(onBack, onOpenEffects)
+        "direct" -> DirectLightSyncScreen(onBack, onOpenEffects, onOpenRhythmGame)
         else -> HaLightSyncScreen(onBack, viewModel)
     }
 }
@@ -740,6 +742,19 @@ private fun DirectLightSyncScreen(onBack: () -> Unit, onOpenEffects: () -> Unit 
                 }
 
                 Spacer(Modifier.height(22.dp))
+                SectionLabel("Play")
+                Spacer(Modifier.height(10.dp))
+                GlassCard(radius = 18.dp, modifier = Modifier.clickable(onClick = onOpenRhythmGame).fillMaxWidth()) {
+                    Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+                            Text("Rhythm Lights", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                            Text("Tap along and flash the room.", color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                        }
+                        Icon(Icons.Default.ChevronRight, null, tint = TextMuted)
+                    }
+                }
+
+                Spacer(Modifier.height(22.dp))
                 SectionLabel("This phone")
                 Spacer(Modifier.height(10.dp))
                 val phoneAudioFeed by settings.phoneAudioFeed.collectAsState(initial = "auto")
@@ -1358,6 +1373,11 @@ private fun PresetChip(
     }
 }
 
+private fun DirectLightSyncScreen(
+    onBack: () -> Unit,
+    onOpenEffects: () -> Unit = {},
+    onOpenRhythmGame: () -> Unit = {},
+) {
 @Composable
 private fun NamePromptDialog(
     title: String,
