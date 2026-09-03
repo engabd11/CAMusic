@@ -149,7 +149,10 @@ class StreamQualityTest {
         val tagged = StreamQuality("flac", 44_100, 16)
         val live = StreamQuality.live(tagged, RemoteAudioFormat(44_100, 16, 2, bitrateKbps = 1_007))
         assertNotNull(live)
-        assertEquals("FLAC", live.codec)
+        // Verbatim: `codec` is the tag as the library wrote it, and the uppercasing
+        // is `displayCodec`'s job on the way to the badge — which the label below
+        // is what actually proves.
+        assertEquals("flac", live.codec)
         // The whole point: the number that moves while the track plays.
         assertEquals(1_007, live.bitrateKbps)
         assertEquals("FLAC • 44.1/16 • 1 Mb/s", live.label)
