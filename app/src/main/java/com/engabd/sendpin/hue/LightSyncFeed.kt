@@ -67,17 +67,32 @@ object LightSyncFeedPicker {
          * "projection" — always use MediaProjection capture.
          */
         phoneAudioFeed: String = "auto",
+        /**
+         * A library that plays its own music is playing, with this phone as its
+         * remote — MPD. Nothing audible reaches this phone at all.
+         *
+         * Ranked below [scanDriving], because a scan that is actually driving is
+         * the answer and this is only the question. It is here so that the case
+         * where no scan could be found still *reports* through the scan branch:
+         * falling through to [LightSyncFeed.LOCAL_PCM] left the status screen
+         * saying "waiting for audio" about PCM that was never going to arrive,
+         * over a track whose real problem — nothing in any library to analyse —
+         * [ShowStatusRules] was holding the words for and never got to say.
+         */
+        remoteHoldsSound: Boolean = false,
     ): LightSyncFeed {
         return when (phoneAudioFeed) {
             "internal" -> when {
                 sendspinPlayingHere && hasSendspinTap -> LightSyncFeed.SENDSPIN_PCM
                 localPlaying -> LightSyncFeed.LOCAL_PCM
                 scanDriving -> LightSyncFeed.SCAN_REMOTE
+                remoteHoldsSound -> LightSyncFeed.SCAN_REMOTE
                 else -> LightSyncFeed.LOCAL_PCM
             }
             "projection" -> when {
                 captureRunning -> LightSyncFeed.CAPTURE
                 scanDriving -> LightSyncFeed.SCAN_REMOTE
+                remoteHoldsSound -> LightSyncFeed.SCAN_REMOTE
                 else -> LightSyncFeed.LOCAL_PCM
             }
             else -> when { // "auto" and anything unexpected
@@ -85,6 +100,7 @@ object LightSyncFeedPicker {
                 localPlaying -> LightSyncFeed.LOCAL_PCM
                 captureRunning -> LightSyncFeed.CAPTURE
                 scanDriving -> LightSyncFeed.SCAN_REMOTE
+                remoteHoldsSound -> LightSyncFeed.SCAN_REMOTE
                 else -> LightSyncFeed.LOCAL_PCM
             }
         }

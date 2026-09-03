@@ -242,6 +242,14 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     @Volatile private var navFormat: String? = null
 
     /**
+     * The badge's reading when the library plays its own music — the server's
+     * live decode, named by the file's own tags. See [StreamQuality.live] for
+     * why it takes half of each.
+     */
+    private fun serverQuality(track: LocalTrack?, live: RemoteAudioFormat?): StreamQuality? =
+        StreamQuality.live(track?.sourceQuality, live)
+
+    /**
      * The format a Navidrome transcode token describes, for the Source row. Rates and
      * depths are the codecs' own defaults — the token only pins codec and bitrate, and
      * claiming a sample rate the server never promised would be worse than omitting it.
@@ -722,6 +730,11 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             // the output.
             quality = when {
                 t == null -> null
+                // MPD is decoding, and it says once a second what it is decoding
+                // *to*. That reading is the honest answer to "what is playing", and
+                // the bitrate in it is the one number on this screen that moves
+                // while a VBR track plays. See [serverQuality].
+                toggles.server.active -> serverQuality(t, l.outputFormat)
                 t.offline -> t.sourceQuality ?: deviceQuality
                 else -> navFormat?.let { transcodeQuality(it) } ?: t.sourceQuality ?: deviceQuality
             },

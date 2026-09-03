@@ -139,6 +139,49 @@ data class StreamQuality(
     companion object {
         private val LOSSLESS = setOf("flac", "alac", "wav", "aiff", "pcm", "dsf", "dff", "ape", "wavpack")
 
+        /**
+         * What a [RemotePlayback] is decoding right now, named by the file's own
+         * tags — the badge's reading when the library plays its own music.
+         *
+         * The two halves answer different questions and neither is enough alone.
+         * A remote player's status line says the sample rate, bit depth, channel
+         * count and — the point of this — the **bitrate it is decoding at right
+         * now**, which on a VBR file moves from second to second and on a lossless
+         * one is the real measure of what is coming off the disk. What it does not
+         * say is what the *codec* is; only the file's tags know that, and a badge
+         * reading "44.1/16" with no name on it is not a badge.
+         *
+         * So: codec from [tagged], everything measurable from [live], and [tagged]
+         * again wherever the player declined to say — MPD writes `f` for its own
+         * float pipeline and `*` for "not decided yet", both of which
+         * `MpdClient.parseAudioFormat` turns into 0. With nothing live at all this
+         * is [tagged] unchanged, which is exactly what the badge showed before.
+         *
+         * The gain and size fields are carried across untouched: they describe the
+         * file, and the file has not changed.
+         */
+        fun live(tagged: StreamQuality?, live: RemoteAudioFormat?): StreamQuality? {
+            if (live == null) return tagged
+            val known = live.sampleRateHz > 0 || live.bitDepth > 0 ||
+                live.bitrateKbps > 0 || live.channels > 0
+            if (!known) return tagged
+            return StreamQuality(
+                // "PCM" rather than a blank: a player that is decoding something is
+                // putting linear audio out of it, and an unnamed badge is worse
+                // than a general one.
+                codec = tagged?.codec?.takeIf { it.isNotBlank() } ?: "PCM",
+                sampleRateHz = live.sampleRateHz.takeIf { it > 0 } ?: tagged?.sampleRateHz ?: 0,
+                bitDepth = live.bitDepth.takeIf { it > 0 } ?: tagged?.bitDepth ?: 0,
+                // Never carried over from the tags: a stale bitrate on a badge that
+                // is meant to be live is worse than no bitrate at all.
+                bitrateKbps = live.bitrateKbps.takeIf { it > 0 } ?: 0,
+                channels = live.channels.takeIf { it > 0 } ?: tagged?.channels ?: 0,
+                replayGainTrack = tagged?.replayGainTrack,
+                replayGainAlbum = tagged?.replayGainAlbum,
+                sizeBytes = tagged?.sizeBytes ?: 0,
+            )
+        }
+
         /** 44100 → "44.1", 96000 → "96". */
         internal fun khz(hz: Int): String {
             val k = hz / 1000.0

@@ -74,6 +74,15 @@ internal fun DjRadioCard(
     crossfadeSeconds: Int,
     /** The join is planned off the track analysis rather than off the clock. */
     smartFade: Boolean,
+    /**
+     * The brief the running set is being held to, or null when it is simply
+     * following its seed.
+     *
+     * On the card because a set that is holding to "before sleep" and one that is
+     * not are different sets, and the only place that is currently visible is the
+     * toast that has already gone.
+     */
+    moodTitle: String?,
     onStart: () -> Unit,
     onStop: () -> Unit,
     modifier: Modifier = Modifier,
@@ -171,8 +180,11 @@ internal fun DjRadioCard(
                 )
                 Text(
                     when {
+                        running && moodTitle != null -> "$moodTitle · $mixLabel · tap to stop"
                         running -> "Mixing on · $mixLabel · tap to stop"
-                        else -> "One tap, one mood, no gaps · $mixLabel"
+                        // Says what the tap does now that it opens a choice rather
+                        // than starting on whatever came back first.
+                        else -> "Pick a mood and a song to start from · $mixLabel"
                     },
                     color = TextMuted,
                     fontFamily = AppFont,

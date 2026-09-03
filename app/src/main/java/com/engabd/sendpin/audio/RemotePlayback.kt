@@ -34,6 +34,24 @@ interface RemotePlayback {
     /** Insert directly after the entry at [afterIndex]. */
     suspend fun playNext(tracks: List<LocalTrack>, afterIndex: Int)
 
+    /**
+     * Keep the entry at [afterIndex] playing and replace everything behind it
+     * with [tracks].
+     *
+     * A distinct call rather than a [setQueue] with the same list, because on a
+     * player that holds its own queue those are not the same thing at all.
+     * MPD's queue swap is `clear`, an `add` per track and a `play` — and that
+     * `play` restarts the very track the listener is in the middle of. It is
+     * what made starting DJ Radio (or shuffling the tail) over a playing record
+     * jump back to the top of the song, which is the one edit that is supposed
+     * to be inaudible: the current entry is not being changed.
+     *
+     * The default sends the whole queue, which is the honest answer for a
+     * player with no way to edit its tail — correct, and audible.
+     */
+    suspend fun replaceUpcoming(tracks: List<LocalTrack>, afterIndex: Int) =
+        setQueue(tracks, afterIndex)
+
     suspend fun playAt(index: Int)
     suspend fun pause()
     suspend fun resume()

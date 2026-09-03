@@ -61,6 +61,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
@@ -707,6 +708,34 @@ fun Bloom(color: Color, size: Dp, x: Dp, y: Dp, alpha: Float = 0.5f) {
 }
 
 /**
+ * The wash a full-screen page wears over [com.engabd.sendpin.ui.theme.Ink]: the
+ * playing album's own colour, bloomed out of the top corner.
+ *
+ * Named rather than repeated because it is the thing that makes the app feel like
+ * one app. Every destination is the same near-black ground, and the only reason
+ * two of them look different is the record that is on — so a page that reaches for
+ * some *other* colour, or for none, reads as a screen from a different application
+ * bolted on. Light Sync was exactly that: its wash was the ambient accent, which is
+ * a fixed colour whenever the listener has chosen one, and it went flat grey the
+ * moment the show was switched off.
+ *
+ * [LocalPalette]'s first swatch and not [LocalAccent], for that reason: the accent
+ * is a *preference* that only follows the artwork on one of its three settings,
+ * while the palette always does. A page that wants to say something about its own
+ * state should say it in [alpha] — brighter while something is running — and leave
+ * the hue to the music.
+ */
+@Composable
+fun PageBloom(
+    alpha: Float = 0.30f,
+    size: Dp = 460.dp,
+    x: Dp = (-60).dp,
+    y: Dp = (-70).dp,
+) {
+    Bloom(LocalPalette.current.swatch(0), size, x, y, alpha)
+}
+
+/**
  * A small static badge marking a feature as not finished.
  *
  * Not a [Pill]: this is not a control and must not look like one — nothing about it
@@ -892,6 +921,10 @@ fun QualityPill(
             style = if (compact) TextStyle(fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 9.sp)
                     else MaterialTheme.typography.labelMedium,
             maxLines = 1,
+            // The label grew a live bitrate on the MPD path, where it moves from
+            // second to second. Clipping the tail of a long one is the right
+            // failure on a narrow phone; pushing the transport icons apart is not.
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }

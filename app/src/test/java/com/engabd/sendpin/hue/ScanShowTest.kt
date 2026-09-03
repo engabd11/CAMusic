@@ -186,6 +186,59 @@ class LightSyncFeedPickerTest {
         )
     }
 
+    /**
+     * MPD is playing and nothing readable reaches this phone. Whether or not a scan
+     * was found, this is the scan branch — the difference is only whether it has
+     * anything to drive with, and the status screen has different words for those
+     * two. Reporting it through the local-PCM branch said "waiting for audio" about
+     * a DAC across the house.
+     */
+    @Test
+    fun `a remote player holding the sound reports through the scan feed`() {
+        assertEquals(
+            LightSyncFeed.SCAN_REMOTE,
+            LightSyncFeedPicker.pick(
+                sendspinPlayingHere = false, hasSendspinTap = false,
+                localPlaying = false, captureRunning = false, scanDriving = false,
+                remoteHoldsSound = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `real audio still beats a remote player with no scan`() {
+        // Ranked below everything that can actually be heard here, so a phone
+        // playing its own music is unaffected by MPD having a queue loaded.
+        assertEquals(
+            LightSyncFeed.LOCAL_PCM,
+            LightSyncFeedPicker.pick(
+                sendspinPlayingHere = false, hasSendspinTap = false,
+                localPlaying = true, captureRunning = false, scanDriving = false,
+                remoteHoldsSound = true,
+            ),
+        )
+        assertEquals(
+            LightSyncFeed.CAPTURE,
+            LightSyncFeedPicker.pick(
+                sendspinPlayingHere = false, hasSendspinTap = false,
+                localPlaying = false, captureRunning = true, scanDriving = false,
+                remoteHoldsSound = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `nothing playing remotely is still the local feed`() {
+        assertEquals(
+            LightSyncFeed.LOCAL_PCM,
+            LightSyncFeedPicker.pick(
+                sendspinPlayingHere = false, hasSendspinTap = false,
+                localPlaying = false, captureRunning = false, scanDriving = false,
+                remoteHoldsSound = false,
+            ),
+        )
+    }
+
     @Test
     fun `sendspin without a tap is not the sendspin feed`() {
         // The engine is rebuilt on reconnect, and for that instant the owner says

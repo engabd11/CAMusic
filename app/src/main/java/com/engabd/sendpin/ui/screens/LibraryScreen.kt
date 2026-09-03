@@ -144,12 +144,14 @@ fun LibraryScreen(
     val playlistChoices by viewModel.playlistChoices.collectAsStateWithLifecycle()
     val activeServerConfig by viewModel.activeServerConfig.collectAsStateWithLifecycle()
     val allServers by viewModel.allServers.collectAsStateWithLifecycle()
+    // DJ Radio's opening choice. Collected here rather than in [Browse] for the same
+    // reason `capabilities` is: the sheet is a sibling of the grid, not a child.
+    val djPicker by viewModel.djPicker.collectAsStateWithLifecycle()
     // Only for the switcher's Downloads subtitle. The set is already collected for
     // the row badges deeper in, but that is inside [Browse] and this is not.
     val downloadCount by viewModel.downloadedIds
         .collectAsStateWithLifecycle()
         .let { ids -> remember { derivedStateOf { ids.value.size } } }
-    val palette = LocalPalette.current
     val snackbar = remember { SnackbarHostState() }
     // Long-press target. Hoisted to the screen so the sheet is a sibling of the
     // grid rather than a child of a row that scrolls out from under it.
@@ -182,7 +184,9 @@ fun LibraryScreen(
     }
 
     Box(Modifier.fillMaxSize().background(Ink)) {
-        Bloom(palette.swatch(0), 520.dp, (-120).dp, (-260).dp, 0.30f)
+        // The app's page wash, named rather than spelled out — see [PageBloom],
+        // which is what every full-screen destination is meant to wear.
+        PageBloom(alpha = 0.30f, size = 520.dp, x = (-120).dp, y = (-260).dp)
 
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars)) {
             Header(
@@ -278,6 +282,21 @@ fun LibraryScreen(
                 onClose = viewModel::closeAddToPlaylist,
                 onPick = viewModel::addToPlaylist,
                 onCreate = { viewModel.createPlaylistFor(pending) },
+            )
+        }
+
+        // DJ Radio's opening choice — six songs and a brief, before a set starts.
+        // Drawn here in the screen's root Box for the same reason every other sheet
+        // is: an overlay sibling cannot change a sibling's measured size, and there
+        // is no second window to have opinions about focus or insets.
+        djPicker?.let { picker ->
+            DjRadioPickerSheet(
+                state = picker,
+                onClose = viewModel::closeDjPicker,
+                onMood = viewModel::pickDjMood,
+                onReroll = viewModel::rerollDjSeeds,
+                onPick = { seed -> viewModel.startDjRadio(seed = seed, mood = picker.mood) },
+                onSurprise = { viewModel.startDjRadio(seed = null, mood = picker.mood) },
             )
         }
 
@@ -391,6 +410,7 @@ private fun Browse(
     val djRadioAvailable by viewModel.djRadioAvailable.collectAsStateWithLifecycle()
     val djCrossfade by viewModel.djRadioCrossfadeSeconds.collectAsStateWithLifecycle()
     val djSmartFade by viewModel.djRadioSmartFade.collectAsStateWithLifecycle()
+    val djMood by viewModel.djRadioMood.collectAsStateWithLifecycle()
 
     val s = if (searchOpen) search else null
 
@@ -545,7 +565,10 @@ private fun Browse(
                         running = djRadio,
                         crossfadeSeconds = djCrossfade,
                         smartFade = djSmartFade,
-                        onStart = viewModel::startDjRadio,
+                        moodTitle = djMood?.title,
+                        // The tap opens the choice rather than making it — see
+                        // [DjRadioPickerSheet]. Stop is still one tap.
+                        onStart = viewModel::openDjPicker,
                         onStop = viewModel::stopDjRadio,
                         modifier = Modifier.padding(bottom = 4.dp),
                     )

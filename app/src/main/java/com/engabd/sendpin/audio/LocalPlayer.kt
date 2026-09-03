@@ -25,6 +25,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -34,6 +35,8 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * One track the local player can play. [localPath] wins over [streamUrl] whenever
@@ -679,6 +682,9 @@ class LocalPlayer(private val context: Context) {
                 _remoteOutputDeviceName.value = null
             }
             stopRemoteLoop()
+            // Anything still queued for the player being detached is addressed by
+            // index into a queue only that player held. See [dropRemoteCommands].
+            dropRemoteCommands()
             // `livePlayer`, not `player`: the latter builds an ExoPlayer on demand,
             // and building one in order to stop it is how switching *to* a remote
             // library would leave an audio engine behind for nothing.
@@ -704,9 +710,87 @@ class LocalPlayer(private val context: Context) {
 
     private var remoteJob: Job? = null
 
-    /** Fire and forget, with the failure kept off the screen. See [RemotePlayback]. */
+    /**
+     * Commands waiting to go out to the remote player, in the order they were
+     * issued, and the one worker that sends them.
+     *
+     * They used to be a `scope.launch` each. Every one of them opens its own
+     * socket and every one of them then ran concurrently on `Dispatchers.IO`, so
+     * two commands issued in order — the queue swap and the `play` that a skip
+     * lands on top of it, say — could reach MPD in either order, or interleave
+     * with the once-a-second `status` poll. That is what made a track started from
+     * the library jump about for the first second or two: the poll answered with
+     * the state from *before* the command, the screen dutifully showed it, and the
+     * next poll put it back. A queue is addressed by index on both sides (see
+     * [MpdRemote]), so an out-of-order edit is not merely a flicker either.
+     *
+     * One unlimited channel and one consumer makes the order the caller wrote the
+     * order the player sees, with no lock for a slow poll to hold against a button
+     * press.
+     */
+    private val remoteQueue = Channel<suspend () -> Unit>(Channel.UNLIMITED)
+    private var remoteWorker: Job? = null
+
+    /**
+     * How many commands are issued but not yet answered for.
+     *
+     * The poll reads it and stays quiet while it is above zero: whatever the
+     * player says mid-command describes the state before it, and applying that is
+     * exactly the glitch above. Zero again means the player's own reading is the
+     * truth once more.
+     */
+    private val remotePending = AtomicInteger(0)
+
+    /**
+     * Bumped by every command issued.
+     *
+     * A poll can be in the air when a command is issued — the socket is already
+     * open and the answer already on its way — and that answer is stale by the
+     * time it lands. Comparing this before and after the poll is how that answer
+     * gets dropped rather than shown.
+     */
+    private val remoteEpoch = AtomicLong(0)
+
+    /** A command has just landed: read the player at once rather than waiting out the interval. */
+    @Volatile
+    private var remoteRepoll = false
+
+    /** Fire and forget, in order, with the failure kept off the screen. See [RemotePlayback]. */
     private fun remoteCall(block: suspend () -> Unit) {
-        scope.launch { runCatching { block() } }
+        remoteEpoch.incrementAndGet()
+        remotePending.incrementAndGet()
+        startRemoteWorker()
+        if (!remoteQueue.trySend(block).isSuccess) remotePending.decrementAndGet()
+    }
+
+    private fun startRemoteWorker() {
+        if (remoteWorker?.isActive == true) return
+        remoteWorker = scope.launch {
+            while (isActive) {
+                val command = remoteQueue.receive()
+                runCatching { command() }
+                // The *last* command of a burst is the one worth re-reading after:
+                // asking between the clear and the play of a queue swap would only
+                // put the intermediate state on screen.
+                if (remotePending.decrementAndGet() <= 0) remoteRepoll = true
+            }
+        }
+    }
+
+    /**
+     * Throw away commands queued for a player that is no longer attached.
+     *
+     * Switching library mid-command would otherwise send the tail of the old
+     * queue's edits to the new player, addressed by indexes into a queue it has
+     * never held.
+     */
+    private fun dropRemoteCommands() {
+        while (remoteQueue.tryReceive().isSuccess) { /* drained */ }
+        remoteWorker?.cancel()
+        remoteWorker = null
+        remotePending.set(0)
+        remoteEpoch.incrementAndGet()
+        remoteRepoll = false
     }
 
     /**
@@ -718,6 +802,12 @@ class LocalPlayer(private val context: Context) {
      * also decoding audio; interpolating costs nothing and is right to within the
      * tick, because a playing track's position advances at exactly one second per
      * second.
+     *
+     * Two rules keep a reading from fighting a command the user has just issued —
+     * see [remotePending] and [remoteEpoch] for what each of them is for. Between
+     * them, the screen never steps backwards onto the track that was playing
+     * before the tap, which is the whole of what "it glitches at the start of a
+     * song, but only when I start or skip one" was.
      */
     private fun startRemoteLoop() {
         stopRemoteLoop()
@@ -725,10 +815,20 @@ class LocalPlayer(private val context: Context) {
         remoteJob = scope.launch {
             var sincePoll = REMOTE_POLL_MS
             while (isActive) {
-                if (sincePoll >= REMOTE_POLL_MS) {
+                val busy = remotePending.get() > 0
+                if (!busy && (remoteRepoll || sincePoll >= REMOTE_POLL_MS)) {
+                    remoteRepoll = false
                     sincePoll = 0
+                    val issuedAt = remoteEpoch.get()
                     val state = runCatching { r.poll() }.getOrNull()
-                    if (state != null) applyRemoteState(state)
+                    if (state != null && remoteEpoch.get() == issuedAt) {
+                        applyRemoteState(state)
+                    } else {
+                        // Unanswered, or overtaken by a command while it was in the
+                        // air. Either way this reading says nothing; ask again on
+                        // the next tick rather than sitting on it for a second.
+                        sincePoll = REMOTE_POLL_MS
+                    }
                 } else if (_playing.value) {
                     // Between polls, and while a poll is failing: the music has not
                     // stopped just because the Wi-Fi dropped a packet.
@@ -794,6 +894,7 @@ class LocalPlayer(private val context: Context) {
      */
     fun adoptRemoteQueue(tracks: List<LocalTrack>, at: Int) {
         if (remote == null || tracks.isEmpty()) return
+        sessionEpoch++
         _queue.value = tracks
         _hasSession.value = true
         smoothQueue = true
@@ -803,10 +904,31 @@ class LocalPlayer(private val context: Context) {
 
     // --- queue ------------------------------------------------------------
 
+    /**
+     * Which listening session this is, counted up every time the queue is replaced
+     * wholesale or emptied.
+     *
+     * A radio top-up is several seconds of network and disk, and the queue it was
+     * asked about can be gone by the time it answers — cleared from the queue
+     * sheet, or replaced by an album the listener started meanwhile. Appending to
+     * that is not a top-up: an empty queue is a *new session* to
+     * [addToQueue], so the answer to a top-up nobody wanted any more was a random
+     * song starting and the queue filling itself back up. Reading this before the
+     * work and again before the append is how a top-up knows the queue it was for
+     * still exists.
+     *
+     * Not a flow: nothing watches it, and everything that reads it is comparing a
+     * value it captured itself.
+     */
+    @Volatile
+    var sessionEpoch: Long = 0L
+        private set
+
     /** Replace the queue and start at [startIndex]. */
     fun setQueue(tracks: List<LocalTrack>, startIndex: Int = 0) {
         if (tracks.isEmpty()) { clear(); return }
         val start = startIndex.coerceIn(0, tracks.lastIndex)
+        sessionEpoch++
         _queue.value = tracks
         _hasSession.value = true
         // Decided here rather than at each call site, because every path that starts
@@ -855,10 +977,25 @@ class LocalPlayer(private val context: Context) {
         player.play()
     }
 
-    /** Append to the queue, starting playback if nothing is loaded. */
-    fun addToQueue(tracks: List<LocalTrack>) {
+    /**
+     * Append to the queue, starting playback if nothing is loaded.
+     *
+     * [startIfEmpty] is what tells a deliberate "add to queue" from a radio
+     * top-up. Landing on an empty queue means two opposite things to the two of
+     * them: the listener adding a track to a stopped player means play it, and a
+     * top-up finding the queue gone means the queue it was for is over. The
+     * top-up passing `false` is why clearing the queue now stays cleared instead
+     * of a random song starting and the whole list building itself back up — see
+     * [sessionEpoch] for the race that produced the answer in the first place.
+     */
+    fun addToQueue(tracks: List<LocalTrack>, startIfEmpty: Boolean = true) {
         if (tracks.isEmpty()) return
         val wasEmpty = _queue.value.isEmpty()
+        if (wasEmpty && !startIfEmpty) return
+        // Landing on an empty queue starts a session, exactly as [setQueue] does, so
+        // it counts as one — anything already in flight for the queue that was there
+        // before is for a different session now.
+        if (wasEmpty) sessionEpoch++
         _queue.value = _queue.value + tracks
         // Appending something from off the record — a radio top-up, a queued track —
         // means this is no longer one album, so the fade applies again.
@@ -916,7 +1053,10 @@ class LocalPlayer(private val context: Context) {
         // album it happened to be a moment ago.
         smoothQueue = true
         remote?.let { r ->
-            remoteCall { r.setQueue(_queue.value, at) }
+            // The current entry is deliberately left alone on the player as well as
+            // in the list: sending the whole queue would restart it, which is
+            // exactly what this method exists not to do.
+            remoteCall { r.replaceUpcoming(tracks, at) }
             return
         }
         val tail = list.size - (at + 1)
@@ -983,11 +1123,21 @@ class LocalPlayer(private val context: Context) {
         val tail = list.subList(from, list.size).shuffled()
         _queue.value = head + tail
         remote?.let { r ->
-            // Sent as a queue replacement rather than as the player's own shuffle:
-            // MPD's `shuffle` would reorder its queue behind this list, and the two
-            // are addressed by index. The list on screen has to be the list the
-            // player holds.
-            remoteCall { r.setQueue(_queue.value, _index.value.coerceAtLeast(0)) }
+            // Sent as an edit rather than as the player's own shuffle: MPD's
+            // `shuffle` would reorder its queue behind this list, and the two are
+            // addressed by index. The list on screen has to be the list the player
+            // holds.
+            //
+            // Only the tail is sent, because only the tail moved — a whole-queue
+            // replacement ends in a `play` that restarts the song being shuffled
+            // *around*. See [RemotePlayback.replaceUpcoming].
+            val at = _index.value
+            // With nothing selected there is no "after the current entry" to edit
+            // around, and the app's own list starts at the shuffled tail — so the
+            // honest edit is the whole queue. Only reachable before the first poll
+            // has landed; every path that loads a queue sets the index first.
+            if (at < 0) remoteCall { r.setQueue(_queue.value, 0) }
+            else remoteCall { r.replaceUpcoming(tail, at) }
             return
         }
         // One removal and one insertion rather than a move per track: ExoPlayer
@@ -1022,6 +1172,7 @@ class LocalPlayer(private val context: Context) {
 
     /** Everything the screens read, back to "nothing is loaded". */
     private fun resetSession() {
+        sessionEpoch++
         _queue.value = emptyList()
         _index.value = -1
         _current.value = null
@@ -1114,6 +1265,9 @@ class LocalPlayer(private val context: Context) {
             if (_positionMs.value > RESTART_THRESHOLD_MS) {
                 seekTo(0)
             } else {
+                // Optimistic for the same reason, and under the same condition, as
+                // [next]'s.
+                if (_index.value > 0 && !_shuffle.value) showRemoteIndex(_index.value - 1)
                 remoteCall { r.previous() }
             }
             return
@@ -1128,7 +1282,15 @@ class LocalPlayer(private val context: Context) {
             // holding the queue — so unlike the local path this does not decide for
             // itself that there is nothing next. The poll sees the stop and emits
             // [exhausted] then.
-            if (_index.value >= _queue.value.lastIndex) _exhausted.tryEmit(Unit)
+            val last = _index.value >= _queue.value.lastIndex
+            if (last) _exhausted.tryEmit(Unit)
+            // Move the screen on the tap rather than on the answer, the same way
+            // [playAt] does. Only when the play order is this list's own order:
+            // with shuffle on, which track comes next is the remote player's
+            // decision (MPD's `random`), and guessing would show one track and then
+            // correct itself to another — the very flicker this path is being
+            // straightened out to stop.
+            if (!last && !_shuffle.value) showRemoteIndex(_index.value + 1)
             remoteCall { r.next() }
             return
         }
@@ -1164,6 +1326,17 @@ class LocalPlayer(private val context: Context) {
      * left" would be infinity, which is not a useful thing to tell a radio.
      */
     fun upcomingCount(limit: Int): Int {
+        remote?.let {
+            // There is no ExoPlayer timeline to ask when the library is its own
+            // player, and the `livePlayer ?: return 0` below answered "none left"
+            // for every single reading on MPD. The radio's top-up trigger is
+            // `upcomingCount < 2`, so it fired on every queue and index emission
+            // for the whole of a session — and [continueAfterEnd] would have moved
+            // the player on the strength of it. The list and the cursor into it are
+            // both held right here; that is the answer.
+            val left = _queue.value.size - 1 - _index.value
+            return left.coerceIn(0, limit)
+        }
         val p = livePlayer ?: return 0
         val timeline = p.currentTimeline
         if (timeline.isEmpty) return 0
