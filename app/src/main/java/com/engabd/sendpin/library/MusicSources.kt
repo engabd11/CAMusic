@@ -1,12 +1,15 @@
 package com.engabd.sendpin.library
 
+import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.emby.EmbyClient
 import com.engabd.sendpin.emby.EmbyException
 import com.engabd.sendpin.jellyfin.JellyfinClient
 import com.engabd.sendpin.jellyfin.JellyfinException
+import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.mpd.MpdClient
 import com.engabd.sendpin.plex.PlexClient
 import com.engabd.sendpin.subsonic.SubsonicClient
+import kotlinx.coroutines.flow.first
 
 /**
  * Turns a stored [ServerConfig] into a live [MusicSource].
@@ -252,4 +255,31 @@ object MusicSources {
 
         else -> config
     }
+
+    /** Every configured local-play server, read once from [AppSettings]. */
+    suspend fun allLocal(context: android.content.Context): List<MusicSource> {
+        val settings = AppSettings(context)
+        val list = settings.servers.first()
+        return buildList {
+            for (config in list) {
+                if (!config.kind.playsLocally) continue
+                val source = create(context, config) ?: continue
+                add(source)
+            }
+        }
+    }
+
+    /**
+     * What a track's analysis is filed under, for an item that came from a
+     * library listing rather than the player.
+     *
+     * Deliberately the same shape as `TrackScanRepository.keyFor`, which sees the
+     * `LocalTrack` side of the same song: library id first, then the stream url,
+     * then the title. A key derived any other way would simply never match a
+     * stored scan.
+     */
+    fun scanKey(item: MaItem): String =
+        item.itemId.takeIf { it.isNotBlank() }
+            ?: item.uri?.takeIf { it.isNotBlank() }
+            ?: item.name
 }

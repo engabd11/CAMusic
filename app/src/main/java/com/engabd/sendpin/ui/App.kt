@@ -83,6 +83,7 @@ import com.engabd.sendpin.ui.screens.NowPlayingOverlay
 import com.engabd.sendpin.ui.screens.NowPlayingScreen
 import com.engabd.sendpin.ui.screens.OnboardingWizard
 import com.engabd.sendpin.ui.screens.PlaylistDetailScreen
+import com.engabd.sendpin.ui.screens.RhythmGameScreen
 import com.engabd.sendpin.ui.screens.SettingsScreen
 import com.engabd.sendpin.ui.screens.SettingsSection
 import com.engabd.sendpin.ui.screens.SpeakersScreen
@@ -186,6 +187,7 @@ private fun sectionOf(route: String?): String? = when {
     // trying to leave straight back on top.
     route == "downloads?from=library" -> "library"
     route == "downloads" || route == "stats" -> "settings"
+    route == "rhythm_game" -> "light_sync"
     // Effects is a sibling of Light Sync in the flat graph, and reached from it — so
     // the Lights tab is the one that should stay lit while it is open.
     route == "effects" -> "light_sync"
@@ -746,6 +748,7 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                             // then the areas reappearing. See LightSyncScreen's own note.
                             viewModel = lightSyncVm,
                             onOpenEffects = { navController.navigate("effects") },
+                            onOpenRhythmGame = { navController.navigate("rhythm_game") },
                         )
                     }
                     screen("effects") {
@@ -753,6 +756,9 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                             onBack = { navController.popBackStack() },
                             viewModel = effectsVm,
                         )
+                    }
+                    screen("rhythm_game") {
+                        RhythmGameScreen(onBack = { navController.popBackStack() })
                     }
                     screen("settings") {
                         SettingsScreen(

@@ -1,7 +1,6 @@
 package com.engabd.sendpin.ui.screens
 
 import android.content.Context
-import android.content.Intent
 import android.media.AudioManager
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -109,7 +108,6 @@ fun NowPlayingScreen(
     val currentItem by viewModel.currentItem.collectAsStateWithLifecycle()
     val favouritable by viewModel.favouritableItem.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     val settings = remember(context) { AppSettings(context) }
     val visualizerByDefault by settings.showVisualizer.collectAsStateWithLifecycle<Boolean?>(initialValue = null)
 
@@ -402,42 +400,13 @@ fun NowPlayingScreen(
 
             // Every sheet and card that sits over the player, in one call so the two
             // layouts cannot disagree about their order — see PlayerOverlays.
-            PlayerOverlays(st, sheets, viewModel)
-
-            // The long-press quick-actions sheet off the album art. Not folded into
-            // PlayerOverlays: it needs the resolved MaItem and the nav callbacks,
-            // neither of which that shared function has a reason to carry.
-            if (sheets.actions) {
-                favouritable?.let { item ->
-                    MediaActionsSheet(
-                        item = item,
-                        onClose = { sheets.actions = false },
-                        onPlayNow = {},
-                        onPlayNext = {},
-                        onAddToQueue = {},
-                        onGoToAlbum = {
-                            scope.launch {
-                                viewModel.resolveAlbum(st.album)?.let(onAlbumClick)
-                            }
-                        },
-                        onGoToArtist = {
-                            scope.launch {
-                                viewModel.resolveArtist(st.artist)?.let(onArtistClick)
-                            }
-                        },
-                        onShare = {
-                            val text = listOf(item.name, st.artist, st.album)
-                                .filter { it.isNotBlank() }
-                                .joinToString(", ")
-                            val send = Intent(Intent.ACTION_SEND).apply {
-                                type = "text/plain"
-                                putExtra(Intent.EXTRA_TEXT, text)
-                            }
-                            context.startActivity(Intent.createChooser(send, "Share"))
-                        },
-                    )
-                }
-            }
+            PlayerOverlays(
+                st, sheets, viewModel,
+                favouritable = favouritable,
+                onAlbumClick = onAlbumClick,
+                onArtistClick = onArtistClick,
+                coverUrl = art.url,
+            )
         }
     }
 }

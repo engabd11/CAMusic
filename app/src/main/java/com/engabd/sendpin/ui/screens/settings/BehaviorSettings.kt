@@ -21,7 +21,7 @@ import kotlinx.coroutines.launch
  * nowhere else for a behavioral setting to go.
  */
 @Composable
-internal fun BehaviorSection(settings: AppSettings, accent: Color, scope: CoroutineScope) {
+internal fun BehaviorSection(settings: AppSettings, accent: Color, scope: CoroutineScope, advanced: Boolean) {
     val showVisualizer by settings.showVisualizer.collectAsStateWithLifecycle(initialValue = false)
     val swipeToSkip by settings.swipeToSkip.collectAsStateWithLifecycle(initialValue = false)
     val sensorGestures by settings.sensorGestures.collectAsStateWithLifecycle(initialValue = false)
@@ -94,41 +94,45 @@ internal fun BehaviorSection(settings: AppSettings, accent: Color, scope: Corout
                     "server-side with no key or tempo data to weigh. An unscanned track simply " +
                     "keeps its plain genre/artist ranking.",
             ) { scope.launch { settings.setDjMode(it) } }
-            ToggleRow(
-                title = "Listening DNA",
-                subtitle = "Log each play's key and tempo, for the Stats screen",
-                checked = listeningDna,
-                accent = accent,
-                info = "Adds a dominant-keys and a BPM sweet-spot breakdown to Stats, from a " +
-                    "snapshot of each played track's key and tempo kept alongside the usual " +
-                    "listening history.\n\nNothing extra is stored until this is turned on, and " +
-                    "turning it off again stops new snapshots without deleting the ones already " +
-                    "logged.",
-            ) { scope.launch { settings.setListeningDna(it) } }
+            if (advanced) {
+                ToggleRow(
+                    title = "Listening DNA",
+                    subtitle = "Log each play's key and tempo, for the Stats screen",
+                    checked = listeningDna,
+                    accent = accent,
+                    info = "Adds a dominant-keys and a BPM sweet-spot breakdown to Stats, from a " +
+                        "snapshot of each played track's key and tempo kept alongside the usual " +
+                        "listening history.\n\nNothing extra is stored until this is turned on, and " +
+                        "turning it off again stops new snapshots without deleting the ones already " +
+                        "logged.",
+                ) { scope.launch { settings.setListeningDna(it) } }
+            }
         }
 
-        SettingsCard(
-            title = "Lyrics timing",
-            lead = "Nudge synced lyrics against the vocal.",
-            info = "Providers stamp the same track differently, so there is no right answer here, " +
-                "only what looks in time to you. Adjustments snap to 50 ms, which is finer than " +
-                "anyone can pick out against a sung line.\n\nThe offset applies to every track " +
-                "rather than being remembered per song.\n\nTip: set it against a slow, clear " +
-                "vocal rather than a fast one. If lyrics run late on some songs and early on " +
-                "others, that is the provider disagreeing with itself and no single offset will " +
-                "fix both.",
-        ) {
-            SliderRow(
-                value = (offset + AppSettings.MAX_LYRICS_OFFSET_MS) /
-                    (2f * AppSettings.MAX_LYRICS_OFFSET_MS),
-                format = { if (offset == 0) "0 ms" else "%+d ms".format(offset) },
-                onChange = { f ->
-                    val ms = (f * 2f * AppSettings.MAX_LYRICS_OFFSET_MS -
-                        AppSettings.MAX_LYRICS_OFFSET_MS).toInt()
-                    scope.launch { settings.setLyricsOffsetMs((ms / 50) * 50) }
-                },
-            )
-            Note("Later ← → earlier")
+        if (advanced) {
+            SettingsCard(
+                title = "Lyrics timing",
+                lead = "Nudge synced lyrics against the vocal.",
+                info = "Providers stamp the same track differently, so there is no right answer here, " +
+                    "only what looks in time to you. Adjustments snap to 50 ms, which is finer than " +
+                    "anyone can pick out against a sung line.\n\nThe offset applies to every track " +
+                    "rather than being remembered per song.\n\nTip: set it against a slow, clear " +
+                    "vocal rather than a fast one. If lyrics run late on some songs and early on " +
+                    "others, that is the provider disagreeing with itself and no single offset will " +
+                    "fix both.",
+            ) {
+                SliderRow(
+                    value = (offset + AppSettings.MAX_LYRICS_OFFSET_MS) /
+                        (2f * AppSettings.MAX_LYRICS_OFFSET_MS),
+                    format = { if (offset == 0) "0 ms" else "%+d ms".format(offset) },
+                    onChange = { f ->
+                        val ms = (f * 2f * AppSettings.MAX_LYRICS_OFFSET_MS -
+                            AppSettings.MAX_LYRICS_OFFSET_MS).toInt()
+                        scope.launch { settings.setLyricsOffsetMs((ms / 50) * 50) }
+                    },
+                )
+                Note("Later ← → earlier")
+            }
         }
     }
 }

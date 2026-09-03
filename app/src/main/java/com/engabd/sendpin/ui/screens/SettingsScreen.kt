@@ -5,16 +5,19 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.SizeTransform
@@ -37,6 +40,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ui.design.Bloom
+import com.engabd.sendpin.ui.design.GlassCard
+import com.engabd.sendpin.ui.design.TitleGap
+import com.engabd.sendpin.ui.design.a
 import com.engabd.sendpin.ui.design.LocalAccent
 import com.engabd.sendpin.ui.design.LocalPalette
 import com.engabd.sendpin.ui.design.Motion
@@ -181,6 +187,7 @@ fun SettingsScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val settings = remember(context) { AppSettings(context) }
+    val advanced by settings.advancedSettings.collectAsStateWithLifecycle(initialValue = false)
 
     // Home Assistant's credentials are read once and held here rather than inside the
     // Light Sync section, so navigating into the bridge page and back doesn't lose a
@@ -240,6 +247,9 @@ fun SettingsScreen(
                     // description of a category is a definition, and the reader already
                     // knows what "Downloads" means; what they do not know is whether
                     // theirs are taking a gigabyte or whether the bridge ever paired.
+                    item(key = "advanced-toggle") {
+                        AdvancedToggleCard(advanced, settings, accent, scope)
+                    }
                     items(SettingsSection.entries, key = { it.name }, contentType = { "category" }) { s ->
                         // Each row takes its own swatch from the album palette, the same
                         // way the library's category tiles do — so eight rows read as a
@@ -281,7 +291,7 @@ fun SettingsScreen(
                                 onDetail = onDetail,
                             )
 
-                            SettingsSection.AUDIO -> AudioSection(viewModel, settings, accent, scope)
+                            SettingsSection.AUDIO -> AudioSection(viewModel, settings, accent, scope, advanced)
 
                             SettingsSection.DOWNLOADS ->
                                 DownloadsSection(libraryViewModel, settings, accent, scope, onOpenDownloads)
@@ -290,6 +300,7 @@ fun SettingsScreen(
                                 settings = settings,
                                 accent = accent,
                                 scope = scope,
+                                advanced = advanced,
                                 detail = detail,
                                 onDetail = onDetail,
                                 haUrl = haUrl,
@@ -306,9 +317,9 @@ fun SettingsScreen(
 
                             SettingsSection.BACKUP -> BackupSection(settings, accent, scope)
 
-                            SettingsSection.APPEARANCE -> AppearanceSection(settings, accent, scope)
+                            SettingsSection.APPEARANCE -> AppearanceSection(settings, accent, scope, advanced)
 
-                            SettingsSection.BEHAVIOR -> BehaviorSection(settings, accent, scope)
+                            SettingsSection.BEHAVIOR -> BehaviorSection(settings, accent, scope, advanced)
 
                             SettingsSection.ABOUT -> AboutSection(accent, onOpenStats)
                         }
@@ -582,6 +593,46 @@ private fun BackupSection(settings: AppSettings, accent: Color, scope: Coroutine
                 }
             },
         )
+    }
+}
+
+/** The master switch that reveals the full settings surface. */
+@Composable
+private fun AdvancedToggleCard(
+    advanced: Boolean,
+    settings: AppSettings,
+    accent: Color,
+    scope: CoroutineScope,
+) {
+    GlassCard(radius = 16.dp) {
+        Row(
+            Modifier.fillMaxWidth()
+                .clickable { scope.launch { settings.setAdvancedSettings(!advanced) } }
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+                Text(
+                    "Advanced settings",
+                    color = TextPrimary,
+                    fontFamily = AppFont,
+                    style = MaterialTheme.typography.titleLarge,
+                )
+                Text(
+                    if (advanced) "Showing every control and explanation" else "Showing only the everyday controls",
+                    color = TextFaint,
+                    fontFamily = AppFont,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Box(
+                Modifier.size(44.dp, 24.dp).clip(RoundedCornerShape(100))
+                    .background(if (advanced) accent else Glass)
+                    .border(1.dp, if (advanced) accent.a(0.5f) else Hairline, RoundedCornerShape(100))
+                    .padding(2.dp),
+                contentAlignment = if (advanced) Alignment.CenterEnd else Alignment.CenterStart,
+            ) { Box(Modifier.size(18.dp).clip(CircleShape).background(if (advanced) Ink else TextMuted)) }
+        }
     }
 }
 

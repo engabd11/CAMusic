@@ -393,6 +393,10 @@ class DirectLightSync(
     /** Normalised room-cube position of every channel, cached alongside [channels]. */
     private var roomPositions: Map<Int, Vec3> = emptyMap()
 
+    /** Optional overlay from the rhythm game, applied on top of the engine output. */
+    @Volatile private var gameOverlay: Map<Int, Rgb>? = null
+    @Volatile private var gameOverlayExpiryMs: Long = 0L
+
     /** What shape the lamps are in, cached alongside [channels]. */
     private var roomTopology: RoomTopology = RoomTopology.CLUSTER
 
@@ -798,7 +802,11 @@ class DirectLightSync(
                 val ac = lastAlbumColours
                 val scheme = ColorScheme.fromWire(settings.lightSyncColor.first())
                 if (ac != null && (scheme == ColorScheme.ALBUM_ART || scheme == ColorScheme.ALBUM_ART_V2)) {
-                    // v1 passes null weights (even interpolation); v2 passes real weights.
+                    // User overrides are already baked into lastAlbumColours by
+                    // applyAlbumArt, so this path respects them too. v1 passes null
+                    // weights (even interpolation); v2 passes real weights. The
+                    // override case uses even spacing because there is no population
+                    // data, and that is already reflected in ac.weights.
                     val w = if (scheme == ColorScheme.ALBUM_ART) null else ac.weights
                     it.setAlbumColors(ac.colors, w)
                 }
@@ -1369,7 +1377,8 @@ class DirectLightSync(
             // its flash budget is measured in wall-clock seconds, so it has to
             // sit after the delay queue rather than before it.
             val guarded = safety?.process(layered, dt) ?: layered
-            val due = rateLimiter.process(guarded, dt)
+            val withGame = applyGameOverlay(guarded)
+            val due = rateLimiter.process(withGame, dt)
 
             // The bridge relays at 25 Hz over Zigbee and the spec asks for a
             // continuous stream because UDP frames are dropped without retry. A
@@ -1403,6 +1412,25 @@ class DirectLightSync(
             // bug — and it costs one map copy on frames that actually differ.
             lastSent = if (due === layered) HashMap(due) else due
         }
+    }
+
+    /** Blend any active rhythm-game hit overlay on top of the computed frame. */
+    private fun applyGameOverlay(base: Map<Int, Rgb>): Map<Int, Rgb> {
+        val overlay = gameOverlay ?: return base
+        if (System.currentTimeMillis() > gameOverlayExpiryMs) {
+            gameOverlay = null
+            return base
+        }
+        val out = HashMap(base)
+        for ((id, rgb) in overlay) {
+            val existing = out[id] ?: Rgb(0f, 0f, 0f)
+            out[id] = Rgb(
+                (existing.first + rgb.first).coerceIn(0f, 1f),
+                (existing.second + rgb.second).coerceIn(0f, 1f),
+                (existing.third + rgb.third).coerceIn(0f, 1f),
+            )
+        }
+        return out
     }
 
     /** What [emitFrame] wants the render loop to do next. */
@@ -1522,17 +1550,48 @@ class DirectLightSync(
             }
             lastAlbumColours = extracted
             lastGoodArtUrl = url
+
+            // User-chosen colours for this album win over whatever was extracted,
+            // but only for the dynamic schemes that actually draw from the cover.
+            val override = if (scheme.isDynamic) findOverride(url) else null
+            val coloursToApply = override?.toAlbumColours() ?: extracted
+
             // v1 (album_art/even) has no weights — pass null so the engine uses
             // pure even interpolation (Palette.evenSample), matching syncoV2's
             // Palette(colors, weights=None). v2 passes the real population weights
-            // for dwell-time-faithful hold-and-crossfade sampling.
-            val paletteWeights = if (scheme == ColorScheme.ALBUM_ART) null else extracted.weights
-            engine?.setAlbumColors(extracted.colors, paletteWeights)
+            // for dwell-time-faithful hold-and-crossfade sampling. Hand-picked
+            // overrides have no population data, so they use even spacing too.
+            val paletteWeights = when {
+                override != null -> null
+                scheme == ColorScheme.ALBUM_ART -> null
+                else -> coloursToApply.weights
+            }
+            engine?.setAlbumColors(coloursToApply.colors, paletteWeights)
         } catch (e: Exception) {
             // A cover that will not load is not a reason to stop the show; the
             // engine keeps whatever palette it already had.
             Log.w(TAG, "Album art palette failed for $url: ${e.message}")
         }
+    }
+
+    /**
+     * A user-corrected palette for whatever is currently playing, if there is one.
+     *
+     * Tries every key the editor could have saved under, in the same order the
+     * editor prefers them — see [CoverPaletteOverride.keysFor]. On the Music
+     * Assistant feed there is no [LocalTrack] at all, and the artwork URL is the
+     * only key left; that is deliberate, not a gap.
+     *
+     * Suspends because it reads [AppSettings.coverPaletteOverrides], which is
+     * backed by DataStore.
+     */
+    private suspend fun findOverride(url: String?): CoverPaletteOverride? {
+        val overrides = settings.coverPaletteOverrides.first()
+        if (overrides.isEmpty()) return null
+        val track = activeSource.value.scanTrack
+        return CoverPaletteOverride
+            .keysFor(track?.album, track?.artist, url, track?.id)
+            .firstNotNullOfOrNull { key -> overrides[key]?.takeIf { it.colors.isNotEmpty() } }
     }
 
     /**
@@ -2053,6 +2112,27 @@ class DirectLightSync(
     /** Album-art colours, pushed by the player when the track changes. */
     fun setAlbumColors(colors: List<Rgb>) {
         engine?.setAlbumColors(colors)
+    }
+
+    /**
+     * A note was hit in the rhythm game. Flash the corresponding side of the room
+     * for a short moment. Called from the UI thread; the overlay is read by the
+     * render loop, so volatility is enough.
+     */
+    fun receiveGameHit(lane: Int, points: Int) {
+        val positions = roomPositions
+        if (positions.isEmpty()) return
+        val color = when (lane) {
+            0 -> Rgb(1f, 0.2f, 0.2f) // red kick
+            1 -> Rgb(0.2f, 0.6f, 1f) // blue snare
+            2 -> Rgb(1f, 0.8f, 0.1f) // yellow hat
+            else -> Rgb(0.5f, 1f, 0.3f) // green melody
+        }
+        val sideX = (lane / 3f) * 2f - 1f // map lane 0..3 to left..right
+        val affected = positions.filter { (_, p) -> kotlin.math.abs(p.x - sideX) < 0.4f }.keys
+        val scale = points / 100f
+        gameOverlay = affected.associateWith { Rgb(color.first * scale, color.second * scale, color.third * scale) }
+        gameOverlayExpiryMs = System.currentTimeMillis() + 150L
     }
 
     // ── Track scans ─────────────────────────────────────────────────────────

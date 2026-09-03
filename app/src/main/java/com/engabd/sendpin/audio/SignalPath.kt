@@ -78,6 +78,8 @@ object SignalPath {
         val highResRequested: Boolean = false,
         /** The player was built with [ExclusiveOutput] on. */
         val exclusive: Boolean = false,
+        /** The player was built with AAudio bit-perfect direct output. */
+        val aaudioBitperfect: Boolean = false,
         /** The rate the device's mixer runs at, or 0 when it could not be read. */
         val mixerRateHz: Int = 0,
     ) {
@@ -188,8 +190,9 @@ object SignalPath {
          * [exclusive] is this app's doing, for the same end — see
          * [ExclusiveOutput] — and deliberately, since exclusive mode's whole point
          * is nothing of ours between the decoder and the DAC.
+         * [aaudioBitperfect] bypasses media3 entirely, so the same applies.
          */
-        val processorsBypassed: Boolean get() = floatEngaged || exclusive
+        val processorsBypassed: Boolean get() = floatEngaged || exclusive || aaudioBitperfect
 
         /** True when Android's mixer is running at a different rate to the stream. */
         val resampling: Boolean
@@ -246,6 +249,11 @@ object SignalPath {
     /** Whether the player currently in use was built with [ExclusiveOutput] on. */
     fun onExclusive(enabled: Boolean) {
         _state.value = _state.value.copy(exclusive = enabled)
+    }
+
+    /** Whether the player currently in use was built with AAudio bit-perfect direct output. */
+    fun onAaudioBitperfect(enabled: Boolean) {
+        _state.value = _state.value.copy(aaudioBitperfect = enabled)
     }
 
     fun onMixerRate(rateHz: Int) {
@@ -309,6 +317,10 @@ object SignalPath {
                     "On the float output path media3 does not run any of this app's audio " +
                     "processors at all — that is media3's own behaviour, not a setting, and " +
                     "it is the price of carrying the extra bits."
+            else if (aaudioBitperfect)
+                "The equaliser and the Light Sync audio analysis are out of the chain — " +
+                    "AAudio bit-perfect output bypasses media3 and sends the decoded PCM " +
+                    "straight to the DAC."
             else
                 "The equaliser and the Light Sync audio analysis are out of the chain — " +
                     "Exclusive output asked for nothing of this app's between the decoder " +

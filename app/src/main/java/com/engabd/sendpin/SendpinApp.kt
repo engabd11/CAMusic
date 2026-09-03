@@ -177,6 +177,7 @@ class SendpinApp : Application(), ImageLoaderFactory {
             localPlayer.current, playback.artworkUrl, playbackOwner.state,
             scanFrameSource.driving, com.engabd.sendpin.capture.PlaybackCapture.running,
             mpdScanFrameSource.driving,
+            com.engabd.sendpin.data.AppSettings(this).phoneAudioFeed,
         ) { values ->
             @Suppress("UNCHECKED_CAST")
             val localTrack = values[0] as com.engabd.sendpin.audio.LocalTrack?
@@ -185,6 +186,7 @@ class SendpinApp : Application(), ImageLoaderFactory {
             val maScanDriving = values[3] as Boolean
             val captureRunning = values[4] as Boolean
             val mpdScanDriving = values[5] as Boolean
+            val phoneAudioFeed = values[6] as String
             val maTap = owner.sendspinTap
             // The precedence lives in one pure function now — see
             // [com.engabd.sendpin.hue.LightSyncFeedPicker]. It used to be an `if` here
@@ -202,6 +204,7 @@ class SendpinApp : Application(), ImageLoaderFactory {
                 localPlaying = owner.soundOwner == PlaybackOwner.Who.LOCAL && owner.soundIsReadable,
                 captureRunning = captureRunning,
                 scanDriving = maScanDriving || mpdScanDriving,
+                phoneAudioFeed = phoneAudioFeed,
             )
             when (feed) {
                 com.engabd.sendpin.hue.LightSyncFeed.SENDSPIN_PCM ->
@@ -339,6 +342,16 @@ class SendpinApp : Application(), ImageLoaderFactory {
      */
     val trackScans: com.engabd.sendpin.audio.TrackScanRepository by lazy {
         com.engabd.sendpin.audio.TrackScanRepository(this)
+    }
+
+    /**
+     * Sonic-similarity matching over the local libraries' offline scans.
+     *
+     * Read only when Music Assistant has no similar tracks for what is playing;
+     * it indexes itself on that first call. See [com.engabd.sendpin.audio.LocalSonicIndex].
+     */
+    val localSonicIndex: com.engabd.sendpin.audio.LocalSonicIndex by lazy {
+        com.engabd.sendpin.audio.LocalSonicIndex(this, trackScans.store)
     }
 
     /**

@@ -67,6 +67,8 @@ internal fun LightSyncSection(
     settings: AppSettings,
     accent: Color,
     scope: CoroutineScope,
+    /** Show detailed rows only when the user has turned on advanced settings. */
+    advanced: Boolean,
     detail: String?,
     onDetail: (String?) -> Unit,
     /** Home Assistant's credentials, hoisted so the section stays stateless. */

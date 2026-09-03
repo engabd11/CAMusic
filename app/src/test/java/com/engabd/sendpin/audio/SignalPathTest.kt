@@ -30,6 +30,7 @@ class SignalPathTest {
         SignalPath.clear()
         SignalPath.onFloatOutput(false)
         SignalPath.onExclusive(false)
+        SignalPath.onAaudioBitperfect(false)
     }
 
     @AfterTest
@@ -37,6 +38,7 @@ class SignalPathTest {
         SignalPath.clear()
         SignalPath.onFloatOutput(false)
         SignalPath.onExclusive(false)
+        SignalPath.onAaudioBitperfect(false)
     }
 
     private fun pcmFormat(sampleRate: Int, encoding: Int, channels: Int = 2): Format =
@@ -99,6 +101,17 @@ class SignalPathTest {
 
         assertTrue(SignalPath.state.value.processorsBypassed, "exclusive mode bypasses regardless of float")
         assertFalse(SignalPath.state.value.floatEngaged, "exclusive alone does not imply the float path engaged")
+    }
+
+    @Test
+    fun `aaudio bit-perfect bypasses the processors at any depth`() {
+        SignalPath.onFloatOutput(false)
+        SignalPath.onExclusive(false)
+        SignalPath.onAaudioBitperfect(true)
+        SignalPath.onDecoderOutput(pcmFormat(44_100, C.ENCODING_PCM_16BIT))
+
+        assertTrue(SignalPath.state.value.processorsBypassed, "aaudio bit-perfect bypasses regardless of float")
+        assertFalse(SignalPath.state.value.floatEngaged, "aaudio bit-perfect alone does not imply the float path engaged")
     }
 
     @Test

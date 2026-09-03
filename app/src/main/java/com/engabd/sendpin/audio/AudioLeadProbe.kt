@@ -43,6 +43,9 @@ class AudioLead {
     var mediaTimeUs: Long = UNKNOWN
         internal set
 
+    /** Position in milliseconds of the newest analysed sample, or null if unknown. */
+    val positionMs: Long? get() = mediaTimeUs.takeIf { it != UNKNOWN }?.let { it / 1000L }
+
     companion object {
         const val UNKNOWN = Long.MIN_VALUE
     }

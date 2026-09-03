@@ -26,6 +26,9 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.floatOrNull
+import com.engabd.sendpin.hue.CoverPaletteOverride
+import org.json.JSONArray
+import org.json.JSONObject
 import kotlinx.serialization.json.jsonPrimitive
 
 private val Context.dataStore by preferencesDataStore(name = "sendpin_settings")
@@ -81,6 +84,12 @@ class AppSettings(private val context: Context) {
          */
         private val DUCK_ANNOUNCEMENTS = booleanPreferencesKey("duck_announcements")
         private val CAPTURE_OTHER_APPS = booleanPreferencesKey("capture_other_apps")
+        /**
+         * How "Listen to this phone" chooses its audio feed.
+         * Values: "auto" | "internal" | "projection".
+         */
+        private val PHONE_AUDIO_FEED = stringPreferencesKey("phone_audio_feed")
+        private val PHONE_AUDIO_FEED_VALUES = setOf("auto", "internal", "projection")
         private val MOTION_MODE = stringPreferencesKey("motion_mode")
 
         /** Follow Android's own "remove animations" setting. The default. */
@@ -119,6 +128,7 @@ class AppSettings(private val context: Context) {
         private val SENDSPIN_CODEC = stringPreferencesKey("sendspin_codec")     // "auto" | "flac" | "pcm" | "opus"
         private val NAV_STREAM_FORMAT = stringPreferencesKey("nav_stream_format") // Subsonic `format=` ("raw" = original)
         private val BIT_PERFECT = booleanPreferencesKey("bit_perfect_24bit")     // 24-bit AudioTrack path when available
+        private val BIT_PERFECT_AAUDIO = booleanPreferencesKey("bit_perfect_aaudio") // AAudio direct I24/float exclusive path
         private val EXCLUSIVE_OUTPUT = booleanPreferencesKey("exclusive_output")  // no processors, no in-app volume — the source's own bits
         // "sendspin_exoplayer" and "sendspin_oboe" were here and are deliberately
         // not replaced. The native Oboe engine is the only MA engine now, so a
@@ -300,6 +310,13 @@ class AppSettings(private val context: Context) {
         // app shows the wizard instead of the main UI on launch.
         private val ONBOARDING_COMPLETED = booleanPreferencesKey("onboarding_completed")
         private val ONBOARDING_SKIPPED = booleanPreferencesKey("onboarding_skipped")
+        /** Show the full set of settings rows; off hides the ones most users never need. */
+        private val ADVANCED_SETTINGS = booleanPreferencesKey("advanced_settings")
+        /**
+         * User-chosen album-art colour overrides, keyed by album id (or track id when
+         * no album id exists). Stored as a JSON object: { "id": [argb, argb, ...], ... }.
+         */
+        private val COVER_PALETTE_OVERRIDES = stringPreferencesKey("cover_palette_overrides")
         // Creative features and UI fixes plan (PR #96) — each off by default until a
         // user turns it on, per the plan's own design principle.
         private val SWIPE_TO_SKIP = booleanPreferencesKey("swipe_to_skip")
@@ -1183,6 +1200,56 @@ class AppSettings(private val context: Context) {
         context.dataStore.edit { it[ONBOARDING_SKIPPED] = skipped }
     }
 
+    /** Collect the full set of settings, or the smaller set most users need. */
+    val advancedSettings: Flow<Boolean> = pref { it[ADVANCED_SETTINGS] ?: false }
+
+    suspend fun setAdvancedSettings(value: Boolean) {
+        context.dataStore.edit { it[ADVANCED_SETTINGS] = value }
+    }
+
+    /** User-chosen cover colours, keyed by album/track id. */
+    val coverPaletteOverrides: Flow<Map<String, CoverPaletteOverride>> = pref {
+        parseCoverPaletteOverrides(it[COVER_PALETTE_OVERRIDES] ?: "{}")
+    }
+
+    /** A null or empty [override] removes the entry, so saving nothing is clearing. */
+    suspend fun setCoverPaletteOverride(id: String, override: CoverPaletteOverride?) {
+        context.dataStore.edit { prefs ->
+            val current = parseCoverPaletteOverrides(prefs[COVER_PALETTE_OVERRIDES] ?: "{}")
+            val next =
+                if (override == null || override.colors.isEmpty()) current - id
+                else current + (id to override)
+            prefs[COVER_PALETTE_OVERRIDES] = encodeCoverPaletteOverrides(next)
+        }
+    }
+
+    suspend fun clearCoverPaletteOverride(id: String) = setCoverPaletteOverride(id, null)
+
+    private fun encodeCoverPaletteOverrides(overrides: Map<String, CoverPaletteOverride>): String {
+        val obj = JSONObject()
+        for ((id, o) in overrides) {
+            obj.put(
+                id,
+                JSONObject()
+                    .put("colors", JSONArray(o.colors))
+                    .put("mode", o.mode.name),
+            )
+        }
+        return obj.toString()
+    }
+
+    private fun parseCoverPaletteOverrides(json: String): Map<String, CoverPaletteOverride> = runCatching {
+        val obj = JSONObject(json)
+        obj.keys().asSequence().associateWith { key ->
+            val o = obj.getJSONObject(key)
+            val arr = o.getJSONArray("colors")
+            val colors = (0 until arr.length()).map { arr.getInt(it) }
+            val mode = runCatching { CoverPaletteOverride.Mode.valueOf(o.getString("mode")) }
+                .getOrDefault(CoverPaletteOverride.Mode.OVERRIDE)
+            CoverPaletteOverride(colors, mode)
+        }
+    }.getOrDefault(emptyMap())
+
     /**
      * Synchronous mirror of [onboardingSkipped], for the first frame.
      *
@@ -1255,6 +1322,17 @@ class AppSettings(private val context: Context) {
     suspend fun setExclusiveOutput(value: Boolean) {
         bootPrefs.edit().putBoolean("exclusive_output", value).apply()
         context.dataStore.edit { it[EXCLUSIVE_OUTPUT] = value }
+        // AAudio bit-perfect is only meaningful with exclusive output; clear it when
+        // exclusive goes off so the UI does not imply a working path that isn't there.
+        if (!value) context.dataStore.edit { it[BIT_PERFECT_AAUDIO] = false }
+    }
+
+    val bitPerfectAaudio: Flow<Boolean> = pref { it[BIT_PERFECT_AAUDIO] ?: false }
+
+    /** The AAudio direct I24/float exclusive path. Requires [exclusiveOutput]. */
+    suspend fun setBitPerfectAaudio(value: Boolean) {
+        bootPrefs.edit().putBoolean("bit_perfect_aaudio", value).apply()
+        context.dataStore.edit { it[BIT_PERFECT_AAUDIO] = value }
     }
 
     /** Clamped to the range the slider offers, so a bad write cannot desync the show. */
@@ -1270,6 +1348,13 @@ class AppSettings(private val context: Context) {
 
     suspend fun setCaptureOtherApps(value: Boolean) {
         context.dataStore.edit { it[CAPTURE_OTHER_APPS] = value }
+    }
+
+    /** Which feed "Listen to this phone" uses: "auto", "internal", or "projection". */
+    val phoneAudioFeed: Flow<String> = pref { it[PHONE_AUDIO_FEED] ?: "auto" }
+
+    suspend fun setPhoneAudioFeed(value: String) {
+        context.dataStore.edit { it[PHONE_AUDIO_FEED] = value.takeIf { it in PHONE_AUDIO_FEED_VALUES } ?: "auto" }
     }
 
     suspend fun setDuckAnnouncements(value: Boolean) {
@@ -1292,8 +1377,18 @@ class AppSettings(private val context: Context) {
      */
     val bootExclusiveOutput: Boolean get() = bootPrefs.getBoolean("exclusive_output", false)
 
+    /** AAudio bit-perfect output, readable without a coroutine — see [bootBitPerfect] for why. */
+    val bootBitPerfectAaudio: Boolean get() = bootPrefs.getBoolean("bit_perfect_aaudio", false)
+
+    /**
+     * Preferred audio device id, readable without a coroutine — [LocalPlayer] and the
+     * AAudio bit-perfect sink need it synchronously when they build the output path.
+     */
+    val bootPreferredAudioDeviceId: String get() = bootPrefs.getString("preferred_audio_device_id", "") ?: ""
+
     /** Takes effect on the next stream/start or track open. */
     suspend fun setPreferredAudioDeviceId(value: String) {
+        bootPrefs.edit().putString("preferred_audio_device_id", value).apply()
         context.dataStore.edit { it[PREFERRED_AUDIO_DEVICE_ID] = value }
     }
 

@@ -12,8 +12,18 @@ add_library(sendspin_output SHARED
     sendspin_output_jni.cpp
 )
 
-target_include_directories(sendspin_output PRIVATE ${CMAKE_SOURCE_DIR})
+add_library(sendspin_aaudio SHARED
+    sendspin_aaudio.cpp
+)
 
+# AAudio is NDK-bundled, unlike Oboe, so no prefab dependency.
+target_link_libraries(sendspin_aaudio
+    ${log-lib}
+    aaudio
+    android
+)
+
+target_include_directories(sendspin_output PRIVATE ${CMAKE_SOURCE_DIR})
 # Oboe's public headers require C++17.
 target_compile_features(sendspin_output PRIVATE cxx_std_17)
 
@@ -22,3 +32,7 @@ target_link_libraries(sendspin_output
     oboe::oboe
     android
 )
+
+# 16 KB page sizes apply to every native library built here.
+target_link_options(sendspin_aaudio PRIVATE "-Wl,-z,max-page-size=16384")
+target_link_options(sendspin_output PRIVATE "-Wl,-z,max-page-size=16384")

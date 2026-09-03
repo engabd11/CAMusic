@@ -93,6 +93,8 @@ fun LightSyncScreen(
     viewModel: LightSyncViewModel = viewModel(),
     /** Opens the ambience Effects screen. Only offered on the direct-to-bridge path. */
     onOpenEffects: () -> Unit = {},
+    /** Opens the rhythm game. Only offered on the direct-to-bridge path. */
+    onOpenRhythmGame: () -> Unit = {},
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val settings = remember(context) {
@@ -104,7 +106,7 @@ fun LightSyncScreen(
         // Effects drives the bridge's entertainment stream directly, which is what the
         // direct path already owns. The Home Assistant path talks to HA's own light
         // service and has no per-frame stream to script, so it does not offer them.
-        "direct" -> DirectLightSyncScreen(onBack, onOpenEffects)
+        "direct" -> DirectLightSyncScreen(onBack, onOpenEffects, onOpenRhythmGame)
         else -> HaLightSyncScreen(onBack, viewModel)
     }
 }
@@ -398,7 +400,11 @@ private fun HaLightSyncScreen(onBack: () -> Unit, viewModel: LightSyncViewModel)
  * "Auto" pill that silently resolved to High would be worse than no pill.
  */
 @Composable
-private fun DirectLightSyncScreen(onBack: () -> Unit, onOpenEffects: () -> Unit = {}) {
+private fun DirectLightSyncScreen(
+    onBack: () -> Unit,
+    onOpenEffects: () -> Unit = {},
+    onOpenRhythmGame: () -> Unit = {},
+) {
     val accent = LocalAccent.current
     val context = androidx.compose.ui.platform.LocalContext.current
     val app = context.applicationContext as com.engabd.sendpin.SendpinApp
@@ -738,6 +744,29 @@ private fun DirectLightSyncScreen(onBack: () -> Unit, onOpenEffects: () -> Unit 
                         )
                     }
                 }
+
+                Spacer(Modifier.height(22.dp))
+                SectionLabel("Play")
+                Spacer(Modifier.height(10.dp))
+                GlassCard(radius = 18.dp, modifier = Modifier.clickable(onClick = onOpenRhythmGame).fillMaxWidth()) {
+                    Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+                            Text("Rhythm Lights", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                            Text("Tap along and flash the room.", color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                        }
+                        Icon(Icons.Default.ChevronRight, null, tint = TextMuted)
+                    }
+                }
+
+                Spacer(Modifier.height(22.dp))
+                SectionLabel("This phone")
+                Spacer(Modifier.height(10.dp))
+                val phoneAudioFeed by settings.phoneAudioFeed.collectAsState(initial = "auto")
+                PhoneAudioCard(
+                    selected = phoneAudioFeed,
+                    onSelect = { scope.launch { settings.setPhoneAudioFeed(it) } },
+                    accent = accent,
+                )
 
                 Spacer(Modifier.height(22.dp))
                 SectionLabel("Other apps")
@@ -1893,4 +1922,40 @@ private fun captureBlurb(
     state == com.engabd.sendpin.capture.PlaybackCapture.State.STOPPED_BY_SYSTEM -> "Capture was stopped."
     state == com.engabd.sendpin.capture.PlaybackCapture.State.DENIED -> "Permission was not granted."
     else -> "Not listening."
+}
+
+@Composable
+private fun PhoneAudioCard(
+    selected: String,
+    onSelect: (String) -> Unit,
+    accent: Color,
+) {
+    GlassCard(radius = 18.dp) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+                    Text(
+                        "Use this phone's audio",
+                        color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp,
+                    )
+                    Text(
+                        "When CAMusic is playing, use its own PCM for the light show.",
+                        color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
+                    )
+                }
+            }
+            val options = listOf("Auto", "Always internal", "Always projection")
+            val values = listOf("auto", "internal", "projection")
+            com.engabd.sendpin.ui.design.SegmentedToggle(
+                options = options,
+                selectedIndex = values.indexOf(selected).coerceAtLeast(0),
+                modifier = Modifier.fillMaxWidth(),
+            ) { onSelect(values[it]) }
+            Text(
+                "Auto uses CAMusic's own tap when it is playing, and MediaProjection for other apps. " +
+                    "Always projection keeps listening through screen capture even when CAMusic is the source.",
+                color = TextFaint, style = MaterialTheme.typography.bodySmall,
+            )
+        }
+    }
 }
