@@ -92,6 +92,13 @@ class TapRenderersFactory(
      * happen to be 0 — the two are set independently, by different settings.
      */
     private val exclusive: Boolean = false,
+    /**
+     * AAudio bit-perfect direct output is on: we still need a sink for media3's
+     * renderer factory, but it is a pure pass-through that reports the signal
+     * path state and lets [AudioLeadProbe] carry position. The actual AAudio
+     * stream is created and fed by [AaudioBitperfectOutput].
+     */
+    private val aaudioBitperfect: Boolean = false,
 ) : DefaultRenderersFactory(context) {
     override fun buildAudioSink(
         context: Context,
@@ -101,13 +108,13 @@ class TapRenderersFactory(
         val sink = DefaultAudioSink.Builder(context)
             .setAudioProcessors(
                 listOfNotNull(
-                    dsp,
-                    vinylNoise,
-                    wowFlutter,
-                    loFi,
-                    oldRadio,
-                    tap,
-                    (if (exclusive) null else OutputRate.hz.takeIf { it > 0 })?.let { rate ->
+                    if (aaudioBitperfect) null else dsp,
+                    if (aaudioBitperfect) null else vinylNoise,
+                    if (aaudioBitperfect) null else wowFlutter,
+                    if (aaudioBitperfect) null else loFi,
+                    if (aaudioBitperfect) null else oldRadio,
+                    if (aaudioBitperfect) null else tap,
+                    (if (exclusive || aaudioBitperfect) null else OutputRate.hz.takeIf { it > 0 })?.let { rate ->
                         androidx.media3.common.audio.SonicAudioProcessor()
                             .apply { setOutputSampleRateHz(rate) }
                     },
@@ -118,6 +125,11 @@ class TapRenderersFactory(
             .build()
         SignalPath.onFloatOutput(enableFloatOutput)
         SignalPath.onExclusive(exclusive)
-        return AudioLeadProbe(sink, lead)
+        SignalPath.onAaudioBitperfect(aaudioBitperfect)
+        return if (aaudioBitperfect) {
+            AaudioBitperfectOutput(context, sink, lead)
+        } else {
+            AudioLeadProbe(sink, lead)
+        }
     }
 }

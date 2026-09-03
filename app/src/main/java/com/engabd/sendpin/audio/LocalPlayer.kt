@@ -529,6 +529,7 @@ class LocalPlayer(private val context: Context) {
         // AudioFlinger, not the DAC.
         val settings = AppSettings(context)
         val bitPerfect = settings.bootBitPerfect
+        val aaudioBitperfect = settings.bootBitPerfectAaudio
         val exclusive = settings.bootExclusiveOutput
         exclusiveOutput = exclusive
 
@@ -542,6 +543,12 @@ class LocalPlayer(private val context: Context) {
         // nothing of ours between the decoder and the DAC, a 16-bit file must not
         // keep the equaliser running just because float output only bypasses
         // processors media3 itself decided to skip.
+        //
+        // AAudio bit-perfect mode bypasses media3's sink entirely, so there is no
+        // chain to inject into. It is only used for the local playback path, not
+        // Music Assistant (the native Sendspin engine is fixed at int16).
+        val useAaudioBitperfect = aaudioBitperfect && exclusive
+
         val renderers = TapRenderersFactory(
             context = context,
             tap = if (exclusive) null else audioAnalysisTap,
@@ -552,6 +559,7 @@ class LocalPlayer(private val context: Context) {
             loFi = if (exclusive) null else loFiProcessor,
             oldRadio = if (exclusive) null else oldRadio,
             exclusive = exclusive,
+            aaudioBitperfect = useAaudioBitperfect,
         ).setEnableAudioFloatOutput(bitPerfect || exclusive) as TapRenderersFactory
 
         // The defaults are sized for video-on-mobile-data. This is a lossless file

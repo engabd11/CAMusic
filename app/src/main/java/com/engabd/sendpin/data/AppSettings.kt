@@ -126,6 +126,7 @@ class AppSettings(private val context: Context) {
         private val SENDSPIN_CODEC = stringPreferencesKey("sendspin_codec")     // "auto" | "flac" | "pcm" | "opus"
         private val NAV_STREAM_FORMAT = stringPreferencesKey("nav_stream_format") // Subsonic `format=` ("raw" = original)
         private val BIT_PERFECT = booleanPreferencesKey("bit_perfect_24bit")     // 24-bit AudioTrack path when available
+        private val BIT_PERFECT_AAUDIO = booleanPreferencesKey("bit_perfect_aaudio") // AAudio direct I24/float exclusive path
         private val EXCLUSIVE_OUTPUT = booleanPreferencesKey("exclusive_output")  // no processors, no in-app volume — the source's own bits
         // "sendspin_exoplayer" and "sendspin_oboe" were here and are deliberately
         // not replaced. The native Oboe engine is the only MA engine now, so a
@@ -1318,6 +1319,17 @@ class AppSettings(private val context: Context) {
     suspend fun setExclusiveOutput(value: Boolean) {
         bootPrefs.edit().putBoolean("exclusive_output", value).apply()
         context.dataStore.edit { it[EXCLUSIVE_OUTPUT] = value }
+        // AAudio bit-perfect is only meaningful with exclusive output; clear it when
+        // exclusive goes off so the UI does not imply a working path that isn't there.
+        if (!value) context.dataStore.edit { it[BIT_PERFECT_AAUDIO] = false }
+    }
+
+    val bitPerfectAaudio: Flow<Boolean> = pref { it[BIT_PERFECT_AAUDIO] ?: false }
+
+    /** The AAudio direct I24/float exclusive path. Requires [exclusiveOutput]. */
+    suspend fun setBitPerfectAaudio(value: Boolean) {
+        bootPrefs.edit().putBoolean("bit_perfect_aaudio", value).apply()
+        context.dataStore.edit { it[BIT_PERFECT_AAUDIO] = value }
     }
 
     /** Clamped to the range the slider offers, so a bad write cannot desync the show. */
@@ -1366,8 +1378,18 @@ class AppSettings(private val context: Context) {
      */
     val bootExclusiveOutput: Boolean get() = bootPrefs.getBoolean("exclusive_output", false)
 
+    /** AAudio bit-perfect output, readable without a coroutine — see [bootBitPerfect] for why. */
+    val bootBitPerfectAaudio: Boolean get() = bootPrefs.getBoolean("bit_perfect_aaudio", false)
+
+    /**
+     * Preferred audio device id, readable without a coroutine — [LocalPlayer] and the
+     * AAudio bit-perfect sink need it synchronously when they build the output path.
+     */
+    val bootPreferredAudioDeviceId: String get() = bootPrefs.getString("preferred_audio_device_id", "") ?: ""
+
     /** Takes effect on the next stream/start or track open. */
     suspend fun setPreferredAudioDeviceId(value: String) {
+        bootPrefs.edit().putString("preferred_audio_device_id", value).apply()
         context.dataStore.edit { it[PREFERRED_AUDIO_DEVICE_ID] = value }
     }
 

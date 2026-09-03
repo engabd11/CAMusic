@@ -88,6 +88,7 @@ private fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSco
     val pinned by settings.preferredAudioDeviceId.collectAsStateWithLifecycle(initialValue = "")
     val bitPerfect by settings.bitPerfect24Bit.collectAsStateWithLifecycle(initialValue = false)
     val exclusiveOutput by settings.exclusiveOutput.collectAsStateWithLifecycle(initialValue = false)
+    val bitPerfectAaudio by settings.bitPerfectAaudio.collectAsStateWithLifecycle(initialValue = false)
 
     val route = remember(pinned) { DeviceCapabilities.activeRoute(am, pinned) }
     val mixerRate = remember { DeviceCapabilities.mixerRateHz() }
@@ -262,6 +263,32 @@ private fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSco
                         AudioOutputs.list(am).firstOrNull { it.isUsb }
                             ?.let { settings.setPreferredAudioDeviceId(it.id) }
                     }
+                }
+            }
+
+            CardDivider()
+            ToggleRow(
+                title = "Bit-perfect AAudio output",
+                subtitle = if (exclusiveOutput) "Bypass media3 and send 24-bit PCM straight to a USB DAC" else "Requires Exclusive output above",
+                checked = bitPerfectAaudio && exclusiveOutput,
+                enabled = exclusiveOutput,
+                accent = accent,
+                info = "Requires Exclusive output above. Uses Android's low-latency AAudio API directly " +
+                    "with a 24-bit or 32-bit float stream, so the file reaches the DAC without being " +
+                    "resampled or requantised by the normal mixer. " +
+                    "Only works on the library this phone decodes itself; Music Assistant playback " +
+                    "stays 16-bit because the native Sendspin engine is int16. " +
+                    "Turning this on disables the equaliser, Light Sync analysis and sound modes, same as Exclusive output.",
+            ) { on ->
+                scope.launch {
+                    if (on && !exclusiveOutput) {
+                        settings.setExclusiveOutput(true)
+                        if (pinned.isBlank()) {
+                            AudioOutputs.list(am).firstOrNull { it.isUsb }
+                                ?.let { settings.setPreferredAudioDeviceId(it.id) }
+                        }
+                    }
+                    settings.setBitPerfectAaudio(on)
                 }
             }
         }
