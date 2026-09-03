@@ -83,6 +83,11 @@ class AppSettings(private val context: Context) {
          */
         private val DUCK_ANNOUNCEMENTS = booleanPreferencesKey("duck_announcements")
         private val CAPTURE_OTHER_APPS = booleanPreferencesKey("capture_other_apps")
+        /**
+         * How "Listen to this phone" chooses its audio feed.
+         * Values: "auto" | "internal" | "projection".
+         */
+        private val PHONE_AUDIO_FEED = stringPreferencesKey("phone_audio_feed")
         private val MOTION_MODE = stringPreferencesKey("motion_mode")
 
         /** Follow Android's own "remove animations" setting. The default. */
@@ -1328,6 +1333,17 @@ class AppSettings(private val context: Context) {
 
     suspend fun setCaptureOtherApps(value: Boolean) {
         context.dataStore.edit { it[CAPTURE_OTHER_APPS] = value }
+    }
+
+    /** Which feed "Listen to this phone" uses: "auto", "internal", or "projection". */
+    val phoneAudioFeed: Flow<String> = pref { it[PHONE_AUDIO_FEED] ?: "auto" }
+
+    suspend fun setPhoneAudioFeed(value: String) {
+        context.dataStore.edit { it[PHONE_AUDIO_FEED] = value.takeIf { it in PHONE_AUDIO_FEED_VALUES } ?: "auto" }
+    }
+
+    companion object {
+        private val PHONE_AUDIO_FEED_VALUES = setOf("auto", "internal", "projection")
     }
 
     suspend fun setDuckAnnouncements(value: Boolean) {

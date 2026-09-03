@@ -60,11 +60,35 @@ object LightSyncFeedPicker {
         localPlaying: Boolean,
         captureRunning: Boolean,
         scanDriving: Boolean,
-    ): LightSyncFeed = when {
-        sendspinPlayingHere && hasSendspinTap -> LightSyncFeed.SENDSPIN_PCM
-        localPlaying -> LightSyncFeed.LOCAL_PCM
-        captureRunning -> LightSyncFeed.CAPTURE
-        scanDriving -> LightSyncFeed.SCAN_REMOTE
-        else -> LightSyncFeed.LOCAL_PCM
+        /**
+         * How the user wants the "Listen to this phone" feed to behave:
+         * "auto" — internal tap when this app is playing, capture otherwise;
+         * "internal" — always use the internal tap (ignore capture);
+         * "projection" — always use MediaProjection capture.
+         */
+        phoneAudioFeed: String = "auto",
+    ): LightSyncFeed {
+        val internalAvailable = sendspinPlayingHere && hasSendspinTap || localPlaying
+        val projectionAvailable = captureRunning || phoneAudioFeed == "projection"
+        return when (phoneAudioFeed) {
+            "internal" -> when {
+                sendspinPlayingHere && hasSendspinTap -> LightSyncFeed.SENDSPIN_PCM
+                localPlaying -> LightSyncFeed.LOCAL_PCM
+                scanDriving -> LightSyncFeed.SCAN_REMOTE
+                else -> LightSyncFeed.LOCAL_PCM
+            }
+            "projection" -> when {
+                captureRunning -> LightSyncFeed.CAPTURE
+                scanDriving -> LightSyncFeed.SCAN_REMOTE
+                else -> LightSyncFeed.LOCAL_PCM
+            }
+            else -> when { // "auto" and anything unexpected
+                sendspinPlayingHere && hasSendspinTap -> LightSyncFeed.SENDSPIN_PCM
+                localPlaying -> LightSyncFeed.LOCAL_PCM
+                captureRunning -> LightSyncFeed.CAPTURE
+                scanDriving -> LightSyncFeed.SCAN_REMOTE
+                else -> LightSyncFeed.LOCAL_PCM
+            }
+        }
     }
 }

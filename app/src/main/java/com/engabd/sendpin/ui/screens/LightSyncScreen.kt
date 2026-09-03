@@ -740,6 +740,16 @@ private fun DirectLightSyncScreen(onBack: () -> Unit, onOpenEffects: () -> Unit 
                 }
 
                 Spacer(Modifier.height(22.dp))
+                SectionLabel("This phone")
+                Spacer(Modifier.height(10.dp))
+                val phoneAudioFeed by settings.phoneAudioFeed.collectAsState(initial = "auto")
+                PhoneAudioCard(
+                    selected = phoneAudioFeed,
+                    onSelect = { scope.launch { settings.setPhoneAudioFeed(it) } },
+                    accent = accent,
+                )
+
+                Spacer(Modifier.height(22.dp))
                 SectionLabel("Other apps")
                 Spacer(Modifier.height(10.dp))
                 CaptureCard(
@@ -1893,4 +1903,40 @@ private fun captureBlurb(
     state == com.engabd.sendpin.capture.PlaybackCapture.State.STOPPED_BY_SYSTEM -> "Capture was stopped."
     state == com.engabd.sendpin.capture.PlaybackCapture.State.DENIED -> "Permission was not granted."
     else -> "Not listening."
+}
+
+@Composable
+private fun PhoneAudioCard(
+    selected: String,
+    onSelect: (String) -> Unit,
+    accent: Color,
+) {
+    GlassCard(radius = 18.dp) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+                    Text(
+                        "Use this phone's audio",
+                        color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp,
+                    )
+                    Text(
+                        "When CAMusic is playing, use its own PCM for the light show.",
+                        color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
+                    )
+                }
+            }
+            val options = listOf("Auto", "Always internal", "Always projection")
+            val values = listOf("auto", "internal", "projection")
+            com.engabd.sendpin.ui.design.SegmentedToggle(
+                options = options,
+                selectedIndex = values.indexOf(selected).coerceAtLeast(0),
+                modifier = Modifier.fillMaxWidth(),
+            ) { onSelect(values[it]) }
+            Text(
+                "Auto uses CAMusic's own tap when it is playing, and MediaProjection for other apps. " +
+                    "Always projection keeps listening through screen capture even when CAMusic is the source.",
+                color = TextFaint, style = MaterialTheme.typography.bodySmall,
+            )
+        }
+    }
 }

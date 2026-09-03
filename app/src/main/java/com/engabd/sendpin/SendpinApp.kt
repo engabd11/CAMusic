@@ -176,7 +176,7 @@ class SendpinApp : Application(), ImageLoaderFactory {
         combine(
             localPlayer.current, playback.artworkUrl, playbackOwner.state,
             scanFrameSource.driving, com.engabd.sendpin.capture.PlaybackCapture.running,
-            mpdScanFrameSource.driving,
+            mpdScanFrameSource.driving, settings.phoneAudioFeed,
         ) { values ->
             @Suppress("UNCHECKED_CAST")
             val localTrack = values[0] as com.engabd.sendpin.audio.LocalTrack?
@@ -185,6 +185,7 @@ class SendpinApp : Application(), ImageLoaderFactory {
             val maScanDriving = values[3] as Boolean
             val captureRunning = values[4] as Boolean
             val mpdScanDriving = values[5] as Boolean
+            val phoneAudioFeed = values[6] as String
             val maTap = owner.sendspinTap
             // The precedence lives in one pure function now — see
             // [com.engabd.sendpin.hue.LightSyncFeedPicker]. It used to be an `if` here
@@ -202,6 +203,7 @@ class SendpinApp : Application(), ImageLoaderFactory {
                 localPlaying = owner.soundOwner == PlaybackOwner.Who.LOCAL && owner.soundIsReadable,
                 captureRunning = captureRunning,
                 scanDriving = maScanDriving || mpdScanDriving,
+                phoneAudioFeed = phoneAudioFeed,
             )
             when (feed) {
                 com.engabd.sendpin.hue.LightSyncFeed.SENDSPIN_PCM ->
