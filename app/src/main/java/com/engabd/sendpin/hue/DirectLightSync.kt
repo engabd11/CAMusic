@@ -199,33 +199,59 @@ private const val PREDROP_WINDOW_S = 2f
 /** How much louder the next section must be to read as a drop rather than a change. */
 private const val DROP_LEVEL_STEP = 0.15f
 
-// ── Rhythm game ─────────────────────────────────────────────────────────────
+// ── Rhythm game ──────────────────────────────────────────────────────────────────
 
 /**
- * What the room is held at in game mode, as a fraction of the user's brightness
- * ceiling — so a room already limited to 40% darkens to a tenth of *that*, and the
- * setting keeps meaning what it says.
+ * The dim level the room rests at in game mode.
+ *
+ * A floor, and an absolute one. It is not scaled by the brightness ceiling, because
+ * it is not competing with it: the ceiling says how bright the show may *peak*, and
+ * this says how dark the room sits between the moments the player earns. Scaling the
+ * floor by the ceiling was the first version's mistake in miniature — it made the
+ * whole room, reactions included, a function of a setting that was only ever meant
+ * to cap the top.
+ *
+ * Clamped under the ceiling at the point of use, since a floor above the ceiling
+ * would be a floor holding the room *up*.
  */
-private const val GAME_FLOOR_LEVEL = 0.10f
+private const val GAME_FLOOR_LEVEL = 0.08f
 
-/** Fraction of a hit's life spent rising. The rest is the decay. */
-private const val GAME_ATTACK_FRACTION = 0.08f
+/**
+ * The floor's colour, as a multiplier per channel on [GAME_FLOOR_LEVEL].
+ *
+ * Very slightly cool, so a room being held down reads as deliberate rather than as a
+ * warm lamp that failed to come up.
+ */
+private const val FLOOR_TINT_R = 0.90f
+private const val FLOOR_TINT_G = 0.95f
+private const val FLOOR_TINT_B = 1.15f
 
-/** How bright a perfectly-struck note takes its own lane's lamps. */
-private const val GAME_HIT_PEAK = 0.85f
-private const val GAME_HIT_LIFE_MS = 420f
+/** How long the gate takes to open. Short enough to read as the tap itself. */
+private const val GATE_ATTACK_MS = 25f
 
-/** The quieter whole-room wash a Perfect adds on top of its lane burst. */
-private const val GAME_PERFECT_BLOOM = 0.30f
-private const val GAME_BLOOM_LIFE_MS = 260f
+/** How long it stays fully open on a hit with no combo behind it. */
+private const val GATE_HOLD_MS = 90f
 
-/** Unbroken notes between whole-room combo flashes. Matches the HUD's multiplier step. */
-private const val GAME_COMBO_MILESTONE = 10
-private const val GAME_COMBO_PEAK = 0.5f
-private const val GAME_COMBO_LIFE_MS = 500f
+/**
+ * Extra hold per unbroken note, and the combo at which that stops growing.
+ *
+ * At the cap this is roughly a third of a second of hold on top of the base, which
+ * turns a long run from a string of separate flashes into a show that is very nearly
+ * continuous. That is the reward, and it needs no explaining because it is simply
+ * more of the thing the player is already playing for.
+ */
+private const val GATE_HOLD_PER_COMBO_MS = 10f
+private const val GATE_HOLD_COMBO_CAP = 30
 
-/** How far either side of a lane's point in the room its lamps are gathered from. */
-private const val GAME_LANE_HALF_WIDTH = 0.45f
+/**
+ * How long the gate takes to close.
+ *
+ * Long enough that a room of Zigbee bulbs relaying at ~25 Hz renders the fall rather
+ * than receiving one bright frame and one dark one, and long enough that a beat's
+ * own reaction has time to play out inside the window rather than being cut off
+ * mid-swell.
+ */
+private const val GATE_RELEASE_MS = 340f
 
 /**
  * Whichever backend is actually producing sound right now, and what
@@ -424,27 +450,22 @@ class DirectLightSync(
 
     /**
      * True while the rhythm game owns the room — see [setGameMode] and
-     * [renderGameField].
+     * [applyGameGate].
      */
     @Volatile private var gameMode = false
 
-    /** Hits still decaying, newest last. Replaced wholesale, never mutated in place. */
-    @Volatile private var gameFlashes: List<GameFlash> = emptyList()
-
     /**
-     * One struck note, decaying.
+     * How far open the game's gate is, and since when.
      *
-     * [peak] is already scaled by the brightness ceiling at the point it is created,
-     * so the render loop can add these straight onto the floor without knowing where
-     * they came from.
+     * A single envelope over the whole room rather than a per-lamp overlay, because
+     * what it gates is the show itself: when it is open the engine's own frame goes
+     * out untouched, so a kick lights the room the way a kick does and a hi-hat the
+     * way a hi-hat does, scan and all. There is nothing here that needs to know
+     * which lamps those are — the engine already decided.
      */
-    private class GameFlash(
-        val channels: Set<Int>,
-        val colour: Rgb,
-        val peak: Float,
-        val bornMs: Long,
-        val lifeMs: Float,
-    )
+    @Volatile private var gateOpenedAtMs = 0L
+    @Volatile private var gatePeak = 0f
+    @Volatile private var gateHoldMs = 0f
 
     /** What shape the lamps are in, cached alongside [channels]. */
     private var roomTopology: RoomTopology = RoomTopology.CLUSTER
@@ -1328,48 +1349,18 @@ class DirectLightSync(
             val enc = encoder ?: continue
             val client = dtls ?: continue
 
-            // The rhythm game takes the room ahead of everything else, ambience
-            // included. Every branch below this one paints something the *music*
-            // caused, and the one promise game mode makes is that nothing but the
-            // player's own timing ever moves a light. That promise cannot be kept by
-            // adding an overlay on top of those branches — which is what this used
-            // to be — because the show underneath goes on flashing regardless, and
-            // a hit lands invisibly inside it. See [setGameMode].
-            if (gameMode) {
-                if (_framesFresh.value) _framesFresh.value = false
-                val field = renderGameField()
-                // No channels means no room to paint. Unreachable while a stream is
-                // up — `channels` and `roomPositions` are set together with the
-                // encoder this branch already required — but emitting an empty field
-                // would encode a frame with no channels in it, and holding the room
-                // still is the safer answer than finding out what the bridge does
-                // with that.
-                if (field.isEmpty()) continue@render
-                // Safety and the rate limiter stay: the flash budget is a
-                // photosensitivity guard, and a player tapping sixteenths is exactly
-                // the case it exists for. The delay queue and the layer chain do not
-                // apply — there is no analysis frame behind this field to hold or to
-                // post-process, only the player.
-                val gameGuarded = safety?.process(field, dt) ?: field
-                val gameDue = rateLimiter.process(gameGuarded, dt)
-                if (isUnchanged(gameDue) && (now - lastSendAt) < RESEND_INTERVAL_NANOS) continue
-                when (emitFrame(gameDue, now, enc, client)) {
-                    EmitResult.ABORT -> return
-                    EmitResult.RETRY -> continue@render
-                    EmitResult.OK -> {
-                        lastSent = HashMap(gameDue)
-                        continue@render
-                    }
-                }
-            }
-
+            // An ambience show, if one is running, takes the room outright — unless
+            // the game is up, which outranks it. A scripted effect is a show of its
+            // own and would paint the room on its own schedule, which is the one
+            // thing game mode is for preventing.
+            //
             // An ambience show, if one is running, takes the room outright.
             //
             // Checked *before* `fresh` and `isIdle` below, and that ordering is
             // load-bearing: a scripted effect produces no analysis frames at all,
             // so `fresh` is always false and `isIdle` always true, and the idle
             // show would quietly paint over the effect on every single tick.
-            val amb = ambience
+            val amb = if (gameMode) null else ambience
             if (amb != null) {
                 if (_framesFresh.value) _framesFresh.value = false
                 val painted = try {
@@ -1469,10 +1460,22 @@ class DirectLightSync(
                 )
             }
 
+            // The rhythm game holds the room down and lets the *real* show through
+            // in the moments the player earns. See [applyGameGate].
+            //
+            // Applied here, on the finished frame, rather than as a branch that
+            // replaces the whole render: everything that makes the show worth
+            // watching — the scan's beat grid, the per-instrument reactions, the
+            // layer chain — has to still be running, because "the lights react
+            // correctly" is the reward. Gating the output is what makes them react
+            // *only* when a note lands; rendering something else entirely, which is
+            // what this used to do, threw away the reaction along with the flashing.
+            val gated = if (gameMode) applyGameGate(layered) else layered
+
             // Safety runs on what is about to be sent, at the moment it is sent —
             // its flash budget is measured in wall-clock seconds, so it has to
             // sit after the delay queue rather than before it.
-            val guarded = safety?.process(layered, dt) ?: layered
+            val guarded = safety?.process(gated, dt) ?: gated
             val due = rateLimiter.process(guarded, dt)
 
             // The bridge relays at 25 Hz over Zigbee and the spec asks for a
@@ -1506,63 +1509,9 @@ class DirectLightSync(
             // next stage that learns to pass its input through rather than a live
             // bug — and it costs one map copy on frames that actually differ.
             lastSent = if (due === layered) HashMap(due) else due
+            // (`gated` is a fresh map on every frame the gate is applied, so it is
+            // never the chain's reused buffer and needs no copy of its own.)
         }
-    }
-
-    /**
-     * The whole of what the room shows in game mode: a dim floor, plus whatever the
-     * player has struck recently.
-     *
-     * The floor is a fraction of the user's own brightness ceiling rather than an
-     * absolute level, so "darken the room" still means something on a setup that
-     * runs at 40% — it darkens to a tenth of what this room is ever allowed to be.
-     *
-     * Reads [gameFlashes] and never writes it. [receiveGameHit] prunes the list on
-     * every hit, which bounds it at the hits landing inside one flash lifetime;
-     * pruning here as well would race that writer for a saving of a few skipped
-     * list entries.
-     */
-    private fun renderGameField(): Map<Int, Rgb> {
-        val positions = roomPositions
-        if (positions.isEmpty()) return emptyMap()
-
-        val now = System.currentTimeMillis()
-        val floor = GAME_FLOOR_LEVEL * layerBrightness
-        val out = HashMap<Int, Rgb>(positions.size)
-        // Very slightly cool, so an unlit room reads as deliberately held down
-        // rather than as a warm light that failed to come up.
-        for (id in positions.keys) out[id] = Rgb(floor * 0.92f, floor * 0.95f, floor * 1.15f)
-
-        for (f in gameFlashes) {
-            val age = (now - f.bornMs).toFloat()
-            if (age < 0f || age >= f.lifeMs) continue
-            val env = flashEnvelope(age / f.lifeMs) * f.peak
-            if (env <= 0f) continue
-            for (id in f.channels) {
-                val base = out[id] ?: continue
-                out[id] = Rgb(
-                    (base.first + f.colour.first * env).coerceAtMost(1f),
-                    (base.second + f.colour.second * env).coerceAtMost(1f),
-                    (base.third + f.colour.third * env).coerceAtMost(1f),
-                )
-            }
-        }
-        return out
-    }
-
-    /**
-     * A struck note's shape over its life, 0..1 in and 0..1 out.
-     *
-     * A near-instant attack and a squared decay: the rise has to read as *the tap*,
-     * so it has to be faster than the eye, and the fall has to be slow enough that
-     * a room of Zigbee bulbs relaying at 25 Hz actually renders it rather than
-     * receiving one bright frame and one dark one.
-     */
-    private fun flashEnvelope(t: Float): Float {
-        if (t <= 0f || t >= 1f) return 0f
-        if (t < GAME_ATTACK_FRACTION) return t / GAME_ATTACK_FRACTION
-        val d = (t - GAME_ATTACK_FRACTION) / (1f - GAME_ATTACK_FRACTION)
-        return (1f - d) * (1f - d)
     }
 
     /** What [emitFrame] wants the render loop to do next. */
@@ -2317,108 +2266,116 @@ class DirectLightSync(
     /**
      * Hand the room to the rhythm game, or take it back.
      *
-     * While this is on, the render loop stops asking the engine what the music is
-     * doing and paints [renderGameField] instead: a dim floor, plus whatever the
-     * player has just struck. Nothing else can light the room — not a beat, not the
-     * idle show, not an ambience effect — and that is the entire point. A room that
-     * flashed on every beat anyway would look identical whether the player was
-     * there or not, and the hits would be invisible inside it.
+     * While this is on the show still runs in full — the beat grid, the scan, the
+     * per-instrument reactions, the layer chain — and [applyGameGate] holds its
+     * output down to a dim floor. A correctly-struck note opens the gate, and for
+     * as long as it is open the room does exactly what it would have done anyway.
      *
-     * Turning it off clears the decaying hits so the next entry starts dark rather
-     * than finishing the last session's flashes.
+     * That is the whole design, and it is a correction of the first attempt at it.
+     * The first version replaced the render with a floor plus a coloured flash per
+     * lane, which meant hitting a note lit a red lamp on the left rather than
+     * *playing the kick's reaction*: it threw away everything the engine knows about
+     * what the music is doing at that instant, which is the only reason the reward
+     * is worth having. It also scaled its flashes by the brightness ceiling, so the
+     * whole room — reactions included — came out dim. Nothing here touches the
+     * ceiling now: the floor comes down, and a hit plays at the brightness the show
+     * was always going to use.
      */
     fun setGameMode(on: Boolean) {
         if (gameMode == on) return
         gameMode = on
-        gameFlashes = emptyList()
-        // Nothing else to do: the render loop picks the branch up on its next tick,
-        // and `lastSent` differing from the game field is what gets the first dim
-        // frame onto the wire.
+        closeGate()
+        // Nothing else to do: the render loop picks the gate up on its next tick.
+    }
+
+    private fun closeGate() {
+        gatePeak = 0f
+        gateHoldMs = 0f
+        gateOpenedAtMs = 0L
     }
 
     /**
-     * A note was struck in the rhythm game. The only thing that lights the room in
-     * game mode.
+     * A note was struck in the rhythm game: open the gate.
      *
-     * [strength] is 0..1 for how well it was hit, [perfect] adds a room-wide bloom
-     * on top of the lane's own burst, and [combo] lets a milestone sweep the whole
-     * room. Called from the main thread; the list is replaced rather than mutated,
-     * so the render loop needs no lock to read it.
+     * [strength] is 0..1 for how well it was hit and becomes how far the gate opens,
+     * so a Perfect plays the show at full and a scrappy Good plays it at rather
+     * less. [combo] lengthens the hold — the better the run, the more continuous the
+     * show becomes, which is a reward that costs nothing to explain because it is
+     * simply more of the thing the player already wanted.
+     *
+     * Not scaled by the brightness ceiling. The engine has already applied that to
+     * the frame this gate multiplies, and scaling here as well is what made the
+     * first version dim the whole room instead of only its floor.
+     *
+     * Called from the main thread; the fields are volatile and the render loop only
+     * reads them, so there is nothing to lock.
      */
-    fun receiveGameHit(lane: Int, strength: Float, perfect: Boolean, combo: Int) {
-        val positions = roomPositions
-        if (positions.isEmpty()) return
-        val now = System.currentTimeMillis()
-        val ceiling = layerBrightness
-        val amount = strength.coerceIn(0f, 1f)
-        val next = ArrayList<GameFlash>(gameFlashes.size + 3)
-
-        // Drop what has already finished rather than letting the list grow for as
-        // long as the game runs.
-        for (f in gameFlashes) if (now - f.bornMs < f.lifeMs) next.add(f)
-
-        next.add(
-            GameFlash(
-                channels = laneChannels(lane, positions),
-                colour = laneColour(lane),
-                peak = (GAME_HIT_PEAK * amount * ceiling).coerceIn(0f, 1f),
-                bornMs = now,
-                lifeMs = GAME_HIT_LIFE_MS,
-            )
-        )
-
-        // A perfect hit is worth seeing from anywhere in the room, not only from the
-        // side the lane maps to.
-        if (perfect) {
-            next.add(
-                GameFlash(
-                    channels = positions.keys,
-                    colour = laneColour(lane),
-                    peak = (GAME_PERFECT_BLOOM * ceiling).coerceIn(0f, 1f),
-                    bornMs = now,
-                    lifeMs = GAME_BLOOM_LIFE_MS,
-                )
-            )
-        }
-
-        // Every tenth unbroken note takes the whole room, once. The multiplier going
-        // up is the moment worth marking, and it is the same moment the HUD marks.
-        if (combo > 0 && combo % GAME_COMBO_MILESTONE == 0) {
-            next.add(
-                GameFlash(
-                    channels = positions.keys,
-                    colour = Rgb(1f, 1f, 1f),
-                    peak = (GAME_COMBO_PEAK * ceiling).coerceIn(0f, 1f),
-                    bornMs = now,
-                    lifeMs = GAME_COMBO_LIFE_MS,
-                )
-            )
-        }
-
-        gameFlashes = next
+    fun receiveGameHit(strength: Float, combo: Int) {
+        val peak = strength.coerceIn(0f, 1f)
+        if (peak <= 0f) return
+        // Never let a new hit drop the room below where the last one has it. A weak
+        // hit landing while a strong one is still ringing should extend the show,
+        // not chop it — the player did not do anything wrong.
+        gatePeak = maxOf(gameGate(), peak)
+        gateHoldMs = GATE_HOLD_MS + (combo.coerceAtMost(GATE_HOLD_COMBO_CAP) * GATE_HOLD_PER_COMBO_MS)
+        gateOpenedAtMs = System.currentTimeMillis()
     }
 
     /**
-     * Which lamps a lane lights.
+     * How far open the gate is right now, 0..1.
      *
-     * The band is generous, and falls back to the single nearest lamp when it
-     * catches nothing: in a room with two lamps most lanes sit between them, and a
-     * hit that lit nothing at all would read as the game having missed the tap.
+     * Attack, hold, release. The attack is short enough to read as the tap itself;
+     * the release is long enough that a room of Zigbee bulbs relaying at 25 Hz
+     * actually renders the fall rather than receiving one bright frame and one dark
+     * one, and that a beat's own reaction has time to play out inside it.
      */
-    private fun laneChannels(lane: Int, positions: Map<Int, Vec3>): Set<Int> {
-        val sideX = (lane / 3f) * 2f - 1f // lane 0..3 across the room, left to right
-        val band = positions.filterValues { kotlin.math.abs(it.x - sideX) < GAME_LANE_HALF_WIDTH }.keys
-        if (band.isNotEmpty()) return band
-        val nearest = positions.minByOrNull { kotlin.math.abs(it.value.x - sideX) } ?: return emptySet()
-        return setOf(nearest.key)
+    private fun gameGate(): Float {
+        val peak = gatePeak
+        if (peak <= 0f) return 0f
+        val age = (System.currentTimeMillis() - gateOpenedAtMs).toFloat()
+        if (age < 0f) return 0f
+        val hold = gateHoldMs
+        return when {
+            age < GATE_ATTACK_MS -> peak * (age / GATE_ATTACK_MS)
+            age < GATE_ATTACK_MS + hold -> peak
+            else -> {
+                val d = (age - GATE_ATTACK_MS - hold) / GATE_RELEASE_MS
+                if (d >= 1f) 0f else peak * (1f - d) * (1f - d)
+            }
+        }
     }
 
-    private fun laneColour(lane: Int): Rgb = when (lane) {
-        0 -> Rgb(1f, 0.18f, 0.22f) // kick, red
-        1 -> Rgb(0.22f, 0.55f, 1f) // snare, blue
-        2 -> Rgb(1f, 0.78f, 0.12f) // hat, amber
-        else -> Rgb(0.45f, 1f, 0.35f) // melody, green
+    /**
+     * Hold the room at a dim floor, and open to the full show where the player has
+     * earned it.
+     *
+     * The floor is a *floor*, not a ceiling: it lifts whatever the show is doing up
+     * to a dim minimum so the room is never black, and it never holds anything down.
+     * The gate above it is a plain multiplier on the engine's own frame, so at full
+     * open this returns the frame unchanged — the reaction is the show's, at the
+     * show's brightness, with the user's ceiling already applied to it upstream.
+     *
+     * Componentwise `max` rather than a blend toward a floor colour: a blend would
+     * wash the show's colours toward neutral in proportion to how dim they are,
+     * which is exactly backwards for a deep-blue verse.
+     */
+    private fun applyGameGate(field: Map<Int, Rgb>): Map<Int, Rgb> {
+        val gate = gameGate()
+        // Kept under the user's ceiling: a room limited to 5% must not have a 6%
+        // floor propping it up. Otherwise absolute, so the floor is the same dim
+        // room whatever the show is allowed to peak at.
+        val floor = minOf(GAME_FLOOR_LEVEL, layerBrightness)
+        val out = HashMap<Int, Rgb>(field.size)
+        for ((id, c) in field) {
+            out[id] = Rgb(
+                maxOf(floor * FLOOR_TINT_R, c.first * gate),
+                maxOf(floor * FLOOR_TINT_G, c.second * gate),
+                maxOf(floor * FLOOR_TINT_B, c.third * gate),
+            )
+        }
+        return out
     }
+
 
     // ── Track scans ─────────────────────────────────────────────────────────
 

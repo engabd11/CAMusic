@@ -44,14 +44,19 @@ data class RhythmHud(
  *
  * ## The one rule this model exists to enforce
  *
- * In this mode the room does not react to the music at all. The lights are held at a
- * dim floor by [com.engabd.sendpin.hue.DirectLightSync.setGameMode], and the *only*
- * thing that ever brightens them is a note struck inside its window. That is what
- * makes the game a game: a room that flashed on every beat regardless would light up
- * identically whether the player was there or not, and every hit would be invisible
- * inside a show that was already flashing.
+ * In this mode the room does not react to the music on its own. The light show still
+ * *runs* in full — the beat grid, the track scan, the per-instrument reactions — but
+ * [com.engabd.sendpin.hue.DirectLightSync.setGameMode] holds its output down to a dim
+ * floor, and the only thing that ever lets it through is a note struck inside its
+ * window. That is what makes the game a game: a room that reacted on every beat
+ * regardless would look identical whether the player was there or not, and every hit
+ * would be invisible inside a show that was already moving.
  *
- * So there is exactly one call into the light engine — [Judgement] that scored
+ * The reward is the show itself, not a substitute for it. Hitting the kick plays what
+ * the room does on a kick, because what is gated is the engine's own frame rather
+ * than a flash invented here.
+ *
+ * So there is exactly one call into the light engine — from a [Judgement] that scored
  * points — and no path from an analysis frame to a light anywhere in this file.
  *
  * ## Clock
@@ -116,8 +121,8 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
     override fun onCleared() {
         // The screen's DisposableEffect normally does this. This is the backstop for
         // the process-death-adjacent paths that skip it — leaving the room stuck at
-        // 10% with no way back short of restarting the stream would be the worst
-        // possible failure for this feature.
+        // its game floor with no way back short of restarting the stream would be the
+        // worst possible failure for this feature.
         stop()
         super.onCleared()
     }
@@ -200,15 +205,24 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * The one place a light is ever asked to do anything in this mode.
      *
+     * This does not *paint* anything — it opens the gate that lets the real light
+     * show through for a moment. Which lamps move, and how, is the engine's answer
+     * to what the music is doing at that instant: a kick reads as a kick, a hi-hat
+     * as a hi-hat, with the track scan behind it. Hitting the note buys the
+     * reaction; it does not replace it. See DirectLightSync.setGameMode.
+     *
+     * How *well* it was hit sets how far the gate opens, so a Perfect plays the show
+     * at full and a scrappy Good plays it at rather less. The note's own intensity
+     * moves that a little as well: a note the music barely made was never going to
+     * pay out much.
+     *
      * Best-effort by design: the game is playable with no bridge paired at all, and
      * a light that cannot be reached must not cost the player a note.
      */
     private fun flashRoom(note: GameNote, judgement: Judgement, combo: Int) {
         runCatching {
             directLightSync.receiveGameHit(
-                lane = note.lane,
-                strength = (judgement.points / 100f) * (0.65f + note.intensity * 0.35f),
-                perfect = judgement == Judgement.PERFECT,
+                strength = (judgement.points / 100f) * (0.7f + note.intensity * 0.3f),
                 combo = combo,
             )
         }

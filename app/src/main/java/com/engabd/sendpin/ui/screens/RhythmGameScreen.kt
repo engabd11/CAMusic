@@ -81,10 +81,14 @@ import kotlin.math.sin
  * ## What the lights do here
  *
  * Nothing, unless the player earns it — see
- * [com.engabd.sendpin.hue.DirectLightSync.setGameMode]. The room is held at a tenth
- * of its ceiling for as long as this screen is open, and only a struck note
- * brightens it. This screen's own effects are free to be as busy as they like; the
- * promise is about the room, not the glass.
+ * [com.engabd.sendpin.hue.DirectLightSync.setGameMode]. The show goes on running
+ * underneath for as long as this screen is open, held down to a dim floor; a struck
+ * note opens the gate and the room does exactly what that moment of the music would
+ * always have made it do. So the reward for playing well is the real light show,
+ * arriving in the pieces the player earns.
+ *
+ * This screen's own effects are free to be as busy as they like; the promise is
+ * about the room, not the glass.
  */
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 @Composable
@@ -194,8 +198,8 @@ fun RhythmGameScreen(
                         // dropped out.
                         when {
                             !hud.locked -> "Finding the beat…"
-                            hud.bpm > 0f -> "Room dimmed · only your hits light it · ${hud.bpm.toInt()} BPM"
-                            else -> "Room dimmed · only your hits light it"
+                            hud.bpm > 0f -> "Room dimmed · hit the notes to light it · ${hud.bpm.toInt()} BPM"
+                            else -> "Room dimmed · hit the notes to light it"
                         },
                         color = TextMuted, fontFamily = AppFont,
                         fontWeight = FontWeight.SemiBold, fontSize = 11.sp,
