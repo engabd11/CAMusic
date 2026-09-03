@@ -102,7 +102,12 @@ fun LightSyncScreen(
     }
     val lsMode by settings.lightSyncMode.collectAsState(initial = null)
     when (lsMode) {
-        null -> Box(Modifier.fillMaxSize().background(Ink))
+        // Blank only of *content*: the wash is the same one both branches below
+        // wear, so reading the stored mode is not a black frame between two
+        // album-tinted pages.
+        null -> Box(Modifier.fillMaxSize().background(Ink)) {
+            PageBloom(alpha = 0.22f, size = 440.dp, x = (-40).dp)
+        }
         // Effects drives the bridge's entertainment stream directly, which is what the
         // direct path already owns. The Home Assistant path talks to HA's own light
         // service and has no per-frame stream to script, so it does not offer them.
@@ -133,7 +138,12 @@ private fun HaLightSyncScreen(onBack: () -> Unit, viewModel: LightSyncViewModel)
     val enabled = area?.enabled == true
 
     Box(Modifier.fillMaxSize().background(Ink)) {
-        Bloom(if (enabled) accent else TextFaint, 440.dp, (-40).dp, (-70).dp, if (enabled) 0.42f else 0.16f)
+        // The album's colour, the same wash the library and the settings pages wear
+        // — see [PageBloom]. It used to be the ambient accent, which is a fixed
+        // colour on two of its three settings, and flat grey whenever the show was
+        // off: the one page in the app that stopped matching the rest of it. The
+        // state is still said, in brightness rather than in hue.
+        PageBloom(alpha = if (enabled) 0.42f else 0.22f, size = 440.dp, x = (-40).dp)
 
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars)) {
             // Header.
@@ -492,7 +502,8 @@ private fun DirectLightSyncScreen(
     )
 
     Box(Modifier.fillMaxSize().background(Ink)) {
-        Bloom(if (live) accent else TextFaint, 440.dp, (-40).dp, (-70).dp, if (live) 0.42f else 0.16f)
+        // As on the Home Assistant path above — see [PageBloom].
+        PageBloom(alpha = if (live) 0.42f else 0.22f, size = 440.dp, x = (-40).dp)
 
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars)) {
             Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, top = 16.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {

@@ -152,7 +152,6 @@ fun LibraryScreen(
     val downloadCount by viewModel.downloadedIds
         .collectAsStateWithLifecycle()
         .let { ids -> remember { derivedStateOf { ids.value.size } } }
-    val palette = LocalPalette.current
     val snackbar = remember { SnackbarHostState() }
     // Long-press target. Hoisted to the screen so the sheet is a sibling of the
     // grid rather than a child of a row that scrolls out from under it.
@@ -185,7 +184,9 @@ fun LibraryScreen(
     }
 
     Box(Modifier.fillMaxSize().background(Ink)) {
-        Bloom(palette.swatch(0), 520.dp, (-120).dp, (-260).dp, 0.30f)
+        // The app's page wash, named rather than spelled out — see [PageBloom],
+        // which is what every full-screen destination is meant to wear.
+        PageBloom(alpha = 0.30f, size = 520.dp, x = (-120).dp, y = (-260).dp)
 
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars)) {
             Header(

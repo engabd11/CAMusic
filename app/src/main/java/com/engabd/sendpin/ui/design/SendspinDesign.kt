@@ -707,6 +707,34 @@ fun Bloom(color: Color, size: Dp, x: Dp, y: Dp, alpha: Float = 0.5f) {
     )
 }
 
+/**
+ * The wash a full-screen page wears over [com.engabd.sendpin.ui.theme.Ink]: the
+ * playing album's own colour, bloomed out of the top corner.
+ *
+ * Named rather than repeated because it is the thing that makes the app feel like
+ * one app. Every destination is the same near-black ground, and the only reason
+ * two of them look different is the record that is on — so a page that reaches for
+ * some *other* colour, or for none, reads as a screen from a different application
+ * bolted on. Light Sync was exactly that: its wash was the ambient accent, which is
+ * a fixed colour whenever the listener has chosen one, and it went flat grey the
+ * moment the show was switched off.
+ *
+ * [LocalPalette]'s first swatch and not [LocalAccent], for that reason: the accent
+ * is a *preference* that only follows the artwork on one of its three settings,
+ * while the palette always does. A page that wants to say something about its own
+ * state should say it in [alpha] — brighter while something is running — and leave
+ * the hue to the music.
+ */
+@Composable
+fun PageBloom(
+    alpha: Float = 0.30f,
+    size: Dp = 460.dp,
+    x: Dp = (-60).dp,
+    y: Dp = (-70).dp,
+) {
+    Bloom(LocalPalette.current.swatch(0), size, x, y, alpha)
+}
+
 // --- buttons --------------------------------------------------------------
 
 @Composable
