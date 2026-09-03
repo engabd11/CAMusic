@@ -454,7 +454,14 @@ class LocalPlayer(private val context: Context) {
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             _playing.value = isPlaying
-            if (isPlaying) startTicker() else stopTicker()
+            // A crossfade's fade-in is driven by the ticker, and a hand-over seeks
+            // into a part of the next track that may not be buffered yet — so
+            // ExoPlayer reports not-playing for a moment right in the middle of the
+            // mix. Stopping the loop there froze the incoming track's ramp at zero
+            // and left it silent until playback resumed, which is the hole the
+            // crossfade exists to remove. The loop ends itself once the transition
+            // is over and playback really has stopped; see [startTicker].
+            if (isPlaying) startTicker() else if (!crossfadeBusy) stopTicker()
         }
 
         override fun onPlaybackStateChanged(state: Int) {
@@ -1774,9 +1781,30 @@ class LocalPlayer(private val context: Context) {
     private fun startTicker() {
         stopTicker()
         ticker = scope.launch {
+            // Time since the playhead was last published, which is *not* the same as
+            // time since the last tick — see below.
+            var sincePublished = POSITION_TICK_MS
             while (isActive) {
                 val pos = player.currentPosition.coerceAtLeast(0)
-                _positionMs.value = pos
+                // The playhead goes out at the rate a scrub bar needs, never at the
+                // rate the fade ramp runs.
+                //
+                // This loop speeds up to 40 ms during a crossfade so the gain moves
+                // smoothly and the hand-over lands on the downbeat it was planned
+                // for. Publishing `_positionMs` on every one of those ticks was a
+                // 25 Hz write into a StateFlow that `UnifiedNowPlaying` combines with
+                // fifteen others and rebuilds a whole snapshot from — so the entire
+                // now-playing state, and every composable reading it, was churning
+                // twenty-five times a second at the exact moment the cover was
+                // running its half-second page turn. Frames went on the floor and
+                // the turn read as the screen flashing.
+                //
+                // Nothing outside this class ever wanted that resolution: it is the
+                // ramp that needs a fine clock, and the ramp is entirely internal.
+                if (sincePublished >= POSITION_TICK_MS) {
+                    _positionMs.value = pos
+                    sincePublished = 0
+                }
                 // In exclusive mode applyGain() is a fixed 1f whatever these compute,
                 // so there is nothing to converge toward — skip the arithmetic rather
                 // than spend it on a gain that is thrown away every tick.
@@ -1796,7 +1824,12 @@ class LocalPlayer(private val context: Context) {
                         applyGain()
                     }
                 }
-                delay(if (crossfadeBusy) CROSSFADE_TICK_MS else POSITION_TICK_MS)
+                val wait = if (crossfadeBusy) CROSSFADE_TICK_MS else POSITION_TICK_MS
+                delay(wait)
+                sincePublished += wait
+                // The loop outlives a pause only for as long as a transition needs it
+                // — see [onIsPlayingChanged]. Once neither holds, it is done.
+                if (!_playing.value && !crossfadeBusy) break
             }
         }
     }

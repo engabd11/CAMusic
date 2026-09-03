@@ -2316,57 +2316,114 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             _toast.tryEmit("DJ Radio needs a library this phone plays itself")
             return
         }
+        // Set outside the coroutine so the card lights on the same frame as the tap.
+        _djRadio.value = true
+        // Claimed before anything is queued. The top-up collectors watch the queue
+        // and fire the moment it looks short — which a one-track opener does,
+        // immediately — so without this the set would be built twice, once here and
+        // once by [startLocalRadio], and the listener would get twenty tracks.
+        radioFetching = true
         viewModelScope.launch {
-            _djRadio.value = true
-            applyDjCrossfade()
-
-            val playing = localPlayer.current.value
-            if (playing != null && localPlayer.queue.value.isNotEmpty()) {
-                // Already listening: this track is the brief. It keeps playing and
-                // the set is built behind it — see [LocalPlayer.replaceUpcoming] for
-                // why neither appending nor replacing the queue is right here.
-                val seedId = playing.scrobbleId ?: playing.id
-                val picks = djPicks(
-                    seed = lastSeeds[seedId],
-                    seedScan = trackScans.cached(playing),
-                    exclude = setOf(seedId),
-                    count = RADIO_BATCH,
-                    generator = source?.takeIf { !_offline.value }?.let { LibraryRadioSource(it) },
-                )
-                if (picks.isNotEmpty()) {
-                    rememberSeeds(picks)
-                    localPlayer.replaceUpcoming(picks.map { localTrack(it) })
+            try {
+                val playing = localPlayer.current.value
+                if (playing != null && localPlayer.queue.value.isNotEmpty()) {
+                    // Already loaded: this track is the brief, and it can be heard
+                    // *now*. Sound first, set afterwards — see [fillBehind].
+                    val sounding = startOrResume()
+                    applyDjCrossfade()
+                    _toast.tryEmit("DJ Radio - mixing on from ${playing.title}")
+                    fillBehind(playing)
+                    // A queue that had run to its end had nothing to move into until
+                    // the set existed. Now it does.
+                    if (!sounding && !startOrResume()) {
+                        _toast.tryEmit("DJ Radio on - nothing to mix in yet")
+                    }
+                    return@launch
                 }
-                // **And then play.** "Already listening" was doing all its work off
-                // `current`, which survives a pause and survives a queue running off
-                // its end — so pressing DJ Radio with a paused or finished player
-                // built a set behind a track nobody was hearing and started nothing.
-                // The button says music will happen; music has to happen.
-                val sounding = startOrResume()
-                _toast.tryEmit(
-                    if (sounding) "DJ Radio - mixing on from ${playing.title}"
-                    else "DJ Radio on - nothing to mix in yet",
-                )
-                return@launch
-            }
 
-            val opener = coldStart()
-            if (opener.isEmpty()) {
-                _djRadio.value = false
+                val opener = pickOpener()
+                if (opener == null) {
+                    _djRadio.value = false
+                    applyDjCrossfade()
+                    _toast.tryEmit("Nothing to start a DJ set from")
+                    return@launch
+                }
+                stopMaPlayback()
+                rememberSeeds(listOf(opener))
+                val openerTrack = localTrack(opener)
+                // setQueue starts playback itself; nothing else here needs to.
+                localPlayer.setQueue(listOf(openerTrack))
+                // [setQueue] decides smoothQueue from the album spread, and a set
+                // drawn from one album would come out sequenced — which is right for
+                // a record and wrong for the thing the listener just pressed
+                // "DJ Radio" on.
+                localPlayer.smoothQueue = true
                 applyDjCrossfade()
-                _toast.tryEmit("Nothing to start a DJ set from")
-                return@launch
+                _toast.tryEmit("DJ Radio - ${opener.name}")
+                fillBehind(openerTrack)
+            } finally {
+                radioFetching = false
             }
-            stopMaPlayback()
-            rememberSeeds(opener)
-            // setQueue starts playback itself; nothing else here needs to.
-            localPlayer.setQueue(opener.map { localTrack(it) })
-            // [setQueue] decides smoothQueue from the album spread, and a set drawn
-            // from one album would come out sequenced — which is right for a record
-            // and wrong for the thing the listener just pressed "DJ Radio" on.
-            localPlayer.smoothQueue = true
-            _toast.tryEmit("DJ Radio - ${opener.first().name}")
         }
+    }
+
+    /**
+     * The cheapest track that can be playing in the next moment.
+     *
+     * DJ Radio used to spend its whole opening on work the listener could hear none
+     * of: a wide random page, a similarity pool gathered across up to five more
+     * requests, and a scan read off disk for every candidate in both — some hundreds
+     * of file reads and half a dozen round trips, all before the first note. On a
+     * server across the house that is the several seconds of nothing that a button
+     * saying "one tap and the room has music in it" cannot afford.
+     *
+     * So the opening is split. This half asks one small question and takes the first
+     * answer; [fillBehind] does the real choosing afterwards, while the opener plays.
+     *
+     * It deliberately does **not** prefer a scanned track, which is what the wide
+     * page was for. A scan on the opener changes nothing about the opener — it only
+     * informs what comes *after* it, and [fillBehind] reads that one scan itself for
+     * a single disk hit rather than sixty.
+     */
+    private suspend fun pickOpener(): MaItem? {
+        val src = source
+        val fromLibrary = if (_offline.value || src == null) {
+            emptyList<MaItem>()
+        } else {
+            runCatching { src.randomSongs(FAST_START_PAGE) }.getOrDefault(emptyList())
+        }
+        val page = fromLibrary.ifEmpty { downloads.value.map { downloadItem(it) } }
+        // Shuffled locally as well as server-side: a Subsonic `random` is not
+        // guaranteed to differ between two calls a few seconds apart, and opening on
+        // the same song every time reads as a broken button.
+        return page.filter { it.itemId.isNotBlank() }.shuffled().firstOrNull()
+    }
+
+    /**
+     * Build the set behind whatever is already playing.
+     *
+     * The expensive half of starting a set, moved off the critical path: the pool,
+     * its scans and the ranking all happen here, with a whole track's worth of slack
+     * to do them in. Nothing waits on it — by the time this returns the listener has
+     * been hearing music for seconds.
+     *
+     * [LocalPlayer.replaceUpcoming] rather than an append, and the same call serves
+     * both openings: on a cold start it lands behind a queue of one and is an append
+     * in effect, and on a queue that was already loaded it is what keeps the current
+     * track and drops the rest.
+     */
+    private suspend fun fillBehind(seed: LocalTrack) {
+        val seedId = seed.scrobbleId ?: seed.id
+        val picks = djPicks(
+            seed = lastSeeds[seedId],
+            seedScan = trackScans.cached(seed),
+            exclude = setOf(seedId),
+            count = RADIO_BATCH,
+            generator = source?.takeIf { !_offline.value }?.let { LibraryRadioSource(it) },
+        )
+        if (picks.isEmpty()) return
+        rememberSeeds(picks)
+        localPlayer.replaceUpcoming(picks.map { localTrack(it) })
     }
 
     /**
@@ -2437,36 +2494,6 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun applyDjCrossfade() {
         localPlayer.djCrossfadeSeconds =
             if (_djRadio.value) settings.djRadioCrossfadeSeconds.first() else 0
-    }
-
-    /**
-     * The opening run of a set started with nothing playing: a seed, then the first
-     * batch mixed off it.
-     */
-    private suspend fun coldStart(): List<MaItem> {
-        val src = source
-        val generator = if (_offline.value || src == null) null else LibraryRadioSource(src)
-        val page = when {
-            generator == null -> downloads.value.map { downloadItem(it) }
-            else -> generator.random(COLD_START_PAGE).ifEmpty {
-                downloads.value.map { downloadItem(it) }
-            }
-        }.filter { it.itemId.isNotBlank() }
-        if (page.isEmpty()) return emptyList()
-
-        // Prefer an opener that has been analysed. Everything downstream of the seed
-        // is scored against it, so a seed with no scan spends the first few
-        // transitions of the set choosing on tags alone.
-        val scans = scansFor(page)
-        val seed = page.firstOrNull { scans[it.itemId] != null } ?: page.first()
-        val rest = djPicks(
-            seed = seed,
-            seedScan = scans[seed.itemId],
-            exclude = setOf(seed.itemId),
-            count = RADIO_BATCH,
-            generator = generator,
-        )
-        return listOf(seed) + rest
     }
 
     /**
@@ -3495,12 +3522,14 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         const val RADIO_BATCH = 10
 
         /**
-         * How wide a random page a cold-started DJ set picks its opener from.
+         * How many tracks the opening request asks for.
          *
-         * Wide enough that a library with only some of it analysed still turns up a
-         * scanned track to open on, and small enough to be one request.
+         * A handful rather than a page. Only one of them is played — the rest are
+         * there so that pressing DJ Radio twice does not open on the same song — and
+         * the whole point of this request is that it is the only thing standing
+         * between the tap and the music. See [pickOpener].
          */
-        const val COLD_START_PAGE = 60
+        const val FAST_START_PAGE = 8
 
         /** How far back DJ Radio looks for an artist run it should not extend. */
         const val ARTIST_RUN_WINDOW = 4
