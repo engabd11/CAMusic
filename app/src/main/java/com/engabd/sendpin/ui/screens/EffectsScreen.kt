@@ -93,7 +93,13 @@ fun EffectsScreen(onBack: () -> Unit, viewModel: EffectsViewModel) {
                 CircleBtn(Icons.AutoMirrored.Filled.ArrowBack, "Back", onBack)
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
-                    Text("Effects", color = TextPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(9.dp),
+                    ) {
+                        Text("Effects", color = TextPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp)
+                        ExperimentalBadge()
+                    }
                     Text(
                         "Atmosphere, not a reaction to music",
                         color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
@@ -109,6 +115,14 @@ fun EffectsScreen(onBack: () -> Unit, viewModel: EffectsViewModel) {
                     Text(it, color = ErrorRed, fontSize = 12.sp)
                     Spacer(Modifier.height(10.dp))
                 }
+
+                Text(
+                    "Experimental: these shows drive the bridge directly and take the room " +
+                        "off the music while they run. Expect rough edges — timings, levels " +
+                        "and the sound mix are all still being tuned.",
+                    color = WarnAmber, fontSize = 12.sp, lineHeight = 17.sp,
+                )
+                Spacer(Modifier.height(12.dp))
 
                 Text(
                     "Each effect plays a real recording and lights the room from it. The " +

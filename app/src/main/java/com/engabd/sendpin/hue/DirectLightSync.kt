@@ -29,6 +29,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlin.math.abs
@@ -197,6 +198,34 @@ private const val PREDROP_WINDOW_S = 2f
 
 /** How much louder the next section must be to read as a drop rather than a change. */
 private const val DROP_LEVEL_STEP = 0.15f
+
+// ── Rhythm game ─────────────────────────────────────────────────────────────
+
+/**
+ * What the room is held at in game mode, as a fraction of the user's brightness
+ * ceiling — so a room already limited to 40% darkens to a tenth of *that*, and the
+ * setting keeps meaning what it says.
+ */
+private const val GAME_FLOOR_LEVEL = 0.10f
+
+/** Fraction of a hit's life spent rising. The rest is the decay. */
+private const val GAME_ATTACK_FRACTION = 0.08f
+
+/** How bright a perfectly-struck note takes its own lane's lamps. */
+private const val GAME_HIT_PEAK = 0.85f
+private const val GAME_HIT_LIFE_MS = 420f
+
+/** The quieter whole-room wash a Perfect adds on top of its lane burst. */
+private const val GAME_PERFECT_BLOOM = 0.30f
+private const val GAME_BLOOM_LIFE_MS = 260f
+
+/** Unbroken notes between whole-room combo flashes. Matches the HUD's multiplier step. */
+private const val GAME_COMBO_MILESTONE = 10
+private const val GAME_COMBO_PEAK = 0.5f
+private const val GAME_COMBO_LIFE_MS = 500f
+
+/** How far either side of a lane's point in the room its lamps are gathered from. */
+private const val GAME_LANE_HALF_WIDTH = 0.45f
 
 /**
  * Whichever backend is actually producing sound right now, and what
@@ -393,9 +422,29 @@ class DirectLightSync(
     /** Normalised room-cube position of every channel, cached alongside [channels]. */
     private var roomPositions: Map<Int, Vec3> = emptyMap()
 
-    /** Optional overlay from the rhythm game, applied on top of the engine output. */
-    @Volatile private var gameOverlay: Map<Int, Rgb>? = null
-    @Volatile private var gameOverlayExpiryMs: Long = 0L
+    /**
+     * True while the rhythm game owns the room — see [setGameMode] and
+     * [renderGameField].
+     */
+    @Volatile private var gameMode = false
+
+    /** Hits still decaying, newest last. Replaced wholesale, never mutated in place. */
+    @Volatile private var gameFlashes: List<GameFlash> = emptyList()
+
+    /**
+     * One struck note, decaying.
+     *
+     * [peak] is already scaled by the brightness ceiling at the point it is created,
+     * so the render loop can add these straight onto the floor without knowing where
+     * they came from.
+     */
+    private class GameFlash(
+        val channels: Set<Int>,
+        val colour: Rgb,
+        val peak: Float,
+        val bornMs: Long,
+        val lifeMs: Float,
+    )
 
     /** What shape the lamps are in, cached alongside [channels]. */
     private var roomTopology: RoomTopology = RoomTopology.CLUSTER
@@ -530,6 +579,18 @@ class DirectLightSync(
      * engine) and the engine becoming available. Applied in [start] if present.
      */
     @Volatile private var lastAlbumColours: AlbumColours? = null
+
+    /**
+     * Exactly the weights handed to [SyncoEngine.setAlbumColors] alongside
+     * [lastAlbumColours], null included.
+     *
+     * Null and "even weights" are different requests to the engine, and the
+     * stream-start replay used to re-derive which one to send from the colour scheme
+     * — which cannot distinguish an override the user spaced evenly from one they
+     * balanced by hand, because by then both are just a list of numbers. Storing
+     * what was actually sent makes the replay a replay.
+     */
+    @Volatile private var lastAlbumWeights: List<Float>? = null
 
     /**
      * The ambience show that owns the room, or null when the music show does.
@@ -802,13 +863,13 @@ class DirectLightSync(
                 val ac = lastAlbumColours
                 val scheme = ColorScheme.fromWire(settings.lightSyncColor.first())
                 if (ac != null && (scheme == ColorScheme.ALBUM_ART || scheme == ColorScheme.ALBUM_ART_V2)) {
-                    // User overrides are already baked into lastAlbumColours by
-                    // applyAlbumArt, so this path respects them too. v1 passes null
-                    // weights (even interpolation); v2 passes real weights. The
-                    // override case uses even spacing because there is no population
-                    // data, and that is already reflected in ac.weights.
-                    val w = if (scheme == ColorScheme.ALBUM_ART) null else ac.weights
-                    it.setAlbumColors(ac.colors, w)
+                    // Replayed exactly as sent — colours and weights both — rather
+                    // than re-derived from the scheme. A user override is genuinely
+                    // respected here now; it previously was not, because
+                    // `lastAlbumColours` held the *extraction* and this line put the
+                    // cover's own palette back over corrected colours whenever a
+                    // bridge session opened mid-track.
+                    it.setAlbumColors(ac.colors, lastAlbumWeights)
                 }
             }
 
@@ -1267,6 +1328,41 @@ class DirectLightSync(
             val enc = encoder ?: continue
             val client = dtls ?: continue
 
+            // The rhythm game takes the room ahead of everything else, ambience
+            // included. Every branch below this one paints something the *music*
+            // caused, and the one promise game mode makes is that nothing but the
+            // player's own timing ever moves a light. That promise cannot be kept by
+            // adding an overlay on top of those branches — which is what this used
+            // to be — because the show underneath goes on flashing regardless, and
+            // a hit lands invisibly inside it. See [setGameMode].
+            if (gameMode) {
+                if (_framesFresh.value) _framesFresh.value = false
+                val field = renderGameField()
+                // No channels means no room to paint. Unreachable while a stream is
+                // up — `channels` and `roomPositions` are set together with the
+                // encoder this branch already required — but emitting an empty field
+                // would encode a frame with no channels in it, and holding the room
+                // still is the safer answer than finding out what the bridge does
+                // with that.
+                if (field.isEmpty()) continue@render
+                // Safety and the rate limiter stay: the flash budget is a
+                // photosensitivity guard, and a player tapping sixteenths is exactly
+                // the case it exists for. The delay queue and the layer chain do not
+                // apply — there is no analysis frame behind this field to hold or to
+                // post-process, only the player.
+                val gameGuarded = safety?.process(field, dt) ?: field
+                val gameDue = rateLimiter.process(gameGuarded, dt)
+                if (isUnchanged(gameDue) && (now - lastSendAt) < RESEND_INTERVAL_NANOS) continue
+                when (emitFrame(gameDue, now, enc, client)) {
+                    EmitResult.ABORT -> return
+                    EmitResult.RETRY -> continue@render
+                    EmitResult.OK -> {
+                        lastSent = HashMap(gameDue)
+                        continue@render
+                    }
+                }
+            }
+
             // An ambience show, if one is running, takes the room outright.
             //
             // Checked *before* `fresh` and `isIdle` below, and that ordering is
@@ -1377,8 +1473,7 @@ class DirectLightSync(
             // its flash budget is measured in wall-clock seconds, so it has to
             // sit after the delay queue rather than before it.
             val guarded = safety?.process(layered, dt) ?: layered
-            val withGame = applyGameOverlay(guarded)
-            val due = rateLimiter.process(withGame, dt)
+            val due = rateLimiter.process(guarded, dt)
 
             // The bridge relays at 25 Hz over Zigbee and the spec asks for a
             // continuous stream because UDP frames are dropped without retry. A
@@ -1414,23 +1509,60 @@ class DirectLightSync(
         }
     }
 
-    /** Blend any active rhythm-game hit overlay on top of the computed frame. */
-    private fun applyGameOverlay(base: Map<Int, Rgb>): Map<Int, Rgb> {
-        val overlay = gameOverlay ?: return base
-        if (System.currentTimeMillis() > gameOverlayExpiryMs) {
-            gameOverlay = null
-            return base
-        }
-        val out = HashMap(base)
-        for ((id, rgb) in overlay) {
-            val existing = out[id] ?: Rgb(0f, 0f, 0f)
-            out[id] = Rgb(
-                (existing.first + rgb.first).coerceIn(0f, 1f),
-                (existing.second + rgb.second).coerceIn(0f, 1f),
-                (existing.third + rgb.third).coerceIn(0f, 1f),
-            )
+    /**
+     * The whole of what the room shows in game mode: a dim floor, plus whatever the
+     * player has struck recently.
+     *
+     * The floor is a fraction of the user's own brightness ceiling rather than an
+     * absolute level, so "darken the room" still means something on a setup that
+     * runs at 40% — it darkens to a tenth of what this room is ever allowed to be.
+     *
+     * Reads [gameFlashes] and never writes it. [receiveGameHit] prunes the list on
+     * every hit, which bounds it at the hits landing inside one flash lifetime;
+     * pruning here as well would race that writer for a saving of a few skipped
+     * list entries.
+     */
+    private fun renderGameField(): Map<Int, Rgb> {
+        val positions = roomPositions
+        if (positions.isEmpty()) return emptyMap()
+
+        val now = System.currentTimeMillis()
+        val floor = GAME_FLOOR_LEVEL * layerBrightness
+        val out = HashMap<Int, Rgb>(positions.size)
+        // Very slightly cool, so an unlit room reads as deliberately held down
+        // rather than as a warm light that failed to come up.
+        for (id in positions.keys) out[id] = Rgb(floor * 0.92f, floor * 0.95f, floor * 1.15f)
+
+        for (f in gameFlashes) {
+            val age = (now - f.bornMs).toFloat()
+            if (age < 0f || age >= f.lifeMs) continue
+            val env = flashEnvelope(age / f.lifeMs) * f.peak
+            if (env <= 0f) continue
+            for (id in f.channels) {
+                val base = out[id] ?: continue
+                out[id] = Rgb(
+                    (base.first + f.colour.first * env).coerceAtMost(1f),
+                    (base.second + f.colour.second * env).coerceAtMost(1f),
+                    (base.third + f.colour.third * env).coerceAtMost(1f),
+                )
+            }
         }
         return out
+    }
+
+    /**
+     * A struck note's shape over its life, 0..1 in and 0..1 out.
+     *
+     * A near-instant attack and a squared decay: the rise has to read as *the tap*,
+     * so it has to be faster than the eye, and the fall has to be slow enough that
+     * a room of Zigbee bulbs relaying at 25 Hz actually renders it rather than
+     * receiving one bright frame and one dark one.
+     */
+    private fun flashEnvelope(t: Float): Float {
+        if (t <= 0f || t >= 1f) return 0f
+        if (t < GAME_ATTACK_FRACTION) return t / GAME_ATTACK_FRACTION
+        val d = (t - GAME_ATTACK_FRACTION) / (1f - GAME_ATTACK_FRACTION)
+        return (1f - d) * (1f - d)
     }
 
     /** What [emitFrame] wants the render loop to do next. */
@@ -1517,9 +1649,33 @@ class DirectLightSync(
      * [clearAlbumArt] exists for the case that really does mean it.
      */
     private suspend fun applyAlbumArt(url: String?) = withContext(Dispatchers.IO) {
+        val scheme = ColorScheme.fromWire(settings.lightSyncColor.first())
+
+        // A hand-picked palette is checked *before* the artwork, and applied without
+        // it. These colours were not derived from an image, so nothing about them
+        // needs one — and every path below gives up when the cover is missing, is a
+        // `file://` that will not decode, or simply never arrives. That is exactly
+        // the offline and downloaded case, which is where a saved palette most needs
+        // to still be the one showing: the user corrected these colours precisely
+        // because they wanted them next time, and "next time" was silently excluding
+        // every track whose cover did not load.
+        //
+        // It also saves a decode on every track that has one.
+        if (scheme.isDynamic) {
+            val saved = findOverride(url)
+            if (saved != null) {
+                val colours = saved.toAlbumColours()
+                val weights = overrideWeights(saved, scheme)
+                lastAlbumColours = colours
+                lastAlbumWeights = weights
+                if (!url.isNullOrBlank()) lastGoodArtUrl = url
+                engine?.setAlbumColors(colours.colors, weights)
+                return@withContext
+            }
+        }
+
         if (url.isNullOrBlank()) return@withContext
         try {
-            val scheme = ColorScheme.fromWire(settings.lightSyncColor.first())
             val key = "$url|${scheme.wire}"
             // A mode switch, or coming back to a track played a moment ago, should not
             // cost a refetch — and must not be able to *lose* a palette to a failed one.
@@ -1548,30 +1704,49 @@ class DirectLightSync(
                 synchronized(paletteCache) { paletteCache[key] = fresh }
                 fresh
             }
+            // What was actually *applied*, not what was extracted. The stream-start
+            // path re-applies this when a bridge session opens mid-track, and it has
+            // always claimed in a comment to be respecting user overrides — which it
+            // could not, because this line stored the extraction and the override was
+            // applied only to the local variable below. Opening the stream on a track
+            // with corrected colours put the cover's own palette back.
+            //
+            // An override returns above, so reaching here means there is none and the
+            // two are the same thing. The variable is kept faithful to its name
+            // regardless: the next person to add a branch here should not have to
+            // rediscover that.
             lastAlbumColours = extracted
             lastGoodArtUrl = url
-
-            // User-chosen colours for this album win over whatever was extracted,
-            // but only for the dynamic schemes that actually draw from the cover.
-            val override = if (scheme.isDynamic) findOverride(url) else null
-            val coloursToApply = override?.toAlbumColours() ?: extracted
 
             // v1 (album_art/even) has no weights — pass null so the engine uses
             // pure even interpolation (Palette.evenSample), matching syncoV2's
             // Palette(colors, weights=None). v2 passes the real population weights
-            // for dwell-time-faithful hold-and-crossfade sampling. Hand-picked
-            // overrides have no population data, so they use even spacing too.
-            val paletteWeights = when {
-                override != null -> null
-                scheme == ColorScheme.ALBUM_ART -> null
-                else -> coloursToApply.weights
-            }
-            engine?.setAlbumColors(coloursToApply.colors, paletteWeights)
+            // for dwell-time-faithful hold-and-crossfade sampling.
+            val paletteWeights = if (scheme == ColorScheme.ALBUM_ART) null else extracted.weights
+            lastAlbumWeights = paletteWeights
+            engine?.setAlbumColors(extracted.colors, paletteWeights)
         } catch (e: Exception) {
             // A cover that will not load is not a reason to stop the show; the
             // engine keeps whatever palette it already had.
             Log.w(TAG, "Album art palette failed for $url: ${e.message}")
         }
+    }
+
+    /**
+     * The weights to hand the engine for a hand-picked palette.
+     *
+     * Null means "space these evenly", which is a different request to the engine
+     * than a weighted sample whose weights happen to be equal — see
+     * [SyncoEngine.setAlbumColors]. So an override the user left alone is expressed
+     * as no weights at all, exactly as before percentages existed, and only one they
+     * actually adjusted carries numbers.
+     *
+     * v1 never takes weights: even interpolation is its whole definition.
+     */
+    private fun overrideWeights(override: CoverPaletteOverride, scheme: ColorScheme): List<Float>? = when {
+        scheme == ColorScheme.ALBUM_ART -> null
+        override.hasWeights -> override.normalisedWeights()
+        else -> null
     }
 
     /**
@@ -1604,6 +1779,7 @@ class DirectLightSync(
      */
     private fun clearAlbumArt() {
         lastAlbumColours = null
+        lastAlbumWeights = null
         lastGoodArtUrl = null
         engine?.setAlbumColors(emptyList())
     }
@@ -1991,12 +2167,36 @@ class DirectLightSync(
                 }
             }
         }
+        // A palette the user has just corrected has to reach the room now, not on
+        // the next track. Nothing else re-reads the overrides — [applyAlbumArt] runs
+        // when the artwork URL changes or the scheme does, and neither happens when
+        // someone saves in the editor. Without this the save succeeded, the lights
+        // carried on showing the old colours until the song ended, and the only
+        // reading available to the user was that saving had not worked.
+        //
+        // Cheap to re-run: the extraction is cached by URL and scheme (see
+        // [paletteCache]), so this costs a map lookup and a setAlbumColors rather
+        // than a second decode of the cover.
+        scope.launch {
+            settings.coverPaletteOverrides
+                .distinctUntilChanged()
+                // The first emission is what is already stored, which the show has
+                // either applied or had no artwork for. Only changes are news.
+                .drop(1)
+                .collect { lastGoodArtUrl?.let { url -> applyAlbumArt(url) } }
+        }
         // Album artwork. Collected unconditionally rather than only while an
         // album-art scheme is selected, so switching to one mid-track picks up
         // the cover already on screen instead of waiting for the next song.
+        //
+        // Keyed on the track as well as the URL. A saved palette is looked up by
+        // track, and two tracks can share an artwork URL — or have none at all, which
+        // is one unchanging null — so keying on the URL alone meant moving from one
+        // track to the next never re-checked for an override. On a library with no
+        // covers that is *every* track change.
         scope.launch {
             @OptIn(kotlinx.coroutines.FlowPreview::class)
-            activeSource.map { it.artUrl }
+            activeSource.map { it.artUrl to scanKeyOf(it.scanTrack) }
                 .distinctUntilChanged()
                 // A backend handover emits null for a moment on its way from one cover
                 // to the next. [applyAlbumArt] already refuses to act on a null, so this
@@ -2004,7 +2204,7 @@ class DirectLightSync(
                 // one extraction rather than two, and stops a rapid run of skips
                 // starting a fetch per track.
                 .debounce(ART_SETTLE_MS)
-                .collect { url ->
+                .collect { (url, _) ->
                     lastArtUrl = url
                     applyAlbumArt(url)
                 }
@@ -2115,24 +2315,109 @@ class DirectLightSync(
     }
 
     /**
-     * A note was hit in the rhythm game. Flash the corresponding side of the room
-     * for a short moment. Called from the UI thread; the overlay is read by the
-     * render loop, so volatility is enough.
+     * Hand the room to the rhythm game, or take it back.
+     *
+     * While this is on, the render loop stops asking the engine what the music is
+     * doing and paints [renderGameField] instead: a dim floor, plus whatever the
+     * player has just struck. Nothing else can light the room — not a beat, not the
+     * idle show, not an ambience effect — and that is the entire point. A room that
+     * flashed on every beat anyway would look identical whether the player was
+     * there or not, and the hits would be invisible inside it.
+     *
+     * Turning it off clears the decaying hits so the next entry starts dark rather
+     * than finishing the last session's flashes.
      */
-    fun receiveGameHit(lane: Int, points: Int) {
+    fun setGameMode(on: Boolean) {
+        if (gameMode == on) return
+        gameMode = on
+        gameFlashes = emptyList()
+        // Nothing else to do: the render loop picks the branch up on its next tick,
+        // and `lastSent` differing from the game field is what gets the first dim
+        // frame onto the wire.
+    }
+
+    /**
+     * A note was struck in the rhythm game. The only thing that lights the room in
+     * game mode.
+     *
+     * [strength] is 0..1 for how well it was hit, [perfect] adds a room-wide bloom
+     * on top of the lane's own burst, and [combo] lets a milestone sweep the whole
+     * room. Called from the main thread; the list is replaced rather than mutated,
+     * so the render loop needs no lock to read it.
+     */
+    fun receiveGameHit(lane: Int, strength: Float, perfect: Boolean, combo: Int) {
         val positions = roomPositions
         if (positions.isEmpty()) return
-        val color = when (lane) {
-            0 -> Rgb(1f, 0.2f, 0.2f) // red kick
-            1 -> Rgb(0.2f, 0.6f, 1f) // blue snare
-            2 -> Rgb(1f, 0.8f, 0.1f) // yellow hat
-            else -> Rgb(0.5f, 1f, 0.3f) // green melody
+        val now = System.currentTimeMillis()
+        val ceiling = layerBrightness
+        val amount = strength.coerceIn(0f, 1f)
+        val next = ArrayList<GameFlash>(gameFlashes.size + 3)
+
+        // Drop what has already finished rather than letting the list grow for as
+        // long as the game runs.
+        for (f in gameFlashes) if (now - f.bornMs < f.lifeMs) next.add(f)
+
+        next.add(
+            GameFlash(
+                channels = laneChannels(lane, positions),
+                colour = laneColour(lane),
+                peak = (GAME_HIT_PEAK * amount * ceiling).coerceIn(0f, 1f),
+                bornMs = now,
+                lifeMs = GAME_HIT_LIFE_MS,
+            )
+        )
+
+        // A perfect hit is worth seeing from anywhere in the room, not only from the
+        // side the lane maps to.
+        if (perfect) {
+            next.add(
+                GameFlash(
+                    channels = positions.keys,
+                    colour = laneColour(lane),
+                    peak = (GAME_PERFECT_BLOOM * ceiling).coerceIn(0f, 1f),
+                    bornMs = now,
+                    lifeMs = GAME_BLOOM_LIFE_MS,
+                )
+            )
         }
-        val sideX = (lane / 3f) * 2f - 1f // map lane 0..3 to left..right
-        val affected = positions.filter { (_, p) -> kotlin.math.abs(p.x - sideX) < 0.4f }.keys
-        val scale = points / 100f
-        gameOverlay = affected.associateWith { Rgb(color.first * scale, color.second * scale, color.third * scale) }
-        gameOverlayExpiryMs = System.currentTimeMillis() + 150L
+
+        // Every tenth unbroken note takes the whole room, once. The multiplier going
+        // up is the moment worth marking, and it is the same moment the HUD marks.
+        if (combo > 0 && combo % GAME_COMBO_MILESTONE == 0) {
+            next.add(
+                GameFlash(
+                    channels = positions.keys,
+                    colour = Rgb(1f, 1f, 1f),
+                    peak = (GAME_COMBO_PEAK * ceiling).coerceIn(0f, 1f),
+                    bornMs = now,
+                    lifeMs = GAME_COMBO_LIFE_MS,
+                )
+            )
+        }
+
+        gameFlashes = next
+    }
+
+    /**
+     * Which lamps a lane lights.
+     *
+     * The band is generous, and falls back to the single nearest lamp when it
+     * catches nothing: in a room with two lamps most lanes sit between them, and a
+     * hit that lit nothing at all would read as the game having missed the tap.
+     */
+    private fun laneChannels(lane: Int, positions: Map<Int, Vec3>): Set<Int> {
+        val sideX = (lane / 3f) * 2f - 1f // lane 0..3 across the room, left to right
+        val band = positions.filterValues { kotlin.math.abs(it.x - sideX) < GAME_LANE_HALF_WIDTH }.keys
+        if (band.isNotEmpty()) return band
+        val nearest = positions.minByOrNull { kotlin.math.abs(it.value.x - sideX) } ?: return emptySet()
+        return setOf(nearest.key)
+    }
+
+    private fun laneColour(lane: Int): Rgb = when (lane) {
+        0 -> Rgb(1f, 0.18f, 0.22f) // kick, red
+        1 -> Rgb(0.22f, 0.55f, 1f) // snare, blue
+        2 -> Rgb(1f, 0.78f, 0.12f) // hat, amber
+        else -> Rgb(0.45f, 1f, 0.35f) // melody, green
     }
 
     // ── Track scans ─────────────────────────────────────────────────────────

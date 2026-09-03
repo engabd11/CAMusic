@@ -83,7 +83,6 @@ class AppSettings(private val context: Context) {
          * its address and label without decrypting its password.
          */
         private val DUCK_ANNOUNCEMENTS = booleanPreferencesKey("duck_announcements")
-        private val CAPTURE_OTHER_APPS = booleanPreferencesKey("capture_other_apps")
         /**
          * How "Listen to this phone" chooses its audio feed.
          * Values: "auto" | "internal" | "projection".
@@ -1225,6 +1224,40 @@ class AppSettings(private val context: Context) {
 
     suspend fun clearCoverPaletteOverride(id: String) = setCoverPaletteOverride(id, null)
 
+    /**
+     * Write (or clear) one override under **every** key it could be looked up by.
+     *
+     * The editor and the light engine do not know the same things about a track, and
+     * filing under one key while the engine looks under another is a saved palette
+     * that silently never applies. That is exactly what happened on the Music
+     * Assistant feed: the editor knows the album name and saved under
+     * `"album|artist"`, while [com.engabd.sendpin.hue.DirectLightSync] has no
+     * `LocalTrack` there at all and could only ever look under the artwork URL. The
+     * override was written, and never once read.
+     *
+     * So the write fans out over the whole of
+     * [com.engabd.sendpin.hue.CoverPaletteOverride.keysFor] rather than its first
+     * entry. The engine still reads *best key first*, so the ordering still decides
+     * which override wins when two disagree; this only makes sure the one the user
+     * saved is findable by whichever name the reader happens to have.
+     *
+     * The cost is a couple of duplicate entries in a small JSON map, which is the
+     * cheaper half of the trade by a wide margin.
+     */
+    suspend fun setCoverPaletteOverrideForKeys(
+        keys: List<String>,
+        override: CoverPaletteOverride?,
+    ) {
+        if (keys.isEmpty()) return
+        context.dataStore.edit { prefs ->
+            val current = parseCoverPaletteOverrides(prefs[COVER_PALETTE_OVERRIDES] ?: "{}")
+            val next =
+                if (override == null || override.colors.isEmpty()) current - keys.toSet()
+                else current + keys.associateWith { override }
+            prefs[COVER_PALETTE_OVERRIDES] = encodeCoverPaletteOverrides(next)
+        }
+    }
+
     private fun encodeCoverPaletteOverrides(overrides: Map<String, CoverPaletteOverride>): String {
         val obj = JSONObject()
         for ((id, o) in overrides) {
@@ -1232,7 +1265,12 @@ class AppSettings(private val context: Context) {
                 id,
                 JSONObject()
                     .put("colors", JSONArray(o.colors))
-                    .put("mode", o.mode.name),
+                    .put("mode", o.mode.name)
+                    // Written only when the user actually set percentages. An
+                    // absent array is what every override saved before weights
+                    // existed looks like, and it decodes to even — so the two are
+                    // the same thing on the way back in, deliberately.
+                    .put("weights", JSONArray(o.weights.map { it.toDouble() })),
             )
         }
         return obj.toString()
@@ -1246,7 +1284,12 @@ class AppSettings(private val context: Context) {
             val colors = (0 until arr.length()).map { arr.getInt(it) }
             val mode = runCatching { CoverPaletteOverride.Mode.valueOf(o.getString("mode")) }
                 .getOrDefault(CoverPaletteOverride.Mode.OVERRIDE)
-            CoverPaletteOverride(colors, mode)
+            // Absent on anything saved before percentages existed, and on any
+            // override the user left evenly spaced. Empty means even.
+            val weightArr = o.optJSONArray("weights")
+            val weights = if (weightArr == null) emptyList()
+            else (0 until weightArr.length()).map { weightArr.getDouble(it).toFloat() }
+            CoverPaletteOverride(colors, mode, weights)
         }
     }.getOrDefault(emptyMap())
 
@@ -1346,11 +1389,22 @@ class AppSettings(private val context: Context) {
         context.dataStore.edit { it[MOTION_MODE] = value }
     }
 
-    suspend fun setCaptureOtherApps(value: Boolean) {
-        context.dataStore.edit { it[CAPTURE_OTHER_APPS] = value }
-    }
-
-    /** Which feed "Listen to this phone" uses: "auto", "internal", or "projection". */
+    /**
+     * Which feed Light Sync listens to on this phone: "auto", "internal" or
+     * "projection".
+     *
+     * This is the whole of the user's intent about listening, and the only setting
+     * that expresses it. It used to sit beside a separate `captureOtherApps` switch
+     * that owned `MediaProjection`, which meant this preference could select a feed
+     * nothing had started — choosing "auto" or "projection" then did nothing at all,
+     * with no error. The UI that writes this starts and stops capture to match it;
+     * see `PhoneAudioCard` in `LightSyncScreen.kt`.
+     *
+     * Not a record of whether capture is *running*: it cannot be. The projection
+     * grant is single-use on Android 14+, so a stored "yes" would be a claim the
+     * platform can revoke between two launches. `PlaybackCapture.state` is the
+     * authority on what is actually listening.
+     */
     val phoneAudioFeed: Flow<String> = pref { it[PHONE_AUDIO_FEED] ?: "auto" }
 
     suspend fun setPhoneAudioFeed(value: String) {
@@ -1511,17 +1565,6 @@ class AppSettings(private val context: Context) {
      */
     val lightSyncSpeakerOffsetMs: Flow<Int> =
         pref { it[LIGHT_SYNC_SPEAKER_OFFSET]?.toIntOrNull() ?: 0 }
-
-    /**
-     * Let Light Sync react to *other apps'* playback.
-     *
-     * Off by default and deliberately not a plain switch in the UI: turning it on
-     * needs a runtime `RECORD_AUDIO` grant, a system consent dialog and a foreground
-     * service, and on Android 14+ the consent dialog comes back **every time** capture
-     * starts, because the projection token is single-use. That is a platform rule and
-     * there is no way around it — see `capture/PlaybackCapture.kt`.
-     */
-    val captureOtherApps: Flow<Boolean> = pref { it[CAPTURE_OTHER_APPS] ?: false }
 
     /**
      * Motion: `system`, `full` or `reduced`.

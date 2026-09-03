@@ -33,6 +33,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.engabd.sendpin.audio.ExclusiveOutput
+import com.engabd.sendpin.audio.OutputMode
 import com.engabd.sendpin.audio.ReplayGain
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
@@ -164,7 +165,8 @@ fun BoxScope.PlayerOptionsSheet(onClose: () -> Unit, viewModel: NowPlayingViewMo
                 if (st.isLocalSession) {
                     val exclusiveReason = ExclusiveOutput.soundModes.reason
                     val soundModesDisabled = st.exclusiveOutputOn
-                    val disabledSubtitle = "Exclusive output is on. $exclusiveReason Turn it off in " +
+                    val disabledSubtitle = "Output mode is ${OutputMode.PURE.title} or deeper. " +
+                        "$exclusiveReason Step back to ${OutputMode.STANDARD.title} in " +
                         "Settings > Playback & audio > Output to use this again."
 
                     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
