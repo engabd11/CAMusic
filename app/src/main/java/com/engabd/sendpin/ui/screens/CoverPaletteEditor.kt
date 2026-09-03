@@ -1,6 +1,5 @@
 package com.engabd.sendpin.ui.screens
 
-import android.graphics.Bitmap
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -38,6 +37,7 @@ import coil.request.ImageRequest
 import coil.request.SuccessResult
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.hue.CoverPaletteOverride
+import com.engabd.sendpin.hue.extractAlbumColours
 import com.engabd.sendpin.ui.design.HSlider
 import com.engabd.sendpin.ui.design.HideBottomChrome
 import com.engabd.sendpin.ui.design.LocalAccent
@@ -46,25 +46,47 @@ import com.engabd.sendpin.ui.design.systemNavInset
 import com.engabd.sendpin.ui.design.TitleGap
 import com.engabd.sendpin.ui.design.a
 import com.engabd.sendpin.ui.theme.*
+import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * A small colour editor that lets the user override the palette the light-sync
- * engine extracts from this album's artwork.
+ * A colour editor that lets the user override the palette the light-sync engine
+ * extracts from this album's artwork.
  *
- * Offered from Now Playing's long-press sheet. It pre-fills the current
- * extracted colours, lets the user change up to four of them, and saves the
- * result to [AppSettings.coverPaletteOverrides] under a stable album key.
+ * ## The same shape as what it replaces
+ *
+ * An extracted palette is *n* colours with population weights — how much of the
+ * sleeve each colour actually is — and the engine samples it by those weights, so a
+ * colour covering half the cover holds the room for half the time. This editor
+ * produces the same thing: a variable number of colours, each with a percentage.
+ *
+ * That matters more than it looks. An override fixed at four evenly-spaced colours
+ * would be a strictly *poorer* description than the one it replaces, so correcting a
+ * single wrong hue would silently flatten the timing of the other three — and "the
+ * blue is right, there is just far too much of it" is the most common correction
+ * anyone actually wants to make and would have been the one thing this could not
+ * express.
+ *
+ * ## Seeding
+ *
+ * From [extractAlbumColours] — the engine's own v2 extractor — rather than a
+ * lookalike written for the preview. The editor is for *adjusting* what the room is
+ * doing, and a preview computed a different way would start the user from colours
+ * the room was never showing.
+ *
+ * Reached from Light Sync's Colour section, and from Now Playing's long-press sheet.
  */
 @Composable
 fun BoxScope.CoverPaletteEditor(
-    /** The album this editor is for. Its name and artist build the stable key. */
+    /** The album this editor is for, for the sheet's own title. */
     albumName: String,
     artistName: String?,
     /** The cover art URL to seed the initial palette from. */
     coverUrl: String?,
+    /** The override already saved for this album, if any: what to open showing. */
+    existing: CoverPaletteOverride? = null,
     /** Called when the user saves a new override, or null to clear it. */
     onSave: (CoverPaletteOverride?) -> Unit,
     onClose: () -> Unit,
@@ -73,39 +95,70 @@ fun BoxScope.CoverPaletteEditor(
     BackHandler(onBack = onClose)
 
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
+    val accent = LocalAccent.current
 
-    // The four colours being edited, as Compose Color objects.
-    var colors by remember { mutableStateOf(List(4) { Color.DarkGray }) }
+    // The palette being edited: colour and its raw share. Raw, not normalised, so a
+    // slider does not shove every other row about while it is under the finger — the
+    // percentages shown are normalised for display on each frame instead.
+    var swatches by remember { mutableStateOf<List<Swatch>>(emptyList()) }
     var pickingIndex by remember { mutableStateOf<Int?>(null) }
     var loaded by remember { mutableStateOf(false) }
+    // What the cover itself says, kept so "Use the cover's colours" can go back to it
+    // without a second decode.
+    var extracted by remember { mutableStateOf<List<Swatch>>(emptyList()) }
 
-    // Seed from the cover's real palette when the sheet opens.
-    LaunchedEffect(coverUrl) {
-        if (coverUrl.isNullOrBlank()) { loaded = true; return@LaunchedEffect }
-        val seed = withContext(Dispatchers.IO) {
+    LaunchedEffect(coverUrl, existing) {
+        val fromCover = withContext(Dispatchers.IO) {
+            if (coverUrl.isNullOrBlank()) return@withContext null
             try {
                 val request = ImageRequest.Builder(context)
                     .data(coverUrl)
-                    .allowHardware(false)
-                    .size(128)
+                    .allowHardware(false) // getPixels needs a software bitmap
+                    .size(256)
                     .build()
                 val result = context.imageLoader.execute(request)
                 val bmp = (result as? SuccessResult)?.drawable?.toBitmap()
                     ?: return@withContext null
-                extractPreviewColors(bmp)
-            } catch (_: Exception) { null }
+                extractAlbumColours(bmp)
+            } catch (_: Exception) {
+                null
+            }
         }
-        seed?.let { colors = it }
+        extracted = fromCover?.let { palette ->
+            palette.colors.mapIndexed { i, rgb ->
+                Swatch(
+                    color = Color(rgb.first, rgb.second, rgb.third),
+                    weight = palette.weights.getOrElse(i) { 1f / palette.colors.size },
+                )
+            }
+        }.orEmpty()
+
+        // What the user already saved wins over the cover: this is an editor for an
+        // existing correction as much as a way to make a new one, and reopening it
+        // has to show what is currently on the room.
+        swatches = when {
+            existing != null && existing.colors.isNotEmpty() -> {
+                val w = existing.normalisedWeights()
+                existing.colors.mapIndexed { i, argb ->
+                    Swatch(Color(argb or (0xFF shl 24)), w.getOrElse(i) { 1f / existing.colors.size })
+                }
+            }
+            extracted.isNotEmpty() -> extracted
+            // No cover, no save: something neutral to start from rather than an
+            // empty sheet. This is the offline-with-no-artwork case, and it is
+            // exactly the one where hand-picking is the only option there is.
+            else -> List(4) { Swatch(Color.DarkGray, 0.25f) }
+        }
         loaded = true
     }
 
     if (pickingIndex != null) {
+        val index = pickingIndex!!
         ColorPickerDialog(
-            initial = colors[pickingIndex!!],
+            initial = swatches.getOrElse(index) { Swatch(Color.DarkGray, 0.25f) }.color,
             onDismiss = { pickingIndex = null },
             onSelect = { color ->
-                colors = colors.toMutableList().apply { set(pickingIndex!!, color) }
+                swatches = swatches.mapIndexed { i, s -> if (i == index) s.copy(color = color) else s }
                 pickingIndex = null
             },
         )
@@ -151,41 +204,99 @@ fun BoxScope.CoverPaletteEditor(
                 maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
             Text(
-                "Override the colours this album lights the room with.",
+                listOfNotNull(albumName.takeIf { it.isNotBlank() }, artistName?.takeIf { it.isNotBlank() })
+                    .joinToString(" · ")
+                    .ifBlank { "The colours this album lights the room with." },
                 color = TextMuted, fontFamily = AppFont, fontSize = 12.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
-            Spacer(Modifier.height(18.dp))
+            Spacer(Modifier.height(14.dp))
 
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                colors.forEachIndexed { i, color ->
+            // The palette as one bar, in proportion. The percentages are abstract in
+            // a list of sliders and obvious here — this is what the room will be.
+            PaletteBar(swatches)
+            Spacer(Modifier.height(16.dp))
+
+            val total = swatches.sumOf { it.weight.toDouble() }.toFloat().coerceAtLeast(0.0001f)
+            swatches.forEachIndexed { i, swatch ->
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(11.dp),
+                ) {
                     Box(
                         Modifier
-                            .size(56.dp)
+                            .size(38.dp)
                             .clip(CircleShape)
-                            .background(color)
-                            .border(2.dp, if (pickingIndex == i) LocalAccent.current else Hairline, CircleShape)
+                            .background(swatch.color)
+                            .border(2.dp, if (pickingIndex == i) accent else Hairline, CircleShape)
                             .clickable { pickingIndex = i },
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(
-                            Icons.Default.Edit,
-                            null,
+                            Icons.Default.Edit, "Change this colour",
                             tint = Color.White.copy(alpha = 0.7f),
-                            modifier = Modifier.size(20.dp),
+                            modifier = Modifier.size(15.dp),
                         )
+                    }
+                    HSlider(
+                        value = (swatch.weight / MAX_WEIGHT).coerceIn(0f, 1f),
+                        onChange = { v ->
+                            swatches = swatches.mapIndexed { j, s ->
+                                if (j == i) s.copy(weight = v * MAX_WEIGHT) else s
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        "${((swatch.weight / total) * 100f).roundToInt()}%",
+                        color = TextSecondary, fontFamily = MonoFont,
+                        fontWeight = FontWeight.Bold, fontSize = 12.sp,
+                        modifier = Modifier.width(38.dp),
+                    )
+                    // Removal is only offered while there would still be a palette
+                    // left. Two colours is the floor: one is not something the engine
+                    // can interpolate across.
+                    Icon(
+                        Icons.Default.Close,
+                        if (swatches.size > CoverPaletteOverride.MIN_COLOURS) "Remove this colour" else null,
+                        tint = if (swatches.size > CoverPaletteOverride.MIN_COLOURS) TextMuted else TextFaint,
+                        modifier = Modifier
+                            .size(18.dp)
+                            .clickable(enabled = swatches.size > CoverPaletteOverride.MIN_COLOURS) {
+                                swatches = swatches.filterIndexed { j, _ -> j != i }
+                            },
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(6.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (swatches.size < CoverPaletteOverride.MAX_COLOURS) {
+                    SmallAction("Add colour", accent, Modifier.weight(1f)) {
+                        // A copy of the last colour rather than a random one: it is
+                        // about to be edited, and starting from something on the
+                        // palette is a shorter trip than starting from grey.
+                        val seed = swatches.lastOrNull()?.color ?: Color.DarkGray
+                        val share = if (swatches.isEmpty()) 0.25f else total / swatches.size
+                        swatches = swatches + Swatch(seed, share)
+                    }
+                }
+                SmallAction("Even", accent, Modifier.weight(1f)) {
+                    swatches = swatches.map { it.copy(weight = 1f) }
+                }
+                if (extracted.isNotEmpty()) {
+                    SmallAction("From cover", accent, Modifier.weight(1f)) {
+                        swatches = extracted
                     }
                 }
             }
 
-            Spacer(Modifier.height(22.dp))
+            Spacer(Modifier.height(14.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 OledButton(
-                    text = "Reset to cover",
-                    accent = LocalAccent.current,
+                    text = "Use cover's own",
+                    accent = accent,
                     outline = true,
                     modifier = Modifier.weight(1f),
                 ) {
@@ -194,12 +305,21 @@ fun BoxScope.CoverPaletteEditor(
                 }
                 OledButton(
                     text = if (loaded) "Save" else "Loading…",
-                    accent = LocalAccent.current,
-                    enabled = loaded,
+                    accent = accent,
+                    enabled = loaded && swatches.size >= CoverPaletteOverride.MIN_COLOURS,
                     modifier = Modifier.weight(1f),
                 ) {
-                    val argbs = colors.map { it.toArgb() }
-                    onSave(CoverPaletteOverride(argbs, CoverPaletteOverride.Mode.OVERRIDE))
+                    // Weights are saved raw. Normalisation is the model's job — see
+                    // CoverPaletteOverride.normalisedWeights — so re-opening the
+                    // editor shows the same slider positions the user left, not a
+                    // rescaled set that drifts a little on every visit.
+                    onSave(
+                        CoverPaletteOverride(
+                            colors = swatches.map { it.color.toArgb() },
+                            mode = CoverPaletteOverride.Mode.OVERRIDE,
+                            weights = swatches.map { it.weight },
+                        )
+                    )
                     onClose()
                 }
             }
@@ -208,47 +328,56 @@ fun BoxScope.CoverPaletteEditor(
     }
 }
 
-/** Pick the most saturated and brightest colours for the editor preview. */
-private fun extractPreviewColors(bmp: Bitmap): List<Color> {
-    val scaled = Bitmap.createScaledBitmap(bmp, 64, 64, true)
-    val px = IntArray(64 * 64)
-    scaled.getPixels(px, 0, 64, 0, 0, 64, 64)
-    if (scaled !== bmp) scaled.recycle()
+/** One colour and how much of the room it should hold. [weight] is a raw share. */
+private data class Swatch(val color: Color, val weight: Float)
 
-    // Group by hue bucket, then pick the most vivid colour in each bucket.
-    // Each entry is (vividness, ARGB pixel) — vividness only orders the bucket,
-    // the pixel is what the swatch shows.
-    val buckets = Array(4) { mutableListOf<Pair<Float, Int>>() }
-    for (p in px) {
-        val r = ((p shr 16) and 0xFF) / 255f
-        val g = ((p shr 8) and 0xFF) / 255f
-        val b = (p and 0xFF) / 255f
-        val max = maxOf(r, g, b)
-        val min = minOf(r, g, b)
-        val sat = if (max > 0f) (max - min) / max else 0f
-        val hue = rgbHue(r, g, b)
-        val bucket = ((hue / 360f) * 4).toInt().coerceIn(0, 3)
-        buckets[bucket].add((sat * max) to p)
-    }
-
-    return buckets.map { list ->
-        val chosen = list.maxByOrNull { it.first }?.second ?: return@map Color.DarkGray
-        Color(chosen)
+/** The palette drawn in proportion, so the percentages mean something at a glance. */
+@Composable
+private fun PaletteBar(swatches: List<Swatch>) {
+    val total = swatches.sumOf { it.weight.toDouble() }.toFloat()
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(34.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .border(1.dp, Hairline, RoundedCornerShape(10.dp)),
+    ) {
+        if (total <= 0f) {
+            Box(Modifier.fillMaxSize().background(Glass))
+            return@Row
+        }
+        swatches.forEach { s ->
+            // A zero-weight colour is left out rather than given a sliver: it is the
+            // user saying "none of this", and a hairline of it would read as a bug.
+            val share = s.weight / total
+            if (share <= 0f) return@forEach
+            Box(Modifier.weight(share).fillMaxHeight().background(s.color))
+        }
     }
 }
 
-private fun rgbHue(r: Float, g: Float, b: Float): Float {
-    val max = maxOf(r, g, b)
-    val min = minOf(r, g, b)
-    val d = max - min
-    val h = when {
-        d == 0f -> 0f
-        max == r -> ((g - b) / d + 6f) % 6f
-        max == g -> (b - r) / d + 2f
-        else -> (r - g) / d + 4f
-    } * 60f
-    return if (h < 0f) h + 360f else h
+@Composable
+private fun SmallAction(text: String, accent: Color, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Box(
+        modifier
+            .clip(RoundedCornerShape(11.dp))
+            .border(1.dp, accent.a(0.45f), RoundedCornerShape(11.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 9.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(text, color = accent, fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+    }
 }
+
+/**
+ * The largest raw share a slider can set.
+ *
+ * Raw shares are normalised for display and for the engine, so the absolute number
+ * is arbitrary — what it buys is a slider that can put one colour well above the
+ * others without every other slider having to come down to make room.
+ */
+private const val MAX_WEIGHT = 2f
 
 @Composable
 private fun ColorPickerDialog(

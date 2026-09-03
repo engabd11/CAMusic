@@ -51,6 +51,18 @@ val NavBarHeight = 62.dp
 val MiniBarHeight = 128.dp
 
 /**
+ * The mini player's height on a screen that needs the bottom of the phone back.
+ *
+ * The full-size bar is 128.dp, and with the tab bar under it that is nearly 200.dp
+ * of chrome — fine on a list, wrong on the rhythm game, where the hit line has to
+ * sit where a thumb naturally falls and every dp of chrome pushes it further up
+ * into the middle of the screen. At this height the bar still says what is playing
+ * and still plays and pauses; it gives up the artist line, the speaker line and the
+ * skip buttons, none of which anyone is reading mid-song.
+ */
+val CompactMiniBarHeight = 56.dp
+
+/**
  * The mini player's height when it is on screen, 0 otherwise.
  *
  * Provided by `App.kt`, which is the only place that knows whether the overlay layout

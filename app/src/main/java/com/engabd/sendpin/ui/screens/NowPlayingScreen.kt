@@ -282,7 +282,7 @@ fun NowPlayingScreen(
                                         interactionSource = remember { MutableInteractionSource() },
                                         indication = null,
                                         onClick = { coverSlot = CoverSlot.VISUALIZER },
-                                        onLongClick = if (favouritable != null) {
+                                        onLongClick = if (!st.idle) {
                                             { sheets.actions = true }
                                         } else null,
                                     ),

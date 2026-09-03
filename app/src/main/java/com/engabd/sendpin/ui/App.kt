@@ -54,6 +54,7 @@ import com.engabd.sendpin.ui.design.LocalBottomChrome
 import androidx.navigation.NavBackStackEntry
 import com.engabd.sendpin.ui.design.LocalMiniBarInset
 import com.engabd.sendpin.ui.design.Motion
+import com.engabd.sendpin.ui.design.CompactMiniBarHeight
 import com.engabd.sendpin.ui.design.MiniBarHeight
 import com.engabd.sendpin.ui.design.LocalPalette
 import com.engabd.sendpin.ui.design.ProvideBackdrop
@@ -519,10 +520,20 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
         // that provides its palette.
         val bottomChrome = remember { BottomChromeState() }
 
+        // Screens that want the bottom of the phone back get a shorter player bar.
+        // The rhythm game is the whole of that list: its hit line has to land under
+        // the player's thumbs, and 128.dp of player plus a tab bar pushes it into
+        // the middle of the screen. Route-driven rather than a flag a screen sets,
+        // because `LocalMiniBarInset` has to be right *before* the destination
+        // composes — a screen that shrank the chrome from inside itself would lay
+        // out once at the full inset and jump.
+        val compactChrome = currentRoute == "rhythm_game"
+        val miniBarHeight = if (compactChrome) CompactMiniBarHeight else MiniBarHeight
+
         CompositionLocalProvider(
             LocalAccent provides appAccent,
             LocalPalette provides appPalette,
-            LocalMiniBarInset provides if (isOverlay) MiniBarHeight else 0.dp,
+            LocalMiniBarInset provides if (isOverlay) miniBarHeight else 0.dp,
             LocalBottomChrome provides bottomChrome,
         ) {
             val tabs = if (isOverlay) OverlayTabs else TabTabs
@@ -797,7 +808,7 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                         // right up until the last frame of the collapse.
                         Box(
                             Modifier
-                                .height(MiniBarHeight)
+                                .height(miniBarHeight)
                                 .padding(horizontal = 8.dp, vertical = 4.dp),
                         ) {
                             // EnterTransition.None / ExitTransition.None because the bar
@@ -809,7 +820,11 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                                 exit = ExitTransition.None,
                                 modifier = Modifier.fillMaxSize(),
                             ) {
-                                MiniPlayerBar(viewModel = nowPlayingVm, onExpand = { overlayExpanded = true })
+                                MiniPlayerBar(
+                                    viewModel = nowPlayingVm,
+                                    onExpand = { overlayExpanded = true },
+                                    compact = compactChrome,
+                                )
                             }
                         }
                         SendspinNavBar(

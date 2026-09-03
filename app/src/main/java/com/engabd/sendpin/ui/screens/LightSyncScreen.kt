@@ -479,8 +479,23 @@ private fun DirectLightSyncScreen(
     val bridgeIp by settings.hueBridgeIp.collectAsState(initial = "")
     val configId by settings.hueEntertainmentConfigId.collectAsState(initial = "")
     val speakerOffsetMs by settings.lightSyncSpeakerOffsetMs.collectAsState(initial = 0)
-    val captureEnabled by settings.captureOtherApps.collectAsState(initial = false)
     val captureState by com.engabd.sendpin.capture.PlaybackCapture.state.collectAsStateWithLifecycle()
+    val coverOverrides by settings.coverPaletteOverrides.collectAsState(initial = emptyMap())
+
+    // Built from exactly what DirectLightSync.findOverride reads — the active
+    // source's LocalTrack and artwork URL — and from nothing else. An override
+    // filed under a key the engine never looks up is a palette the user saved and
+    // the room never shows, which is the failure this feature already had once.
+    val paletteKeys = com.engabd.sendpin.hue.CoverPaletteOverride.keysFor(
+        album = lightSource.scanTrack?.album,
+        artist = lightSource.scanTrack?.artist,
+        coverUrl = lightSource.artUrl,
+        trackId = lightSource.scanTrack?.id,
+    )
+    val savedPalette = paletteKeys.firstNotNullOfOrNull { key ->
+        coverOverrides[key]?.takeIf { it.colors.isNotEmpty() }
+    }
+    var paletteEditorOpen by remember { mutableStateOf(false) }
 
     // Entertainment areas, read from the process-scoped [DirectLightSync] rather than
     // fetched here. This screen is a NavHost destination, so screen-local state is
@@ -696,7 +711,13 @@ private fun DirectLightSyncScreen(
                         }
                         Spacer(Modifier.width(13.dp))
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
-                            Text("Effects", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Text("Effects", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                                ExperimentalBadge()
+                            }
                             Text(
                                 "Fireworks, thunderstorm, fireplace and more - with their own sound, " +
                                     "and no music needed",
@@ -714,6 +735,27 @@ private fun DirectLightSyncScreen(
                 ColourPicker(selected = colour, showDynamic = true, songFromBeats = true) { scheme ->
                     scope.launch { settings.setLightSyncColor(scheme) }
                 }
+
+                // Correcting the colours an album lights the room with belongs here,
+                // beside the picker that chose to use them. It was previously only
+                // reachable by long-pressing the artwork on Now Playing — behind a
+                // sheet of queue and share actions, and gated on the track being
+                // favouritable, which has nothing to do with its colours.
+                Spacer(Modifier.height(10.dp))
+                AlbumColoursCard(
+                    scheme = colour,
+                    label = lightSource.scanTrack?.album?.takeIf { it.isNotBlank() }
+                        ?: maNow?.album?.takeIf { it.isNotBlank() }
+                        ?: lightSource.scanTrack?.title
+                        ?: maNow?.title,
+                    saved = savedPalette,
+                    canEdit = paletteKeys.isNotEmpty(),
+                    accent = accent,
+                    onEdit = { paletteEditorOpen = true },
+                    onReset = {
+                        scope.launch { settings.setCoverPaletteOverrideForKeys(paletteKeys, null) }
+                    },
+                )
 
                 // Only while the scan-driven show is the one running. It has no
                 // equivalent of the live path's measured [AudioLead] — there is no sink
@@ -770,28 +812,26 @@ private fun DirectLightSyncScreen(
                 }
 
                 Spacer(Modifier.height(22.dp))
-                SectionLabel("This phone")
+                SectionLabel("What this phone listens to")
                 Spacer(Modifier.height(10.dp))
                 val phoneAudioFeed by settings.phoneAudioFeed.collectAsState(initial = "auto")
                 PhoneAudioCard(
                     selected = phoneAudioFeed,
-                    onSelect = { scope.launch { settings.setPhoneAudioFeed(it) } },
-                    accent = accent,
-                )
-
-                Spacer(Modifier.height(22.dp))
-                SectionLabel("Other apps")
-                Spacer(Modifier.height(10.dp))
-                CaptureCard(
-                    enabled = captureEnabled,
                     state = captureState,
                     accent = accent,
-                    onEnable = { on ->
-                        scope.launch { settings.setCaptureOtherApps(on) }
-                        if (on) com.engabd.sendpin.capture.PlaybackCapture.requestStart(context)
-                        else com.engabd.sendpin.capture.PlaybackCapture.stop(context)
+                    onSelect = { choice ->
+                        scope.launch { settings.setPhoneAudioFeed(choice) }
+                        // The choice *is* the switch. This is the whole of the fix:
+                        // picking a mode that needs capture now starts capture, where
+                        // before it only changed which feed the picker would have
+                        // preferred had anything ever started one.
+                        if (choice == "internal") {
+                            com.engabd.sendpin.capture.PlaybackCapture.stop(context)
+                        } else if (!com.engabd.sendpin.capture.PlaybackCapture.hasToken()) {
+                            com.engabd.sendpin.capture.PlaybackCapture.requestStart(context)
+                        }
                     },
-                    onRetry = { com.engabd.sendpin.capture.PlaybackCapture.requestStart(context) },
+                    onStartCapture = { com.engabd.sendpin.capture.PlaybackCapture.requestStart(context) },
                 )
 
                 Spacer(Modifier.height(22.dp))
@@ -1109,6 +1149,29 @@ private fun DirectLightSyncScreen(
                     )
                 }
             }
+        }
+
+        // The palette editor, over the whole screen. A BoxScope sheet, so it belongs
+        // to this Box rather than to the scrolling column that opens it.
+        if (paletteEditorOpen) {
+            CoverPaletteEditor(
+                albumName = lightSource.scanTrack?.album?.takeIf { it.isNotBlank() }
+                    ?: maNow?.album?.takeIf { it.isNotBlank() }
+                    ?: "What's playing",
+                artistName = lightSource.scanTrack?.artist?.takeIf { it.isNotBlank() }
+                    ?: maNow?.artist?.takeIf { it.isNotBlank() },
+                coverUrl = lightSource.artUrl,
+                // Open showing what is actually on the room, so this is an editor
+                // for an existing correction and not only a way to start a new one.
+                existing = savedPalette,
+                onSave = { override ->
+                    // Every key, not the best one — see
+                    // AppSettings.setCoverPaletteOverrideForKeys.
+                    scope.launch { settings.setCoverPaletteOverrideForKeys(paletteKeys, override) }
+                    paletteEditorOpen = false
+                },
+                onClose = { paletteEditorOpen = false },
+            )
         }
     }
 }
@@ -1836,29 +1899,177 @@ private fun offsetFromSlider(fraction: Float): Int {
 
 
 /**
- * Light Sync listening to whatever else is playing on the phone.
+ * What this phone's Light Sync is listening to, and the one control that decides it.
  *
- * Written as a set-up action rather than a plain switch because it is not one: it
- * needs a runtime microphone grant (which is what `AudioPlaybackCapture` is gated on,
- * even though no microphone is opened), a system consent dialog, and a foreground
- * service — and on Android 14+ the consent dialog reappears every single time capture
- * starts, because the projection token is single-use. Presenting that as a toggle
- * would promise a thing the platform does not offer.
+ * ## Why this is one card and not two
+ *
+ * It used to be two, and they did not add up. A "Use this phone's audio" selector
+ * offered Auto and Always projection, and a separate "React to other apps" switch
+ * owned `MediaProjection`. But the selector only expressed a *preference* — the feed
+ * picker consults it and then asks whether capture happens to be running — and
+ * nothing in the selector ever started capture. So choosing Auto or Always
+ * projection and expecting the room to follow Spotify did exactly nothing, forever,
+ * with no error: the picker fell through to the local tap, which was silent, and the
+ * lights ran the idle show. The two controls could also disagree by construction,
+ * since either could be set to something the other contradicted.
+ *
+ * Now the choice is the switch. Picking a mode that needs capture asks for it, and
+ * picking the one that does not stops it, so there is nothing left for a second
+ * toggle to say.
+ *
+ * ## Why it is not a plain switch
+ *
+ * Capture needs a runtime microphone grant (which is what `AudioPlaybackCapture` is
+ * gated on, even though no microphone is opened), a system consent dialog, and a
+ * foreground service — and on Android 14+ that consent dialog reappears every single
+ * time capture starts, because the projection token is single-use. So the card can
+ * want capture and not have it, and it has to be able to say so and offer the way
+ * back, rather than showing a switch that is on while nothing is listening.
  *
  * The blocked message is the part that earns the feature its keep. An app that opts
  * out of capture is delivered as bit-exact silence with no error of any kind, so
- * without saying so plainly the only observation available to the user is "the lights
- * do nothing", which is indistinguishable from a bug here.
+ * without saying so plainly the only observation available to the user is "the
+ * lights do nothing", which is indistinguishable from a bug here.
+ */
+/**
+ * The row that opens the album-palette editor, and says whether this album already
+ * has corrected colours.
+ *
+ * ## Why it lives on this screen
+ *
+ * The editor shipped reachable only by long-pressing the artwork on Now Playing,
+ * inside a sheet of play/queue/share actions — and that long-press was gated on the
+ * track being *favouritable*, which is a question about whether a server can star it
+ * and has nothing whatever to do with its colours. On a local file with no library
+ * behind it the gesture did nothing at all. Nobody looking for a Light Sync setting
+ * was going to find it there even when it worked.
+ *
+ * So it is here, under the colour picker that chose to use album colours in the
+ * first place. The Now Playing entry stays — it is the right shortcut when you are
+ * already looking at the cover you want to fix.
+ *
+ * [scheme] is the stored wire name rather than a boolean, because the card has three
+ * things to say and only one of them is "tap to edit": a fixed palette means these
+ * colours are not in use at all, and nothing playing means there is no album to save
+ * them against.
  */
 @Composable
-private fun CaptureCard(
-    enabled: Boolean,
+private fun AlbumColoursCard(
+    scheme: String,
+    /** Album name, or the track's, for saying which record this would correct. */
+    label: String?,
+    saved: com.engabd.sendpin.hue.CoverPaletteOverride?,
+    /** False when nothing is playing, so there is no key to file an override under. */
+    canEdit: Boolean,
+    accent: Color,
+    onEdit: () -> Unit,
+    onReset: () -> Unit,
+) {
+    val dynamic = com.engabd.sendpin.hue.ColorScheme.fromWire(scheme).isDynamic
+    GlassCard(radius = 18.dp, fill = if (saved != null) accent.a(0.10f) else Glass) {
+        Column {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable(enabled = canEdit, onClick = onEdit)
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                // The saved colours themselves where there are some — the only
+                // preview worth showing, and the one that answers "did that save?"
+                // without opening anything. The extracted palette is not shown here
+                // because knowing it means decoding the cover, which is work this
+                // row should not be doing on every recomposition of the screen.
+                Box(
+                    Modifier.size(42.dp).clip(RoundedCornerShape(13.dp)).background(Glass)
+                        .border(1.dp, Hairline, RoundedCornerShape(13.dp)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    val colours = saved?.colors.orEmpty()
+                    if (colours.isEmpty()) {
+                        Icon(
+                            Icons.Default.Palette, null,
+                            tint = if (canEdit && dynamic) TextMuted else TextFaint,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    } else {
+                        Column(Modifier.fillMaxSize()) {
+                            colours.take(4).chunked(2).forEach { pair ->
+                                Row(Modifier.weight(1f).fillMaxWidth()) {
+                                    pair.forEach { argb ->
+                                        Box(
+                                            Modifier.weight(1f).fillMaxHeight()
+                                                .background(Color(argb or (0xFF shl 24))),
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.width(13.dp))
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(
+                            "Album colours",
+                            color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp,
+                        )
+                        if (saved != null) {
+                            Text(
+                                "Corrected",
+                                color = accent, fontWeight = FontWeight.Bold, fontSize = 10.sp,
+                            )
+                        }
+                    }
+                    Text(
+                        when {
+                            !canEdit -> "Play something to correct the colours it lights the room with."
+                            !dynamic ->
+                                "The colour above is a fixed palette, so album colours are not in " +
+                                    "use. Corrections are kept, and apply again on Album art."
+                            saved != null && label != null -> "Your colours for $label."
+                            saved != null -> "Your colours, not the artwork's."
+                            label != null -> "Change the colours $label lights the room with."
+                            else -> "Change the colours this album lights the room with."
+                        },
+                        color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
+                    )
+                }
+                if (canEdit) {
+                    Icon(Icons.Default.ChevronRight, null, tint = TextFaint, modifier = Modifier.size(20.dp))
+                }
+            }
+
+            if (saved != null) {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable(onClick = onReset)
+                        .padding(start = 16.dp, end = 16.dp, bottom = 14.dp),
+                ) {
+                    Text(
+                        "Use the artwork's own colours again",
+                        color = accent, fontWeight = FontWeight.Bold, fontSize = 12.sp,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PhoneAudioCard(
+    selected: String,
     state: com.engabd.sendpin.capture.PlaybackCapture.State,
-    accent: androidx.compose.ui.graphics.Color,
-    onEnable: (Boolean) -> Unit,
-    onRetry: () -> Unit,
+    accent: Color,
+    onSelect: (String) -> Unit,
+    onStartCapture: () -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val wantsCapture = selected != "internal"
     var granted by remember {
         mutableStateOf(
             androidx.core.content.ContextCompat.checkSelfPermission(
@@ -1866,107 +2077,117 @@ private fun CaptureCard(
             ) == android.content.pm.PackageManager.PERMISSION_GRANTED,
         )
     }
+    // Remembers which choice asked for the grant, so answering the dialog completes
+    // that choice rather than starting capture for a mode the user has since left.
+    var pendingChoice by remember { mutableStateOf<String?>(null) }
     val permission = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
     ) { ok ->
         granted = ok
-        if (ok) onEnable(true)
+        val choice = pendingChoice
+        pendingChoice = null
+        if (ok && choice != null) onSelect(choice)
     }
 
-    GlassCard(radius = 18.dp, fill = if (enabled) accent.a(0.10f) else Glass) {
+    fun choose(choice: String) {
+        if (choice != "internal" && !granted) {
+            pendingChoice = choice
+            permission.launch(android.Manifest.permission.RECORD_AUDIO)
+            return
+        }
+        onSelect(choice)
+    }
+
+    GlassCard(radius = 18.dp, fill = if (wantsCapture) accent.a(0.10f) else Glass) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
-                    Text(
-                        "React to other apps",
-                        color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp,
-                    )
-                    Text(
-                        captureBlurb(enabled, state),
-                        color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
-                    )
-                }
-                AccentSwitch(enabled) { on ->
-                    if (on && !granted) permission.launch(android.Manifest.permission.RECORD_AUDIO)
-                    else onEnable(on)
-                }
+            Column(verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+                Text(
+                    "What this phone listens to",
+                    color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp,
+                )
+                Text(
+                    phoneFeedBlurb(selected, state),
+                    color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
+                )
             }
+
+            val options = listOf("Auto", "CAMusic only", "Other apps")
+            val values = listOf("auto", "internal", "projection")
+            SegmentedToggle(
+                options = options,
+                selectedIndex = values.indexOf(selected).coerceAtLeast(0),
+                modifier = Modifier.fillMaxWidth(),
+            ) { choose(values[it]) }
+
+            Text(
+                when (selected) {
+                    "internal" ->
+                        "Only CAMusic's own playback drives the lights. Nothing else on the " +
+                            "phone is listened to, and no permission is needed."
+                    "projection" ->
+                        "Always listens through screen capture, even while CAMusic is playing. " +
+                            "Pick this if you want another app's audio to win outright."
+                    else ->
+                        "Uses CAMusic's own audio while it is playing - which is exact and free - " +
+                            "and listens to whatever else is playing when it is not."
+                },
+                color = TextFaint, style = MaterialTheme.typography.bodySmall,
+            )
+
             if (state == com.engabd.sendpin.capture.PlaybackCapture.State.BLOCKED) {
                 Text(
-                    "This app does not allow its audio to be captured. YouTube, YouTube Music " +
+                    "That app does not allow its audio to be captured. YouTube, YouTube Music " +
                         "and most DRM-protected apps opt out, and nothing here can change that. " +
                         "Spotify, podcast apps and local players usually work.",
                     color = WarnAmber, style = MaterialTheme.typography.bodySmall,
                 )
             }
-            if (state == com.engabd.sendpin.capture.PlaybackCapture.State.STOPPED_BY_SYSTEM ||
-                state == com.engabd.sendpin.capture.PlaybackCapture.State.DENIED
-            ) {
+
+            // Wanting capture and not having it is a normal, recurring state rather
+            // than an error: the grant is single-use, so this is where every app
+            // restart lands. Offer the way back instead of a switch that lies.
+            if (wantsCapture && !com.engabd.sendpin.capture.PlaybackCapture.hasToken()) {
                 Text(
-                    "Android asks permission each time capture starts, the grant is single-use " +
-                        "and cannot be remembered.",
+                    "Android asks permission each time listening starts, and the grant cannot " +
+                        "be remembered - so this needs one tap per app session.",
                     color = TextFaint, style = MaterialTheme.typography.bodySmall,
                 )
                 Box(
                     Modifier
                         .clip(RoundedCornerShape(12.dp))
                         .border(1.dp, accent.a(0.55f), RoundedCornerShape(12.dp))
-                        .clickable(onClick = onRetry)
+                        .clickable {
+                            if (granted) {
+                                onStartCapture()
+                            } else {
+                                pendingChoice = selected
+                                permission.launch(android.Manifest.permission.RECORD_AUDIO)
+                            }
+                        }
                         .padding(horizontal = 16.dp, vertical = 10.dp),
                 ) {
-                    Text("Start again", color = accent, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text(
+                        if (state == com.engabd.sendpin.capture.PlaybackCapture.State.OFF) "Start listening"
+                        else "Start again",
+                        color = accent, fontWeight = FontWeight.Bold, fontSize = 13.sp,
+                    )
                 }
             }
         }
     }
 }
 
-private fun captureBlurb(
-    enabled: Boolean,
+private fun phoneFeedBlurb(
+    selected: String,
     state: com.engabd.sendpin.capture.PlaybackCapture.State,
 ): String = when {
-    !enabled -> "Follow music from any other app on this phone."
+    selected == "internal" -> "CAMusic's own playback."
     state == com.engabd.sendpin.capture.PlaybackCapture.State.RUNNING -> "Listening."
     state == com.engabd.sendpin.capture.PlaybackCapture.State.QUIET -> "Listening, nothing playing."
     state == com.engabd.sendpin.capture.PlaybackCapture.State.BLOCKED -> "That app will not allow it."
-    state == com.engabd.sendpin.capture.PlaybackCapture.State.STARTING -> "Starting…"
-    state == com.engabd.sendpin.capture.PlaybackCapture.State.STOPPED_BY_SYSTEM -> "Capture was stopped."
+    state == com.engabd.sendpin.capture.PlaybackCapture.State.STARTING -> "Starting..."
+    state == com.engabd.sendpin.capture.PlaybackCapture.State.STOPPED_BY_SYSTEM -> "Listening was stopped."
     state == com.engabd.sendpin.capture.PlaybackCapture.State.DENIED -> "Permission was not granted."
-    else -> "Not listening."
-}
-
-@Composable
-private fun PhoneAudioCard(
-    selected: String,
-    onSelect: (String) -> Unit,
-    accent: Color,
-) {
-    GlassCard(radius = 18.dp) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
-                    Text(
-                        "Use this phone's audio",
-                        color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp,
-                    )
-                    Text(
-                        "When CAMusic is playing, use its own PCM for the light show.",
-                        color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
-                    )
-                }
-            }
-            val options = listOf("Auto", "Always internal", "Always projection")
-            val values = listOf("auto", "internal", "projection")
-            com.engabd.sendpin.ui.design.SegmentedToggle(
-                options = options,
-                selectedIndex = values.indexOf(selected).coerceAtLeast(0),
-                modifier = Modifier.fillMaxWidth(),
-            ) { onSelect(values[it]) }
-            Text(
-                "Auto uses CAMusic's own tap when it is playing, and MediaProjection for other apps. " +
-                    "Always projection keeps listening through screen capture even when CAMusic is the source.",
-                color = TextFaint, style = MaterialTheme.typography.bodySmall,
-            )
-        }
-    }
+    selected == "projection" -> "Other apps on this phone, once started."
+    else -> "CAMusic when it is playing, other apps when it is not."
 }

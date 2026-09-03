@@ -735,6 +735,35 @@ fun PageBloom(
     Bloom(LocalPalette.current.swatch(0), size, x, y, alpha)
 }
 
+/**
+ * A small static badge marking a feature as not finished.
+ *
+ * Not a [Pill]: this is not a control and must not look like one — nothing about it
+ * is tappable, and the whole point is that it sits beside a title without competing
+ * with it. Amber rather than the accent, because the accent is the app's "this is
+ * on" colour and an experimental feature is not making a claim about its state.
+ */
+@Composable
+fun ExperimentalBadge(modifier: Modifier = Modifier, label: String = "Experimental") {
+    Box(
+        modifier
+            .clip(RoundedCornerShape(100))
+            .background(WarnAmber.a(0.14f))
+            .border(1.dp, WarnAmber.a(0.35f), RoundedCornerShape(100))
+            .padding(horizontal = 8.dp, vertical = 3.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            color = WarnAmber,
+            fontFamily = AppFont,
+            fontWeight = FontWeight.Bold,
+            fontSize = 10.sp,
+            maxLines = 1,
+        )
+    }
+}
+
 // --- buttons --------------------------------------------------------------
 
 @Composable

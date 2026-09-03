@@ -18,6 +18,7 @@ import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.audio.AudioOutputs
 import com.engabd.sendpin.audio.DeviceCapabilities
 import com.engabd.sendpin.audio.ExclusiveOutput
+import com.engabd.sendpin.audio.OutputMode
 import com.engabd.sendpin.audio.ReplayGain
 import com.engabd.sendpin.audio.SignalPath
 import com.engabd.sendpin.audio.StreamQuality
@@ -173,7 +174,7 @@ private fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSco
                     if (path.decoded.known) StatusRow("Decoder output", path.decoded.summary())
                     if (path.sink.known) StatusRow("To Android", path.sink.summary())
                     StatusRow(
-                        "High-resolution output",
+                        OutputMode.HIGH_RESOLUTION.title,
                         when {
                             !path.highResRequested -> "Off"
                             path.floatEngaged -> "On, carrying the extra bits"
@@ -196,15 +197,15 @@ private fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSco
                         "own MediaCodec comes out as 16-bit PCM, and nothing downstream can " +
                         "put those bits back.\n\n**To Android** is the last thing this app " +
                         "can see. Past it the platform mixes, resamples if it has to, and on " +
-                        "Bluetooth hands the result to the codec.\n\n**High-resolution " +
-                        "output** is the switch that decides whether the decoder's extra bits " +
-                        "survive: without it Android converts anything above 16-bit down to " +
-                        "16 on the way to the sink. It only actually engages on a stream that " +
-                        "needs it - a 16-bit file plays exactly the same either way, which is " +
-                        "what \"on, but this stream is 16-bit\" means above.\n\n**Equaliser / " +
-                        "Light Sync** appears only while they are genuinely out of the chain: " +
-                        "on a stream carrying the extra bits, or with Exclusive output on, " +
-                        "media3 is not running either.\n\nTip: on Bluetooth the device row above " +
+                        "Bluetooth hands the result to the codec.\n\n**${OutputMode.HIGH_RESOLUTION.title}** " +
+                        "is the rung of Output mode that decides whether the decoder's extra " +
+                        "bits survive: below it Android converts anything above 16-bit down " +
+                        "to 16 on the way to the sink. It only actually engages on a stream " +
+                        "that needs it - a 16-bit file plays exactly the same either way, " +
+                        "which is what \"on, but this stream is 16-bit\" means above.\n\n" +
+                        "**Equaliser / Light Sync** appears only while they are genuinely out " +
+                        "of the chain: on a stream carrying the extra bits, or on " +
+                        "${OutputMode.PURE.title} and above, media3 is not running either.\n\nTip: on Bluetooth the device row above " +
                         "will always say 16-bit, whatever LDAC is carrying — that is Android " +
                         "describing the sink it gives apps, not the codec. These lines are " +
                         "the ones that tell you something.",
@@ -243,92 +244,93 @@ private fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSco
         }
 
         CardDivider()
-        ToggleRow(
-            title = "High-resolution output",
-            subtitle = if (route?.isBluetooth == true)
-                "Keeps the decoder's extra bits as far as the Bluetooth codec"
-            else
-                "Carry more than 16 bits to the output",
-            checked = bitPerfect,
-            accent = accent,
-            info = "Carries whatever depth the decoder produced instead of flattening it to " +
-                "16 bits on the way to the sink.\n\nThis matters on Bluetooth too, which is " +
-                "not obvious: LDAC is lossy, so nothing here is ever bit-perfect over the " +
-                "air — but the codec is fed by Android, and handing it a signal already " +
-                "truncated to 16 bits throws away resolution *before* it encodes. Check " +
-                "Developer options, Bluetooth audio bits per sample: if it says 24 or 32, " +
-                "the codec is ready for more than 16 and this is what supplies it.\n\nIt " +
-                "only helps where the decoder produced more than 16 bits to begin with. " +
-                "The Signal path panel above says whether it did.\n\nThe float path is " +
-                "fixed when the player is built, so a change applies next time the app " +
-                "starts rather than straight away.\n\nThe trade: on a stream where it " +
-                "engages, media3 stops running any of this app's audio processors at " +
-                "all - the equaliser and the Light Sync audio analysis go quiet, not " +
-                "because of a setting but because of how media3's float path works. " +
-                "The Signal path panel above says when that is happening.\n\nTip: if you " +
-                "hear distortion on 44.1 kHz material on a phone whose mixer runs at 48, " +
-                "turn it back off — that combination has been known to misbehave, and " +
-                "switching it off fixes it immediately.",
-        ) { scope.launch { settings.setBitPerfect24Bit(it) } }
+        FieldLabel("Output mode")
 
-        if (advanced) {
-            CardDivider()
-            ToggleRow(
-                title = "Exclusive output",
-                subtitle = "Nothing of this app's between the decoder and the DAC",
-                checked = exclusiveOutput,
-                accent = accent,
-                info = "Removes every stage this app puts between the decoder and the DAC, and " +
-                    "asks the platform to carry the source's own rate and depth instead of " +
-                    "this app touching either.\n\nTurns off: " +
-                    ExclusiveOutput.disables.joinToString(", ") { it.title } + ".\n\n" +
-                    ExclusiveOutput.disables.joinToString("\n\n") { "**${it.title}.** ${it.reason}" } +
-                    "\n\n" + ExclusiveOutput.VOLUME_NOTE +
-                    "\n\n" + ExclusiveOutput.ANDROID_CEILING_NOTE +
-                    "\n\nPins a USB output the moment you turn this on, if one is attached and " +
-                    "nothing is pinned already — exclusive output through the phone speaker " +
-                    "is nothing to ask for. Turning it back off does not unpin it; do that " +
-                    "above if you want Android routing normally again.\n\nThe renderer is " +
-                    "fixed when the player is built, so this applies next time the app " +
-                    "starts, same as High-resolution output above.",
-            ) { on ->
-                scope.launch {
-                    settings.setExclusiveOutput(on)
-                    // Reuses AudioOutputs.list rather than `outputs` above: the picker row
-                    // is hidden on a phone with only its own speaker, but a USB DAC plugged
-                    // in after that row last composed should still get pinned.
-                    if (on && pinned.isBlank()) {
-                        AudioOutputs.list(am).firstOrNull { it.isUsb }
-                            ?.let { settings.setPreferredAudioDeviceId(it.id) }
-                    }
+        // One dial, not three switches. See [OutputMode] for why these were never
+        // independent settings and what each rung is named after.
+        val mode = OutputMode.of(bitPerfect, exclusiveOutput, bitPerfectAaudio)
+        val rungs = OutputMode.offered(advanced, mode)
+        SegmentedToggleRow(rungs.map { it.title }, rungs.indexOf(mode).coerceAtLeast(0)) { i ->
+            val next = rungs[i]
+            scope.launch {
+                // All three written together, every time, so the stored state can
+                // only ever be one of the four rungs. The old UI wrote them
+                // independently, which is how "AAudio on, exclusive off" — a
+                // combination that does nothing — was reachable.
+                settings.setBitPerfect24Bit(next.floatPath)
+                settings.setExclusiveOutput(next.exclusive)
+                settings.setBitPerfectAaudio(next.aaudio)
+                // Exclusive output through the phone's own speaker is nothing to ask
+                // for, so stepping onto a rung that removes this app's processing
+                // pins a USB output if one is attached and nothing is pinned yet.
+                // Reuses AudioOutputs.list rather than `outputs` above: the picker
+                // row is hidden on a phone with only its own speaker, but a DAC
+                // plugged in after that row last composed should still get pinned.
+                if (next.exclusive && pinned.isBlank()) {
+                    AudioOutputs.list(am).firstOrNull { it.isUsb }
+                        ?.let { settings.setPreferredAudioDeviceId(it.id) }
                 }
             }
+        }
 
-            CardDivider()
-            ToggleRow(
-                title = "Bit-perfect AAudio output",
-                subtitle = if (exclusiveOutput) "Bypass media3 and send 24-bit PCM straight to a USB DAC" else "Requires Exclusive output above",
-                checked = bitPerfectAaudio && exclusiveOutput,
-                enabled = exclusiveOutput,
-                accent = accent,
-                info = "Requires Exclusive output above. Uses Android's low-latency AAudio API directly " +
-                    "with a 24-bit or 32-bit float stream, so the file reaches the DAC without being " +
-                    "resampled or requantised by the normal mixer. " +
-                    "Only works on the library this phone decodes itself; Music Assistant playback " +
-                    "stays 16-bit because the native Sendspin engine is int16. " +
-                    "Turning this on disables the equaliser, Light Sync analysis and sound modes, same as Exclusive output.",
-            ) { on ->
-                scope.launch {
-                    if (on && !exclusiveOutput) {
-                        settings.setExclusiveOutput(true)
-                        if (pinned.isBlank()) {
-                            AudioOutputs.list(am).firstOrNull { it.isUsb }
-                                ?.let { settings.setPreferredAudioDeviceId(it.id) }
-                        }
-                    }
-                    settings.setBitPerfectAaudio(on)
-                }
-            }
+        Note(
+            mode.summary,
+            title = "Output mode",
+            info = "Four rungs of the same ladder: each one is everything the one before " +
+                "it does, plus one more stage taken out of the way. There is no " +
+                "combination to work out — pick how far down you want to go.\n\n" +
+                "**Standard.** Every stage this app offers is in the chain, and the " +
+                "output is 16-bit. This is the right answer unless you can hear a " +
+                "reason it is not.\n\n" +
+                "**High resolution.** Carries whatever depth the decoder produced " +
+                "instead of flattening it to 16 bits on the way to the sink. It only " +
+                "helps where the decoder produced more than 16 bits to begin with — " +
+                "the Signal path panel above says whether it did. This matters on " +
+                "Bluetooth too, which is not obvious: LDAC is lossy, so nothing here " +
+                "is ever bit-perfect over the air, but the codec is fed by Android, " +
+                "and handing it a signal already truncated to 16 bits throws away " +
+                "resolution *before* it encodes. Check Developer options, Bluetooth " +
+                "audio bits per sample: if it says 24 or 32, the codec is ready for " +
+                "more than 16 and this is what supplies it.\n\nThe catch is that on a " +
+                "stream where it engages, media3 stops running any of this app's " +
+                "audio processors at all — the equaliser and the Light Sync analysis " +
+                "go quiet, not because of a setting but because of how media3's float " +
+                "path works. The Signal path panel says when that is happening.\n\n" +
+                "**Pure.** Removes every stage this app puts between the decoder and " +
+                "the DAC, deliberately and always, and asks the platform to carry the " +
+                "source's own rate and depth.\n\nTurns off: " +
+                ExclusiveOutput.disables.joinToString(", ") { it.title } + ".\n\n" +
+                ExclusiveOutput.disables.joinToString("\n\n") { "**${it.title}.** ${it.reason}" } +
+                "\n\n" + ExclusiveOutput.VOLUME_NOTE +
+                "\n\n" + ExclusiveOutput.ANDROID_CEILING_NOTE + "\n\n" +
+                "**Direct to DAC.** Uses Android's low-latency AAudio API directly " +
+                "with a 24-bit or 32-bit float stream, so the file reaches the DAC " +
+                "without being resampled or requantised by the normal mixer. Only " +
+                "works on the library this phone decodes itself; Music Assistant " +
+                "playback stays 16-bit, because the native Sendspin engine is int16. " +
+                "Wants a USB DAC — this is not something to ask of the phone's own " +
+                "speaker.\n\nThe renderer and the float path are both fixed when the " +
+                "player is built, so a change here applies next time the app starts " +
+                "rather than to the track playing now.\n\nTip: if you hear distortion " +
+                "on 44.1 kHz material on a phone whose mixer runs at 48, step back to " +
+                "Standard — that combination has been known to misbehave, and " +
+                "dropping down fixes it immediately.",
+        )
+
+        if (mode.alwaysBypassesProcessors) {
+            Note(
+                "The equaliser, Light Sync analysis, sound modes and ReplayGain are off " +
+                    "while this mode is selected. That is the mode working, not a fault.",
+                warn = true,
+            )
+        }
+
+        if (mode == OutputMode.DIRECT && route?.isUsb != true) {
+            Note(
+                "No USB DAC is attached, so this falls back to the ordinary path. Pin one " +
+                    "under Output device above once it is plugged in.",
+                warn = true,
+            )
         }
     }
 }
@@ -387,7 +389,7 @@ internal fun StreamingCard(settings: AppSettings, accent: Color, scope: Coroutin
         ) { scope.launch { settings.setPreferOriginal(it) } }
         Note(
             "Music Assistant playback on this phone is 16-bit — the native output engine " +
-                "renders int16 whatever depth is advertised here. High-resolution output " +
+                "renders int16 whatever depth is advertised here. The Output mode " +
                 "under Output above is for the library this phone decodes for itself, not " +
                 "this one.",
         )
