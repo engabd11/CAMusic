@@ -91,6 +91,22 @@ class AaudioBitperfectOutput(
             C.ENCODING_PCM_32BIT, C.ENCODING_PCM_FLOAT -> 4
             else -> 2
         }
+
+        /**
+         * media3's encoding for one of the native side's own format codes — see
+         * the FORMAT_* constants in sendspin_aaudio.cpp.
+         *
+         * The translation lives here, where `C.ENCODING_*` can be named, rather
+         * than as copies of media3's numeric values in C++ where a renumbering
+         * upstream would go unnoticed until something played back as noise.
+         */
+        private fun formatCodeOf(encoding: Int): Int = when (encoding) {
+            C.ENCODING_PCM_16BIT -> 1
+            C.ENCODING_PCM_24BIT -> 2
+            C.ENCODING_PCM_32BIT -> 3
+            C.ENCODING_PCM_FLOAT -> 4
+            else -> 0
+        }
     }
 
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -150,7 +166,7 @@ class AaudioBitperfectOutput(
         SignalPath.onDecoderOutput(format)
 
         val preferred = preferredDeviceId()
-        val opened = nativeOpenStream(sampleRate, channelCount, pcmEncoding, preferred)
+        val opened = nativeOpenStream(sampleRate, channelCount, formatCodeOf(pcmEncoding), preferred)
         if (opened == 0L) {
             throw AudioSink.ConfigurationException(
                 "Failed to open AAudio stream ${sampleRate}Hz/${channelCount}ch/enc=${pcmEncoding} " +
@@ -302,7 +318,7 @@ class AaudioBitperfectOutput(
     }
 
     /** Native AAudio bridge. Declarations only; implementation lives in cpp/sendspin_aaudio.cpp. */
-    private external fun nativeOpenStream(sampleRate: Int, channels: Int, encoding: Int, deviceId: Int): Long
+    private external fun nativeOpenStream(sampleRate: Int, channels: Int, formatCode: Int, deviceId: Int): Long
     private external fun nativeClose(ptr: Long)
     private external fun nativeWrite(ptr: Long, pcm: ByteArray, offset: Int, length: Int): Long
     private external fun nativeFlush(ptr: Long)

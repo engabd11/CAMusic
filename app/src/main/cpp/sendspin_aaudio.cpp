@@ -19,18 +19,22 @@
 
 namespace {
 
-// AAudio data format constants mapped from media3 C encoding values.
-constexpr int ENCODING_PCM_16BIT = 0x00000002; // C.ENCODING_PCM_16BIT
-constexpr int ENCODING_PCM_24BIT = 0x0000000a; // C.ENCODING_PCM_24BIT
-constexpr int ENCODING_PCM_32BIT = 0x0000000e; // C.ENCODING_PCM_32BIT
-constexpr int ENCODING_PCM_FLOAT  = 0x00000004; // C.ENCODING_PCM_FLOAT
+// Format codes agreed with AaudioBitperfectOutput.kt, which maps media3's own
+// C.ENCODING_* constants onto them. Ours rather than media3's numeric values on
+// purpose: those belong to a library this file cannot see, so copying them here
+// means a renumbering upstream arrives as a stream opened in the wrong format
+// rather than as a build error.
+constexpr int FORMAT_I16 = 1;
+constexpr int FORMAT_I24_PACKED = 2;
+constexpr int FORMAT_I32 = 3;
+constexpr int FORMAT_FLOAT = 4;
 
-aaudio_format_t aaudioFormatOf(int encoding) {
-    switch (encoding) {
-        case ENCODING_PCM_16BIT: return AAUDIO_FORMAT_PCM_I16;
-        case ENCODING_PCM_24BIT: return AAUDIO_FORMAT_PCM_I24;
-        case ENCODING_PCM_32BIT: return AAUDIO_FORMAT_PCM_I32;
-        case ENCODING_PCM_FLOAT: return AAUDIO_FORMAT_PCM_FLOAT;
+aaudio_format_t aaudioFormatOf(int formatCode) {
+    switch (formatCode) {
+        case FORMAT_I16: return AAUDIO_FORMAT_PCM_I16;
+        case FORMAT_I24_PACKED: return AAUDIO_FORMAT_PCM_I24_PACKED;
+        case FORMAT_I32: return AAUDIO_FORMAT_PCM_I32;
+        case FORMAT_FLOAT: return AAUDIO_FORMAT_PCM_FLOAT;
         default: return AAUDIO_FORMAT_INVALID;
     }
 }
@@ -38,7 +42,7 @@ aaudio_format_t aaudioFormatOf(int encoding) {
 int bytesPerSampleOf(aaudio_format_t format) {
     switch (format) {
         case AAUDIO_FORMAT_PCM_I16: return 2;
-        case AAUDIO_FORMAT_PCM_I24: return 3;
+        case AAUDIO_FORMAT_PCM_I24_PACKED: return 3;
         case AAUDIO_FORMAT_PCM_I32: return 4;
         case AAUDIO_FORMAT_PCM_FLOAT: return 4;
         default: return 2;
@@ -110,7 +114,7 @@ extern "C" {
 
 JNIEXPORT jlong JNICALL
 Java_com_engabd_sendpin_audio_AaudioBitperfectOutput_nativeOpenStream(
-    JNIEnv* /*env*/, jobject /*thiz*/, jint sampleRate, jint channels, jint encoding, jint deviceId) {
+    JNIEnv* /*env*/, jobject /*thiz*/, jint sampleRate, jint channels, jint formatCode, jint deviceId) {
     AAudioStreamBuilder* builder = nullptr;
     aaudio_result_t result = AAudio_createStreamBuilder(&builder);
     if (result != AAUDIO_OK || builder == nullptr) {
@@ -118,9 +122,9 @@ Java_com_engabd_sendpin_audio_AaudioBitperfectOutput_nativeOpenStream(
         return 0;
     }
 
-    const aaudio_format_t format = aaudioFormatOf(encoding);
+    const aaudio_format_t format = aaudioFormatOf(formatCode);
     if (format == AAUDIO_FORMAT_INVALID) {
-        LOGE("Unsupported encoding: %d", encoding);
+        LOGE("Unsupported format code: %d", formatCode);
         AAudioStreamBuilder_delete(builder);
         return 0;
     }
@@ -178,7 +182,7 @@ Java_com_engabd_sendpin_audio_AaudioBitperfectOutput_nativeOpenStream(
         return 0;
     }
 
-    LOGI("Opened AAudio stream %dHz/%dch format=%d device=%d", sampleRate, channels, encoding, deviceId);
+    LOGI("Opened AAudio stream %dHz/%dch format=%d device=%d", sampleRate, channels, format, deviceId);
     return reinterpret_cast<jlong>(out);
 }
 
