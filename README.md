@@ -88,7 +88,10 @@ shuffle and repeat, all of it addressing MPD. Point it at the protocol port (660
 the whole setup: no `httpd` output, no stream, nothing to configure twice. ReplayGain is MPD's
 own, set from the loudness control in the Now Playing options sheet. Covers come down the
 protocol socket, embedded art first and a folder cover behind it. There is no download column
-because MPD has no endpoint that hands a file over.
+because MPD has no endpoint that hands a file over. The Now Playing overlays and quality badge
+show MPD's own live output — codec, sample rate, depth, channels and the bitrate it is decoding
+right now — rather than this phone's, and Light Sync runs from an offline scan the same way it
+does for any other server driving a speaker in another room.
 
 **Continue listening** leads the library with the albums and songs you were last in the
 middle of, including Jellyfin's own resume shelf. Anything can be taken offline for the train,
@@ -110,24 +113,38 @@ Playback is built to be worth good headphones and a good DAC.
   `FLAC • 96/24 • 3 Mb/s` with a detail card behind it.
 - **Gapless playback**, smooth transitions from one to twelve seconds, and beat matched
   crossfades that align to the beat grid of both tracks when scan data is available.
+- **Sound modes** recolour whatever is playing, ahead of the equaliser. Vinyl decorrelates
+  its crackle, pop and rumble left from right and adds a band-limited surface hiss. Lo-fi
+  applies a persistent vari-speed slowdown, speed and pitch together, with wow-and-flutter
+  modulation on top. Old Radio band-limits to telephone range with light saturation, AM
+  static bursts shaped by the same "speaker", and a slow carrier warble.
+- **An output ladder** — Standard, High resolution, Pure, Direct to DAC — replaces what used
+  to be three overlapping switches with one dial, each rung removing one more stage between
+  the decoder and the DAC. High resolution carries more than 16 bits to the sink; Pure strips
+  every processor this app adds, equaliser and sound modes included; Direct to DAC bypasses
+  media3 entirely over a native AAudio bridge straight to a USB DAC.
 - **USB DAC awareness**: connect one and CAMusic tells you what it can do and offers to pin
   the output to it.
-- **DJ Radio** — one button on the library's front page, and the room has a set on. It picks
-  what plays next by how the music actually sounds, not just by what it is filed under: the
-  genre tags your library carries, plus the energy, tempo and spectral balance the offline
-  scan already measured, folded at half and double time the way a DJ hears it. Tracks
-  **overlap** rather than fading through silence — the outgoing one keeps playing on a second
-  deck while the next comes up under it — so there is no quiet moment between songs. **Smart
-  fade** plans each join off the scan rather than the clock: it leaves where the music actually
-  stops rather than where the file does, starts the overlap on a downbeat, sizes it in whole
-  bars, and skips any dead air at the front of the next track. Fade mode, crossfade length and
-  how close the next track has to be are all yours to set; Harmonic DJ mode adds key matching
-  on top.
+- **DJ Radio** — one button on the library's front page, and the room has a set on. Tapping it
+  opens six songs picked for maximum spread across your library, each tagged with the brief it
+  fits — Morning, Focus, Workout, Party, Sundown, Before sleep, or Surprise me — so a set starts
+  from a deliberate corner of the library rather than a guess. From there it picks what plays
+  next by how the music actually sounds, not just by what it is filed under: the genre tags
+  your library carries, plus the energy, tempo and spectral balance the offline scan already
+  measured, folded at half and double time the way a DJ hears it. Tracks **overlap** rather
+  than fading through silence — the outgoing one keeps playing on a second deck while the next
+  comes up under it — so there is no quiet moment between songs. **Smart fade** plans each join
+  off the scan rather than the clock: it leaves where the music actually stops rather than
+  where the file does, starts the overlap on a downbeat, sizes it in whole bars, and skips any
+  dead air at the front of the next track. Fade mode, crossfade length and how close the next
+  track has to be are all yours to set; Harmonic DJ mode adds key matching on top.
 - **Keep the music going** on every library the phone plays itself, and the shuffle button
   decides what "going" means: shuffled, the next track is a random song from the library;
   unshuffled, it is the next track on the record, then the next record, and so on. Plus
   favourites, a version picker that lists every copy of a track across every provider, and
-  cross-device resume.
+  cross-device resume. Where a server has no "more like this" of its own, an on-device sonic
+  index finds one anyway, matching local tracks on the same tempo, key, energy and spectral
+  shape the offline scan already measured.
 
 ---
 
@@ -144,8 +161,16 @@ The one to use. CAMusic opens its own DTLS entertainment stream to the Hue bridg
   across the room, bass sits low, and the room's own shape (a line, a ring, a cluster) changes
   how effects are drawn.
 - **Colour from the album art**, extracted for a *room* rather than for a UI accent, and
-  weighted so each colour holds for its share of the sleeve.
+  weighted so each colour holds for its share of the sleeve. Long-press Now Playing to
+  **hand-correct** what the extractor got wrong in a 2–6 swatch editor, and the room uses your
+  palette from the very next frame.
 - **Five intensity rungs** plus Auto, which picks per track.
+- **Rhythm Lights**, a tap-along game on the Light Sync screen: four falling lanes — kick,
+  snare, hat, melody — charted from the track's own beat grid rather than lagging a beat
+  behind it. A well-timed hit doesn't replace the show with a coloured flash, it **gates** it —
+  the room runs exactly the light show that moment of music would always have produced, held
+  down to a floor until a hit opens the gate, and a long combo turns a string of hits into a
+  nearly continuous show.
 - **Saved shows.** A dinner is not a party is not a film score. Each show stores intensity,
   palette, brightness and every feature toggle as one preset. Tap a chip to apply it, and tie a
   show to a genre so the room picks it up on its own.
@@ -355,10 +380,25 @@ playing. `LocalDsp` sits ahead of the tap so the show reacts to what you actuall
 
 ## Recent releases
 
-**v0.11.1**, the next release, brings the ten band equaliser, the signal path card, saved
-light shows with genre rules, the Set Builder, the shareable listening recap, and the offline
-speed-limit database shipping inside the app.
+**Unreleased**, on top of v0.11.5, brings **Rhythm Lights** (a tap-along game that gates the
+real light show instead of replacing it), the **output ladder** that collapses three
+overlapping switches into one dial, **hand-correctable album colours**, a **Simple/Advanced**
+split for Settings, an on-device **sonic "more like this"** for tracks no server has an
+opinion on, DJ Radio's six-song opening picker with mood briefs, and a pass of MPD transport,
+queue and Light Sync fixes.
 
+**v0.11.5**: DJ Radio starts the instant you tap it, with no flicker on the way in.
+**v0.11.4**: **DJ Radio** ships — a set that chooses by genre, energy, tempo and key and mixes
+with no gap between tracks; vinyl and lo-fi reworked into real production techniques, plus a
+new **Old Radio** effect; ambience effects driven by their own recording's audio instead of a
+script running alongside it.
+**v0.11.3**: the ambience storm and fireworks unified into one show instead of two; motion
+polish across the parts of the app that still jumped; MPD's lock screen session.
+**v0.11.2**: **MPD** as a library — browse, play and control a daemon over its own protocol
+port, the phone becoming the remote for whatever DAC it is plugged into.
+**v0.11.1**: the ten band equaliser, the signal path card, saved light shows with genre rules,
+the Set Builder, the shareable listening recap, and the offline speed-limit database shipping
+inside the app.
 **v0.11.0**: Emby and Plex as libraries; recorded sound for the ambience effects; a spectrum
 analyser that reads as one; lyrics as typography; Settings reorganised.
 **v0.10.9**: native Oboe Sendspin engine; the MA playhead rewritten on the server's anchor;
@@ -374,14 +414,16 @@ Full history: [docs/release-history.md](docs/release-history.md).
 - Wear OS companion
 - Audiobookshelf and Kodi as libraries
 - Network filesystems: SMB, WebDAV and the major cloud drives
-- True overlapping crossfade on the standalone path
-- Bit-perfect exclusive-mode output through the native AAudio path
+- A live-wired ambient background for the Android TV app, beyond today's fallback palette
 - More effects, and more bundled beds
 
 ---
 
 ## Good to know
 
+- **Settings default to Simple.** Advanced toggles — detailed signal-path readouts, the Pure
+  and Direct to DAC output rungs, motion settings, listening-DNA and lyrics timing — sit behind
+  one Advanced switch at the top of Settings, off until you go looking for them.
 - **A Hue entertainment area serves one client at a time.** If the Hue app takes the area,
   CAMusic's stream is handed over and stays stopped, deliberately, so its own stop button keeps
   working.
