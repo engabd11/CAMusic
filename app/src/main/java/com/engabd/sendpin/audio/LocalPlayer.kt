@@ -894,6 +894,7 @@ class LocalPlayer(private val context: Context) {
      */
     fun adoptRemoteQueue(tracks: List<LocalTrack>, at: Int) {
         if (remote == null || tracks.isEmpty()) return
+        sessionEpoch++
         _queue.value = tracks
         _hasSession.value = true
         smoothQueue = true
@@ -903,10 +904,31 @@ class LocalPlayer(private val context: Context) {
 
     // --- queue ------------------------------------------------------------
 
+    /**
+     * Which listening session this is, counted up every time the queue is replaced
+     * wholesale or emptied.
+     *
+     * A radio top-up is several seconds of network and disk, and the queue it was
+     * asked about can be gone by the time it answers — cleared from the queue
+     * sheet, or replaced by an album the listener started meanwhile. Appending to
+     * that is not a top-up: an empty queue is a *new session* to
+     * [addToQueue], so the answer to a top-up nobody wanted any more was a random
+     * song starting and the queue filling itself back up. Reading this before the
+     * work and again before the append is how a top-up knows the queue it was for
+     * still exists.
+     *
+     * Not a flow: nothing watches it, and everything that reads it is comparing a
+     * value it captured itself.
+     */
+    @Volatile
+    var sessionEpoch: Long = 0L
+        private set
+
     /** Replace the queue and start at [startIndex]. */
     fun setQueue(tracks: List<LocalTrack>, startIndex: Int = 0) {
         if (tracks.isEmpty()) { clear(); return }
         val start = startIndex.coerceIn(0, tracks.lastIndex)
+        sessionEpoch++
         _queue.value = tracks
         _hasSession.value = true
         // Decided here rather than at each call site, because every path that starts
@@ -955,10 +977,25 @@ class LocalPlayer(private val context: Context) {
         player.play()
     }
 
-    /** Append to the queue, starting playback if nothing is loaded. */
-    fun addToQueue(tracks: List<LocalTrack>) {
+    /**
+     * Append to the queue, starting playback if nothing is loaded.
+     *
+     * [startIfEmpty] is what tells a deliberate "add to queue" from a radio
+     * top-up. Landing on an empty queue means two opposite things to the two of
+     * them: the listener adding a track to a stopped player means play it, and a
+     * top-up finding the queue gone means the queue it was for is over. The
+     * top-up passing `false` is why clearing the queue now stays cleared instead
+     * of a random song starting and the whole list building itself back up — see
+     * [sessionEpoch] for the race that produced the answer in the first place.
+     */
+    fun addToQueue(tracks: List<LocalTrack>, startIfEmpty: Boolean = true) {
         if (tracks.isEmpty()) return
         val wasEmpty = _queue.value.isEmpty()
+        if (wasEmpty && !startIfEmpty) return
+        // Landing on an empty queue starts a session, exactly as [setQueue] does, so
+        // it counts as one — anything already in flight for the queue that was there
+        // before is for a different session now.
+        if (wasEmpty) sessionEpoch++
         _queue.value = _queue.value + tracks
         // Appending something from off the record — a radio top-up, a queued track —
         // means this is no longer one album, so the fade applies again.
@@ -1135,6 +1172,7 @@ class LocalPlayer(private val context: Context) {
 
     /** Everything the screens read, back to "nothing is loaded". */
     private fun resetSession() {
+        sessionEpoch++
         _queue.value = emptyList()
         _index.value = -1
         _current.value = null

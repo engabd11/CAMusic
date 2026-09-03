@@ -826,6 +826,14 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         }
         startLocalRadio()
         startQueueSync()
+        // A set is defined by the queue it built — see [leaveDjRadio], which says so
+        // about every other path that replaces that queue. Emptying it from the
+        // queue sheet is the same statement as pressing Stop, and until this the set
+        // went on running behind a player holding nothing, topping the emptiness
+        // back up on the next collector emission.
+        viewModelScope.launch {
+            localPlayer.queue.collect { if (it.isEmpty()) leaveDjRadio() }
+        }
         // The fade belongs to the player, and the setting can change under a queue
         // that is already running.
         viewModelScope.launch { settings.navFadeSeconds.collect { localPlayer.fadeSeconds = it } }
@@ -2615,6 +2623,11 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * track and drops the rest.
      */
     private suspend fun fillBehind(seed: LocalTrack, session: Int) {
+        // The queue the fill is going behind, named before the waiting starts —
+        // see [queueGone]. A clear from the queue sheet mid-fill would otherwise
+        // land [com.engabd.sendpin.audio.LocalPlayer.replaceUpcoming] on an empty
+        // list, which is a `setQueue`, which plays.
+        val queueSession = localPlayer.sessionEpoch
         val seedId = seed.scrobbleId ?: seed.id
         val picks = djPicks(
             seed = lastSeeds[seedId],
@@ -2628,7 +2641,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         // Several seconds of network and disk have passed since the tap. See
         // [djStillRunning] — without this the set lands behind a queue that Stop
         // already emptied, and the room starts playing again.
-        if (!djStillRunning(session)) return
+        if (!djStillRunning(session) || queueGone(queueSession)) return
         rememberSeeds(picks)
         localPlayer.replaceUpcoming(picks.map { localTrack(it) })
     }
@@ -2911,6 +2924,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * should follow where the listener has got to.
      */
     private suspend fun topUpRadio(queue: List<com.engabd.sendpin.audio.LocalTrack>): Boolean {
+        // The queue this top-up is for, named before any of the waiting starts. See
+        // [queueGone].
+        val session = localPlayer.sessionEpoch
         val playing = localPlayer.current.value
         val seedId = playing?.scrobbleId ?: playing?.id
         val seed = seedId?.let { id -> lastSeeds[id] }
@@ -2939,7 +2955,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         // memory-only by design, so on a library scanned last week it would come
         // back null for the very track that is playing.
         if (_djRadio.value) {
-            val session = djSession
+            val djSet = djSession
             val djPicked = djPicks(
                 seed = seed,
                 seedScan = playing?.let { trackScans.cached(it) },
@@ -2949,9 +2965,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 mood = djMood,
             )
             if (djPicked.isEmpty()) return false
-            if (!djStillRunning(session) || queueGone()) return false
+            if (!djStillRunning(djSet) || queueGone(session)) return false
             rememberSeeds(djPicked)
-            localPlayer.addToQueue(djPicked.map { localTrack(it) })
+            localPlayer.addToQueue(djPicked.map { localTrack(it) }, startIfEmpty = false)
             return true
         }
 
@@ -2984,24 +3000,32 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                     .ifEmpty { radio.next(generator, seed, RADIO_BATCH, exclude, bonus = bonus) }
         }
         if (picked.isEmpty()) return false
-        if (queueGone()) return false
+        if (queueGone(session)) return false
         rememberSeeds(picked)
-        localPlayer.addToQueue(picked.map { localTrack(it) })
+        localPlayer.addToQueue(picked.map { localTrack(it) }, startIfEmpty = false)
         return true
     }
 
     /**
-     * The queue this top-up was for is gone: stopped, or replaced by something the
-     * listener started while the fetch was in the air.
+     * The queue this top-up was for is gone: emptied from the queue sheet, stopped,
+     * or replaced by something the listener started while the fetch was in the air.
      *
      * The check exists because appending to an empty queue is not an append.
      * [com.engabd.sendpin.audio.LocalPlayer.addToQueue] reads an empty queue as a
      * fresh session and *starts playing* — so a top-up that outlived its queue did
-     * not top anything up, it started a song nobody asked for. That is exactly what
-     * "I stopped DJ Radio and another song started instead" was, and it could
-     * happen on the plain "keep the music going" path too.
+     * not top anything up, it started a song nobody asked for, and the collector
+     * watching the queue then topped that up in turn. "I clear the queue and it
+     * plays something and fills itself back up", from a paused player, was one
+     * top-up in flight at the moment of the clear.
+     *
+     * Both halves are asked, because they are different questions.
+     * [com.engabd.sendpin.audio.LocalPlayer.sessionEpoch] catches a queue that was
+     * *replaced* — the listener put an album on, and ten radio picks appended to
+     * the end of it are not what either of them asked for — while the emptiness
+     * check catches the queue draining to nothing by any route at all.
      */
-    private fun queueGone(): Boolean = localPlayer.queue.value.isEmpty()
+    private fun queueGone(session: Long): Boolean =
+        localPlayer.sessionEpoch != session || localPlayer.queue.value.isEmpty()
 
     /**
      * Harmonic DJ mode's ranking bonus for one candidate, against the scan of what

@@ -9,6 +9,7 @@ import com.engabd.sendpin.audio.TrackScan
 import com.engabd.sendpin.audio.TrackScanRepository
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.download.DownloadManager
+import com.engabd.sendpin.library.CompanionLibraries
 import com.engabd.sendpin.library.MusicSource
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -63,8 +64,14 @@ class MpdScanFrameSource(
     private val local: LocalPlayer,
     private val downloads: DownloadManager,
     private val settings: AppSettings,
-    /** The live self-hosted library, for finding a file to analyse. May be null. */
-    private val musicSource: () -> MusicSource?,
+    /**
+     * The libraries that can hand this phone a file to analyse.
+     *
+     * A list, and not [LocalPlayer]'s own library, because on an MPD session the
+     * library that is playing is precisely the one that cannot answer — MPD has no
+     * endpoint that gives a file up. See [CompanionLibraries].
+     */
+    private val libraries: suspend () -> List<MusicSource>,
     /** Where a synthesised frame goes. Wired to `DirectLightSync.onSynthFrame`. */
     private val sink: (AnalysisFrame, BeatGrid?, TrackScan, Float) -> Unit,
 ) {
@@ -84,12 +91,19 @@ class MpdScanFrameSource(
     @Volatile private var pendingKey: String? = null
     @Volatile private var offsetMs: Int = 0
 
+    /**
+     * What each MPD track resolved to, including the ones that resolved to nothing.
+     * See [resolveScannable].
+     */
+    private val resolved = HashMap<String, LocalTrack?>()
+
     private var jobs = mutableListOf<Job>()
 
     fun start() {
         if (jobs.isNotEmpty()) return
         jobs += scope.launch { watchTrack() }
         jobs += scope.launch { watchScans() }
+        jobs += scope.launch { scanAhead() }
         jobs += scope.launch { settings.lightSyncSpeakerOffsetMs.collect { offsetMs = it } }
         jobs += scope.launch { tick() }
     }
@@ -97,6 +111,11 @@ class MpdScanFrameSource(
     fun stop() {
         jobs.forEach { it.cancel() }
         jobs.clear()
+        // Not in [reset], which runs on every pause: a track that resolved to
+        // nothing is worth asking about again once the show has been off long
+        // enough for the listener to have added the server that has it, and not
+        // once per pause.
+        synchronized(resolved) { resolved.clear() }
         reset()
     }
 
@@ -159,6 +178,38 @@ class MpdScanFrameSource(
             }
     }
 
+    /**
+     * Analyse the track *after* the one playing, while there is still a song's worth
+     * of time to do it in.
+     *
+     * The app-wide pre-scan in `SendpinApp` cannot do this one. It requests
+     * [LocalPlayer.queue]'s entries directly, and an MPD queue entry carries no
+     * local path and no stream URL — `TrackScanRepository` reads a blank URL and
+     * returns without a word. Every MPD track therefore arrived unanalysed, and the
+     * lights came up somewhere in the middle of it if at all. The resolution
+     * [resolveScannable] does for the current track is exactly what the next one
+     * needs too, one track early.
+     *
+     * Not urgent: the point of doing it now is that nothing is waiting on it.
+     */
+    private suspend fun scanAhead() {
+        combine(local.remoteActive, local.queue, local.index) { remote, queue, at ->
+            if (remote) queue.getOrNull(at + 1) else null
+        }
+            .distinctUntilChanged { a, b ->
+                RemoteTrackIdentity.sameTrack(
+                    a?.title, a?.artist, a?.durationMs ?: 0L,
+                    b?.title, b?.artist, b?.durationMs ?: 0L,
+                )
+            }
+            .collect { next ->
+                val track = next ?: return@collect
+                val analysable = resolveScannable(track) ?: return@collect
+                if (scans.cached(analysable) != null) return@collect
+                scans.request(analysable)
+            }
+    }
+
     /** Adopt an analysis the moment the repository finishes one we asked for. */
     private suspend fun watchScans() {
         scans.completed.collect { key ->
@@ -197,6 +248,25 @@ class MpdScanFrameSource(
     private suspend fun resolveScannable(track: LocalTrack): LocalTrack? {
         if (!track.streamUrl.isNullOrBlank() || !track.localPath.isNullOrBlank()) return track
 
+        // Every track is resolved twice — a song early by [scanAhead] and again by
+        // [watchTrack] when it starts — and each resolution is a search against
+        // every companion library. Remembering the answer halves that. Remembering
+        // a *failure* matters more: a track no library has would otherwise be
+        // searched for in full every time it came round.
+        val key = track.scrobbleId ?: track.id
+        synchronized(resolved) { if (resolved.containsKey(key)) return resolved[key] }
+        val found = searchForScannable(track)
+        synchronized(resolved) {
+            // Cleared rather than evicted one at a time: this is a session's queue,
+            // not a library, and re-resolving costs one search.
+            if (resolved.size > RESOLVED_LIMIT) resolved.clear()
+            resolved[key] = found
+        }
+        return found
+    }
+
+    /** The part of [resolveScannable] that touches the network. */
+    private suspend fun searchForScannable(track: LocalTrack): LocalTrack? {
         downloads.downloads.value.firstOrNull {
             RemoteTrackIdentity.sameTrack(
                 track.title, track.artist, track.durationMs,
@@ -204,26 +274,38 @@ class MpdScanFrameSource(
             )
         }?.let { return it.toLocalTrack() }
 
-        val source = musicSource() ?: return null
-        val hits = runCatching { source.search("${track.title} ${track.artist}", limit = 10) }
-            .getOrNull()?.tracks
-            ?: return null
-        val hit = hits.firstOrNull {
-            RemoteTrackIdentity.sameTrack(
-                track.title, track.artist, track.durationMs,
-                it.name, it.subtitle, (it.duration ?: 0).toLong() * 1000L,
+        // Every library that will serve a file, not the one that is playing. On an
+        // MPD session those are never the same thing, and asking the playing one
+        // was the bug: `MpdSource.downloadUrl` answers with the empty string, this
+        // built a track around it, and `TrackScanRepository` then returned from a
+        // blank URL without a word — so the feed sat on SCANNING for ever and the
+        // lights never came up. A resolution with nothing fetchable behind it is
+        // worse than none, because "no match" is at least true and the Light Sync
+        // screen says it out loud.
+        for (source in runCatching { libraries() }.getOrDefault(emptyList())) {
+            val hits = runCatching { source.search("${track.title} ${track.artist}", limit = 10) }
+                .getOrNull()?.tracks
+                ?: continue
+            val hit = hits.firstOrNull {
+                RemoteTrackIdentity.sameTrack(
+                    track.title, track.artist, track.durationMs,
+                    it.name, it.subtitle, (it.duration ?: 0).toLong() * 1000L,
+                )
+            } ?: continue
+            val url = source.downloadUrl(hit.itemId)
+            if (url.isBlank()) continue
+            return LocalTrack(
+                id = hit.itemId,
+                title = hit.name,
+                artist = hit.subtitle,
+                album = hit.album,
+                durationMs = (hit.duration ?: 0).toLong() * 1000L,
+                artUrl = track.artUrl,
+                streamUrl = url,
+                localPath = null,
             )
-        } ?: return null
-        return LocalTrack(
-            id = hit.itemId,
-            title = hit.name,
-            artist = hit.subtitle,
-            album = hit.album,
-            durationMs = (hit.duration ?: 0).toLong() * 1000L,
-            artUrl = track.artUrl,
-            streamUrl = source.downloadUrl(hit.itemId),
-            localPath = null,
-        )
+        }
+        return null
     }
 
     /** Produce frames at the analysis hop rate — see [ScanFrameSource.tick] for why 20 ms. */
@@ -251,5 +333,8 @@ class MpdScanFrameSource(
     private companion object {
         const val TICK_MS = 20L
         const val MAX_STEP_S = 0.25f
+
+        /** How many resolutions to remember before starting again. See [resolveScannable]. */
+        const val RESOLVED_LIMIT = 400
     }
 }

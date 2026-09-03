@@ -188,6 +188,10 @@ class SendpinApp : Application(), ImageLoaderFactory {
             val mpdScanDriving = values[5] as Boolean
             val phoneAudioFeed = values[6] as String
             val maTap = owner.sendspinTap
+            // MPD is playing and this phone is only its remote — see
+            // `PlaybackOwner.State.soundIsReadable`, which is the same question the
+            // other way round.
+            val mpdHoldsSound = owner.localRemoteActive && owner.localPlaying
             // The precedence lives in one pure function now — see
             // [com.engabd.sendpin.hue.LightSyncFeedPicker]. It used to be an `if` here
             // and a differently-shaped `if` in the gate below, which is how a paused MA
@@ -205,6 +209,13 @@ class SendpinApp : Application(), ImageLoaderFactory {
                 captureRunning = captureRunning,
                 scanDriving = maScanDriving || mpdScanDriving,
                 phoneAudioFeed = phoneAudioFeed,
+                // MPD is playing and nothing readable reaches this phone. Below
+                // `scanDriving` in the picker's order, so it changes nothing while a
+                // scan is driving — it is what makes the *failure* legible instead
+                // of reporting an MPD track through the local-PCM branch and saying
+                // "waiting for audio" about audio that is coming out of a DAC across
+                // the house.
+                remoteHoldsSound = mpdHoldsSound,
             )
             when (feed) {
                 com.engabd.sendpin.hue.LightSyncFeed.SENDSPIN_PCM ->
@@ -231,8 +242,18 @@ class SendpinApp : Application(), ImageLoaderFactory {
                 com.engabd.sendpin.hue.LightSyncFeed.SCAN_REMOTE ->
                     com.engabd.sendpin.hue.ActiveLightSyncSource(
                         tap = localPlayer.audioAnalysisTap, lead = localPlayer.audioLead,
-                        artUrl = if (mpdScanDriving) localTrack?.artUrl else maArtUrl,
-                        scanTrack = null, feed = feed,
+                        // `mpdHoldsSound` and not only `mpdScanDriving`: an MPD track
+                        // with no analysis behind it now reports through this branch
+                        // too, and the *colours* never needed the analysis. Dropping
+                        // to `maArtUrl` there would have taken the album palette away
+                        // from the one case that has nothing else going for it.
+                        artUrl = if (mpdScanDriving || mpdHoldsSound) localTrack?.artUrl else maArtUrl,
+                        // Likewise the track itself, which is what the genre presets
+                        // and the per-album palette overrides are keyed on. It is
+                        // null on the Music Assistant side because there is no local
+                        // track there to name; on MPD there always is.
+                        scanTrack = if (mpdHoldsSound || mpdScanDriving) localTrack else null,
+                        feed = feed,
                     )
                 else ->
                     com.engabd.sendpin.hue.ActiveLightSyncSource(
@@ -327,8 +348,27 @@ class SendpinApp : Application(), ImageLoaderFactory {
             local = localPlayer,
             downloads = downloads,
             settings = com.engabd.sendpin.data.AppSettings(this),
-            musicSource = { musicSource.value },
+            // Not `musicSource.value`. On an MPD session that *is* MPD, which is the
+            // one library with no file to give — see [companionLibraries].
+            libraries = { companionLibraries.all() },
             sink = { frame, grid, scan, pos -> scanFrameSink?.invoke(frame, grid, scan, pos) },
+        )
+    }
+
+    /**
+     * The libraries that can hand this phone an audio file, for the analysis paths
+     * that need bytes the playing library will not give them.
+     *
+     * Process-scoped and lazy, so an install with one Navidrome server and nothing
+     * else never builds a second connection, and an MPD one builds its companion
+     * once rather than per track. See
+     * [com.engabd.sendpin.library.CompanionLibraries].
+     */
+    val companionLibraries: com.engabd.sendpin.library.CompanionLibraries by lazy {
+        com.engabd.sendpin.library.CompanionLibraries(
+            context = this,
+            settings = com.engabd.sendpin.data.AppSettings(this),
+            active = { musicSource.value },
         )
     }
 
