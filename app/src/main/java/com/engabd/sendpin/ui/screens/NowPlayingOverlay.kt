@@ -10,9 +10,11 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FiniteAnimationSpec
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -53,6 +55,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.data.AppSettings
+import com.engabd.sendpin.hue.CoverPaletteOverride
 import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ui.design.titleMarquee
 import com.engabd.sendpin.ui.design.*
@@ -81,6 +84,7 @@ private const val BACK_PREVIEW_FRACTION = 0.28f
  *
  * Light Sync stays in its own tab — it's not part of the cover.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun NowPlayingOverlay(
     viewModel: NowPlayingViewModel = viewModel(),
@@ -414,15 +418,19 @@ fun NowPlayingOverlay(
                                         .fillMaxSize()
                                         .graphicsLayer { alpha = artDim.value }
                                         // Tap → the live visualizer takes the cover's place.
-                                        .clickable(
+                                        // Long-press → quick actions (go to album/artist, share,
+                                        // edit Light Sync colours).
+                                        .combinedClickable(
                                             interactionSource = remember { MutableInteractionSource() },
                                             indication = null,
-                                        ) { coverSlot = CoverSlot.VISUALIZER },
+                                            onClick = { coverSlot = CoverSlot.VISUALIZER },
+                                            onLongClick = if (favouritable != null) {
+                                                { sheets.actions = true }
+                                            } else null,
+                                        ),
                                     glowAlpha = artGlow.value,
                                     placeholder = Icons.AutoMirrored.Filled.QueueMusic,
                                 )
-                                // The same affordance the tab layout got. This cover has
-                                // been tappable just as long and said so just as little.
                                 CoverTapHint(trackId = st.currentQueueItemId)
                             }
                     }
@@ -512,7 +520,13 @@ fun NowPlayingOverlay(
                 VolumeRow(st.volume) { viewModel.setVolume(it) }
             }
 
-            PlayerOverlays(st, sheets, viewModel)
+            PlayerOverlays(
+                st, sheets, viewModel,
+                favouritable = favouritable,
+                onAlbumClick = {},
+                onArtistClick = {},
+                coverUrl = art.url,
+            )
         }
     }
 }

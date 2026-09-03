@@ -26,6 +26,8 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.floatOrNull
+import org.json.JSONArray
+import org.json.JSONObject
 import kotlinx.serialization.json.jsonPrimitive
 
 private val Context.dataStore by preferencesDataStore(name = "sendpin_settings")
@@ -302,6 +304,11 @@ class AppSettings(private val context: Context) {
         private val ONBOARDING_SKIPPED = booleanPreferencesKey("onboarding_skipped")
         /** Show the full set of settings rows; off hides the ones most users never need. */
         private val ADVANCED_SETTINGS = booleanPreferencesKey("advanced_settings")
+        /**
+         * User-chosen album-art colour overrides, keyed by album id (or track id when
+         * no album id exists). Stored as a JSON object: { "id": [argb, argb, ...], ... }.
+         */
+        private val COVER_PALETTE_OVERRIDES = stringPreferencesKey("cover_palette_overrides")
         // Creative features and UI fixes plan (PR #96) — each off by default until a
         // user turns it on, per the plan's own design principle.
         private val SWIPE_TO_SKIP = booleanPreferencesKey("swipe_to_skip")
@@ -1191,6 +1198,48 @@ class AppSettings(private val context: Context) {
     suspend fun setAdvancedSettings(value: Boolean) {
         context.dataStore.edit { it[ADVANCED_SETTINGS] = value }
     }
+
+    /** User-chosen cover colours, keyed by album/track id. */
+    val coverPaletteOverrides: Flow<Map<String, CoverPaletteOverride>> = pref {
+        parseCoverPaletteOverrides(it[COVER_PALETTE_OVERRIDES] ?: "{}")
+    }
+
+    suspend fun setCoverPaletteOverride(id: String, override: CoverPaletteOverride?) {
+        context.dataStore.edit {
+            val current = parseCoverPaletteOverrides(it[COVER_PALETTE_OVERRIDES] ?: "{}")
+            val next = if (override == null || override.colors.isEmpty()) current - id else current + (id to override)
+            it[COVER_PALETTE_OVERRIDES] = JSONObject(next.mapValues { (_, o) ->
+                JSONObject(mapOf(
+                    "colors" to JSONArray(o.colors),
+                    "mode" to o.mode.name,
+                ))
+            } as Map<String, Any>).toString()
+        }
+    }
+
+    suspend fun clearCoverPaletteOverride(id: String) {
+        context.dataStore.edit {
+            val current = parseCoverPaletteOverrides(it[COVER_PALETTE_OVERRIDES] ?: "{}")
+            val next = current - id
+            it[COVER_PALETTE_OVERRIDES] = JSONObject(next.mapValues { (_, o) ->
+                JSONObject(mapOf(
+                    "colors" to JSONArray(o.colors),
+                    "mode" to o.mode.name,
+                ))
+            } as Map<String, Any>).toString()
+        }
+    }
+
+    private fun parseCoverPaletteOverrides(json: String): Map<String, CoverPaletteOverride> = runCatching {
+        val obj = JSONObject(json)
+        obj.keys().asSequence().associateWith { key ->
+            val o = obj.getJSONObject(key)
+            val arr = o.getJSONArray("colors")
+            val colors = (0 until arr.length()).map { arr.getInt(it) }
+            val mode = runCatching { CoverPaletteOverride.Mode.valueOf(o.getString("mode")) }.getOrDefault(CoverPaletteOverride.Mode.OVERRIDE)
+            CoverPaletteOverride(colors, mode)
+        }
+    }.getOrDefault(emptyMap())
 
     /**
      * Synchronous mirror of [onboardingSkipped], for the first frame.

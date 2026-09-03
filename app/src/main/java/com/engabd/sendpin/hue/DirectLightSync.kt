@@ -798,7 +798,11 @@ class DirectLightSync(
                 val ac = lastAlbumColours
                 val scheme = ColorScheme.fromWire(settings.lightSyncColor.first())
                 if (ac != null && (scheme == ColorScheme.ALBUM_ART || scheme == ColorScheme.ALBUM_ART_V2)) {
-                    // v1 passes null weights (even interpolation); v2 passes real weights.
+                    // User overrides are already baked into lastAlbumColours by
+                    // applyAlbumArt, so this path respects them too. v1 passes null
+                    // weights (even interpolation); v2 passes real weights. The
+                    // override case uses even spacing because there is no population
+                    // data, and that is already reflected in ac.weights.
                     val w = if (scheme == ColorScheme.ALBUM_ART) null else ac.weights
                     it.setAlbumColors(ac.colors, w)
                 }
@@ -1522,17 +1526,88 @@ class DirectLightSync(
             }
             lastAlbumColours = extracted
             lastGoodArtUrl = url
+
+            // User-chosen colours for this album win over whatever was extracted,
+            // but only for the dynamic schemes that actually draw from the cover.
+            val override = if (scheme.isDynamic) findOverride(url) else null
+            val coloursToApply = override?.toAlbumColours() ?: extracted
+
             // v1 (album_art/even) has no weights — pass null so the engine uses
             // pure even interpolation (Palette.evenSample), matching syncoV2's
             // Palette(colors, weights=None). v2 passes the real population weights
-            // for dwell-time-faithful hold-and-crossfade sampling.
-            val paletteWeights = if (scheme == ColorScheme.ALBUM_ART) null else extracted.weights
-            engine?.setAlbumColors(extracted.colors, paletteWeights)
+            // for dwell-time-faithful hold-and-crossfade sampling. Hand-picked
+            // overrides have no population data, so they use even spacing too.
+            val paletteWeights = when {
+                override != null -> null
+                scheme == ColorScheme.ALBUM_ART -> null
+                else -> coloursToApply.weights
+            }
+            engine?.setAlbumColors(coloursToApply.colors, paletteWeights)
         } catch (e: Exception) {
             // A cover that will not load is not a reason to stop the show; the
             // engine keeps whatever palette it already had.
             Log.w(TAG, "Album art palette failed for $url: ${e.message}")
         }
+    }
+
+    /**
+     * Look up a user-corrected palette for whatever is currently playing.
+     *
+     * The key is chosen to be stable across per-track artwork URL churn:
+     * 1. The MA / Subsonic album id, when the active source carries one.
+     * 2. "album|artist" from the now-playing state, which the UI already uses
+     *    as the page-turn key.
+     * 3. The artwork URL itself, as a last resort.
+     *
+     * The lookup is suspended because it reads [AppSettings.coverPaletteOverrides],
+     * which is backed by DataStore.
+     */
+    private suspend fun findOverride(url: String?): CoverPaletteOverride? {
+        val overrides = settings.coverPaletteOverrides.first()
+        if (overrides.isEmpty()) return null
+
+        val source = activeSource.value
+        val scanTrack = source.scanTrack
+        // A stable id is the best key. LocalTrack.id is usually a server-side
+        // track id, but the override is stored per *album*, so we also try the
+        // album name when we can build one from the current metadata.
+        scanTrack?.let { track ->
+            val idKey = albumIdKeyFor(track)
+            overrides[idKey]?.takeIf { it.colors.isNotEmpty() }?.let { return it }
+        }
+
+        val albumArtistKey = currentAlbumArtistKey()
+        if (!albumArtistKey.isNullOrBlank()) {
+            overrides[albumArtistKey]?.takeIf { it.colors.isNotEmpty() }?.let { return it }
+        }
+
+        url?.let { overrides[it]?.takeIf { it.colors.isNotEmpty() }?.let { return it } }
+        return null
+    }
+
+    /**
+     * Best-effort album identity from a [LocalTrack]. Uses the album name when
+     * present, otherwise falls back to the track id so a single-track override
+     * can still work.
+     */
+    private fun albumIdKeyFor(track: LocalTrack): String =
+        track.album?.takeIf { it.isNotBlank() }?.let { "$it|${track.artist ?: ""}" }
+            ?: track.id
+
+    /**
+     * "Album|Artist" from the active source metadata, matching the key used for
+     * the Now Playing page-turn. Built here because [LocalTrack] only carries
+     * album and artist strings; the MA path has no id and must rely on this.
+     */
+    private fun currentAlbumArtistKey(): String? {
+        val track = activeSource.value.scanTrack
+        if (track != null) {
+            return track.album?.takeIf { it.isNotBlank() }
+                ?.let { "$it|${track.artist ?: ""}" }
+        }
+        // The MA feed has no LocalTrack. We do not have a live album/artist string
+        // in this class, so this path is intentionally left to the URL fallback.
+        return null
     }
 
     /**

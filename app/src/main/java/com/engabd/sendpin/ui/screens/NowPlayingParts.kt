@@ -21,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -29,12 +30,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.engabd.sendpin.audio.StreamQuality
+import com.engabd.sendpin.data.AppSettings
+import com.engabd.sendpin.hue.CoverPaletteOverride
+import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ui.design.titleMarquee
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 
 /**
  * What identifies the album on show, for [AlbumArt]'s page-turn.
@@ -326,11 +331,13 @@ class PlayerSheetState {
     var device by mutableStateOf(false)
     /** The long-press quick-actions sheet off the album art. */
     var actions by mutableStateOf(false)
+    /** Cover-palette editor for Light Sync. */
+    var palette by mutableStateOf(false)
 
     /** A sheet — not an overlay card — is up, so swipes belong to it. */
-    val sheetOpen: Boolean get() = panel != null || options || speakers || actions
+    val sheetOpen: Boolean get() = panel != null || options || speakers || actions || palette
 
-    fun closeSheets() { panel = null; options = false; speakers = false; actions = false }
+    fun closeSheets() { panel = null; options = false; speakers = false; actions = false; palette = false }
 }
 
 @Composable
@@ -351,6 +358,13 @@ fun BoxScope.PlayerOverlays(
     state: NowPlayingViewModel.State,
     sheets: PlayerSheetState,
     viewModel: NowPlayingViewModel,
+    /** The currently favouritable item, so the actions sheet can be rendered here too. */
+    favouritable: MaItem? = null,
+    /** Navigation callbacks for go-to-album / go-to-artist actions. */
+    onAlbumClick: (MaItem) -> Unit = {},
+    onArtistClick: (MaItem) -> Unit = {},
+    /** The settled cover url, for the palette editor's seed. */
+    coverUrl: String? = null,
 ) {
     if (sheets.sheetOpen) {
         // Anything still visible above a sheet dismisses it, and so does system Back —
@@ -378,6 +392,69 @@ fun BoxScope.PlayerOverlays(
     }
     if (sheets.options) PlayerOptionsSheet(onClose = { sheets.options = false }, viewModel = viewModel)
     if (sheets.speakers) SpeakerPickerSheet(onClose = { sheets.speakers = false })
+
+    sheets.actions.let { open ->
+        if (open) {
+            val context = LocalContext.current
+            val scope = rememberCoroutineScope()
+            val settings = remember(context) { AppSettings(context) }
+            favouritable?.let { item ->
+                MediaActionsSheet(
+                    item = item,
+                    onClose = { sheets.actions = false },
+                    onPlayNow = {},
+                    onPlayNext = {},
+                    onAddToQueue = {},
+                    onGoToAlbum = {
+                        scope.launch {
+                            viewModel.resolveAlbum(state.album)?.let(onAlbumClick)
+                        }
+                    },
+                    onGoToArtist = {
+                        scope.launch {
+                            viewModel.resolveArtist(state.artist)?.let(onArtistClick)
+                        }
+                    },
+                    onShare = {
+                        val text = listOf(item.name, state.artist, state.album)
+                            .filter { it.isNotBlank() }
+                            .joinToString(", ")
+                        val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(android.content.Intent.EXTRA_TEXT, text)
+                        }
+                        context.startActivity(android.content.Intent.createChooser(send, "Share"))
+                    },
+                    onEditLightSyncColours = {
+                        sheets.actions = false
+                        sheets.palette = true
+                    },
+                )
+            }
+        }
+    }
+
+    if (sheets.palette) {
+        CoverPaletteEditor(
+            albumName = state.album.takeIf { it.isNotBlank() } ?: favouritable?.name ?: "",
+            artistName = state.artist.takeIf { it.isNotBlank() } ?: favouritable?.subtitle,
+            coverUrl = coverUrl,
+            onSave = { override ->
+                scope.launch {
+                    val key = state.album.takeIf { it.isNotBlank() }
+                        ?.let { "$it|${state.artist}" }
+                        ?: favouritable?.itemId ?: ""
+                    if (override == null || override.colors.isEmpty() || key.isBlank()) {
+                        if (key.isNotBlank()) settings.clearCoverPaletteOverride(key)
+                    } else {
+                        settings.setCoverPaletteOverride(key, override)
+                    }
+                    sheets.palette = false
+                }
+            },
+            onClose = { sheets.palette = false },
+        )
+    }
 
     QualityDetailOverlay(
         visible = sheets.quality,

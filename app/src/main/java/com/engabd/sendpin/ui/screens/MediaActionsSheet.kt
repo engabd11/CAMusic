@@ -84,6 +84,8 @@ fun BoxScope.MediaActionsSheet(
     onShare: (() -> Unit)? = null,
     /** Null leaves the row out. Only ever passed for a playlist the server owns. */
     onDelete: (() -> Unit)? = null,
+    /** Null leaves the row out. Lets the user correct the Light Sync palette for this album. */
+    onEditLightSyncColours: (() -> Unit)? = null,
 ) {
     HideBottomChrome()
     BackHandler(onBack = onClose)
@@ -180,6 +182,12 @@ fun BoxScope.MediaActionsSheet(
                     Icons.Default.Download, "Download",
                     if (whole) "Every track, for offline" else "For offline",
                 ) { onClose(); dl() }
+            }
+            onEditLightSyncColours?.let { edit ->
+                ActionRow(
+                    Icons.Default.Palette, "Light Sync colours",
+                    "Change the colours this album lights the room with",
+                ) { onClose(); edit() }
             }
             onDelete?.let { del ->
                 var confirming by remember { mutableStateOf(false) }

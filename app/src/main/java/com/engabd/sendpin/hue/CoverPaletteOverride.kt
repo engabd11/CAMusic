@@ -1,0 +1,47 @@
+package com.engabd.sendpin.hue
+
+/**
+ * A user-chosen replacement for the album-art palette the light-sync engine
+ * would otherwise extract from the cover.
+ *
+ * Stored by a stable key (album id when available, otherwise album name +
+ * artist, otherwise the art url) so the same override survives per-track
+ * artwork URL churn and backend handovers.
+ */
+data class CoverPaletteOverride(
+    /** ARGB ints, as returned by `android.graphics.Color` / Compose `Color.toArgb()`. */
+    val colors: List<Int>,
+    /** How this override was created. Saved for future UI hints; does not affect rendering. */
+    val mode: Mode = Mode.OVERRIDE,
+) {
+    enum class Mode {
+        /** User picked every colour by hand. */
+        OVERRIDE,
+        /** User locked the currently extracted cover palette in place. */
+        LOCKED,
+        /** User mixed the extracted palette with one of their own. */
+        MIXED,
+    }
+
+    companion object {
+        /** Empty helper used when an id has no override. */
+        val EMPTY = CoverPaletteOverride(emptyList())
+    }
+}
+
+/** Convert ARGB ints to the 0..1 RGB triples the engine expects. */
+internal fun List<Int>.toRgbList(): List<Rgb> = map { argb ->
+    val r = ((argb shr 16) and 0xFF) / 255f
+    val g = ((argb shr 8) and 0xFF) / 255f
+    val b = (argb and 0xFF) / 255f
+    Triple(r, g, b)
+}
+
+/** Wrap the override colours in the same shape [applyAlbumArt] already produces. */
+internal fun CoverPaletteOverride.toAlbumColours(): AlbumColours {
+    val rgbs = colors.toRgbList()
+    // No population weights are available for hand-picked colours, so we use
+    // even weights. This matches the v1 "album_art" path; if the user has the
+    // v2 scheme selected the engine still gets a valid palette and samples it.
+    return AlbumColours(rgbs, rgbs.map { 1f / rgbs.size.coerceAtLeast(1) })
+}
