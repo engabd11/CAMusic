@@ -44,7 +44,7 @@ import java.io.OutputStreamWriter
 
 /** How the app looks — theme, accent, and the shape of the player itself. */
 @Composable
-internal fun AppearanceSection(settings: AppSettings, accent: Color, scope: CoroutineScope) {
+internal fun AppearanceSection(settings: AppSettings, accent: Color, scope: CoroutineScope, advanced: Boolean) {
     val themeKey by settings.theme.collectAsStateWithLifecycle(initialValue = ThemeChoice.OLED.key)
     val accentKey by settings.accentSource.collectAsStateWithLifecycle(initialValue = AccentChoice.ALBUM.key)
     val fixedHex by settings.fixedAccent.collectAsStateWithLifecycle(initialValue = "")
@@ -140,36 +140,38 @@ internal fun AppearanceSection(settings: AppSettings, accent: Color, scope: Coro
             )
         }
 
-        SettingsCard(
-            title = "Motion",
-            lead = when (motionMode) {
-                AppSettings.MOTION_FULL -> "Everything animates, whatever the system setting says."
-                AppSettings.MOTION_REDUCED -> "Still, resolved states instead of continuous motion."
-                else -> "Follows Android's own \"remove animations\" setting."
-            },
-        ) {
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(
-                    AppSettings.MOTION_SYSTEM to "Follow system",
-                    AppSettings.MOTION_FULL to "Full",
-                    AppSettings.MOTION_REDUCED to "Reduced",
-                ).forEach { (key, label) ->
-                    ToggleChip(label, key == motionMode) {
-                        scope.launch { settings.setMotionMode(key) }
+        if (advanced) {
+            SettingsCard(
+                title = "Motion",
+                lead = when (motionMode) {
+                    AppSettings.MOTION_FULL -> "Everything animates, whatever the system setting says."
+                    AppSettings.MOTION_REDUCED -> "Still, resolved states instead of continuous motion."
+                    else -> "Follows Android's own \"remove animations\" setting."
+                },
+            ) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(
+                        AppSettings.MOTION_SYSTEM to "Follow system",
+                        AppSettings.MOTION_FULL to "Full",
+                        AppSettings.MOTION_REDUCED to "Reduced",
+                    ).forEach { (key, label) ->
+                        ToggleChip(label, key == motionMode) {
+                            scope.launch { settings.setMotionMode(key) }
+                        }
                     }
                 }
+                Note(
+                    "Reduced settles motion rather than slowing it.",
+                    title = "Reduced motion",
+                    info = "Spinners, shimmers and the wave seek bar come to rest in a still state " +
+                        "instead of freezing wherever they happened to be. An animation that is " +
+                        "merely suspended looks broken rather than calm, which is what a plain " +
+                        "speed reduction gives you.\\n\\nTransitions that carry something from one " +
+                        "place to another still run, just without the flourish.\\n\\nTip: this " +
+                        "follows the system setting on its own. Set it here only if you want the " +
+                        "app to differ from the rest of the phone.",
+                )
             }
-            Note(
-                "Reduced settles motion rather than slowing it.",
-                title = "Reduced motion",
-                info = "Spinners, shimmers and the wave seek bar come to rest in a still state " +
-                    "instead of freezing wherever they happened to be. An animation that is " +
-                    "merely suspended looks broken rather than calm, which is what a plain " +
-                    "speed reduction gives you.\n\nTransitions that carry something from one " +
-                    "place to another still run, just without the flourish.\n\nTip: this " +
-                    "follows the system setting on its own. Set it here only if you want the " +
-                    "app to differ from the rest of the phone.",
-            )
         }
     }
 }

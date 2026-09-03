@@ -45,9 +45,10 @@ internal fun AudioSection(
     settings: AppSettings,
     accent: Color,
     scope: CoroutineScope,
+    advanced: Boolean,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        OutputCard(settings, accent, scope)
+        OutputCard(settings, accent, scope, advanced)
         LoudnessCard(settings, accent, scope)
         ContinuousPlayCard(settings, accent, scope)
         DjRadioSettingsCard(settings, scope)
@@ -75,7 +76,7 @@ internal fun AudioSection(
  * differently is worse than only one of them existing.
  */
 @Composable
-private fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineScope) {
+private fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineScope, advanced: Boolean) {
     val context = LocalContext.current
     val am = remember(context) { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
     val outputs = remember { AudioOutputs.list(am) }
@@ -119,83 +120,88 @@ private fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSco
         }
         route?.bluetoothCodecNote?.let { Note(it) }
 
-        // The chain itself, stage by stage. The row above describes the *device*;
-        // this describes what is actually flowing through it, which is the question
-        // someone reading this card is really asking. See SignalPath.
-        val path by SignalPath.state.collectAsStateWithLifecycle()
-        if (path.source.known || path.decoded.known) {
-            CardDivider()
-            FieldLabel("Signal path")
-            StatusPanel {
-                if (path.source.known) StatusRow("File", path.source.summary())
-                if (path.decoded.known) StatusRow("Decoder output", path.decoded.summary())
-                if (path.sink.known) StatusRow("To Android", path.sink.summary())
-                StatusRow(
-                    "High-resolution output",
-                    when {
-                        !path.highResRequested -> "Off"
-                        path.floatEngaged -> "On, carrying the extra bits"
-                        else -> "On, but this stream is 16-bit so it makes no difference"
-                    },
-                )
-                if (path.processorsBypassed) {
-                    StatusRow("Equaliser / Light Sync", "Bypassed")
+        if (advanced) {
+            // The chain itself, stage by stage. The row above describes the *device*;
+            // this describes what is actually flowing through it, which is the question
+            // someone reading this card is really asking. See SignalPath.
+            val path by SignalPath.state.collectAsStateWithLifecycle()
+            if (path.source.known || path.decoded.known) {
+                CardDivider()
+                FieldLabel("Signal path")
+                StatusPanel {
+                    if (path.source.known) StatusRow("File", path.source.summary())
+                    if (path.decoded.known) StatusRow("Decoder output", path.decoded.summary())
+                    if (path.sink.known) StatusRow("To Android", path.sink.summary())
+                    StatusRow(
+                        "High-resolution output",
+                        when {
+                            !path.highResRequested -> "Off"
+                            path.floatEngaged -> "On, carrying the extra bits"
+                            else -> "On, but this stream is 16-bit so it makes no difference"
+                        },
+                    )
+                    if (path.processorsBypassed) {
+                        StatusRow("Equaliser / Light Sync", "Bypassed")
+                    }
                 }
+                with(SignalPath) { path.explain(route?.isBluetooth == true) }?.let {
+                    Note(it, warn = path.truncating)
+                }
+                Note(
+                    "What each line means.",
+                    title = "Signal path",
+                    info = "**File** is what the container declares.\n\n**Decoder output** is " +
+                        "what the decoder actually handed over, and it is usually the line " +
+                        "that explains a disappointment: a 24-bit FLAC decoded by the phone's " +
+                        "own MediaCodec comes out as 16-bit PCM, and nothing downstream can " +
+                        "put those bits back.\n\n**To Android** is the last thing this app " +
+                        "can see. Past it the platform mixes, resamples if it has to, and on " +
+                        "Bluetooth hands the result to the codec.\n\n**High-resolution " +
+                        "output** is the switch that decides whether the decoder's extra bits " +
+                        "survive: without it Android converts anything above 16-bit down to " +
+                        "16 on the way to the sink. It only actually engages on a stream that " +
+                        "needs it - a 16-bit file plays exactly the same either way, which is " +
+                        "what \"on, but this stream is 16-bit\" means above.\n\n**Equaliser / " +
+                        "Light Sync** appears only while they are genuinely out of the chain: " +
+                        "on a stream carrying the extra bits, or with Exclusive output on, " +
+                        "media3 is not running either.\n\nTip: on Bluetooth the device row above " +
+                        "will always say 16-bit, whatever LDAC is carrying — that is Android " +
+                        "describing the sink it gives apps, not the codec. These lines are " +
+                        "the ones that tell you something.",
+                )
             }
-            with(SignalPath) { path.explain(route?.isBluetooth == true) }?.let {
-                Note(it, warn = path.truncating)
-            }
-            Note(
-                "What each line means.",
-                title = "Signal path",
-                info = "**File** is what the container declares.\n\n**Decoder output** is " +
-                    "what the decoder actually handed over, and it is usually the line " +
-                    "that explains a disappointment: a 24-bit FLAC decoded by the phone's " +
-                    "own MediaCodec comes out as 16-bit PCM, and nothing downstream can " +
-                    "put those bits back.\n\n**To Android** is the last thing this app " +
-                    "can see. Past it the platform mixes, resamples if it has to, and on " +
-                    "Bluetooth hands the result to the codec.\n\n**High-resolution " +
-                    "output** is the switch that decides whether the decoder's extra bits " +
-                    "survive: without it Android converts anything above 16-bit down to " +
-                    "16 on the way to the sink. It only actually engages on a stream that " +
-                    "needs it - a 16-bit file plays exactly the same either way, which is " +
-                    "what \"on, but this stream is 16-bit\" means above.\n\n**Equaliser / " +
-                    "Light Sync** appears only while they are genuinely out of the chain: " +
-                    "on a stream carrying the extra bits, or with Exclusive output on, " +
-                    "media3 is not running either.\n\nTip: on Bluetooth the device row above " +
-                    "will always say 16-bit, whatever LDAC is carrying — that is Android " +
-                    "describing the sink it gives apps, not the codec. These lines are " +
-                    "the ones that tell you something.",
-            )
         }
 
-        CardDivider()
-        FieldLabel("Output sample rate")
-        val outRate by settings.outputSampleRateHz.collectAsStateWithLifecycle(initialValue = 0)
-        val rateOptions = listOf(0) + AppSettings.OUTPUT_RATES
-        SegmentedToggleRow(
-            labels = rateOptions.map { if (it == 0) "Follow file" else StreamQuality.khz(it) },
-            selectedIndex = rateOptions.indexOf(outRate).coerceAtLeast(0),
-        ) { i -> scope.launch { settings.setOutputSampleRateHz(rateOptions[i]) } }
-        Note(
-            if (outRate == 0)
-                "Every file plays at its own rate. Android converts if the output needs it."
-            else
-                "Everything is resampled to ${StreamQuality.khz(outRate)} kHz before it leaves the app.",
-            title = "Output sample rate",
-            info = "Follow file is right almost always: resampling is a loss, and doing " +
-                "it here on top of whatever Android does is two losses instead of one.\n\n" +
-                "Fixing a rate is worth it in one situation - when the output is locked " +
-                "to a rate your files are not. The Mixer output line above says what " +
-                "Android is running at. Matching it means this app resamples once, with " +
-                "a good resampler, instead of the platform doing it on every track.\n\n" +
-                "On Bluetooth the rate the codec negotiated is in Developer options " +
-                "under Bluetooth audio sample rate, and that is the number worth " +
-                "matching.\n\n" +
-                "Applies to the next track rather than the one playing.\n\n" +
-                "Tip: if you do not know, leave it on Follow file. A wrong choice here " +
-                "is audible and a right one usually is not.",
-        )
+
+        if (advanced) {
+            CardDivider()
+            FieldLabel("Output sample rate")
+            val outRate by settings.outputSampleRateHz.collectAsStateWithLifecycle(initialValue = 0)
+            val rateOptions = listOf(0) + AppSettings.OUTPUT_RATES
+            SegmentedToggleRow(
+                labels = rateOptions.map { if (it == 0) "Follow file" else StreamQuality.khz(it) },
+                selectedIndex = rateOptions.indexOf(outRate).coerceAtLeast(0),
+            ) { i -> scope.launch { settings.setOutputSampleRateHz(rateOptions[i]) } }
+            Note(
+                if (outRate == 0)
+                    "Every file plays at its own rate. Android converts if the output needs it."
+                else
+                    "Everything is resampled to ${StreamQuality.khz(outRate)} kHz before it leaves the app.",
+                title = "Output sample rate",
+                info = "Follow file is right almost always: resampling is a loss, and doing " +
+                    "it here on top of whatever Android does is two losses instead of one.\n\n" +
+                    "Fixing a rate is worth it in one situation - when the output is locked " +
+                    "to a rate your files are not. The Mixer output line above says what " +
+                    "Android is running at. Matching it means this app resamples once, with " +
+                    "a good resampler, instead of the platform doing it on every track.\n\n" +
+                    "On Bluetooth the rate the codec negotiated is in Developer options " +
+                    "under Bluetooth audio sample rate, and that is the number worth " +
+                    "matching.\n\n" +
+                    "Applies to the next track rather than the one playing.\n\n" +
+                    "Tip: if you do not know, leave it on Follow file. A wrong choice here " +
+                    "is audible and a right one usually is not.",
+            )
+        }
 
         CardDivider()
         ToggleRow(
@@ -226,34 +232,36 @@ private fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSco
                 "switching it off fixes it immediately.",
         ) { scope.launch { settings.setBitPerfect24Bit(it) } }
 
-        CardDivider()
-        ToggleRow(
-            title = "Exclusive output",
-            subtitle = "Nothing of this app's between the decoder and the DAC",
-            checked = exclusiveOutput,
-            accent = accent,
-            info = "Removes every stage this app puts between the decoder and the DAC, and " +
-                "asks the platform to carry the source's own rate and depth instead of " +
-                "this app touching either.\n\nTurns off: " +
-                ExclusiveOutput.disables.joinToString(", ") { it.title } + ".\n\n" +
-                ExclusiveOutput.disables.joinToString("\n\n") { "**${it.title}.** ${it.reason}" } +
-                "\n\n" + ExclusiveOutput.VOLUME_NOTE +
-                "\n\n" + ExclusiveOutput.ANDROID_CEILING_NOTE +
-                "\n\nPins a USB output the moment you turn this on, if one is attached and " +
-                "nothing is pinned already — exclusive output through the phone speaker " +
-                "is nothing to ask for. Turning it back off does not unpin it; do that " +
-                "above if you want Android routing normally again.\n\nThe renderer is " +
-                "fixed when the player is built, so this applies next time the app " +
-                "starts, same as High-resolution output above.",
-        ) { on ->
-            scope.launch {
-                settings.setExclusiveOutput(on)
-                // Reuses AudioOutputs.list rather than `outputs` above: the picker row
-                // is hidden on a phone with only its own speaker, but a USB DAC plugged
-                // in after that row last composed should still get pinned.
-                if (on && pinned.isBlank()) {
-                    AudioOutputs.list(am).firstOrNull { it.isUsb }
-                        ?.let { settings.setPreferredAudioDeviceId(it.id) }
+        if (advanced) {
+            CardDivider()
+            ToggleRow(
+                title = "Exclusive output",
+                subtitle = "Nothing of this app's between the decoder and the DAC",
+                checked = exclusiveOutput,
+                accent = accent,
+                info = "Removes every stage this app puts between the decoder and the DAC, and " +
+                    "asks the platform to carry the source's own rate and depth instead of " +
+                    "this app touching either.\n\nTurns off: " +
+                    ExclusiveOutput.disables.joinToString(", ") { it.title } + ".\n\n" +
+                    ExclusiveOutput.disables.joinToString("\n\n") { "**${it.title}.** ${it.reason}" } +
+                    "\n\n" + ExclusiveOutput.VOLUME_NOTE +
+                    "\n\n" + ExclusiveOutput.ANDROID_CEILING_NOTE +
+                    "\n\nPins a USB output the moment you turn this on, if one is attached and " +
+                    "nothing is pinned already — exclusive output through the phone speaker " +
+                    "is nothing to ask for. Turning it back off does not unpin it; do that " +
+                    "above if you want Android routing normally again.\n\nThe renderer is " +
+                    "fixed when the player is built, so this applies next time the app " +
+                    "starts, same as High-resolution output above.",
+            ) { on ->
+                scope.launch {
+                    settings.setExclusiveOutput(on)
+                    // Reuses AudioOutputs.list rather than `outputs` above: the picker row
+                    // is hidden on a phone with only its own speaker, but a USB DAC plugged
+                    // in after that row last composed should still get pinned.
+                    if (on && pinned.isBlank()) {
+                        AudioOutputs.list(am).firstOrNull { it.isUsb }
+                            ?.let { settings.setPreferredAudioDeviceId(it.id) }
+                    }
                 }
             }
         }

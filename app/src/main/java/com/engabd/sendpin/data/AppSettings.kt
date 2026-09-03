@@ -300,6 +300,8 @@ class AppSettings(private val context: Context) {
         // app shows the wizard instead of the main UI on launch.
         private val ONBOARDING_COMPLETED = booleanPreferencesKey("onboarding_completed")
         private val ONBOARDING_SKIPPED = booleanPreferencesKey("onboarding_skipped")
+        /** Show the full set of settings rows; off hides the ones most users never need. */
+        private val ADVANCED_SETTINGS = booleanPreferencesKey("advanced_settings")
         // Creative features and UI fixes plan (PR #96) — each off by default until a
         // user turns it on, per the plan's own design principle.
         private val SWIPE_TO_SKIP = booleanPreferencesKey("swipe_to_skip")
@@ -1181,6 +1183,13 @@ class AppSettings(private val context: Context) {
     suspend fun setOnboardingSkipped(skipped: Boolean) {
         bootPrefs.edit().putBoolean("onboarding_skipped", skipped).apply()
         context.dataStore.edit { it[ONBOARDING_SKIPPED] = skipped }
+    }
+
+    /** Collect the full set of settings, or the smaller set most users need. */
+    val advancedSettings: Flow<Boolean> = pref { it[ADVANCED_SETTINGS] ?: false }
+
+    suspend fun setAdvancedSettings(value: Boolean) {
+        context.dataStore.edit { it[ADVANCED_SETTINGS] = value }
     }
 
     /**

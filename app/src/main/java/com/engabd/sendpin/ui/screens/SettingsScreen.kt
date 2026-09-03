@@ -181,6 +181,7 @@ fun SettingsScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val settings = remember(context) { AppSettings(context) }
+    val advanced by settings.advancedSettings.collectAsStateWithLifecycle(initialValue = false)
 
     // Home Assistant's credentials are read once and held here rather than inside the
     // Light Sync section, so navigating into the bridge page and back doesn't lose a
@@ -240,6 +241,9 @@ fun SettingsScreen(
                     // description of a category is a definition, and the reader already
                     // knows what "Downloads" means; what they do not know is whether
                     // theirs are taking a gigabyte or whether the bridge ever paired.
+                    item(key = "advanced-toggle") {
+                        AdvancedToggleCard(advanced, accent, scope)
+                    }
                     items(SettingsSection.entries, key = { it.name }, contentType = { "category" }) { s ->
                         // Each row takes its own swatch from the album palette, the same
                         // way the library's category tiles do — so eight rows read as a
@@ -281,7 +285,7 @@ fun SettingsScreen(
                                 onDetail = onDetail,
                             )
 
-                            SettingsSection.AUDIO -> AudioSection(viewModel, settings, accent, scope)
+                            SettingsSection.AUDIO -> AudioSection(viewModel, settings, accent, scope, advanced)
 
                             SettingsSection.DOWNLOADS ->
                                 DownloadsSection(libraryViewModel, settings, accent, scope, onOpenDownloads)
@@ -290,6 +294,7 @@ fun SettingsScreen(
                                 settings = settings,
                                 accent = accent,
                                 scope = scope,
+                                advanced = advanced,
                                 detail = detail,
                                 onDetail = onDetail,
                                 haUrl = haUrl,
@@ -306,9 +311,9 @@ fun SettingsScreen(
 
                             SettingsSection.BACKUP -> BackupSection(settings, accent, scope)
 
-                            SettingsSection.APPEARANCE -> AppearanceSection(settings, accent, scope)
+                            SettingsSection.APPEARANCE -> AppearanceSection(settings, accent, scope, advanced)
 
-                            SettingsSection.BEHAVIOR -> BehaviorSection(settings, accent, scope)
+                            SettingsSection.BEHAVIOR -> BehaviorSection(settings, accent, scope, advanced)
 
                             SettingsSection.ABOUT -> AboutSection(accent, onOpenStats)
                         }
@@ -582,6 +587,46 @@ private fun BackupSection(settings: AppSettings, accent: Color, scope: Coroutine
                 }
             },
         )
+    }
+}
+
+/** The master switch that reveals the full settings surface. */
+@Composable
+private fun AdvancedToggleCard(
+    advanced: Boolean,
+    accent: Color,
+    scope: CoroutineScope,
+    settings: AppSettings = LocalContext.current.let { remember(it) { AppSettings(it) } },
+) {
+    GlassCard(radius = 16.dp) {
+        Row(
+            Modifier.fillMaxWidth()
+                .clickable { scope.launch { settings.setAdvancedSettings(!advanced) } }
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+                Text(
+                    "Advanced settings",
+                    color = TextPrimary,
+                    fontFamily = AppFont,
+                    style = MaterialTheme.typography.titleLarge,
+                )
+                Text(
+                    if (advanced) "Showing every control and explanation" else "Showing only the everyday controls",
+                    color = TextFaint,
+                    fontFamily = AppFont,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Box(
+                Modifier.size(44.dp, 24.dp).clip(RoundedCornerShape(100))
+                    .background(if (advanced) accent else Glass)
+                    .border(1.dp, if (advanced) accent.a(0.5f) else Hairline, RoundedCornerShape(100))
+                    .padding(2.dp),
+                contentAlignment = if (advanced) Alignment.CenterEnd else Alignment.CenterStart,
+            ) { Box(Modifier.size(18.dp).clip(CircleShape).background(if (advanced) Ink else TextMuted)) }
+        }
     }
 }
 
