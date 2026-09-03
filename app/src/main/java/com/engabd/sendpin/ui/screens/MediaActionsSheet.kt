@@ -65,9 +65,18 @@ import com.engabd.sendpin.ui.theme.*
 fun BoxScope.MediaActionsSheet(
     item: MaItem,
     onClose: () -> Unit,
-    onPlayNow: () -> Unit,
-    onPlayNext: () -> Unit,
-    onAddToQueue: () -> Unit,
+    /**
+     * Null leaves the row out.
+     *
+     * Nullable because the player's own long-press sheet has no queue actions to
+     * offer — it is already looking at the thing that is playing — and passing `{}`
+     * for these rendered three rows that read as actions and did nothing.
+     */
+    onPlayNow: (() -> Unit)? = null,
+    /** Null leaves the row out. See [onPlayNow]. */
+    onPlayNext: (() -> Unit)? = null,
+    /** Null leaves the row out. See [onPlayNow]. */
+    onAddToQueue: (() -> Unit)? = null,
     /** Null leaves the row out — nothing on the MA backend can be downloaded. */
     onDownload: (() -> Unit)? = null,
     /** Null leaves the row out. Absent for a playlist — filing one into itself. */
@@ -142,18 +151,24 @@ fun BoxScope.MediaActionsSheet(
             }
 
             val whole = item.mediaType != "track" && item.mediaType != "radio"
-            ActionRow(
-                Icons.Default.PlayArrow, "Play now",
-                if (whole) "Replaces the queue with all of it" else "Replaces the queue",
-            ) { onClose(); onPlayNow() }
-            ActionRow(
-                Icons.AutoMirrored.Filled.PlaylistAdd, "Play next",
-                "After the current track",
-            ) { onClose(); onPlayNext() }
-            ActionRow(
-                Icons.AutoMirrored.Filled.QueueMusic, "Add to queue",
-                "At the end",
-            ) { onClose(); onAddToQueue() }
+            onPlayNow?.let { play ->
+                ActionRow(
+                    Icons.Default.PlayArrow, "Play now",
+                    if (whole) "Replaces the queue with all of it" else "Replaces the queue",
+                ) { onClose(); play() }
+            }
+            onPlayNext?.let { next ->
+                ActionRow(
+                    Icons.AutoMirrored.Filled.PlaylistAdd, "Play next",
+                    "After the current track",
+                ) { onClose(); next() }
+            }
+            onAddToQueue?.let { queue ->
+                ActionRow(
+                    Icons.AutoMirrored.Filled.QueueMusic, "Add to queue",
+                    "At the end",
+                ) { onClose(); queue() }
+            }
             onAddToPlaylist?.let { add ->
                 ActionRow(
                     Icons.Default.LibraryAdd, "Add to playlist",

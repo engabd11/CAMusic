@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.engabd.sendpin.audio.Biquad
 import com.engabd.sendpin.audio.LocalDsp
+import com.engabd.sendpin.audio.OutputMode
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.ui.design.LocalAccent
 import com.engabd.sendpin.ui.design.a
@@ -74,9 +75,10 @@ fun ColumnScope.LocalEqBody(accent: Color) {
     ) {
         if (exclusiveOutput) {
             Text(
-                "Exclusive output is on, so nothing of this app's — including this " +
-                    "curve — is running on what's playing. Turn it off under Settings > " +
-                    "Playback & audio > Output to use the equaliser again.",
+                "Output mode is set to ${OutputMode.PURE.title} or deeper, so nothing of " +
+                    "this app's — including this curve — is running on what's playing. Step " +
+                    "back to ${OutputMode.STANDARD.title} under Settings > Playback & audio > " +
+                    "Output to use the equaliser again.",
                 color = WarnAmber,
                 fontFamily = AppFont,
                 style = MaterialTheme.typography.bodySmall,
@@ -86,7 +88,7 @@ fun ColumnScope.LocalEqBody(accent: Color) {
         ToggleRow(
             title = "Equaliser",
             subtitle = if (exclusiveOutput)
-                "Inert while Exclusive output is on — see the note above"
+                "Inert on ${OutputMode.PURE.title} output — see the note above"
             else
                 "Ten bands, applied to music this phone plays itself",
             checked = config.enabled,

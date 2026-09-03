@@ -398,13 +398,35 @@ fun BoxScope.PlayerOverlays(
     val settings = remember(context) { AppSettings(context) }
 
     if (sheets.actions) {
-        favouritable?.let { item ->
+        // Not `favouritable?.let`. That gated the whole sheet — and with it the only
+        // way to the Light Sync palette editor — on whether some server could *star*
+        // this track, which is a question about favourites and nothing to do with
+        // any action in here. On a local file with no library behind it
+        // `favouritableItem` is null for the entire session, so the long-press did
+        // nothing at all and the palette editor was unreachable.
+        //
+        // Everything this sheet actually does works off the player's own state:
+        // go-to-album and go-to-artist resolve by name, share builds its text from
+        // the same three fields, and the palette editor keys off the album and the
+        // cover. So a describable item is enough, and one is synthesised when there
+        // is no favouritable one. The heart on the player still reads
+        // `favouritableItem`, which is the control that genuinely needs it.
+        val item = favouritable ?: state.takeIf { !it.idle }?.let {
+            MaItem(
+                itemId = "",
+                provider = "",
+                name = it.title,
+                uri = null,
+                mediaType = "track",
+                subtitle = it.artist.takeIf { a -> a.isNotBlank() },
+                image = it.artworkUrl,
+                duration = null,
+            )
+        }
+        item?.let { subject ->
             MediaActionsSheet(
-                item = item,
+                item = subject,
                 onClose = { sheets.actions = false },
-                onPlayNow = {},
-                onPlayNext = {},
-                onAddToQueue = {},
                 onGoToAlbum = {
                     scope.launch {
                         viewModel.resolveAlbum(state.album)?.let(onAlbumClick)
@@ -434,21 +456,35 @@ fun BoxScope.PlayerOverlays(
     }
 
     if (sheets.palette) {
+        // The keys this album's override could be filed under, built once and used
+        // for both halves — reading what is already saved, and writing the new one.
+        // Two lists built separately is how the editor and the engine came to
+        // disagree in the first place.
+        val paletteKeys = CoverPaletteOverride.keysFor(
+            album = state.album,
+            artist = state.artist,
+            coverUrl = coverUrl,
+            trackId = favouritable?.itemId,
+        )
+        val overrides by settings.coverPaletteOverrides.collectAsStateWithLifecycle(
+            initialValue = emptyMap(),
+        )
         CoverPaletteEditor(
             albumName = state.album.takeIf { it.isNotBlank() } ?: favouritable?.name ?: "",
             artistName = state.artist.takeIf { it.isNotBlank() } ?: favouritable?.subtitle,
             coverUrl = coverUrl,
+            // Open showing what is actually on the room, so this is an editor for an
+            // existing correction and not only a way to start a new one.
+            existing = paletteKeys.firstNotNullOfOrNull { key ->
+                overrides[key]?.takeIf { it.colors.isNotEmpty() }
+            },
             onSave = { override ->
-                // The same key the light-sync engine will look under, from the same
-                // helper — see CoverPaletteOverride.keysFor.
-                val key = CoverPaletteOverride.keysFor(
-                    album = state.album,
-                    artist = state.artist,
-                    coverUrl = coverUrl,
-                    trackId = favouritable?.itemId,
-                ).firstOrNull()
-                if (key != null) {
-                    scope.launch { settings.setCoverPaletteOverride(key, override) }
+                // Every key the engine might look under, not just the best one.
+                // Filing under one name while the engine reads another is a palette
+                // that saves and never applies — see
+                // AppSettings.setCoverPaletteOverrideForKeys.
+                if (paletteKeys.isNotEmpty()) {
+                    scope.launch { settings.setCoverPaletteOverrideForKeys(paletteKeys, override) }
                 }
                 sheets.palette = false
             },

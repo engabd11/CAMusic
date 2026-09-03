@@ -319,12 +319,12 @@ object SignalPath {
                     "it is the price of carrying the extra bits."
             else if (aaudioBitperfect)
                 "The equaliser and the Light Sync audio analysis are out of the chain — " +
-                    "AAudio bit-perfect output bypasses media3 and sends the decoded PCM " +
+                    "${OutputMode.DIRECT.title} bypasses media3 and sends the decoded PCM " +
                     "straight to the DAC."
             else
                 "The equaliser and the Light Sync audio analysis are out of the chain — " +
-                    "Exclusive output asked for nothing of this app's between the decoder " +
-                    "and the DAC."
+                    "${OutputMode.PURE.title} output asked for nothing of this app's between " +
+                    "the decoder and the DAC."
         resampling && isBluetooth ->
             "Android's mixer is at ${StreamQuality.khz(mixerRateHz)} kHz and the stream is " +
                 "${sink.rateLabel()}, so it is being resampled before the Bluetooth codec sees it."

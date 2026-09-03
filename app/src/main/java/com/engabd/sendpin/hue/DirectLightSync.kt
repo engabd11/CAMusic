@@ -29,6 +29,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlin.math.abs
@@ -197,6 +198,60 @@ private const val PREDROP_WINDOW_S = 2f
 
 /** How much louder the next section must be to read as a drop rather than a change. */
 private const val DROP_LEVEL_STEP = 0.15f
+
+// ── Rhythm game ──────────────────────────────────────────────────────────────────
+
+/**
+ * The dim level the room rests at in game mode.
+ *
+ * A floor, and an absolute one. It is not scaled by the brightness ceiling, because
+ * it is not competing with it: the ceiling says how bright the show may *peak*, and
+ * this says how dark the room sits between the moments the player earns. Scaling the
+ * floor by the ceiling was the first version's mistake in miniature — it made the
+ * whole room, reactions included, a function of a setting that was only ever meant
+ * to cap the top.
+ *
+ * Clamped under the ceiling at the point of use, since a floor above the ceiling
+ * would be a floor holding the room *up*.
+ */
+private const val GAME_FLOOR_LEVEL = 0.08f
+
+/**
+ * The floor's colour, as a multiplier per channel on [GAME_FLOOR_LEVEL].
+ *
+ * Very slightly cool, so a room being held down reads as deliberate rather than as a
+ * warm lamp that failed to come up.
+ */
+private const val FLOOR_TINT_R = 0.90f
+private const val FLOOR_TINT_G = 0.95f
+private const val FLOOR_TINT_B = 1.15f
+
+/** How long the gate takes to open. Short enough to read as the tap itself. */
+private const val GATE_ATTACK_MS = 25f
+
+/** How long it stays fully open on a hit with no combo behind it. */
+private const val GATE_HOLD_MS = 90f
+
+/**
+ * Extra hold per unbroken note, and the combo at which that stops growing.
+ *
+ * At the cap this is roughly a third of a second of hold on top of the base, which
+ * turns a long run from a string of separate flashes into a show that is very nearly
+ * continuous. That is the reward, and it needs no explaining because it is simply
+ * more of the thing the player is already playing for.
+ */
+private const val GATE_HOLD_PER_COMBO_MS = 10f
+private const val GATE_HOLD_COMBO_CAP = 30
+
+/**
+ * How long the gate takes to close.
+ *
+ * Long enough that a room of Zigbee bulbs relaying at ~25 Hz renders the fall rather
+ * than receiving one bright frame and one dark one, and long enough that a beat's
+ * own reaction has time to play out inside the window rather than being cut off
+ * mid-swell.
+ */
+private const val GATE_RELEASE_MS = 340f
 
 /**
  * Whichever backend is actually producing sound right now, and what
@@ -393,9 +448,24 @@ class DirectLightSync(
     /** Normalised room-cube position of every channel, cached alongside [channels]. */
     private var roomPositions: Map<Int, Vec3> = emptyMap()
 
-    /** Optional overlay from the rhythm game, applied on top of the engine output. */
-    @Volatile private var gameOverlay: Map<Int, Rgb>? = null
-    @Volatile private var gameOverlayExpiryMs: Long = 0L
+    /**
+     * True while the rhythm game owns the room — see [setGameMode] and
+     * [applyGameGate].
+     */
+    @Volatile private var gameMode = false
+
+    /**
+     * How far open the game's gate is, and since when.
+     *
+     * A single envelope over the whole room rather than a per-lamp overlay, because
+     * what it gates is the show itself: when it is open the engine's own frame goes
+     * out untouched, so a kick lights the room the way a kick does and a hi-hat the
+     * way a hi-hat does, scan and all. There is nothing here that needs to know
+     * which lamps those are — the engine already decided.
+     */
+    @Volatile private var gateOpenedAtMs = 0L
+    @Volatile private var gatePeak = 0f
+    @Volatile private var gateHoldMs = 0f
 
     /** What shape the lamps are in, cached alongside [channels]. */
     private var roomTopology: RoomTopology = RoomTopology.CLUSTER
@@ -530,6 +600,18 @@ class DirectLightSync(
      * engine) and the engine becoming available. Applied in [start] if present.
      */
     @Volatile private var lastAlbumColours: AlbumColours? = null
+
+    /**
+     * Exactly the weights handed to [SyncoEngine.setAlbumColors] alongside
+     * [lastAlbumColours], null included.
+     *
+     * Null and "even weights" are different requests to the engine, and the
+     * stream-start replay used to re-derive which one to send from the colour scheme
+     * — which cannot distinguish an override the user spaced evenly from one they
+     * balanced by hand, because by then both are just a list of numbers. Storing
+     * what was actually sent makes the replay a replay.
+     */
+    @Volatile private var lastAlbumWeights: List<Float>? = null
 
     /**
      * The ambience show that owns the room, or null when the music show does.
@@ -802,13 +884,13 @@ class DirectLightSync(
                 val ac = lastAlbumColours
                 val scheme = ColorScheme.fromWire(settings.lightSyncColor.first())
                 if (ac != null && (scheme == ColorScheme.ALBUM_ART || scheme == ColorScheme.ALBUM_ART_V2)) {
-                    // User overrides are already baked into lastAlbumColours by
-                    // applyAlbumArt, so this path respects them too. v1 passes null
-                    // weights (even interpolation); v2 passes real weights. The
-                    // override case uses even spacing because there is no population
-                    // data, and that is already reflected in ac.weights.
-                    val w = if (scheme == ColorScheme.ALBUM_ART) null else ac.weights
-                    it.setAlbumColors(ac.colors, w)
+                    // Replayed exactly as sent — colours and weights both — rather
+                    // than re-derived from the scheme. A user override is genuinely
+                    // respected here now; it previously was not, because
+                    // `lastAlbumColours` held the *extraction* and this line put the
+                    // cover's own palette back over corrected colours whenever a
+                    // bridge session opened mid-track.
+                    it.setAlbumColors(ac.colors, lastAlbumWeights)
                 }
             }
 
@@ -1267,13 +1349,18 @@ class DirectLightSync(
             val enc = encoder ?: continue
             val client = dtls ?: continue
 
+            // An ambience show, if one is running, takes the room outright — unless
+            // the game is up, which outranks it. A scripted effect is a show of its
+            // own and would paint the room on its own schedule, which is the one
+            // thing game mode is for preventing.
+            //
             // An ambience show, if one is running, takes the room outright.
             //
             // Checked *before* `fresh` and `isIdle` below, and that ordering is
             // load-bearing: a scripted effect produces no analysis frames at all,
             // so `fresh` is always false and `isIdle` always true, and the idle
             // show would quietly paint over the effect on every single tick.
-            val amb = ambience
+            val amb = if (gameMode) null else ambience
             if (amb != null) {
                 if (_framesFresh.value) _framesFresh.value = false
                 val painted = try {
@@ -1373,12 +1460,23 @@ class DirectLightSync(
                 )
             }
 
+            // The rhythm game holds the room down and lets the *real* show through
+            // in the moments the player earns. See [applyGameGate].
+            //
+            // Applied here, on the finished frame, rather than as a branch that
+            // replaces the whole render: everything that makes the show worth
+            // watching — the scan's beat grid, the per-instrument reactions, the
+            // layer chain — has to still be running, because "the lights react
+            // correctly" is the reward. Gating the output is what makes them react
+            // *only* when a note lands; rendering something else entirely, which is
+            // what this used to do, threw away the reaction along with the flashing.
+            val gated = if (gameMode) applyGameGate(layered) else layered
+
             // Safety runs on what is about to be sent, at the moment it is sent —
             // its flash budget is measured in wall-clock seconds, so it has to
             // sit after the delay queue rather than before it.
-            val guarded = safety?.process(layered, dt) ?: layered
-            val withGame = applyGameOverlay(guarded)
-            val due = rateLimiter.process(withGame, dt)
+            val guarded = safety?.process(gated, dt) ?: gated
+            val due = rateLimiter.process(guarded, dt)
 
             // The bridge relays at 25 Hz over Zigbee and the spec asks for a
             // continuous stream because UDP frames are dropped without retry. A
@@ -1411,26 +1509,9 @@ class DirectLightSync(
             // next stage that learns to pass its input through rather than a live
             // bug — and it costs one map copy on frames that actually differ.
             lastSent = if (due === layered) HashMap(due) else due
+            // (`gated` is a fresh map on every frame the gate is applied, so it is
+            // never the chain's reused buffer and needs no copy of its own.)
         }
-    }
-
-    /** Blend any active rhythm-game hit overlay on top of the computed frame. */
-    private fun applyGameOverlay(base: Map<Int, Rgb>): Map<Int, Rgb> {
-        val overlay = gameOverlay ?: return base
-        if (System.currentTimeMillis() > gameOverlayExpiryMs) {
-            gameOverlay = null
-            return base
-        }
-        val out = HashMap(base)
-        for ((id, rgb) in overlay) {
-            val existing = out[id] ?: Rgb(0f, 0f, 0f)
-            out[id] = Rgb(
-                (existing.first + rgb.first).coerceIn(0f, 1f),
-                (existing.second + rgb.second).coerceIn(0f, 1f),
-                (existing.third + rgb.third).coerceIn(0f, 1f),
-            )
-        }
-        return out
     }
 
     /** What [emitFrame] wants the render loop to do next. */
@@ -1517,9 +1598,33 @@ class DirectLightSync(
      * [clearAlbumArt] exists for the case that really does mean it.
      */
     private suspend fun applyAlbumArt(url: String?) = withContext(Dispatchers.IO) {
+        val scheme = ColorScheme.fromWire(settings.lightSyncColor.first())
+
+        // A hand-picked palette is checked *before* the artwork, and applied without
+        // it. These colours were not derived from an image, so nothing about them
+        // needs one — and every path below gives up when the cover is missing, is a
+        // `file://` that will not decode, or simply never arrives. That is exactly
+        // the offline and downloaded case, which is where a saved palette most needs
+        // to still be the one showing: the user corrected these colours precisely
+        // because they wanted them next time, and "next time" was silently excluding
+        // every track whose cover did not load.
+        //
+        // It also saves a decode on every track that has one.
+        if (scheme.isDynamic) {
+            val saved = findOverride(url)
+            if (saved != null) {
+                val colours = saved.toAlbumColours()
+                val weights = overrideWeights(saved, scheme)
+                lastAlbumColours = colours
+                lastAlbumWeights = weights
+                if (!url.isNullOrBlank()) lastGoodArtUrl = url
+                engine?.setAlbumColors(colours.colors, weights)
+                return@withContext
+            }
+        }
+
         if (url.isNullOrBlank()) return@withContext
         try {
-            val scheme = ColorScheme.fromWire(settings.lightSyncColor.first())
             val key = "$url|${scheme.wire}"
             // A mode switch, or coming back to a track played a moment ago, should not
             // cost a refetch — and must not be able to *lose* a palette to a failed one.
@@ -1548,30 +1653,49 @@ class DirectLightSync(
                 synchronized(paletteCache) { paletteCache[key] = fresh }
                 fresh
             }
+            // What was actually *applied*, not what was extracted. The stream-start
+            // path re-applies this when a bridge session opens mid-track, and it has
+            // always claimed in a comment to be respecting user overrides — which it
+            // could not, because this line stored the extraction and the override was
+            // applied only to the local variable below. Opening the stream on a track
+            // with corrected colours put the cover's own palette back.
+            //
+            // An override returns above, so reaching here means there is none and the
+            // two are the same thing. The variable is kept faithful to its name
+            // regardless: the next person to add a branch here should not have to
+            // rediscover that.
             lastAlbumColours = extracted
             lastGoodArtUrl = url
-
-            // User-chosen colours for this album win over whatever was extracted,
-            // but only for the dynamic schemes that actually draw from the cover.
-            val override = if (scheme.isDynamic) findOverride(url) else null
-            val coloursToApply = override?.toAlbumColours() ?: extracted
 
             // v1 (album_art/even) has no weights — pass null so the engine uses
             // pure even interpolation (Palette.evenSample), matching syncoV2's
             // Palette(colors, weights=None). v2 passes the real population weights
-            // for dwell-time-faithful hold-and-crossfade sampling. Hand-picked
-            // overrides have no population data, so they use even spacing too.
-            val paletteWeights = when {
-                override != null -> null
-                scheme == ColorScheme.ALBUM_ART -> null
-                else -> coloursToApply.weights
-            }
-            engine?.setAlbumColors(coloursToApply.colors, paletteWeights)
+            // for dwell-time-faithful hold-and-crossfade sampling.
+            val paletteWeights = if (scheme == ColorScheme.ALBUM_ART) null else extracted.weights
+            lastAlbumWeights = paletteWeights
+            engine?.setAlbumColors(extracted.colors, paletteWeights)
         } catch (e: Exception) {
             // A cover that will not load is not a reason to stop the show; the
             // engine keeps whatever palette it already had.
             Log.w(TAG, "Album art palette failed for $url: ${e.message}")
         }
+    }
+
+    /**
+     * The weights to hand the engine for a hand-picked palette.
+     *
+     * Null means "space these evenly", which is a different request to the engine
+     * than a weighted sample whose weights happen to be equal — see
+     * [SyncoEngine.setAlbumColors]. So an override the user left alone is expressed
+     * as no weights at all, exactly as before percentages existed, and only one they
+     * actually adjusted carries numbers.
+     *
+     * v1 never takes weights: even interpolation is its whole definition.
+     */
+    private fun overrideWeights(override: CoverPaletteOverride, scheme: ColorScheme): List<Float>? = when {
+        scheme == ColorScheme.ALBUM_ART -> null
+        override.hasWeights -> override.normalisedWeights()
+        else -> null
     }
 
     /**
@@ -1604,6 +1728,7 @@ class DirectLightSync(
      */
     private fun clearAlbumArt() {
         lastAlbumColours = null
+        lastAlbumWeights = null
         lastGoodArtUrl = null
         engine?.setAlbumColors(emptyList())
     }
@@ -1991,12 +2116,36 @@ class DirectLightSync(
                 }
             }
         }
+        // A palette the user has just corrected has to reach the room now, not on
+        // the next track. Nothing else re-reads the overrides — [applyAlbumArt] runs
+        // when the artwork URL changes or the scheme does, and neither happens when
+        // someone saves in the editor. Without this the save succeeded, the lights
+        // carried on showing the old colours until the song ended, and the only
+        // reading available to the user was that saving had not worked.
+        //
+        // Cheap to re-run: the extraction is cached by URL and scheme (see
+        // [paletteCache]), so this costs a map lookup and a setAlbumColors rather
+        // than a second decode of the cover.
+        scope.launch {
+            settings.coverPaletteOverrides
+                .distinctUntilChanged()
+                // The first emission is what is already stored, which the show has
+                // either applied or had no artwork for. Only changes are news.
+                .drop(1)
+                .collect { lastGoodArtUrl?.let { url -> applyAlbumArt(url) } }
+        }
         // Album artwork. Collected unconditionally rather than only while an
         // album-art scheme is selected, so switching to one mid-track picks up
         // the cover already on screen instead of waiting for the next song.
+        //
+        // Keyed on the track as well as the URL. A saved palette is looked up by
+        // track, and two tracks can share an artwork URL — or have none at all, which
+        // is one unchanging null — so keying on the URL alone meant moving from one
+        // track to the next never re-checked for an override. On a library with no
+        // covers that is *every* track change.
         scope.launch {
             @OptIn(kotlinx.coroutines.FlowPreview::class)
-            activeSource.map { it.artUrl }
+            activeSource.map { it.artUrl to scanKeyOf(it.scanTrack) }
                 .distinctUntilChanged()
                 // A backend handover emits null for a moment on its way from one cover
                 // to the next. [applyAlbumArt] already refuses to act on a null, so this
@@ -2004,7 +2153,7 @@ class DirectLightSync(
                 // one extraction rather than two, and stops a rapid run of skips
                 // starting a fetch per track.
                 .debounce(ART_SETTLE_MS)
-                .collect { url ->
+                .collect { (url, _) ->
                     lastArtUrl = url
                     applyAlbumArt(url)
                 }
@@ -2115,25 +2264,118 @@ class DirectLightSync(
     }
 
     /**
-     * A note was hit in the rhythm game. Flash the corresponding side of the room
-     * for a short moment. Called from the UI thread; the overlay is read by the
-     * render loop, so volatility is enough.
+     * Hand the room to the rhythm game, or take it back.
+     *
+     * While this is on the show still runs in full — the beat grid, the scan, the
+     * per-instrument reactions, the layer chain — and [applyGameGate] holds its
+     * output down to a dim floor. A correctly-struck note opens the gate, and for
+     * as long as it is open the room does exactly what it would have done anyway.
+     *
+     * That is the whole design, and it is a correction of the first attempt at it.
+     * The first version replaced the render with a floor plus a coloured flash per
+     * lane, which meant hitting a note lit a red lamp on the left rather than
+     * *playing the kick's reaction*: it threw away everything the engine knows about
+     * what the music is doing at that instant, which is the only reason the reward
+     * is worth having. It also scaled its flashes by the brightness ceiling, so the
+     * whole room — reactions included — came out dim. Nothing here touches the
+     * ceiling now: the floor comes down, and a hit plays at the brightness the show
+     * was always going to use.
      */
-    fun receiveGameHit(lane: Int, points: Int) {
-        val positions = roomPositions
-        if (positions.isEmpty()) return
-        val color = when (lane) {
-            0 -> Rgb(1f, 0.2f, 0.2f) // red kick
-            1 -> Rgb(0.2f, 0.6f, 1f) // blue snare
-            2 -> Rgb(1f, 0.8f, 0.1f) // yellow hat
-            else -> Rgb(0.5f, 1f, 0.3f) // green melody
-        }
-        val sideX = (lane / 3f) * 2f - 1f // map lane 0..3 to left..right
-        val affected = positions.filter { (_, p) -> kotlin.math.abs(p.x - sideX) < 0.4f }.keys
-        val scale = points / 100f
-        gameOverlay = affected.associateWith { Rgb(color.first * scale, color.second * scale, color.third * scale) }
-        gameOverlayExpiryMs = System.currentTimeMillis() + 150L
+    fun setGameMode(on: Boolean) {
+        if (gameMode == on) return
+        gameMode = on
+        closeGate()
+        // Nothing else to do: the render loop picks the gate up on its next tick.
     }
+
+    private fun closeGate() {
+        gatePeak = 0f
+        gateHoldMs = 0f
+        gateOpenedAtMs = 0L
+    }
+
+    /**
+     * A note was struck in the rhythm game: open the gate.
+     *
+     * [strength] is 0..1 for how well it was hit and becomes how far the gate opens,
+     * so a Perfect plays the show at full and a scrappy Good plays it at rather
+     * less. [combo] lengthens the hold — the better the run, the more continuous the
+     * show becomes, which is a reward that costs nothing to explain because it is
+     * simply more of the thing the player already wanted.
+     *
+     * Not scaled by the brightness ceiling. The engine has already applied that to
+     * the frame this gate multiplies, and scaling here as well is what made the
+     * first version dim the whole room instead of only its floor.
+     *
+     * Called from the main thread; the fields are volatile and the render loop only
+     * reads them, so there is nothing to lock.
+     */
+    fun receiveGameHit(strength: Float, combo: Int) {
+        val peak = strength.coerceIn(0f, 1f)
+        if (peak <= 0f) return
+        // Never let a new hit drop the room below where the last one has it. A weak
+        // hit landing while a strong one is still ringing should extend the show,
+        // not chop it — the player did not do anything wrong.
+        gatePeak = maxOf(gameGate(), peak)
+        gateHoldMs = GATE_HOLD_MS + (combo.coerceAtMost(GATE_HOLD_COMBO_CAP) * GATE_HOLD_PER_COMBO_MS)
+        gateOpenedAtMs = System.currentTimeMillis()
+    }
+
+    /**
+     * How far open the gate is right now, 0..1.
+     *
+     * Attack, hold, release. The attack is short enough to read as the tap itself;
+     * the release is long enough that a room of Zigbee bulbs relaying at 25 Hz
+     * actually renders the fall rather than receiving one bright frame and one dark
+     * one, and that a beat's own reaction has time to play out inside it.
+     */
+    private fun gameGate(): Float {
+        val peak = gatePeak
+        if (peak <= 0f) return 0f
+        val age = (System.currentTimeMillis() - gateOpenedAtMs).toFloat()
+        if (age < 0f) return 0f
+        val hold = gateHoldMs
+        return when {
+            age < GATE_ATTACK_MS -> peak * (age / GATE_ATTACK_MS)
+            age < GATE_ATTACK_MS + hold -> peak
+            else -> {
+                val d = (age - GATE_ATTACK_MS - hold) / GATE_RELEASE_MS
+                if (d >= 1f) 0f else peak * (1f - d) * (1f - d)
+            }
+        }
+    }
+
+    /**
+     * Hold the room at a dim floor, and open to the full show where the player has
+     * earned it.
+     *
+     * The floor is a *floor*, not a ceiling: it lifts whatever the show is doing up
+     * to a dim minimum so the room is never black, and it never holds anything down.
+     * The gate above it is a plain multiplier on the engine's own frame, so at full
+     * open this returns the frame unchanged — the reaction is the show's, at the
+     * show's brightness, with the user's ceiling already applied to it upstream.
+     *
+     * Componentwise `max` rather than a blend toward a floor colour: a blend would
+     * wash the show's colours toward neutral in proportion to how dim they are,
+     * which is exactly backwards for a deep-blue verse.
+     */
+    private fun applyGameGate(field: Map<Int, Rgb>): Map<Int, Rgb> {
+        val gate = gameGate()
+        // Kept under the user's ceiling: a room limited to 5% must not have a 6%
+        // floor propping it up. Otherwise absolute, so the floor is the same dim
+        // room whatever the show is allowed to peak at.
+        val floor = minOf(GAME_FLOOR_LEVEL, layerBrightness)
+        val out = HashMap<Int, Rgb>(field.size)
+        for ((id, c) in field) {
+            out[id] = Rgb(
+                maxOf(floor * FLOOR_TINT_R, c.first * gate),
+                maxOf(floor * FLOOR_TINT_G, c.second * gate),
+                maxOf(floor * FLOOR_TINT_B, c.third * gate),
+            )
+        }
+        return out
+    }
+
 
     // ── Track scans ─────────────────────────────────────────────────────────
 

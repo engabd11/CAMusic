@@ -423,7 +423,7 @@ fun NowPlayingOverlay(
                                             interactionSource = remember { MutableInteractionSource() },
                                             indication = null,
                                             onClick = { coverSlot = CoverSlot.VISUALIZER },
-                                            onLongClick = if (favouritable != null) {
+                                            onLongClick = if (!st.idle) {
                                                 { sheets.actions = true }
                                             } else null,
                                         ),
@@ -546,6 +546,16 @@ fun NowPlayingOverlay(
 fun MiniPlayerBar(
     viewModel: NowPlayingViewModel = viewModel(),
     onExpand: () -> Unit,
+    /**
+     * Shrink to a strip, for a screen that needs the bottom of the phone back —
+     * see [com.engabd.sendpin.ui.design.CompactMiniBarHeight] for who asks and why.
+     *
+     * What survives is what a minimised player is *for*: what is playing, whether
+     * it is playing, and the way back into the full screen. The artist, the speaker
+     * line and the skip buttons go, because at 56.dp there is no room to render
+     * them at a size worth tapping, and half a skip button is worse than none.
+     */
+    compact: Boolean = false,
 ) {
     val st by viewModel.state.collectAsStateWithLifecycle()
 
@@ -575,9 +585,12 @@ fun MiniPlayerBar(
                     }
                 }
                 .fillMaxHeight()
-                .padding(horizontal = 14.dp, vertical = 12.dp),
+                .padding(
+                    horizontal = if (compact) 10.dp else 14.dp,
+                    vertical = if (compact) 6.dp else 12.dp,
+                ),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            horizontalArrangement = Arrangement.spacedBy(if (compact) 10.dp else 14.dp),
         ) {
             // Album thumbnail. Sized off the bar rather than pinned, so it grows with
             // it — see [MiniBarHeight] for why the bar is as tall as it is.
@@ -608,7 +621,9 @@ fun MiniPlayerBar(
                     if (st.blank) "Nothing playing" else st.title,
                     color = if (st.blank) TextSecondary else TextPrimary,
                     fontFamily = AppFont,
-                    fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 1,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = if (compact) 13.sp else 14.sp,
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     // Only the title. The bar is 14sp of text in a strip across the
                     // bottom of every screen, and two lines scrolling at once there
@@ -621,14 +636,14 @@ fun MiniPlayerBar(
                 // is playing, not just *what*. The bar has the height to spare (see
                 // MiniBarHeight), so this doesn't need to fight the artist for one
                 // truncating line: each gets to be read in full.
-                if (!st.blank && st.artist.isNotBlank()) {
+                if (!compact && !st.blank && st.artist.isNotBlank()) {
                     Text(
                         st.artist, color = TextMuted, fontFamily = AppFont,
                         fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
                 }
                 val speakerLabel = if (st.groupSize > 1) "${st.playerName} (${st.groupSize})" else st.playerName
-                if (speakerLabel.isNotBlank()) {
+                if (!compact && speakerLabel.isNotBlank()) {
                     Text(
                         "($speakerLabel)", color = TextFaint, fontFamily = AppFont,
                         fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
@@ -643,14 +658,16 @@ fun MiniPlayerBar(
             // is the thing most often wanted from a minimised player: it used to cost
             // opening the full screen, skipping, and swiping back down.
             if (!st.blank) {
-                Icon(
-                    Icons.Default.SkipPrevious, "Previous",
-                    tint = TextSecondary,
-                    modifier = Modifier.size(30.dp).clip(CircleShape)
-                        .clickable { viewModel.previous() }.padding(4.dp),
-                )
+                if (!compact) {
+                    Icon(
+                        Icons.Default.SkipPrevious, "Previous",
+                        tint = TextSecondary,
+                        modifier = Modifier.size(30.dp).clip(CircleShape)
+                            .clickable { viewModel.previous() }.padding(4.dp),
+                    )
+                }
                 Box(
-                    Modifier.size(44.dp).clip(CircleShape)
+                    Modifier.size(if (compact) 36.dp else 44.dp).clip(CircleShape)
                         .background(Glass)
                         .clickable { viewModel.playPause() },
                     contentAlignment = Alignment.Center,
@@ -658,15 +675,17 @@ fun MiniPlayerBar(
                     Icon(
                         if (st.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                         if (st.isPlaying) "Pause" else "Play",
-                        tint = accent, modifier = Modifier.size(24.dp),
+                        tint = accent, modifier = Modifier.size(if (compact) 20.dp else 24.dp),
                     )
                 }
-                Icon(
-                    Icons.Default.SkipNext, "Next",
-                    tint = TextSecondary,
-                    modifier = Modifier.size(30.dp).clip(CircleShape)
-                        .clickable { viewModel.next() }.padding(4.dp),
-                )
+                if (!compact) {
+                    Icon(
+                        Icons.Default.SkipNext, "Next",
+                        tint = TextSecondary,
+                        modifier = Modifier.size(30.dp).clip(CircleShape)
+                            .clickable { viewModel.next() }.padding(4.dp),
+                    )
+                }
             }
         }
     }
