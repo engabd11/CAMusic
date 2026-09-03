@@ -67,7 +67,7 @@ struct AaudioOutput {
     }
 
     aaudio_data_callback_result_t onCallback(AAudioStream* /*stream*/, void* audioData, int32_t numFrames) {
-        const size_t bytesNeeded = numFrames * bytesPerFrame;
+        const size_t bytesNeeded = static_cast<size_t>(numFrames) * static_cast<size_t>(bytesPerFrame);
         size_t bytesFilled = 0;
         uint8_t* dst = static_cast<uint8_t*>(audioData);
 
@@ -197,18 +197,30 @@ Java_com_engabd_sendpin_audio_AaudioBitperfectOutput_nativeClose(
 JNIEXPORT jlong JNICALL
 Java_com_engabd_sendpin_audio_AaudioBitperfectOutput_nativeWrite(
     JNIEnv* env, jobject /*thiz*/, jlong ptr, jbyteArray pcm, jint offset, jint length) {
-    if (ptr == 0 || pcm == nullptr || length <= 0) return 0;
+    if (ptr == 0 || pcm == nullptr || length <= 0 || offset < 0) return 0;
+
+    // offset and length come from Java, and are the only thing between the memcpy
+    // below and a read past the end of the array. Check them against the array
+    // itself; subtracting rather than adding keeps the bound from overflowing.
+    const jsize pcmLength = env->GetArrayLength(pcm);
+    if (offset > pcmLength || length > pcmLength - offset) {
+        LOGE("nativeWrite out of bounds: offset=%d length=%d array=%d", offset, length, pcmLength);
+        return 0;
+    }
+
     auto* out = reinterpret_cast<AaudioOutput*>(ptr);
     const int bytesPerFrame = out->bytesPerFrame;
     if (bytesPerFrame <= 0) return 0;
     const int frames = length / bytesPerFrame;
     if (frames <= 0) return 0;
 
+    // Allocated before the critical region: allocating inside one can block on the
+    // GC that the region is holding off.
+    std::vector<uint8_t> chunk(static_cast<size_t>(length));
+
     void* base = env->GetPrimitiveArrayCritical(pcm, nullptr);
     if (base == nullptr) return 0;
-
-    std::vector<uint8_t> chunk(static_cast<size_t>(length));
-    std::memcpy(chunk.data(), static_cast<const uint8_t*>(base) + offset, length);
+    std::memcpy(chunk.data(), static_cast<const uint8_t*>(base) + offset, static_cast<size_t>(length));
     env->ReleasePrimitiveArrayCritical(pcm, base, JNI_ABORT);
 
     {
