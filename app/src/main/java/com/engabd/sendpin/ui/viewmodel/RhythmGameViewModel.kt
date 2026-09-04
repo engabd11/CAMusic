@@ -94,7 +94,17 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
     /** How far notes fall before the line, so the UI can place them. */
     val lookAheadMs: Long get() = generator.lookAheadMs
 
-    private var eventId = 0L
+    /**
+     * The tap-timing offset, in ms, and the difficulty scale — both read from
+     * settings and applied at once, so a change lands on the very next frame
+     * rather than the next session. Positive offset = the player's taps arrive
+     * late, so the judged clock runs that much later.
+     */
+    private var timingOffsetMs = 0
+    private var difficultyScale = 1f
+    private var hapticsOn = true
+
+    private val eventId = java.util.concurrent.atomic.AtomicLong()
     private var publishedRevision = -1
     private var notesReached = 0
     private var notesStruck = 0
@@ -122,22 +132,6 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
         runCatching { directLightSync.setGameMode(true) }
     }
 
-    /** Leave game mode and hand the room back to the music. */
-    fun stop() {
-        if (!running) return
-        running = false
-        runCatching { directLightSync.setGameMode(false) }
-    }
-
-    override fun onCleared() {
-        // The screen's DisposableEffect normally does this. This is the backstop for
-        // the process-death-adjacent paths that skip it — leaving the room stuck at
-        // its game floor with no way back short of restarting the stream would be the
-        // worst possible failure for this feature.
-        stop()
-        super.onCleared()
-    }
-
     /**
      * Fold in one analysis frame.
      *
@@ -155,6 +149,40 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
         if (leadKnown != _leadKnown.value) _leadKnown.value = leadKnown
         generator.onFrame(frame, nowMs(), leadMs, directLightSync.gameChartSource())
         publish()
+    }
+
+    /**
+     * [offset] shifts the judged clock; [scale] widens or narrows the judgement
+     * windows; [haptics] gates the vibration channel. All three are settings the
+     * screen (or a calibration flow) may change mid-session, so they are plain
+     * fields applied from the next frame on rather than constructor state.
+     */
+    fun applyTiming(offsetMs: Int, scale: Float, haptics: Boolean) {
+        timingOffsetMs = offsetMs.coerceIn(-300, 300)
+        difficultyScale = scale.coerceIn(0.4f, 2f)
+        hapticsOn = haptics
+    }
+
+    /** The offset currently applied, for the calibration flow's read-back. */
+    val appliedTimingOffsetMs: Int get() = timingOffsetMs
+
+    /** The difficulty scale currently applied. */
+    val appliedDifficultyScale: Float get() = difficultyScale
+
+    /** Leave game mode and hand the room back to the music. */
+    fun stop() {
+        if (!running) return
+        running = false
+        runCatching { directLightSync.setGameMode(false) }
+    }
+
+    override fun onCleared() {
+        // The screen's DisposableEffect normally does this. This is the backstop for
+        // the process-death-adjacent paths that skip it — leaving the room stuck at
+        // its game floor with no way back short of restarting the stream would be the
+        // worst possible failure for this feature.
+        stop()
+        super.onCleared()
     }
 
     /**
@@ -192,18 +220,26 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
      * A tap that *does* find a note always scores, because the window
      * [NoteGenerator.take] searches is the widest scoring window. A note the player
      * was too late for is not taken here at all — it is reaped by [tick] as a miss.
+     *
+     * The tap is judged against `now + timingOffsetMs`: the calibration offset is
+     * the player's own measured touch/output latency, and shifting the *judged*
+     * clock by it centres every window on how the player actually experiences the
+     * beat. The chart itself is untouched — a shifted chart would misplace notes
+     * relative to the lights as well.
      */
     fun tap(lane: Int, now: Long): Judgement? {
         if (!running) return null
-        val note = generator.take(lane, now) ?: return null
-        val delta = kotlin.math.abs(note.triggerTimeMs - now)
-        val judgement = Judgement.forDelta(delta)
+        val judgedNow = now + timingOffsetMs
+        val note = generator.take(lane, judgedNow, difficultyScale) ?: return null
+        val delta = kotlin.math.abs(note.triggerTimeMs - judgedNow)
+        val judgement = Judgement.forDelta(delta, difficultyScale)
         notesReached++
         notesStruck++
 
         var hud = _hud.value
         val combo = hud.combo + 1
         val multiplier = multiplierFor(combo)
+        val steppedUp = multiplier > hud.multiplier
         hud = hud.copy(
             score = hud.score + judgement.points * multiplier,
             combo = combo,
@@ -215,9 +251,32 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
         )
         _hud.value = hud.withAccuracy()
         emit(judgement, lane, combo, now)
+        if (hapticsOn) haptics(judgement, steppedUp)
         flashRoom(note, judgement, combo)
         publish()
         return judgement
+    }
+
+    /**
+     * The haptic channel: a tap's confirmation reaches the hand before the eye.
+     * Sharp for a Perfect, soft for the rest, a double pulse when the multiplier
+     * steps up — the one reward that works with no bridge and no screen attention.
+     */
+    private fun haptics(judgement: Judgement, steppedUp: Boolean) {
+        val vibrator = getApplication<Application>().getSystemService(android.content.Context.VIBRATOR_SERVICE)
+            as? android.os.Vibrator ?: return
+        if (!vibrator.hasVibrator()) return
+        runCatching {
+            when {
+                steppedUp -> vibrator.vibrate(
+                    android.os.VibrationEffect.createWaveform(longArrayOf(0, 24, 60, 24), -1),
+                )
+                judgement == Judgement.PERFECT -> vibrator.vibrate(
+                    android.os.VibrationEffect.createWaveform(longArrayOf(0, 28), -1),
+                )
+                else -> vibrator.vibrate(android.os.VibrationEffect.createOneShot(12, 96))
+            }
+        }
     }
 
     /**
@@ -273,7 +332,7 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun emit(judgement: Judgement, lane: Int, comboAfter: Int, atMs: Long) {
-        _judgement.value = JudgementEvent(++eventId, judgement, lane, comboAfter, atMs)
+        _judgement.value = JudgementEvent(eventId.incrementAndGet(), judgement, lane, comboAfter, atMs)
     }
 
     private fun RhythmHud.withAccuracy(): RhythmHud =

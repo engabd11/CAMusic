@@ -78,6 +78,11 @@ data class GameNote(
  * a live tempo estimate of audio nobody charted by hand, and the player is tapping
  * a sheet of glass against a room's worth of speaker latency — a 20 ms Perfect
  * window would only ever be measuring how wrong the estimate was.
+ *
+ * [scaled] rebuilds the windows at a difficulty multiplier: Easy widens them (a
+ * forgiving first session, and the right setting while a chart is still
+ * scan-less), Expert narrows them (viable now the chart is exact from bar one
+ * rather than a live estimate's guess).
  */
 enum class Judgement(val label: String, val points: Int, val windowMs: Long) {
     PERFECT("Perfect", 100, 60L),
@@ -89,14 +94,26 @@ enum class Judgement(val label: String, val points: Int, val windowMs: Long) {
         /** The widest window any tap can still be judged in. */
         val HIT_WINDOW_MS = GOOD.windowMs
 
-        fun forDelta(deltaMs: Long): Judgement = when {
-            deltaMs <= PERFECT.windowMs -> PERFECT
-            deltaMs <= GREAT.windowMs -> GREAT
-            deltaMs <= GOOD.windowMs -> GOOD
+        fun forDelta(deltaMs: Long): Judgement = forDelta(deltaMs, 1f)
+
+        /** [scale] multiplies every window; 1f is the shipped Normal. */
+        fun forDelta(deltaMs: Long, scale: Float): Judgement = when {
+            deltaMs <= PERFECT.windowMs * scale -> PERFECT
+            deltaMs <= GREAT.windowMs * scale -> GREAT
+            deltaMs <= GOOD.windowMs * scale -> GOOD
             else -> MISS
         }
+
+        /** Widest window at a given difficulty scale, for reaping. */
+        fun hitWindowMs(scale: Float): Long = (GOOD.windowMs * scale).toLong()
     }
 }
+
+/**
+ * Difficulty multipliers for the judgement windows, by setting name. Kept beside
+ * [Judgement] so the screen's picker and the generator's reaping cannot drift.
+ */
+val DIFFICULTY_SCALE = mapOf("easy" to 1.5f, "normal" to 1f, "expert" to 0.66f)
 
 /**
  * Turns the live analysis stream into a chart the player can actually read.
@@ -272,8 +289,13 @@ class NoteGenerator(
      * Removes it, so one note can only be scored once — which the old version could
      * not promise: it filtered the published list, and the next frame republished
      * the note from the generator's own store.
+     *
+     * [windowScale] widens or narrows the search window with the judgement
+     * difficulty, so Easy finds a note slightly further from its moment and
+     * Expert slightly closer — the same windows the judgement then uses, or a
+     * tap could take a note it was about to be denied scoring.
      */
-    fun take(lane: Int, nowMs: Long): GameNote? {
+    fun take(lane: Int, nowMs: Long, windowScale: Float = 1f): GameNote? {
         var best: GameNote? = null
         var bestDelta = Long.MAX_VALUE
         for (n in notes) {
@@ -285,7 +307,7 @@ class NoteGenerator(
             }
         }
         val hit = best ?: return null
-        if (bestDelta > Judgement.HIT_WINDOW_MS) return null
+        if (bestDelta > Judgement.hitWindowMs(windowScale)) return null
         notes.remove(hit)
         revision++
         return hit

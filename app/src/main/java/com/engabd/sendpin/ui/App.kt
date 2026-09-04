@@ -87,6 +87,7 @@ import com.engabd.sendpin.ui.screens.NowPlayingScreen
 import com.engabd.sendpin.ui.screens.OnboardingWizard
 import com.engabd.sendpin.ui.screens.PlaylistDetailScreen
 import com.engabd.sendpin.ui.screens.RhythmGameScreen
+import com.engabd.sendpin.ui.screens.RhythmCalibrationScreen
 import com.engabd.sendpin.ui.screens.SettingsScreen
 import com.engabd.sendpin.ui.screens.SettingsSection
 import com.engabd.sendpin.ui.screens.SpeakersScreen
@@ -787,7 +788,13 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                         )
                     }
                     screen("rhythm_game") {
-                        RhythmGameScreen(onBack = { navController.popBackStack() })
+                        RhythmGameScreen(
+                            onBack = { navController.popBackStack() },
+                            onOpenCalibration = { navController.navigate("rhythm_calibration") },
+                        )
+                    }
+                    screen("rhythm_calibration") {
+                        RhythmCalibrationScreen(onBack = { navController.popBackStack() })
                     }
                     screen("settings") {
                         SettingsScreen(

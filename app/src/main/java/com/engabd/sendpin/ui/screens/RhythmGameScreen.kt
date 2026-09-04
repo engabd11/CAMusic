@@ -50,6 +50,7 @@ import com.engabd.sendpin.ui.theme.TextFaint
 import com.engabd.sendpin.ui.theme.TextMuted
 import com.engabd.sendpin.ui.theme.TextPrimary
 import com.engabd.sendpin.ui.viewmodel.RhythmGameViewModel
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlin.math.abs
@@ -94,6 +95,7 @@ import kotlin.math.sin
 @Composable
 fun RhythmGameScreen(
     onBack: () -> Unit,
+    onOpenCalibration: () -> Unit = {},
     viewModel: RhythmGameViewModel = viewModel(),
 ) {
     val context = LocalContext.current
@@ -108,6 +110,23 @@ fun RhythmGameScreen(
     DisposableEffect(viewModel) {
         viewModel.start()
         onDispose { viewModel.stop() }
+    }
+
+    // Timing settings feed the judged clock: offset, difficulty scale, haptics.
+    // Collected for the screen's lifetime so a mid-session change applies from
+    // the next tap rather than the next launch.
+    LaunchedEffect(viewModel) {
+        val app2 = context.applicationContext as SendpinApp
+        val s = com.engabd.sendpin.data.AppSettings(app2)
+        combine(
+            s.gameTimingOffsetMs,
+            s.gameDifficulty,
+            s.gameHaptics,
+        ) { offset, difficulty, haptics ->
+            Triple(offset, com.engabd.sendpin.game.DIFFICULTY_SCALE[difficulty] ?: 1f, haptics)
+        }.collect { (offset, scale, haptics) ->
+            viewModel.applyTiming(offset, scale, haptics)
+        }
     }
 
     DisposableEffect(Unit) {
@@ -208,6 +227,15 @@ fun RhythmGameScreen(
                         },
                         color = TextMuted, fontFamily = AppFont,
                         fontWeight = FontWeight.SemiBold, fontSize = 11.sp,
+                    )
+                }
+                // Calibration lives one tap away from the game, not buried in
+                // settings: the moment the game feels off is the moment to fix it.
+                androidx.compose.material3.TextButton(onClick = onOpenCalibration) {
+                    Text(
+                        "Timing",
+                        color = accent, fontFamily = AppFont,
+                        fontWeight = FontWeight.Bold, fontSize = 13.sp,
                     )
                 }
             }
