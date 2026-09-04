@@ -220,8 +220,11 @@ class LocalPlayer(private val context: Context) {
 
     /**
      * Vinyl surface noise: crackle, dust pops, and low-end rumble. Sits after
-     * the EQ and before the lo-fi processor in the chain, so both the lo-fi
-     * mode and the light show hear the treated audio.
+     * the lo-fi processor's bitcrush/saturate/filter stages in the chain, so
+     * the noise floor is layered onto the finished signal rather than being
+     * quantised and decimated along with the music — see
+     * [TapRenderersFactory]'s class doc for why. Still ahead of the tap, so
+     * the light show hears the treated audio.
      *
      * One instance for the same reason as [localDsp]: the processor chain is
      * fixed at player construction, but the intensity slider moves long after.
@@ -236,9 +239,12 @@ class LocalPlayer(private val context: Context) {
     val wowFlutter = WowFlutterProcessor()
 
     /**
-     * Lo-fi music mode: bitcrusher, warm saturation, low-pass. Sits after
-     * vinyl noise so it can share the crackle stage when both are active,
-     * avoiding double-running the noise.
+     * Lo-fi music mode: bitcrusher, warm saturation, high-pass/low-pass. Sits
+     * ahead of vinyl noise in the chain (see [TapRenderersFactory]) so its
+     * crush stages act on the clean music, not on any noise already mixed
+     * in; it can still share the crackle stage with [vinylNoise] when both
+     * are active, avoiding double-running the noise — that's a config flag
+     * ([LoFiProcessor.Config.shareVinylCrackle]), independent of chain order.
      */
     val loFiProcessor = LoFiProcessor()
 
