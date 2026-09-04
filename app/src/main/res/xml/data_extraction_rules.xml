@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The settings DataStore ("sendpin_settings") is excluded from both cloud backup and
+  device-to-device transfer, deliberately.
+
+  Every credential in it is AES-GCM encrypted under a Keystore key
+  (data/Crypto.kt) that — by design — never leaves the device's secure hardware.
+  A restored backup therefore carries enc1: blobs that can never be decrypted:
+  Crypto.decrypt() catches the failure and returns "", so the app comes up with
+  silently blank passwords and no signal to the user that anything was lost.
+  Backing the file up buys nothing but that failure mode.
+
+  The cost is that non-secret settings (theme, server addresses, player names) are
+  also not restored. That is the honest trade: either the whole file is excluded, or
+  credentials ride along undecryptable — Android backup rules work at file
+  granularity, and the keys share one file.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="file" path="datastore/sendpin_settings.preferences_pb" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="file" path="datastore/sendpin_settings.preferences_pb" />
+    </device-transfer>
+</data-extraction-rules>

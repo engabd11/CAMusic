@@ -1,5 +1,6 @@
 package com.engabd.sendpin.data
 
+import android.util.Log
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
@@ -19,6 +20,7 @@ object Crypto {
     private const val KEY_ALIAS = "sendpin_creds_v1"
     private const val PREFIX = "enc1:"
     private const val IV_LEN = 12
+    private const val TAG = "SendpinCrypto"
 
     private fun secretKey(): SecretKey {
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
@@ -45,8 +47,12 @@ object Crypto {
             val iv = c.iv
             val ct = c.doFinal(plain.toByteArray(Charsets.UTF_8))
             PREFIX + Base64.encodeToString(iv + ct, Base64.NO_WRAP)
-        } catch (_: Exception) {
-            plain // never lose the value; fall back to plaintext if crypto is unavailable
+        } catch (e: Exception) {
+            // No plaintext fallback: a broken Keystore must never cause a password
+            // or token to be written to DataStore in the clear. Losing the value is
+            // recoverable (the user re-enters it); storing it unencrypted is not.
+            Log.w(TAG, "encrypt failed; credential not persisted", e)
+            ""
         }
     }
 
