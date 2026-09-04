@@ -437,6 +437,10 @@ fun BoxScope.PlayerOverlays(
                         viewModel.resolveArtist(state.artist)?.let(onArtistClick)
                     }
                 },
+                onMoreLikeThis = {
+                    sheets.actions = false
+                    sheets.panel = Panel.SIMILAR
+                },
                 onShare = {
                     val text = listOf(item.name, state.artist, state.album)
                         .filter { it.isNotBlank() }

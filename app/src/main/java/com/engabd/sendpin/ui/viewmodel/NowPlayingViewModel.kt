@@ -1883,6 +1883,42 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * Put one of the suggestions on now, in place of what is playing.
+     *
+     * The same split as [enqueue], for the same reason: the local player owns its own
+     * queue, and a suggestion no Subsonic library provided has no URL this phone could
+     * fetch on its own. Replacing the queue is what a tap on a track means everywhere
+     * else in this app — see `MediaActionsSheet`'s "Play now" — and the panel keeps an
+     * append beside every row for the other intention.
+     */
+    fun playSimilar(track: MaSimilarTrack) {
+        if (isLocal) {
+            viewModelScope.launch {
+                val queued = localTrackFor(track)
+                if (queued == null) {
+                    _toast.tryEmit("Can't play that here")
+                    return@launch
+                }
+                local.setQueue(listOf(queued))
+                _toast.tryEmit("Playing ${track.name}")
+                if (_queueItems.value !is Load.Idle) _queueItems.value = Load.Ready(localQueueItems())
+            }
+            return
+        }
+        val uri = track.uri ?: "track://${track.provider}/${track.itemId}"
+        viewModelScope.launch {
+            try {
+                repo.playOn(targetId(), listOf(uri), "replace")
+                _toast.tryEmit("Playing ${track.name}")
+                delay(350); refresh()
+                if (_queueItems.value !is Load.Idle) loadQueue(silent = true)
+            } catch (e: Exception) {
+                _toast.tryEmit(e.message ?: "Couldn't play that")
+            }
+        }
+    }
+
+    /**
      * The library that can answer for a locally-playing track.
      *
      * `scrobbleProvider` is the track's record of which server its id belongs to, so
