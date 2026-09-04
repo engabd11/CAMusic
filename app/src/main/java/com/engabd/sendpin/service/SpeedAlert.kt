@@ -27,11 +27,17 @@ object SpeedAlert {
      * not failing to detect anything; it was waiting for a stretch of speeding
      * almost nobody actually does.
      *
-     * Three seconds is long enough that a spike cannot cause it and short enough to
-     * still be a warning. Expressed in time, so tightening the update interval makes
-     * the alert more accurate rather than more trigger-happy.
+     * Two seconds is the number, and it is deliberately short. Australian
+     * enforcement does not have a grace band worth relying on, so an alert that
+     * waits is an alert that arrives after the camera. Two fixes at
+     * [SpeedMonitor]'s one-a-second interval is still enough that a single bad
+     * sample cannot cause it — see [MIN_READINGS], which is what actually guards
+     * against that — and it is short enough to be a warning rather than a report.
+     *
+     * Expressed in time, so tightening the update interval makes the alert more
+     * accurate rather than more trigger-happy.
      */
-    const val CONFIRM_WINDOW_MS = 3_000L
+    const val CONFIRM_WINDOW_MS = 2_000L
 
     /**
      * The fewest readings that window can be made of.
@@ -50,6 +56,12 @@ object SpeedAlert {
      * driver sitting a few km/h over the trigger produces readings that cross it in
      * both directions, and every crossing put the confirmation window back to zero.
      * The speed has to be genuinely under for this long before the streak is over.
+     *
+     * Forgiving a dip is not the same as counting it. Time spent under the trigger
+     * is subtracted from the window rather than credited to it — see [Tracker] —
+     * because otherwise a two-second window could be satisfied by two brief
+     * excursions with a comfortably legal second and a half between them, which is
+     * not what "over the limit for two seconds" means to anybody.
      */
     const val UNDER_GRACE_MS = 4_000L
 
@@ -83,7 +95,14 @@ object SpeedAlert {
                 if (nowMs - underSinceMs >= UNDER_GRACE_MS) reset(keepLastBeep = true)
                 return false
             }
-            underSinceMs = NONE
+            if (underSinceMs != NONE) {
+                // Coming back over after a dip the grace period forgave. The streak
+                // survives, but the time spent under does not count toward the
+                // window: push the streak's start forward by exactly that long, so
+                // what the window measures stays "seconds actually over the trigger".
+                overSinceMs += nowMs - underSinceMs
+                underSinceMs = NONE
+            }
             if (overSinceMs == NONE) {
                 overSinceMs = nowMs
                 readingsInStreak = 0

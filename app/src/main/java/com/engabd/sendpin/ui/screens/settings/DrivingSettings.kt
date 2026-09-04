@@ -279,8 +279,12 @@ private fun SpeedFeaturesRow(settings: AppSettings, accent: Color, scope: Corout
         val effective = activeLimit
         if (effective != null && effective > 0) {
             val trigger = com.engabd.sendpin.service.SpeedAlert.triggerSpeedKmh(effective, tolerancePct).toInt() + 1
-            if (autoDetect) "Auto: $effective km/h here — beeps at $trigger km/h"
-            else "Beeps at $trigger km/h and above"
+            // The hold is read from the tracker's own constant rather than typed
+            // here, so the screen cannot end up promising a different wait than the
+            // one the alert keeps.
+            val hold = com.engabd.sendpin.service.SpeedAlert.CONFIRM_WINDOW_MS / 1000
+            if (autoDetect) "Auto: $effective km/h here — beeps after ${hold}s over $trigger km/h"
+            else "Beeps after ${hold}s over $trigger km/h"
         } else if (autoDetect) {
             "Detecting limit from location…"
         } else {
