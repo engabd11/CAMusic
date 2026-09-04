@@ -78,7 +78,7 @@ internal fun LightSyncSection(
     onHaToken: (String) -> Unit,
 ) {
     if (detail == BRIDGE_ROUTE) {
-        BridgeAndSyncPage(settings, accent, scope)
+        BridgeAndSyncPage(settings, accent, scope, advanced)
         return
     }
 
@@ -228,10 +228,10 @@ private fun HomeAssistantCard(
 // ── Bridge & analysis ─────────────────────────────────────────────────────
 
 @Composable
-private fun BridgeAndSyncPage(settings: AppSettings, accent: Color, scope: CoroutineScope) {
+private fun BridgeAndSyncPage(settings: AppSettings, accent: Color, scope: CoroutineScope, advanced: Boolean) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         DirectBridgeSetup(settings, scope, accent)
-        TrackAnalysisCard(settings, accent)
+        TrackAnalysisCard(settings, accent, advanced)
     }
 }
 
@@ -409,9 +409,15 @@ private fun DirectBridgeSetup(settings: AppSettings, scope: CoroutineScope, acce
  * output was a count and a one-line "most recent problem" could be parked on a metered
  * connection, fail on forty files, or be working from months-old analyses, and look
  * identical in all three cases: a number that was not going up.
+ *
+ * All of which is diagnosis, and diagnosis is what [advanced] is for — the same line
+ * the output card draws around its signal path. Simple keeps the two switches, how far
+ * a running sweep has got, what is on disk, and the two buttons that start and undo the
+ * whole thing. The per-track verdict, the files that would not read and the older-
+ * analyser count are the rows someone asks for only once they are asking *why*.
  */
 @Composable
-private fun TrackAnalysisCard(settings: AppSettings, accent: Color) {
+private fun TrackAnalysisCard(settings: AppSettings, accent: Color, advanced: Boolean) {
     val context = LocalContext.current
     val app = context.applicationContext as SendpinApp
     val scans = app.trackScans
@@ -482,7 +488,9 @@ private fun TrackAnalysisCard(settings: AppSettings, accent: Color) {
         ) { checked -> scope.launch { settings.setLightSyncPrescanWifiOnly(checked) } }
 
         // ── This song ────────────────────────────────────────────────────
-        playing?.let { track -> PlayingTrackScan(track.title, playingScan, accent) }
+        if (advanced) {
+            playing?.let { track -> PlayingTrackScan(track.title, playingScan, accent) }
+        }
 
         // ── The sweep, while it runs ─────────────────────────────────────
         if (progress.sweeping || progress.waitingForNetwork) {
@@ -493,11 +501,11 @@ private fun TrackAnalysisCard(settings: AppSettings, accent: Color) {
         StatusPanel {
             StatusRow("Analysed", if (count == 0) "None yet" else count.toString())
             StatusRow("On disk", formatBytes(bytes))
-            if (outdated > 0) StatusRow("From an older version", outdated.toString())
+            if (advanced && outdated > 0) StatusRow("From an older version", outdated.toString())
         }
 
         // ── What failed ──────────────────────────────────────────────────
-        if (progress.failures.isNotEmpty()) {
+        if (advanced && progress.failures.isNotEmpty()) {
             FailureList(
                 failures = progress.failures,
                 expanded = showFailures,
@@ -520,14 +528,16 @@ private fun TrackAnalysisCard(settings: AppSettings, accent: Color) {
             }
             // Only offered when there is something to gain: a refresh with nothing out
             // of date is a full library decode that ends where it started.
-            if (outdated > 0 && !progress.sweeping) {
+            if (advanced && outdated > 0 && !progress.sweeping) {
                 Pill("Refresh $outdated older", false) {
                     scans.sweep(refreshOutdated = true) {
                         ScanLibrarySource.tracks(context.applicationContext, app.downloads)
                     }
                 }
             }
-            playing?.let { track -> Pill("Re-analyse this track", false) { scans.rescan(track) } }
+            if (advanced) {
+                playing?.let { track -> Pill("Re-analyse this track", false) { scans.rescan(track) } }
+            }
             // Two taps, because this can throw away hours of decoding — and on a
             // streamed library, a gigabyte of transfer — that nothing can get back
             // except by doing it all again.
