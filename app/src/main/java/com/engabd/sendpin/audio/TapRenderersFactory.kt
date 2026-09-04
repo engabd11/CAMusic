@@ -2,6 +2,7 @@ package com.engabd.sendpin.audio
 
 import android.content.Context
 import androidx.annotation.OptIn
+import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.audio.AudioSink
@@ -34,13 +35,25 @@ object OutputRate {
  *
  * The processor chain order is:
  * 1. [LocalDsp] — the equaliser, so the light show reacts to what is heard.
- * 2. [VinylNoiseProcessor] — surface noise, after EQ so the noise is on the
- *    equalised signal.
- * 3. [WowFlutterProcessor] — pitch wobble, riding Lo-fi's own toggle and
+ * 2. [WowFlutterProcessor] — pitch wobble, riding Lo-fi's own toggle and
  *    sitting before the bitcrusher so it crushes the already-wobbly signal,
  *    the way a real transport feeds a tape head before anything saturates.
- * 4. [LoFiProcessor] — bitcrusher/saturation/low-pass, after vinyl noise so
- *    it can share the crackle stage.
+ * 3. [LoFiProcessor] — bitcrusher/saturation/high-pass/low-pass, run on the
+ *    clean (or wobbled) music before any noise is layered on top of it.
+ * 4. [VinylNoiseProcessor] — surface noise, after lo-fi's crush stage rather
+ *    than before it. Vinyl hiss tops out at 1.5% of full scale, smaller than
+ *    a single 6-bit quantisation step, so running it through the bitcrusher
+ *    and decimator together with the music produced harsh "zipper" digital
+ *    artifacts instead of a soft analog texture — the noise floor needs to
+ *    sit on the finished signal at its full designed amplitude, the way a
+ *    producer layers a vinyl-crackle sample over an already-processed beat
+ *    rather than through the same sampler. One side effect: vinyl noise no
+ *    longer rides [LocalDsp]'s EQ curve, which is the right trade — surface
+ *    noise is a physical texture, not part of the tonal EQ, and letting it
+ *    bypass an arbitrary user EQ curve is more defensible than the reverse.
+ *    [LoFiProcessor]'s own noise texture (when Vinyl mode isn't sharing the
+ *    crackle stage — see `shareVinylCrackle`) is added inside its own
+ *    `processSample`, likewise after its crush stages, for the same reason.
  * 5. [OldRadioProcessor] — the last coloration stage before the tap.
  * 6. [AudioAnalysisTap] — copies for analysis, sees the treated audio.
  * 7. Sonic — resamples to the fixed output rate if one is set.
@@ -78,11 +91,11 @@ class TapRenderersFactory(
     private val lead: AudioLead,
     /** The local equaliser, ahead of the tap. See [LocalDsp]. */
     private val dsp: LocalDsp? = null,
-    /** Vinyl surface noise, after the EQ. See [VinylNoiseProcessor]. */
+    /** Vinyl surface noise, after lo-fi's crush stage. See [VinylNoiseProcessor]. */
     private val vinylNoise: VinylNoiseProcessor? = null,
     /** Lo-fi's pitch wobble, ahead of the bitcrusher. See [WowFlutterProcessor]. */
     private val wowFlutter: WowFlutterProcessor? = null,
-    /** Lo-fi mode, after vinyl noise. See [LoFiProcessor]. */
+    /** Lo-fi mode, ahead of vinyl noise. See [LoFiProcessor]. */
     private val loFi: LoFiProcessor? = null,
     /** Old Radio mode, the last coloration stage before the tap. See [OldRadioProcessor]. */
     private val oldRadio: OldRadioProcessor? = null,
@@ -100,25 +113,50 @@ class TapRenderersFactory(
      */
     private val aaudioBitperfect: Boolean = false,
 ) : DefaultRenderersFactory(context) {
+
+    companion object {
+        /**
+         * The processor chain in order, with `aaudioBitperfect`'s coloration
+         * stages dropped and every null entry filtered out — see the class doc
+         * for why this order is what it is.
+         *
+         * Pulled out of [buildAudioSink] as a pure function, taking already-built
+         * processors rather than building them, so the ordering itself is
+         * unit-testable without a [Context] or a real [DefaultAudioSink].
+         */
+        internal fun orderedProcessors(
+            aaudioBitperfect: Boolean,
+            dsp: AudioProcessor?,
+            wowFlutter: AudioProcessor?,
+            loFi: AudioProcessor?,
+            vinylNoise: AudioProcessor?,
+            oldRadio: AudioProcessor?,
+            tap: AudioProcessor?,
+            sonic: AudioProcessor?,
+        ): List<AudioProcessor> = listOfNotNull(
+            if (aaudioBitperfect) null else dsp,
+            if (aaudioBitperfect) null else wowFlutter,
+            if (aaudioBitperfect) null else loFi,
+            if (aaudioBitperfect) null else vinylNoise,
+            if (aaudioBitperfect) null else oldRadio,
+            if (aaudioBitperfect) null else tap,
+            sonic,
+        )
+    }
+
     override fun buildAudioSink(
         context: Context,
         enableFloatOutput: Boolean,
         enableAudioOutputPlaybackParams: Boolean,
     ): AudioSink {
+        val sonic = (if (exclusive || aaudioBitperfect) null else OutputRate.hz.takeIf { it > 0 })?.let { rate ->
+            androidx.media3.common.audio.SonicAudioProcessor()
+                .apply { setOutputSampleRateHz(rate) }
+        }
         val sink = DefaultAudioSink.Builder(context)
             .setAudioProcessors(
-                listOfNotNull(
-                    if (aaudioBitperfect) null else dsp,
-                    if (aaudioBitperfect) null else vinylNoise,
-                    if (aaudioBitperfect) null else wowFlutter,
-                    if (aaudioBitperfect) null else loFi,
-                    if (aaudioBitperfect) null else oldRadio,
-                    if (aaudioBitperfect) null else tap,
-                    (if (exclusive || aaudioBitperfect) null else OutputRate.hz.takeIf { it > 0 })?.let { rate ->
-                        androidx.media3.common.audio.SonicAudioProcessor()
-                            .apply { setOutputSampleRateHz(rate) }
-                    },
-                ).toTypedArray(),
+                orderedProcessors(aaudioBitperfect, dsp, wowFlutter, loFi, vinylNoise, oldRadio, tap, sonic)
+                    .toTypedArray(),
             )
             .setEnableFloatOutput(enableFloatOutput)
             .setEnableAudioTrackPlaybackParams(enableAudioOutputPlaybackParams)

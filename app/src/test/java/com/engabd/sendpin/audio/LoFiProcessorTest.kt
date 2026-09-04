@@ -81,21 +81,39 @@ class LoFiProcessorTest {
     }
 
     @Test
-    fun `low-pass coefficient is passthrough at zero intensity`() {
-        assertEquals(1f, LoFiProcessor.lowPassCoeff(0f, 44_100))
+    fun `low-pass frequency is near-inaudible at zero intensity`() {
+        assertEquals(20_000f, LoFiProcessor.lowPassFreqHz(0f))
     }
 
     @Test
-    fun `low-pass coefficient decreases with intensity`() {
-        val low = LoFiProcessor.lowPassCoeff(0.2f, 44_100)
-        val high = LoFiProcessor.lowPassCoeff(0.8f, 44_100)
-        assertTrue(high < low, "Higher intensity should mean more filtering")
+    fun `low-pass frequency decreases with intensity`() {
+        val low = LoFiProcessor.lowPassFreqHz(0.2f)
+        val high = LoFiProcessor.lowPassFreqHz(0.8f)
+        assertTrue(high < low, "Higher intensity should mean a lower low-pass corner")
+    }
+
+    @Test
+    fun `high-pass is bypassed at zero intensity`() {
+        assertEquals(0f, LoFiProcessor.highPassFreq(0f))
+    }
+
+    @Test
+    fun `high-pass frequency rises with intensity, within lo-fi range`() {
+        assertTrue(LoFiProcessor.highPassFreq(1f) in 100f..150f)
+        assertTrue(LoFiProcessor.highPassFreq(0.5f) < LoFiProcessor.highPassFreq(1f))
     }
 
     @Test
     fun `lo-fi crackle is quieter than dedicated vinyl crackle`() {
         val i = 0.5f
         assertTrue(LoFiProcessor.loFiCrackleAmplitude(i) < VinylNoiseProcessor.crackleAmplitude(i))
+    }
+
+    @Test
+    fun `lo-fi hiss floor is quieter than dedicated vinyl hiss`() {
+        for (i in listOf(0.25f, 0.5f, 0.75f, 1f)) {
+            assertTrue(LoFiProcessor.loFiHissAmplitude(i) < VinylNoiseProcessor.hissAmplitude(i))
+        }
     }
 
     @Test
@@ -126,6 +144,23 @@ class LoFiProcessorTest {
             val msAt96000 = at96000 * 1000.0 / 96_000
             assertTrue(abs(msAt44100 - msAt96000) < 1.0)
         }
+    }
+
+    @Test
+    fun `output frame count matches input frame count at full intensity`() {
+        // High-pass, low-pass and the noise texture are all new wiring in this
+        // processor - this guards against any of it accidentally not being 1:1.
+        val p = LoFiProcessor().apply {
+            configure(AudioProcessor.AudioFormat(44_100, 2, C.ENCODING_PCM_16BIT))
+            flush()
+            setConfig(LoFiProcessor.Config(enabled = true, intensity = 1f, shareVinylCrackle = false))
+        }
+        val frames = 1000
+        val input = ByteBuffer.allocateDirect(frames * 2 * 2)
+        repeat(frames * 2) { input.putShort(0) }
+        input.flip()
+        p.queueInput(input)
+        assertEquals(frames * 2 * 2, p.output.remaining())
     }
 
     @Test
