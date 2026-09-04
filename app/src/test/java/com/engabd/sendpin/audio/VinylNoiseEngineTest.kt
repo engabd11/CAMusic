@@ -79,8 +79,13 @@ class VinylNoiseEngineTest {
 
     @Test
     fun `hiss is silent at zero intensity and present at full intensity`() {
+        // `== 0f` rather than assertEquals(0f, ...): hissAmplitude(0f) is exactly
+        // 0f, but multiplying it by a negative internal noise state legitimately
+        // produces -0.0f (audibly identical to 0.0f). assertEquals routes through
+        // boxed Float.equals(), which - unlike statically-typed Float `==` - treats
+        // -0.0f and 0.0f as unequal, which would fail this for the wrong reason.
         val engine = VinylNoiseEngine().apply { configureFilters(44_100) }
-        repeat(1_000) { assertEquals(0f, engine.hiss(channel = 0, intensity = 0f)) }
+        repeat(1_000) { assertTrue(engine.hiss(channel = 0, intensity = 0f) == 0f) }
 
         var sawNonzero = false
         repeat(1_000) {
@@ -91,8 +96,10 @@ class VinylNoiseEngineTest {
 
     @Test
     fun `rumble is silent at zero intensity and present at full intensity`() {
+        // See the note in the hiss test above: `== 0f`, not assertEquals, to
+        // treat the legitimate -0.0f case the same as 0.0f.
         val engine = VinylNoiseEngine().apply { configureFilters(44_100) }
-        repeat(1_000) { assertEquals(0f, engine.rumble(intensity = 0f)) }
+        repeat(1_000) { assertTrue(engine.rumble(intensity = 0f) == 0f) }
 
         var sawNonzero = false
         repeat(1_000) {
