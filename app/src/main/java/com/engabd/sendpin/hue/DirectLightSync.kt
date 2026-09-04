@@ -19,6 +19,7 @@ import com.engabd.sendpin.audio.StructureTracker
 import com.engabd.sendpin.audio.TempoTracker
 import com.engabd.sendpin.audio.TrackScan
 import com.engabd.sendpin.audio.TrackScanRepository
+import com.engabd.sendpin.game.GameChartSource
 import androidx.core.graphics.drawable.toBitmap
 import coil.imageLoader
 import coil.request.ImageRequest
@@ -453,6 +454,20 @@ class DirectLightSync(
      * [applyGameGate].
      */
     @Volatile private var gameMode = false
+
+    /**
+     * The light engine's beat clock for the rhythm game, published each analysis
+     * frame beside [latestGrid]. The game charts against what the room is about
+     * to light — one clock, not two — and the null-grid case degrades to the
+     * game's own PLL without any special handling here.
+     *
+     * Volatile reference, immutable payload, never mutated in place: same
+     * discipline as [latestGrid].
+     */
+    @Volatile private var chartSource: GameChartSource? = null
+
+    /** The engine's beat clock for the rhythm game's chart, as of the last frame. */
+    fun gameChartSource(): GameChartSource? = chartSource
 
     /**
      * How far open the game's gate is, and since when.
@@ -1193,6 +1208,15 @@ class DirectLightSync(
         latestGesture = gest
         latestFrame = published
         latestFrameAt = System.nanoTime()
+        // The rhythm game charts against the very grid this frame will light up.
+        // Published alongside the volatile snapshot trio with the same discipline:
+        // a reference assignment, read by the game on the main thread, never
+        // mutated in place afterwards (BeatGrid and TrackScan are immutable).
+        chartSource = GameChartSource(
+            grid = grid,
+            scan = if (mapCommitted == true) activeScan else null,
+            frameTAudioS = if (pos.isNaN()) frame.tAudio else pos,
+        )
     }
 
     /**

@@ -74,6 +74,15 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
     private val _notes = MutableStateFlow<List<GameNote>>(emptyList())
     val notes: StateFlow<List<GameNote>> = _notes.asStateFlow()
 
+    /**
+     * False while the active backend cannot measure an output latency (its
+     * AudioLead is null — capture and cast feeds), meaning the chart runs in
+     * analysis time and the whole game is shifted by the real latency. The
+     * screen shows a calibrate hint instead of leaving the player to wonder.
+     */
+    private val _leadKnown = MutableStateFlow(true)
+    val leadKnown: StateFlow<Boolean> = _leadKnown.asStateFlow()
+
     private val _hud = MutableStateFlow(RhythmHud())
     val hud: StateFlow<RhythmHud> = _hud.asStateFlow()
 
@@ -132,10 +141,17 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
      *
      * [leadMs] is how long until this frame's audio is audible — see [NoteGenerator]
      * for why the chart is written in audible time rather than analysis time.
+     *
+     * [leadKnown] is false when the backend could not measure an output latency at
+     * all (capture/cast feeds report a null AudioLead), in which case the chart
+     * silently runs in analysis time. Surfaced so the screen can tell the player
+     * to calibrate rather than let the game feel systematically off with no
+     * explanation.
      */
-    fun onFrame(frame: AnalysisFrame, leadMs: Long) {
+    fun onFrame(frame: AnalysisFrame, leadMs: Long, leadKnown: Boolean = leadMs != 0L) {
         if (!running) return
-        generator.onFrame(frame, nowMs(), leadMs)
+        if (leadKnown != _leadKnown.value) _leadKnown.value = leadKnown
+        generator.onFrame(frame, nowMs(), leadMs, directLightSync.gameChartSource())
         publish()
     }
 

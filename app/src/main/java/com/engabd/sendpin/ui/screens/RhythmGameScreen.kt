@@ -135,8 +135,13 @@ fun RhythmGameScreen(
                     // audible time — see NoteGenerator — so this is the one number
                     // that decides whether the hit line lands on the beat or behind
                     // it.
-                    val lead = app.activeLightSyncSource.value.lead.leadMs?.toLong() ?: 0L
-                    viewModel.onFrame(frame, lead)
+                    val source = app.activeLightSyncSource.value
+                    val lead = source.lead
+                    viewModel.onFrame(
+                        frame,
+                        lead.leadMs?.toLong() ?: 0L,
+                        leadKnown = lead.leadMs != null,
+                    )
                 }
         }
     }
@@ -270,6 +275,20 @@ fun RhythmGameScreen(
                         color = TextFaint, fontFamily = AppFont,
                         fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
                         modifier = Modifier.align(Alignment.TopCenter).padding(top = 40.dp),
+                    )
+                }
+
+                // The backend could not measure an output latency (capture/cast
+                // feeds), so the chart runs in analysis time and the whole game
+                // is shifted by the real latency. Telling the player beats them
+                // guessing whether the game or their speakers are wrong.
+                val leadKnown by viewModel.leadKnown.collectAsStateWithLifecycle()
+                if (!leadKnown && hud.locked) {
+                    Text(
+                        "Output latency unknown on this source — timing may feel off",
+                        color = TextFaint, fontFamily = AppFont,
+                        fontWeight = FontWeight.SemiBold, fontSize = 11.sp,
+                        modifier = Modifier.align(Alignment.TopCenter).padding(top = 64.dp),
                     )
                 }
             }
