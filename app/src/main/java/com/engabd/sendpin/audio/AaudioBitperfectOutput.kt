@@ -126,6 +126,9 @@ class AaudioBitperfectOutput(
     private var framesWrittenTotal = 0L
     private var endOfStreamRequested = false
 
+    /** The device the open stream was built for; 0 is "wherever Android routes to". */
+    private var openedDeviceId = 0
+
     private var scratch = ByteArray(0)
     private var firstWriteLogged = false
 
@@ -175,6 +178,7 @@ class AaudioBitperfectOutput(
             )
         }
         streamPtr = opened
+        openedDeviceId = preferred
         Log.i(TAG, "configured ${sampleRate}Hz/${channelCount}ch/enc=${pcmEncoding} device=$preferred")
     }
 
@@ -281,9 +285,42 @@ class AaudioBitperfectOutput(
         // No auxiliary effects chain on the direct AAudio path.
     }
 
+    /**
+     * Follow the output the player was just pointed at, mid-track.
+     *
+     * The device used to be read once, at [configure], and every later change was
+     * dropped on the floor: swap the DAC while Direct to DAC is running and the
+     * stream went on addressing the one that had gone, with nothing short of a
+     * restart or a trip through the output ladder to get the music back.
+     *
+     * The swap keeps the native output and everything queued on it, and only the
+     * AAudio stream underneath is replaced — see `nativeSetDevice` — so no audio is
+     * lost and the position this sink reports never moves. A device that will not
+     * take the stream in this format is a real answer, not a failure: it is what a
+     * DAC that cannot do 192 kHz says, and what a device unplugged again between
+     * the callback and this line says. So the next-best output is tried, then the
+     * one that was already working, then whatever Android routes to.
+     *
+     * Called on the playback thread, like [configure] and [handleBuffer].
+     */
     override fun setPreferredDevice(audioDeviceInfo: AudioDeviceInfo?) {
-        // The device is pinned from AppSettings at configure() time; dynamic changes
-        // mid-stream are not supported by this first cut.
+        val want = audioDeviceInfo?.id ?: 0
+        val p = streamPtr
+        // Nothing open to move. The next configure() reads the pinned device itself.
+        if (p == 0L || want == openedDeviceId) return
+
+        for (id in listOf(want, openedDeviceId, 0).distinct()) {
+            if (!nativeSetDevice(p, id)) continue
+            if (id == want) Log.i(TAG, "moved the AAudio stream to device=$id")
+            else Log.w(TAG, "device=$want would not take the stream; on device=$id instead")
+            openedDeviceId = id
+            return
+        }
+        // No output would take it at all, which means the route is gone rather than
+        // changed. The AAudio stream is closed native-side either way; let the output
+        // go with it, so nothing is queued onto one that can never play it.
+        Log.e(TAG, "no output would take the AAudio stream; closing it")
+        closeStream()
     }
 
     override fun getAudioTrackBufferSizeUs(): Long = RING_BUFFER_US
@@ -311,6 +348,7 @@ class AaudioBitperfectOutput(
 
     private fun closeStream() {
         val p = streamPtr
+        openedDeviceId = 0
         if (p != 0L) {
             streamPtr = 0L
             nativeClose(p)
@@ -319,6 +357,14 @@ class AaudioBitperfectOutput(
 
     /** Native AAudio bridge. Declarations only; implementation lives in cpp/sendspin_aaudio.cpp. */
     private external fun nativeOpenStream(sampleRate: Int, channels: Int, formatCode: Int, deviceId: Int): Long
+
+    /**
+     * Reopen [ptr]'s stream on another output, keeping the PCM already queued on it
+     * and the frame counters [getCurrentPositionUs] is read from. False if that
+     * output would not give up a stream in this format, in which case the native
+     * output is left with no stream at all and is only good for closing.
+     */
+    private external fun nativeSetDevice(ptr: Long, deviceId: Int): Boolean
     private external fun nativeClose(ptr: Long)
     private external fun nativeWrite(ptr: Long, pcm: ByteArray, offset: Int, length: Int): Long
     private external fun nativeFlush(ptr: Long)

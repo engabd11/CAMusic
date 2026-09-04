@@ -54,6 +54,9 @@ struct AaudioOutput {
     std::atomic<int64_t> framesWritten{0};
     std::atomic<int64_t> framesRead{0};
     std::atomic<float> volume{1.0f};
+    // Whether the sink is paused, so a stream opened to replace this one on another
+    // device does not start playing a player the listener stopped.
+    std::atomic<bool> paused{false};
     std::mutex mutex;
     std::queue<std::vector<uint8_t>> chunks;
     int sampleRate = 48000;
@@ -108,42 +111,28 @@ struct AaudioOutput {
     }
 };
 
-} // namespace
-
-extern "C" {
-
-JNIEXPORT jlong JNICALL
-Java_com_engabd_sendpin_audio_AaudioBitperfectOutput_nativeOpenStream(
-    JNIEnv* /*env*/, jobject /*thiz*/, jint sampleRate, jint channels, jint formatCode, jint deviceId) {
+// Open a stream for `out` on `deviceId` (0 for whatever Android routes to) and
+// start it.
+//
+// The callback's userData is what it writes into, and AAudio only accepts it on
+// the builder - there is no setter for an already-open stream - so the output has
+// to exist before the stream does. It also outlives every stream opened for it,
+// which is what lets a device change swap the stream underneath without touching
+// the PCM already queued on it or the frame counters the position is read from.
+bool openStreamFor(AaudioOutput* out, int deviceId) {
     AAudioStreamBuilder* builder = nullptr;
     aaudio_result_t result = AAudio_createStreamBuilder(&builder);
     if (result != AAUDIO_OK || builder == nullptr) {
         LOGE("AAudio_createStreamBuilder failed: %d", result);
-        return 0;
+        return false;
     }
-
-    const aaudio_format_t format = aaudioFormatOf(formatCode);
-    if (format == AAUDIO_FORMAT_INVALID) {
-        LOGE("Unsupported format code: %d", formatCode);
-        AAudioStreamBuilder_delete(builder);
-        return 0;
-    }
-
-    // The callback's userData is what it writes into, and AAudio only accepts it
-    // on the builder - there is no setter for an already-open stream - so the
-    // output has to exist before the stream does.
-    auto* out = new AaudioOutput();
-    out->sampleRate = sampleRate;
-    out->channels = channels;
-    out->format = format;
-    out->bytesPerFrame = channels * bytesPerSampleOf(format);
 
     AAudioStreamBuilder_setDirection(builder, AAUDIO_DIRECTION_OUTPUT);
     AAudioStreamBuilder_setSharingMode(builder, AAUDIO_SHARING_MODE_EXCLUSIVE);
     AAudioStreamBuilder_setPerformanceMode(builder, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
-    AAudioStreamBuilder_setSampleRate(builder, sampleRate);
-    AAudioStreamBuilder_setChannelCount(builder, channels);
-    AAudioStreamBuilder_setFormat(builder, format);
+    AAudioStreamBuilder_setSampleRate(builder, out->sampleRate);
+    AAudioStreamBuilder_setChannelCount(builder, out->channels);
+    AAudioStreamBuilder_setFormat(builder, out->format);
     AAudioStreamBuilder_setDataCallback(builder, AaudioOutput::callback, out);
     if (deviceId > 0) {
         AAudioStreamBuilder_setDeviceId(builder, deviceId);
@@ -154,36 +143,81 @@ Java_com_engabd_sendpin_audio_AaudioBitperfectOutput_nativeOpenStream(
     AAudioStreamBuilder_delete(builder);
     if (result != AAUDIO_OK || stream == nullptr) {
         LOGE("AAudioStreamBuilder_openStream failed: %d", result);
-        delete out;
-        return 0;
+        return false;
     }
-    out->stream = stream;
 
     // AAudio is free to hand back a stream in a different format, rate or channel
     // count to the one asked for. Accepting one would mean feeding it bytes laid
     // out for something else - noise, and noise presented as bit-perfect. Refusing
-    // is the whole point: the Kotlin side then falls back to DefaultAudioSink.
+    // is the whole point: the Kotlin side then falls back to DefaultAudioSink, or,
+    // on a device change, to another output.
     const aaudio_format_t gotFormat = AAudioStream_getFormat(stream);
     const int32_t gotRate = AAudioStream_getSampleRate(stream);
     const int32_t gotChannels = AAudioStream_getChannelCount(stream);
-    if (gotFormat != format || gotRate != sampleRate || gotChannels != channels) {
+    if (gotFormat != out->format || gotRate != out->sampleRate || gotChannels != out->channels) {
         LOGE("AAudio opened %dHz/%dch/fmt=%d, asked for %dHz/%dch/fmt=%d - declining",
-             gotRate, gotChannels, gotFormat, sampleRate, channels, format);
+             gotRate, gotChannels, gotFormat, out->sampleRate, out->channels, out->format);
         AAudioStream_close(stream);
-        delete out;
-        return 0;
+        return false;
     }
 
     result = AAudioStream_requestStart(stream);
     if (result != AAUDIO_OK) {
         LOGE("AAudioStream_requestStart failed: %d", result);
         AAudioStream_close(stream);
-        delete out;
+        return false;
+    }
+
+    out->stream = stream;
+    LOGI("Opened AAudio stream %dHz/%dch format=%d device=%d",
+         out->sampleRate, out->channels, out->format, deviceId);
+    return true;
+}
+
+} // namespace
+
+extern "C" {
+
+JNIEXPORT jlong JNICALL
+Java_com_engabd_sendpin_audio_AaudioBitperfectOutput_nativeOpenStream(
+    JNIEnv* /*env*/, jobject /*thiz*/, jint sampleRate, jint channels, jint formatCode, jint deviceId) {
+    const aaudio_format_t format = aaudioFormatOf(formatCode);
+    if (format == AAUDIO_FORMAT_INVALID) {
+        LOGE("Unsupported format code: %d", formatCode);
         return 0;
     }
 
-    LOGI("Opened AAudio stream %dHz/%dch format=%d device=%d", sampleRate, channels, format, deviceId);
+    auto* out = new AaudioOutput();
+    out->sampleRate = sampleRate;
+    out->channels = channels;
+    out->format = format;
+    out->bytesPerFrame = channels * bytesPerSampleOf(format);
+
+    if (!openStreamFor(out, deviceId)) {
+        delete out;
+        return 0;
+    }
     return reinterpret_cast<jlong>(out);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_engabd_sendpin_audio_AaudioBitperfectOutput_nativeSetDevice(
+    JNIEnv* /*env*/, jobject /*thiz*/, jlong ptr, jint deviceId) {
+    if (ptr == 0) return JNI_FALSE;
+    auto* out = reinterpret_cast<AaudioOutput*>(ptr);
+
+    // The old stream goes first. AAudio stops its data callback before close
+    // returns, so nothing is reading `out` while the replacement is opened - and
+    // the PCM already queued on it is simply waiting for whichever stream comes
+    // next, which is why a swap costs no audio rather than the ring's worth of it.
+    if (out->stream != nullptr) {
+        AAudioStream_requestStop(out->stream);
+        AAudioStream_close(out->stream);
+        out->stream = nullptr;
+    }
+    if (!openStreamFor(out, deviceId)) return JNI_FALSE;
+    if (out->paused.load()) AAudioStream_requestPause(out->stream);
+    return JNI_TRUE;
 }
 
 JNIEXPORT void JNICALL
@@ -249,6 +283,7 @@ Java_com_engabd_sendpin_audio_AaudioBitperfectOutput_nativePause(
     JNIEnv* /*env*/, jobject /*thiz*/, jlong ptr) {
     if (ptr == 0) return;
     auto* out = reinterpret_cast<AaudioOutput*>(ptr);
+    out->paused.store(true);
     if (out->stream != nullptr) AAudioStream_requestPause(out->stream);
 }
 
@@ -257,6 +292,7 @@ Java_com_engabd_sendpin_audio_AaudioBitperfectOutput_nativeResume(
     JNIEnv* /*env*/, jobject /*thiz*/, jlong ptr) {
     if (ptr == 0) return;
     auto* out = reinterpret_cast<AaudioOutput*>(ptr);
+    out->paused.store(false);
     if (out->stream != nullptr) AAudioStream_requestStart(out->stream);
 }
 
