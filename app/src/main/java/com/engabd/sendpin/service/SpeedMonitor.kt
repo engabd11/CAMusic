@@ -6,8 +6,6 @@ import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
-import android.media.AudioManager
-import android.media.ToneGenerator
 import android.os.Looper
 import androidx.core.content.ContextCompat
 import com.engabd.sendpin.SendpinApp
@@ -50,7 +48,6 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private val locationManager get() = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
     private val alertTracker = SpeedAlert.Tracker()
-    private var toneGenerator: ToneGenerator? = null
     private var gateJob: Job? = null
     private var listening = false
 
@@ -198,20 +195,12 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
 
         if (limit == null || limit <= 0) return
         val trigger = SpeedAlert.triggerSpeedKmh(limit, tolerance)
-        if (alertTracker.onReading(kmh, trigger, System.currentTimeMillis())) beep()
-    }
-
-    /** A single short, gentle tone — not an alarm. See the plan's own safety note. */
-    private fun beep() {
-        val tg = toneGenerator ?: runCatching {
-            ToneGenerator(AudioManager.STREAM_NOTIFICATION, BEEP_VOLUME)
-        }.getOrNull()?.also { toneGenerator = it } ?: return
-        runCatching { tg.startTone(ToneGenerator.TONE_PROP_BEEP, BEEP_DURATION_MS) }
+        if (alertTracker.onReading(kmh, trigger, System.currentTimeMillis())) {
+            SpeedAlertSound.play(context, settings.speedAlertSound.first())
+        }
     }
 
     companion object {
         private const val MIN_UPDATE_INTERVAL_MS = 5_000L
-        private const val BEEP_VOLUME = 60 // 0..100, a notification-level tone, not a klaxon
-        private const val BEEP_DURATION_MS = 200
     }
 }

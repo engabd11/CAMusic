@@ -155,6 +155,8 @@ class AppSettings(private val context: Context) {
         private val DRIVING_SPEED_LIMIT_KMH = stringPreferencesKey("driving_speed_limit_kmh")   // 0 = not set
         private val DRIVING_SPEED_TOLERANCE_PCT = stringPreferencesKey("driving_speed_tolerance_pct")
         private val SPEED_ADAPTIVE_VOLUME = booleanPreferencesKey("speed_adaptive_volume")
+        /** Which sound the alert plays: [SPEED_ALERT_TONE] or one of [com.engabd.sendpin.service.SpeedAlertSound.OPTIONS]'s ids. */
+        private val SPEED_ALERT_SOUND = stringPreferencesKey("speed_alert_sound")
 
         // Dynamic speed-limit detection — when true, the speed-limit alert uses GPS
         // location to look up the posted limit from a local offline database, instead
@@ -397,6 +399,9 @@ class AppSettings(private val context: Context) {
 
         /** `SYSTEM_ALERT_WINDOW`: driving-sized targets, free positioning. */
         const val DRIVING_OVERLAY = "overlay"
+
+        /** The speed-limit alert's default sound — the original synthesised beep. */
+        const val SPEED_ALERT_TONE = "tone"
         const val BACKEND_SUBSONIC = "subsonic"
         const val BACKEND_MA = "ma"
 
@@ -1742,6 +1747,13 @@ class AppSettings(private val context: Context) {
     val speedAdaptiveVolume: Flow<Boolean> = pref { it[SPEED_ADAPTIVE_VOLUME] ?: false }
 
     /**
+     * Which sound the speed-limit alert plays: [SPEED_ALERT_TONE] (the default,
+     * original synthesised beep) or one of the bundled notification clips'
+     * ids — see [com.engabd.sendpin.service.SpeedAlertSound.OPTIONS].
+     */
+    val speedAlertSound: Flow<String> = pref { it[SPEED_ALERT_SOUND] ?: SPEED_ALERT_TONE }
+
+    /**
      * Dynamic speed-limit detection. When true, [SpeedMonitor] looks up the
      * posted limit from a local offline database using GPS coordinates, instead
      * of using [drivingSpeedLimitKmh]. The manual limit serves as fallback.
@@ -1760,6 +1772,8 @@ class AppSettings(private val context: Context) {
     }
 
     suspend fun setSpeedAdaptiveVolume(on: Boolean) = context.dataStore.edit { it[SPEED_ADAPTIVE_VOLUME] = on }
+
+    suspend fun setSpeedAlertSound(id: String) = context.dataStore.edit { it[SPEED_ALERT_SOUND] = id }
 
     suspend fun setSpeedLimitAutoDetect(on: Boolean) = context.dataStore.edit { it[SPEED_LIMIT_AUTO_DETECT] = on }
 
