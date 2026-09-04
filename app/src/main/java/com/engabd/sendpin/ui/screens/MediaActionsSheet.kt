@@ -13,6 +13,7 @@ import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.LibraryAdd
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Person
@@ -90,6 +91,11 @@ fun BoxScope.MediaActionsSheet(
     onGoToAlbum: (() -> Unit)? = null,
     /** Null leaves the row out. Only ever passed for a track's artist. */
     onGoToArtist: (() -> Unit)? = null,
+    /**
+     * Null leaves the row out. Only ever passed for the track that is playing, since
+     * "more like this" is answered about the record on the deck.
+     */
+    onMoreLikeThis: (() -> Unit)? = null,
     /** Null leaves the row out. */
     onShare: (() -> Unit)? = null,
     /** Null leaves the row out. Only ever passed for a playlist the server owns. */
@@ -189,6 +195,12 @@ fun BoxScope.MediaActionsSheet(
             }
             onGoToArtist?.let { go ->
                 ActionRow(Icons.Default.Person, "Go to artist", item.subtitle ?: "Open the artist") { onClose(); go() }
+            }
+            onMoreLikeThis?.let { more ->
+                ActionRow(
+                    Icons.Default.GraphicEq, "More like this",
+                    "Tracks that sound like this one",
+                ) { onClose(); more() }
             }
             onShare?.let { share ->
                 ActionRow(Icons.Default.Share, "Share", item.name) { onClose(); share() }

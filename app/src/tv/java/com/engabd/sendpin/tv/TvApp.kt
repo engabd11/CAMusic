@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.tv.design.TvTile
+import com.engabd.sendpin.tv.screens.TvAmbientBackground
 import com.engabd.sendpin.tv.screens.TvLibraryScreen
 import com.engabd.sendpin.tv.screens.TvLightSyncScreen
 import com.engabd.sendpin.tv.screens.TvNowPlayingScreen
@@ -93,7 +94,13 @@ fun TvApp() {
         Box(Modifier.fillMaxHeight().width(1.dp).background(Glass))
         Box(Modifier.fillMaxSize()) {
             when (tab) {
-                TvTab.NOW_PLAYING -> TvNowPlayingScreen()
+                // The wash goes in first so it sits behind the screen rather than
+                // over it. Only under this tab: it is the album's colour, and the
+                // album is what this tab is about.
+                TvTab.NOW_PLAYING -> {
+                    TvAmbientBackground()
+                    TvNowPlayingScreen()
+                }
                 TvTab.LIBRARY -> TvLibraryScreen()
                 TvTab.QUEUE -> TvQueueScreen()
                 TvTab.LIGHT_SYNC -> TvLightSyncScreen()

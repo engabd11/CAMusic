@@ -62,10 +62,15 @@ import com.engabd.sendpin.ui.viewmodel.formatListeningTime
 
 /**
  * Which panel the sheet is showing. Lyrics moved into the player itself (it takes
- * the album art's place) and sonic similarity moved to the Library, where finding
- * something to play belongs — neither was ever really "the queue button".
+ * the album art's place), and sonic *search* — "rainy sunday piano" — moved to the
+ * Library, where going looking for something to play belongs; neither was ever
+ * really "the queue button".
+ *
+ * [SIMILAR] is the half of that which stayed. "What else sounds like this" is a
+ * question about the record that is on, so it is asked where the record is, off the
+ * long-press sheet rather than a chip of its own: once a song, not once a session.
  */
-enum class Panel(val label: String) { QUEUE("Queue"), DSP("Equaliser") }
+enum class Panel(val label: String) { QUEUE("Queue"), DSP("Equaliser"), SIMILAR("More like this") }
 
 /**
  * The DSP view model, scoped to the Activity rather than to the sheet.
@@ -154,6 +159,7 @@ fun BoxScope.NowPlayingSheet(
                 Panel.DSP ->
                     if (localSession) LocalEqBody(accent)
                     else DspBody(dspViewModel(), accent)
+                Panel.SIMILAR -> SimilarPanel(viewModel)
             }
         }
     }
@@ -461,6 +467,111 @@ private fun QueueRow(
                 modifier = Modifier.size(18.dp),
             )
         }
+    }
+}
+
+// --- more like this -------------------------------------------------------
+
+/**
+ * What else sounds like the record that is on.
+ *
+ * Music Assistant answers this for the providers it knows about. Where it has no
+ * answer of its own — a Subsonic or Jellyfin library on its own has no such service,
+ * and that is exactly the library this app plays locally — the same list is worked
+ * out from this phone's own offline scans instead; see [LocalSonicIndex]. The rows
+ * look the same either way, deliberately: the question was "what else sounds like
+ * this", not "who is answering".
+ */
+@Composable
+private fun ColumnScope.SimilarPanel(viewModel: NowPlayingViewModel) {
+    val load by viewModel.similar.collectAsStateWithLifecycle()
+
+    // Idle-guarded like the queue's, and the view model puts this state back to idle
+    // on every track change — so closing and reopening the sheet on the same song
+    // shows what was already found, and the next song asks again.
+    LaunchedEffect(Unit) { if (load is Load.Idle) viewModel.loadSimilar() }
+
+    when (val l = load) {
+        is Load.Loading, Load.Idle -> PanelSpinner()
+        is Load.Failed -> PanelMessage(Icons.Default.CloudOff, l.message)
+        is Load.Ready -> {
+            if (l.value.isEmpty()) {
+                // Two different nothings, said as one: no server answer, and nothing
+                // close enough on this phone. The second has a cure, so it is the one
+                // worth naming.
+                PanelMessage(
+                    Icons.Default.MusicNote,
+                    "Nothing close enough to suggest. Tracks are compared by what the " +
+                        "offline analysis makes of them, so a library that has never been " +
+                        "read through has nothing to compare.",
+                )
+            } else {
+                LazyColumn(
+                    Modifier.weight(1f).fillMaxWidth(),
+                    contentPadding = PaddingValues(
+                        start = 12.dp, end = 12.dp, top = 4.dp, bottom = systemNavInset() + 16.dp,
+                    ),
+                ) {
+                    // Keyed by index as well as id: two providers can hand back the
+                    // same track id, and a duplicate key is a hard crash in a lazy list.
+                    itemsIndexed(l.value, key = { i, t -> "similar:$i:${t.itemId}" }) { _, track ->
+                        SimilarRow(
+                            track = track,
+                            onPlay = { viewModel.playSimilar(track) },
+                            onQueue = { viewModel.enqueue(track, "add") },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** A suggestion: the row is the track, so tapping it plays it, as in the queue. */
+@Composable
+private fun SimilarRow(track: MaSimilarTrack, onPlay: () -> Unit, onQueue: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 3.dp)
+            .clip(RoundedCornerShape(13.dp))
+            .clickable(onClick = onPlay)
+            .padding(9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(40.dp).clip(RoundedCornerShape(9.dp)).background(Glass), contentAlignment = Alignment.Center) {
+            if (track.image != null) {
+                AsyncImage(
+                    model = rememberArtRequest(track.image, pixels = 120),
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.matchParentSize(),
+                )
+            } else {
+                Icon(Icons.Default.MusicNote, null, tint = TextFaint, modifier = Modifier.size(16.dp))
+            }
+        }
+        Spacer(Modifier.width(11.dp))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+            Text(
+                track.name, color = TextPrimary, fontFamily = AppFont,
+                fontWeight = FontWeight.Bold, fontSize = 13.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+            if (!track.artist.isNullOrBlank()) {
+                Text(
+                    track.artist, color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        // Tapping the row replaces the queue, which is not always what someone
+        // browsing a list of suggestions wants to happen to the record they are
+        // listening to. This is the other half of that choice.
+        Icon(
+            Icons.AutoMirrored.Filled.QueueMusic, "Add to queue", tint = TextFaint,
+            modifier = Modifier.size(26.dp).clip(CircleShape).clickable(onClick = onQueue).padding(5.dp),
+        )
     }
 }
 
