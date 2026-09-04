@@ -20,3 +20,7 @@ build/
 *.aab
 *.jks
 *.keystore
+
+# Claude Code's own local tooling state (agent worktrees, local settings) —
+# never repo content.
+.claude/
