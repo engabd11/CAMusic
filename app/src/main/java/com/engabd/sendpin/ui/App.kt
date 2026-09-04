@@ -7,6 +7,8 @@ import androidx.activity.compose.BackHandler
 import androidx.core.view.WindowCompat
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.animation.AnimatedContentTransitionScope
+import androidx.compose.animation.animateColorAsState
+import com.engabd.sendpin.ui.design.AlbumPalette
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.fadeIn
@@ -373,9 +375,25 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
         // the user asked for one colour that does not move, so the palette is still
         // extracted (its companion swatches feed avatars and blooms) but the accent
         // itself is held.
-        val appAccent = accentChoice.resolve(
+        val rawAppAccent = accentChoice.resolve(
             appPalette.accent, fixedAccent, MaterialTheme.colorScheme.primary,
         )
+        // Cross-Fading Color States: smooth physics transitions when switching tracks
+        // or album palettes so the UI glides across hues without sharp snaps.
+        val appAccent by animateColorAsState(
+            targetValue = rawAppAccent,
+            animationSpec = Motion.effects(),
+            label = "appAccentCrossfade",
+        )
+        val s0 by animateColorAsState(appPalette.swatch(0), Motion.effects(), label = "s0")
+        val s1 by animateColorAsState(appPalette.swatch(1), Motion.effects(), label = "s1")
+        val s2 by animateColorAsState(appPalette.swatch(2), Motion.effects(), label = "s2")
+        val s3 by animateColorAsState(appPalette.swatch(3), Motion.effects(), label = "s3")
+        val s4 by animateColorAsState(appPalette.swatch(4), Motion.effects(), label = "s4")
+        val s5 by animateColorAsState(appPalette.swatch(5), Motion.effects(), label = "s5")
+        val animatedAppPalette = remember(appAccent, s0, s1, s2, s3, s4, s5) {
+            AlbumPalette(accent = appAccent, swatches = listOf(s0, s1, s2, s3, s4, s5))
+        }
 
         // Read the now-playing layout preference.
         val context = LocalContext.current
@@ -532,7 +550,7 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
 
         CompositionLocalProvider(
             LocalAccent provides appAccent,
-            LocalPalette provides appPalette,
+            LocalPalette provides animatedAppPalette,
             LocalMiniBarInset provides if (isOverlay) miniBarHeight else 0.dp,
             LocalBottomChrome provides bottomChrome,
         ) {

@@ -124,20 +124,44 @@ internal fun AppearanceSection(settings: AppSettings, accent: Color, scope: Coro
             title = "Seek bar",
             lead = "How the progress line in Now Playing is drawn.",
         ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 ToggleChip("Line", seekBarStyle == "line") {
                     scope.launch { settings.setSeekBarStyle("line") }
                 }
                 ToggleChip("Wave", seekBarStyle == "wave") {
                     scope.launch { settings.setSeekBarStyle("wave") }
                 }
+                ToggleChip("M3 Pill", seekBarStyle == "pill") {
+                    scope.launch { settings.setSeekBarStyle("pill") }
+                }
+                ToggleChip("Audiophile Glow", seekBarStyle == "glow") {
+                    scope.launch { settings.setSeekBarStyle("glow") }
+                }
             }
             Note(
-                if (seekBarStyle == "wave")
-                    "The played portion wobbles gently while the track plays, like a water surface."
-                else
-                    "A straight progress line.",
+                when (seekBarStyle) {
+                    "wave" -> "The played portion wobbles gently while the track plays, like a water surface."
+                    "pill" -> "A bold, modern Material 3 expressive segmented pill with elevated touch targets."
+                    "glow" -> "An ultra-clean minimalist line with a luminous breathing halo around the playhead."
+                    else -> "A straight progress line."
+                },
             )
+        }
+
+        val chameleonBloom by settings.chameleonBloom.collectAsStateWithLifecycle(initialValue = false)
+        SettingsCard(
+            title = "Chameleon Canvas & Bloom",
+            lead = "Ambient, hardware-accelerated color diffusion around Now Playing.",
+        ) {
+            ToggleRow(
+                title = "Ambient Album Bloom",
+                subtitle = if (chameleonBloom) "Active — the room and screen canvas bleed with the album's living colors" else "Off — pure, crisp dark canvas",
+                checked = chameleonBloom,
+                accent = accent,
+            ) { on ->
+                scope.launch { settings.setChameleonBloom(on) }
+            }
+            Note("Diffuses primary and secondary album hues at 60 FPS across the screen edges, creating an organic physical extension of the artwork.")
         }
 
         if (advanced) {

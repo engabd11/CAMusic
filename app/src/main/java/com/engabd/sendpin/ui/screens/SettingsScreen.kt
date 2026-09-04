@@ -92,58 +92,30 @@ enum class SettingsSection(
     val subtitle: String,
     val icon: ImageVector,
 ) {
-    LIBRARIES(
-        "Libraries",
-        "Your music servers, and which one the Library tab browses",
+    PROVIDERS(
+        "Media Providers & Accounts",
+        "Your music servers, connected libraries, and local storage",
         Icons.Default.LibraryMusic,
     ),
-    // No PLAYER section. This phone as a Music Assistant player is set up on that
-    // server's own page, under Libraries — name, stream format, gapless, status and
-    // announcements together with the server they all describe a registration with.
-    // A top-level entry that only pointed at that page was one more place to look
-    // before finding the settings, not one fewer.
     AUDIO(
-        "Playback & audio",
-        // Driving is named here because the section index is the only place it can be
-        // found from: it is one card among four, and someone looking for it is looking
-        // for a feature rather than for an audio setting.
-        "Output device, loudness, what happens between tracks, DJ Radio, and driving controls",
+        "Audio Engine & DSP",
+        "Output device, loudness, equalizer, gestures, and playback behavior",
         Icons.Default.GraphicEq,
     ),
-    DOWNLOADS(
-        "Downloads",
-        "Offline copies, when to fetch them and how much room they may take",
-        Icons.Default.Download,
-    ),
-    LIGHTS(
-        "Light Sync",
-        "Home Assistant or the Hue Bridge, and reading tracks ahead of the show",
+    LIGHTS_SYNC(
+        "Illumination & Sync",
+        "Philips Hue Bridge, Light Sync reactive shows, and ambient illumination",
         Icons.Default.Lightbulb,
     ),
-    STATS(
-        "Listening stats",
-        "Your recent top artists, total listening time, and format breakdown",
-        Icons.Default.BarChart,
-    ),
-    BACKUP(
-        "Backup & restore",
-        "Export or import all settings and servers as encrypted file",
-        Icons.Default.Backup,
-    ),
     APPEARANCE(
-        "Appearance",
-        "Theme, accent colour, the Now Playing layout and seek bar",
+        "Interface & Appearance",
+        "Themes, album art accents, seek bar styles, motion, and Chameleon bloom",
         Icons.Default.Palette,
     ),
-    BEHAVIOR(
-        "Playback & Behavior",
-        "The visualizer, gestures, Harmonic DJ mode, Listening DNA, and lyrics timing",
-        Icons.Default.Gesture,
-    ),
-    ABOUT(
-        "About",
-        "Version and source code",
-        Icons.Default.Info,
+    SYSTEM_ABOUT(
+        "System, Storage & About",
+        "Downloads, encrypted backup & restore, diagnostics, version, and stats",
+        Icons.Default.Settings,
     ),
 }
 
@@ -240,7 +212,7 @@ fun SettingsScreen(
                     // not which of six categories to browse.
                     if (state.servers == 0) {
                         item(key = "get-started") {
-                            GetStartedCard(accent) { onSection(SettingsSection.LIBRARIES); onDetail(null) }
+                            GetStartedCard(accent) { onSection(SettingsSection.PROVIDERS); onDetail(null) }
                         }
                     }
                     // The index. Every row says what is behind it *right now* — a static
@@ -257,13 +229,8 @@ fun SettingsScreen(
                         // both screens are visibly tinted by the record on the player.
                         val hue = LocalPalette.current.swatch(s.ordinal)
                         val tint by animateColorAsState(hue, Motion.effects(), label = "sectionHue")
-                        // Stats opens its own full-screen view rather than a settings sub-page.
-                        if (s == SettingsSection.STATS) {
-                            NavRow(s.icon, s.title, state.subtitleFor(s) ?: s.subtitle, tint, onClick = onOpenStats)
-                        } else {
-                            NavRow(s.icon, s.title, state.subtitleFor(s) ?: s.subtitle, tint) {
-                                onSection(s); onDetail(null)
-                            }
+                        NavRow(s.icon, s.title, state.subtitleFor(s) ?: s.subtitle, tint) {
+                            onSection(s); onDetail(null)
                         }
                     }
                 } else {
@@ -282,7 +249,7 @@ fun SettingsScreen(
                             label = "settingsSection",
                         ) { section ->
                         when (section) {
-                            SettingsSection.LIBRARIES -> LibrariesSection(
+                            SettingsSection.PROVIDERS -> LibrariesSection(
                                 settings = settings,
                                 libraryVm = libraryViewModel,
                                 accent = accent,
@@ -291,12 +258,13 @@ fun SettingsScreen(
                                 onDetail = onDetail,
                             )
 
-                            SettingsSection.AUDIO -> AudioSection(viewModel, settings, accent, scope, advanced)
+                            SettingsSection.AUDIO -> {
+                                AudioSection(viewModel, settings, accent, scope, advanced)
+                                Spacer(Modifier.height(10.dp))
+                                BehaviorSection(settings, accent, scope, advanced)
+                            }
 
-                            SettingsSection.DOWNLOADS ->
-                                DownloadsSection(libraryViewModel, settings, accent, scope, onOpenDownloads)
-
-                            SettingsSection.LIGHTS -> LightSyncSection(
+                            SettingsSection.LIGHTS_SYNC -> LightSyncSection(
                                 settings = settings,
                                 accent = accent,
                                 scope = scope,
@@ -309,19 +277,16 @@ fun SettingsScreen(
                                 onHaToken = { haToken = it },
                             )
 
-                            // No STATS branch. It is intercepted in the index above and
-                            // opens its own full-screen view, so it never arrives here —
-                            // the branch that used to sit here said so in a comment and
-                            // was otherwise empty.
-                            SettingsSection.STATS -> Unit
-
-                            SettingsSection.BACKUP -> BackupSection(settings, accent, scope)
-
                             SettingsSection.APPEARANCE -> AppearanceSection(settings, accent, scope, advanced)
 
-                            SettingsSection.BEHAVIOR -> BehaviorSection(settings, accent, scope, advanced)
-
-                            SettingsSection.ABOUT -> AboutSection(accent, onOpenStats)
+                            SettingsSection.SYSTEM_ABOUT -> SystemSection(
+                                libraryVm = libraryViewModel,
+                                settings = settings,
+                                accent = accent,
+                                scope = scope,
+                                onOpenDownloads = onOpenDownloads,
+                                onOpenStats = onOpenStats,
+                            )
                         }
                         }
                     }
@@ -365,32 +330,23 @@ private data class SettingsOverview(
 ) {
     /** The live line for [section], or null to fall back to its written description. */
     fun subtitleFor(section: SettingsSection): String? = when (section) {
-        SettingsSection.LIBRARIES -> when {
+        SettingsSection.PROVIDERS -> when {
             servers == 0 -> "No music library yet, start here"
             else -> listOfNotNull(activeLibrary, libraryStatus).joinToString(" · ")
                 .takeIf { it.isNotBlank() }
         }
-        SettingsSection.DOWNLOADS -> when (downloadCount) {
-            0 -> "Nothing kept on this phone yet"
-            else -> "$downloadCount ${if (downloadCount == 1) "track" else "tracks"} · " +
-                formatBytes(downloadBytes)
-        }
-        SettingsSection.LIGHTS -> lightSyncSummary
-        SettingsSection.APPEARANCE -> appearanceSummary
-        // Every switch in here is off by default, so the useful thing to say is how
-        // many are not — a written list of the five topics is a definition, and the
-        // reader has already read it once. The lyrics trim is a slider rather than a
-        // switch, so it only earns its half of the line when it has been moved.
-        SettingsSection.BEHAVIOR -> listOfNotNull(
-            if (behaviorOn == 0) "Nothing turned on yet"
-            else "$behaviorOn of $BEHAVIOR_TOGGLES on",
+        SettingsSection.AUDIO -> listOfNotNull(
+            if (behaviorOn == 0) "Standard playback"
+            else "$behaviorOn gestures/effects on",
             behaviorLyricsOffsetMs.takeIf { it != 0 }?.let { "lyrics %+d ms".format(it) },
         ).joinToString(" · ")
-        // Nothing about the audio path or the app itself changes often enough to be
-        // worth a live line, and a row that reads "Output: Phone speaker" would be
-        // wrong every time headphones are plugged in while this screen is not open.
-        SettingsSection.AUDIO, SettingsSection.STATS, SettingsSection.BACKUP,
-        SettingsSection.ABOUT -> null
+        SettingsSection.LIGHTS_SYNC -> lightSyncSummary
+        SettingsSection.APPEARANCE -> appearanceSummary
+        SettingsSection.SYSTEM_ABOUT -> when (downloadCount) {
+            0 -> "Downloads, encrypted backup & restore, version"
+            else -> "$downloadCount ${if (downloadCount == 1) "offline track" else "offline tracks"} · " +
+                formatBytes(downloadBytes)
+        }
     }
 }
 
@@ -486,10 +442,41 @@ private fun GetStartedCard(accent: androidx.compose.ui.graphics.Color, onAddLibr
 @Composable
 private fun headerTitle(section: SettingsSection?, detail: String?): String = when {
     section == null -> "Settings"
-    section == SettingsSection.LIBRARIES && detail == PICK_ROUTE -> "Add a server"
-    section == SettingsSection.LIBRARIES && detail != null -> "Server"
-    section == SettingsSection.LIGHTS && detail == BRIDGE_ROUTE -> "Bridge & analysis"
+    section == SettingsSection.PROVIDERS && detail == PICK_ROUTE -> "Add a server"
+    section == SettingsSection.PROVIDERS && detail != null -> "Server"
+    section == SettingsSection.LIGHTS_SYNC && detail == BRIDGE_ROUTE -> "Bridge & analysis"
     else -> section.title
+}
+
+
+@Composable
+private fun SystemSection(
+    libraryVm: LibraryViewModel,
+    settings: AppSettings,
+    accent: Color,
+    scope: CoroutineScope,
+    onOpenDownloads: () -> Unit,
+    onOpenStats: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        // Listening stats banner / card
+        NavRow(
+            icon = Icons.Default.BarChart,
+            title = "Listening statistics",
+            subtitle = "Your recent top artists, total listening time, and format breakdown",
+            accent = accent,
+            onClick = onOpenStats,
+        )
+
+        // Offline storage & downloads
+        DownloadsSection(libraryVm, settings, accent, scope, onOpenDownloads)
+
+        // Encrypted backup and restore
+        BackupSection(settings, accent, scope)
+
+        // Crash diagnostics, GitHub issues, and about
+        AboutSection(accent, onOpenStats)
+    }
 }
 
 // ── Backup & Restore section ─────────────────────────────────────────────

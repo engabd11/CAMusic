@@ -1495,6 +1495,160 @@ fun WaveSeekBar(
 private val WaveLength = 34.dp
 private val WaveAmplitude = 5.dp
 
+/**
+ * M3 Expressive Pill Seek Bar: a bold, modern segmented pill track with rounded caps,
+ * tactile knob elevation and dynamic accent fill.
+ */
+@Composable
+fun PillSeekBar(
+    value: Float,
+    onChange: (Float) -> Unit,
+    modifier: Modifier = Modifier,
+    trackHeight: Dp = 8.dp,
+    knob: Dp = 16.dp,
+    onCommit: ((Float) -> Unit)? = null,
+    label: ((Float) -> String)? = null,
+) {
+    val accent = rememberAccent()
+    var width by remember { mutableIntStateOf(1) }
+    val gesture = rememberSliderGesture(value)
+    val v = gesture.display(value)
+
+    fun commit(f: Float) {
+        val c = f.coerceIn(0f, 1f)
+        if (onCommit != null) onCommit(c) else onChange(c)
+    }
+
+    Box(
+        modifier
+            .fillMaxWidth()
+            .height(SliderTouchHeight)
+            .onSizeChanged { width = if (it.width > 0) it.width else 1 }
+            .sliderInput(gesture, { width }, onChange, ::commit),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        val fillWidth = (v * width).coerceIn(0f, width.toFloat())
+        // Background pill
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(trackHeight)
+                .clip(RoundedCornerShape(50))
+                .background(inkOn(0.12f))
+        )
+        // Filled active pill with subtle gradient
+        Box(
+            Modifier
+                .width((fillWidth / (LocalContext.current.resources.displayMetrics.density)).dp)
+                .height(trackHeight)
+                .clip(RoundedCornerShape(50))
+                .background(
+                    Brush.horizontalGradient(
+                        listOf(accent.a(0.7f), accent)
+                    )
+                )
+        )
+        // Expressive elevated thumb
+        Box(
+            Modifier
+                .offset { IntOffset((v * width - knob.toPx() / 2f).roundToInt(), 0) }
+                .shadow(12.dp, CircleShape, ambientColor = accent, spotColor = accent)
+                .size(if (gesture.dragging) knob * 1.35f else knob)
+                .clip(CircleShape)
+                .background(TextPrimary)
+                .border(2.dp, accent, CircleShape)
+        )
+
+        if (gesture.dragging && label != null) SliderMagnifier(label(v), v, width, accent)
+    }
+}
+
+/**
+ * Audiophile Glow Seek Bar: a luminous, ultra-clean line with a breathing accent halo
+ * around the playhead that pulses during playback.
+ */
+@Composable
+fun GlowSeekBar(
+    value: Float,
+    onChange: (Float) -> Unit,
+    playing: Boolean,
+    modifier: Modifier = Modifier,
+    trackHeight: Dp = 3.dp,
+    knob: Dp = 12.dp,
+    onCommit: ((Float) -> Unit)? = null,
+    label: ((Float) -> String)? = null,
+) {
+    val accent = rememberAccent()
+    var width by remember { mutableIntStateOf(1) }
+    val gesture = rememberSliderGesture(value)
+    val v = gesture.display(value)
+
+    fun commit(f: Float) {
+        val c = f.coerceIn(0f, 1f)
+        if (onCommit != null) onCommit(c) else onChange(c)
+    }
+
+    val reduced = LocalReducedMotion.current
+    val infinite = rememberInfiniteTransition(label = "glowPulse")
+    val pulseAlpha by infinite.animateFloat(
+        initialValue = 0.35f,
+        targetValue = 0.85f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1200, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "pulseAlpha",
+    )
+    val effectiveGlow = if (reduced || !playing) 0.5f else pulseAlpha
+
+    Box(
+        modifier
+            .fillMaxWidth()
+            .height(SliderTouchHeight)
+            .onSizeChanged { width = if (it.width > 0) it.width else 1 }
+            .sliderInput(gesture, { width }, onChange, ::commit),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        // Track rail
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(trackHeight)
+                .clip(RoundedCornerShape(50))
+                .background(inkOn(0.14f))
+        )
+        // Active line with soft glow behind it
+        Box(
+            Modifier
+                .fillMaxWidth(v)
+                .height(trackHeight)
+                .shadow(8.dp, RoundedCornerShape(50), ambientColor = accent, spotColor = accent)
+                .clip(RoundedCornerShape(50))
+                .background(accent)
+        )
+        // Luminous glowing bead
+        val density = androidx.compose.ui.platform.LocalDensity.current
+        val knobOffset = with(density) { (v * width - knob.toPx() / 2f).roundToInt() }
+        Box(
+            Modifier
+                .offset { IntOffset(knobOffset, 0) }
+                .size(if (gesture.dragging) knob * 1.5f else knob)
+        ) {
+            // Radial halo
+            CastGlow(accent, CircleShape, blurRadius = 14.dp, alpha = effectiveGlow, offsetY = 0.dp)
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .clip(CircleShape)
+                    .background(accent)
+                    .border(1.5.dp, TextPrimary, CircleShape)
+            )
+        }
+
+        if (gesture.dragging && label != null) SliderMagnifier(label(v), v, width, accent)
+    }
+}
+
 /** ~17 samples per wavelength. Below about 8 the curve reads as a polygon. */
 private val WaveSampleStep = 2.dp
 
