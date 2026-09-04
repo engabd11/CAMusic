@@ -11,23 +11,30 @@ package com.engabd.sendpin.service
  * fell back to a default.
  *
  * Implementations must be safe to call from a background coroutine scope.
- * [getSpeedLimit] is called on every GPS reading (throttled to one every 5s
- * by [SpeedMonitor]'s update interval), so it should be fast — under 10ms
+ * [getSpeedLimit] is called on every GPS reading — one a second, since
+ * [SpeedMonitor] tightened its update interval — so it should be fast, under 10ms
  * for the local database path. The geohash cache in [OfflineSpeedLimitProvider]
- * makes repeat lookups in the same area effectively free.
+ * makes repeat lookups on the same stretch of road effectively free.
+ * [SpeedMonitor] never lets two run at once and never waits on one before judging a
+ * reading, so a slow lookup delays the *limit* updating and not the alert.
  */
 interface SpeedLimitProvider {
 
     /**
      * @param lat  GPS latitude (WGS84 decimal degrees).
      * @param lon  GPS longitude (WGS84 decimal degrees).
+     * @param accuracyMeters  the fix's own reported horizontal accuracy, or 0 when
+     *        it did not report one. A lookup matches the point against road geometry
+     *        within a radius, and a fix that is honestly ±25 m needs that radius
+     *        widened by 25 m or it lands beside every road it is actually on — which
+     *        reads to the driver as "auto-detect does not work down my street".
      * @return the posted speed limit in km/h at the given location, or null
      *         if no data is available (outside dataset coverage, database not
      *         downloaded yet, etc.). Returning null tells [SpeedMonitor] to
      *         fall back to the manually-set limit, so this method should be
      *         honest about what it doesn't know rather than guessing.
      */
-    suspend fun getSpeedLimit(lat: Double, lon: Double): Int?
+    suspend fun getSpeedLimit(lat: Double, lon: Double, accuracyMeters: Float = 0f): Int?
 
     /**
      * Whether the provider has data ready — for the offline provider this

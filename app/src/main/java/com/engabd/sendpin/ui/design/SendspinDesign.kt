@@ -601,9 +601,21 @@ fun GlassCard(
  * sheet pulled the whole player down behind it and left the sheet hanging. Drags
  * the sheet's own content hasn't already taken — a list already at its top, or the
  * grabber at the sheet's head — move the sheet and go no further.
+ *
+ * [enabled] turns the *gesture* off without taking the modifier out of the chain,
+ * which matters for a sheet that pages between two views: dropping the modifier
+ * conditionally would drop the entry animation's state with it and replay the
+ * slide-up every time the sheet changed page. A page that stacks horizontal
+ * sliders — [com.engabd.sendpin.ui.screens.CoverPaletteEditor]'s colour picker —
+ * passes false, because a drag that leaves the slider's own axis is a missed
+ * slider adjustment there, not a request to throw the sheet away.
  */
 @Composable
-fun Modifier.dismissOnDragDown(onDismiss: () -> Unit, threshold: Dp = 110.dp): Modifier {
+fun Modifier.dismissOnDragDown(
+    onDismiss: () -> Unit,
+    threshold: Dp = 110.dp,
+    enabled: Boolean = true,
+): Modifier {
     val scope = rememberCoroutineScope()
     /** How far the finger has dragged the sheet down, in pixels. */
     val offsetY = remember { Animatable(0f) }
@@ -633,7 +645,8 @@ fun Modifier.dismissOnDragDown(onDismiss: () -> Unit, threshold: Dp = 110.dp): M
         // Both the entry and the drag ride here: a translation is a draw-time property,
         // so dragging a sheet does not re-layout the list inside it on every frame.
         .graphicsLayer { translationY = offsetY.value + enter * size.height }
-        .pointerInput(Unit) {
+        .pointerInput(enabled) {
+            if (!enabled) return@pointerInput
             val height = size.height.toFloat()
             detectVerticalDragGestures(
                 onDragEnd = {

@@ -260,6 +260,10 @@ private fun SpeedFeaturesRow(settings: AppSettings, accent: Color, scope: Corout
         .limitDataStatus.collectAsState(initial = null)
     val activeLimit by com.engabd.sendpin.SendpinApp.instance.speedMonitor
         .activeLimitKmh.collectAsState(initial = null)
+    // Whether fixes are actually arriving. The first question anyone asks when an
+    // alert did not fire, and until now the screen could not answer it.
+    val fixStatus by com.engabd.sendpin.SendpinApp.instance.speedMonitor
+        .fixStatus.collectAsState(initial = null)
 
     val askLocation = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -307,7 +311,25 @@ private fun SpeedFeaturesRow(settings: AppSettings, accent: Color, scope: Corout
         OledButton("Preview \"$soundLabel\"", accent = accent, outline = true) {
             com.engabd.sendpin.service.SpeedAlertSound.play(context, soundId)
         }
-        Note("Plays when the speed limit and its tolerance are breached while driving.")
+        Note(
+            "Plays over the music, on the same output the music is on — the track " +
+                "ducks for it and comes back after.",
+        )
+
+        // ── Is it actually watching? ───────────────────────────────────────
+        Note(
+            fixStatus ?: "Not watching — starts when the car connects and something is playing.",
+            title = "GPS",
+            info = "Driving mode watches your speed while the car is connected (or " +
+                "the switch above is on by hand) and something is playing.\n\nWhile " +
+                "it is watching, a notification says so: that is what keeps Android " +
+                "delivering GPS fixes once you switch to your map. Android stops " +
+                "sending location to an app that is not on screen and has no such " +
+                "notification, which is why the alert used to go quiet the moment " +
+                "you opened Google Maps.\n\nIf this line says it is waiting for a " +
+                "fix for more than a minute or two, check that Location is on and " +
+                "that the phone can see the sky.",
+        )
 
         // ── Limit source toggle: Auto-detect vs Manual ──────────────────────
         FieldLabel("Limit source")

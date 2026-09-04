@@ -58,11 +58,12 @@ object Geohash {
 /**
  * LRU cache for speed-limit lookups, keyed by geohash.
  *
- * The cache is intentionally small (64 entries). Both [get] and [put] are
- * `synchronized` on the cache instance, which is correct but very cheap —
- * the cache is accessed from a single coroutine (SpeedMonitor's location
- * handler) so contention is effectively zero, and the synchronized block
- * protects against the adaptive-volume path reading concurrently.
+ * Small by design — a few hundred entries, sized by the caller against how fine
+ * its keys are. Both [get] and [put] are `synchronized` on the cache instance,
+ * which is correct but very cheap: the cache is accessed from a single coroutine
+ * (SpeedMonitor's location handler) so contention is effectively zero, and the
+ * synchronized block protects against the adaptive-volume path reading
+ * concurrently.
  */
 class SpeedLimitCache(private val maxSize: Int = 64) {
 

@@ -1154,20 +1154,39 @@ private fun DirectLightSyncScreen(
         // The palette editor, over the whole screen. A BoxScope sheet, so it belongs
         // to this Box rather than to the scrolling column that opens it.
         if (paletteEditorOpen) {
-            CoverPaletteEditor(
-                albumName = lightSource.scanTrack?.album?.takeIf { it.isNotBlank() }
+            // Pinned to the album that was playing when the sheet opened. `remember`
+            // with no key inside this `if` lasts exactly as long as the edit, because
+            // the block enters composition on open and leaves it on close. Without the
+            // pin the next track to start would re-seed the palette out from under the
+            // user and file the save against the new track's keys instead — see
+            // CoverPaletteEditor's own note on seeding.
+            val editorKeys = remember { paletteKeys }
+            val editorAlbum = remember {
+                lightSource.scanTrack?.album?.takeIf { it.isNotBlank() }
                     ?: maNow?.album?.takeIf { it.isNotBlank() }
-                    ?: "What's playing",
-                artistName = lightSource.scanTrack?.artist?.takeIf { it.isNotBlank() }
-                    ?: maNow?.artist?.takeIf { it.isNotBlank() },
-                coverUrl = lightSource.artUrl,
+                    ?: "What's playing"
+            }
+            val editorArtist = remember {
+                lightSource.scanTrack?.artist?.takeIf { it.isNotBlank() }
+                    ?: maNow?.artist?.takeIf { it.isNotBlank() }
+            }
+            val editorCover = remember { lightSource.artUrl }
+            CoverPaletteEditor(
+                albumName = editorAlbum,
+                artistName = editorArtist,
+                coverUrl = editorCover,
                 // Open showing what is actually on the room, so this is an editor
                 // for an existing correction and not only a way to start a new one.
-                existing = savedPalette,
+                // Read live against the pinned keys, not pinned itself: the overrides
+                // map is a flow whose first emission is empty, so what is already
+                // saved arrives a frame or two after the sheet does.
+                existing = editorKeys.firstNotNullOfOrNull { key ->
+                    coverOverrides[key]?.takeIf { it.colors.isNotEmpty() }
+                },
                 onSave = { override ->
                     // Every key, not the best one — see
                     // AppSettings.setCoverPaletteOverrideForKeys.
-                    scope.launch { settings.setCoverPaletteOverrideForKeys(paletteKeys, override) }
+                    scope.launch { settings.setCoverPaletteOverrideForKeys(editorKeys, override) }
                     paletteEditorOpen = false
                 },
                 onClose = { paletteEditorOpen = false },
