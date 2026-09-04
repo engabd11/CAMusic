@@ -394,4 +394,27 @@ class NoteGeneratorTest {
             "the null-chart path diverged from the legacy PLL",
         )
     }
+
+    // ── Band mapping (A3) ────────────────────────────────────────────────────
+
+    @Test
+    fun `note kinds map to the room bands the show stacks`() {
+        // The engine stacks bass on the floor and treble at the ceiling; the
+        // game's answer must use the same vocabulary or the two disagree about
+        // what "low" means.
+        assertEquals(GameBand.BASS, bandOf(NoteKind.KICK))
+        assertEquals(GameBand.FULL, bandOf(NoteKind.SNARE))
+        assertEquals(GameBand.TOP, bandOf(NoteKind.HAT))
+        assertEquals(GameBand.COLOR, bandOf(NoteKind.MELODY))
+    }
+
+    @Test
+    fun `every note kind has a band`() {
+        // Exhaustive when-expression — this is a compile guarantee, but the test
+        // documents the contract and fails loudly if a kind is added without a
+        // band decision.
+        for (kind in NoteKind.entries) {
+            assertTrue(bandOf(kind) in GameBand.entries, "no band for $kind")
+        }
+    }
 }

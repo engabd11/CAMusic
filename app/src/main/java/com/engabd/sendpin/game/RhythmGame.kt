@@ -38,6 +38,21 @@ data class GameChartSource(
 
 enum class NoteKind { KICK, SNARE, HAT, MELODY }
 
+/**
+ * Which part of the room a struck note answers in.
+ *
+ * The old game opened one gate over the whole room, so a kick hit and a hat hit
+ * lit it identically. The band is the note's answer: bass frequencies live on
+ * the floor and treble at the ceiling the way the engine already stacks them
+ * ([heightBandLower]), so a kick lights the low lamps and a hat the high ones,
+ * with the rest of the room at a sympathy level rather than dark. [COLOR] is
+ * the melody lane's reward — a hue rotation with a gentler brightness lift,
+ * because the Hue guide book is explicit that a colour transition may be faster
+ * than a brightness one and sudden brightness in peripheral vision is what
+ * reads as harsh.
+ */
+enum class GameBand { BASS, FULL, TOP, COLOR }
+
 /** Lane indices, named so the chart reads as music rather than as integers. */
 const val LANE_KICK = 0
 const val LANE_SNARE = 1
@@ -713,7 +728,17 @@ private const val DEAD_AIR_ACCENT = 0.08f
  */
 private const val FILL_SECTION_JUMP = 0.2f
 
-/** Closest two notes in one lane may be. */
+/**
+ * Closest two notes in one lane may be.
+ */
 private const val MIN_GAP_MS = 110L
 
 private const val FALLBACK_MIN_GAP_MS = 150L
+
+/** The band of the room each note kind answers in — the hit-to-lamp mapping. */
+internal fun bandOf(kind: NoteKind): GameBand = when (kind) {
+    NoteKind.KICK -> GameBand.BASS
+    NoteKind.SNARE -> GameBand.FULL
+    NoteKind.HAT -> GameBand.TOP
+    NoteKind.MELODY -> GameBand.COLOR
+}

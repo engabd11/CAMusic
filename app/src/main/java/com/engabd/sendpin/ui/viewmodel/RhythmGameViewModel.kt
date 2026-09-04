@@ -6,8 +6,10 @@ import androidx.lifecycle.AndroidViewModel
 import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.audio.AnalysisFrame
 import com.engabd.sendpin.game.GameNote
+import com.engabd.sendpin.game.GameBand
 import com.engabd.sendpin.game.Judgement
 import com.engabd.sendpin.game.NoteGenerator
+import com.engabd.sendpin.game.bandOf
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -232,6 +234,10 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
      * moves that a little as well: a note the music barely made was never going to
      * pay out much.
      *
+     * The note's band decides *where* in the room the answer lands — bass on the
+     * floor, hats at the ceiling, the melody lane as a colour sweep — so the room
+     * answers in the shape of the music rather than as one undifferentiated flash.
+     *
      * Best-effort by design: the game is playable with no bridge paired at all, and
      * a light that cannot be reached must not cost the player a note.
      */
@@ -240,6 +246,7 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
             directLightSync.receiveGameHit(
                 strength = (judgement.points / 100f) * (0.7f + note.intensity * 0.3f),
                 combo = combo,
+                band = bandOf(note.kind),
             )
         }
     }
