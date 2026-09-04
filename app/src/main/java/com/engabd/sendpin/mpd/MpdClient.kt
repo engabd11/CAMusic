@@ -96,7 +96,14 @@ class MpdClient(
             return line.substring(0, colon).trim().lowercase() to line.substring(colon + 1).trim()
         }
 
-        /** [parseLine] over a whole response, for tests and for [command]. */
+        /**
+         * [parseLine] over a whole response, for the parser tests.
+         *
+         * Not for [command], whatever this used to claim: reading a response means
+         * stopping at `OK` or raising on `ACK`, so the socket is read a line at a
+         * time and each line goes through [parseLine] as it arrives. This is how a
+         * test hands the same parsers a recorded response with no socket under it.
+         */
         internal fun parseLines(lines: List<String>): List<Pair<String, String>> =
             lines.mapNotNull(::parseLine)
 
