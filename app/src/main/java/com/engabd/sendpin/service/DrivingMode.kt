@@ -115,6 +115,29 @@ class DrivingMode(private val app: Context) {
         enabled && (car || manual) && !hidden && playback.sessionOwner != PlaybackOwner.Who.NONE
     }.distinctUntilChanged().stateIn(scope, SharingStarted.Eagerly, false)
 
+    /**
+     * Whether the GPS-driven speed features should be watching.
+     *
+     * [active] minus the bar's own dismissal. The X on the driving bar means "I do
+     * not want this transport over my map for the rest of this drive"; it does not
+     * mean "stop warning me about the speed limit", and reading it as both is how
+     * pressing X quietly switched a safety feature off with nothing on screen to say
+     * so. Everything else [active] requires still applies — driving mode is on, the
+     * car or the user asked for it, and there is something playing — because a GPS
+     * subscription held with nothing to duck is battery spent for no one.
+     *
+     * [SpeedMonitor] gates on this. Nothing else should: the bar itself must keep
+     * following [active], dismissal and all.
+     */
+    val speedWatchActive: StateFlow<Boolean> = combine(
+        settings.drivingEnabled,
+        carConnected,
+        manualOverride,
+        owner.state,
+    ) { enabled, car, manual, playback ->
+        enabled && (car || manual) && playback.sessionOwner != PlaybackOwner.Who.NONE
+    }.distinctUntilChanged().stateIn(scope, SharingStarted.Eagerly, false)
+
     /** Turn it on or off by hand, for the tile and the Settings switch. */
     fun setManual(on: Boolean) {
         manualOverride.value = on

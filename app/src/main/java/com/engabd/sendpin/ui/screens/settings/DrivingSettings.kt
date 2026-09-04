@@ -260,6 +260,10 @@ private fun SpeedFeaturesRow(settings: AppSettings, accent: Color, scope: Corout
         .limitDataStatus.collectAsState(initial = null)
     val activeLimit by com.engabd.sendpin.SendpinApp.instance.speedMonitor
         .activeLimitKmh.collectAsState(initial = null)
+    // Whether fixes are actually arriving. The first question anyone asks when an
+    // alert did not fire, and until now the screen could not answer it.
+    val fixStatus by com.engabd.sendpin.SendpinApp.instance.speedMonitor
+        .fixStatus.collectAsState(initial = null)
 
     val askLocation = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -275,8 +279,12 @@ private fun SpeedFeaturesRow(settings: AppSettings, accent: Color, scope: Corout
         val effective = activeLimit
         if (effective != null && effective > 0) {
             val trigger = com.engabd.sendpin.service.SpeedAlert.triggerSpeedKmh(effective, tolerancePct).toInt() + 1
-            if (autoDetect) "Auto: $effective km/h here — beeps at $trigger km/h"
-            else "Beeps at $trigger km/h and above"
+            // The hold is read from the tracker's own constant rather than typed
+            // here, so the screen cannot end up promising a different wait than the
+            // one the alert keeps.
+            val hold = com.engabd.sendpin.service.SpeedAlert.CONFIRM_WINDOW_MS / 1000
+            if (autoDetect) "Auto: $effective km/h here — beeps after ${hold}s over $trigger km/h"
+            else "Beeps after ${hold}s over $trigger km/h"
         } else if (autoDetect) {
             "Detecting limit from location…"
         } else {
@@ -307,7 +315,25 @@ private fun SpeedFeaturesRow(settings: AppSettings, accent: Color, scope: Corout
         OledButton("Preview \"$soundLabel\"", accent = accent, outline = true) {
             com.engabd.sendpin.service.SpeedAlertSound.play(context, soundId)
         }
-        Note("Plays when the speed limit and its tolerance are breached while driving.")
+        Note(
+            "Plays over the music, on the same output the music is on — the track " +
+                "ducks for it and comes back after.",
+        )
+
+        // ── Is it actually watching? ───────────────────────────────────────
+        Note(
+            fixStatus ?: "Not watching — starts when the car connects and something is playing.",
+            title = "GPS",
+            info = "Driving mode watches your speed while the car is connected (or " +
+                "the switch above is on by hand) and something is playing.\n\nWhile " +
+                "it is watching, a notification says so: that is what keeps Android " +
+                "delivering GPS fixes once you switch to your map. Android stops " +
+                "sending location to an app that is not on screen and has no such " +
+                "notification, which is why the alert used to go quiet the moment " +
+                "you opened Google Maps.\n\nIf this line says it is waiting for a " +
+                "fix for more than a minute or two, check that Location is on and " +
+                "that the phone can see the sky.",
+        )
 
         // ── Limit source toggle: Auto-detect vs Manual ──────────────────────
         FieldLabel("Limit source")

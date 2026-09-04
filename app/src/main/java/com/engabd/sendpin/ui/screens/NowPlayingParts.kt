@@ -464,19 +464,31 @@ fun BoxScope.PlayerOverlays(
         // for both halves — reading what is already saved, and writing the new one.
         // Two lists built separately is how the editor and the engine came to
         // disagree in the first place.
-        val paletteKeys = CoverPaletteOverride.keysFor(
-            album = state.album,
-            artist = state.artist,
-            coverUrl = coverUrl,
-            trackId = favouritable?.itemId,
-        )
+        //
+        // `remember` with no key, inside this `if`, pins them to the album that was
+        // playing when the sheet opened: this block enters composition on open and
+        // leaves it on close, so the pin lasts exactly as long as the edit. Without
+        // it the next track to start would re-target the sheet mid-edit — the seed
+        // would be re-read from another cover and the save would land on the new
+        // track's keys rather than the one whose colours are on screen.
+        val paletteKeys = remember {
+            CoverPaletteOverride.keysFor(
+                album = state.album,
+                artist = state.artist,
+                coverUrl = coverUrl,
+                trackId = favouritable?.itemId,
+            )
+        }
+        val pinnedAlbum = remember { state.album.takeIf { it.isNotBlank() } ?: favouritable?.name ?: "" }
+        val pinnedArtist = remember { state.artist.takeIf { it.isNotBlank() } ?: favouritable?.subtitle }
+        val pinnedCover = remember { coverUrl }
         val overrides by settings.coverPaletteOverrides.collectAsStateWithLifecycle(
             initialValue = emptyMap(),
         )
         CoverPaletteEditor(
-            albumName = state.album.takeIf { it.isNotBlank() } ?: favouritable?.name ?: "",
-            artistName = state.artist.takeIf { it.isNotBlank() } ?: favouritable?.subtitle,
-            coverUrl = coverUrl,
+            albumName = pinnedAlbum,
+            artistName = pinnedArtist,
+            coverUrl = pinnedCover,
             // Open showing what is actually on the room, so this is an editor for an
             // existing correction and not only a way to start a new one.
             existing = paletteKeys.firstNotNullOfOrNull { key ->

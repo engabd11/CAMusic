@@ -75,6 +75,18 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
     <!--
+      ACCESS_FINE_LOCATION is a *while-in-use* grant, and an app that is not on
+      screen only keeps it while it runs a foreground service declared with the
+      `location` type. Driving mode's whole premise is that the driver is looking at
+      Google Maps rather than at this app, so without this the speed-limit alert
+      stopped receiving fixes the moment it became useful - silently, with no error
+      and no callback. See DrivingLocationService, which is the only thing that
+      starts a service of that type, and only while a speed feature is switched on
+      and the location grant is actually held.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+
+    <!--
       Android Auto. Not required for Auto to bind to CarMediaLibraryService (Auto
       queries this app, not the other way round) - only for this app's own code to
       be able to ask PackageManager whether Gearhead is installed, under Android
@@ -210,6 +222,18 @@
             android:foregroundServiceType="mediaPlayback"
             android:exported="false">
         </service>
+
+        <!--
+          The permission anchor that keeps GPS alive while the driver is in another
+          app. Its own service rather than a second type on a playback one, because
+          the platform grants location on the type a service actually started with:
+          a media service that added `location` to its manifest would still start as
+          mediaPlayback and change nothing. See DrivingLocationService.
+        -->
+        <service
+            android:name=".service.DrivingLocationService"
+            android:foregroundServiceType="location"
+            android:exported="false" />
 
         <!--
           Ambience effects. A third service rather than a third role for one of the
