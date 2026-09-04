@@ -335,6 +335,13 @@ fun NowPlayingOverlay(
             // stays in step with the cover and does not reload inside an album.
             MeltBackdrop(art.url, intensity = washDim.value)
 
+            // Chameleon Canvas & Ambient Bloom (optional appearance setting)
+            val chameleonBloom by settings.chameleonBloom.collectAsStateWithLifecycle(initialValue = false)
+            if (chameleonBloom && !st.idle) {
+                Bloom(palette.swatch(0), 460.dp, (-40).dp, (-80).dp, 0.40f * washDim.value)
+                Bloom(palette.swatch(1), 380.dp, 80.dp, 120.dp, 0.28f * washDim.value)
+            }
+
             Column(
                 Modifier
                     .fillMaxSize()

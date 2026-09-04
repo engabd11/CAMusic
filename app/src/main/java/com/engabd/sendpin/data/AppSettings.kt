@@ -114,7 +114,8 @@ class AppSettings(private val context: Context) {
         private val PLAYER_NAME = stringPreferencesKey("player_name")          // Sendspin client/hello name
         private val TARGET_PLAYER = stringPreferencesKey("target_player")      // MA player to play to / control ("" = this phone)
         private val NOW_PLAYING_LAYOUT = stringPreferencesKey("now_playing_layout") // "tab" (default) | "overlay"
-        private val SEEK_BAR_STYLE = stringPreferencesKey("seek_bar_style")     // "line" (default) | "wave"
+        private val SEEK_BAR_STYLE = stringPreferencesKey("seek_bar_style")     // "line" (default) | "wave" | "pill" | "glow"
+        private val CHAMELEON_BLOOM = booleanPreferencesKey("chameleon_bloom")
         // Appearance. Defaults are the app as designed — OLED black with the accent
         // pulled from album art — so an untouched install looks exactly as before.
         private val THEME = stringPreferencesKey("theme")                       // oled | dark | light | system
@@ -775,6 +776,8 @@ class AppSettings(private val context: Context) {
     val nowPlayingLayout: Flow<String> = pref { it[NOW_PLAYING_LAYOUT] ?: "tab" }
     /** How the Now Playing seek bar is drawn — a straight line, or a wobbling wave. */
     val seekBarStyle: Flow<String> = pref { it[SEEK_BAR_STYLE] ?: "line" }
+    /** Chameleon dynamic canvas and ambient bloom behind Now Playing. Off by default. */
+    val chameleonBloom: Flow<Boolean> = pref { it[CHAMELEON_BLOOM] ?: false }
     /** Swipe right/left on Now Playing to skip forward/back. Off by default. */
     val swipeToSkip: Flow<Boolean> = pref { it[SWIPE_TO_SKIP] ?: false }
     /**
@@ -1154,6 +1157,10 @@ class AppSettings(private val context: Context) {
 
     suspend fun setSeekBarStyle(style: String) {
         context.dataStore.edit { it[SEEK_BAR_STYLE] = style }
+    }
+
+    suspend fun setChameleonBloom(enabled: Boolean) {
+        context.dataStore.edit { it[CHAMELEON_BLOOM] = enabled }
     }
 
     suspend fun setSwipeToSkip(on: Boolean) {

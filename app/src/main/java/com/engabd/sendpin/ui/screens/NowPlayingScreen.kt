@@ -213,6 +213,13 @@ fun NowPlayingScreen(
             // within an album nor changes a quarter of a second before the cover does.
             MeltBackdrop(art.url, intensity = washDim.value)
 
+            // Chameleon Canvas & Ambient Bloom (optional appearance setting)
+            val chameleonBloom by settings.chameleonBloom.collectAsStateWithLifecycle(initialValue = false)
+            if (chameleonBloom && !st.idle) {
+                Bloom(palette.swatch(0), 460.dp, (-40).dp, (-80).dp, 0.40f * washDim.value)
+                Bloom(palette.swatch(1), 380.dp, 80.dp, 120.dp, 0.28f * washDim.value)
+            }
+
             Column(
                 Modifier
                     .fillMaxSize()
@@ -321,7 +328,7 @@ fun NowPlayingScreen(
                             .widthIn(min = rowMinWidth)
                             .padding(horizontal = 12.dp),
                         horizontalArrangement =
-                            Arrangement.spacedBy(19.dp, Alignment.CenterHorizontally),
+                            Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         IconChip(Icons.Default.Lyrics, "Lyrics", active = coverSlot == CoverSlot.LYRICS) {
@@ -776,6 +783,28 @@ private fun QualityDetailCard(
                 }
             }
 
+            val dspState = dsp?.state
+            // ── Signal Path Inspector (Audiophile Transparency) ────────────
+            val sourceLabel = (source ?: playing)?.label ?: "PCM"
+            val dspLabel = when {
+                dspState == "enabled" -> "EQ / DSP"
+                gainMode != ReplayGain.OFF && localSession -> "ReplayGain"
+                else -> null
+            }
+            val engineLabel = when {
+                bitPerfect -> "24-bit Direct"
+                localSession -> "AAudio/Track"
+                else -> "Sendspin"
+            }
+            val devName = if (serverPlayer) "Remote Player" else "This Device"
+            SignalPathDiagram(
+                sourceFormat = sourceLabel,
+                dspInfo = dspLabel,
+                outputEngine = engineLabel,
+                hardwareDevice = devName,
+                accent = accent,
+            )
+
             // ── Format ────────────────────────────────────────────────────
             QualityBlock("Format") {
                 QualityRow("Playing", playing, accent)
@@ -798,7 +827,6 @@ private fun QualityDetailCard(
             // own 24-bit setting, whether the Android mixer is resampling under it,
             // and — on a Music Assistant player — whether MA's DSP chain ran.
             val deviceRate = remember(bitPerfect) { FormatNegotiator.deviceOutputQuality(bitPerfect) }
-            val dspState = dsp?.state
             val decodingHere = localSession && !serverPlayer
             val showOutput = decodingHere || dspState != null
             if (showOutput) {
@@ -1137,6 +1165,66 @@ private fun LocalDeviceDetail(accent: Color, playingRateHz: Int) {
             route.bluetoothCodecNote?.let { QualityNote(it) }
         }
     }
+}
+
+@Composable
+private fun SignalPathDiagram(
+    sourceFormat: String,
+    dspInfo: String?,
+    outputEngine: String,
+    hardwareDevice: String,
+    accent: Color,
+) {
+    QualityBlock("Signal Path Inspector") {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(Ink3.copy(alpha = 0.5f))
+                .padding(horizontal = 8.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            SignalStageNode(title = "SOURCE", subtitle = sourceFormat, accent = accent, active = true)
+            SignalArrow(accent)
+            SignalStageNode(title = "DSP", subtitle = dspInfo ?: "Direct", accent = accent, active = dspInfo != null)
+            SignalArrow(accent)
+            SignalStageNode(title = "ENGINE", subtitle = outputEngine, accent = accent, active = true)
+            SignalArrow(accent)
+            SignalStageNode(title = "OUTPUT", subtitle = hardwareDevice, accent = accent, active = true)
+        }
+    }
+}
+
+@Composable
+private fun SignalStageNode(title: String, subtitle: String, accent: Color, active: Boolean) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Text(
+            title,
+            color = if (active) accent else TextFaint,
+            fontFamily = MonoFont,
+            fontWeight = FontWeight.Bold,
+            fontSize = 9.sp,
+            letterSpacing = 0.8.sp,
+        )
+        Text(
+            subtitle,
+            color = if (active) TextPrimary else TextMuted,
+            fontFamily = AppFont,
+            fontWeight = FontWeight.SemiBold,
+            fontSize = 10.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
+private fun SignalArrow(accent: Color) {
+    Text("→", color = accent.a(0.6f), fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 11.sp)
 }
 
 /** An eyebrow and the lines under it, so the card reads as sections not a list. */

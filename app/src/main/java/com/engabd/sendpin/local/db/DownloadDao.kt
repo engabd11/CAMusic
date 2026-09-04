@@ -43,4 +43,13 @@ interface DownloadDao {
 
     @Query("SELECT EXISTS(SELECT 1 FROM downloads WHERE id = :id)")
     suspend fun exists(id: String): Boolean
+
+    /**
+     * Resilient offline SQLite fast search index across title, artist, and album.
+     */
+    @Query("SELECT * FROM downloads WHERE title LIKE '%' || :query || '%' OR artist LIKE '%' || :query || '%' OR album LIKE '%' || :query || '%' ORDER BY title ASC")
+    suspend fun searchTracks(query: String): List<DownloadedTrackEntity>
+
+    @Query("SELECT * FROM downloads WHERE title LIKE '%' || :query || '%' OR artist LIKE '%' || :query || '%' OR album LIKE '%' || :query || '%' ORDER BY title ASC")
+    fun observeSearchTracks(query: String): Flow<List<DownloadedTrackEntity>>
 }

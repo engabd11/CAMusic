@@ -169,16 +169,28 @@ fun SeekRow(scrubber: Scrubber, durationMs: Long, playing: Boolean = false) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val settings = remember(context) { com.engabd.sendpin.data.AppSettings(context) }
     val style by settings.seekBarStyle.collectAsStateWithLifecycle(initialValue = "line")
-    if (style == "wave") {
-        WaveSeekBar(
+    when (style) {
+        "wave" -> WaveSeekBar(
             progress,
             onChange = { scrubber.onDrag(it, durationMs) },
             playing = playing,
             onCommit = { scrubber.onRelease(it, durationMs) },
             label = { fmtTime((it * durationMs).toLong()) },
         )
-    } else {
-        HSlider(
+        "pill" -> PillSeekBar(
+            progress,
+            onChange = { scrubber.onDrag(it, durationMs) },
+            onCommit = { scrubber.onRelease(it, durationMs) },
+            label = { fmtTime((it * durationMs).toLong()) },
+        )
+        "glow" -> GlowSeekBar(
+            progress,
+            onChange = { scrubber.onDrag(it, durationMs) },
+            playing = playing,
+            onCommit = { scrubber.onRelease(it, durationMs) },
+            label = { fmtTime((it * durationMs).toLong()) },
+        )
+        else -> HSlider(
             progress,
             onChange = { scrubber.onDrag(it, durationMs) },
             onCommit = { scrubber.onRelease(it, durationMs) },
@@ -205,36 +217,34 @@ fun TransportRow(
     viewModel: NowPlayingViewModel,
     onShowQuality: () -> Unit,
 ) {
-    Row(
+    Box(
         Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
+        contentAlignment = Alignment.Center,
     ) {
-        TransportIcon(Icons.Default.Shuffle, "Shuffle", 20.dp, state.shuffle) { viewModel.toggleShuffle() }
-        TransportIcon(Icons.Default.SkipPrevious, "Previous", 26.dp) { viewModel.previous() }
-        PlayCluster(state.quality, onShowQuality, state.isPlaying) { viewModel.playPause() }
-        TransportIcon(Icons.Default.SkipNext, "Next", 26.dp) { viewModel.next() }
-        TransportIcon(
-            if (state.repeatMode == "one") Icons.Default.RepeatOne else Icons.Default.Repeat,
-            "Repeat", 20.dp, state.repeatMode != "off",
-        ) { viewModel.cycleRepeat() }
-    }
-}
+        // Floating quality badge positioned above the PlayButton without shifting
+        // the vertical alignment of the surrounding transport icons.
+        Box(
+            Modifier
+                .align(Alignment.TopCenter)
+                .offset(y = (-32).dp),
+        ) {
+            TappableQualityChip(playing = state.quality, onClick = onShowQuality)
+        }
 
-/** The quality badge and the play button, stacked — the transport row's center slot. */
-@Composable
-private fun PlayCluster(
-    quality: StreamQuality?,
-    onShowQuality: () -> Unit,
-    isPlaying: Boolean,
-    onPlayPause: () -> Unit,
-) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        TappableQualityChip(playing = quality, onClick = onShowQuality)
-        PlayButton(isPlaying, onClick = onPlayPause)
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TransportIcon(Icons.Default.Shuffle, "Shuffle", 20.dp, state.shuffle) { viewModel.toggleShuffle() }
+            TransportIcon(Icons.Default.SkipPrevious, "Previous", 26.dp) { viewModel.previous() }
+            PlayButton(state.isPlaying) { viewModel.playPause() }
+            TransportIcon(Icons.Default.SkipNext, "Next", 26.dp) { viewModel.next() }
+            TransportIcon(
+                if (state.repeatMode == "one") Icons.Default.RepeatOne else Icons.Default.Repeat,
+                "Repeat", 20.dp, state.repeatMode != "off",
+            ) { viewModel.cycleRepeat() }
+        }
     }
 }
 
