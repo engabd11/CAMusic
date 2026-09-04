@@ -293,6 +293,22 @@ private fun SpeedFeaturesRow(settings: AppSettings, accent: Color, scope: Corout
     ) { on -> requestThenSet(on) { settings.setSpeedLimitAlertEnabled(on) } }
 
     if (alertEnabled && granted) {
+        // ── Warning sound ─────────────────────────────────────────────────
+        val soundId by settings.speedAlertSound.collectAsState(initial = AppSettings.SPEED_ALERT_TONE)
+        val soundOptions = com.engabd.sendpin.service.SpeedAlertSound.OPTIONS
+        val soundLabel = com.engabd.sendpin.service.SpeedAlertSound.labelFor(soundId)
+        FieldLabel("Warning sound")
+        DropdownPicker(
+            options = soundOptions.map { it.label },
+            selectedIndex = soundOptions.indexOfFirst { it.id == soundId }.takeIf { it >= 0 } ?: 0,
+            accent = accent,
+            placeholder = "Choose a sound",
+        ) { i -> scope.launch { settings.setSpeedAlertSound(soundOptions[i].id) } }
+        OledButton("Preview \"$soundLabel\"", accent = accent, outline = true) {
+            com.engabd.sendpin.service.SpeedAlertSound.play(context, soundId)
+        }
+        Note("Plays when the speed limit and its tolerance are breached while driving.")
+
         // ── Limit source toggle: Auto-detect vs Manual ──────────────────────
         FieldLabel("Limit source")
         com.engabd.sendpin.ui.design.SegmentedToggle(
