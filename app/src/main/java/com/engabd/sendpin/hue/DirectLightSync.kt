@@ -282,6 +282,19 @@ data class ActiveLightSyncSource(
     val artUrl: String?,
     val scanTrack: LocalTrack?,
     /**
+     * The album and artist a hand-picked palette is filed under, for
+     * [CoverPaletteOverride.keysFor].
+     *
+     * Separate from [scanTrack] because the Music Assistant feed has no [LocalTrack]
+     * and yet does know what record is playing — it simply knew it somewhere else, in
+     * `Playback`'s own metadata. Keying MA's overrides on the artwork URL alone (the
+     * only key left without this) filed them under a `/imageproxy` address that MA
+     * re-issues with a different id and token on the next session, so a correction
+     * saved on Monday was orphaned by Tuesday. Album-and-artist survives that.
+     */
+    val paletteAlbum: String? = null,
+    val paletteArtist: String? = null,
+    /**
      * Which of the four feeds this is. [tap] stays non-null for all of them — for
      * [LightSyncFeed.SCAN_REMOTE] it is simply the local player's tap, which is
      * receiving nothing, so wiring it is harmless and saves making every reader of
@@ -1767,9 +1780,11 @@ class DirectLightSync(
      * A user-corrected palette for whatever is currently playing, if there is one.
      *
      * Tries every key the editor could have saved under, in the same order the
-     * editor prefers them — see [CoverPaletteOverride.keysFor]. On the Music
-     * Assistant feed there is no [LocalTrack] at all, and the artwork URL is the
-     * only key left; that is deliberate, not a gap.
+     * editor prefers them — see [CoverPaletteOverride.keysFor]. The album and
+     * artist come from [ActiveLightSyncSource.paletteAlbum] and
+     * [ActiveLightSyncSource.paletteArtist] rather than from [ActiveLightSyncSource.scanTrack],
+     * which is null on the Music Assistant feed — that used to leave the artwork
+     * URL as MA's only key, and MA re-issues those between sessions.
      *
      * Suspends because it reads [AppSettings.coverPaletteOverrides], which is
      * backed by DataStore.
@@ -1777,9 +1792,9 @@ class DirectLightSync(
     private suspend fun findOverride(url: String?): CoverPaletteOverride? {
         val overrides = settings.coverPaletteOverrides.first()
         if (overrides.isEmpty()) return null
-        val track = activeSource.value.scanTrack
+        val source = activeSource.value
         return CoverPaletteOverride
-            .keysFor(track?.album, track?.artist, url, track?.id)
+            .keysFor(source.paletteAlbum, source.paletteArtist, url, source.scanTrack?.id)
             .firstNotNullOfOrNull { key -> overrides[key]?.takeIf { it.colors.isNotEmpty() } }
     }
 
@@ -2197,7 +2212,16 @@ class DirectLightSync(
                 // The first emission is what is already stored, which the show has
                 // either applied or had no artwork for. Only changes are news.
                 .drop(1)
-                .collect { lastGoodArtUrl?.let { url -> applyAlbumArt(url) } }
+                // Unconditionally, not `lastGoodArtUrl?.let`: that field is only
+                // written on a path that *succeeded* (see [applyAlbumArt]), so a
+                // track whose cover is missing, is a `file://` that will not decode,
+                // or simply never arrived left it null — and the save the user had
+                // just made was a no-op for the show actually running. Those are
+                // exactly the tracks a hand-picked palette exists for. A null URL is
+                // fine here: `applyAlbumArt` checks the override *before* it needs a
+                // cover, and `findOverride` still has the album, artist and track id
+                // to look one up by.
+                .collect { applyAlbumArt(lastGoodArtUrl) }
         }
         // Album artwork. Collected unconditionally rather than only while an
         // album-art scheme is selected, so switching to one mid-track picks up

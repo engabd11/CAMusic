@@ -481,14 +481,25 @@ private fun DirectLightSyncScreen(
     val speakerOffsetMs by settings.lightSyncSpeakerOffsetMs.collectAsState(initial = 0)
     val captureState by com.engabd.sendpin.capture.PlaybackCapture.state.collectAsStateWithLifecycle()
     val coverOverrides by settings.coverPaletteOverrides.collectAsState(initial = emptyMap())
+    // Which saved show the room is actually on. Compared rather than remembered, so
+    // the highlight is right after leaving the tab, after a genre rule fires on its
+    // own, and — the point — stops being right the moment a tunable moves. See
+    // ShowPreset.matches.
+    val liveShow by settings.liveShowPreset.collectAsState(initial = com.engabd.sendpin.hue.ShowPreset.default())
+    val activePresetId = remember(presets, liveShow) {
+        presets.firstOrNull { it.matches(liveShow) }?.id
+    }
 
     // Built from exactly what DirectLightSync.findOverride reads — the active
-    // source's LocalTrack and artwork URL — and from nothing else. An override
-    // filed under a key the engine never looks up is a palette the user saved and
-    // the room never shows, which is the failure this feature already had once.
+    // source's own palette fields, artwork URL and track id — and from nothing else.
+    // An override filed under a key the engine never looks up is a palette the user
+    // saved and the room never shows, which is the failure this feature already had
+    // once. `paletteAlbum`/`paletteArtist` rather than `scanTrack`'s: the latter is
+    // null on the Music Assistant feed, which left the churning artwork URL as MA's
+    // only key — see ActiveLightSyncSource.
     val paletteKeys = com.engabd.sendpin.hue.CoverPaletteOverride.keysFor(
-        album = lightSource.scanTrack?.album,
-        artist = lightSource.scanTrack?.artist,
+        album = lightSource.paletteAlbum,
+        artist = lightSource.paletteArtist,
         coverUrl = lightSource.artUrl,
         trackId = lightSource.scanTrack?.id,
     )
@@ -988,6 +999,7 @@ private fun DirectLightSyncScreen(
                     presets = presets,
                     rules = genreRules,
                     genreAuto = genreAuto,
+                    activeId = activePresetId,
                     accent = accent,
                     onApply = { preset -> scope.launch { settings.applyShowPreset(preset) } },
                     onSave = { name ->
@@ -1161,15 +1173,12 @@ private fun DirectLightSyncScreen(
             // user and file the save against the new track's keys instead — see
             // CoverPaletteEditor's own note on seeding.
             val editorKeys = remember { paletteKeys }
+            // The same fields the keys above are built from, so the sheet cannot
+            // name one record and file the save against another.
             val editorAlbum = remember {
-                lightSource.scanTrack?.album?.takeIf { it.isNotBlank() }
-                    ?: maNow?.album?.takeIf { it.isNotBlank() }
-                    ?: "What's playing"
+                lightSource.paletteAlbum?.takeIf { it.isNotBlank() } ?: "What's playing"
             }
-            val editorArtist = remember {
-                lightSource.scanTrack?.artist?.takeIf { it.isNotBlank() }
-                    ?: maNow?.artist?.takeIf { it.isNotBlank() }
-            }
+            val editorArtist = remember { lightSource.paletteArtist?.takeIf { it.isNotBlank() } }
             val editorCover = remember { lightSource.artUrl }
             CoverPaletteEditor(
                 albumName = editorAlbum,
@@ -1205,7 +1214,7 @@ private fun DirectLightSyncScreen(
  * screen and none of them was cut; they moved somewhere with room to be read.
  */
 @Composable
-private fun FeatureRow(
+internal fun FeatureRow(
     title: String,
     gist: String,
     info: String,
@@ -1316,258 +1325,6 @@ private fun EmptyAreas(error: String?, onRetry: () -> Unit) {
             Text("Retry", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
         }
     }
-}
-
-/**
- * Saved shows: apply one, save the current one, and optionally let the genre of
- * whatever is playing pick between them.
- *
- * A chip per preset rather than a list, because applying one is the common action
- * by a wide margin and everything else - rename, delete, tie it to a genre - is
- * rare enough to live behind a long-press.
- */
-@Composable
-private fun SavedShows(
-    presets: List<com.engabd.sendpin.hue.ShowPreset>,
-    rules: List<com.engabd.sendpin.hue.GenrePresetRule>,
-    genreAuto: Boolean,
-    accent: Color,
-    onApply: (com.engabd.sendpin.hue.ShowPreset) -> Unit,
-    onSave: (String) -> Unit,
-    onRename: (com.engabd.sendpin.hue.ShowPreset, String) -> Unit,
-    onDelete: (com.engabd.sendpin.hue.ShowPreset) -> Unit,
-    onGenreAuto: (Boolean) -> Unit,
-    onAddRule: (String, com.engabd.sendpin.hue.ShowPreset) -> Unit,
-    onRemoveRule: (com.engabd.sendpin.hue.GenrePresetRule) -> Unit,
-) {
-    var saving by remember { mutableStateOf(false) }
-    var editing by remember { mutableStateOf<com.engabd.sendpin.hue.ShowPreset?>(null) }
-    var applied by remember { mutableStateOf<String?>(null) }
-
-    SectionLabel("Saved shows")
-    Spacer(Modifier.height(2.dp))
-    Text(
-        "The whole show - intensity, palette, brightness, layers and tunables - under one " +
-            "name. Applying one never turns the lights on or off, or moves them to another room.",
-        color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 11.sp,
-    )
-    Spacer(Modifier.height(12.dp))
-
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        presets.forEach { preset ->
-            PresetChip(
-                preset = preset,
-                accent = accent,
-                justApplied = applied == preset.id,
-                onClick = { applied = preset.id; onApply(preset) },
-                onLongClick = { editing = preset },
-            )
-        }
-    }
-    Spacer(Modifier.height(10.dp))
-    OledButton("Save this show as\u2026", accent = accent, outline = true) { saving = true }
-    Spacer(Modifier.height(4.dp))
-    Note("Long-press a show to rename it, delete it, or tie it to a genre.")
-
-    Spacer(Modifier.height(14.dp))
-    FeatureRow(
-        title = "Pick a show by genre",
-        gist = "Change the room to match what is playing.",
-        info = "When a track starts, its genre is matched against the rules you have set and " +
-            "that show is applied. First matching rule wins, so the order you add them in " +
-            "is the priority order.\n\nMatching is loose in both directions, because no two " +
-            "servers agree on genre strings: a rule for \"jazz\" catches \"Vocal Jazz\", and a " +
-            "rule for \"Progressive House\" is caught by a track tagged \"house\".\n\nA track " +
-            "with no genre, or one nothing matches, leaves the room exactly as it is - " +
-            "rather than resetting to a default halfway through a record.\n\nTip: two or " +
-            "three broad rules beat a dozen narrow ones. The point is that a quiet album " +
-            "does not light the room like a club.",
-        checked = genreAuto,
-        unavailable = if (rules.isEmpty()) "Add a rule first - long-press a show above." else null,
-    ) { on -> onGenreAuto(on) }
-
-    if (rules.isNotEmpty()) {
-        Spacer(Modifier.height(10.dp))
-        rules.forEach { rule ->
-            val name = presets.firstOrNull { it.id == rule.presetId }?.name ?: "(deleted)"
-            Row(
-                Modifier.fillMaxWidth().padding(vertical = 3.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    "${rule.genre}  \u2192  $name",
-                    color = TextSecondary, fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
-                    modifier = Modifier.weight(1f),
-                    maxLines = 1, overflow = TextOverflow.Ellipsis,
-                )
-                CircleBtn(Icons.Default.Close, "Remove rule") { onRemoveRule(rule) }
-            }
-        }
-    }
-
-    if (saving) {
-        NamePromptDialog(
-            title = "Save this show",
-            note = "Everything on this screen as it is right now, under a name.",
-            initial = "",
-            confirmLabel = "Save",
-            accent = accent,
-            onDismiss = { saving = false },
-            onConfirm = { name -> saving = false; onSave(name) },
-        )
-    }
-
-    editing?.let { preset ->
-        PresetActionsDialog(
-            preset = preset,
-            presets = presets,
-            accent = accent,
-            onDismiss = { editing = null },
-            onRename = { name -> editing = null; onRename(preset, name) },
-            onDelete = { editing = null; onDelete(preset) },
-            onAddRule = { genre -> editing = null; onAddRule(genre, preset) },
-        )
-    }
-}
-
-@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
-@Composable
-private fun PresetChip(
-    preset: com.engabd.sendpin.hue.ShowPreset,
-    accent: Color,
-    justApplied: Boolean,
-    onClick: () -> Unit,
-    onLongClick: () -> Unit,
-) {
-    Column(
-        Modifier
-            .clip(RoundedCornerShape(14.dp))
-            .background(if (justApplied) accent.a(0.16f) else Glass)
-            .border(
-                1.dp,
-                if (justApplied) accent.a(0.45f) else Hairline,
-                RoundedCornerShape(14.dp),
-            )
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-            .padding(horizontal = 13.dp, vertical = 9.dp),
-    ) {
-        Text(
-            preset.name.ifBlank { "Untitled" },
-            color = if (justApplied) accent else TextPrimary,
-            fontWeight = FontWeight.Bold, fontSize = 13.sp,
-            maxLines = 1, overflow = TextOverflow.Ellipsis,
-        )
-        Text(
-            preset.summary(),
-            color = TextFaint, fontWeight = FontWeight.SemiBold, fontSize = 10.sp,
-            maxLines = 1, overflow = TextOverflow.Ellipsis,
-        )
-    }
-}
-
-@Composable
-private fun NamePromptDialog(
-    title: String,
-    note: String,
-    initial: String,
-    confirmLabel: String,
-    accent: Color,
-    onDismiss: () -> Unit,
-    onConfirm: (String) -> Unit,
-) {
-    var name by remember { mutableStateOf(initial) }
-    androidx.compose.material3.AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = Ink2,
-        title = { Text(title, color = TextPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 17.sp) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OledField(name, { name = it }, "Name", "e.g. Dinner", accent)
-                Note(note)
-            }
-        },
-        confirmButton = {
-            androidx.compose.material3.TextButton(
-                onClick = { onConfirm(name.trim()) },
-                enabled = name.isNotBlank(),
-            ) {
-                Text(
-                    confirmLabel,
-                    color = if (name.isBlank()) TextFaint else accent,
-                    fontWeight = FontWeight.Bold,
-                )
-            }
-        },
-        dismissButton = {
-            androidx.compose.material3.TextButton(onClick = onDismiss) {
-                Text("Cancel", color = TextMuted)
-            }
-        },
-    )
-}
-
-/**
- * Rename, delete, or tie a preset to a genre.
- *
- * One dialog for all three because they are all rare: a preset is applied dozens of
- * times for every once it is edited, which is why the chip's tap does the applying
- * and everything here is behind a long-press.
- */
-@Composable
-private fun PresetActionsDialog(
-    preset: com.engabd.sendpin.hue.ShowPreset,
-    presets: List<com.engabd.sendpin.hue.ShowPreset>,
-    accent: Color,
-    onDismiss: () -> Unit,
-    onRename: (String) -> Unit,
-    onDelete: () -> Unit,
-    onAddRule: (String) -> Unit,
-) {
-    var name by remember { mutableStateOf(preset.name) }
-    var genre by remember { mutableStateOf("") }
-    var confirmDelete by remember { mutableStateOf(false) }
-    androidx.compose.material3.AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = Ink2,
-        title = { Text(preset.name.ifBlank { "Untitled" }, color = TextPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 17.sp) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                OledField(name, { name = it }, "Name", "e.g. Dinner", accent)
-                OledField(genre, { genre = it }, "Use for genre (optional)", "e.g. jazz", accent)
-                Note(preset.summary())
-                OledButton(
-                    if (confirmDelete) "Tap again to delete" else "Delete this show",
-                    accent = accent, danger = true,
-                ) {
-                    if (confirmDelete) onDelete() else confirmDelete = true
-                }
-            }
-        },
-        confirmButton = {
-            androidx.compose.material3.TextButton(
-                onClick = {
-                    // A genre typed here is the reason the dialog was opened; a name
-                    // change alone is the other reason. Both at once is fine.
-                    if (genre.isNotBlank()) onAddRule(genre)
-                    else if (name.trim() != preset.name) onRename(name.trim())
-                    else onDismiss()
-                },
-                enabled = name.isNotBlank(),
-            ) {
-                Text("Done", color = if (name.isBlank()) TextFaint else accent, fontWeight = FontWeight.Bold)
-            }
-        },
-        dismissButton = {
-            androidx.compose.material3.TextButton(onClick = onDismiss) {
-                Text("Cancel", color = TextMuted)
-            }
-        },
-    )
 }
 
 @Composable
@@ -1984,7 +1741,14 @@ private fun AlbumColoursCard(
     onEdit: () -> Unit,
     onReset: () -> Unit,
 ) {
-    val dynamic = com.engabd.sendpin.hue.ColorScheme.fromWire(scheme).isDynamic
+    val colourScheme = com.engabd.sendpin.hue.ColorScheme.fromWire(scheme)
+    val dynamic = colourScheme.isDynamic
+    // Song draws its own colours from the music and never takes the album's — see
+    // [SyncoEngine.setAlbumColors], which stores a correction under Song but does not
+    // put it on the room. So a correction is kept and is real, and this card must not
+    // claim it is what the lights are showing.
+    val songScheme = colourScheme == com.engabd.sendpin.hue.ColorScheme.SONG
+    val showing = dynamic && !songScheme
     GlassCard(radius = 18.dp, fill = if (saved != null) accent.a(0.10f) else Glass) {
         Column {
             Row(
@@ -2008,7 +1772,7 @@ private fun AlbumColoursCard(
                     if (colours.isEmpty()) {
                         Icon(
                             Icons.Default.Palette, null,
-                            tint = if (canEdit && dynamic) TextMuted else TextFaint,
+                            tint = if (canEdit && showing) TextMuted else TextFaint,
                             modifier = Modifier.size(20.dp),
                         )
                     } else {
@@ -2038,8 +1802,9 @@ private fun AlbumColoursCard(
                         )
                         if (saved != null) {
                             Text(
-                                "Corrected",
-                                color = accent, fontWeight = FontWeight.Bold, fontSize = 10.sp,
+                                if (showing) "Corrected" else "Corrected, not in use",
+                                color = if (showing) accent else TextMuted,
+                                fontWeight = FontWeight.Bold, fontSize = 10.sp,
                             )
                         }
                     }
@@ -2049,6 +1814,10 @@ private fun AlbumColoursCard(
                             !dynamic ->
                                 "The colour above is a fixed palette, so album colours are not in " +
                                     "use. Corrections are kept, and apply again on Album art."
+                            songScheme ->
+                                "Song draws its colours from the music itself, not the sleeve, so " +
+                                    "album colours are not in use. Corrections are kept, and apply " +
+                                    "again on Album art."
                             saved != null && label != null -> "Your colours for $label."
                             saved != null -> "Your colours, not the artwork's."
                             label != null -> "Change the colours $label lights the room with."

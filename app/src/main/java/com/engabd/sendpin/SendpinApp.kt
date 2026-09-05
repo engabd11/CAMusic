@@ -178,6 +178,11 @@ class SendpinApp : Application(), ImageLoaderFactory {
             scanFrameSource.driving, com.engabd.sendpin.capture.PlaybackCapture.running,
             mpdScanFrameSource.driving,
             com.engabd.sendpin.data.AppSettings(this).phoneAudioFeed,
+            // The record Music Assistant is playing, for the per-album palette key.
+            // From `Playback` rather than `MaNowPlaying` because these two are written
+            // in the same `nowPlaying` collect as `artworkUrl` above, so the album and
+            // the cover a palette is keyed on can never come from different tracks.
+            playback.album, playback.artist,
         ) { values ->
             @Suppress("UNCHECKED_CAST")
             val localTrack = values[0] as com.engabd.sendpin.audio.LocalTrack?
@@ -187,6 +192,8 @@ class SendpinApp : Application(), ImageLoaderFactory {
             val captureRunning = values[4] as Boolean
             val mpdScanDriving = values[5] as Boolean
             val phoneAudioFeed = values[6] as String
+            val maAlbum = (values[7] as String).takeIf { it.isNotBlank() }
+            val maArtist = (values[8] as String).takeIf { it.isNotBlank() }
             val maTap = owner.sendspinTap
             // MPD is playing and this phone is only its remote — see
             // `PlaybackOwner.State.soundIsReadable`, which is the same question the
@@ -221,7 +228,9 @@ class SendpinApp : Application(), ImageLoaderFactory {
                 com.engabd.sendpin.hue.LightSyncFeed.SENDSPIN_PCM ->
                     com.engabd.sendpin.hue.ActiveLightSyncSource(
                         tap = maTap!!.first, lead = maTap.second, artUrl = maArtUrl,
-                        scanTrack = null, feed = feed,
+                        scanTrack = null,
+                        paletteAlbum = maAlbum, paletteArtist = maArtist,
+                        feed = feed,
                     )
                 // Another app's audio, through MediaProjection. Its own tap instance,
                 // because the analysis ring has one writer by contract.
@@ -253,12 +262,19 @@ class SendpinApp : Application(), ImageLoaderFactory {
                         // null on the Music Assistant side because there is no local
                         // track there to name; on MPD there always is.
                         scanTrack = if (mpdHoldsSound || mpdScanDriving) localTrack else null,
+                        // Same split as `artUrl` and `scanTrack` above: MPD's colours
+                        // come from this phone's own track, Music Assistant's from
+                        // what MA says it is playing.
+                        paletteAlbum = if (mpdScanDriving || mpdHoldsSound) localTrack?.album else maAlbum,
+                        paletteArtist = if (mpdScanDriving || mpdHoldsSound) localTrack?.artist else maArtist,
                         feed = feed,
                     )
                 else ->
                     com.engabd.sendpin.hue.ActiveLightSyncSource(
                         tap = localPlayer.audioAnalysisTap, lead = localPlayer.audioLead,
-                        artUrl = localTrack?.artUrl, scanTrack = localTrack, feed = feed,
+                        artUrl = localTrack?.artUrl, scanTrack = localTrack,
+                        paletteAlbum = localTrack?.album, paletteArtist = localTrack?.artist,
+                        feed = feed,
                     )
             }
         }.stateIn(
@@ -266,6 +282,8 @@ class SendpinApp : Application(), ImageLoaderFactory {
             com.engabd.sendpin.hue.ActiveLightSyncSource(
                 tap = localPlayer.audioAnalysisTap, lead = localPlayer.audioLead,
                 artUrl = localPlayer.current.value?.artUrl, scanTrack = localPlayer.current.value,
+                paletteAlbum = localPlayer.current.value?.album,
+                paletteArtist = localPlayer.current.value?.artist,
             ),
         )
     }
@@ -295,18 +313,36 @@ class SendpinApp : Application(), ImageLoaderFactory {
      * selected (or no bridge is configured), this stays idle and the existing
      * HA-based path handles Light Sync.
      */
+    /**
+     * Whether *anything* this phone can analyse is making sound right now.
+     *
+     * The scan-driven feed has to count, or [com.engabd.sendpin.hue.DirectLightSync]'s
+     * `renderLoop` runs `isIdle = !playerPlaying || !fresh` straight over perfectly
+     * good synthetic frames — and so does the MediaProjection capture.
+     *
+     * Named and shared rather than assembled inline where it is used. The rhythm game
+     * needs the same answer (its board must freeze when the music does), and two
+     * derivations of "is it playing" in two files is exactly the shape of bug
+     * [com.engabd.sendpin.service.PlaybackOwner] was written to end — a paused player
+     * driving one consumer and not the other.
+     *
+     * Deliberately not [com.engabd.sendpin.service.PlaybackOwner.State.anyPlaying],
+     * which is about *decoders* and so excludes both the scan and capture feeds.
+     */
+    val audioIsPlaying: StateFlow<Boolean> by lazy {
+        combine(
+            localPlayer.playing, playback.isPlaying, scanFrameSource.driving,
+            com.engabd.sendpin.capture.PlaybackCapture.running,
+        ) { local, ma, scanning, capturing -> local || ma || scanning || capturing }
+            .stateIn(appScope, SharingStarted.Eagerly, false)
+    }
+
     val directLightSync: com.engabd.sendpin.hue.DirectLightSync by lazy {
         com.engabd.sendpin.hue.DirectLightSync(
             this,
             activeLightSyncSource,
             trackScans,
-            // The scan-driven feed has to count as playing, or `renderLoop`'s
-            // `isIdle = !playerPlaying || !fresh` runs the idle show straight over
-            // perfectly good synthetic frames.
-            isPlaying = combine(
-                localPlayer.playing, playback.isPlaying, scanFrameSource.driving,
-                com.engabd.sendpin.capture.PlaybackCapture.running,
-            ) { local, ma, scanning, capturing -> local || ma || scanning || capturing },
+            isPlaying = audioIsPlaying,
         ).also { sync -> scanFrameSink = sync::onSynthFrame }
     }
 
