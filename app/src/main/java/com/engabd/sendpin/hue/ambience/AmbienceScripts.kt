@@ -2,6 +2,7 @@ package com.engabd.sendpin.hue.ambience
 
 import com.engabd.sendpin.hue.Rgb
 import com.engabd.sendpin.hue.ambience.scripts.AuroraScript
+import com.engabd.sendpin.hue.ambience.scripts.CoastalRainScript
 import com.engabd.sendpin.hue.ambience.scripts.FireplaceScript
 import com.engabd.sendpin.hue.ambience.scripts.FireworksAmbienceScript
 import com.engabd.sendpin.hue.ambience.scripts.LightTrainScript
@@ -44,4 +45,5 @@ fun scriptFor(effect: AmbienceEffect): AmbienceScript = when (effect) {
     AmbienceEffect.FIREPLACE -> FireplaceScript()
     AmbienceEffect.LIGHT_TRAIN -> LightTrainScript()
     AmbienceEffect.AURORA -> AuroraScript()
+    AmbienceEffect.COASTAL_RAIN -> CoastalRainScript()
 }

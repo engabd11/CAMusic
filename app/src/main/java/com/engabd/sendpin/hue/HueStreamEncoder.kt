@@ -240,6 +240,23 @@ class HueStreamEncoder(
         return x to y
     }
 
+    /**
+     * Copy of the per-channel chromaticity state, for surviving a reconnect.
+     *
+     * `reconnect()` rebuilds the encoder because its sequence numbers belong to
+     * the old session — and until this existed, rebuilding also dropped
+     * [prevXy], so every channel's colour jumped to the engine's current state
+     * in one frame, exactly the pop the slew limiter exists to prevent. The
+     * sequence counter deliberately does not cross: it belongs to the session.
+     */
+    fun snapshotXy(): Map<Int, Pair<Float, Float>> = prevXy.toMap()
+
+    /** Restore chromaticity state from a previous encoder's [snapshotXy]. */
+    fun restoreXy(state: Map<Int, Pair<Float, Float>>) {
+        prevXy.clear()
+        prevXy.putAll(state)
+    }
+
     private fun gamutCentroid(gamut: List<Pair<Float, Float>>): Pair<Float, Float> =
         (gamut[0].first + gamut[1].first + gamut[2].first) / 3f to
         (gamut[0].second + gamut[1].second + gamut[2].second) / 3f

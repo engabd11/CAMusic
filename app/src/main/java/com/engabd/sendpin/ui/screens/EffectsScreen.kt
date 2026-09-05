@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Thunderstorm
 import androidx.compose.material.icons.filled.Train
 import androidx.compose.material.icons.filled.Water
+import androidx.compose.material.icons.filled.WaterDrop
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -380,6 +381,7 @@ private fun ambienceIcon(e: AmbienceEffect): ImageVector = when (e) {
     AmbienceEffect.FIREPLACE -> Icons.Default.LocalFireDepartment
     AmbienceEffect.LIGHT_TRAIN -> Icons.Default.Train
     AmbienceEffect.AURORA -> Icons.Default.AutoAwesome
+    AmbienceEffect.COASTAL_RAIN -> Icons.Default.WaterDrop
 }
 
 private fun formatRemaining(seconds: Int): String {
