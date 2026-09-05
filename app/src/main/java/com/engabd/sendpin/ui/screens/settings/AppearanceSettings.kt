@@ -142,7 +142,7 @@ internal fun AppearanceSection(settings: AppSettings, accent: Color, scope: Coro
                 when (seekBarStyle) {
                     "wave" -> "The played portion wobbles gently while the track plays, like a water surface."
                     "pill" -> "A bold, modern Material 3 expressive segmented pill with elevated touch targets."
-                    "glow" -> "An ultra-clean minimalist line with a luminous breathing halo around the playhead."
+                    "glow" -> "A beam of light: the played stretch glows in the accent with a breathing halo around the playhead."
                     else -> "A straight progress line."
                 },
             )

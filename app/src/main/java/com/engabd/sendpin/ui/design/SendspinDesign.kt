@@ -1564,8 +1564,22 @@ fun PillSeekBar(
 }
 
 /**
- * Audiophile Glow Seek Bar: a luminous, ultra-clean line with a breathing accent halo
- * around the playhead that pulses during playback.
+ * Audiophile Glow Seek Bar: the played stretch is a glowing beam of light, not a
+ * painted line.
+ *
+ * Its sibling skins are ink on glass: [HSlider] a flat accent bar, [PillSeekBar] a
+ * bold pill, [WaveSeekBar] a wobble. This one is the outlier on purpose — the
+ * progress is drawn as emitted light: a soft outer bloom the full length of what has
+ * played, a hot core inside it, a white-hot leading edge where the beam meets the
+ * playhead, and a playhead that is a lamp rather than a dot, with its own radiance
+ * and a slow breath while playing. The first cut of this skin differed from
+ * [HSlider] by a 1dp track and an 8dp shadow — both invisible on OLED — and read as
+ * the same line; every layer here is additive glow a flat bar cannot have.
+ *
+ * Drawn in one [Canvas] rather than layered blurred [Box]es: three stacked blur
+ * passes per frame is real GPU work on the one control that redraws every frame
+ * during playback, and a radial gradient painted directly reads as the same bloom
+ * for none of the cost.
  */
 @Composable
 fun GlowSeekBar(
@@ -1599,7 +1613,15 @@ fun GlowSeekBar(
         ),
         label = "pulseAlpha",
     )
+    // The breath dims the playhead's radiance, not the beam: a paused beam is a
+    // lamp that is still on, and the pulse was always about the playhead feeling
+    // alive while the track runs.
     val effectiveGlow = if (reduced || !playing) 0.5f else pulseAlpha
+
+    // Resolved in composition — theme reads are `@Composable`, and the Canvas lambda
+    // runs in DrawScope. See the note on [WaveSeekBar]'s Canvas.
+    val railColor = inkOn(0.10f)
+    val dragScale = if (gesture.dragging) 1.6f else 1f
 
     Box(
         modifier
@@ -1609,39 +1631,100 @@ fun GlowSeekBar(
             .sliderInput(gesture, { width }, onChange, ::commit),
         contentAlignment = Alignment.CenterStart,
     ) {
-        // Track rail
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(trackHeight)
-                .clip(RoundedCornerShape(50))
-                .background(inkOn(0.14f))
-        )
-        // Active line with soft glow behind it
-        Box(
-            Modifier
-                .fillMaxWidth(v)
-                .height(trackHeight)
-                .shadow(8.dp, RoundedCornerShape(50), ambientColor = accent, spotColor = accent)
-                .clip(RoundedCornerShape(50))
-                .background(accent)
-        )
-        // Luminous glowing bead
-        val density = androidx.compose.ui.platform.LocalDensity.current
-        val knobOffset = with(density) { (v * width - knob.toPx() / 2f).roundToInt() }
-        Box(
-            Modifier
-                .offset { IntOffset(knobOffset, 0) }
-                .size(if (gesture.dragging) knob * 1.5f else knob)
-        ) {
-            // Radial halo
-            CastGlow(accent, CircleShape, blurRadius = 14.dp, alpha = effectiveGlow, offsetY = 0.dp)
-            Box(
-                Modifier
-                    .matchParentSize()
-                    .clip(CircleShape)
-                    .background(accent)
-                    .border(1.5.dp, TextPrimary, CircleShape)
+        Canvas(Modifier.matchParentSize()) {
+            val centerY = size.height / 2f
+            val corePx = trackHeight.toPx()
+            val fillPx = size.width * v.coerceIn(0f, 1f)
+            val knobPx = knob.toPx()
+
+            // ── Rail: the unplayed stretch, a fainter whisper of the beam. ──
+            drawLine(
+                color = railColor,
+                start = Offset(0f, centerY),
+                end = Offset(size.width, centerY),
+                strokeWidth = corePx,
+                cap = StrokeCap.Round,
+            )
+
+            if (fillPx > 0f) {
+                // ── Outer bloom: the light thrown by the beam, falling off fast. ──
+                val bloomPx = corePx * 6f * dragScale
+                drawLine(
+                    brush = Brush.horizontalGradient(
+                        0f to accent.copy(alpha = 0.14f),
+                        0.7f to accent.copy(alpha = 0.30f * effectiveGlow.coerceIn(0f, 1f)),
+                        1f to accent.copy(alpha = 0.55f * effectiveGlow.coerceIn(0f, 1f)),
+                    ),
+                    start = Offset(0f, centerY),
+                    end = Offset(fillPx, centerY),
+                    strokeWidth = bloomPx,
+                    cap = StrokeCap.Round,
+                )
+
+                // ── Inner halo: the lit gas around the core. ──
+                val haloPx = corePx * 2.6f * dragScale
+                drawLine(
+                    brush = Brush.horizontalGradient(
+                        0f to accent.copy(alpha = 0.35f),
+                        1f to accent.copy(alpha = 0.80f),
+                    ),
+                    start = Offset(0f, centerY),
+                    end = Offset(fillPx, centerY),
+                    strokeWidth = haloPx,
+                    cap = StrokeCap.Round,
+                )
+
+                // ── Hot core: the beam itself. ──
+                drawLine(
+                    brush = Brush.horizontalGradient(
+                        0f to accent.copy(alpha = 0.85f),
+                        1f to lerp(accent, Color.White, 0.45f),
+                    ),
+                    start = Offset(0f, centerY),
+                    end = Offset(fillPx, centerY),
+                    strokeWidth = corePx,
+                    cap = StrokeCap.Round,
+                )
+
+                // ── White-hot leading edge: where the beam meets the playhead. ──
+                drawLine(
+                    brush = Brush.horizontalGradient(
+                        (fillPx - knobPx * 4f) / size.width to Color.Transparent,
+                        (fillPx - knobPx) / size.width to lerp(accent, Color.White, 0.25f),
+                        1f to Color.White.copy(alpha = 0.95f),
+                    ),
+                    start = Offset(0f, centerY),
+                    end = Offset(fillPx, centerY),
+                    strokeWidth = corePx,
+                    cap = StrokeCap.Butt,
+                )
+            }
+
+            // ── Playhead: a lamp, not a dot. Radiance first (drawn under), then
+            //    the lamp: an accent ring around a white-hot filament core. ──
+            val glowR = knobPx * 2.2f * dragScale
+            drawCircle(
+                brush = Brush.radialGradient(
+                    0f to accent.copy(alpha = 0.75f * effectiveGlow.coerceIn(0f, 1f)),
+                    0.4f to accent.copy(alpha = 0.30f * effectiveGlow.coerceIn(0f, 1f)),
+                    1f to Color.Transparent,
+                ),
+                radius = glowR,
+                center = Offset(fillPx, centerY),
+            )
+            drawCircle(
+                color = accent.copy(alpha = 0.9f),
+                radius = knobPx / 2f,
+                center = Offset(fillPx, centerY),
+            )
+            drawCircle(
+                brush = Brush.radialGradient(
+                    0f to Color.White,
+                    0.7f to lerp(accent, Color.White, 0.6f),
+                    1f to Color.Transparent,
+                ),
+                radius = knobPx * 0.38f,
+                center = Offset(fillPx, centerY),
             )
         }
 
