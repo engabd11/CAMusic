@@ -69,7 +69,7 @@ internal fun PlayerSection(
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         if (!hasMaServer) {
-            SettingsCard(
+            PageIntro(
                 title = "No Music Assistant server",
                 lead = "Add one under Libraries and this page starts meaning something.",
                 info = "Everything here configures the player CAMusic registers with Music " +
@@ -78,7 +78,7 @@ internal fun PlayerSection(
                     "go.\n\nTip: add one under Libraries and come back. This phone then appears " +
                     "in Music Assistant's own speaker list, and you can play to it from any " +
                     "other client.",
-            ) {}
+            )
         }
 
         SettingsCard(
@@ -501,17 +501,3 @@ private fun MaConfigRow(entry: MaConfigEntry, accent: Color, onChange: (JsonElem
     }
 }
 
-/** `SegmentedToggle` at full width, which is how every settings page wants it. */
-@Composable
-internal fun SegmentedToggleRow(
-    labels: List<String>,
-    selectedIndex: Int,
-    onSelect: (Int) -> Unit,
-) {
-    com.engabd.sendpin.ui.design.SegmentedToggle(
-        options = labels,
-        selectedIndex = selectedIndex,
-        modifier = Modifier.fillMaxWidth(),
-        onSelect = onSelect,
-    )
-}

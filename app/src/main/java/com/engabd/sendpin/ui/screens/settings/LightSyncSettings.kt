@@ -34,12 +34,12 @@ import com.engabd.sendpin.audio.ScanFailureNote
 import com.engabd.sendpin.audio.ScanProgress
 import com.engabd.sendpin.audio.TrackScan
 import com.engabd.sendpin.data.AppSettings
+import com.engabd.sendpin.library.ServerKind
 import com.engabd.sendpin.hue.DiscoveredBridge
 import com.engabd.sendpin.hue.LinkButtonNotPressed
 import com.engabd.sendpin.ui.design.MeterBar
 import com.engabd.sendpin.ui.design.Motion
 import com.engabd.sendpin.ui.design.Pill
-import com.engabd.sendpin.ui.design.SegmentedToggle
 import com.engabd.sendpin.ui.design.TitleGap
 import com.engabd.sendpin.ui.theme.*
 import kotlinx.coroutines.CoroutineScope
@@ -62,6 +62,19 @@ import kotlinx.coroutines.launch
  */
 internal const val BRIDGE_ROUTE = "__bridge__"
 
+/** Home Assistant's address and token, when that is the transport. */
+internal const val HA_ROUTE = "__ha__"
+
+/**
+ * Reading tracks ahead of the show.
+ *
+ * Its own page, not a second card under the bridge. Pairing a bridge is a one-time
+ * network setup; this is a background batch job with a disk cost, a progress meter, a
+ * failures list and a destructive delete. They were together because both had been
+ * moved off the Lights tab at the same time, which is not a reason.
+ */
+internal const val ANALYSIS_ROUTE = "__analysis__"
+
 @Composable
 internal fun LightSyncSection(
     settings: AppSettings,
@@ -76,15 +89,26 @@ internal fun LightSyncSection(
     onHaUrl: (String) -> Unit,
     haToken: String,
     onHaToken: (String) -> Unit,
+    /** Opens the Ambience screen, which is a screen rather than a settings page. */
+    onOpenAmbience: () -> Unit,
+    /** Opens a server's own page under Media Providers, for the cross-link below. */
+    onOpenServer: (String) -> Unit,
 ) {
-    if (detail == BRIDGE_ROUTE) {
-        BridgeAndSyncPage(settings, accent, scope, advanced)
-        return
+    when (detail) {
+        BRIDGE_ROUTE -> { DirectBridgeSetup(settings, scope, accent); return }
+        ANALYSIS_ROUTE -> { TrackAnalysisCard(settings, accent, advanced); return }
+        HA_ROUTE -> {
+            HomeAssistantCard(settings, accent, scope, haUrl, onHaUrl, haToken, onHaToken)
+            return
+        }
     }
 
     val mode by settings.lightSyncMode.collectAsStateWithLifecycle(initialValue = AppSettings.MODE_HA)
     val auto by settings.lightSyncModeAuto.collectAsStateWithLifecycle(initialValue = true)
     val direct = mode == AppSettings.MODE_DIRECT
+    val bridgeIp by settings.hueBridgeIp.collectAsStateWithLifecycle(initialValue = "")
+    val servers by settings.servers.collectAsStateWithLifecycle(initialValue = emptyList())
+    val maServerId = servers.firstOrNull { it.kind == ServerKind.MUSIC_ASSISTANT }?.id
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         SettingsCard(
@@ -95,10 +119,9 @@ internal fun LightSyncSection(
                 "lives on the Lights tab.\n\nTip: get the route working here first. Nothing on " +
                 "the Lights tab will do anything until this page reports a connection.",
         ) {
-            SegmentedToggle(
-                options = listOf("Home Assistant", "Hue Bridge"),
+            SegmentedToggleRow(
+                labels = listOf("Home Assistant", "Hue Bridge"),
                 selectedIndex = if (direct) 1 else 0,
-                modifier = Modifier.fillMaxWidth(),
             ) {
                 // Choosing by hand pins the transport, so the library stops moving it.
                 scope.launch {
@@ -152,12 +175,47 @@ internal fun LightSyncSection(
         if (direct) {
             NavRow(
                 Icons.Default.Router,
-                "Bridge & analysis",
-                "Pair the Hue Bridge, and choose whether tracks are read ahead of the show.",
+                "Hue Bridge",
+                if (bridgeIp.isBlank()) "Not paired yet — press the button on the bridge"
+                else "Paired at $bridgeIp",
                 accent,
             ) { onDetail(BRIDGE_ROUTE) }
         } else {
-            HomeAssistantCard(settings, accent, scope, haUrl, onHaUrl, haToken, onHaToken)
+            NavRow(
+                Icons.Default.Router,
+                "Home Assistant",
+                if (haUrl.isBlank()) "Not set up yet" else haUrl,
+                accent,
+            ) { onDetail(HA_ROUTE) }
+        }
+
+        NavRow(
+            Icons.Default.GraphicEq,
+            "Track analysis",
+            "Read tracks ahead of the show, so a song is exact from its first bar.",
+            accent,
+        ) { onDetail(ANALYSIS_ROUTE) }
+
+        NavRow(
+            Icons.Default.Waves,
+            "Ambience & room shows",
+            "Rain, fire, a storm — a lit room with its own sound, and no music needed.",
+            accent,
+            onClick = onOpenAmbience,
+        )
+
+        // The phone's own identity as a Music Assistant player — its name, the codec
+        // it advertises, and the latency trim that lines it up against the rest of a
+        // group — lives with the server it belongs to rather than here. This row is
+        // the signpost, because "the lights are late on the multi-room group" is a
+        // question people arrive at this page with.
+        maServerId?.let { id ->
+            NavRow(
+                Icons.Default.Speaker,
+                "Multi-room timing",
+                "Latency trim and this phone's player settings, on the Music Assistant server.",
+                accent,
+            ) { onOpenServer(id) }
         }
     }
 }
@@ -226,14 +284,6 @@ private fun HomeAssistantCard(
 }
 
 // ── Bridge & analysis ─────────────────────────────────────────────────────
-
-@Composable
-private fun BridgeAndSyncPage(settings: AppSettings, accent: Color, scope: CoroutineScope, advanced: Boolean) {
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        DirectBridgeSetup(settings, scope, accent)
-        TrackAnalysisCard(settings, accent, advanced)
-    }
-}
 
 /**
  * The bridge discovery, pairing and status UI.
@@ -481,7 +531,7 @@ private fun TrackAnalysisCard(settings: AppSettings, accent: Color, advanced: Bo
         if (!on) return@SettingsCard
 
         ToggleRow(
-            "Wi-Fi only",
+            "Analyse on Wi-Fi only",
             "Streamed tracks are downloaded to be read. Downloaded ones are always analysed, " +
                 "network or not.",
             wifiOnly, accent,
@@ -541,7 +591,7 @@ private fun TrackAnalysisCard(settings: AppSettings, accent: Color, advanced: Bo
             // Two taps, because this can throw away hours of decoding — and on a
             // streamed library, a gigabyte of transfer — that nothing can get back
             // except by doing it all again.
-            Pill(if (confirmDelete) "Delete them all?" else "Delete analyses", confirmDelete) {
+            Pill(if (confirmDelete) "Tap again to delete" else "Delete analyses", confirmDelete) {
                 if (confirmDelete) {
                     confirmDelete = false
                     scope.launch { scans.deleteAll(); usage = 0 to 0L; outdated = 0 }

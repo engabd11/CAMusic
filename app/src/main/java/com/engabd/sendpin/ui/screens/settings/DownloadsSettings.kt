@@ -70,7 +70,7 @@ internal fun DownloadsSection(
                 "to spend a data allowance on by accident.",
         ) {
             ToggleRow(
-                "Wi-Fi only",
+                "Download on Wi-Fi only",
                 "Skip downloads on mobile data rather than spending the allowance on them",
                 wifiOnly, accent,
             ) { scope.launch { settings.setDownloadWifiOnly(it) } }

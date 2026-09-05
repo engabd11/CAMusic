@@ -1675,39 +1675,6 @@ private fun offsetFromSlider(fraction: Float): Int {
 
 
 /**
- * What this phone's Light Sync is listening to, and the one control that decides it.
- *
- * ## Why this is one card and not two
- *
- * It used to be two, and they did not add up. A "Use this phone's audio" selector
- * offered Auto and Always projection, and a separate "React to other apps" switch
- * owned `MediaProjection`. But the selector only expressed a *preference* — the feed
- * picker consults it and then asks whether capture happens to be running — and
- * nothing in the selector ever started capture. So choosing Auto or Always
- * projection and expecting the room to follow Spotify did exactly nothing, forever,
- * with no error: the picker fell through to the local tap, which was silent, and the
- * lights ran the idle show. The two controls could also disagree by construction,
- * since either could be set to something the other contradicted.
- *
- * Now the choice is the switch. Picking a mode that needs capture asks for it, and
- * picking the one that does not stops it, so there is nothing left for a second
- * toggle to say.
- *
- * ## Why it is not a plain switch
- *
- * Capture needs a runtime microphone grant (which is what `AudioPlaybackCapture` is
- * gated on, even though no microphone is opened), a system consent dialog, and a
- * foreground service — and on Android 14+ that consent dialog reappears every single
- * time capture starts, because the projection token is single-use. So the card can
- * want capture and not have it, and it has to be able to say so and offer the way
- * back, rather than showing a switch that is on while nothing is listening.
- *
- * The blocked message is the part that earns the feature its keep. An app that opts
- * out of capture is delivered as bit-exact silence with no error of any kind, so
- * without saying so plainly the only observation available to the user is "the
- * lights do nothing", which is indistinguishable from a bug here.
- */
-/**
  * The row that opens the album-palette editor, and says whether this album already
  * has corrected colours.
  *
@@ -1848,6 +1815,39 @@ private fun AlbumColoursCard(
     }
 }
 
+/**
+ * What this phone's Light Sync is listening to, and the one control that decides it.
+ *
+ * ## Why this is one card and not two
+ *
+ * It used to be two, and they did not add up. A "Use this phone's audio" selector
+ * offered Auto and Always projection, and a separate "React to other apps" switch
+ * owned `MediaProjection`. But the selector only expressed a *preference* — the feed
+ * picker consults it and then asks whether capture happens to be running — and
+ * nothing in the selector ever started capture. So choosing Auto or Always
+ * projection and expecting the room to follow Spotify did exactly nothing, forever,
+ * with no error: the picker fell through to the local tap, which was silent, and the
+ * lights ran the idle show. The two controls could also disagree by construction,
+ * since either could be set to something the other contradicted.
+ *
+ * Now the choice is the switch. Picking a mode that needs capture asks for it, and
+ * picking the one that does not stops it, so there is nothing left for a second
+ * toggle to say.
+ *
+ * ## Why it is not a plain switch
+ *
+ * Capture needs a runtime microphone grant (which is what `AudioPlaybackCapture` is
+ * gated on, even though no microphone is opened), a system consent dialog, and a
+ * foreground service — and on Android 14+ that consent dialog reappears every single
+ * time capture starts, because the projection token is single-use. So the card can
+ * want capture and not have it, and it has to be able to say so and offer the way
+ * back, rather than showing a switch that is on while nothing is listening.
+ *
+ * The blocked message is the part that earns the feature its keep. An app that opts
+ * out of capture is delivered as bit-exact silence with no error of any kind, so
+ * without saying so plainly the only observation available to the user is "the
+ * lights do nothing", which is indistinguishable from a bug here.
+ */
 @Composable
 private fun PhoneAudioCard(
     selected: String,
