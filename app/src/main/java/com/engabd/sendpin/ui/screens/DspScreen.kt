@@ -716,13 +716,16 @@ private fun sliderToQ(s: Float): Float {
 /**
  * Everything in DSP below the title bar.
  *
- * Split out so the same controls can be a page or a sheet without being written
- * twice: [DspScreen] wraps it in a full screen with a back arrow, and [DspSheet]
- * hangs it off the player. `ColumnScope` because the body uses `weight` to let the
- * scroll area take what is left after the header, which is true in both hosts.
+ * Split out so the same controls can be a page or a sheet without being written twice.
+ *
+ * [modifier] rather than a `ColumnScope` `weight`, for the reason spelled out on
+ * [com.engabd.sendpin.ui.screens.LocalEqBody]: a weight is only honoured against a
+ * bounded height, so a body that takes one can be hosted by a sheet and *not* by a
+ * settings `LazyColumn`, where it silently measures at zero. The host says what shape
+ * it needs; the body sizes itself to whatever it is given.
  */
 @Composable
-internal fun ColumnScope.DspBody(viewModel: DspViewModel, accent: Color) {
+internal fun DspBody(viewModel: DspViewModel, accent: Color, modifier: Modifier = Modifier) {
     val config by viewModel.config.collectAsStateWithLifecycle()
     val loading by viewModel.loading.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
@@ -751,7 +754,7 @@ internal fun ColumnScope.DspBody(viewModel: DspViewModel, accent: Color) {
     }
 
             if (loading) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator(color = accent, strokeWidth = 2.dp, modifier = Modifier.size(28.dp))
                 }
                 return
@@ -767,10 +770,7 @@ internal fun ColumnScope.DspBody(viewModel: DspViewModel, accent: Color) {
             }
 
             Column(
-                Modifier
-                    .weight(1f)
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp),
+                modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Spacer(Modifier.height(4.dp))

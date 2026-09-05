@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -157,8 +159,24 @@ fun BoxScope.NowPlayingSheet(
                 // pipeline configured per MA player; the local one is a processor in
                 // this phone's own sink. Neither can describe the other.
                 Panel.DSP ->
-                    if (localSession) LocalEqBody(accent)
-                    else DspBody(dspViewModel(), accent)
+                    // The scroll, the side padding and the nav-bar inset belong to the
+                    // sheet rather than to the equaliser: this is the caller with a
+                    // bounded height to weight against, and the settings page — which
+                    // is a LazyColumn, and had none — is what the body used to be
+                    // measured at zero pixels inside. See [LocalEqBody].
+                    if (localSession) Column(
+                        Modifier.weight(1f).verticalScroll(rememberScrollState()),
+                    ) {
+                        LocalEqBody(accent, Modifier.padding(horizontal = 16.dp))
+                        Spacer(Modifier.height(systemNavInset()))
+                    }
+                    else DspBody(
+                        dspViewModel(), accent,
+                        Modifier
+                            .weight(1f)
+                            .verticalScroll(rememberScrollState())
+                            .padding(horizontal = 16.dp),
+                    )
                 Panel.SIMILAR -> SimilarPanel(viewModel)
             }
         }
