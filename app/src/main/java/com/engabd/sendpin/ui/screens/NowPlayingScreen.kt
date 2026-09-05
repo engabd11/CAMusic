@@ -211,15 +211,12 @@ fun NowPlayingScreen(
             // rather than swapping the whole screen for an empty state.
             // Fed the *settled* url rather than the raw one, so it neither reloads
             // within an album nor changes a quarter of a second before the cover does.
-            MeltBackdrop(art.url, intensity = washDim.value)
-
-            // Chameleon Canvas & Ambient Bloom (optional appearance setting) —
-            // painted after the backdrop, so the album's colours land *over* the
-            // wash's scrim and are actually visible; see ChameleonBloom.
+            // The wash and the bloom over it, in one composable that takes the fade
+            // as State rather than as a value — see [AlbumWash]. Read here, the
+            // fade recomposed this whole player on every frame of every transition
+            // between playing and idle.
             val chameleonBloom by settings.chameleonBloom.collectAsStateWithLifecycle(initialValue = false)
-            if (chameleonBloom) {
-                ChameleonBloom(palette, washDim.value)
-            }
+            AlbumWash(art.url, palette, chameleonBloom, washDim)
 
             Column(
                 Modifier

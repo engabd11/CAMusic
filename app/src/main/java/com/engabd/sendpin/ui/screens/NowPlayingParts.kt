@@ -67,6 +67,35 @@ import kotlinx.coroutines.launch
 internal fun idleFade(idle: Boolean, dimmed: Float, lit: Float = 1f): State<Float> =
     animateFloatAsState(if (idle) dimmed else lit, Motion.effects(), label = "idleFade")
 
+/**
+ * The album wash and, optionally, the bloom over it — as one composable, so that the
+ * idle fade has a recomposition scope of its own.
+ *
+ * Both players painted these two inline and passed `washDim.value` to them, which is
+ * a read of animating state at the *screen's* scope: for the length of every fade
+ * between playing and idle, the whole player — cover, transport, seek bar, panels —
+ * recomposed on every frame. The same file already knows better and says so, at the
+ * `graphicsLayer { alpha = artDim.value }` on the sleeve a hundred lines down.
+ *
+ * The State is passed in rather than its value, and read here. Everything above this
+ * function is then untouched by the fade, and only these four blooms and a blurred
+ * bitmap recompose — which is what they have to do, because `Bloom` takes its alpha
+ * as a composition-time parameter and this is not the place to change that.
+ *
+ * [BoxScope] because both blooms are positioned siblings of the player column, and
+ * `Box` children paint in declaration order — see [ChameleonBloom].
+ */
+@Composable
+internal fun BoxScope.AlbumWash(
+    artUrl: String?,
+    palette: AlbumPalette,
+    bloom: Boolean,
+    dim: State<Float>,
+) {
+    MeltBackdrop(artUrl, intensity = dim.value)
+    if (bloom) ChameleonBloom(palette, dim.value)
+}
+
 internal fun albumFlipKey(st: NowPlayingViewModel.State): String? =
     if (st.idle || (st.album.isBlank() && st.artist.isBlank())) null
     else "${st.album}|${st.artist}"

@@ -47,13 +47,21 @@ class AlbumDetailProfile {
                 device.waitForIdle()
             }
 
-            // Try to tap the first clickable element in the grid area —
-            // an album cover. The grid tiles are roughly 1/3 of the screen
-            // width, so tapping at 1/6 width and 1/4 height targets the
-            // first tile in the grid.
-            val tileX = device.displayWidth / 6
-            val tileY = device.displayHeight / 4
-            device.click(tileX, tileY)
+            // Tap a real tile rather than a guessed coordinate.
+            //
+            // This used to click at a sixth of the screen width and a quarter of its
+            // height, on the reasoning that a grid tile is about a third of the width.
+            // That is true on a phone in portrait with the shelves this profile happens
+            // to scroll past — and false on a tablet, in landscape, in the overlay
+            // layout where a mini player occupies the bottom, or any time the scroll
+            // lands with a header under that point. When it missed it hit a header or
+            // nothing, the detail screen never opened, and the profile silently
+            // recorded a library scroll under an album's name.
+            //
+            // A tile carries its own content description, so ask for one.
+            val tile = device.findObject(By.clickable(true).descContains("Open"))
+                ?: device.findObject(By.clickable(true).hasChild(By.clazz("android.widget.ImageView")))
+            tile?.click()
             device.waitForIdle()
 
             // If a detail screen opened, scroll its track list.

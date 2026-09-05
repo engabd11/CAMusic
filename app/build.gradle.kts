@@ -232,6 +232,21 @@ dependencies {
     // Names :baselineprofile as the producer of this module's profile. Without it the
     // plugin applies cleanly, `generateBaselineProfile` runs, and nothing is generated
     // — it has no dependency telling it where profiles come from.
+    //
+    // The committed profile at app/src/release/generated/baselineProfiles/ is only as
+    // good as the last run against a device, and a generator added afterwards
+    // contributes nothing until someone runs it again. It has drifted once already:
+    // the Album, Now Playing, Settings and Startup journeys were written a week after
+    // the last regeneration and so were absent from the shipped rules entirely, which
+    // is very likely why the first visit to those screens was the rough one.
+    //
+    //   ./gradlew :app:generateBaselineProfile      # needs a connected device
+    //
+    // Worth re-running whenever a screen is added or restructured, and worth checking
+    // before a release:
+    //
+    //   grep -c LightSyncScreen app/src/release/generated/baselineProfiles/baseline-prof.txt
+    //
     baselineProfile(project(":baselineprofile"))
     implementation("androidx.datastore:datastore-preferences:1.2.1")
 

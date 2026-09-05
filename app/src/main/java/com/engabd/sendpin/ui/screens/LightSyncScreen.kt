@@ -5,6 +5,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -157,237 +158,269 @@ private fun HaLightSyncScreen(onBack: () -> Unit, viewModel: LightSyncViewModel)
                 StatusPill(connected && enabled)
             }
 
-            Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp).padding(bottom = navBarInset() + 16.dp)) {
+            // Lazily, for the reason the direct path below is lazy: a Column that
+            // scrolls composes and measures its whole contents in one frame and
+            // recycles none of it. This page is shorter than that one but the same
+            // shape — nine sections, three horizontally scrolling rows of chips, and
+            // a dozen sliders behind the Advanced switch.
+            LazyColumn(
+                Modifier.weight(1f).fillMaxWidth(),
+                contentPadding = PaddingValues(
+                    start = 18.dp, end = 18.dp, bottom = navBarInset() + 16.dp,
+                ),
+            ) {
 
                 if (!connected) {
-                    ConnectCard(
-                        prefillUrl = prefillUrl,
-                        prefillToken = prefillToken,
-                        error = error,
-                        onConnect = viewModel::connect,
-                    )
-                    return@Column
+                    item(key = "ha_connect", contentType = "section") {
+                        ConnectCard(
+                            prefillUrl = prefillUrl,
+                            prefillToken = prefillToken,
+                            error = error,
+                            onConnect = viewModel::connect,
+                        )
+                    }
+                    return@LazyColumn
                 }
 
                 if (areas.isEmpty()) {
-                    EmptyAreas(error) { viewModel.refresh() }
-                    return@Column
+                    item(key = "ha_empty", contentType = "section") {
+                        EmptyAreas(error) { viewModel.refresh() }
+                    }
+                    return@LazyColumn
                 }
 
-                val a = area ?: return@Column
+                val a = area ?: return@LazyColumn
 
-                // Master toggle.
-                GlassCard(radius = 18.dp, fill = if (enabled) accent.a(0.10f) else Glass) {
-                    Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.size(42.dp).clip(RoundedCornerShape(13.dp)).background(if (enabled) accent.a(0.18f) else Glass).border(1.dp, if (enabled) accent.a(0.4f) else Hairline, RoundedCornerShape(13.dp)), contentAlignment = Alignment.Center) {
-                            Icon(Icons.Default.Lightbulb, null, tint = if (enabled) accent else TextMuted, modifier = Modifier.size(20.dp))
+                item(key = "ha_master", contentType = "section") {
+                    // Master toggle.
+                    GlassCard(radius = 18.dp, fill = if (enabled) accent.a(0.10f) else Glass) {
+                        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Box(Modifier.size(42.dp).clip(RoundedCornerShape(13.dp)).background(if (enabled) accent.a(0.18f) else Glass).border(1.dp, if (enabled) accent.a(0.4f) else Hairline, RoundedCornerShape(13.dp)), contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.Lightbulb, null, tint = if (enabled) accent else TextMuted, modifier = Modifier.size(20.dp))
+                            }
+                            Spacer(Modifier.width(13.dp))
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+                                Text("Sync lights to music", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                                Text(if (enabled) "Reacting to the beat" else "Lights are steady", color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                            }
+                            AccentSwitch(enabled) { viewModel.setEnabled(it) }
                         }
-                        Spacer(Modifier.width(13.dp))
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
-                            Text("Sync lights to music", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                            Text(if (enabled) "Reacting to the beat" else "Lights are steady", color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                        }
-                        AccentSwitch(enabled) { viewModel.setEnabled(it) }
                     }
                 }
 
-                if (areas.size > 1) {
+                item(key = "ha_area", contentType = "section") {
+                    if (areas.size > 1) {
+                        Spacer(Modifier.height(22.dp))
+                        SectionLabel("Entertainment zone")
+                        Spacer(Modifier.height(10.dp))
+                        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            areas.forEach { ar ->
+                                AreaChip(
+                                    name = ar.name,
+                                    selected = ar.id == a.id,
+                                    active = ar.enabled,
+                                    accent = accent,
+                                ) { viewModel.selectArea(ar.id) }
+                            }
+                        }
+                    }
+                }
+
+                item(key = "ha_player", contentType = "section") {
+                    // Which player this area follows ("Auto" — whatever is playing).
                     Spacer(Modifier.height(22.dp))
-                    SectionLabel("Entertainment zone")
+                    SectionLabel("Follow player")
                     Spacer(Modifier.height(10.dp))
-                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        areas.forEach { ar ->
-                            AreaChip(
-                                name = ar.name,
-                                selected = ar.id == a.id,
-                                active = ar.enabled,
-                                accent = accent,
-                            ) { viewModel.selectArea(ar.id) }
-                        }
-                    }
-                }
-
-                // Which player this area follows ("Auto" — whatever is playing).
-                Spacer(Modifier.height(22.dp))
-                SectionLabel("Follow player")
-                Spacer(Modifier.height(10.dp))
-                PlayerRow(
-                    selected = a.mediaPlayer,
-                    players = mediaPlayers,
-                    onSelect = viewModel::setFollowPlayer,
-                )
-
-                val modeOptions = a.modeOptions.ifEmpty { ModeFallback }
-                Spacer(Modifier.height(22.dp))
-                SectionLabel("Intensity")
-                Spacer(Modifier.height(10.dp))
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    modeOptions.forEach { opt -> Pill(opt.label(), opt == a.mode) { viewModel.setMode(opt) } }
-                }
-                // What the selected rung actually does — the ladder's names don't say.
-                LightSyncRepository.MODE_BLURBS[a.mode]?.let {
-                    Spacer(Modifier.height(9.dp))
-                    Text(it, color = TextFaint, style = MaterialTheme.typography.bodySmall)
-                }
-
-                // Auto rungs — the intensities Auto may pick from (only when mode == auto).
-                if (a.mode == "auto") {
-                    Spacer(Modifier.height(14.dp))
-                    SectionLabel("Auto can use")
-                    Spacer(Modifier.height(9.dp))
-                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        LightSyncRepository.AUTO_RUNGS.forEach { rung ->
-                            ToggleChip(rung.label(), rung in a.autoLevels) { viewModel.toggleAutoLevel(rung) }
-                        }
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(2.dp),
-                    ) {
-                        Text(
-                            "Auto spreads these across the song's own range.",
-                            color = TextFaint, style = MaterialTheme.typography.bodySmall,
-                        )
-                        InfoChip(
-                            "Auto levels",
-                            "The quiet parts of a song sit on the lowest level you have " +
-                                "allowed, and its biggest moments reach the highest. It is " +
-                                "measured against that song's own dynamic range rather than an " +
-                                "absolute loudness, so a quiet acoustic record still gets a " +
-                                "full show instead of sitting at the bottom of the range all " +
-                                "evening.\n\nTip: pick two or three neighbouring levels rather " +
-                                "than all of them. Allowing the whole range means every song " +
-                                "uses the whole range, which flattens the difference between " +
-                                "them.",
-                            Modifier.heightIn(0.dp),
-                        )
-                    }
-                }
-
-                val effectOptions = a.effectOptions.ifEmpty { EffectFallback }
-                Spacer(Modifier.height(22.dp))
-                SectionLabel("Effect")
-                Spacer(Modifier.height(10.dp))
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    effectOptions.forEach { opt -> EffectTile(opt, effectIcon(opt), opt == a.effect) { viewModel.setEffect(opt) } }
-                }
-                LightSyncRepository.EFFECT_BLURBS[a.effect]?.let {
-                    Spacer(Modifier.height(9.dp))
-                    Text(it, color = TextFaint, style = MaterialTheme.typography.bodySmall)
-                }
-
-                Spacer(Modifier.height(22.dp))
-                SectionLabel("Colour")
-                Spacer(Modifier.height(10.dp))
-                ColourPicker(selected = a.colour, onSelect = viewModel::setColour)
-
-                Spacer(Modifier.height(22.dp))
-                SectionLabel("Brightness ceiling")
-                Spacer(Modifier.height(10.dp))
-                // Live value while dragging, stored value otherwise — the same shape
-                // the direct path uses below. Without it the trailing "%" lagged the
-                // thumb by a debounce plus a WebSocket round-trip, so the number read
-                // as stuck while the finger moved.
-                var haBrightnessDrag by remember { mutableStateOf<Int?>(null) }
-                val haBrightness = haBrightnessDrag ?: a.brightnessPct
-                val bSlider = ((haBrightness - 5) / 95f).coerceIn(0f, 1f)
-                LabeledSlider(
-                    icon = Icons.Default.BrightnessHigh,
-                    value = bSlider,
-                    onChange = {
-                        val pct = (5 + it * 95).roundToInt()
-                        haBrightnessDrag = pct
-                        // Still previewed live: the view model debounces this to 200 ms
-                        // and holds the optimistic value for three seconds, so the room
-                        // follows the finger without the poll fighting it.
-                        viewModel.setBrightness(pct)
-                    },
-                    onCommit = {
-                        val pct = (5 + it * 95).roundToInt()
-                        haBrightnessDrag = null
-                        viewModel.setBrightness(pct)
-                    },
-                    trailing = "$haBrightness%",
-                )
-
-                Spacer(Modifier.height(22.dp))
-                SectionLabel("Timing")
-                Spacer(Modifier.height(10.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
-                        Text("Auto timing", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                        Text("Calibrate the delay per song", color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
-                    }
-                    AccentSwitch(a.autoTiming) { viewModel.setAutoTiming(it) }
-                }
-                if (!a.autoTiming) {
-                    Spacer(Modifier.height(12.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Light offset", color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, modifier = Modifier.weight(1f))
-                        OffsetStep("−") { viewModel.changeTiming(-5) }
-                        Text("${a.timingMs} ms", color = TextSecondary, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 12.sp, modifier = Modifier.widthIn(min = 56.dp))
-                        OffsetStep("+") { viewModel.changeTiming(5) }
-                    }
-                    Text(
-                        "Positive delays the lights, negative pushes them ahead of the " +
-                            "speaker. Which way you need depends on whether your speaker " +
-                            "buffers more audio than the bridge does, and there is no way to " +
-                            "know that without trying it.\n\nTip: play something with a hard, " +
-                            "obvious kick and sit where you normally listen. Move in 20 ms " +
-                            "steps until the flash and the thump stop arriving separately. Most " +
-                            "setups land somewhere between 0 and 150 ms.",
-                        color = TextFaint, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp),
+                    PlayerRow(
+                        selected = a.mediaPlayer,
+                        players = mediaPlayers,
+                        onSelect = viewModel::setFollowPlayer,
                     )
                 }
 
-                // Advanced live tunables — the card's knob section.
-                Spacer(Modifier.height(22.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        SectionLabel("Advanced")
-                        Spacer(Modifier.height(2.dp))
-                        Text("Fine-tune the reaction", color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
+                item(key = "ha_intensity", contentType = "section") {
+                    val modeOptions = a.modeOptions.ifEmpty { ModeFallback }
+                    Spacer(Modifier.height(22.dp))
+                    SectionLabel("Intensity")
+                    Spacer(Modifier.height(10.dp))
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        modeOptions.forEach { opt -> Pill(opt.label(), opt == a.mode) { viewModel.setMode(opt) } }
                     }
-                    AccentSwitch(a.advanced) { viewModel.setAdvanced(it) }
-                }
-                if (a.advanced) {
-                    Spacer(Modifier.height(12.dp))
-                    // The Home Assistant path's list, deliberately *not* the direct
-                    // path's. `LightSyncViewModel` posts this map verbatim to
-                    // syncoV2's `hue_music_sync.set_options` service, and that
-                    // integration has no `cohesion` option to receive — so the two
-                    // lists must stay separate.
-                    var haDraft by remember { mutableStateOf<Map<String, Float>>(emptyMap()) }
-                    LightSyncRepository.TUNABLE_DEFS.forEach { (key, label) ->
-                        val factor = haDraft[key] ?: a.tunables[key] ?: 1f
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 5.dp), horizontalArrangement = Arrangement.spacedBy(11.dp)) {
-                            Text(label, color = TextSecondary, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, modifier = Modifier.width(96.dp))
-                            HSlider(
-                                value = (factor / 2f).coerceIn(0f, 1f),
-                                onChange = {
-                                    haDraft = haDraft + (key to (it * 2f))
-                                    viewModel.setTunable(key, it * 2f)
-                                },
-                                onCommit = {
-                                    haDraft = haDraft - key
-                                    viewModel.setTunable(key, it * 2f)
-                                },
-                                modifier = Modifier.weight(1f),
-                            )
-                            Text("${(factor * 100).roundToInt()}%", color = TextMuted, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 11.sp, modifier = Modifier.widthIn(min = 40.dp))
+                    // What the selected rung actually does — the ladder's names don't say.
+                    LightSyncRepository.MODE_BLURBS[a.mode]?.let {
+                        Spacer(Modifier.height(9.dp))
+                        Text(it, color = TextFaint, style = MaterialTheme.typography.bodySmall)
+                    }
+
+                    // Auto rungs — the intensities Auto may pick from (only when mode == auto).
+                    if (a.mode == "auto") {
+                        Spacer(Modifier.height(14.dp))
+                        SectionLabel("Auto can use")
+                        Spacer(Modifier.height(9.dp))
+                        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            LightSyncRepository.AUTO_RUNGS.forEach { rung ->
+                                ToggleChip(rung.label(), rung in a.autoLevels) { viewModel.toggleAutoLevel(rung) }
+                            }
                         }
-                        // The same explanations the direct path shows. They describe the
-                        // effect rather than the transport, and the six keys here are a
-                        // subset of the seven there, so one map serves both.
-                        com.engabd.sendpin.hue.SyncoEngine.TUNABLE_BLURBS[key]?.let { blurb ->
+                        Spacer(Modifier.height(8.dp))
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
                             Text(
-                                blurb,
-                                color = TextFaint,
-                                fontSize = 11.sp,
-                                lineHeight = 15.sp,
-                                modifier = Modifier.padding(start = 107.dp, bottom = 10.dp),
+                                "Auto spreads these across the song's own range.",
+                                color = TextFaint, style = MaterialTheme.typography.bodySmall,
                             )
+                            InfoChip(
+                                "Auto levels",
+                                "The quiet parts of a song sit on the lowest level you have " +
+                                    "allowed, and its biggest moments reach the highest. It is " +
+                                    "measured against that song's own dynamic range rather than an " +
+                                    "absolute loudness, so a quiet acoustic record still gets a " +
+                                    "full show instead of sitting at the bottom of the range all " +
+                                    "evening.\n\nTip: pick two or three neighbouring levels rather " +
+                                    "than all of them. Allowing the whole range means every song " +
+                                    "uses the whole range, which flattens the difference between " +
+                                    "them.",
+                                Modifier.heightIn(0.dp),
+                            )
+                        }
+                    }
+                }
+
+                item(key = "ha_effect", contentType = "section") {
+                    val effectOptions = a.effectOptions.ifEmpty { EffectFallback }
+                    Spacer(Modifier.height(22.dp))
+                    SectionLabel("Effect")
+                    Spacer(Modifier.height(10.dp))
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        effectOptions.forEach { opt -> EffectTile(opt, effectIcon(opt), opt == a.effect) { viewModel.setEffect(opt) } }
+                    }
+                    LightSyncRepository.EFFECT_BLURBS[a.effect]?.let {
+                        Spacer(Modifier.height(9.dp))
+                        Text(it, color = TextFaint, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+
+                item(key = "ha_colour", contentType = "section") {
+                    Spacer(Modifier.height(22.dp))
+                    SectionLabel("Colour")
+                    Spacer(Modifier.height(10.dp))
+                    ColourPicker(selected = a.colour, onSelect = viewModel::setColour)
+                }
+
+                item(key = "ha_brightness", contentType = "section") {
+                    Spacer(Modifier.height(22.dp))
+                    SectionLabel("Brightness ceiling")
+                    Spacer(Modifier.height(10.dp))
+                    // Live value while dragging, stored value otherwise — the same shape
+                    // the direct path uses below. Without it the trailing "%" lagged the
+                    // thumb by a debounce plus a WebSocket round-trip, so the number read
+                    // as stuck while the finger moved.
+                    var haBrightnessDrag by remember { mutableStateOf<Int?>(null) }
+                    val haBrightness = haBrightnessDrag ?: a.brightnessPct
+                    val bSlider = ((haBrightness - 5) / 95f).coerceIn(0f, 1f)
+                    LabeledSlider(
+                        icon = Icons.Default.BrightnessHigh,
+                        value = bSlider,
+                        onChange = {
+                            val pct = (5 + it * 95).roundToInt()
+                            haBrightnessDrag = pct
+                            // Still previewed live: the view model debounces this to 200 ms
+                            // and holds the optimistic value for three seconds, so the room
+                            // follows the finger without the poll fighting it.
+                            viewModel.setBrightness(pct)
+                        },
+                        onCommit = {
+                            val pct = (5 + it * 95).roundToInt()
+                            haBrightnessDrag = null
+                            viewModel.setBrightness(pct)
+                        },
+                        trailing = "$haBrightness%",
+                    )
+                }
+
+                item(key = "ha_timing", contentType = "section") {
+                    Spacer(Modifier.height(22.dp))
+                    SectionLabel("Timing")
+                    Spacer(Modifier.height(10.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+                            Text("Auto timing", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text("Calibrate the delay per song", color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
+                        }
+                        AccentSwitch(a.autoTiming) { viewModel.setAutoTiming(it) }
+                    }
+                    if (!a.autoTiming) {
+                        Spacer(Modifier.height(12.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Light offset", color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                            OffsetStep("−") { viewModel.changeTiming(-5) }
+                            Text("${a.timingMs} ms", color = TextSecondary, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 12.sp, modifier = Modifier.widthIn(min = 56.dp))
+                            OffsetStep("+") { viewModel.changeTiming(5) }
+                        }
+                        Text(
+                            "Positive delays the lights, negative pushes them ahead of the " +
+                                "speaker. Which way you need depends on whether your speaker " +
+                                "buffers more audio than the bridge does, and there is no way to " +
+                                "know that without trying it.\n\nTip: play something with a hard, " +
+                                "obvious kick and sit where you normally listen. Move in 20 ms " +
+                                "steps until the flash and the thump stop arriving separately. Most " +
+                                "setups land somewhere between 0 and 150 ms.",
+                            color = TextFaint, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp),
+                        )
+                    }
+                }
+
+                item(key = "ha_advanced", contentType = "section") {
+                    // Advanced live tunables — the card's knob section.
+                    Spacer(Modifier.height(22.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            SectionLabel("Advanced")
+                            Spacer(Modifier.height(2.dp))
+                            Text("Fine-tune the reaction", color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
+                        }
+                        AccentSwitch(a.advanced) { viewModel.setAdvanced(it) }
+                    }
+                    if (a.advanced) {
+                        Spacer(Modifier.height(12.dp))
+                        // The Home Assistant path's list, deliberately *not* the direct
+                        // path's. `LightSyncViewModel` posts this map verbatim to
+                        // syncoV2's `hue_music_sync.set_options` service, and that
+                        // integration has no `cohesion` option to receive — so the two
+                        // lists must stay separate.
+                        var haDraft by remember { mutableStateOf<Map<String, Float>>(emptyMap()) }
+                        LightSyncRepository.TUNABLE_DEFS.forEach { (key, label) ->
+                            val factor = haDraft[key] ?: a.tunables[key] ?: 1f
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 5.dp), horizontalArrangement = Arrangement.spacedBy(11.dp)) {
+                                Text(label, color = TextSecondary, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, modifier = Modifier.width(96.dp))
+                                HSlider(
+                                    value = (factor / 2f).coerceIn(0f, 1f),
+                                    onChange = {
+                                        haDraft = haDraft + (key to (it * 2f))
+                                        viewModel.setTunable(key, it * 2f)
+                                    },
+                                    onCommit = {
+                                        haDraft = haDraft - key
+                                        viewModel.setTunable(key, it * 2f)
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Text("${(factor * 100).roundToInt()}%", color = TextMuted, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 11.sp, modifier = Modifier.widthIn(min = 40.dp))
+                            }
+                            // The same explanations the direct path shows. They describe the
+                            // effect rather than the transport, and the six keys here are a
+                            // subset of the seven there, so one map serves both.
+                            com.engabd.sendpin.hue.SyncoEngine.TUNABLE_BLURBS[key]?.let { blurb ->
+                                Text(
+                                    blurb,
+                                    color = TextFaint,
+                                    fontSize = 11.sp,
+                                    lineHeight = 15.sp,
+                                    modifier = Modifier.padding(start = 107.dp, bottom = 10.dp),
+                                )
+                            }
                         }
                     }
                 }
@@ -542,623 +575,674 @@ private fun DirectLightSyncScreen(
                 StatusPill(live)
             }
 
-            Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp).padding(bottom = navBarInset() + 16.dp)) {
-
+            // A lazy list, not a Column that scrolls.
+            //
+            // Everything below used to be one Column with `verticalScroll`, which meant
+            // the whole page — six cards, four pill rows, twelve swatches, seven tunable
+            // sliders with their blurbs, five feature rows and two long paragraphs —
+            // was composed and measured in a single frame on the way in, and none of it
+            // ever recycled. That is the same diagnosis `perf: recycle the Audio & DSP
+            // page card by card` wrote up, and that commit's own message names this
+            // screen as one it did not get to.
+            //
+            // The second half matters more here than it did there. This screen collects
+            // around thirty flows, and several of them move with the *audio* —
+            // `framesFresh` flips as the music plays. Inside one Column every one of
+            // those emissions re-ran all six hundred lines; now an emission re-runs the
+            // items that actually read it.
+            //
+            // Section spacing is left exactly as it was, in the `Spacer` each section
+            // already opened with, rather than moved to `verticalArrangement` — the
+            // gaps here are deliberately uneven (22dp between sections, 10dp under a
+            // label, 16dp between feature rows) and a uniform arrangement would flatten
+            // all three.
+            LazyColumn(
+                Modifier.weight(1f).fillMaxWidth(),
+                contentPadding = PaddingValues(
+                    start = 18.dp, end = 18.dp, bottom = navBarInset() + 16.dp,
+                ),
+            ) {
                 if (bridgeIp.isBlank()) {
-                    NoBridgeCard()
-                    return@Column
+                    item(key = "ls_nobridge", contentType = "section") { NoBridgeCard() }
+                    return@LazyColumn
                 }
 
-                // Master toggle. Streaming also needs something playing on this
-                // phone — either the local player, or Music Assistant playing to this
-                // phone through the ExoPlayer engine, which is the one that carries
-                // the analysis tap. See SendpinApp's direct-sync gate.
-                GlassCard(radius = 18.dp, fill = if (enabled) accent.a(0.10f) else Glass) {
-                    Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.size(42.dp).clip(RoundedCornerShape(13.dp)).background(if (enabled) accent.a(0.18f) else Glass).border(1.dp, if (enabled) accent.a(0.4f) else Hairline, RoundedCornerShape(13.dp)), contentAlignment = Alignment.Center) {
-                            Icon(Icons.Default.Lightbulb, null, tint = if (enabled) accent else TextMuted, modifier = Modifier.size(20.dp))
-                        }
-                        Spacer(Modifier.width(13.dp))
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
-                            Text("Sync lights to music", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                            Text(
-                                showStatusText(showStatus, speakerLabel),
-                                color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
-                            )
-                        }
-                        AccentSwitch(enabled) { on ->
-                            scope.launch {
-                                // A running ambience show may have turned this on itself
-                                // (see EffectsViewModel.start). If the user now touches
-                                // the switch themselves while that's true, that confirms
-                                // they want sync on regardless of the show — adopt it, so
-                                // stopping the show later doesn't turn it back off under
-                                // them.
-                                if (on && app.ambienceSyncOwnership.value ==
-                                    com.engabd.sendpin.hue.ambience.AmbienceSyncOwnership.AUTO_ENABLED
-                                ) {
-                                    app.ambienceSyncOwnership.value =
-                                        com.engabd.sendpin.hue.ambience.AmbienceSyncOwnership.USER_ADOPTED
+                item(key = "ls_master", contentType = "section") {
+                    // Master toggle. Streaming also needs something playing on this
+                    // phone — either the local player, or Music Assistant playing to this
+                    // phone through the ExoPlayer engine, which is the one that carries
+                    // the analysis tap. See SendpinApp's direct-sync gate.
+                    GlassCard(radius = 18.dp, fill = if (enabled) accent.a(0.10f) else Glass) {
+                        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Box(Modifier.size(42.dp).clip(RoundedCornerShape(13.dp)).background(if (enabled) accent.a(0.18f) else Glass).border(1.dp, if (enabled) accent.a(0.4f) else Hairline, RoundedCornerShape(13.dp)), contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.Lightbulb, null, tint = if (enabled) accent else TextMuted, modifier = Modifier.size(20.dp))
+                            }
+                            Spacer(Modifier.width(13.dp))
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+                                Text("Sync lights to music", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                                Text(
+                                    showStatusText(showStatus, speakerLabel),
+                                    color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
+                                )
+                            }
+                            AccentSwitch(enabled) { on ->
+                                scope.launch {
+                                    // A running ambience show may have turned this on itself
+                                    // (see EffectsViewModel.start). If the user now touches
+                                    // the switch themselves while that's true, that confirms
+                                    // they want sync on regardless of the show — adopt it, so
+                                    // stopping the show later doesn't turn it back off under
+                                    // them.
+                                    if (on && app.ambienceSyncOwnership.value ==
+                                        com.engabd.sendpin.hue.ambience.AmbienceSyncOwnership.AUTO_ENABLED
+                                    ) {
+                                        app.ambienceSyncOwnership.value =
+                                            com.engabd.sendpin.hue.ambience.AmbienceSyncOwnership.USER_ADOPTED
+                                    }
+                                    settings.setLightSyncEnabled(on)
                                 }
-                                settings.setLightSyncEnabled(on)
                             }
                         }
                     }
-                }
 
-                syncError?.let {
-                    Spacer(Modifier.height(12.dp))
-                    Text(it, color = ErrorRed, fontSize = 12.sp)
-                }
-
-                // Required by the Hue Entertainment API best practices: an app
-                // producing fast-changing light effects has to warn about them.
-                // Shown here rather than once behind a dismiss, because the
-                // intensity rungs are right below it and two of them relax or
-                // bypass the WCAG flash limiter.
-                Spacer(Modifier.height(14.dp))
-                Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Icon(
-                        Icons.Default.WarningAmber, null,
-                        tint = TextFaint, modifier = Modifier.size(15.dp).padding(top = 1.dp),
-                    )
-                    Text(
-                        "Light Sync produces fast-changing light effects. These may trigger " +
-                            "seizures in people with photosensitive epilepsy, including those " +
-                            "with no history of it. Intense and Extreme flash hardest.",
-                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-
-                Spacer(Modifier.height(22.dp))
-                SectionLabel("Entertainment area")
-                Spacer(Modifier.height(10.dp))
-                when {
-                    loadingConfigs -> Text("Loading areas from the bridge…", color = TextMuted, fontSize = 13.sp)
-                    configs.isNotEmpty() -> Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        configs.forEach { cfg ->
-                            AreaChip(
-                                name = cfg.name,
-                                selected = cfg.id == configId,
-                                active = cfg.isStreaming,
-                                accent = accent,
-                            ) { scope.launch { settings.setHueConfigId(cfg.id) } }
-                        }
+                    syncError?.let {
+                        Spacer(Modifier.height(12.dp))
+                        Text(it, color = ErrorRed, fontSize = 12.sp)
                     }
-                    else -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(
-                            configError ?: "No areas found. Create one in the Hue app.",
-                            color = if (configError != null) ErrorRed else TextFaint, fontSize = 13.sp,
+
+                    // Required by the Hue Entertainment API best practices: an app
+                    // producing fast-changing light effects has to warn about them.
+                    // Shown here rather than once behind a dismiss, because the
+                    // intensity rungs are right below it and two of them relax or
+                    // bypass the WCAG flash limiter.
+                    Spacer(Modifier.height(14.dp))
+                    Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Icon(
+                            Icons.Default.WarningAmber, null,
+                            tint = TextFaint, modifier = Modifier.size(15.dp).padding(top = 1.dp),
                         )
-                        // The list no longer reloads on every visit, so the one case
-                        // that used to be fixed by leaving the tab and coming back —
-                        // the bridge was briefly unreachable — needs a way to ask.
                         Text(
-                            "Ask the bridge again",
-                            color = accent, fontWeight = FontWeight.Bold, fontSize = 13.sp,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(100))
-                                .clickable { direct.refreshEntertainmentConfigs() }
-                                .padding(vertical = 4.dp),
-                        )
-                    }
-                }
-
-                Spacer(Modifier.height(22.dp))
-                SectionLabel("Intensity")
-                Spacer(Modifier.height(10.dp))
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    // Auto is not a rung — it is a choice between rungs, resolved
-                    // per frame from the music's character. The rest come straight
-                    // off the engine's enum, so the pills can never offer a rung
-                    // the engine doesn't have.
-                    Pill("Auto", intensity == AUTO_INTENSITY) {
-                        scope.launch { settings.setLightSyncIntensity(AUTO_INTENSITY) }
-                    }
-                    com.engabd.sendpin.hue.SyncMode.entries.forEach { m ->
-                        Pill(m.wire.label(), m.wire == intensity) {
-                            scope.launch { settings.setLightSyncIntensity(m.wire) }
-                        }
-                    }
-                }
-                LightSyncRepository.MODE_BLURBS[intensity]?.let {
-                    Spacer(Modifier.height(9.dp))
-                    Text(it, color = TextFaint, style = MaterialTheme.typography.bodySmall)
-                }
-
-                if (intensity == AUTO_INTENSITY) {
-                    Spacer(Modifier.height(9.dp))
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(2.dp),
-                    ) {
-                        Text(
-                            "Follows the music's character, not just its volume.",
+                            "Light Sync produces fast-changing light effects. These may trigger " +
+                                "seizures in people with photosensitive epilepsy, including those " +
+                                "with no history of it. Intense and Extreme flash hardest.",
                             color = TextFaint, style = MaterialTheme.typography.bodySmall,
                         )
-                        InfoChip(
-                            "Auto intensity",
-                            "A chill track tops out low however loud its chorus gets. Only " +
-                                "a genuinely heavy one reaches the top of what you allow below, " +
-                                "so the lights tell you something about the music rather than " +
-                                "tracking the volume knob.\n\nTip: if everything feels too " +
-                                "tame, raise the ceiling below instead of turning Auto off. " +
-                                "Auto still picks the level, it just has further to go.",
-                            Modifier.heightIn(0.dp),
-                        )
-                    }
-                    Spacer(Modifier.height(12.dp))
-                    Text("Auto may use", color = TextMuted, fontSize = 12.sp)
-                    Spacer(Modifier.height(8.dp))
-                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        com.engabd.sendpin.hue.SyncMode.entries.forEach { m ->
-                            val on = m.wire in autoLevels
-                            Pill(m.wire.label(), on) {
-                                // Never let the selection empty out — Auto with
-                                // nothing to choose from has no answer to give.
-                                val next = if (on) autoLevels - m.wire else autoLevels + m.wire
-                                if (next.isNotEmpty()) {
-                                    scope.launch { settings.setLightSyncAutoLevels(next) }
-                                }
-                            }
-                        }
                     }
                 }
 
-                Spacer(Modifier.height(22.dp))
-                SectionLabel("Ambience")
-                Spacer(Modifier.height(10.dp))
-                GlassCard(radius = 18.dp) {
-                    Row(
-                        Modifier.fillMaxWidth().clickable(onClick = onOpenEffects).padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Box(
-                            Modifier.size(42.dp).clip(RoundedCornerShape(13.dp)).background(Glass)
-                                .border(1.dp, Hairline, RoundedCornerShape(13.dp)),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(Icons.Default.AutoAwesome, null, tint = TextMuted, modifier = Modifier.size(20.dp))
-                        }
-                        Spacer(Modifier.width(13.dp))
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                Text("Effects", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                                ExperimentalBadge()
-                            }
-                            Text(
-                                "Fireworks, thunderstorm, fireplace and more - with their own sound, " +
-                                    "and no music needed",
-                                color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
-                            )
-                        }
-                        Icon(Icons.Default.ChevronRight, null, tint = TextFaint, modifier = Modifier.size(20.dp))
-                    }
-                }
-
-                Spacer(Modifier.height(22.dp))
-                SectionLabel("Colour")
-                Spacer(Modifier.height(10.dp))
-                // Every dynamic source works on the direct path now.
-                ColourPicker(selected = colour, showDynamic = true, songFromBeats = true) { scheme ->
-                    scope.launch { settings.setLightSyncColor(scheme) }
-                }
-
-                // Correcting the colours an album lights the room with belongs here,
-                // beside the picker that chose to use them. It was previously only
-                // reachable by long-pressing the artwork on Now Playing — behind a
-                // sheet of queue and share actions, and gated on the track being
-                // favouritable, which has nothing to do with its colours.
-                Spacer(Modifier.height(10.dp))
-                AlbumColoursCard(
-                    scheme = colour,
-                    label = lightSource.scanTrack?.album?.takeIf { it.isNotBlank() }
-                        ?: maNow?.album?.takeIf { it.isNotBlank() }
-                        ?: lightSource.scanTrack?.title
-                        ?: maNow?.title,
-                    saved = savedPalette,
-                    canEdit = paletteKeys.isNotEmpty(),
-                    accent = accent,
-                    onEdit = { paletteEditorOpen = true },
-                    onReset = {
-                        scope.launch { settings.setCoverPaletteOverrideForKeys(paletteKeys, null) }
-                    },
-                )
-
-                // Only while the scan-driven show is the one running. It has no
-                // equivalent of the live path's measured [AudioLead] — there is no sink
-                // here to measure — and the latency from Music Assistant out to a cast
-                // group or a networked amp is device-specific and never reported. There
-                // is no way to work it out; there is only asking.
-                if (feed == com.engabd.sendpin.hue.LightSyncFeed.SCAN_REMOTE) {
+                item(key = "ls_area", contentType = "section") {
                     Spacer(Modifier.height(22.dp))
-                    SectionLabel("Speaker offset")
+                    SectionLabel("Entertainment area")
                     Spacer(Modifier.height(10.dp))
-                    var offsetDrag by remember { mutableStateOf<Int?>(null) }
-                    val shownOffset = offsetDrag ?: speakerOffsetMs
-                    LabeledSlider(
-                        icon = Icons.Default.Speaker,
-                        value = ((shownOffset + OFFSET_RANGE_MS) / (2f * OFFSET_RANGE_MS)).coerceIn(0f, 1f),
-                        onChange = { offsetDrag = offsetFromSlider(it) },
-                        onCommit = {
-                            val ms = offsetFromSlider(it)
-                            offsetDrag = null
-                            scope.launch { settings.setLightSyncSpeakerOffsetMs(ms) }
-                        },
-                        trailing = "$shownOffset ms",
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(2.dp),
-                    ) {
-                        Text(
-                            "Nudge until the beat lands with the sound in the room.",
-                            color = TextFaint, style = MaterialTheme.typography.bodySmall,
-                        )
-                        InfoChip(
-                            "Speaker offset",
-                            "Positive delays the lights; negative pushes them ahead of the " +
-                                "speaker. Which way you need depends on whether the speaker " +
-                                "buffers more than the bridge does.",
-                            Modifier.heightIn(0.dp),
-                        )
-                    }
-                }
-
-                Spacer(Modifier.height(22.dp))
-                SectionLabel("Play")
-                Spacer(Modifier.height(10.dp))
-                GlassCard(radius = 18.dp, modifier = Modifier.clickable(onClick = onOpenRhythmGame).fillMaxWidth()) {
-                    Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
-                            Text("Rhythm Lights", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                            Text("Tap along and flash the room.", color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                    when {
+                        loadingConfigs -> Text("Loading areas from the bridge…", color = TextMuted, fontSize = 13.sp)
+                        configs.isNotEmpty() -> Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            configs.forEach { cfg ->
+                                AreaChip(
+                                    name = cfg.name,
+                                    selected = cfg.id == configId,
+                                    active = cfg.isStreaming,
+                                    accent = accent,
+                                ) { scope.launch { settings.setHueConfigId(cfg.id) } }
+                            }
                         }
-                        Icon(Icons.Default.ChevronRight, null, tint = TextMuted)
-                    }
-                }
-
-                Spacer(Modifier.height(22.dp))
-                SectionLabel("What this phone listens to")
-                Spacer(Modifier.height(10.dp))
-                val phoneAudioFeed by settings.phoneAudioFeed.collectAsState(initial = "auto")
-                PhoneAudioCard(
-                    selected = phoneAudioFeed,
-                    state = captureState,
-                    accent = accent,
-                    onSelect = { choice ->
-                        scope.launch { settings.setPhoneAudioFeed(choice) }
-                        // The choice *is* the switch. This is the whole of the fix:
-                        // picking a mode that needs capture now starts capture, where
-                        // before it only changed which feed the picker would have
-                        // preferred had anything ever started one.
-                        if (choice == "internal") {
-                            com.engabd.sendpin.capture.PlaybackCapture.stop(context)
-                        } else if (!com.engabd.sendpin.capture.PlaybackCapture.hasToken()) {
-                            com.engabd.sendpin.capture.PlaybackCapture.requestStart(context)
+                        else -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                configError ?: "No areas found. Create one in the Hue app.",
+                                color = if (configError != null) ErrorRed else TextFaint, fontSize = 13.sp,
+                            )
+                            // The list no longer reloads on every visit, so the one case
+                            // that used to be fixed by leaving the tab and coming back —
+                            // the bridge was briefly unreachable — needs a way to ask.
+                            Text(
+                                "Ask the bridge again",
+                                color = accent, fontWeight = FontWeight.Bold, fontSize = 13.sp,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(100))
+                                    .clickable { direct.refreshEntertainmentConfigs() }
+                                    .padding(vertical = 4.dp),
+                            )
                         }
-                    },
-                    onStartCapture = { com.engabd.sendpin.capture.PlaybackCapture.requestStart(context) },
-                )
-
-                Spacer(Modifier.height(22.dp))
-                SectionLabel("Brightness ceiling")
-                Spacer(Modifier.height(10.dp))
-                // Live value while dragging, stored value otherwise. Same reasoning as
-                // the tunables below: a DataStore write per pointer move recomposed the
-                // screen on every frame, which is what made these sliders judder.
-                var brightnessDrag by remember { mutableStateOf<Int?>(null) }
-                val shownBrightness = brightnessDrag ?: brightnessPct
-                val bSlider = ((shownBrightness - 5) / 95f).coerceIn(0f, 1f)
-                LabeledSlider(
-                    icon = Icons.Default.BrightnessHigh,
-                    value = bSlider,
-                    onChange = {
-                        val pct = (5 + it * 95).roundToInt()
-                        brightnessDrag = pct
-                        direct.previewBrightness(pct)
-                    },
-                    onCommit = {
-                        val pct = (5 + it * 95).roundToInt()
-                        brightnessDrag = null
-                        scope.launch { settings.setLightSyncBrightness(pct) }
-                    },
-                    trailing = "$shownBrightness%",
-                )
-
-                // Advanced live tunables — same six factors as the Home Assistant path.
-                Spacer(Modifier.height(22.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        SectionLabel("Advanced")
-                        Spacer(Modifier.height(2.dp))
-                        Text("Fine-tune the reaction", color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
                     }
-                    AccentSwitch(advanced) { on -> scope.launch { settings.setLightSyncAdvanced(on) } }
                 }
-                if (advanced) {
-                    Spacer(Modifier.height(12.dp))
-                    // What the finger is currently doing, overlaid on what is stored.
-                    // Held here rather than written through on every frame: each write
-                    // re-serialised the whole map, re-emitted the settings Flow, and
-                    // came back round through DirectLightSync.observeSettings to set
-                    // the identical values again — sixty times a second, per slider.
-                    // The lights still track the finger, via previewTunables.
-                    var draft by remember { mutableStateOf<Map<String, Float>>(emptyMap()) }
-                    val shown = tunables + draft
 
-                    // The direct path's own list, which carries `cohesion`. The HA
-                    // screen keeps `LightSyncRepository.TUNABLE_DEFS`, because that map
-                    // is posted verbatim to syncoV2's `set_options` service and the
-                    // integration has no such option to receive.
-                    com.engabd.sendpin.hue.SyncoEngine.TUNABLE_DEFS.forEach { (key, label) ->
-                        val factor = shown[key] ?: 1f
-                        val isDefault = kotlin.math.abs(factor - 1f) < 0.005f
+                item(key = "ls_intensity", contentType = "section") {
+                    Spacer(Modifier.height(22.dp))
+                    SectionLabel("Intensity")
+                    Spacer(Modifier.height(10.dp))
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // Auto is not a rung — it is a choice between rungs, resolved
+                        // per frame from the music's character. The rest come straight
+                        // off the engine's enum, so the pills can never offer a rung
+                        // the engine doesn't have.
+                        Pill("Auto", intensity == AUTO_INTENSITY) {
+                            scope.launch { settings.setLightSyncIntensity(AUTO_INTENSITY) }
+                        }
+                        com.engabd.sendpin.hue.SyncMode.entries.forEach { m ->
+                            Pill(m.wire.label(), m.wire == intensity) {
+                                scope.launch { settings.setLightSyncIntensity(m.wire) }
+                            }
+                        }
+                    }
+                    LightSyncRepository.MODE_BLURBS[intensity]?.let {
+                        Spacer(Modifier.height(9.dp))
+                        Text(it, color = TextFaint, style = MaterialTheme.typography.bodySmall)
+                    }
+
+                    if (intensity == AUTO_INTENSITY) {
+                        Spacer(Modifier.height(9.dp))
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(vertical = 5.dp),
-                            horizontalArrangement = Arrangement.spacedBy(11.dp),
+                            horizontalArrangement = Arrangement.spacedBy(2.dp),
                         ) {
-                            Text(label, color = TextSecondary, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, modifier = Modifier.width(96.dp))
-                            HSlider(
-                                value = (factor / 2f).coerceIn(0f, 1f),
-                                onChange = {
-                                    val next = draft + (key to (it * 2f))
-                                    draft = next
-                                    direct.previewTunables(tunables + next)
-                                },
-                                onCommit = {
-                                    val committed = tunables + (key to (it * 2f))
-                                    draft = draft - key
-                                    scope.launch { settings.setLightSyncTunables(committed) }
-                                },
-                                modifier = Modifier.weight(1f),
-                            )
                             Text(
-                                "${(factor * 100).roundToInt()}%",
-                                color = TextMuted, fontFamily = MonoFont, fontWeight = FontWeight.Bold,
-                                fontSize = 11.sp, modifier = Modifier.widthIn(min = 40.dp),
+                                "Follows the music's character, not just its volume.",
+                                color = TextFaint, style = MaterialTheme.typography.bodySmall,
                             )
-                            // 100% is the neutral multiplier — `withTunables` treats a
-                            // missing key as 1f — so resetting is removing the entry,
-                            // not storing a value. Greyed out when already there, so the
-                            // row also reads as "this one has been changed".
-                            ResetStep(enabled = !isDefault, description = "Reset $label") {
-                                draft = draft - key
-                                val next = tunables - key
-                                direct.previewTunables(next)
-                                scope.launch { settings.setLightSyncTunables(next) }
-                            }
-                        }
-                        // What this one actually does, and what each direction costs.
-                        // Seven unlabelled percentage sliders is a panel you can only
-                        // learn by moving one and watching the room.
-                        com.engabd.sendpin.hue.SyncoEngine.TUNABLE_BLURBS[key]?.let { blurb ->
-                            Text(
-                                blurb,
-                                color = TextFaint,
-                                fontSize = 11.sp,
-                                lineHeight = 15.sp,
-                                modifier = Modifier.padding(start = 107.dp, bottom = 10.dp),
+                            InfoChip(
+                                "Auto intensity",
+                                "A chill track tops out low however loud its chorus gets. Only " +
+                                    "a genuinely heavy one reaches the top of what you allow below, " +
+                                    "so the lights tell you something about the music rather than " +
+                                    "tracking the volume knob.\n\nTip: if everything feels too " +
+                                    "tame, raise the ceiling below instead of turning Auto off. " +
+                                    "Auto still picks the level, it just has further to go.",
+                                Modifier.heightIn(0.dp),
                             )
                         }
-                    }
-
-                    Spacer(Modifier.height(8.dp))
-                    val anyChanged = com.engabd.sendpin.hue.SyncoEngine.TUNABLE_DEFS.any { (k, _) ->
-                        kotlin.math.abs((shown[k] ?: 1f) - 1f) >= 0.005f
-                    }
-                    Text(
-                        "Reset all",
-                        color = if (anyChanged) accent else TextFaint,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 12.sp,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable(enabled = anyChanged) {
-                                draft = emptyMap()
-                                direct.previewTunables(emptyMap())
-                                scope.launch { settings.setLightSyncTunables(emptyMap()) }
+                        Spacer(Modifier.height(12.dp))
+                        Text("Auto may use", color = TextMuted, fontSize = 12.sp)
+                        Spacer(Modifier.height(8.dp))
+                        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            com.engabd.sendpin.hue.SyncMode.entries.forEach { m ->
+                                val on = m.wire in autoLevels
+                                Pill(m.wire.label(), on) {
+                                    // Never let the selection empty out — Auto with
+                                    // nothing to choose from has no answer to give.
+                                    val next = if (on) autoLevels - m.wire else autoLevels + m.wire
+                                    if (next.isNotEmpty()) {
+                                        scope.launch { settings.setLightSyncAutoLevels(next) }
+                                    }
+                                }
                             }
-                            .padding(horizontal = 10.dp, vertical = 6.dp),
-                    )
-
-                    // Room gestures. Under Advanced rather than beside the colour
-                    // picker because it is the one control here that can do nothing
-                    // at all: a track with no stereo movement and no swell in it
-                    // looks exactly the same either way, and that is the correct
-                    // behaviour rather than a fault.
-                    Spacer(Modifier.height(20.dp))
-                    FeatureRow(
-                        title = "Room gestures",
-                        gist = "Let a sweep or a swell travel across the room.",
-                        info = "When a sound sweeps across the stereo field, or a swell rises with " +
-                            "no beat under it, the light travels with it: along a line of " +
-                            "lamps, or around a room with lamps in the corners.\n\nRooms with " +
-                            "only a couple of lamps get a soft brightness swell instead, since " +
-                            "there is nowhere for the light to travel to.\n\nMost songs have " +
-                            "neither a sweep nor a swell in them and stay exactly as they are. " +
-                            "That is the correct behaviour rather than a fault.\n\nTip: it " +
-                            "shows itself best on ambient, film scores and anything with a long " +
-                            "build. On a four-to-the-floor dance track you will barely notice " +
-                            "it.",
-                        checked = spatial,
-                    ) { on -> scope.launch { settings.setLightSyncSpatial(on) } }
+                        }
+                    }
                 }
 
-                // Saved shows. Above the layers rather than below them, because a
-                // preset is mostly a way of setting those layers and the intensity
-                // and the palette all at once - so it reads as "or just pick one of
-                // these" before the reader starts working through them one by one.
-                Spacer(Modifier.height(22.dp))
-                SavedShows(
-                    presets = presets,
-                    rules = genreRules,
-                    genreAuto = genreAuto,
-                    activeId = activePresetId,
-                    accent = accent,
-                    onApply = { preset -> scope.launch { settings.applyShowPreset(preset) } },
-                    onSave = { name ->
-                        scope.launch {
-                            val captured = settings.captureShowPreset(name)
-                            settings.saveShowPresets(presets + captured)
+                item(key = "ls_ambience", contentType = "section") {
+                    Spacer(Modifier.height(22.dp))
+                    SectionLabel("Ambience")
+                    Spacer(Modifier.height(10.dp))
+                    GlassCard(radius = 18.dp) {
+                        Row(
+                            Modifier.fillMaxWidth().clickable(onClick = onOpenEffects).padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Box(
+                                Modifier.size(42.dp).clip(RoundedCornerShape(13.dp)).background(Glass)
+                                    .border(1.dp, Hairline, RoundedCornerShape(13.dp)),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(Icons.Default.AutoAwesome, null, tint = TextMuted, modifier = Modifier.size(20.dp))
+                            }
+                            Spacer(Modifier.width(13.dp))
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    Text("Effects", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                                    ExperimentalBadge()
+                                }
+                                Text(
+                                    "Fireworks, thunderstorm, fireplace and more - with their own sound, " +
+                                        "and no music needed",
+                                    color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
+                                )
+                            }
+                            Icon(Icons.Default.ChevronRight, null, tint = TextFaint, modifier = Modifier.size(20.dp))
                         }
-                    },
-                    onRename = { preset, name ->
-                        scope.launch {
-                            settings.saveShowPresets(
-                                presets.map { if (it.id == preset.id) it.copy(name = name) else it },
+                    }
+                }
+
+                item(key = "ls_colour", contentType = "section") {
+                    Spacer(Modifier.height(22.dp))
+                    SectionLabel("Colour")
+                    Spacer(Modifier.height(10.dp))
+                    // Every dynamic source works on the direct path now.
+                    ColourPicker(selected = colour, showDynamic = true, songFromBeats = true) { scheme ->
+                        scope.launch { settings.setLightSyncColor(scheme) }
+                    }
+
+                    // Correcting the colours an album lights the room with belongs here,
+                    // beside the picker that chose to use them. It was previously only
+                    // reachable by long-pressing the artwork on Now Playing — behind a
+                    // sheet of queue and share actions, and gated on the track being
+                    // favouritable, which has nothing to do with its colours.
+                    Spacer(Modifier.height(10.dp))
+                    AlbumColoursCard(
+                        scheme = colour,
+                        label = lightSource.scanTrack?.album?.takeIf { it.isNotBlank() }
+                            ?: maNow?.album?.takeIf { it.isNotBlank() }
+                            ?: lightSource.scanTrack?.title
+                            ?: maNow?.title,
+                        saved = savedPalette,
+                        canEdit = paletteKeys.isNotEmpty(),
+                        accent = accent,
+                        onEdit = { paletteEditorOpen = true },
+                        onReset = {
+                            scope.launch { settings.setCoverPaletteOverrideForKeys(paletteKeys, null) }
+                        },
+                    )
+                }
+
+                item(key = "ls_offset", contentType = "section") {
+                    // Only while the scan-driven show is the one running. It has no
+                    // equivalent of the live path's measured [AudioLead] — there is no sink
+                    // here to measure — and the latency from Music Assistant out to a cast
+                    // group or a networked amp is device-specific and never reported. There
+                    // is no way to work it out; there is only asking.
+                    if (feed == com.engabd.sendpin.hue.LightSyncFeed.SCAN_REMOTE) {
+                        Spacer(Modifier.height(22.dp))
+                        SectionLabel("Speaker offset")
+                        Spacer(Modifier.height(10.dp))
+                        var offsetDrag by remember { mutableStateOf<Int?>(null) }
+                        val shownOffset = offsetDrag ?: speakerOffsetMs
+                        LabeledSlider(
+                            icon = Icons.Default.Speaker,
+                            value = ((shownOffset + OFFSET_RANGE_MS) / (2f * OFFSET_RANGE_MS)).coerceIn(0f, 1f),
+                            onChange = { offsetDrag = offsetFromSlider(it) },
+                            onCommit = {
+                                val ms = offsetFromSlider(it)
+                                offsetDrag = null
+                                scope.launch { settings.setLightSyncSpeakerOffsetMs(ms) }
+                            },
+                            trailing = "$shownOffset ms",
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
+                            Text(
+                                "Nudge until the beat lands with the sound in the room.",
+                                color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                            )
+                            InfoChip(
+                                "Speaker offset",
+                                "Positive delays the lights; negative pushes them ahead of the " +
+                                    "speaker. Which way you need depends on whether the speaker " +
+                                    "buffers more than the bridge does.",
+                                Modifier.heightIn(0.dp),
                             )
                         }
-                    },
-                    onDelete = { preset ->
-                        scope.launch {
-                            settings.saveShowPresets(presets.filterNot { it.id == preset.id })
-                            // A rule pointing at a deleted preset would silently never
-                            // fire, which looks exactly like the rules being broken.
-                            settings.saveGenrePresetRules(
-                                genreRules.filterNot { it.presetId == preset.id },
-                            )
+                    }
+                }
+
+                item(key = "ls_play", contentType = "section") {
+                    Spacer(Modifier.height(22.dp))
+                    SectionLabel("Play")
+                    Spacer(Modifier.height(10.dp))
+                    GlassCard(radius = 18.dp, modifier = Modifier.clickable(onClick = onOpenRhythmGame).fillMaxWidth()) {
+                        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+                                Text("Rhythm Lights", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                                Text("Tap along and flash the room.", color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                            }
+                            Icon(Icons.Default.ChevronRight, null, tint = TextMuted)
                         }
-                    },
-                    onGenreAuto = { on -> scope.launch { settings.setGenrePresetsEnabled(on) } },
-                    onAddRule = { genre, preset ->
-                        scope.launch {
-                            settings.saveGenrePresetRules(
-                                genreRules.filterNot { it.genre.equals(genre, true) } +
-                                    com.engabd.sendpin.hue.GenrePresetRule(genre.trim(), preset.id),
-                            )
+                    }
+                }
+
+                item(key = "ls_listen", contentType = "section") {
+                    Spacer(Modifier.height(22.dp))
+                    SectionLabel("What this phone listens to")
+                    Spacer(Modifier.height(10.dp))
+                    val phoneAudioFeed by settings.phoneAudioFeed.collectAsState(initial = "auto")
+                    PhoneAudioCard(
+                        selected = phoneAudioFeed,
+                        state = captureState,
+                        accent = accent,
+                        onSelect = { choice ->
+                            scope.launch { settings.setPhoneAudioFeed(choice) }
+                            // The choice *is* the switch. This is the whole of the fix:
+                            // picking a mode that needs capture now starts capture, where
+                            // before it only changed which feed the picker would have
+                            // preferred had anything ever started one.
+                            if (choice == "internal") {
+                                com.engabd.sendpin.capture.PlaybackCapture.stop(context)
+                            } else if (!com.engabd.sendpin.capture.PlaybackCapture.hasToken()) {
+                                com.engabd.sendpin.capture.PlaybackCapture.requestStart(context)
+                            }
+                        },
+                        onStartCapture = { com.engabd.sendpin.capture.PlaybackCapture.requestStart(context) },
+                    )
+                }
+
+                item(key = "ls_brightness", contentType = "section") {
+                    Spacer(Modifier.height(22.dp))
+                    SectionLabel("Brightness ceiling")
+                    Spacer(Modifier.height(10.dp))
+                    // Live value while dragging, stored value otherwise. Same reasoning as
+                    // the tunables below: a DataStore write per pointer move recomposed the
+                    // screen on every frame, which is what made these sliders judder.
+                    var brightnessDrag by remember { mutableStateOf<Int?>(null) }
+                    val shownBrightness = brightnessDrag ?: brightnessPct
+                    val bSlider = ((shownBrightness - 5) / 95f).coerceIn(0f, 1f)
+                    LabeledSlider(
+                        icon = Icons.Default.BrightnessHigh,
+                        value = bSlider,
+                        onChange = {
+                            val pct = (5 + it * 95).roundToInt()
+                            brightnessDrag = pct
+                            direct.previewBrightness(pct)
+                        },
+                        onCommit = {
+                            val pct = (5 + it * 95).roundToInt()
+                            brightnessDrag = null
+                            scope.launch { settings.setLightSyncBrightness(pct) }
+                        },
+                        trailing = "$shownBrightness%",
+                    )
+                }
+
+                item(key = "ls_advanced", contentType = "section") {
+                    // Advanced live tunables — same six factors as the Home Assistant path.
+                    Spacer(Modifier.height(22.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            SectionLabel("Advanced")
+                            Spacer(Modifier.height(2.dp))
+                            Text("Fine-tune the reaction", color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
                         }
-                    },
-                    onRemoveRule = { rule ->
-                        scope.launch { settings.saveGenrePresetRules(genreRules - rule) }
-                    },
-                )
+                        AccentSwitch(advanced) { on -> scope.launch { settings.setLightSyncAdvanced(on) } }
+                    }
+                    if (advanced) {
+                        Spacer(Modifier.height(12.dp))
+                        // What the finger is currently doing, overlaid on what is stored.
+                        // Held here rather than written through on every frame: each write
+                        // re-serialised the whole map, re-emitted the settings Flow, and
+                        // came back round through DirectLightSync.observeSettings to set
+                        // the identical values again — sixty times a second, per slider.
+                        // The lights still track the finger, via previewTunables.
+                        var draft by remember { mutableStateOf<Map<String, Float>>(emptyMap()) }
+                        val shown = tunables + draft
 
-                // Four additive light-show layers — see `docs/creative-light-shows.md`.
-                // Outside the Advanced gate, deliberately: these are the
-                // headline features this screen exists to show off, not
-                // obscure tunables someone has to go looking for.
-                Spacer(Modifier.height(22.dp))
-                SectionLabel("Light show layers")
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    "Extra, off by default. Each one layers on top of the show above, never a replacement for it.",
-                    color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 11.sp,
-                )
-                Spacer(Modifier.height(12.dp))
+                        // The direct path's own list, which carries `cohesion`. The HA
+                        // screen keeps `LightSyncRepository.TUNABLE_DEFS`, because that map
+                        // is posted verbatim to syncoV2's `set_options` service and the
+                        // integration has no such option to receive.
+                        com.engabd.sendpin.hue.SyncoEngine.TUNABLE_DEFS.forEach { (key, label) ->
+                            val factor = shown[key] ?: 1f
+                            val isDefault = kotlin.math.abs(factor - 1f) < 0.005f
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(vertical = 5.dp),
+                                horizontalArrangement = Arrangement.spacedBy(11.dp),
+                            ) {
+                                Text(label, color = TextSecondary, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, modifier = Modifier.width(96.dp))
+                                HSlider(
+                                    value = (factor / 2f).coerceIn(0f, 1f),
+                                    onChange = {
+                                        val next = draft + (key to (it * 2f))
+                                        draft = next
+                                        direct.previewTunables(tunables + next)
+                                    },
+                                    onCommit = {
+                                        val committed = tunables + (key to (it * 2f))
+                                        draft = draft - key
+                                        scope.launch { settings.setLightSyncTunables(committed) }
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Text(
+                                    "${(factor * 100).roundToInt()}%",
+                                    color = TextMuted, fontFamily = MonoFont, fontWeight = FontWeight.Bold,
+                                    fontSize = 11.sp, modifier = Modifier.widthIn(min = 40.dp),
+                                )
+                                // 100% is the neutral multiplier — `withTunables` treats a
+                                // missing key as 1f — so resetting is removing the entry,
+                                // not storing a value. Greyed out when already there, so the
+                                // row also reads as "this one has been changed".
+                                ResetStep(enabled = !isDefault, description = "Reset $label") {
+                                    draft = draft - key
+                                    val next = tunables - key
+                                    direct.previewTunables(next)
+                                    scope.launch { settings.setLightSyncTunables(next) }
+                                }
+                            }
+                            // What this one actually does, and what each direction costs.
+                            // Seven unlabelled percentage sliders is a panel you can only
+                            // learn by moving one and watching the room.
+                            com.engabd.sendpin.hue.SyncoEngine.TUNABLE_BLURBS[key]?.let { blurb ->
+                                Text(
+                                    blurb,
+                                    color = TextFaint,
+                                    fontSize = 11.sp,
+                                    lineHeight = 15.sp,
+                                    modifier = Modifier.padding(start = 107.dp, bottom = 10.dp),
+                                )
+                            }
+                        }
 
-                FeatureRow(
-                    title = "Music DNA",
-                    gist = "A visual fingerprint unique to each track.",
-                    info = "Tempo, key and structure shape a slow colour floor underneath the " +
-                        "reactive show, so two songs never light the room the same way. The " +
-                        "same track lights it the same way every time, which is the point: the " +
-                        "room starts to feel familiar before you have placed the song.\n\nIt " +
-                        "locks in a few seconds into a track, once that track has been " +
-                        "analysed.\n\nTip: run a sweep under Settings, Light Sync, Track " +
-                        "analysis first. Until a track has been read its fingerprint is being " +
-                        "guessed at from what has played so far.",
-                    checked = musicDna,
-                    // Music DNA reads the offline track scan, and there is no scan for a
-                    // stream arriving from Music Assistant — `scanTrack` is null for both
-                    // MA feeds by construction, so `MusicDnaLayer.apply` hands back its
-                    // input unchanged. The toggle moved and nothing happened, which reads
-                    // as a broken feature rather than an inapplicable one.
-                    unavailable = if (feed == com.engabd.sendpin.hue.LightSyncFeed.SENDSPIN_PCM) {
-                        "Needs a local track scan - not available while Music Assistant " +
-                            "is streaming to this phone."
-                    } else null,
-                ) { on -> scope.launch { settings.setMusicDnaEnabled(on) } }
+                        Spacer(Modifier.height(8.dp))
+                        val anyChanged = com.engabd.sendpin.hue.SyncoEngine.TUNABLE_DEFS.any { (k, _) ->
+                            kotlin.math.abs((shown[k] ?: 1f) - 1f) >= 0.005f
+                        }
+                        Text(
+                            "Reset all",
+                            color = if (anyChanged) accent else TextFaint,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 12.sp,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable(enabled = anyChanged) {
+                                    draft = emptyMap()
+                                    direct.previewTunables(emptyMap())
+                                    scope.launch { settings.setLightSyncTunables(emptyMap()) }
+                                }
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                        )
 
-                Spacer(Modifier.height(16.dp))
-                FeatureRow(
-                    title = "Emotional arc",
-                    gist = "Colour temperature follows the song's own shape.",
-                    info = "Cool through the calm parts, warming into a build, hot on the drop, " +
-                        "cold on a breakdown. The room reads the song's shape rather than just " +
-                        "its level, so a loud passage that is not going anywhere stays " +
-                        "cool.\n\nTip: it layers under everything else rather than replacing " +
-                        "it, so it is worth leaving on alongside Music DNA and Phantom stage. " +
-                        "If the room ends up too warm overall, that is the colour setting on " +
-                        "the Lights tab and not this.",
-                    checked = emotionalArc,
-                ) { on -> scope.launch { settings.setEmotionalArcEnabled(on) } }
+                        // Room gestures. Under Advanced rather than beside the colour
+                        // picker because it is the one control here that can do nothing
+                        // at all: a track with no stereo movement and no swell in it
+                        // looks exactly the same either way, and that is the correct
+                        // behaviour rather than a fault.
+                        Spacer(Modifier.height(20.dp))
+                        FeatureRow(
+                            title = "Room gestures",
+                            gist = "Let a sweep or a swell travel across the room.",
+                            info = "When a sound sweeps across the stereo field, or a swell rises with " +
+                                "no beat under it, the light travels with it: along a line of " +
+                                "lamps, or around a room with lamps in the corners.\n\nRooms with " +
+                                "only a couple of lamps get a soft brightness swell instead, since " +
+                                "there is nowhere for the light to travel to.\n\nMost songs have " +
+                                "neither a sweep nor a swell in them and stay exactly as they are. " +
+                                "That is the correct behaviour rather than a fault.\n\nTip: it " +
+                                "shows itself best on ambient, film scores and anything with a long " +
+                                "build. On a four-to-the-floor dance track you will barely notice " +
+                                "it.",
+                            checked = spatial,
+                        ) { on -> scope.launch { settings.setLightSyncSpatial(on) } }
+                    }
+                }
 
-                Spacer(Modifier.height(16.dp))
-                FeatureRow(
-                    title = "Phantom stage",
-                    gist = "Each part of the mix gets its own lamp.",
-                    info = "Bass, drums, guitar, vocals and synths each take a fixed spot in the " +
-                        "room for the session, glowing softly and flashing when that part of " +
-                        "the mix hits.\n\nIt is a rough approximation from frequency, not real " +
-                        "instrument separation. A bass guitar and a kick drum share a lamp, and " +
-                        "a synth playing in the vocal range lands on the vocal one.\n\nTip: it " +
-                        "needs four or more lamps, spread out, to read as a stage. In a room " +
-                        "with two, everything piles onto both and it looks like a brighter " +
-                        "version of the normal show.",
-                    checked = phantomStage,
-                ) { on -> scope.launch { settings.setPhantomStageEnabled(on) } }
+                item(key = "ls_shows", contentType = "section") {
+                    // Saved shows. Above the layers rather than below them, because a
+                    // preset is mostly a way of setting those layers and the intensity
+                    // and the palette all at once - so it reads as "or just pick one of
+                    // these" before the reader starts working through them one by one.
+                    Spacer(Modifier.height(22.dp))
+                    SavedShows(
+                        presets = presets,
+                        rules = genreRules,
+                        genreAuto = genreAuto,
+                        activeId = activePresetId,
+                        accent = accent,
+                        onApply = { preset -> scope.launch { settings.applyShowPreset(preset) } },
+                        onSave = { name ->
+                            scope.launch {
+                                val captured = settings.captureShowPreset(name)
+                                settings.saveShowPresets(presets + captured)
+                            }
+                        },
+                        onRename = { preset, name ->
+                            scope.launch {
+                                settings.saveShowPresets(
+                                    presets.map { if (it.id == preset.id) it.copy(name = name) else it },
+                                )
+                            }
+                        },
+                        onDelete = { preset ->
+                            scope.launch {
+                                settings.saveShowPresets(presets.filterNot { it.id == preset.id })
+                                // A rule pointing at a deleted preset would silently never
+                                // fire, which looks exactly like the rules being broken.
+                                settings.saveGenrePresetRules(
+                                    genreRules.filterNot { it.presetId == preset.id },
+                                )
+                            }
+                        },
+                        onGenreAuto = { on -> scope.launch { settings.setGenrePresetsEnabled(on) } },
+                        onAddRule = { genre, preset ->
+                            scope.launch {
+                                settings.saveGenrePresetRules(
+                                    genreRules.filterNot { it.genre.equals(genre, true) } +
+                                        com.engabd.sendpin.hue.GenrePresetRule(genre.trim(), preset.id),
+                                )
+                            }
+                        },
+                        onRemoveRule = { rule ->
+                            scope.launch { settings.saveGenrePresetRules(genreRules - rule) }
+                        },
+                    )
+                }
 
-                if (phantomStage) {
+                item(key = "ls_layers", contentType = "section") {
+                    // Four additive light-show layers — see `docs/creative-light-shows.md`.
+                    // Outside the Advanced gate, deliberately: these are the
+                    // headline features this screen exists to show off, not
+                    // obscure tunables someone has to go looking for.
+                    Spacer(Modifier.height(22.dp))
+                    SectionLabel("Light show layers")
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        "Extra, off by default. Each one layers on top of the show above, never a replacement for it.",
+                        color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 11.sp,
+                    )
+                    Spacer(Modifier.height(12.dp))
+
+                    FeatureRow(
+                        title = "Music DNA",
+                        gist = "A visual fingerprint unique to each track.",
+                        info = "Tempo, key and structure shape a slow colour floor underneath the " +
+                            "reactive show, so two songs never light the room the same way. The " +
+                            "same track lights it the same way every time, which is the point: the " +
+                            "room starts to feel familiar before you have placed the song.\n\nIt " +
+                            "locks in a few seconds into a track, once that track has been " +
+                            "analysed.\n\nTip: run a sweep under Settings, Light Sync, Track " +
+                            "analysis first. Until a track has been read its fingerprint is being " +
+                            "guessed at from what has played so far.",
+                        checked = musicDna,
+                        // Music DNA reads the offline track scan, and there is no scan for a
+                        // stream arriving from Music Assistant — `scanTrack` is null for both
+                        // MA feeds by construction, so `MusicDnaLayer.apply` hands back its
+                        // input unchanged. The toggle moved and nothing happened, which reads
+                        // as a broken feature rather than an inapplicable one.
+                        unavailable = if (feed == com.engabd.sendpin.hue.LightSyncFeed.SENDSPIN_PCM) {
+                            "Needs a local track scan - not available while Music Assistant " +
+                                "is streaming to this phone."
+                        } else null,
+                    ) { on -> scope.launch { settings.setMusicDnaEnabled(on) } }
+
                     Spacer(Modifier.height(16.dp))
                     FeatureRow(
-                        title = "Real instrument separation",
-                        gist = "Use actual stem energy instead of frequency bands, where a scan has it.",
-                        info = "Separates vocals, a stereo-width signal (synths, wide guitars) and " +
-                            "bass from the mix during the offline track scan — a mid-side " +
-                            "decomposition, not a machine-learning model, run on this phone with " +
-                            "nothing sent anywhere.\n\nOff: Phantom Stage uses frequency bands as a " +
-                            "proxy for instruments, as above. On: it uses the real stem energy for " +
-                            "tracks that have been scanned since this shipped.\n\nTracks that have " +
-                            "not been scanned, or were scanned before this existed, fall back to " +
-                            "the frequency-band proxy automatically — re-read them under Track " +
-                            "analysis to fill them in.",
-                        checked = stemSeparation,
-                    ) { on -> scope.launch { settings.setStemSeparation(on) } }
+                        title = "Emotional arc",
+                        gist = "Colour temperature follows the song's own shape.",
+                        info = "Cool through the calm parts, warming into a build, hot on the drop, " +
+                            "cold on a breakdown. The room reads the song's shape rather than just " +
+                            "its level, so a loud passage that is not going anywhere stays " +
+                            "cool.\n\nTip: it layers under everything else rather than replacing " +
+                            "it, so it is worth leaving on alongside Music DNA and Phantom stage. " +
+                            "If the room ends up too warm overall, that is the colour setting on " +
+                            "the Lights tab and not this.",
+                        checked = emotionalArc,
+                    ) { on -> scope.launch { settings.setEmotionalArcEnabled(on) } }
+
+                    Spacer(Modifier.height(16.dp))
+                    FeatureRow(
+                        title = "Phantom stage",
+                        gist = "Each part of the mix gets its own lamp.",
+                        info = "Bass, drums, guitar, vocals and synths each take a fixed spot in the " +
+                            "room for the session, glowing softly and flashing when that part of " +
+                            "the mix hits.\n\nIt is a rough approximation from frequency, not real " +
+                            "instrument separation. A bass guitar and a kick drum share a lamp, and " +
+                            "a synth playing in the vocal range lands on the vocal one.\n\nTip: it " +
+                            "needs four or more lamps, spread out, to read as a stage. In a room " +
+                            "with two, everything piles onto both and it looks like a brighter " +
+                            "version of the normal show.",
+                        checked = phantomStage,
+                    ) { on -> scope.launch { settings.setPhantomStageEnabled(on) } }
+
+                    if (phantomStage) {
+                        Spacer(Modifier.height(16.dp))
+                        FeatureRow(
+                            title = "Real instrument separation",
+                            gist = "Use actual stem energy instead of frequency bands, where a scan has it.",
+                            info = "Separates vocals, a stereo-width signal (synths, wide guitars) and " +
+                                "bass from the mix during the offline track scan — a mid-side " +
+                                "decomposition, not a machine-learning model, run on this phone with " +
+                                "nothing sent anywhere.\n\nOff: Phantom Stage uses frequency bands as a " +
+                                "proxy for instruments, as above. On: it uses the real stem energy for " +
+                                "tracks that have been scanned since this shipped.\n\nTracks that have " +
+                                "not been scanned, or were scanned before this existed, fall back to " +
+                                "the frequency-band proxy automatically — re-read them under Track " +
+                                "analysis to fill them in.",
+                            checked = stemSeparation,
+                        ) { on -> scope.launch { settings.setStemSeparation(on) } }
+                    }
+
+                    Spacer(Modifier.height(16.dp))
+                    FeatureRow(
+                        title = "Phone conductor",
+                        gist = "Conduct the room by moving the phone.",
+                        info = "Tilt to shift colour across the room, flick for a flash, or turn the " +
+                            "phone slowly to spin colour around the space.\n\nIt stands down after " +
+                            "a few seconds of no motion, so the phone can sit on a table without " +
+                            "conducting anything.\n\nTip: it overrides the show while you are " +
+                            "moving, so it is a party trick rather than something to leave running. " +
+                            "Hand someone the phone and let them find it.",
+                        checked = phoneConductor,
+                    ) { on -> scope.launch { settings.setPhoneConductorEnabled(on) } }
                 }
 
-                Spacer(Modifier.height(16.dp))
-                FeatureRow(
-                    title = "Phone conductor",
-                    gist = "Conduct the room by moving the phone.",
-                    info = "Tilt to shift colour across the room, flick for a flash, or turn the " +
-                        "phone slowly to spin colour around the space.\n\nIt stands down after " +
-                        "a few seconds of no motion, so the phone can sit on a table without " +
-                        "conducting anything.\n\nTip: it overrides the show while you are " +
-                        "moving, so it is a party trick rather than something to leave running. " +
-                        "Hand someone the phone and let them find it.",
-                    checked = phoneConductor,
-                ) { on -> scope.launch { settings.setPhoneConductorEnabled(on) } }
-
-                Spacer(Modifier.height(22.dp))
-                // No "…has moved to…" line here any more. The app has never been
-                // published, so nobody reading this has a previous version to be
-                // redirected from — it only ever told a first-time user that
-                // something they have not seen is somewhere they were not looking.
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(2.dp),
-                ) {
-                    Text(
-                        "Direct mode needs no timing offset.",
-                        color = TextFaint, style = MaterialTheme.typography.bodySmall,
-                    )
-                    InfoChip(
-                        "Direct mode timing",
-                        "Direct mode syncs this phone's own playback, so it can measure how " +
-                            "far the audio tap runs ahead of the speaker and compensate " +
-                            "exactly. There is nothing left for you to dial in, which is why " +
-                            "the offset slider is not shown on this route.\n\nTip: if the " +
-                            "lights still feel late here, it is the bridge or the network " +
-                            "rather than the timing. Check that nothing else is driving the " +
-                            "same entertainment area.",
-                        Modifier.heightIn(0.dp),
-                    )
+                item(key = "ls_footer", contentType = "section") {
+                    Spacer(Modifier.height(22.dp))
+                    // No "…has moved to…" line here any more. The app has never been
+                    // published, so nobody reading this has a previous version to be
+                    // redirected from — it only ever told a first-time user that
+                    // something they have not seen is somewhere they were not looking.
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        Text(
+                            "Direct mode needs no timing offset.",
+                            color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                        )
+                        InfoChip(
+                            "Direct mode timing",
+                            "Direct mode syncs this phone's own playback, so it can measure how " +
+                                "far the audio tap runs ahead of the speaker and compensate " +
+                                "exactly. There is nothing left for you to dial in, which is why " +
+                                "the offset slider is not shown on this route.\n\nTip: if the " +
+                                "lights still feel late here, it is the bridge or the network " +
+                                "rather than the timing. Check that nothing else is driving the " +
+                                "same entertainment area.",
+                            Modifier.heightIn(0.dp),
+                        )
+                    }
                 }
             }
         }

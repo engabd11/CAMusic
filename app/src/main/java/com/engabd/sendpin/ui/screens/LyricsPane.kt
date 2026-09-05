@@ -59,6 +59,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.engabd.sendpin.ma.MaLyrics
 import com.engabd.sendpin.ui.design.LocalAccent
+import com.engabd.sendpin.ui.design.LocalReducedMotion
 import com.engabd.sendpin.ui.design.Motion
 import com.engabd.sendpin.ui.theme.AppFont
 import com.engabd.sendpin.ui.theme.TextFaint
@@ -309,6 +310,7 @@ private fun SyncedLyrics(
     // everybody and the focus *travels* down the pane. Read inside `graphicsLayer`
     // below, which means it costs a layer invalidation per frame and no recomposition.
     val focus = remember(lines) { Animatable(0f) }
+    val reducedMotion = LocalReducedMotion.current
     var seeded by remember(lines) { mutableStateOf(false) }
     LaunchedEffect(active, lines) {
         if (active < 0) return@LaunchedEffect
@@ -388,7 +390,17 @@ private fun SyncedLyrics(
         ),
         verticalArrangement = Arrangement.spacedBy(LINE_GAP),
     ) {
-        itemsIndexed(lines) { i, line ->
+        // Keyed by position and typed by shape. A lyric pane is two kinds of row —
+        // a line of words and the blank that separates two verses — and without a
+        // contentType the list recycled a Spacer's slot into a Text's and rebuilt
+        // both from scratch. The index is the right key here rather than the text:
+        // a chorus repeats its lines verbatim, so the words are not unique, and the
+        // list is replaced wholesale when the song changes.
+        itemsIndexed(
+            lines,
+            key = { i, _ -> i },
+            contentType = { _, line -> if (line.text.isBlank()) "gap" else "line" },
+        ) { i, line ->
             if (line.text.isBlank()) {
                 Spacer(Modifier.height(VERSE_GAP))
             } else {
@@ -436,7 +448,12 @@ private fun SyncedLyrics(
                             alpha = ALPHA_FAR +
                                 (ALPHA_NEAR - ALPHA_FAR) * near +
                                 (1f - ALPHA_NEAR) * lit
-                            val blur = MAX_BLUR.toPx() * (1f - near)
+                            // A Gaussian blur is an offscreen layer per line, recomputed
+                            // every frame the focus moves — the most expensive thing on
+                            // this screen by a wide margin, and it is pure depth cueing.
+                            // Reduced motion drops it and keeps the dimming, which is the
+                            // same information without the per-frame cost.
+                            val blur = if (reducedMotion) 0f else MAX_BLUR.toPx() * (1f - near)
                             renderEffect =
                                 if (blur > MIN_BLUR_PX) BlurEffect(blur, blur, TileMode.Decal)
                                 else null
