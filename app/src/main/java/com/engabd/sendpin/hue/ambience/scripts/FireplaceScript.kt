@@ -256,6 +256,12 @@ class FireplaceScript : AmbienceScript {
             var g = lerp(EMBER.second, FLAME.second, heat) * level
             var b = lerp(EMBER.third, FLAME.third, heat) * level
 
+            // Sum this frame's raw glint from every live pop before filtering. The
+            // cast filter is per-lamp state and has to advance exactly once per frame:
+            // stepping it inside this loop made its time constant depend on how many
+            // pops happened to overlap, and at full intensity (lambda 3/s against a
+            // 0.38 s envelope) two or more usually do.
+            var glintIn = 0f
             var k = 0
             while (k < n) {
                 val e = live[k]
@@ -265,13 +271,15 @@ class FireplaceScript : AmbienceScript {
                 // A pop is a glint off the embers, not a flash of lightning. POP_LIGHT
                 // keeps it that side of the line; the audio pop is unscaled, because a
                 // crackle that is quiet is just a fire further away.
-                val lvl = POP_LIGHT * e.levelAt(tS) * e.timbre / (1f + 5f * d * d)
-                if (lvl <= 0f) continue
-                // Bounced light arrives spread over frames, not in a step: the glint
-                // passes through the lamp's cast filter first (transparent near the
-                // hearth, diffusing across the room). Render runs at 60 Hz, matching
-                // the cutoff the filters were built for in bind().
-                val glint = castFilters.getOrNull(room.ids.indexOf(id))?.lp(lvl) ?: lvl
+                glintIn += POP_LIGHT * e.levelAt(tS) * e.timbre / (1f + 5f * d * d)
+            }
+            // Bounced light arrives spread over frames, not in a step: transparent
+            // near the hearth, diffusing across the room. Stepped on every frame,
+            // including the quiet ones between pops — left unstepped the tail froze
+            // at its last value and reappeared on the front of the next pop. Render
+            // runs at 60 Hz, matching the cutoff the filters were built for in bind().
+            val glint = castFilters.getOrNull(i)?.lp(glintIn) ?: glintIn
+            if (glint > 0f) {
                 r = minOf(1f, r + SPARK.first * glint)
                 g = minOf(1f, g + SPARK.second * glint)
                 b = minOf(1f, b + SPARK.third * glint)

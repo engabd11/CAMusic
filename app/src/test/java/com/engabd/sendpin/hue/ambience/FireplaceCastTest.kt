@@ -74,4 +74,60 @@ class FireplaceCastTest {
         val far = peakFrame(tall.ids.last())
         assertTrue(far > near, "far glint peaked at frame $far, near at $near - no cast lag")
     }
+
+    /**
+     * The cast filter is per-lamp state, so it must advance exactly once per frame.
+     *
+     * It used to be stepped inside the loop over live events, which made its time
+     * constant depend on how many pops happened to overlap — and they do overlap:
+     * at full intensity the rate is 3 a second against a 0.38 s envelope. A one-pole
+     * is linear, so the room's answer to two identical pops must be exactly twice its
+     * answer to one. Under the old code it was not: the doubled stepping converged
+     * the filter faster and the early frames ran hot.
+     */
+    @Test
+    fun `overlapping pops stay linear through the cast filter`() {
+        val room = RoomModel(linearRoom(6))
+        val far = room.ids.last()
+        fun pop() = AmbienceEvent(
+            kind = AmbienceEvent.POP,
+            startS = 1.0,
+            env = Envelope(attackS = 0.020f, holdS = 0.006f, decayTauS = 0.09f),
+            gain = 1f,
+            origin = room.positions.getValue(room.ids.first()),
+            azimuth = 0f,
+            colour = Rgb(1f, 0.85f, 0.55f),
+            timbre = 1f,
+        )
+        // Two events, identical in everything the light path reads, so twice the input.
+        val one = arrayOfNulls<AmbienceEvent>(2).also { it[0] = pop() }
+        val two = arrayOfNulls<AmbienceEvent>(2).also { it[0] = pop(); it[1] = pop() }
+        val none = arrayOfNulls<AmbienceEvent>(2)
+
+        // Low intensity keeps the base dim so nothing clips at 1.0 and the doubling
+        // stays visible in the arithmetic rather than in the ceiling.
+        val a = FireplaceScript().also { it.bind(room, AmbienceParams(intensity = 0.2f)) }
+        val b = FireplaceScript().also { it.bind(room, AmbienceParams(intensity = 0.2f)) }
+        val c = FireplaceScript().also { it.bind(room, AmbienceParams(intensity = 0.2f)) }
+
+        var worst = 0f
+        var seen = 0f
+        var t = 1.0
+        while (t < 1.5) {
+            val fa = HashMap<Int, Rgb>()
+            val fb = HashMap<Int, Rgb>()
+            val fc = HashMap<Int, Rgb>()
+            a.renderLights(t, one, 1, fa)
+            b.renderLights(t, two, 2, fb)
+            c.renderLights(t, none, 0, fc)
+            val base = fc.getValue(far).first
+            val g1 = fa.getValue(far).first - base
+            val g2 = fb.getValue(far).first - base
+            worst = max(worst, kotlin.math.abs(g2 - 2f * g1))
+            seen = max(seen, g1)
+            t += 1.0 / 60.0
+        }
+        assertTrue(seen > 1e-4f, "no glint reached the far lamp at all, nothing was tested")
+        assertTrue(worst < 1e-4f, "two pops were not twice one: off by $worst at worst")
+    }
 }
