@@ -96,6 +96,12 @@ internal fun SettingsCard(
  * line in this app. `heightIn(0.dp)` lets it overhang instead of setting the row
  * height — without it every card with an [InfoChip] stood 8dp taller than every card
  * without one, and the settings index rippled.
+ *
+ * The text is given most of the row with the chip beside it, rather than both sizing
+ * themselves in an unconstrained row: long titles ("Media Providers & Accounts",
+ * "Chameleon Canvas & Bloom") otherwise ran underneath the chip and read as two lines
+ * printed over each other. Top-aligned, so a title that wraps keeps its second line
+ * clear of the chip sitting on the first.
  */
 @Composable
 private fun TitleWithInfo(title: String, info: String?, style: TextStyle) {
@@ -104,8 +110,8 @@ private fun TitleWithInfo(title: String, info: String?, style: TextStyle) {
         return
     }
     Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Text(
             title, color = TextPrimary, fontFamily = AppFont, style = style,
@@ -140,8 +146,8 @@ internal fun Note(
         return
     }
     Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Text(
             text,
@@ -234,12 +240,33 @@ internal fun StatusLine(text: String, health: Health, accent: Color) {
     }
 }
 
-/** A label and a monospaced value, for the read-only readouts. */
+/**
+ * A label and a monospaced value, for the read-only readouts.
+ *
+ * Both sides are given a share of the row rather than left to size themselves:
+ * these rows sit inside narrow cards, and values like "On, but this stream is
+ * 16-bit so it makes no difference" ran under the label — the two texts printed
+ * over each other — whenever the pair together outgrew the width. The value
+ * carries the larger share and wraps rather than clips, since half the point of
+ * these lines is a sentence the reader is meant to finish.
+ */
 @Composable
 internal fun StatusRow(label: String, value: String) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(label, color = TextMuted, fontSize = 12.sp)
-        Text(value, color = TextSecondary, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(
+            label,
+            color = TextMuted,
+            fontSize = 12.sp,
+            modifier = Modifier.weight(0.4f),
+        )
+        Text(
+            value,
+            color = TextSecondary,
+            fontFamily = MonoFont,
+            fontWeight = FontWeight.Bold,
+            fontSize = 12.sp,
+            modifier = Modifier.weight(0.6f),
+        )
     }
 }
 
