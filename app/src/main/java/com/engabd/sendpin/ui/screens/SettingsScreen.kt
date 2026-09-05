@@ -381,7 +381,13 @@ private fun LazyListScope.sectionItems(
 
         SettingsSection.AUDIO -> when (detail) {
             AUDIO_OUTPUT_ROUTE -> card("audio_output") { OutputCard(settings, accent, scope, advanced) }
-            AUDIO_EQ_ROUTE -> card("audio_eq") { EqualiserCard(accent) }
+            AUDIO_EQ_ROUTE -> {
+                card("audio_eq") { EqualiserCard(accent) }
+                // The other equaliser, for the other engine. One page, because
+                // "equaliser" is one thing to go looking for — see [MaDspCard], which
+                // draws nothing when there is no Music Assistant server.
+                card("audio_ma_dsp") { MaDspCard(accent) }
+            }
             AUDIO_GAIN_ROUTE -> card("audio_gain") { LoudnessCard(settings, accent, scope) }
             AUDIO_BETWEEN_ROUTE -> {
                 card("audio_continuous") { ContinuousPlayCard(settings, accent, scope) }
