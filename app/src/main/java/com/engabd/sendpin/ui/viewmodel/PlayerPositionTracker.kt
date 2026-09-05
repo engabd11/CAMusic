@@ -430,3 +430,52 @@ class PlayerPositionTracker(
         const val SKEW_DEADBAND_MS = 250L
     }
 }
+
+/**
+ * How long an optimistic freeze may hold the bar before it gives up and accepts
+ * whatever the server says.
+ *
+ * A freeze exists so the bar shows where the music is *going* rather than where the
+ * server last said it was, and every one is paired with a watchdog so a server that
+ * never corroborates costs a stuck second and not a stuck bar. What the right deadline
+ * is depends entirely on **what is going to confirm it**, and that differs by path —
+ * which is the distinction this object exists to make, in one place, because
+ * `NowPlayingViewModel` and `MaNowPlaying` both arm these and must not disagree.
+ */
+internal object FreezeDeadlines {
+
+    /**
+     * The ordinary deadline: long enough to outlast a stream starting somewhere else.
+     */
+    const val DEFAULT_MS = 6_000L
+
+    /**
+     * A seek's deadline when the player is **remote**.
+     *
+     * Music Assistant writes `queue.elapsed_time = position` and signals it *before* it
+     * rebuilds the stream, precisely so clients see the target straight away — so a
+     * remote seek that landed is corroborated by the very next reading. Waiting six
+     * seconds there only ever benefits one that did **not** land (a refused position, a
+     * command that never left a dropped socket), and what it buys is six seconds of the
+     * bar insisting on a place the music never went.
+     */
+    const val REMOTE_SEEK_MS = 2_500L
+
+    /**
+     * The deadline for a seek, given whether this phone is the player.
+     *
+     * [REMOTE_SEEK_MS]'s reasoning rests on the poll being what confirms the seek, and
+     * that is only true of a remote player. When this phone is the player the poll is
+     * deliberately ignored (Music Assistant's clock runs ahead of our own output) and
+     * the confirmation is the audible edge — the first PCM actually written to the
+     * output ring. That does not arrive until roughly 2.9 s after the request: about
+     * 1.25 s from the tap to `stream/start`, and about 1.64 s more before the decoder
+     * and audio track have warmed up, both measured on-device.
+     *
+     * So a 2.5 s deadline won that race every time. It lifted the freeze while the
+     * track was still silent, the bar re-anchored on `elapsed_time` — which the server
+     * has been advancing since it started the stream job — and the bar then ran about
+     * two seconds ahead of anything audible for the rest of the track.
+     */
+    fun forSeek(selfPlayer: Boolean): Long = if (selfPlayer) DEFAULT_MS else REMOTE_SEEK_MS
+}
