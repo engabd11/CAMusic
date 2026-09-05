@@ -1,7 +1,9 @@
 package com.engabd.sendpin.hue.ambience
 
+import com.engabd.sendpin.hue.FLASH_DELTA
 import com.engabd.sendpin.hue.Rgb
 import com.engabd.sendpin.hue.ambience.scripts.CoastalRainScript
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -17,6 +19,20 @@ class CoastalRainTest {
 
     private fun bound(intensity: Float = 0.7f): CoastalRainScript =
         CoastalRainScript().also { it.bind(RoomModel(linearRoom(6)), AmbienceParams(intensity)) }
+
+    /** Everything [s] schedules over its first [horizonS] seconds, in lookahead steps. */
+    private fun scheduled(s: CoastalRainScript, horizonS: Double): List<AmbienceEvent> {
+        val out = ArrayList<AmbienceEvent>()
+        var t = 0.0
+        while (t < horizonS) {
+            s.schedule(t, t + 0.25) { out.add(it) }
+            t += 0.25
+        }
+        return out
+    }
+
+    private fun firstSweep(): AmbienceEvent =
+        scheduled(bound(), 120.0).first { it.kind == AmbienceEvent.SWEEP }
 
     @Test
     fun `the base field is cool, dim, and paints every lamp`() {
@@ -78,24 +94,89 @@ class CoastalRainTest {
     }
 
     @Test
-    fun `a sweep travels across the room`() {
-        val s = bound()
-        val events = ArrayList<AmbienceEvent>()
-        var t = 0.0
-        while (t < 120.0) {
-            s.schedule(t, t + 0.25) { events.add(it) }
-            t += 0.25
+    fun `a sweep travels across the room, one way, without doubling back`() {
+        // The sweep's own contribution, isolated: two scripts with the same seed, one
+        // given the event and one not, so the breathing base subtracts out and what is
+        // left is the headlights alone. (The same trick FireplaceCastTest uses.)
+        val e = firstSweep()
+        val lit = bound()
+        val dark = bound()
+        val one = arrayOfNulls<AmbienceEvent>(1).also { it[0] = e }
+        val none = arrayOfNulls<AmbienceEvent>(1)
+
+        val brightest = ArrayList<Int>()
+        val peaks = ArrayList<Float>()
+        var t = e.startS
+        val travelEndS = e.startS + e.env.attackS + e.env.holdS + 0.5
+        while (t <= travelEndS) {
+            val a = HashMap<Int, Rgb>()
+            val b = HashMap<Int, Rgb>()
+            lit.renderLights(t, one, 1, a)
+            dark.renderLights(t, none, 0, b)
+            var bestId = -1
+            var best = 0f
+            for ((id, c) in a) {
+                val v = b.getValue(id)
+                val glint = max(c.first - v.first, max(c.second - v.second, c.third - v.third))
+                if (glint > best) { best = glint; bestId = id }
+            }
+            brightest.add(bestId)
+            peaks.add(best)
+            t += 1.0 / 60.0
         }
-        val e = events.first { it.kind == AmbienceEvent.SWEEP }
-        val room = RoomModel(linearRoom(6))
-        fun brightestAt(tS: Double): Int {
-            val f = HashMap<Int, Rgb>()
-            s.renderLights(tS, arrayOfNulls<AmbienceEvent>(1).also { it[0] = e }, 1, f)
-            return f.maxByOrNull { max(it.value.first, max(it.value.second, it.value.third)) }!!.key
+
+        // Only the samples where the head is actually over the room: at both ends of
+        // the travel it is out of range of every lamp and the argmax means nothing.
+        val ceiling = peaks.max()
+        val walk = brightest.filterIndexed { i, id -> id >= 0 && peaks[i] > 0.2f * ceiling }
+        assertTrue(walk.size >= 10, "the sweep was barely visible: ${walk.size} lit frames")
+        assertTrue(walk.distinct().size >= 4, "the head sat still: visited ${walk.distinct()}")
+
+        // One direction, start to finish. The wrap this replaced showed up here as the
+        // head reaching one wall and reappearing at the other, which is neither.
+        val rising = walk.zipWithNext().all { (a, b) -> b >= a }
+        val falling = walk.zipWithNext().all { (a, b) -> b <= a }
+        assertTrue(rising || falling, "the head doubled back: $walk")
+    }
+
+    /**
+     * The bug this pins: the head position used to be `(azimuth + travel) % 1f`, and
+     * the modulo moved the bright spot to the opposite wall in a single frame.
+     * `positions` is min-max normalised, so a lamp sits at x=0 and another at x=1 to
+     * catch it, and the step measured 0.14-0.23 against a FLASH_DELTA of 0.10.
+     *
+     * Neither guard downstream would have caught it — FieldSafety keys off *whole
+     * field* brightness, and one lamp of six moving that far hardly shifts the mean,
+     * while EffectRateLimiter only gates repeated reversals inside its interval and
+     * passes an isolated step straight through. So it has to be right here.
+     */
+    @Test
+    fun `a sweep never jumps across the room`() {
+        val s = bound(1f)   // full intensity: the brightest sweeps this effect emits
+        var worst = 0f
+        var worstAt = ""
+        for (e in scheduled(s, 600.0).filter { it.kind == AmbienceEvent.SWEEP }) {
+            val one = arrayOfNulls<AmbienceEvent>(1).also { it[0] = e }
+            var prev: Map<Int, Rgb>? = null
+            var t = e.startS
+            while (t < e.startS + e.env.lifetimeS) {
+                val f = HashMap<Int, Rgb>()
+                s.renderLights(t, one, 1, f)
+                prev?.let { p ->
+                    for ((id, c) in f) {
+                        val a = p.getValue(id)
+                        val d = max(
+                            abs(c.first - a.first),
+                            max(abs(c.second - a.second), abs(c.third - a.third)),
+                        )
+                        if (d > worst) { worst = d; worstAt = "lamp $id at age ${t - e.startS}" }
+                    }
+                }
+                prev = f
+                t += 1.0 / 60.0
+            }
         }
-        val early = brightestAt(e.startS + 0.2)
-        val late = brightestAt(e.startS + e.env.attackS + e.env.holdS * 0.8)
-        assertTrue(early != late, "the brightest lamp did not move: stuck on $early")
+        assertTrue(worst < FLASH_DELTA, "a sweep moved $worst in one frame ($worstAt)")
     }
 
     @Test

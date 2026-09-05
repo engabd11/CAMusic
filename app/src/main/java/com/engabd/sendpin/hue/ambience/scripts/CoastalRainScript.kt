@@ -14,9 +14,7 @@ import com.engabd.sendpin.hue.ambience.OnePole
 import com.engabd.sendpin.hue.ambience.PinkNoise
 import com.engabd.sendpin.hue.ambience.Rng
 import com.engabd.sendpin.hue.ambience.RoomModel
-import com.engabd.sendpin.hue.ambience.Svf
 import com.engabd.sendpin.hue.ambience.VoicePool
-import com.engabd.sendpin.hue.ambience.panGains
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.exp
@@ -67,8 +65,18 @@ class CoastalRainScript : AmbienceScript {
     private val hissHpR = OnePole()
     private val bodyLpL = OnePole()
     private val bodyLpR = OnePole()
-    private val pan = FloatArray(2)
     private var voiced = false
+
+    /**
+     * The strikes audible in the block being rendered, and their voices.
+     *
+     * Two parallel lists rather than a list of `Pair`s built per block: this is the
+     * generator thread, and `clear()` plus adding an existing reference into a
+     * pre-sized list allocates nothing. Sized to [VoicePool]'s capacity, so they
+     * never grow either. Generator thread only.
+     */
+    private val strikeEvents = ArrayList<AmbienceEvent>(STRIKE_VOICES)
+    private val strikeVoiceRefs = ArrayList<StrikeVoice>(STRIKE_VOICES)
 
     /** Per-lamp light accumulator, so [renderLights] can loop events outside lamps. */
     private var acc = FloatArray(0)
@@ -175,7 +183,7 @@ class CoastalRainScript : AmbienceScript {
                 ),
                 gain = (0.10f + 0.08f * rng.f01()) * (0.7f + 0.6f * params.intensity.coerceIn(0f, 1f)),
                 origin = room.centre(),
-                azimuth = rng.f01(),          // where on the wall the headlights appear
+                azimuth = rng.f01(),          // which way the car is going; see renderSweep
                 colour = HEADLIGHTS,
                 seed = rng.nextLong(),
                 leadS = 0f,
@@ -199,8 +207,11 @@ class CoastalRainScript : AmbienceScript {
                 timbre = distKm,
                 seed = rng.nextLong(),
                 // The roll arrives after the propagation delay, as the storm's own
-                // strikes do — the relationship this script borrows intact.
-                soundS = distKm / SPEED_KM_PER_S + 3.5f,
+                // strikes do — the relationship this script borrows intact. The event
+                // has to outlive the whole roll, not a guessed 3.5 s: `spanS` is what
+                // the timeline collects on, and a roll still sounding when its event
+                // is collected stops mid-rumble. Same construction as ThunderstormScript.
+                soundS = distKm / SPEED_KM_PER_S + rollEnvelopeFor(distKm).lifetimeS,
             ),
         )
     }
@@ -265,9 +276,21 @@ class CoastalRainScript : AmbienceScript {
     }
 
     /**
-     * A sweep's brightest lamp walks across the room: the wash's centre moves from
-     * the event's starting azimuth across the room's dominant axis over its life.
-     * Distance falloff from the moving centre, warm additive colour.
+     * A sweep's brightest lamp walks across the room: the wash's centre enters off
+     * one side, crosses, and leaves off the other. Distance falloff from the moving
+     * centre, warm additive colour.
+     *
+     * The head must **never wrap**. It used to be `(azimuth + travel) % 1f`, which
+     * put the bright spot on the opposite wall in a single frame — `positions` is
+     * min-max normalised, so there is always a lamp at x=0 and one at x=1 to catch
+     * it, and the step measured 0.14–0.23 on the edge lamp where `FLASH_DELTA` is
+     * 0.10. Neither guard would have caught it: `FieldSafety` keys off whole-field
+     * brightness, and one lamp of six moving that far barely shifts the mean, while
+     * `EffectRateLimiter` only gates *repeated* reversals inside its interval and
+     * lets an isolated step through. So the travel now runs from [SWEEP_REACH]
+     * outside one edge to [SWEEP_REACH] outside the other, where every lamp is
+     * already out of range, and the azimuth picks the direction instead of the
+     * start — which is what a passing car actually varies.
      */
     private fun renderSweep(e: AmbienceEvent, tS: Double, acc: FloatArray) {
         val age = e.ageAt(tS)
@@ -275,13 +298,16 @@ class CoastalRainScript : AmbienceScript {
         val lvl = e.levelAt(tS)
         if (lvl <= 0f) return
         val travel = (age / (e.env.attackS + e.env.holdS + 0.5f)).coerceIn(0f, 1f)
-        // Start position from the azimuth, walk across x by design (the headlight
-        // read wants horizontal motion, not the room's own axis).
-        val headX = ((e.azimuth + travel) % 1f)
+        val span = 1f + 2f * SWEEP_REACH
+        val headX = if (e.azimuth < 0.5f) {
+            -SWEEP_REACH + travel * span
+        } else {
+            1f + SWEEP_REACH - travel * span
+        }
         for ((i, id) in room.ids.withIndex()) {
             val p = room.positions[id] ?: room.centre()
             val d = kotlin.math.abs(p.x - headX)
-            val influence = (1f - (d / 0.40f).coerceIn(0f, 1f)) * lvl
+            val influence = (1f - (d / SWEEP_REACH).coerceIn(0f, 1f)) * lvl
             if (influence <= 0f) continue
             acc[i * 3] += e.colour.first * influence
             acc[i * 3 + 1] += e.colour.second * influence
@@ -333,17 +359,28 @@ class CoastalRainScript : AmbienceScript {
         val gust0 = gustAt(startS).toDouble()
         val gust1 = gustAt(startS + frames.toDouble() / sampleRate).toDouble()
 
-        panGains(sin(0.3f), pan)  // essentially centred; rain has no position
-
         // Distant strikes from the schedule get their roll, arriving after the
-        // propagation delay exactly as the storm's own do.
+        // propagation delay exactly as the storm's own do. Collected into two
+        // pre-sized scratch lists rather than a fresh list of Pairs: this runs on the
+        // generator thread every block, and neither clear() nor adding an existing
+        // reference allocates.
+        strikeEvents.clear()
+        strikeVoiceRefs.clear()
         var k = 0
-        val strikeVoices = ArrayList<Pair<AmbienceEvent, StrikeVoice>>(2)
         while (k < n) {
             val e = live[k]
             k++
             if (e != null && e.kind == AmbienceEvent.STRIKE && e.soundS > 0f) {
-                strikeVoices.add(e to voices.voiceFor(e) { it.reset() })
+                val v = voices.voiceFor(e) { it.reset() }
+                // Air absorbs treble long before bass, which is the whole reason
+                // distant thunder is a rumble. Without this the roll ran on OnePole's
+                // default coefficient — around 5 kHz, essentially unfiltered.
+                v.rollLp.setCutoff(rollCutFor(e.timbre), sampleRate)
+                // Derived once per block, never per sample: Envelope is a data class
+                // and this loop is about to run at the sample rate.
+                v.rollEnv = rollEnvelopeFor(e.timbre)
+                strikeEvents.add(e)
+                strikeVoiceRefs.add(v)
             }
         }
 
@@ -359,11 +396,22 @@ class CoastalRainScript : AmbienceScript {
             val bodyR = bodyLpR.lp(surfBody.next()) * bl
             var l = hissL + bodyL
             var r = hissR + bodyR
-            for ((e, v) in strikeVoices) {
+            var vi = 0
+            while (vi < strikeEvents.size) {
+                val e = strikeEvents[vi]
+                val v = strikeVoiceRefs[vi]
+                vi++
                 val age = (startS + i.toDouble() / sampleRate - e.startS).toFloat()
-                if (age < e.timbre / SPEED_KM_PER_S) continue  // the light comes first
+                val heard = age - e.timbre / SPEED_KM_PER_S  // the light comes first
+                if (heard < 0f) continue
+                // Enveloped, not gated. It used to switch on at full amplitude the
+                // moment the delay elapsed and stop dead when the timeline collected
+                // the event — a click at each end of every roll, on an effect meant to
+                // run all evening.
+                val re = v.rollEnv.at(heard)
+                if (re <= 0f) continue
                 val roll = v.rollLp.lp(v.roll.next()) * 1.4f
-                val s = roll * 0.10f * e.gain
+                val s = roll * re * 0.10f * e.gain
                 l += s * (1f - e.azimuth)
                 r += s * e.azimuth
             }
@@ -389,18 +437,57 @@ class CoastalRainScript : AmbienceScript {
     private class StrikeVoice {
         val rollLp = OnePole()
         val roll = BrownNoise(0x9ABC)
+        /** Set per block from the event's distance; see [rollEnvelopeFor]. */
+        var rollEnv: Envelope = SILENT_ROLL
         fun reset() { rollLp.reset() }
     }
 
-    private val voices = VoicePool(4) { StrikeVoice() }
+    private val voices = VoicePool(STRIKE_VOICES) { StrikeVoice() }
 
     private companion object {
         const val SPEED_KM_PER_S = 0.343f
         const val STRIKE_REFRACTORY_S = 20.0
+        const val STRIKE_VOICES = 4
 
         /** Sweeps land between 20 and 60 s apart at full intensity. */
         const val SWEEP_MIN_GAP_S = 20.0
         const val SWEEP_MAX_GAP_S = 60.0
+
+        /**
+         * How far outside the room a sweep's head starts and ends, in normalised x.
+         *
+         * Doubles as the falloff radius, which is the point: at the ends of the
+         * travel every lamp is at least this far from the head, so the influence is
+         * already zero and the head can appear and disappear without a step.
+         */
+        const val SWEEP_REACH = 0.40f
+
+        /** Until a voice is given a real one. Zero-length, so it sounds nothing. */
+        val SILENT_ROLL = Envelope(attackS = 0f, holdS = 0f, decayTauS = 1e-4f)
+
+        /**
+         * The roll's shape, sized to fit inside the window [emitStrike] then buys it.
+         *
+         * `soundS` is set from this envelope's own [Envelope.lifetimeS], so the roll
+         * always fades to its tail before the timeline collects the event — the two
+         * cannot drift apart. Slow in and slow out: a lightning channel kilometres
+         * long is heard over a spread of arrival times, not at one instant.
+         */
+        fun rollEnvelopeFor(distKm: Float) = Envelope(
+            attackS = 0.55f + 0.22f * distKm,
+            holdS = 0.20f,
+            decayTauS = 0.60f + 0.18f * distKm,
+            tailCut = 0.02f,
+        )
+
+        /**
+         * Where the roll's treble is gone by, for a strike [distKm] away.
+         *
+         * At this effect's 2.5–4.5 km that lands between roughly 550 and 180 Hz —
+         * a rumble, which is the only kind of thunder a distant storm has left.
+         */
+        fun rollCutFor(distKm: Float): Float =
+            (2200f * exp(-distKm.coerceAtLeast(0f) / 1.8f)).coerceAtLeast(70f)
 
         /** The base's cool lean, and the two event colours against it. */
         val COLD_BOLT = Rgb(0.80f, 0.86f, 1.00f)
