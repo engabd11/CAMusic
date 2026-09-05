@@ -8,6 +8,15 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!--
+      Rhythm Lights' haptic feedback: a tap's confirmation reaches the hand before
+      the eye, and unlike the light show this channel works with no bridge paired.
+      A normal-level permission, granted at install; the game also runs without it
+      (the vibrator calls are runCatching-guarded and the feature degrades to
+      visuals alone), so the manifest entry is what makes the feedback present
+      rather than what keeps the game alive.
+    -->
+    <uses-permission android:name="android.permission.VIBRATE" />
 
     <!--
       Light Sync reacting to *other apps* (Settings > Light Sync > "Other apps").
