@@ -30,6 +30,8 @@ import com.engabd.sendpin.ma.MaQueue
 import com.engabd.sendpin.ma.MaQueueItem
 import com.engabd.sendpin.ma.MaRepository
 import com.engabd.sendpin.ma.MaSimilarTrack
+import com.engabd.sendpin.ma.maxSeekPositionMs
+import com.engabd.sendpin.ma.seekableDurationMs
 import com.engabd.sendpin.subsonic.SubsonicClient
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -611,7 +613,11 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             isPlaying = live != null && p?.isPlaying == true,
             volume = ((p?.volumeLevel ?: 100) / 100f).coerceIn(0f, 1f),
             positionMs = if (live != null) live.elapsedMs ?: 0 else 0,
-            durationMs = if (live != null) live.durationMs ?: 0 else 0,
+            // The queue's own item duration, not the player's `current_media` — see
+            // [seekableDurationMs]. This is the bar's whole scale *and* what
+            // [seekOnServer] clamps against, and it has to be the same number Music
+            // Assistant will measure the seek it receives against.
+            durationMs = if (live != null) seekableDurationMs(queue, p) else 0,
             hasTrack = live != null,
             idle = live == null,
             blank = np == null,
@@ -817,7 +823,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         pendingSkipFromTrack = null
         freezeAtAudibleSeq = playback.audibleSeq.value
         positions.setOptimisticSeek(key, target, state.value.durationMs.takeIf { it > 0 })
-        armFreezeWatchdog(key)
+        armFreezeWatchdog(key, SEEK_FREEZE_TIMEOUT_MS)
     }
 
     private fun freezeForTrackChange() {
@@ -829,10 +835,10 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         armFreezeWatchdog(key)
     }
 
-    private fun armFreezeWatchdog(key: String) {
+    private fun armFreezeWatchdog(key: String, timeoutMs: Long = FREEZE_TIMEOUT_MS) {
         freezeWatchdog?.cancel()
         freezeWatchdog = viewModelScope.launch {
-            delay(FREEZE_TIMEOUT_MS)
+            delay(timeoutMs)
             releaseFreeze(key)
         }
     }
@@ -856,7 +862,10 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
 
         val live = p?.nowPlaying?.takeIf { it.title.isNotBlank() }
         val isPlaying = live != null && p.isPlaying
-        val duration = live?.durationMs ?: 0L
+        // Same reading the bar is drawn with, and for the same reason: the tracker
+        // clamps its projection to this, so a duration belonging to another track
+        // would pin or overrun the playhead it is clamping.
+        val duration = seekableDurationMs(q, p)
         // The queue's own playhead is the better reading — the player object can lag
         // it — but not every server fills it in. Nullable, and deliberately not
         // defaulted to zero: MA sends `"title": null` metadata around a queue restart,
@@ -1226,19 +1235,27 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         val id = targetId()
         return _players.value.firstOrNull { it.playerId == id }?.syncedTo ?: id
     }
-    fun seekTo(fraction: Float) {
-        if (isLocal) {
-            val dur = state.value.durationMs
-            if (dur > 0) local.seekTo((fraction.coerceIn(0f, 1f) * dur).toLong())
-            return
-        }
-        seekOnServer(fraction)
+    /**
+     * The user dropped the scrubber at [positionMs] into the current track.
+     *
+     * Milliseconds, not the fraction of the bar this used to take. The fraction had
+     * to be turned back into a position somewhere, and doing that here meant reading
+     * the duration a second time, from a flow that had been free to move since the
+     * one the bar was drawn with — so the number the magnifier promised and the
+     * number sent to the server were two different multiplications. The scrubber has
+     * already done the arithmetic against the duration the user was actually looking
+     * at; this takes its answer. `massdroid_native`'s slider is in absolute seconds
+     * end to end for the same reason.
+     */
+    fun seekTo(positionMs: Long) {
+        if (isLocal) { local.seekTo(positionMs.coerceAtLeast(0L)); return }
+        seekOnServer(positionMs)
     }
 
     /**
      * Seek the MA player.
      *
-     * Two server behaviours have to be worked around here:
+     * Three server behaviours have to be worked around here:
      *
      *  - `players/cmd/seek` resolves into `play_index(..., seek_position=)`, which
      *    **starts** the queue. Seeking while paused therefore begins playback, which
@@ -1247,19 +1264,30 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
      *  - The seek takes a moment to land, and until it does MA reports the *old*
      *    position. [freezeForSeek] holds the bar at the target so it doesn't snap
      *    back before jumping forward again.
+     *  - Music Assistant **refuses** a seek past `current_item.duration` ("Can not
+     *    seek outside of duration range"), and refuses one on an item with no
+     *    duration at all. A refusal used to be swallowed whole: the command threw,
+     *    [act] discarded it, and the freeze went on holding the bar at a position
+     *    playback had never gone to — for six seconds, until the watchdog gave up and
+     *    the bar snapped forward to wherever the track had got to on its own. That is
+     *    the "I seeked to 1:49 and it took me to 3:01" report; the music never moved.
+     *    So a failure now drops the freeze immediately and says so, and the clamp is
+     *    measured against the same duration the server will measure it against — see
+     *    [seekableDurationMs].
      */
-    private fun seekOnServer(fraction: Float) = act {
-        val dur = state.value.durationMs
-        if (dur <= 0) return@act
-        // Clamp to [0, duration - 1s] so MA doesn't interpret a seek-to-end
-        // as "skip to next track". 1 second of headroom is enough.
-        val maxFraction = ((dur - 1000L).coerceAtLeast(0L).toFloat() / dur)
-        val clamped = fraction.coerceIn(0f, maxFraction)
-        val targetMs = (clamped * dur).toLong()
+    private fun seekOnServer(positionMs: Long) = act(toastOnError = "Couldn't seek") {
+        val target = positionMs.coerceIn(0L, maxSeekPositionMs(state.value.durationMs))
         val wasPlaying = state.value.isPlaying
 
-        freezeForSeek(targetMs)
-        repo.seek(targetId(), (targetMs / 1000).toInt())
+        freezeForSeek(target)
+        try {
+            repo.seek(targetId(), (target / 1000).toInt())
+        } catch (e: Exception) {
+            // Nothing moved, so stop pretending it did. [act]'s own refresh puts the
+            // real position back on the bar a beat later, and the toast says why.
+            releaseFreeze(positionKey())
+            throw e
+        }
         if (!wasPlaying) {
             // The seek restarted it. Put it back where it was — after a beat, or the
             // pause races the play the seek just issued.
@@ -2063,6 +2091,22 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
 
         /** How close the server's clock must land to a seek target to count as landed. */
         const val SEEK_CONFIRM_MS = 3_000L
+
+        /**
+         * A seek's own, shorter deadline.
+         *
+         * A skip has to wait out a stream starting somewhere else, which is why
+         * [FREEZE_TIMEOUT_MS] is as generous as it is. A seek does not: Music
+         * Assistant writes `queue.elapsed_time = position` and signals the update
+         * *before* it rebuilds the stream, precisely so clients see the target
+         * straight away, so a seek that landed is corroborated by the very next
+         * reading. Holding one for six seconds only ever benefits a seek that did
+         * **not** land — a position the server refused, or a command that never left
+         * a dropped socket — and what that buys is six seconds of a bar insisting on
+         * a place the music never went before it jumps to where the track actually
+         * got to. That jump is the bug this constant exists to shorten.
+         */
+        const val SEEK_FREEZE_TIMEOUT_MS = 2_500L
 
         /**
          * Matches LibraryViewModel.SCROBBLE_MAX_MS — the same "was this a real play" call.

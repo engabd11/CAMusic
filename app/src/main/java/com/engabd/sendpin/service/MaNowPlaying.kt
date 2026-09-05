@@ -9,6 +9,8 @@ import com.engabd.sendpin.ma.MaParse
 import com.engabd.sendpin.ma.MaPlayer
 import com.engabd.sendpin.ma.MaQueue
 import com.engabd.sendpin.ma.MaRepository
+import com.engabd.sendpin.ma.maxSeekPositionMs
+import com.engabd.sendpin.ma.seekableDurationMs
 import com.engabd.sendpin.ui.viewmodel.PlayerPositionTracker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -111,7 +113,7 @@ class MaNowPlaying(private val app: Context) {
     private val owner get() = SendpinApp.instance.playbackOwner
 
     val now: StateFlow<Now?> =
-        combine(_players, _queues, _target, owner.state) { players, _, target, own ->
+        combine(_players, _queues, _target, owner.state) { players, queues, target, own ->
             if (own.sessionOwner == PlaybackOwner.Who.LOCAL) return@combine null
             val id = target.ifBlank { myPlayerId }
             val p = players.firstOrNull { it.playerId == id } ?: return@combine null
@@ -123,7 +125,12 @@ class MaNowPlaying(private val app: Context) {
                 artist = np.artist,
                 album = np.album,
                 artworkUrl = np.imageUrl,
-                durationMs = np.durationMs ?: 0L,
+                // The queue's item duration, not the player's `current_media` — see
+                // [seekableDurationMs]. The shade's bar is drawn to this and the
+                // media session declares it as the track length, so a seek arriving
+                // from the notification, Android Auto or a head unit is bounded by
+                // the same number Music Assistant will check it against.
+                durationMs = seekableDurationMs(queues.firstOrNull { it.queueId == streamId(p) }, p),
                 isPlaying = p.isPlaying,
                 isSelf = p.isSelfOrActiveOutput(myPlayerId),
                 volumeLevel = p.volumeLevel,
@@ -365,8 +372,8 @@ class MaNowPlaying(private val app: Context) {
         pendingSkip = false
         pendingSkipFromTrack = null
         freezeAtAudibleSeq = SendpinApp.instance.playback.audibleSeq.value
-        positions.setOptimisticSeek(playerId, target, now.value?.durationMs)
-        armFreezeWatchdog(playerId)
+        positions.setOptimisticSeek(playerId, target, now.value?.durationMs?.takeIf { it > 0 })
+        armFreezeWatchdog(playerId, SEEK_FREEZE_TIMEOUT_MS)
     }
 
     private fun freezeForTrackChange(playerId: String) {
@@ -378,10 +385,10 @@ class MaNowPlaying(private val app: Context) {
         armFreezeWatchdog(playerId)
     }
 
-    private fun armFreezeWatchdog(playerId: String) {
+    private fun armFreezeWatchdog(playerId: String, timeoutMs: Long = FREEZE_TIMEOUT_MS) {
         freezeWatchdog?.cancel()
         freezeWatchdog = scope.launch {
-            delay(FREEZE_TIMEOUT_MS)
+            delay(timeoutMs)
             releaseFreeze(playerId)
         }
     }
@@ -462,7 +469,7 @@ class MaNowPlaying(private val app: Context) {
                 elapsedMs = 0L,
                 capturedAtMs = null,
                 isPlaying = player.isPlaying,
-                durationMs = np?.durationMs,
+                durationMs = seekableDurationMs(queue, player).takeIf { it > 0 },
                 speed = queue?.playbackSpeed,
             )
             return
@@ -473,7 +480,7 @@ class MaNowPlaying(private val app: Context) {
             elapsedMs = elapsed,
             capturedAtMs = capturedAtMs,
             isPlaying = player.isPlaying,
-            durationMs = np?.durationMs,
+            durationMs = seekableDurationMs(queue, player).takeIf { it > 0 },
             speed = queue?.playbackSpeed,
         )
     }
@@ -548,6 +555,12 @@ class MaNowPlaying(private val app: Context) {
 
     fun seekTo(positionMs: Long) = command {
         val id = targetId()
+        // Clamped here rather than trusted from the caller: a media session hands
+        // over a position measured against the duration *it* was told, and Music
+        // Assistant rejects anything past `current_item.duration` outright — a
+        // rejection [command]'s `runCatching` would swallow, leaving the shade's bar
+        // frozen on a position playback never reached.
+        val target = positionMs.coerceIn(0L, maxSeekPositionMs(now.value?.durationMs ?: 0L))
         // Hold the bar where the user dropped it: MA keeps reporting the old position
         // for a beat after a seek, and rendering that makes the bar jump back.
         //
@@ -556,8 +569,15 @@ class MaNowPlaying(private val app: Context) {
         // used to do — released the hold before the server had even processed the
         // seek, so the very next poll reported the old position and the notification's
         // bar snapped back. That is the whole reason the freeze exists.
-        freezeForSeek(id, positionMs)
-        repo.seek(id, (positionMs / 1000).toInt())
+        freezeForSeek(id, target)
+        try {
+            repo.seek(id, (target / 1000).toInt())
+        } catch (e: Exception) {
+            // The seek did not happen, so let the bar say where playback really is
+            // instead of holding a target for six seconds and then jumping.
+            releaseFreeze(id)
+            throw e
+        }
     }
 
     /** [level01] is 0..1, as the media session reports it. */
@@ -589,5 +609,13 @@ class MaNowPlaying(private val app: Context) {
          * that goes quiet should cost a stuck second, not a stuck bar.
          */
         const val FREEZE_TIMEOUT_MS = 6_000L
+
+        /**
+         * A seek's own, shorter deadline — see the note on
+         * `NowPlayingViewModel.SEEK_FREEZE_TIMEOUT_MS`. MA publishes a seek's target
+         * before it rebuilds the stream, so one that landed is confirmed by the next
+         * reading; the long wait only prolongs the lie told by one that did not.
+         */
+        const val SEEK_FREEZE_TIMEOUT_MS = 2_500L
     }
 }

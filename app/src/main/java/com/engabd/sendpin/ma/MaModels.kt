@@ -375,12 +375,44 @@ data class MaQueue(
      * directly; a synced member may have no entry of its own.
      */
     val dsp: Map<String, MaDspDetails> = emptyMap(),
+    /**
+     * MA's own `active` flag: is this queue the thing the player is playing?
+     *
+     * A queue object outlives the session it describes. A speaker switched to an
+     * external source — Spotify Connect, a line-in, the device's own app — keeps its
+     * Music Assistant queue, `current_item` and all, and that item is then a record
+     * of what MA last played on it rather than what is coming out of it now. Anything
+     * reading the queue as a description of *current* playback has to ask this first;
+     * [seekableDurationMs] does.
+     *
+     * Defaults true, because absent has to mean "can't tell": a server that omits the
+     * field must not read as one whose queues are all dormant.
+     */
+    val active: Boolean = true,
     val shuffleEnabled: Boolean = false,
     val repeatMode: String = "off",   // off | one | all
     val currentIndex: Int? = null,
     val itemCount: Int = 0,
     /** The library item behind `current_item` — the handle for favourite/lyrics/similar. */
     val currentItem: MaItem? = null,
+    /**
+     * How long `current_item` is, off the **queue item's** own `duration`.
+     *
+     * The one duration that can be trusted to describe the thing [elapsedMs] is a
+     * position in, and the only one Music Assistant itself will accept a seek
+     * against: `player_queues/seek` rejects anything past `current_item.duration`
+     * outright ("Can not seek outside of duration range"), and `play_index` seeks
+     * within that same item.
+     *
+     * The player's `current_media.duration` is a different reading of a different
+     * object, updated on its own schedule, and it disagrees often enough to matter —
+     * it lags a track change, it is absent on a group member, and MA's own model
+     * marks it optional. Pairing the queue's playhead with the player's duration is
+     * what let the app draw a bar whose scale belonged to one track and whose
+     * playhead belonged to another, and send seeks the server then refused. See
+     * [seekableDurationMs], which is what callers should ask.
+     */
+    val currentItemDurationMs: Long? = null,
     val currentQueueItemId: String? = null,
     val dontStopTheMusic: Boolean = false,
     val playbackSpeed: Float = 1f,
@@ -455,6 +487,52 @@ data class MaSearchResults(
     val tracks: List<MaItem>,
     val playlists: List<MaItem>,
 )
+
+/**
+ * How long the thing a player is playing actually is — the number the seek bar's
+ * scale, and every seek built from it, has to be measured against.
+ *
+ * The queue's own [MaQueue.currentItemDurationMs] first, because that is the reading
+ * `player_queues/seek` validates against and the one that belongs to the same object
+ * as [MaQueue.elapsedMs]. The player's `current_media.duration` is the fallback, for
+ * the case the queue is not in view at all (a player driven by something other than
+ * an MA queue, or one whose queue has gone dormant behind an external source), not
+ * the primary — a bar whose length comes from one object and whose
+ * playhead comes from another is a bar that can disagree with the server about where
+ * the end of the track is, and a seek built from it is one the server can refuse.
+ *
+ * This is `massdroid_native`'s `currentTrackDurationFor`, which reaches for the queue
+ * first for the same reason and records that `current_media.duration` "is often 0 for
+ * non-leader children".
+ *
+ * Zero means nobody knows, and callers must not treat that as a real length.
+ */
+fun seekableDurationMs(queue: MaQueue?, player: MaPlayer?): Long =
+    queue?.takeIf { it.active }?.currentItemDurationMs?.takeIf { it > 0 }
+        ?: player?.nowPlaying?.durationMs?.takeIf { it > 0 }
+        ?: 0L
+
+/**
+ * The furthest into a track a seek may legally land, in milliseconds.
+ *
+ * Music Assistant refuses a seek past the current item's duration outright, and a
+ * position *at* the end is read as "this track is over" and advances the queue —
+ * neither of which is what dropping the scrubber near the end means. [durationMs] of
+ * zero means the length is unknown, and then there is nothing to clamp against:
+ * the caller's own position stands.
+ */
+fun maxSeekPositionMs(durationMs: Long): Long =
+    if (durationMs > 0) (durationMs - SEEK_END_MARGIN_MS).coerceAtLeast(0L) else Long.MAX_VALUE
+
+/**
+ * Headroom kept between a seek target and the end of the track.
+ *
+ * A second, matching `massdroid_native`'s `SEEK_END_MARGIN_S`. It is not a rounding
+ * allowance: the app sends whole seconds, the server compares against a duration it
+ * may hold to a fraction, and the two only have to disagree by a hair for a seek near
+ * the end to be rejected or to skip the track.
+ */
+const val SEEK_END_MARGIN_MS = 1_000L
 
 /** A single queue item with its stream details. */
 data class MaQueueItem(
@@ -838,6 +916,16 @@ object MaParse {
         return base + (if (raw.startsWith("/")) raw else "/$raw")
     }
 
+    /**
+     * A Music Assistant duration field — seconds, integer or float — as milliseconds.
+     *
+     * Null for absent, and for the zero and negative values MA uses to mean "no
+     * duration" (a live radio stream, an item whose provider never reported one).
+     * Callers treat null as "unknown", which is not the same as "zero long".
+     */
+    private fun durationSecMs(e: JsonElement?): Long? =
+        (e as? JsonPrimitive)?.doubleOrNull?.takeIf { it > 0 }?.let { (it * 1000).toLong() }
+
     fun queues(result: JsonElement?, serverUrl: String? = null): List<MaQueue> {
         val arr = result as? JsonArray ?: return emptyList()
         return arr.mapNotNull { el ->
@@ -849,11 +937,17 @@ object MaParse {
                 queueId = id,
                 inputFormat = inputFormat,
                 dsp = dsp,
+                active = o["active"]?.jsonPrimitive?.booleanOrNull ?: true,
                 shuffleEnabled = o["shuffle_enabled"]?.jsonPrimitive?.booleanOrNull ?: false,
                 repeatMode = o["repeat_mode"]?.jsonPrimitive?.contentOrNull ?: "off",
                 currentIndex = o["current_index"]?.jsonPrimitive?.intOrNull,
                 itemCount = o["items"]?.jsonPrimitive?.intOrNull ?: 0,
                 currentItem = item(current?.get("media_item"), serverUrl),
+                // The QueueItem's own `duration` (seconds) first — that is the field
+                // MA validates a seek against. The media item's is the catalogue
+                // figure and only stands in when the queue item carries none.
+                currentItemDurationMs = durationSecMs(current?.get("duration"))
+                    ?: durationSecMs((current?.get("media_item") as? JsonObject)?.get("duration")),
                 currentQueueItemId = current?.get("queue_item_id")?.jsonPrimitive?.contentOrNull,
                 dontStopTheMusic = o["dont_stop_the_music_enabled"]?.jsonPrimitive?.booleanOrNull ?: false,
                 playbackSpeed = o["playback_speed"]?.jsonPrimitive?.floatOrNull ?: 1f,
