@@ -81,6 +81,19 @@ class FireplaceScript : AmbienceScript {
     /** Scratch for the light tick's read of the bed. Render thread only. */
     private val bedNow = BedSample()
 
+    /**
+     * Per-lamp one-pole on the pop glint, so cast light lags its source.
+     *
+     * Light from the fire itself has nothing to bounce off and may arrive in a step;
+     * light reaching the far side of the room arrives off the walls, spread over
+     * frames. The cutoff scales with distance in [bind]: the near lamp is nearly
+     * transparent, the far wall diffuses over a few 60 Hz frames. Guided by the
+     * Light Effects Guide Book — brightness transitions read best slower than
+     * colour ones, and a reflection that arrives in lockstep with the flame reads
+     * as a second fire rather than as one room lit by one fire.
+     */
+    private var castFilters: Array<OnePole> = emptyArray()
+
     /** Reaction state. Analysis thread only. */
     private var lastPopS = Double.NaN
     private val reactRng = Rng(0x1F1AEL)
@@ -100,6 +113,16 @@ class FireplaceScript : AmbienceScript {
             val d = room.gap(room.ids[i], hearth)
             // Near the hearth is fire; far from it is the glow the fire throws.
             (1f / (1f + 2.2f * d * d)).coerceIn(0.12f, 1f)
+        }
+        // Cast-light diffusion, per lamp: near the hearth the glint is direct light
+        // (no bounce, no lag), across the room it is bounced and arrives spread.
+        // gap is in roomShape units, which span 1.0 across the room's largest
+        // dimension, so the cutoff falls 18 Hz (transparent) to 2.5 Hz (a few
+        // 60 Hz frames of diffusion) from hearth to far wall.
+        castFilters = Array(n) { i ->
+            OnePole().also {
+                it.setCutoff(18f - 15.5f * room.gap(room.ids[i], hearth).coerceIn(0f, 1f), 60)
+            }
         }
     }
 
@@ -244,9 +267,14 @@ class FireplaceScript : AmbienceScript {
                 // crackle that is quiet is just a fire further away.
                 val lvl = POP_LIGHT * e.levelAt(tS) * e.timbre / (1f + 5f * d * d)
                 if (lvl <= 0f) continue
-                r = minOf(1f, r + SPARK.first * lvl)
-                g = minOf(1f, g + SPARK.second * lvl)
-                b = minOf(1f, b + SPARK.third * lvl)
+                // Bounced light arrives spread over frames, not in a step: the glint
+                // passes through the lamp's cast filter first (transparent near the
+                // hearth, diffusing across the room). Render runs at 60 Hz, matching
+                // the cutoff the filters were built for in bind().
+                val glint = castFilters.getOrNull(room.ids.indexOf(id))?.lp(lvl) ?: lvl
+                r = minOf(1f, r + SPARK.first * glint)
+                g = minOf(1f, g + SPARK.second * glint)
+                b = minOf(1f, b + SPARK.third * glint)
             }
             out[id] = Rgb(r, g, b)
         }
