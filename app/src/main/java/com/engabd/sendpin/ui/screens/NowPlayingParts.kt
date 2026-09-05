@@ -487,8 +487,17 @@ fun BoxScope.PlayerOverlays(
         // `LocalTrack.id` is not `MaItem.itemId` — so a save keyed on what Now
         // Playing happened to be displaying could miss on every key at once. This is
         // the same list `LightSyncScreen` builds, from the same fields.
-        val lightSource = (LocalContext.current.applicationContext as SendpinApp)
-            .activeLightSyncSource.value
+        //
+        // Collected rather than read as `.value`. The pin is what `remember` does,
+        // not what the read does: a `.value` inside composition never observes the
+        // flow at all, so the sheet would have been seeded from whatever the source
+        // happened to hold on the frame it opened and would never have corrected
+        // itself if that arrived a frame later — which on a backend handover it does.
+        // (It is also the one thing `StateFlowValueCalledInComposition` exists to
+        // catch, and `LightSyncScreen` carries a comment about losing this same
+        // argument once already.)
+        val lightSource by (LocalContext.current.applicationContext as SendpinApp)
+            .activeLightSyncSource.collectAsStateWithLifecycle()
         val paletteKeys = remember {
             CoverPaletteOverride.keysFor(
                 album = lightSource.paletteAlbum,
