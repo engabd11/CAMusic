@@ -252,43 +252,43 @@ internal fun MotionCard(settings: AppSettings, scope: CoroutineScope) {
 @Composable
 internal fun AboutCard(accent: Color) {
     val context = LocalContext.current
-        SettingsCard(
-            title = "CAMusic",
-            lead = "A Music Assistant player built to give Philips Hue Entertainment its full power.",
-            info = "CAMusic is short for Cyborg Automation Music, built by Cyborg Automation AU.\n\n" +
-                "The idea started with Hue: Spotify and Samsung's Music Sync can drive the " +
-                "Entertainment system properly, but most players settle for a generic colour " +
-                "cycle that leaves the rest of what the bridge can do on the table. CAMusic " +
-                "renders straight to the bridge at 60 frames a second instead, using the room's " +
-                "own layout and the track itself to shape every effect.\n\nIt plays your own " +
-                "library with the same directness, and is a full Music Assistant player and " +
-                "controller in its own right, so this phone shows up as a speaker in Music " +
-                "Assistant's own list.",
-        ) {
-            StatusPanel {
-                StatusRow("Developer", "Cyborg Automation AU")
-                StatusRow("Version", BuildConfig.VERSION_NAME)
-                StatusRow("Build", BuildConfig.VERSION_CODE.toString())
-            }
-            Row(
-                Modifier.clip(RoundedCornerShape(100)).background(Glass)
-                    .border(1.dp, Hairline, RoundedCornerShape(100))
-                    .clickable {
-                        context.startActivity(
-                            Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/engabd11/CAMusic"))
-                        )
-                    }
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Icon(Icons.Default.Code, null, tint = accent, modifier = Modifier.size(16.dp))
-                Text(
-                    "Source on GitHub", color = TextSecondary, fontFamily = AppFont,
-                    fontWeight = FontWeight.Bold, fontSize = 13.sp,
-                )
-            }
+    SettingsCard(
+        title = "CAMusic",
+        lead = "A Music Assistant player built to give Philips Hue Entertainment its full power.",
+        info = "CAMusic is short for Cyborg Automation Music, built by Cyborg Automation AU.\n\n" +
+            "The idea started with Hue: Spotify and Samsung's Music Sync can drive the " +
+            "Entertainment system properly, but most players settle for a generic colour " +
+            "cycle that leaves the rest of what the bridge can do on the table. CAMusic " +
+            "renders straight to the bridge at 60 frames a second instead, using the room's " +
+            "own layout and the track itself to shape every effect.\n\nIt plays your own " +
+            "library with the same directness, and is a full Music Assistant player and " +
+            "controller in its own right, so this phone shows up as a speaker in Music " +
+            "Assistant's own list.",
+    ) {
+        StatusPanel {
+            StatusRow("Developer", "Cyborg Automation AU")
+            StatusRow("Version", BuildConfig.VERSION_NAME)
+            StatusRow("Build", BuildConfig.VERSION_CODE.toString())
         }
+        Row(
+            Modifier.clip(RoundedCornerShape(100)).background(Glass)
+                .border(1.dp, Hairline, RoundedCornerShape(100))
+                .clickable {
+                    context.startActivity(
+                        Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/engabd11/CAMusic"))
+                    )
+                }
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Icon(Icons.Default.Code, null, tint = accent, modifier = Modifier.size(16.dp))
+            Text(
+                "Source on GitHub", color = TextSecondary, fontFamily = AppFont,
+                fontWeight = FontWeight.Bold, fontSize = 13.sp,
+            )
+        }
+    }
 }
 
 /**
@@ -325,98 +325,98 @@ internal fun DiagnosticsCard(accent: Color) {
         lastReport = CrashReporter.lastUnreported()
     }
 
-        SettingsCard(
-            title = "Crash reporting",
-            lead = "Crashes stay on this device unless you send them.",
-            info = "Crashes are written to this device and stay there. Share one to GitHub by " +
-                "hand, or enable automatic upload with a personal access token. Nothing leaves " +
-                "the phone until you do one of those two things.\n\nTip: a report is far more " +
-                "use with a line about what you were doing when it happened. The automatic " +
-                "upload cannot know that, so one manual share with a sentence attached beats " +
-                "ten silent ones.",
+    SettingsCard(
+        title = "Crash reporting",
+        lead = "Crashes stay on this device unless you send them.",
+        info = "Crashes are written to this device and stay there. Share one to GitHub by " +
+            "hand, or enable automatic upload with a personal access token. Nothing leaves " +
+            "the phone until you do one of those two things.\n\nTip: a report is far more " +
+            "use with a line about what you were doing when it happened. The automatic " +
+            "upload cannot know that, so one manual share with a sentence attached beats " +
+            "ten silent ones.",
+    ) {
+        OledField(
+            value = repo,
+            onChange = { repo = it },
+            label = "GitHub repository",
+            placeholder = "owner/repo",
+            accent = accent,
+        )
+        SecretField(
+            value = token,
+            onChange = { token = it },
+            label = "GitHub token (optional)",
+            accent = accent,
+            visible = showToken,
+            onVisibilityChange = { showToken = it },
+        )
+        Note("With a token, the app can open an issue automatically. Without one, you still get a one-tap share link.")
+        Spacer(Modifier.height(8.dp))
+        OledButton(
+            text = "Save repository and token",
+            accent = accent,
+            outline = true,
         ) {
-            OledField(
-                value = repo,
-                onChange = { repo = it },
-                label = "GitHub repository",
-                placeholder = "owner/repo",
-                accent = accent,
-            )
-            SecretField(
-                value = token,
-                onChange = { token = it },
-                label = "GitHub token (optional)",
-                accent = accent,
-                visible = showToken,
-                onVisibilityChange = { showToken = it },
-            )
-            Note("With a token, the app can open an issue automatically. Without one, you still get a one-tap share link.")
-            Spacer(Modifier.height(8.dp))
-            OledButton(
-                text = "Save repository and token",
-                accent = accent,
-                outline = true,
-            ) {
-                scope.launch {
-                    settings.setCrashGitHubRepo(repo)
-                    if (token.isNotBlank()) settings.setCrashGitHubToken(token)
-                }
+            scope.launch {
+                settings.setCrashGitHubRepo(repo)
+                if (token.isNotBlank()) settings.setCrashGitHubToken(token)
             }
-            Spacer(Modifier.height(8.dp))
-            // Below the button rather than above it, because it depends on what the
-            // button saved: the switch is only live once a token is actually stored.
-            ToggleRow(
-                title = "Upload crashes automatically",
-                subtitle = if (savedToken.isBlank()) "Save a token above first"
-                    else "Opens an issue on the repository above, without asking",
-                checked = autoUpload && savedToken.isNotBlank(),
-                accent = accent,
-                enabled = savedToken.isNotBlank(),
-            ) { on -> scope.launch { settings.setCrashAutoUpload(on) } }
-            if (lastReport != null) {
-                CardDivider()
-                val report: CrashReport = lastReport ?: return@SettingsCard
-                Text(
-                    "Last crash: ${report.exceptionClass}",
-                    color = TextSecondary,
-                    fontFamily = AppFont,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                Note(report.time)
-                Spacer(Modifier.height(6.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        }
+        Spacer(Modifier.height(8.dp))
+        // Below the button rather than above it, because it depends on what the
+        // button saved: the switch is only live once a token is actually stored.
+        ToggleRow(
+            title = "Upload crashes automatically",
+            subtitle = if (savedToken.isBlank()) "Save a token above first"
+                else "Opens an issue on the repository above, without asking",
+            checked = autoUpload && savedToken.isNotBlank(),
+            accent = accent,
+            enabled = savedToken.isNotBlank(),
+        ) { on -> scope.launch { settings.setCrashAutoUpload(on) } }
+        if (lastReport != null) {
+            CardDivider()
+            val report: CrashReport = lastReport ?: return@SettingsCard
+            Text(
+                "Last crash: ${report.exceptionClass}",
+                color = TextSecondary,
+                fontFamily = AppFont,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Note(report.time)
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OledButton(
+                    text = "Share to GitHub",
+                    accent = accent,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    val url = CrashReporter.githubIssueUrl(repo, report)
+                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                    CrashReporter.markLastReported()
+                    lastReport = null
+                }
+                if (token.isNotBlank()) {
                     OledButton(
-                        text = "Share to GitHub",
+                        text = "Upload now",
                         accent = accent,
                         modifier = Modifier.weight(1f),
                     ) {
-                        val url = CrashReporter.githubIssueUrl(repo, report)
-                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-                        CrashReporter.markLastReported()
-                        lastReport = null
-                    }
-                    if (token.isNotBlank()) {
-                        OledButton(
-                            text = "Upload now",
-                            accent = accent,
-                            modifier = Modifier.weight(1f),
-                        ) {
-                            scope.launch {
-                                uploadResult = CrashReporter.postToGitHub(repo, token, report)
-                                    .fold(
-                                        onSuccess = { "Issue #$it created" },
-                                        onFailure = { "Upload failed: ${it.message}" },
-                                    )
-                                CrashReporter.markLastReported()
-                                lastReport = null
-                            }
+                        scope.launch {
+                            uploadResult = CrashReporter.postToGitHub(repo, token, report)
+                                .fold(
+                                    onSuccess = { "Issue #$it created" },
+                                    onFailure = { "Upload failed: ${it.message}" },
+                                )
+                            CrashReporter.markLastReported()
+                            lastReport = null
                         }
                     }
                 }
-                uploadResult?.let {
-                    Spacer(Modifier.height(6.dp))
-                    Note(it, warn = it.startsWith("Upload failed"))
-                }
+            }
+            uploadResult?.let {
+                Spacer(Modifier.height(6.dp))
+                Note(it, warn = it.startsWith("Upload failed"))
             }
         }
+    }
 }
