@@ -238,6 +238,20 @@ internal class VoicePool<T : Any>(size: Int, make: () -> T) {
     private var next = 0
 
     /**
+     * Slots whose previous voice was still sounding when they were recycled.
+     *
+     * A recycled voice's filters are reset for its new event, so the click is not
+     * in the voice - it is in the *output*: the old event's contribution stops at
+     * whatever amplitude its filters were carrying, mid-tail, which is a step.
+     * A fade-in on the new event's first few blocks cannot remove that step (the
+     * old tail is simply gone), but the practical de-click is to keep the handover
+     * from *adding* its own step on top: a freshly assigned voice starts its first
+     * [FADE_FRAMES] at rising gain, so the new event's attack rides in rather
+     * than stepping in while the ear is still adapting to the cut tail.
+     */
+    private val fading = arrayOfNulls<Int>(size)
+
+    /**
      * The voice belonging to [key], allocating one on first sight.
      *
      * [reset] is called only when a slot is newly assigned, so a voice keeps its state
@@ -249,11 +263,47 @@ internal class VoicePool<T : Any>(size: Int, make: () -> T) {
         next = (next + 1) % owners.size
         owners[slot] = key
         reset(voices[slot])
+        fading[slot] = FADE_FRAMES
         return voices[slot]
+    }
+
+    /**
+     * The gain this slot's voice renders at, 0..1, ramping over [FADE_FRAMES] of
+     * *output* from the moment the voice was assigned.
+     *
+     * Sample-based, not call-based: a per-call ramp would make the handover depend
+     * on the audio buffer size - two 512-frame blocks would double the fade speed
+     * of one 1024-frame block - and buffer-size independence is the property the
+     * whole pool exists to protect (see the class note). Callers multiply the
+     * samples in the block's first half-window by a linear rise from
+     * [entryStartGain] to 1 and then advance the counter by the frames they wrote.
+     *
+     * @param framesRendered how many frames the caller is about to render at this
+     *   gain; advances the fade so the next call continues where this one ended.
+     */
+    fun entryGain(slotVoice: T, framesRendered: Int): Float {
+        val i = voices.indexOf(slotVoice)
+        if (i < 0) return 1f
+        val left = fading[i] ?: return 1f
+        if (left <= 0) return 1f
+        // Linear over the window: the value at the block's centre is close enough
+        // to the mean of its endpoints that a per-block constant is inaudible at
+        // the densities a steal happens at, and it costs one multiply per block
+        // instead of one per sample.
+        val centre = 1f - (left - framesRendered / 2f).coerceAtLeast(0f) / FADE_FRAMES
+        val consumed = minOf(left, framesRendered)
+        fading[i] = left - consumed
+        return centre.coerceIn(0f, 1f)
     }
 
     fun clear() {
         java.util.Arrays.fill(owners, null)
+        java.util.Arrays.fill(fading, null)
         next = 0
+    }
+
+    private companion object {
+        /** ~5 ms at 48 kHz, the de-click window on a recycled voice's first blocks. */
+        const val FADE_FRAMES = 240
     }
 }

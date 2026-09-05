@@ -280,6 +280,24 @@ interface AmbienceScript {
      */
     fun react(sample: BedSample, onset: BedOnset, emit: (AmbienceEvent) -> Unit) {}
 
+    /**
+     * The recording jumped (a loop point or a seek): forget whatever reaction
+     * state described the stretch that is no longer playing.
+     *
+     * The session already drops the timeline and resets the shared detector on
+     * this event; what it could not reach was the script's own refractory
+     * bookkeeping, because that is private. The consequence was specific: the
+     * bed loops (REPEAT_MODE_ONE), media time leaps back by the whole file, and
+     * `sample.tS - lastStrikeS` goes hugely *negative* - which passes every
+     * refractory test rather than failing it, so nothing is suppressed... until
+     * the playhead climbs back past the last strike of the previous pass. From
+     * that moment to the end of the loop, every real onset sits inside the
+     * previous pass's refractory window and is silently swallowed. A looping
+     * storm flashed on its first pass and then went dark for a full loop. This
+     * hook is where each script forgets.
+     */
+    fun onBedReset() {}
+
     /** Live parameter change. Takes effect on the next scheduled window. */
     fun retune(params: AmbienceParams)
 

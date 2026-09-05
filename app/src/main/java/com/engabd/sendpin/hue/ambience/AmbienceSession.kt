@@ -128,7 +128,7 @@ class AmbienceSession(
     private val bed = AmbienceBedTrack()
 
     /** Onset detection over the recording. Analysis thread only. */
-    private val bedAnalyser = AmbienceBedAnalyser()
+    private val bedAnalyser = AmbienceBedAnalyser(hopS = ANALYSIS_HOP / ANALYSIS_SR.toDouble())
 
     /** Media position of the last analysed frame, for spotting a loop or a seek. */
     private var lastAnalysedS = Double.NaN
@@ -271,6 +271,10 @@ class AmbienceSession(
             bedAnalyser.reset()
             // Only touch the timeline on the thread that writes it. See [reactive].
             if (reactive) timeline.clear() else rescheduleFromS = atS
+            // And the script's own refractory bookkeeping, which the clears above
+            // cannot reach. Without this a looping reactive show went dark for a
+            // whole loop after the first pass - see AmbienceScript.onBedReset.
+            script.onBedReset()
         }
         lastAnalysedS = atS
 
@@ -435,5 +439,9 @@ class AmbienceSession(
          * one stale flash.
          */
         const val DISCONTINUITY_S = 0.5
+
+        /** The tap's analysis hop and rate, matching `AudioAnalyzer`. */
+        const val ANALYSIS_HOP = 441
+        const val ANALYSIS_SR = 22_050
     }
 }

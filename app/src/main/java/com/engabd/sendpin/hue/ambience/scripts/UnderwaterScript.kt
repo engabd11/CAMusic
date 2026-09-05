@@ -198,6 +198,7 @@ class UnderwaterScript : AmbienceScript {
             // on the buffer size. Gated per sample below instead.
             panGains(sin(2f * PI.toFloat() * e.azimuth), pan)
             val v = voices.voiceFor(e) { it.reset() }
+            val entry = voices.entryGain(v, frames)
             v.filter.set(90f + 130f * e.timbre, 1.1f, sampleRate)
             var j = 0
             while (j < frames) {
@@ -205,7 +206,7 @@ class UnderwaterScript : AmbienceScript {
                 if (age >= 0f) {
                     val env = e.env.at(age)
                     if (env > 0f) {
-                        val s = v.filter.lp(v.noise.next()) * env * e.gain * 0.55f
+                        val s = v.filter.lp(v.noise.next()) * env * e.gain * entry * 0.55f
                         out[j * 2] += s * pan[0]
                         out[j * 2 + 1] += s * pan[1]
                     }

@@ -64,6 +64,15 @@ fun EffectsScreen(onBack: () -> Unit, viewModel: EffectsViewModel) {
 
     var toast by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) { viewModel.toast.collect { toast = it } }
+    // Toasts clear themselves: an error left on screen for the life of the show
+    // read as a permanent state the screen could not recover from, when every
+    // message it carries is about a moment that has already passed.
+    LaunchedEffect(toast) {
+        if (toast != null) {
+            kotlinx.coroutines.delay(4_000)
+            toast = null
+        }
+    }
 
     // Which tile has its controls open. The running one by default, so starting a show
     // reveals its settings without a second tap.
@@ -130,6 +139,18 @@ fun EffectsScreen(onBack: () -> Unit, viewModel: EffectsViewModel) {
                         "thunderclap, from the side it came from, and a far-off rumble " +
                         "washes the room instead of cracking it.",
                     color = TextMuted, fontSize = 12.sp, lineHeight = 17.sp,
+                )
+                Spacer(Modifier.height(10.dp))
+                // The two kinds of effect, stated plainly: which ones follow the sound
+                // and which ones merely live alongside it. The distinction is the
+                // design, not a footnote - a storm is its thunder, an aurora is not
+                // its pad.
+                Text(
+                    "Storms, fireworks and the fireplace react to what you hear - a clap " +
+                        "flashes where it came from. The aurora, underwater and light train " +
+                        "are their own scene: their sound is a background, and the lights " +
+                        "drift on their own no matter what plays.",
+                    color = TextFaint, fontSize = 11.sp, lineHeight = 15.sp,
                 )
                 Spacer(Modifier.height(16.dp))
 
@@ -364,5 +385,11 @@ private fun ambienceIcon(e: AmbienceEffect): ImageVector = when (e) {
 private fun formatRemaining(seconds: Int): String {
     val m = seconds / 60
     val s = seconds % 60
-    return if (m >= 1) "${m}m" else "${s}s"
+    // Below ten minutes the seconds matter - "9m" covering anything from 9:59 to
+    // 9:00 made the last minute of a show look stuck. Above that, minutes only.
+    return when {
+        m >= 10 -> "${m}m"
+        m >= 1 -> "${m}m ${s}s"
+        else -> "${s}s"
+    }
 }
