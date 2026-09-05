@@ -46,6 +46,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import androidx.compose.material.icons.filled.Hearing
+import com.engabd.sendpin.ui.design.a
+import com.engabd.sendpin.ui.design.GlassCard
+import com.engabd.sendpin.ui.design.SegmentedToggle
+import com.engabd.sendpin.capture.PlaybackCapture
+import androidx.compose.material3.MaterialTheme
 
 /**
  * The plumbing behind the light show.
@@ -75,6 +81,22 @@ internal const val HA_ROUTE = "__ha__"
  */
 internal const val ANALYSIS_ROUTE = "__analysis__"
 
+/**
+ * What this phone's Light Sync listens to.
+ *
+ * On the Lights tab until now, where it was the eighth of thirteen sections. It is a
+ * plumbing question - a runtime permission, a system consent dialog and a foreground
+ * service - and this page's whole remit is how the signal reaches the lights, so it
+ * belongs here beside the bridge and the track analysis rather than among the controls
+ * for what the show looks like.
+ *
+ * The one part that stayed behind is the tap: Android 14+ makes the projection token
+ * single-use, so starting it recurs every app session, and an action that frequent
+ * cannot live two screens deep. The Light Sync hero offers it whenever a capture feed
+ * has no token.
+ */
+internal const val LISTEN_ROUTE = "__listen__"
+
 @Composable
 internal fun LightSyncSection(
     settings: AppSettings,
@@ -97,6 +119,7 @@ internal fun LightSyncSection(
     when (detail) {
         BRIDGE_ROUTE -> { DirectBridgeSetup(settings, scope, accent); return }
         ANALYSIS_ROUTE -> { TrackAnalysisCard(settings, accent, advanced); return }
+        LISTEN_ROUTE -> { PhoneAudioPage(settings, scope, accent); return }
         HA_ROUTE -> {
             HomeAssistantCard(settings, accent, scope, haUrl, onHaUrl, haToken, onHaToken)
             return
@@ -195,6 +218,13 @@ internal fun LightSyncSection(
             "Read tracks ahead of the show, so a song is exact from its first bar.",
             accent,
         ) { onDetail(ANALYSIS_ROUTE) }
+
+        NavRow(
+            Icons.Default.Hearing,
+            "What this phone listens to",
+            "Whether the lights follow this app, or whatever else is playing.",
+            accent,
+        ) { onDetail(LISTEN_ROUTE) }
 
         NavRow(
             Icons.Default.Waves,
@@ -717,4 +747,202 @@ private fun FailureList(
             Pill("Try $retryable again", false, onClick = onRetry)
         }
     }
+}
+
+
+/**
+ * The listening page: the card, and the capture state it needs.
+ *
+ * The collectors live here rather than in [PhoneAudioCard] so the card stays a plain
+ * function of what it is told - it is the piece that moved, and moving it should not
+ * have changed it.
+ */
+@Composable
+private fun PhoneAudioPage(settings: AppSettings, scope: CoroutineScope, accent: Color) {
+    val context = LocalContext.current
+    val selected by settings.phoneAudioFeed.collectAsStateWithLifecycle(initialValue = "auto")
+    val state by PlaybackCapture.state.collectAsStateWithLifecycle()
+
+    PhoneAudioCard(
+        selected = selected,
+        state = state,
+        accent = accent,
+        onSelect = { choice ->
+            scope.launch { settings.setPhoneAudioFeed(choice) }
+            // The choice *is* the switch. This is the whole of the fix: picking a mode
+            // that needs capture now starts capture, where before it only changed which
+            // feed the picker would have preferred had anything ever started one.
+            if (choice == "internal") {
+                PlaybackCapture.stop(context)
+            } else if (!PlaybackCapture.hasToken()) {
+                PlaybackCapture.requestStart(context)
+            }
+        },
+        onStartCapture = { PlaybackCapture.requestStart(context) },
+    )
+}
+
+/**
+ * What this phone's Light Sync is listening to, and the one control that decides it.
+ *
+ * ## Why this is one card and not two
+ *
+ * It used to be two, and they did not add up. A "Use this phone's audio" selector
+ * offered Auto and Always projection, and a separate "React to other apps" switch
+ * owned `MediaProjection`. But the selector only expressed a *preference* — the feed
+ * picker consults it and then asks whether capture happens to be running — and
+ * nothing in the selector ever started capture. So choosing Auto or Always
+ * projection and expecting the room to follow Spotify did exactly nothing, forever,
+ * with no error: the picker fell through to the local tap, which was silent, and the
+ * lights ran the idle show. The two controls could also disagree by construction,
+ * since either could be set to something the other contradicted.
+ *
+ * Now the choice is the switch. Picking a mode that needs capture asks for it, and
+ * picking the one that does not stops it, so there is nothing left for a second
+ * toggle to say.
+ *
+ * ## Why it is not a plain switch
+ *
+ * Capture needs a runtime microphone grant (which is what `AudioPlaybackCapture` is
+ * gated on, even though no microphone is opened), a system consent dialog, and a
+ * foreground service — and on Android 14+ that consent dialog reappears every single
+ * time capture starts, because the projection token is single-use. So the card can
+ * want capture and not have it, and it has to be able to say so and offer the way
+ * back, rather than showing a switch that is on while nothing is listening.
+ *
+ * The blocked message is the part that earns the feature its keep. An app that opts
+ * out of capture is delivered as bit-exact silence with no error of any kind, so
+ * without saying so plainly the only observation available to the user is "the
+ * lights do nothing", which is indistinguishable from a bug here.
+ */
+@Composable
+internal fun PhoneAudioCard(
+    selected: String,
+    state: PlaybackCapture.State,
+    accent: Color,
+    onSelect: (String) -> Unit,
+    onStartCapture: () -> Unit,
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val wantsCapture = selected != "internal"
+    var granted by remember {
+        mutableStateOf(
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                context, android.Manifest.permission.RECORD_AUDIO,
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED,
+        )
+    }
+    // Remembers which choice asked for the grant, so answering the dialog completes
+    // that choice rather than starting capture for a mode the user has since left.
+    var pendingChoice by remember { mutableStateOf<String?>(null) }
+    val permission = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+    ) { ok ->
+        granted = ok
+        val choice = pendingChoice
+        pendingChoice = null
+        if (ok && choice != null) onSelect(choice)
+    }
+
+    fun choose(choice: String) {
+        if (choice != "internal" && !granted) {
+            pendingChoice = choice
+            permission.launch(android.Manifest.permission.RECORD_AUDIO)
+            return
+        }
+        onSelect(choice)
+    }
+
+    GlassCard(radius = 18.dp, fill = if (wantsCapture) accent.a(0.10f) else Glass) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+                Text(
+                    "What this phone listens to",
+                    color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp,
+                )
+                Text(
+                    phoneFeedBlurb(selected, state),
+                    color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
+                )
+            }
+
+            val options = listOf("Auto", "CAMusic only", "Other apps")
+            val values = listOf("auto", "internal", "projection")
+            SegmentedToggle(
+                options = options,
+                selectedIndex = values.indexOf(selected).coerceAtLeast(0),
+                modifier = Modifier.fillMaxWidth(),
+            ) { choose(values[it]) }
+
+            Text(
+                when (selected) {
+                    "internal" ->
+                        "Only CAMusic's own playback drives the lights. Nothing else on the " +
+                            "phone is listened to, and no permission is needed."
+                    "projection" ->
+                        "Always listens through screen capture, even while CAMusic is playing. " +
+                            "Pick this if you want another app's audio to win outright."
+                    else ->
+                        "Uses CAMusic's own audio while it is playing - which is exact and free - " +
+                            "and listens to whatever else is playing when it is not."
+                },
+                color = TextFaint, style = MaterialTheme.typography.bodySmall,
+            )
+
+            if (state == PlaybackCapture.State.BLOCKED) {
+                Text(
+                    "That app does not allow its audio to be captured. YouTube, YouTube Music " +
+                        "and most DRM-protected apps opt out, and nothing here can change that. " +
+                        "Spotify, podcast apps and local players usually work.",
+                    color = WarnAmber, style = MaterialTheme.typography.bodySmall,
+                )
+            }
+
+            // Wanting capture and not having it is a normal, recurring state rather
+            // than an error: the grant is single-use, so this is where every app
+            // restart lands. Offer the way back instead of a switch that lies.
+            if (wantsCapture && !PlaybackCapture.hasToken()) {
+                Text(
+                    "Android asks permission each time listening starts, and the grant cannot " +
+                        "be remembered - so this needs one tap per app session.",
+                    color = TextFaint, style = MaterialTheme.typography.bodySmall,
+                )
+                Box(
+                    Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .border(1.dp, accent.a(0.55f), RoundedCornerShape(12.dp))
+                        .clickable {
+                            if (granted) {
+                                onStartCapture()
+                            } else {
+                                pendingChoice = selected
+                                permission.launch(android.Manifest.permission.RECORD_AUDIO)
+                            }
+                        }
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                ) {
+                    Text(
+                        if (state == PlaybackCapture.State.OFF) "Start listening"
+                        else "Start again",
+                        color = accent, fontWeight = FontWeight.Bold, fontSize = 13.sp,
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun phoneFeedBlurb(
+    selected: String,
+    state: PlaybackCapture.State,
+): String = when {
+    selected == "internal" -> "CAMusic's own playback."
+    state == PlaybackCapture.State.RUNNING -> "Listening."
+    state == PlaybackCapture.State.QUIET -> "Listening, nothing playing."
+    state == PlaybackCapture.State.BLOCKED -> "That app will not allow it."
+    state == PlaybackCapture.State.STARTING -> "Starting..."
+    state == PlaybackCapture.State.STOPPED_BY_SYSTEM -> "Listening was stopped."
+    state == PlaybackCapture.State.DENIED -> "Permission was not granted."
+    selected == "projection" -> "Other apps on this phone, once started."
+    else -> "CAMusic when it is playing, other apps when it is not."
 }
