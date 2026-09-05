@@ -113,11 +113,11 @@ fun TvNowPlayingScreen(viewModel: NowPlayingViewModel = viewModel()) {
                 TvIconButton(Icons.Default.Shuffle, "Shuffle", active = state.shuffle) { viewModel.toggleShuffle() }
                 TvIconButton(Icons.Default.SkipPrevious, "Previous") { viewModel.previous() }
                 TvIconButton(Icons.Default.FastRewind, "Seek back 10s") {
-                    seekBySeconds(viewModel, state, -10)
+                    seekBySeconds(viewModel, -10)
                 }
                 TvPlayPauseButton(state.isPlaying) { viewModel.playPause() }
                 TvIconButton(Icons.Default.FastForward, "Seek forward 10s") {
-                    seekBySeconds(viewModel, state, 10)
+                    seekBySeconds(viewModel, 10)
                 }
                 TvIconButton(Icons.Default.SkipNext, "Next") { viewModel.next() }
                 TvIconButton(
@@ -135,10 +135,24 @@ fun TvNowPlayingScreen(viewModel: NowPlayingViewModel = viewModel()) {
     }
 }
 
-private fun seekBySeconds(viewModel: NowPlayingViewModel, state: NowPlayingViewModel.State, deltaSeconds: Int) {
-    if (state.durationMs <= 0) return
-    val targetMs = (state.positionMs + deltaSeconds * 1000L).coerceIn(0, state.durationMs)
-    viewModel.seekTo((targetMs.toDouble() / state.durationMs).toFloat())
+/**
+ * The remote's skip buttons: [deltaSeconds] from where the music actually is.
+ *
+ * Measured off [NowPlayingViewModel.positionMs], the projected playhead, and not
+ * [NowPlayingViewModel.State.positionMs], which is the last raw reading Music
+ * Assistant sent and can be most of a poll old — "back ten seconds" taken from that
+ * lands somewhere the listener did not ask for, and two presses in a row both
+ * measure from the same stale number. `massdroid_native`'s `seekRelative` reads its
+ * own ticker for exactly this reason.
+ *
+ * The target goes out in milliseconds. It used to be divided back down into a
+ * fraction of the duration for a view model that multiplied it straight back up —
+ * two conversions that could disagree, on a number this already had exactly right.
+ * Clamping is the view model's job now, and it holds the one duration the server
+ * will measure the seek against.
+ */
+private fun seekBySeconds(viewModel: NowPlayingViewModel, deltaSeconds: Int) {
+    viewModel.seekTo((viewModel.positionMs.value + deltaSeconds * 1000L).coerceAtLeast(0L))
 }
 
 private fun formatMs(ms: Long): String {
