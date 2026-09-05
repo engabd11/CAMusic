@@ -470,6 +470,7 @@ installing alongside a release build.
 | [docs/providers.md](docs/providers.md) | Adding a music backend |
 | [docs/architecture-decision.md](docs/architecture-decision.md) | Why direct to the bridge rather than through Home Assistant |
 | [webos/README.md](webos/README.md) | The webOS TV app, its JS Service and its build |
+| [docs/attributions.md](docs/attributions.md) | Third-party material shipped in the app, and its licences |
 | [docs/release-history.md](docs/release-history.md) | Every shipped feature, by release |
 
 ---
