@@ -1,6 +1,7 @@
 package com.engabd.sendpin.ui.screens
 
 import android.view.WindowManager
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
@@ -121,6 +122,12 @@ fun RhythmGameScreen(
         onBack()
     }
 
+    // Every other screen in the app handles back; this one did not, so the system
+    // gesture popped the NavHost and only `onDispose`'s `stop()` ran. The run was
+    // never finished, which meant the record was discarded and the results sheet
+    // never appeared — a whole game's score lost to leaving the way most people do.
+    BackHandler { back() }
+
     // Timing settings feed the judged clock: offset, difficulty scale, haptics.
     // Collected for the screen's lifetime so a mid-session change applies from
     // the next tap rather than the next launch.
@@ -180,6 +187,16 @@ fun RhythmGameScreen(
     val hud by viewModel.hud.collectAsStateWithLifecycle()
     val judgement by viewModel.judgement.collectAsStateWithLifecycle()
     val result by viewModel.result.collectAsStateWithLifecycle()
+
+    // Hold the run while nothing is playing. The frame loop below belongs to the
+    // window, not the music, so without this a pause spent the next second and a half
+    // of lookahead retiring every note on the board as a miss — the combo, the
+    // multiplier and the accuracy all gone for pressing pause. `audioIsPlaying` is the
+    // same flow the light engine reads, so the game and the room can never disagree
+    // about whether the music stopped.
+    val playing by app.audioIsPlaying.collectAsStateWithLifecycle()
+    val paused by viewModel.paused.collectAsStateWithLifecycle()
+    LaunchedEffect(playing) { viewModel.setPlaying(playing) }
 
     // The frame clock. Written every frame and read only inside draw lambdas and the
     // tap handler, so nothing here recomposes at 60 Hz.
@@ -325,6 +342,28 @@ fun RhythmGameScreen(
                         accent = accent,
                         onDismiss = back,
                     )
+                }
+
+                // Says the board is held rather than broken. Over the highway, which
+                // is deliberately still drawn: the notes are where they were and the
+                // player can see they have not lost them.
+                if (paused && hud.locked) {
+                    Column(
+                        Modifier.align(Alignment.Center),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Text(
+                            "Paused",
+                            color = accent, fontFamily = AppFont,
+                            fontWeight = FontWeight.ExtraBold, fontSize = 26.sp,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "The run is held. Start the music and it carries on.",
+                            color = TextMuted, fontFamily = AppFont,
+                            fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
+                        )
+                    }
                 }
 
                 if (!hud.locked && hud.score == 0) {

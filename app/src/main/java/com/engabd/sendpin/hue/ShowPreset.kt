@@ -63,7 +63,67 @@ data class ShowPreset(
         }
     }
 
+    /**
+     * Whether this preset describes the same show as [other] — everything except who
+     * it is, which is [id] and [name].
+     *
+     * This is what "which preset is active" means. The alternative, remembering which
+     * chip was last tapped, answers a different question: it stays lit after a slider
+     * moves, is lost the moment the Lights tab is left, and says nothing at all when a
+     * genre rule applies a preset by itself.
+     *
+     * Tunables are compared through [normalisedTunables], because an explicit 1.0 and a
+     * missing key are the same show and the two spellings both occur — `applyShowPreset`
+     * writes whatever the preset carried, and the screen writes every key it has a
+     * slider for.
+     */
+    fun matches(other: ShowPreset): Boolean =
+        intensity == other.intensity &&
+            autoLevels.toSet() == other.autoLevels.toSet() &&
+            color == other.color &&
+            brightness == other.brightness &&
+            spatial == other.spatial &&
+            musicDna == other.musicDna &&
+            emotionalArc == other.emotionalArc &&
+            phantomStage == other.phantomStage &&
+            stemSeparation == other.stemSeparation &&
+            phoneConductor == other.phoneConductor &&
+            normalisedTunables() == other.normalisedTunables()
+
+    /**
+     * [tunables] with the noise taken out: keys the engine does not have dropped, and
+     * every multiplier that is neutral dropped with them, so "1.0" and "absent" are one
+     * value. Rounded to three places — these arrive from a slider and from a JSON
+     * round trip, and neither promises the last bit.
+     */
+    fun normalisedTunables(): Map<String, Float> = tunables
+        .filterKeys { it in SyncoEngine.TUNABLE_KEYS }
+        .mapValues { (_, v) -> Math.round(v.coerceIn(0f, 2f) * 1000f) / 1000f }
+        .filterValues { it != 1f }
+
     companion object {
+        /**
+         * The id of the built-in [default] show.
+         *
+         * Fixed rather than a fresh [UUID], for two reasons that both bite later: a
+         * [GenrePresetRule] points at a preset by id and would break on every restart,
+         * and "is this the active one" cannot survive a process death against an id
+         * that changes.
+         */
+        const val DEFAULT_ID = "__default__"
+
+        /**
+         * The show as it ships — the one every setting on the Lights tab falls back to
+         * when it has never been touched.
+         *
+         * This needs no values of its own: `ShowPreset()`'s constructor defaults *are*
+         * the app's per-setting defaults, one for one (`AppSettings.lightSyncIntensity`
+         * and the ten flows beside it), and `captureShowPreset` uses the same literals
+         * as its own fallbacks. Somewhere to go back to without undoing a preset by
+         * hand, and it can never drift from the defaults it names.
+         */
+        fun default(): ShowPreset = ShowPreset(id = DEFAULT_ID, name = "Default")
+
         /** Presets a listener has not made yet, so the feature is not an empty list. */
         fun starters(): List<ShowPreset> = listOf(
             ShowPreset(

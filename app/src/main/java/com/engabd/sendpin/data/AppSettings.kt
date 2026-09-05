@@ -1542,9 +1542,19 @@ class AppSettings(private val context: Context) {
      * missing keys default to 1.0 (no change). Values are coerced to 0..2.
      */
     val lightSyncTunables: Flow<Map<String, Float>> = pref { prefs ->
-        val raw = prefs[LIGHT_SYNC_TUNABLES]
-        if (raw.isNullOrBlank()) return@pref emptyMap()
-        try {
+        decodeTunables(prefs[LIGHT_SYNC_TUNABLES])
+    }
+
+    /**
+     * The stored tunable multipliers, or an empty map.
+     *
+     * Shared with [readShowPreset] rather than inlined in [lightSyncTunables]: a
+     * preset that decoded the same JSON by a second route is a preset that can
+     * disagree with the sliders about what is on the room.
+     */
+    private fun decodeTunables(raw: String?): Map<String, Float> {
+        if (raw.isNullOrBlank()) return emptyMap()
+        return try {
             val obj = serverJson.decodeFromString(JsonObject.serializer(), raw)
             obj.mapNotNull { (k, v) ->
                 val f = v.jsonPrimitive.floatOrNull ?: v.jsonPrimitive.content.toFloatOrNull()
@@ -1874,14 +1884,59 @@ class AppSettings(private val context: Context) {
      * A decode failure falls back to the starters rather than to an empty list —
      * `ShowPreset.decode` returns null for exactly that case, and treating it as
      * "no presets" would let the next save overwrite a list that was only unreadable.
+     *
+     * [ShowPreset.default] leads the list and is not part of the stored one. Without
+     * it, the only way back from a preset was to undo it control by control from
+     * memory — the app knows what its own defaults are, so it should be able to say
+     * so. Prepended on read and stripped on write (see [saveShowPresets]) rather than
+     * seeded like the starters, because a *built-in* that could be renamed, deleted or
+     * left behind by a future change to the defaults would stop being the thing it
+     * claims to be. Any stored preset carrying its id is dropped, so it can never be
+     * shadowed or shown twice.
      */
     val showPresets: Flow<List<ShowPreset>> = pref { prefs ->
-        prefs[SHOW_PRESETS]?.let { ShowPreset.decode(it) } ?: ShowPreset.starters()
+        val stored = prefs[SHOW_PRESETS]?.let { ShowPreset.decode(it) } ?: ShowPreset.starters()
+        listOf(ShowPreset.default()) + stored.filterNot { it.id == ShowPreset.DEFAULT_ID }
     }
 
     suspend fun saveShowPresets(list: List<ShowPreset>) {
-        context.dataStore.edit { it[SHOW_PRESETS] = ShowPreset.encode(list) }
+        // The built-in never goes to disk — see [showPresets].
+        val storable = list.filterNot { it.id == ShowPreset.DEFAULT_ID }
+        context.dataStore.edit { it[SHOW_PRESETS] = ShowPreset.encode(storable) }
     }
+
+    /**
+     * The show currently on the room, in the shape a preset is stored in.
+     *
+     * The same eleven controls [captureShowPreset] reads, as a flow, so the Lights tab
+     * can say *which* saved show is the one that is running — and stop saying it the
+     * moment any of the eleven moves. One flow rather than eleven collected side by
+     * side: `pref` dedupes, and a screen comparing against a value assembled from
+     * eleven independent emissions would flicker through combinations that were never
+     * on the room.
+     *
+     * [name] is blank: a live show has no name until someone gives it one.
+     */
+    val liveShowPreset: Flow<ShowPreset> = pref { prefs -> readShowPreset(prefs, name = "") }
+
+    /** [liveShowPreset]'s reader, shared with [captureShowPreset]'s single snapshot. */
+    private fun readShowPreset(prefs: Preferences, name: String): ShowPreset = ShowPreset(
+        name = name,
+        intensity = prefs[LIGHT_SYNC_INTENSITY] ?: "high",
+        autoLevels = prefs[LIGHT_SYNC_AUTO_LEVELS]
+            ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
+            ?.takeIf { it.isNotEmpty() }
+            ?: listOf("subtle", "medium", "high"),
+        color = prefs[LIGHT_SYNC_COLOR] ?: "album_art_v2",
+        brightness = prefs[LIGHT_SYNC_BRIGHTNESS]?.toIntOrNull() ?: 100,
+        tunables = decodeTunables(prefs[LIGHT_SYNC_TUNABLES]),
+        spatial = prefs[LIGHT_SYNC_SPATIAL] ?: false,
+        musicDna = prefs[MUSIC_DNA_ENABLED] ?: false,
+        emotionalArc = prefs[EMOTIONAL_ARC_ENABLED] ?: false,
+        phantomStage = prefs[PHANTOM_STAGE_ENABLED] ?: false,
+        stemSeparation = prefs[STEM_SEPARATION] ?: false,
+        phoneConductor = prefs[PHONE_CONDUCTOR_ENABLED] ?: false,
+    )
 
     /**
      * A fixed output rate for the local player, or 0 to follow each file.
@@ -1954,26 +2009,8 @@ class AppSettings(private val context: Context) {
      * One snapshot rather than eleven `first()` calls, so a preset cannot capture
      * half of one show and half of the next if something changes mid-save.
      */
-    suspend fun captureShowPreset(name: String): ShowPreset {
-        val prefs = context.dataStore.data.first()
-        return ShowPreset(
-            name = name,
-            intensity = prefs[LIGHT_SYNC_INTENSITY] ?: "high",
-            autoLevels = prefs[LIGHT_SYNC_AUTO_LEVELS]
-                ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
-                ?.takeIf { it.isNotEmpty() }
-                ?: listOf("subtle", "medium", "high"),
-            color = prefs[LIGHT_SYNC_COLOR] ?: "album_art_v2",
-            brightness = prefs[LIGHT_SYNC_BRIGHTNESS]?.toIntOrNull() ?: 100,
-            tunables = lightSyncTunables.first(),
-            spatial = prefs[LIGHT_SYNC_SPATIAL] ?: false,
-            musicDna = prefs[MUSIC_DNA_ENABLED] ?: false,
-            emotionalArc = prefs[EMOTIONAL_ARC_ENABLED] ?: false,
-            phantomStage = prefs[PHANTOM_STAGE_ENABLED] ?: false,
-            stemSeparation = prefs[STEM_SEPARATION] ?: false,
-            phoneConductor = prefs[PHONE_CONDUCTOR_ENABLED] ?: false,
-        )
-    }
+    suspend fun captureShowPreset(name: String): ShowPreset =
+        readShowPreset(context.dataStore.data.first(), name)
 
     /**
      * Put a preset's show on the room.

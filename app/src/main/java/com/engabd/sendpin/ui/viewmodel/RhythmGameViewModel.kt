@@ -9,6 +9,7 @@ import com.engabd.sendpin.game.GameNote
 import com.engabd.sendpin.game.GameBand
 import com.engabd.sendpin.game.Judgement
 import com.engabd.sendpin.game.NoteGenerator
+import com.engabd.sendpin.game.PausableClock
 import com.engabd.sendpin.game.bandOf
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
@@ -92,6 +93,13 @@ internal fun mergeRecord(old: GameRecord?, score: Int, combo: Int, accuracy: Flo
  * version scheduled notes against the *player's* position when it had one and the
  * wall clock when it did not, which meant a seek, a track change or simply a backend
  * without a position moved every pending note by an arbitrary amount.
+ *
+ * Wrapped in a [PausableClock], which is the one thing a wall clock cannot do by
+ * itself: stop when the music does. Pausing the song used to leave the frame loop
+ * advancing over a board nobody could play, and everything on it was retired as a
+ * miss. Freezing the clock is deliberately not the same as skipping the scoring —
+ * the notes hold their place relative to the line, so the run resumes rather than
+ * restarting from a board already past it.
  */
 class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
     private val generator = NoteGenerator()
@@ -153,8 +161,39 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
     private var notesStruck = 0
     private var running = false
 
-    /** The game's clock. Everything here — frames, notes, taps — is on it. */
-    fun nowMs(): Long = SystemClock.elapsedRealtime()
+    /**
+     * The game's clock. Everything here — frames, notes, taps — is on it.
+     *
+     * Pausable, and that is the whole of how the game pauses with the music. The
+     * board is advanced from a frame loop that keeps running whatever the player is
+     * doing, so with a plain `elapsedRealtime()` a pause spent the next 1.6 seconds
+     * of lookahead retiring every pending note as a miss. Freezing the clock keeps
+     * the notes where they are instead of merely stopping the scoring — see
+     * [PausableClock].
+     */
+    private val clock = PausableClock { SystemClock.elapsedRealtime() }
+
+    fun nowMs(): Long = clock.now()
+
+    private val _paused = MutableStateFlow(false)
+
+    /** Whether the run is held because nothing is playing. For the screen's overlay. */
+    val paused: StateFlow<Boolean> = _paused.asStateFlow()
+
+    /**
+     * Follow the audio: hold the run while nothing is playing, let it go when
+     * something is.
+     *
+     * Pushed in by the screen from [com.engabd.sendpin.SendpinApp.audioIsPlaying]
+     * rather than collected here, for the same reason the timing settings are —
+     * a ViewModel that reached for the application to answer a question the screen
+     * already has the answer to is a ViewModel that cannot be tested.
+     */
+    fun setPlaying(playing: Boolean) {
+        if (!running) return
+        clock.setPlaying(playing)
+        if (_paused.value != !playing) _paused.value = !playing
+    }
 
     /**
      * Enter game mode: darken the room and take the lights off the music.
@@ -165,6 +204,8 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
     fun start() {
         if (running) return
         running = true
+        clock.reset()
+        _paused.value = false
         generator.reset()
         publishedRevision = generator.revision
         _notes.value = emptyList()
@@ -249,7 +290,10 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
      * explanation.
      */
     fun onFrame(frame: AnalysisFrame, leadMs: Long, leadKnown: Boolean = leadMs != 0L) {
-        if (!running) return
+        // A held run charts nothing. The tap normally goes quiet on its own when the
+        // music stops, but the scan-driven and capture feeds can keep delivering, and
+        // a note charted against a frozen clock lands on top of the hit line.
+        if (!running || clock.paused) return
         if (leadKnown != _leadKnown.value) _leadKnown.value = leadKnown
         generator.onFrame(frame, nowMs(), leadMs, directLightSync.gameChartSource())
         publish()
@@ -296,7 +340,10 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
      * game only advances while someone is looking at it.
      */
     fun tick(now: Long) {
-        if (!running) return
+        // The frame loop is the window's, not the music's — it runs on regardless.
+        // Reaping here while the song is paused is what turned a pause into a screen
+        // full of misses.
+        if (!running || clock.paused) return
         val missed = generator.reap(now)
         if (missed.isEmpty()) {
             publish()
@@ -335,7 +382,7 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
      * relative to the lights as well.
      */
     fun tap(lane: Int, now: Long): Judgement? {
-        if (!running) return null
+        if (!running || clock.paused) return null
         val judgedNow = now + timingOffsetMs
         val note = generator.take(lane, judgedNow, difficultyScale) ?: return null
         val delta = kotlin.math.abs(note.triggerTimeMs - judgedNow)

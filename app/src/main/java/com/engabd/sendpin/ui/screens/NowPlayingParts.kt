@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.hue.CoverPaletteOverride
@@ -481,17 +482,34 @@ fun BoxScope.PlayerOverlays(
         // it the next track to start would re-target the sheet mid-edit — the seed
         // would be re-read from another cover and the save would land on the new
         // track's keys rather than the one whose colours are on screen.
+        // Read off the *light sync source*, not off this screen's own state: the
+        // engine builds its lookup keys from that object and nothing else, and
+        // `LocalTrack.id` is not `MaItem.itemId` — so a save keyed on what Now
+        // Playing happened to be displaying could miss on every key at once. This is
+        // the same list `LightSyncScreen` builds, from the same fields.
+        val lightSource = (LocalContext.current.applicationContext as SendpinApp)
+            .activeLightSyncSource.value
         val paletteKeys = remember {
             CoverPaletteOverride.keysFor(
-                album = state.album,
-                artist = state.artist,
-                coverUrl = coverUrl,
-                trackId = favouritable?.itemId,
-            )
+                album = lightSource.paletteAlbum,
+                artist = lightSource.paletteArtist,
+                coverUrl = lightSource.artUrl ?: coverUrl,
+                trackId = lightSource.scanTrack?.id,
+            ).ifEmpty {
+                // Nothing is driving the lights — the sheet is still usable, and the
+                // save should still land somewhere the engine will find it when
+                // something starts playing.
+                CoverPaletteOverride.keysFor(
+                    album = state.album,
+                    artist = state.artist,
+                    coverUrl = coverUrl,
+                    trackId = favouritable?.itemId,
+                )
+            }
         }
         val pinnedAlbum = remember { state.album.takeIf { it.isNotBlank() } ?: favouritable?.name ?: "" }
         val pinnedArtist = remember { state.artist.takeIf { it.isNotBlank() } ?: favouritable?.subtitle }
-        val pinnedCover = remember { coverUrl }
+        val pinnedCover = remember { lightSource.artUrl ?: coverUrl }
         val overrides by settings.coverPaletteOverrides.collectAsStateWithLifecycle(
             initialValue = emptyMap(),
         )
