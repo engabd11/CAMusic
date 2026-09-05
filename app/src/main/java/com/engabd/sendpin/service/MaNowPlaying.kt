@@ -11,6 +11,7 @@ import com.engabd.sendpin.ma.MaQueue
 import com.engabd.sendpin.ma.MaRepository
 import com.engabd.sendpin.ma.maxSeekPositionMs
 import com.engabd.sendpin.ma.seekableDurationMs
+import com.engabd.sendpin.ui.viewmodel.FreezeDeadlines
 import com.engabd.sendpin.ui.viewmodel.PlayerPositionTracker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -310,6 +311,14 @@ class MaNowPlaying(private val app: Context) {
                 if (targetIsThisPhone()) freezeForTrackChange(targetId())
             }
         }
+        // And the boundary itself, which is what covers a track ending on its own —
+        // see [Playback.streamStartSeq]. Neither of the two above fires for that: one
+        // is a queue replacement the app asked for, the other a skip.
+        scope.launch {
+            SendpinApp.instance.playback.streamStartSeq.drop(1).collect {
+                if (targetIsThisPhone()) freezeForTrackChange(targetId())
+            }
+        }
     }
 
     /**
@@ -373,7 +382,12 @@ class MaNowPlaying(private val app: Context) {
         pendingSkipFromTrack = null
         freezeAtAudibleSeq = SendpinApp.instance.playback.audibleSeq.value
         positions.setOptimisticSeek(playerId, target, now.value?.durationMs?.takeIf { it > 0 })
-        armFreezeWatchdog(playerId, SEEK_FREEZE_TIMEOUT_MS)
+        // Same split as `NowPlayingViewModel.freezeForSeek`, and for the same reason:
+        // the short deadline is right for a remote player, where the poll is the only
+        // confirmation, and wrong for this phone, where the confirmation is the audible
+        // edge and arrives about 2.9 s after the request. Holding for 2.5 s released
+        // the bar before the audio existed and left it running two seconds ahead of it.
+        armFreezeWatchdog(playerId, FreezeDeadlines.forSeek(targetIsThisPhone()))
     }
 
     private fun freezeForTrackChange(playerId: String) {
@@ -385,7 +399,7 @@ class MaNowPlaying(private val app: Context) {
         armFreezeWatchdog(playerId)
     }
 
-    private fun armFreezeWatchdog(playerId: String, timeoutMs: Long = FREEZE_TIMEOUT_MS) {
+    private fun armFreezeWatchdog(playerId: String, timeoutMs: Long = FreezeDeadlines.DEFAULT_MS) {
         freezeWatchdog?.cancel()
         freezeWatchdog = scope.launch {
             delay(timeoutMs)
@@ -604,18 +618,5 @@ class MaNowPlaying(private val app: Context) {
         /** How near the server's clock has to land for a seek to count as landed. */
         const val SEEK_CONFIRM_MS = 3_000L
 
-        /**
-         * How long a freeze may hold out for a confirmation that never comes. A server
-         * that goes quiet should cost a stuck second, not a stuck bar.
-         */
-        const val FREEZE_TIMEOUT_MS = 6_000L
-
-        /**
-         * A seek's own, shorter deadline — see the note on
-         * `NowPlayingViewModel.SEEK_FREEZE_TIMEOUT_MS`. MA publishes a seek's target
-         * before it rebuilds the stream, so one that landed is confirmed by the next
-         * reading; the long wait only prolongs the lie told by one that did not.
-         */
-        const val SEEK_FREEZE_TIMEOUT_MS = 2_500L
     }
 }

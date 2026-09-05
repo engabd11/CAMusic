@@ -823,7 +823,18 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         pendingSkipFromTrack = null
         freezeAtAudibleSeq = playback.audibleSeq.value
         positions.setOptimisticSeek(key, target, state.value.durationMs.takeIf { it > 0 })
-        armFreezeWatchdog(key, SEEK_FREEZE_TIMEOUT_MS)
+        // The short deadline belongs to the *remote* path only. There the poll is the
+        // sole confirmation a seek landed, so holding a refused one for six seconds
+        // buys nothing but six seconds of a bar insisting on a place the music never
+        // went. When this phone is the player the confirmation is [Playback.audibleSeq]
+        // instead — and that arrives about 2.9 s after the request (tap to
+        // `stream/start` ~1.25 s, `stream/start` to first sound ~1.64 s, both measured
+        // on-device; see docs/ma-playhead-rewrite-plan.md). A 2.5 s watchdog therefore
+        // won that race every single time: it lifted the freeze before the audio
+        // existed, the bar re-anchored on Music Assistant's `elapsed_time` — which has
+        // been advancing since the server started the stream job — and settled about
+        // two seconds ahead of what could be heard.
+        armFreezeWatchdog(key, FreezeDeadlines.forSeek(sendspinAuthoritative()))
     }
 
     private fun freezeForTrackChange() {
@@ -835,7 +846,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         armFreezeWatchdog(key)
     }
 
-    private fun armFreezeWatchdog(key: String, timeoutMs: Long = FREEZE_TIMEOUT_MS) {
+    private fun armFreezeWatchdog(key: String, timeoutMs: Long = FreezeDeadlines.DEFAULT_MS) {
         freezeWatchdog?.cancel()
         freezeWatchdog = viewModelScope.launch {
             delay(timeoutMs)
@@ -1118,7 +1129,6 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     private val maEvents = api.events
         .mapNotNull { MaParse.event(it) }
         .shareIn(viewModelScope, SharingStarted.Eagerly)
-
 
     /**
      * Ask for a fresh read of players and queues.
@@ -2081,32 +2091,8 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         /** How long the sleep timer spends fading out before it pauses. */
         const val FADE_MS = 10_000L
 
-        /**
-         * How long an optimistic seek/skip may ignore the server before it gives up
-         * and accepts whatever the server says. A freeze that never releases would
-         * wedge the bar permanently, so this is the liveness backstop, not a tuning
-         * knob — keep it comfortably longer than a slow round trip.
-         */
-        const val FREEZE_TIMEOUT_MS = 6_000L
-
         /** How close the server's clock must land to a seek target to count as landed. */
         const val SEEK_CONFIRM_MS = 3_000L
-
-        /**
-         * A seek's own, shorter deadline.
-         *
-         * A skip has to wait out a stream starting somewhere else, which is why
-         * [FREEZE_TIMEOUT_MS] is as generous as it is. A seek does not: Music
-         * Assistant writes `queue.elapsed_time = position` and signals the update
-         * *before* it rebuilds the stream, precisely so clients see the target
-         * straight away, so a seek that landed is corroborated by the very next
-         * reading. Holding one for six seconds only ever benefits a seek that did
-         * **not** land — a position the server refused, or a command that never left
-         * a dropped socket — and what that buys is six seconds of a bar insisting on
-         * a place the music never went before it jumps to where the track actually
-         * got to. That jump is the bug this constant exists to shorten.
-         */
-        const val SEEK_FREEZE_TIMEOUT_MS = 2_500L
 
         /**
          * Matches LibraryViewModel.SCROBBLE_MAX_MS — the same "was this a real play" call.
@@ -2191,6 +2177,20 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         // request the moment this collector attaches.
         viewModelScope.launch {
             playback.playStartSeq.drop(1).collect {
+                if (!isLocal && sendspinAuthoritative()) freezeForTrackChange()
+            }
+        }
+        // And arm it again when a stream actually begins. [playStartSeq] above only
+        // fires for a queue replacement this app asked for, and a skip freezes on its
+        // way out — so a track ending on its own and the next one starting had nothing
+        // holding the bar, and it ran from 0:00 as soon as the poll named the new
+        // track, over a second before this phone made a sound.
+        //
+        // Re-arming a freeze that is already held is harmless: [freezeForTrackChange]
+        // re-samples [Playback.audibleSeq], which cannot have moved in between (the
+        // stream it is waiting for is the one just starting), and re-arms the watchdog.
+        viewModelScope.launch {
+            playback.streamStartSeq.drop(1).collect {
                 if (!isLocal && sendspinAuthoritative()) freezeForTrackChange()
             }
         }

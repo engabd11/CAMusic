@@ -677,6 +677,10 @@ class Playback(private val app: Context) {
                 eng.start(format)
                 idleJob?.cancel(); idleJob = null
                 val kind = streamKind
+                // A new stream is beginning — see [streamStartSeq]. Synchronous rather
+                // than inside the launch below, because this is the boundary itself and
+                // the UI's freeze wants it before anything else can anchor on it.
+                if (kind != StreamClassifier.Kind.ANNOUNCEMENT) _streamStartSeq.value += 1
                 sessionScope.launch {
                     requestAudioFocus(kind)
                     _isPlaying.value = true
@@ -961,6 +965,29 @@ class Playback(private val app: Context) {
      */
     private val _playStartSeq = MutableStateFlow(0L)
     val playStartSeq: StateFlow<Long> = _playStartSeq.asStateFlow()
+
+    /**
+     * Counts streams this phone has begun receiving.
+     *
+     * The third edge in the same family, and the one that covers a track ending on its
+     * own. [playStartSeq] fires only for a queue replacement *this app asked for*, and
+     * a skip freezes on its way out — so a natural advance from one track to the next
+     * had nothing arming the bar at all, and it started running from 0:00 the moment
+     * Music Assistant named the new track, over a second before this phone made a
+     * sound.
+     *
+     * Deliberately raised here rather than when a poll notices the track changed: the
+     * poll runs every five seconds and can notice *after* [audibleSeq] has already
+     * moved, and a freeze armed then would sit waiting for the following stream's edge
+     * — wedging the bar for the whole watchdog. A `stream/start` cannot arrive after
+     * its own stream became audible, so arming on this edge and releasing on that one
+     * can never invert.
+     *
+     * Announcements are excluded: they interrupt the music without changing what is
+     * playing, so freezing the position for one would stop the bar for a notification.
+     */
+    private val _streamStartSeq = MutableStateFlow(0L)
+    val streamStartSeq: StateFlow<Long> = _streamStartSeq.asStateFlow()
 
     /** Called by [com.engabd.sendpin.ma.MaRepository] when it replaces a queue. */
     fun noteQueueReplaced() { _playStartSeq.value += 1 }
