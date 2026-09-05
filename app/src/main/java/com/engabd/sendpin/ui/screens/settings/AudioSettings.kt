@@ -26,6 +26,7 @@ import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.data.rememberIsIgnoringBatteryOptimizations
 import com.engabd.sendpin.ui.design.HSlider
 import com.engabd.sendpin.ui.design.InfoChip
+import com.engabd.sendpin.ui.design.ToggleChip
 import com.engabd.sendpin.ui.theme.MonoFont
 import com.engabd.sendpin.ui.theme.TextSecondary
 import com.engabd.sendpin.ui.theme.WarnAmber
@@ -139,11 +140,21 @@ private fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSco
         }
 
         // Nothing to choose between on a phone with only its own speaker.
+        // A dropdown, not the segmented row this used to be: output names — DAC
+        // brands, headphone models, "Phone speaker" — are as long as their makers
+        // make them, and a segmented row gives each an equal share of one screen
+        // width, so past about three every label clipped into an unreadable sliver
+        // and the row read as text printed over text. Same shape as the paired-car
+        // picker in DrivingSettings, which fixed the same problem there.
         if (outputs.size >= 2) {
             FieldLabel("Output device")
-            val labels = listOf("Automatic") + outputs.map { it.label }
             val ids = listOf("") + outputs.map { it.id }
-            SegmentedToggleRow(labels, ids.indexOf(pinned).coerceAtLeast(0)) { i ->
+            DropdownPicker(
+                options = listOf("Automatic") + outputs.map { it.label },
+                selectedIndex = ids.indexOf(pinned).coerceAtLeast(0),
+                accent = accent,
+                placeholder = "Pick an output",
+            ) { i ->
                 scope.launch { settings.setPreferredAudioDeviceId(ids[i]) }
             }
             Note(
@@ -218,10 +229,23 @@ private fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSco
             FieldLabel("Output sample rate")
             val outRate by settings.outputSampleRateHz.collectAsStateWithLifecycle(initialValue = 0)
             val rateOptions = listOf(0) + AppSettings.OUTPUT_RATES
-            SegmentedToggleRow(
-                labels = rateOptions.map { if (it == 0) "Follow file" else StreamQuality.khz(it) },
-                selectedIndex = rateOptions.indexOf(outRate).coerceAtLeast(0),
-            ) { i -> scope.launch { settings.setOutputSampleRateHz(rateOptions[i]) } }
+            // Wrapping chips, not the segmented row this used to be. Seven options
+            // ("Follow file" plus six rates) on one segment give each a seventh of
+            // the card's width, which is shorter than the word "Follow file" — the
+            // labels clipped into each other and read as text printed over text.
+            // Chips flow onto as many lines as they need and every one stays whole
+            // and tappable, the same shape the Appearance page uses for its pickers.
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                rateOptions.forEach { rate ->
+                    ToggleChip(
+                        if (rate == 0) "Follow file" else StreamQuality.khz(rate),
+                        rate == outRate,
+                    ) { scope.launch { settings.setOutputSampleRateHz(rate) } }
+                }
+            }
             Note(
                 if (outRate == 0)
                     "Every file plays at its own rate. Android converts if the output needs it."
@@ -250,25 +274,35 @@ private fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineSco
         // independent settings and what each rung is named after.
         val mode = OutputMode.of(bitPerfect, exclusiveOutput, bitPerfectAaudio)
         val rungs = OutputMode.offered(advanced, mode)
-        SegmentedToggleRow(rungs.map { it.title }, rungs.indexOf(mode).coerceAtLeast(0)) { i ->
-            val next = rungs[i]
-            scope.launch {
-                // All three written together, every time, so the stored state can
-                // only ever be one of the four rungs. The old UI wrote them
-                // independently, which is how "AAudio on, exclusive off" — a
-                // combination that does nothing — was reachable.
-                settings.setBitPerfect24Bit(next.floatPath)
-                settings.setExclusiveOutput(next.exclusive)
-                settings.setBitPerfectAaudio(next.aaudio)
-                // Exclusive output through the phone's own speaker is nothing to ask
-                // for, so stepping onto a rung that removes this app's processing
-                // pins a USB output if one is attached and nothing is pinned yet.
-                // Reuses AudioOutputs.list rather than `outputs` above: the picker
-                // row is hidden on a phone with only its own speaker, but a DAC
-                // plugged in after that row last composed should still get pinned.
-                if (next.exclusive && pinned.isBlank()) {
-                    AudioOutputs.list(am).firstOrNull { it.isUsb }
-                        ?.let { settings.setPreferredAudioDeviceId(it.id) }
+        // Wrapping chips rather than one segmented row: the rungs' own titles —
+        // "High resolution", "Direct to DAC" — are the longest strings in this
+        // section, and four of them on one row squeezed every label past its
+        // neighbours' edge. Chips wrap instead of collide.
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            rungs.forEach { rung ->
+                ToggleChip(rung.title, rung == mode) {
+                    scope.launch {
+                        // All three written together, every time, so the stored state can
+                        // only ever be one of the four rungs. The old UI wrote them
+                        // independently, which is how "AAudio on, exclusive off" — a
+                        // combination that does nothing — was reachable.
+                        settings.setBitPerfect24Bit(rung.floatPath)
+                        settings.setExclusiveOutput(rung.exclusive)
+                        settings.setBitPerfectAaudio(rung.aaudio)
+                        // Exclusive output through the phone's own speaker is nothing to ask
+                        // for, so stepping onto a rung that removes this app's processing
+                        // pins a USB output if one is attached and nothing is pinned yet.
+                        // Reuses AudioOutputs.list rather than `outputs` above: the picker
+                        // row is hidden on a phone with only its own speaker, but a DAC
+                        // plugged in after that row last composed should still get pinned.
+                        if (rung.exclusive && pinned.isBlank()) {
+                            AudioOutputs.list(am).firstOrNull { it.isUsb }
+                                ?.let { settings.setPreferredAudioDeviceId(it.id) }
+                        }
+                    }
                 }
             }
         }
@@ -419,8 +453,12 @@ private fun LoudnessCard(settings: AppSettings, accent: Color, scope: CoroutineS
         lead = "A 1985 master and a 2015 one can land 10 dB apart. ReplayGain uses the level " +
             "tags in your files to even that out.",
     ) {
-        SegmentedToggleRow(ReplayGainLabels, ReplayGainValues.indexOf(mode).coerceAtLeast(0)) {
-            scope.launch { settings.setReplayGainMode(ReplayGainValues[it]) }
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ReplayGainLabels.forEachIndexed { i, label ->
+                ToggleChip(label, ReplayGainValues[i] == mode) {
+                    scope.launch { settings.setReplayGainMode(ReplayGainValues[i]) }
+                }
+            }
         }
         Note(
             when (mode) {
@@ -556,8 +594,12 @@ private fun DjRadioSettingsCard(settings: AppSettings, scope: CoroutineScope) {
                 Modifier.heightIn(0.dp),
             )
         }
-        SegmentedToggleRow(FadeModeLabels, if (smartFade) 0 else 1) { i ->
-            scope.launch { settings.setDjRadioSmartFade(i == 0) }
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FadeModeLabels.forEachIndexed { i, label ->
+                ToggleChip(label, i == if (smartFade) 0 else 1) {
+                    scope.launch { settings.setDjRadioSmartFade(i == 0) }
+                }
+            }
         }
         Note(
             if (smartFade) "Bars and downbeats, from the scan. Falls back to the time below."
