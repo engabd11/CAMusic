@@ -35,46 +35,6 @@ import com.engabd.sendpin.ui.viewmodel.PlayerViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
-/**
- * Everything between the file and the speaker.
- *
- * This was one card of eleven controls with four paragraphs of explanation stacked
- * under it — sample rates next to ReplayGain next to a connection readout, and no
- * indication which of them applied to which backend. Split into the four questions a
- * listener actually asks, each one saying who it is for.
- *
- * Split into per-card composables the settings screen emits as individual list
- * items, so the host list composes and recycles lazily instead of measuring the
- * whole page in one frame. The list's own 10dp spacing supplies the gaps the old
- * Column carried.
- */
-@Composable
-internal fun AudioSection(
-    viewModel: PlayerViewModel,
-    settings: AppSettings,
-    accent: Color,
-    scope: CoroutineScope,
-    advanced: Boolean,
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        OutputCard(settings, accent, scope, advanced)
-        LoudnessCard(settings, accent, scope)
-        ContinuousPlayCard(settings, accent, scope)
-        DjRadioSettingsCard(settings, scope)
-        // Here rather than in a section of its own: it is about how playback is
-        // *controlled* on this device, which is what this section already is, and a
-        // top-level entry for one card is the shape the "CAMusic player" section
-        // was just removed for being.
-        DrivingCard(settings, accent, scope)
-        // The Music Assistant connection readout is no longer here. It described one
-        // phone's registration with one server, and it now sits on that server's own
-        // page beside the settings it reports the effect of — see
-        // PlayerSettings.MaPlayerStatusCard. This section is the device-wide half:
-        // where sound goes, how loud, and what happens between tracks, none of which
-        // depends on which server is connected.
-    }
-}
-
 // ── Output ────────────────────────────────────────────────────────────────
 
 /**
@@ -499,6 +459,15 @@ internal fun ContinuousPlayCard(settings: AppSettings, accent: Color, scope: Cor
     SettingsCard(
         title = "Between tracks",
         lead = "What happens in the gap between one track and the next.",
+        info = "Gapless is not a setting here and never needs to be: a track that was recorded " +
+            "to run into the next one does, because the decoder hands the samples straight " +
+            "on. This is about the gap you *do* want shortened — the one between two " +
+            "unrelated songs.\n\nA smooth transition overlaps the end of one with the start " +
+            "of the next. Beat-matched timing lands that overlap on a beat rather than " +
+            "wherever the clock happened to be, which needs the track to have been read " +
+            "ahead — see Illumination & Sync, Track analysis.\n\nTip: two or three seconds " +
+            "is enough to remove a silence without blurring two songs together. Longer " +
+            "belongs on a party queue, not an album.",
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -537,7 +506,7 @@ internal fun ContinuousPlayCard(settings: AppSettings, accent: Color, scope: Cor
                     "the same analysis Light Sync uses.\n\nWhere that analysis has not run for " +
                     "the track coming up, the fade quietly falls back to the fixed length " +
                     "above. A fade that waited for a scan would be a gap.\n\nTip: run a sweep " +
-                    "under Settings, Light Sync, Track analysis and this will apply to far more " +
+                    "under Settings, $SWEEP_PATH, and this will apply to far more " +
                     "of your queue.",
             )
         }
@@ -576,6 +545,14 @@ internal fun DjRadioSettingsCard(settings: AppSettings, scope: CoroutineScope) {
     SettingsCard(
         title = "DJ Radio",
         lead = "The button on the library's front page: one tap, and it keeps choosing.",
+        info = "An endless queue built from your own library, extended a few tracks at a time " +
+            "from whatever is playing rather than chosen up front.\n\nThree things shape " +
+            "it. How it joins decides whether a track is beat-matched into the last or " +
+            "simply follows it. How long is the overlap. How similar decides how far it may " +
+            "wander from the song that started it — tight keeps to one mood, loose is closer " +
+            "to a shuffle that pays attention.\n\nTip: it uses the key and tempo from the " +
+            "track scans where a song has them, and falls back to genre and era where it " +
+            "does not. A scanned library gives noticeably better joins.",
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -596,7 +573,7 @@ internal fun DjRadioSettingsCard(settings: AppSettings, scope: CoroutineScope) {
                     "air at the front of the next track.\n\nNeeds the track scanned. Where it " +
                     "has not been, Smart quietly does exactly what Standard does, so there is " +
                     "nothing lost by leaving it on.\n\nTip: run a sweep under Settings, Light " +
-                    "Sync, Track analysis and far more of your library gets the good join.",
+                    "$SWEEP_PATH, and far more of your library gets the good join.",
                 Modifier.heightIn(0.dp),
             )
         }
@@ -663,7 +640,7 @@ internal fun DjRadioSettingsCard(settings: AppSettings, scope: CoroutineScope) {
                     "alone, and sits behind the ones that have been.\n\nNothing ever stalls " +
                     "here: if nothing clears the bar, the bar comes down until something " +
                     "does. Loose is a wider net, not a worse one.\n\nTip: run a sweep under " +
-                    "Settings, Light Sync, Track analysis. Every scanned track is one more " +
+                    "Settings, $SWEEP_PATH. Every scanned track is one more " +
                     "the set can actually listen to before choosing it.",
                 Modifier.heightIn(0.dp),
             )

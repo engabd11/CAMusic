@@ -40,6 +40,7 @@ import com.engabd.sendpin.audio.ReplayGain
 import com.engabd.sendpin.ui.design.GlassCard
 import com.engabd.sendpin.ui.design.HSlider
 import com.engabd.sendpin.ui.design.InfoChip
+import com.engabd.sendpin.ui.design.SegmentedToggle
 import com.engabd.sendpin.ui.design.a
 import com.engabd.sendpin.ui.design.TitleGap
 import com.engabd.sendpin.ui.theme.*
@@ -157,6 +158,22 @@ internal fun Note(
             modifier = Modifier.weight(1f, fill = false),
         )
         InfoChip(title ?: text, info, Modifier.heightIn(0.dp))
+    }
+}
+
+/**
+ * What a page is for, at the top of it.
+ *
+ * Six of these were written as a [SettingsCard] with an empty body — a card is a
+ * group of controls, and one holding none reads as a control that failed to load
+ * rather than as a paragraph. This is the same words without the frame: no glass, no
+ * padding of its own, and the long form still behind a chip.
+ */
+@Composable
+internal fun PageIntro(title: String, lead: String, info: String? = null) {
+    Column(verticalArrangement = Arrangement.spacedBy(TitleGap)) {
+        TitleWithInfo(title, info, MaterialTheme.typography.titleLarge)
+        Text(lead, color = TextMuted, fontFamily = AppFont, style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -377,6 +394,33 @@ internal fun OledButton(
 }
 
 /**
+ * A row of two to four fixed choices, the full width of the card.
+ *
+ * The one call style for a segmented control in Settings. It lived at the bottom of
+ * `PlayerSettings.kt` and half the pages reached past it to
+ * [com.engabd.sendpin.ui.design.SegmentedToggle] directly instead — same control, two
+ * import paths, and the direct callers each had to remember `fillMaxWidth()` for
+ * themselves. One of them forgot.
+ *
+ * Only correct while the options are few and fixed. The moment a list comes from the
+ * *phone* rather than from the app, every entry past the screen edge becomes
+ * unreachable — use [DropdownPicker].
+ */
+@Composable
+internal fun SegmentedToggleRow(
+    labels: List<String>,
+    selectedIndex: Int,
+    onSelect: (Int) -> Unit,
+) {
+    SegmentedToggle(
+        options = labels,
+        selectedIndex = selectedIndex,
+        modifier = Modifier.fillMaxWidth(),
+        onSelect = onSelect,
+    )
+}
+
+/**
  * A picker for a list that is too long, or too unpredictable, to lay out flat.
  *
  * The alternative in this file is [com.engabd.sendpin.ui.design.SegmentedToggle], and
@@ -592,6 +636,15 @@ internal val StreamFormatLabels = listOf("Original", "FLAC", "MP3 320", "MP3 192
 
 internal val ReplayGainValues = listOf(ReplayGain.OFF, ReplayGain.TRACK, ReplayGain.ALBUM)
 internal val ReplayGainLabels = listOf("Off", "Track", "Album")
+
+/**
+ * Where the track sweep lives, spelled once.
+ *
+ * Four cards send the reader there and each of them had written the path out by hand,
+ * in four slightly different forms — and then the page moved, so three of them were
+ * pointing at somewhere that no longer existed.
+ */
+internal const val SWEEP_PATH = "Illumination & Sync, Track analysis"
 
 internal fun formatBytes(bytes: Long): String = when {
     bytes >= 1_000_000_000 -> "%.1f GB".format(bytes / 1_000_000_000.0)

@@ -53,6 +53,13 @@ internal fun BehaviorHandsCard(settings: AppSettings, accent: androidx.compose.u
             subtitle = "On Now Playing: swipe right for next, left for previous",
             checked = swipeToSkip,
             accent = accent,
+            info = "The whole cover becomes the gesture, so a track can be changed with a " +
+                "thumb and no aim at all — which is the point in a pocket, in a car cradle, " +
+                "or with gloves on.\n\nOff by default because it takes the horizontal swipe " +
+                "away from anything else that might want it, and because an accidental " +
+                "brush skipping a track is worse than reaching for a button.\n\nTip: the " +
+                "lyrics and queue panels are reached by tapping the cover rather than " +
+                "swiping it, so the two do not collide.",
         ) { scope.launch { settings.setSwipeToSkip(it) } }
         ToggleRow(
             title = "Shake, flip and tap",

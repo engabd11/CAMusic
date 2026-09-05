@@ -809,6 +809,7 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                             onDetail = { settingsDetail = it },
                             onOpenDownloads = { navController.navigate("downloads") },
                             onOpenStats = { navController.navigate("stats") },
+                            onOpenAmbience = { navController.navigate("effects") },
                         )
                     }
                     } // NavHost

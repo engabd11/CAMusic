@@ -18,14 +18,13 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.service.DrivingOverlayService
-import com.engabd.sendpin.ui.design.SegmentedToggle
 import com.engabd.sendpin.ui.theme.WarnAmber
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
- * Driving mode's setup, in one card.
+ * Driving mode's setup.
  *
  * The one *safety* feature in this app rather than a polish or correctness one, and
  * the copy is written accordingly: it says what the feature is for, in the situation
@@ -34,9 +33,14 @@ import kotlinx.coroutines.launch
  * Three things to settle and they are asked in the order that matters — is it on,
  * which car, and only then which window mechanism. The mechanism is last on purpose:
  * the default costs nothing and most people should never reach the third question.
+ *
+ * The speed alert and the call handling used to be dividers inside this same card,
+ * which made it a 440-line card holding a Bluetooth picker, a GPS subsystem, a
+ * permission for the microphone-adjacent phone state and a window mechanism. They are
+ * their own page now — see [SafetyCard].
  */
 @Composable
-internal fun DrivingCard(settings: AppSettings, accent: Color, scope: CoroutineScope) {
+internal fun DrivingModeCard(settings: AppSettings, accent: Color, scope: CoroutineScope) {
     val context = LocalContext.current
     val enabled by settings.drivingEnabled.collectAsState(initial = false)
     val mechanism by settings.drivingMechanism.collectAsState(initial = AppSettings.DRIVING_PIP)
@@ -74,12 +78,14 @@ internal fun DrivingCard(settings: AppSettings, accent: Color, scope: CoroutineS
             "Driving controls",
             "Appears when you connect to your car, and only while something is playing.",
             enabled, accent,
+            info = "Nothing appears the moment this is switched on. The controls are brought " +
+                "up by connecting to the car chosen below, and taken away again when it " +
+                "disconnects — so the phone behaves normally everywhere except in the " +
+                "car.\n\nThere is also a Quick Settings tile, for a car with no Bluetooth " +
+                "or a cradle in someone else's.\n\nTip: if the controls never appear, it is " +
+                "almost always that no car has been picked below, or that the window " +
+                "mechanism is Floating window and the app was not opened before the map.",
         ) { on -> scope.launch { settings.setDrivingEnabled(on) } }
-
-        CardDivider()
-        PauseForCallsRow(settings, accent, scope)
-        CardDivider()
-        SpeedFeaturesRow(settings, accent, scope)
 
         if (!enabled) return@SettingsCard
 
@@ -141,10 +147,9 @@ internal fun DrivingCard(settings: AppSettings, accent: Color, scope: CoroutineS
 
         // ── Which window ─────────────────────────────────────────────────────
         FieldLabel("How the controls appear")
-        SegmentedToggle(
-            options = listOf("Floating window", "Full-width bar"),
+        SegmentedToggleRow(
+            labels = listOf("Floating window", "Full-width bar"),
             selectedIndex = if (mechanism == AppSettings.DRIVING_OVERLAY) 1 else 0,
-            modifier = Modifier.fillMaxWidth(),
         ) { i ->
             val next = if (i == 1) AppSettings.DRIVING_OVERLAY else AppSettings.DRIVING_PIP
             scope.launch { settings.setDrivingMechanism(next) }
@@ -191,7 +196,34 @@ internal fun DrivingCard(settings: AppSettings, accent: Color, scope: CoroutineS
 }
 
 /**
- * Auto-pause on a ringing or answered call. Not tied to [DrivingCard]'s own toggle —
+ * The two things that watch the world outside the phone: what a call does to the
+ * music, and what your speed does.
+ *
+ * Neither is tied to [DrivingModeCard]'s own switch — a call interrupting music is
+ * just as real parked as it is driving — but both ask for a runtime permission, and
+ * grouping the two permission requests on one page is kinder than meeting them one at
+ * a time halfway down a page about something else.
+ */
+@Composable
+internal fun SafetyCard(settings: AppSettings, accent: Color, scope: CoroutineScope) {
+    SettingsCard(
+        title = "Speed & safety",
+        lead = "What happens when the phone rings, and when you are going too fast.",
+        info = "Both of these are off until you ask for them, and each asks for its own " +
+            "permission at the moment you do rather than up front.\n\nThe speed alert uses " +
+            "GPS speed, which is the speed you are actually travelling rather than the one on " +
+            "the dial — those differ by a few per cent on most cars, in the cautious " +
+            "direction.\n\nNothing here is stored or sent anywhere. Your location is compared " +
+            "against data already on the phone and then forgotten.",
+    ) {
+        PauseForCallsRow(settings, accent, scope)
+        CardDivider()
+        SpeedFeaturesRow(settings, accent, scope)
+    }
+}
+
+/**
+ * Auto-pause on a ringing or answered call. Not tied to [DrivingModeCard]'s own toggle —
  * a call interrupting music is just as real parked as it is driving — but lives in
  * this card because it needs the same kind of runtime permission request the car
  * picker above does, and one settings card asking for phone permissions is enough.
@@ -337,10 +369,9 @@ private fun SpeedFeaturesRow(settings: AppSettings, accent: Color, scope: Corout
 
         // ── Limit source toggle: Auto-detect vs Manual ──────────────────────
         FieldLabel("Limit source")
-        com.engabd.sendpin.ui.design.SegmentedToggle(
-            options = listOf("Auto-detect", "Manual"),
+        SegmentedToggleRow(
+            labels = listOf("Auto-detect", "Manual"),
             selectedIndex = if (autoDetect) 0 else 1,
-            modifier = Modifier.fillMaxWidth(),
         ) { i ->
             scope.launch { settings.setSpeedLimitAutoDetect(i == 0) }
         }
@@ -368,46 +399,40 @@ private fun SpeedFeaturesRow(settings: AppSettings, accent: Color, scope: Corout
                     "the data has nothing for that road and the fallback is doing the " +
                     "work.",
             )
-        } else {
-            // Manual limit input (original behaviour)
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                OledField(
-                    value = if (limitKmh > 0) limitKmh.toString() else "",
-                    onChange = { v -> scope.launch { settings.setDrivingSpeedLimitKmh(v.filter(Char::isDigit).toIntOrNull() ?: 0) } },
-                    label = "Limit (km/h)", placeholder = "e.g. 100", accent = accent,
-                    modifier = Modifier.weight(1f),
-                )
-                OledField(
-                    value = tolerancePct.toString(),
-                    onChange = { v -> scope.launch { settings.setDrivingSpeedTolerancePct(v.filter(Char::isDigit).toIntOrNull() ?: 0) } },
-                    label = "Tolerance (%)", placeholder = "5", accent = accent,
-                    modifier = Modifier.weight(1f),
-                )
-            }
         }
 
-        // Tolerance is always shown — it applies to both auto and manual modes
-        if (autoDetect) {
+        // One pair of fields for both modes, not two.
+        //
+        // These are two settings, and they used to be rendered by four separate code
+        // paths: a manual branch drawing "Limit (km/h)" and "Tolerance (%)" side by
+        // side, and an auto branch drawing a second tolerance field and then the same
+        // limit again under the name "Fallback limit (km/h)". The same number under
+        // two names in two places reads as two settings that might disagree, and the
+        // one thing a speed limit must not be is ambiguous. The limit means the same
+        // thing either way — it is simply the only answer in manual mode and the
+        // answer of last resort in auto — so only the note under it changes.
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+            OledField(
+                value = if (limitKmh > 0) limitKmh.toString() else "",
+                onChange = { v -> scope.launch { settings.setDrivingSpeedLimitKmh(v.filter(Char::isDigit).toIntOrNull() ?: 0) } },
+                label = "Speed limit (km/h)", placeholder = "e.g. 100", accent = accent,
+                modifier = Modifier.weight(1f),
+            )
             OledField(
                 value = tolerancePct.toString(),
                 onChange = { v -> scope.launch { settings.setDrivingSpeedTolerancePct(v.filter(Char::isDigit).toIntOrNull() ?: 0) } },
                 label = "Tolerance (%)", placeholder = "5", accent = accent,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.weight(1f),
             )
         }
-
-        // Manual fallback limit is still relevant in auto-detect mode — it's used
-        // when the database has no data for the current location.
-        if (autoDetect) {
-            FieldLabel("Manual fallback")
-            OledField(
-                value = if (limitKmh > 0) limitKmh.toString() else "",
-                onChange = { v -> scope.launch { settings.setDrivingSpeedLimitKmh(v.filter(Char::isDigit).toIntOrNull() ?: 0) } },
-                label = "Fallback limit (km/h)", placeholder = "e.g. 60", accent = accent,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Note("Used when the database has no data for your location (e.g. outside Victoria).")
-        }
+        Note(
+            if (autoDetect) {
+                "Used wherever the map data has no answer — outside Victoria, or on a road " +
+                    "it does not cover. Worth setting even on auto."
+            } else {
+                "The alert fires at this limit plus the tolerance, held for a few seconds."
+            },
+        )
     }
 
     Spacer(Modifier.height(4.dp))
@@ -415,6 +440,12 @@ private fun SpeedFeaturesRow(settings: AppSettings, accent: Color, scope: Corout
         "Speed-adaptive volume",
         "Nudges volume up at speed to compensate for road noise, fading back down when you slow.",
         adaptiveEnabled && granted, accent,
+        info = "Road and wind noise rise with speed, so a level that was right in traffic is " +
+            "too quiet on the motorway and much too loud coming off it. This moves the " +
+            "volume with the speed instead of leaving you to.\n\nIt moves by a few steps, " +
+            "slowly, and never past the volume you set by hand — it is a correction, not a " +
+            "second volume control.\n\nTip: it shares the GPS the speed alert uses, so " +
+            "turning either on is what starts location; turning both off stops it.",
     ) { on -> requestThenSet(on) { settings.setSpeedAdaptiveVolume(on) } }
 
     if ((alertEnabled || adaptiveEnabled) && !granted) {
