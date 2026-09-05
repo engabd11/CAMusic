@@ -333,15 +333,12 @@ fun NowPlayingOverlay(
         ) {
             // Album wash — always present, dimmed when idle. The settled url, so it
             // stays in step with the cover and does not reload inside an album.
-            MeltBackdrop(art.url, intensity = washDim.value)
-
-            // Chameleon Canvas & Ambient Bloom (optional appearance setting) —
-            // painted after the backdrop, so the album's colours land *over* the
-            // wash's scrim and are actually visible; see ChameleonBloom.
+            // The wash and the bloom over it, in one composable that takes the fade
+            // as State rather than as a value — see [AlbumWash]. Read here, the
+            // fade recomposed this whole player on every frame of every transition
+            // between playing and idle.
             val chameleonBloom by settings.chameleonBloom.collectAsStateWithLifecycle(initialValue = false)
-            if (chameleonBloom) {
-                ChameleonBloom(palette, washDim.value)
-            }
+            AlbumWash(art.url, palette, chameleonBloom, washDim)
 
             Column(
                 Modifier

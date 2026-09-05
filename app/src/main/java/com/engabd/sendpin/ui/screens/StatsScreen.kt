@@ -130,10 +130,10 @@ fun StatsScreen(onBack: () -> Unit = {}, viewModel: StatsViewModel = viewModel()
                 // want to show another person, and burying a share action under nine
                 // cards of charts is how it never gets found.
                 if (state.plays > 0) {
-                    item { RecapCard(state) }
+                    item(key = "recap", contentType = "card") { RecapCard(state) }
                 }
 
-                item {
+                item(key = "overview", contentType = "card") {
                     SettingsCard(title = "Overview") {
                         StatusPanel {
                             StatusRow("Total listening", formatListeningTime(state.totalListeningMs))
@@ -156,7 +156,7 @@ fun StatsScreen(onBack: () -> Unit = {}, viewModel: StatsViewModel = viewModel()
                 }
 
                 if (state.clock.isNotEmpty()) {
-                    item {
+                    item(key = "clock", contentType = "card") {
                         SettingsCard(
                             title = "Listening clock",
                             lead = "When the music actually happens.",
@@ -165,7 +165,7 @@ fun StatsScreen(onBack: () -> Unit = {}, viewModel: StatsViewModel = viewModel()
                 }
 
                 if (state.distinctArtists > 1) {
-                    item {
+                    item(key = "variety", contentType = "card") {
                         SettingsCard(
                             title = "Variety",
                             lead = "How spread out the listening was, not how much of it there was.",
@@ -175,7 +175,7 @@ fun StatsScreen(onBack: () -> Unit = {}, viewModel: StatsViewModel = viewModel()
                 }
 
                 if (state.tempoEnergy.size >= 4) {
-                    item {
+                    item(key = "tempo", contentType = "card") {
                         SettingsCard(
                             title = "Tempo and energy",
                             lead = "One dot per scanned track. Warm is major, cool is minor.",
@@ -184,13 +184,13 @@ fun StatsScreen(onBack: () -> Unit = {}, viewModel: StatsViewModel = viewModel()
                 }
 
                 if (state.daily.size >= 2) {
-                    item {
+                    item(key = "daily", contentType = "card") {
                         SettingsCard(title = "Day by day") { DailyBars(state.daily, accent) }
                     }
                 }
 
                 if (state.topArtists.isNotEmpty()) {
-                    item {
+                    item(key = "artists", contentType = "card") {
                         SettingsCard(title = "Top artists") {
                             RankedBars(state.topArtists.map { it.artist to it.plays }, accent)
                         }
@@ -198,7 +198,7 @@ fun StatsScreen(onBack: () -> Unit = {}, viewModel: StatsViewModel = viewModel()
                 }
 
                 if (state.sources.isNotEmpty()) {
-                    item {
+                    item(key = "sources", contentType = "card") {
                         SettingsCard(
                             title = "Where it came from",
                             lead = "The provider the bytes were streamed from, not just the backend.",
@@ -207,7 +207,7 @@ fun StatsScreen(onBack: () -> Unit = {}, viewModel: StatsViewModel = viewModel()
                 }
 
                 if (state.timeBySource.size > 1) {
-                    item {
+                    item(key = "time_by_source", contentType = "card") {
                         SettingsCard(
                             title = "Time by source",
                             lead = "The same thing by minutes - a long album is not one play.",
@@ -223,7 +223,7 @@ fun StatsScreen(onBack: () -> Unit = {}, viewModel: StatsViewModel = viewModel()
                 }
 
                 if (state.formats.isNotEmpty()) {
-                    item {
+                    item(key = "formats", contentType = "card") {
                         SettingsCard(title = "By format") {
                             RankedBars(state.formats.map { it.label() to it.plays }, accent)
                         }
@@ -231,7 +231,7 @@ fun StatsScreen(onBack: () -> Unit = {}, viewModel: StatsViewModel = viewModel()
                 }
 
                 if (state.dominantKeys.isNotEmpty()) {
-                    item {
+                    item(key = "keys", contentType = "card") {
                         SettingsCard(title = "Dominant keys") {
                             RankedBars(state.dominantKeys, accent)
                         }
@@ -239,21 +239,21 @@ fun StatsScreen(onBack: () -> Unit = {}, viewModel: StatsViewModel = viewModel()
                 }
 
                 if (state.bpmHistogram.isNotEmpty()) {
-                    item {
+                    item(key = "bpm", contentType = "card") {
                         SettingsCard(title = "BPM sweet spot") {
                             RankedBars(state.bpmHistogram, accent)
                         }
                     }
                 }
 
-                item {
+                item(key = "note_counting", contentType = "note") {
                     Note(
                         "Counts a track once it is roughly half played, or after four minutes. " +
                             "That is the same rule the scrobbler uses, so a skip does not count.",
                     )
                 }
                 if (state.dominantKeys.isEmpty() && state.bpmHistogram.isEmpty()) {
-                    item {
+                    item(key = "note_dna", contentType = "note") {
                         Note(
                             "Key, tempo and energy need Listening DNA turned on in Appearance " +
                                 "settings, and tracks that have been scanned.",

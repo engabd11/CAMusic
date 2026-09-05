@@ -306,7 +306,11 @@ private fun ColumnScope.QueueList(
         // gesture to itself rather than fighting the list for it.
         userScrollEnabled = draggingId == null,
     ) {
-        itemsIndexed(order, key = { _, it -> it.queueItemId }) { _, item ->
+        itemsIndexed(
+            order,
+            key = { _, it -> it.queueItemId },
+            contentType = { _, _ -> "queueRow" },
+        ) { _, item ->
             val dragging = item.queueItemId == draggingId
             QueueRow(
                 item = item,
@@ -514,7 +518,11 @@ private fun ColumnScope.SimilarPanel(viewModel: NowPlayingViewModel) {
                 ) {
                     // Keyed by index as well as id: two providers can hand back the
                     // same track id, and a duplicate key is a hard crash in a lazy list.
-                    itemsIndexed(l.value, key = { i, t -> "similar:$i:${t.itemId}" }) { _, track ->
+                    itemsIndexed(
+                        l.value,
+                        key = { i, t -> "similar:$i:${t.itemId}" },
+                        contentType = { _, _ -> "similarTrack" },
+                    ) { _, track ->
                         SimilarRow(
                             track = track,
                             onPlay = { viewModel.playSimilar(track) },

@@ -245,7 +245,7 @@ fun AlbumDetailScreen(
                     // read about it first. The notes were Navidrome-only until now
                     // for want of one assignment on the MA path.
                     if (!notes.isNullOrBlank() || facts.isNotEmpty()) {
-                        item(key = "about") {
+                        item(key = "about", contentType = "about") {
                             AboutAlbum(
                                 notes = notes,
                                 facts = facts,
@@ -260,7 +260,7 @@ fun AlbumDetailScreen(
                     (related as? NowPlayingViewModel.Load.Ready)?.value
                         ?.takeIf { it.isNotEmpty() }
                         ?.let { albums ->
-                            item(key = "related") {
+                            item(key = "related", contentType = "shelf") {
                                 RelatedAlbums(
                                     title = relatedTitle,
                                     albums = albums,
@@ -746,7 +746,11 @@ private fun RelatedAlbums(title: String, albums: List<MaItem>, onClick: (MaItem)
             contentPadding = PaddingValues(horizontal = 20.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            items(albums, key = { it.provider + "|" + it.itemId }) { album ->
+            items(
+                albums,
+                key = { it.provider + "|" + it.itemId },
+                contentType = { "relatedAlbum" },
+            ) { album ->
                 Column(
                     Modifier.width(124.dp).clickable { onClick(album) },
                     verticalArrangement = Arrangement.spacedBy(TitleGap),

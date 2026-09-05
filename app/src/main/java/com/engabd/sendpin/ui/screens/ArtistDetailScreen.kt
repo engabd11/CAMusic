@@ -65,6 +65,7 @@ private fun SimilarArtists(artists: List<MaItem>, onClick: (MaItem) -> Unit) {
             itemsIndexed(
                 artists,
                 key = { i, a -> "similar:$i:${a.itemId}" },
+                contentType = { _, _ -> "similarArtist" },
             ) { index, artist ->
                 Column(
                     Modifier.width(84.dp).clickable { onClick(artist) },
@@ -220,7 +221,7 @@ fun ArtistDetailScreen(
 
                     // Biography, when the server has one (Navidrome's getArtistInfo2).
                     biography?.takeIf { it.isNotBlank() }?.let { bio ->
-                        item(key = "bio") { Biography(bio) }
+                        item(key = "bio", contentType = "bio") { Biography(bio) }
                     }
 
                     // ── Top tracks ───────────────────────────────────────────
@@ -291,7 +292,7 @@ fun ArtistDetailScreen(
                     (similar as? NowPlayingViewModel.Load.Ready)?.value
                         ?.takeIf { it.isNotEmpty() }
                         ?.let { artists ->
-                            item(key = "similar") {
+                            item(key = "similar", contentType = "shelf") {
                                 SimilarArtists(artists) { a ->
                                     onArtistClick(a.itemId, a.provider)
                                 }

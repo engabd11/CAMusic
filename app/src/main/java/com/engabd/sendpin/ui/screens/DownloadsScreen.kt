@@ -161,7 +161,11 @@ fun DownloadsScreen(
                     // the row vanished and everything below it was somewhere new on the
                     // next frame. `animateItem` gives all three the same treatment —
                     // the row fades where it stood, and the rest close the gap.
-                    items(jobs, key = { "job-${it.id}" }) { job ->
+                    items(
+                        jobs,
+                        key = { "job-${it.id}" },
+                        contentType = { "job" },
+                    ) { job ->
                         Box(Modifier.animateItem(placementSpec = Motion.itemPlacement())) {
                             JobRow(
                                 job = job,
@@ -209,7 +213,7 @@ fun DownloadsScreen(
                                 )
                             }
                         }
-                        item(key = "album-gap-${album.key}") { Spacer(Modifier.height(16.dp)) }
+                        item(key = "album-gap-${album.key}", contentType = "gap") { Spacer(Modifier.height(16.dp)) }
                     }
                 } else {
                     items(shown, key = { it.id }, contentType = { "track" }) { track ->
