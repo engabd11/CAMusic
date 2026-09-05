@@ -400,3 +400,45 @@ verified against master@6834e52). Hand to a Claude Code or Codex session with:
 `"Implement docs/plan/rhythm-lights-and-ambience-v2.md starting at Phase A1; follow
 docs/creative-light-shows.md conventions and the test standards in spatial-swell-implementation.md §8."`
 Phase D items are separable and safe to hand over independently.
+
+## Hue-spec audit (2026-09, against the official developer-program docs)
+
+A critical review of the direct-bridge light sync and ambience paths against Signify's
+published documents (Entertainment API, Hue System Performance, Using HTTPS, Color
+Conversion Formulas, Light Effects Experience Guide Book, EDK Effect Creation).
+
+**Conformant, verified in code.** DTLS 1.2 PSK with the mandated cipher suite
+(`HueDtlsClient`); `hue-application-id` via `/auth/v1` as the PSK identity
+(`HueBridgeClient.startStream`); mDNS-primary discovery with the cloud endpoint cached
+for its 15-minute limit, manual entry last, no SSDP; Signify root-CA pinning plus
+CN==bridgeid validation with no trust-on-first-use and no HTTP fallback; xy+brightness
+colour space, ≤20 channels per datagram, byte-exact HueStream v2.0 header; 9 s keepalive
+against the 10 s idle close; 60 fps stream with the effect rate capped at the documented
+12.5 Hz ceiling (`EffectRateLimiter`); WCAG flash budget plus red guard (`FieldSafety`);
+`FrameDelayQueue`'s 100 ms light-pipeline compensation matches the System Performance
+note's 55–95 ms measurements; per-show `FieldSafety` so the music rungs' relaxed limiter
+never leaks into ambience; bridge-initiated teardown never retried while network faults
+are, so the Hue app's stop button keeps working.
+
+**Already correct in code, where the initial audit assumed otherwise.** Per-light gamuts
+are parsed from `/clip/v2/resource/light` and fed per channel
+(`resolveChannelGamuts`), so no model-id gamut guessing exists; near lightning already
+restrikes (`ThunderstormScript`, 1–3 flickers at 30–90 ms for strikes under 1.5 km); the
+fireplace already carries hearth falloff. These were documented rather than changed.
+
+**Changed by this audit (PR feat/hue-sync-ambience-audit):**
+
+1. Encoder chromaticity state now crosses reconnects (`snapshotXy`/`restoreXy`) — a
+   rebuilt encoder used to let every channel's xy pop in one frame, the exact failure
+   the slew limiter exists to prevent.
+2. Fireplace cast lag: a pop's glint passes through a per-lamp one-pole whose cutoff
+   falls with distance from the hearth, so bounced light arrives spread instead of in
+   lockstep with the flame (Guide Book: brightness transitions slower than colour).
+3. Coastal rain added (`AmbienceEffect.COASTAL_RAIN`): the low steady archetype the set
+   lacked — cool breathing base an order of magnitude under the flash threshold, warm
+   headlight sweeps every 20–60 s, distant strikes with the propagation-delay coherence
+   intact at a third of the brightness.
+
+**Deliberately not changed:** the aurora's eventless design (the Guide Book's "nothing
+sudden", pinned by its own test); the 100 ms pipeline constant; the 60 fps / 12.5 Hz
+ceilings (hardware facts, not comfort settings).
