@@ -234,11 +234,26 @@ fun SettingsScreen(
                         }
                     }
                 } else {
-                    // One item per section: each is a page of cards, and a page is not
-                    // a list worth recycling. The index above is, and gets `items`.
-                    // Keyed on the section, not on `section.name`, so drilling from one
-                    // section into another — which the Libraries page can do — is a
-                    // transition rather than a redraw of a slot that never changed.
+                    // AUDIO is a plain stack of cards, so it is emitted as one item per
+                    // card: the host list composes and recycles lazily, which is what
+                    // the page's scroll was missing — the whole page inside a single
+                    // item measured in one frame, the heaviest on the screen. Other
+                    // sections keep the single-item page (Providers carries detail
+                    // pages, Light Sync and System are not card runs), and keys carry
+                    // the section name so drilling into another section replaces the
+                    // item set rather than redrawing slots that never changed. The
+                    // list's own 10dp spacing supplies the card gaps.
+                    if (section == SettingsSection.AUDIO) {
+                        item(key = "audio_output", contentType = "card") { OutputCard(settings, accent, scope, advanced) }
+                        item(key = "audio_loudness", contentType = "card") { LoudnessCard(settings, accent, scope) }
+                        item(key = "audio_continuous", contentType = "card") { ContinuousPlayCard(settings, accent, scope) }
+                        item(key = "audio_djradio", contentType = "card") { DjRadioSettingsCard(settings, scope) }
+                        item(key = "audio_driving", contentType = "card") { DrivingCard(settings, accent, scope) }
+                        item(key = "behavior_player", contentType = "card") { BehaviorPlayerCard(settings, accent, scope) }
+                        item(key = "behavior_hands", contentType = "card") { BehaviorHandsCard(settings, accent, scope) }
+                        item(key = "behavior_scans", contentType = "card") { BehaviorScansCard(settings, accent, scope, advanced) }
+                        if (advanced) item(key = "behavior_lyrics", contentType = "card") { BehaviorLyricsCard(settings, scope) }
+                    } else {
                     item(key = "section") {
                         AnimatedContent(
                             targetState = section,
@@ -257,12 +272,6 @@ fun SettingsScreen(
                                 detail = detail,
                                 onDetail = onDetail,
                             )
-
-                            SettingsSection.AUDIO -> {
-                                AudioSection(viewModel, settings, accent, scope, advanced)
-                                Spacer(Modifier.height(10.dp))
-                                BehaviorSection(settings, accent, scope, advanced)
-                            }
 
                             SettingsSection.LIGHTS_SYNC -> LightSyncSection(
                                 settings = settings,
@@ -287,8 +296,11 @@ fun SettingsScreen(
                                 onOpenDownloads = onOpenDownloads,
                                 onOpenStats = onOpenStats,
                             )
+
+                            else -> Unit
                         }
                         }
+                    }
                     }
                 }
             }

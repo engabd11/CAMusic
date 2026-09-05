@@ -5,6 +5,7 @@ import android.content.Intent
 import android.media.AudioManager
 import android.provider.Settings
 import androidx.compose.foundation.layout.*
+
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -41,6 +42,11 @@ import kotlinx.coroutines.launch
  * under it — sample rates next to ReplayGain next to a connection readout, and no
  * indication which of them applied to which backend. Split into the four questions a
  * listener actually asks, each one saying who it is for.
+ *
+ * Split into per-card composables the settings screen emits as individual list
+ * items, so the host list composes and recycles lazily instead of measuring the
+ * whole page in one frame. The list's own 10dp spacing supplies the gaps the old
+ * Column carried.
  */
 @Composable
 internal fun AudioSection(
@@ -79,7 +85,7 @@ internal fun AudioSection(
  * differently is worse than only one of them existing.
  */
 @Composable
-private fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineScope, advanced: Boolean) {
+internal fun OutputCard(settings: AppSettings, accent: Color, scope: CoroutineScope, advanced: Boolean) {
     val context = LocalContext.current
     val am = remember(context) { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
     val outputs = remember { AudioOutputs.list(am) }
@@ -445,7 +451,7 @@ private fun remoteChannels(channels: Int): String = when (channels) {
 // ── Loudness ──────────────────────────────────────────────────────────────
 
 @Composable
-private fun LoudnessCard(settings: AppSettings, accent: Color, scope: CoroutineScope) {
+internal fun LoudnessCard(settings: AppSettings, accent: Color, scope: CoroutineScope) {
     val mode by settings.replayGainMode.collectAsStateWithLifecycle(initialValue = ReplayGain.ALBUM)
 
     SettingsCard(
@@ -486,7 +492,7 @@ private fun LoudnessCard(settings: AppSettings, accent: Color, scope: CoroutineS
 // ── Between tracks ────────────────────────────────────────────────────────
 
 @Composable
-private fun ContinuousPlayCard(settings: AppSettings, accent: Color, scope: CoroutineScope) {
+internal fun ContinuousPlayCard(settings: AppSettings, accent: Color, scope: CoroutineScope) {
     val fade by settings.navFadeSeconds.collectAsStateWithLifecycle(initialValue = 0)
     val beatMatched by settings.beatMatchedCrossfade.collectAsStateWithLifecycle(initialValue = false)
 
@@ -560,7 +566,7 @@ private fun ContinuousPlayCard(settings: AppSettings, accent: Color, scope: Coro
  * shipping a DJ mode with a gap in it.
  */
 @Composable
-private fun DjRadioSettingsCard(settings: AppSettings, scope: CoroutineScope) {
+internal fun DjRadioSettingsCard(settings: AppSettings, scope: CoroutineScope) {
     val crossfade by settings.djRadioCrossfadeSeconds
         .collectAsStateWithLifecycle(initialValue = AppSettings.DEFAULT_DJ_CROSSFADE_S)
     val similarity by settings.djRadioSimilarity
