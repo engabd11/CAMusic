@@ -706,7 +706,8 @@ object WindowCenterPosition : PopupPositionProvider {
     )
 }
 
-/** A soft radial glow (the design's "bloom"). Place inside a Box behind content. */
+/**
+ * A soft radial glow (the design's "bloom"). Place inside a Box behind content. */
 @Composable
 fun Bloom(color: Color, size: Dp, x: Dp, y: Dp, alpha: Float = 0.5f) {
     Box(
@@ -718,6 +719,48 @@ fun Bloom(color: Color, size: Dp, x: Dp, y: Dp, alpha: Float = 0.5f) {
                 CircleShape,
             )
     )
+}
+
+/**
+ * Chameleon Canvas & Bloom: the album's colours bleeding across the player canvas.
+ *
+ * Painted *over* [MeltBackdrop] rather than under it. The backdrop is the cover
+ * blurred to 64dp and drowned in a scrim that reaches solid black from two-thirds
+ * of the way down — and the first cut of this effect painted its blooms behind
+ * that scrim, so switching the setting on changed nothing anyone could see. From
+ * over the scrim the same blooms are the room's light: a large wash of the album's
+ * primary swatch off the top-left, its companion off the top-right, and two faint
+ * pools low in the corners so the whole canvas reads as lit by the record rather
+ * than tinted at the top edge only.
+ *
+ * Never over the content: this is a sibling of the player column, drawn before it,
+ * so text and controls keep their contrast however bright the album is. Colours
+ * ride [Motion.effects()] so a track change melts the room to the new palette
+ * instead of snapping, and the level fades with [washDim] so an idle player keeps
+ * the canvas dark.
+ *
+ * Placed after the backdrop in the caller's [BoxScope] — `Box` children paint in
+ * declaration order, so "before the content" is the whole job.
+ */
+@Composable
+fun BoxScope.ChameleonBloom(palette: AlbumPalette, washDim: Float) {
+    val level = washDim.coerceIn(0f, 1f)
+    if (level <= 0f) return
+
+    // Palette colours animate rather than snap: this layer is the most exposed
+    // colour in the app — full-bleed, over the scrim — so a track change must
+    // melt, not flip.
+    val primary by animateColorAsState(
+        palette.swatch(0), Motion.effects(), label = "chameleonPrimary",
+    )
+    val secondary by animateColorAsState(
+        palette.swatch(1), Motion.effects(), label = "chameleonSecondary",
+    )
+
+    Bloom(primary, 540.dp, (-120).dp, (-180).dp, 0.50f * level)
+    Bloom(secondary, 460.dp, (-60).dp, (-40).dp, 0.34f * level)
+    Bloom(secondary, 420.dp, (-140).dp, 340.dp, 0.20f * level)
+    Bloom(primary, 380.dp, 40.dp, 320.dp, 0.24f * level)
 }
 
 /**
