@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.engabd.sendpin.audio.LocalDsp
@@ -2021,10 +2022,63 @@ class AppSettings(private val context: Context) {
         context.dataStore.edit { it[LIGHT_SYNC_PRESCAN] = on }
     }
 
+    // ── Rhythm Lights ────────────────────────────────────────────────────────
+
+    /**
+     * The player's tap-timing offset for the rhythm game, in milliseconds.
+     *
+     * Positive means the player's taps land late relative to the chart (touch
+     * latency, Bluetooth audio, a slow display), so the chart is judged against
+     * a clock shifted later by this much. Measured by the in-game calibration
+     * flow rather than guessed; 0 until then, which is correct for wired audio.
+     */
+    private val GAME_TIMING_OFFSET = intPreferencesKey("game_timing_offset_ms")
+
+    /** Tap-timing offset in ms. See the key's docs for the sign. */
+    val gameTimingOffsetMs: Flow<Int> = pref { it[GAME_TIMING_OFFSET] ?: 0 }
+
+    suspend fun setGameTimingOffsetMs(value: Int) {
+        context.dataStore.edit { it[GAME_TIMING_OFFSET] = value.coerceIn(-300, 300) }
+    }
+
+    /**
+     * Judgement-window difficulty: easy widens every window by 1.5x, normal is
+     * as shipped, expert narrows them to 2/3. The windows exist to absorb the
+     * tempo estimate's error and the player's own spread; a scan-backed chart
+     * is far more accurate than the old live estimate was, so expert is now a
+     * real option rather than a punishment.
+     */
+    private val GAME_DIFFICULTY = stringPreferencesKey("game_difficulty")
+
+    /** One of "easy", "normal", "expert". See the key's docs. */
+    val gameDifficulty: Flow<String> = pref { it[GAME_DIFFICULTY] ?: "normal" }
+
+    suspend fun setGameDifficulty(value: String) {
+        context.dataStore.edit {
+            it[GAME_DIFFICULTY] = if (value in GAME_DIFFICULTIES) value else "normal"
+        }
+    }
+
+    /**
+     * The haptics toggle. On by default: a tap's confirmation reaches the hand
+     * before the eye, and the light show — the other tactile channel — is not
+     * running on every device this game is played on.
+     */
+    private val GAME_HAPTICS = booleanPreferencesKey("game_haptics")
+
+    /** Haptic feedback on taps and judgement events. */
+    val gameHaptics: Flow<Boolean> = pref { it[GAME_HAPTICS] ?: true }
+
+    suspend fun setGameHaptics(on: Boolean) {
+        context.dataStore.edit { it[GAME_HAPTICS] = on }
+    }
+
+    /** Valid difficulty names, for validation on read as well as write. */
+    val GAME_DIFFICULTIES = setOf("easy", "normal", "expert")
+
     suspend fun setLightSyncPrescanWifiOnly(on: Boolean) {
         context.dataStore.edit { it[LIGHT_SYNC_PRESCAN_WIFI] = on }
     }
-
     suspend fun setLightSyncSpatial(on: Boolean) {
         context.dataStore.edit { it[LIGHT_SYNC_SPATIAL] = on }
     }

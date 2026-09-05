@@ -19,6 +19,8 @@ import com.engabd.sendpin.audio.StructureTracker
 import com.engabd.sendpin.audio.TempoTracker
 import com.engabd.sendpin.audio.TrackScan
 import com.engabd.sendpin.audio.TrackScanRepository
+import com.engabd.sendpin.game.GameBand
+import com.engabd.sendpin.game.GameChartSource
 import androidx.core.graphics.drawable.toBitmap
 import coil.imageLoader
 import coil.request.ImageRequest
@@ -455,6 +457,27 @@ class DirectLightSync(
     @Volatile private var gameMode = false
 
     /**
+     * The light engine's beat clock for the rhythm game, published each analysis
+     * frame beside [latestGrid]. The game charts against what the room is about
+     * to light — one clock, not two — and the null-grid case degrades to the
+     * game's own PLL without any special handling here.
+     *
+     * Volatile reference, immutable payload, never mutated in place: same
+     * discipline as [latestGrid].
+     */
+    @Volatile private var chartSource: GameChartSource? = null
+
+    /** The engine's beat clock for the rhythm game's chart, as of the last frame. */
+    fun gameChartSource(): GameChartSource? = chartSource
+
+    /**
+     * A stable identity for the track the room is currently lit by — the same key
+     * the scan store uses, so the game's records line up with the tracks people
+     * actually played, across backends. Null when nothing identifiable is playing.
+     */
+    fun currentGameTrackKey(): String? = scanKeyOf(currentTrack)
+
+    /**
      * How far open the game's gate is, and since when.
      *
      * A single envelope over the whole room rather than a per-lamp overlay, because
@@ -462,10 +485,25 @@ class DirectLightSync(
      * out untouched, so a kick lights the room the way a kick does and a hi-hat the
      * way a hi-hat does, scan and all. There is nothing here that needs to know
      * which lamps those are — the engine already decided.
+     *
+     * The gate is additionally **shaped** by the struck note's band (see
+     * [receiveGameHit]): low-band hits favour the floor lamps, high-band the
+     * ceiling, and a melody hit rotates colour rather than punching brightness —
+     * the room answers in the shape of the music.
      */
     @Volatile private var gateOpenedAtMs = 0L
     @Volatile private var gatePeak = 0f
     @Volatile private var gateHoldMs = 0f
+    @Volatile private var gateBand: GameBand = GameBand.FULL
+
+    /**
+     * The game's lamp classes, rebuilt with the room. Index 0 = bass-leaning
+     * lamps, 1 = top-leaning; a lamp's split is its height-band blend, the same
+     * arithmetic the engine's heightFreq path uses, so "bass lamps" means the
+     * same thing here as it does in the show.
+     */
+    private var gameBassLamps: Map<Int, Float> = emptyMap()
+    private var gameTopLamps: Map<Int, Float> = emptyMap()
 
     /** What shape the lamps are in, cached alongside [channels]. */
     private var roomTopology: RoomTopology = RoomTopology.CLUSTER
@@ -836,6 +874,24 @@ class DirectLightSync(
             roomPositions = normalizePositions(channels)
             roomTopology = classifyTopology(channels)
 
+            // The game's lamp classes: each lamp's height-band blend, the same
+            // arithmetic the engine's heightFreq path uses. Rebuilt here because
+            // the lamps do not move while a session is up — the same argument
+            // roomPositions makes.
+            val bassLamps = HashMap<Int, Float>(channels.size)
+            val topLamps = HashMap<Int, Float>(channels.size)
+            for (ch in channels) {
+                val nz = roomPositions[ch.channelId]?.z ?: 0.5f
+                val lower = heightBandLower(nz)
+                val frac = heightBandFrac(nz)
+                // Bass weight: 1.0 pure sub_bass, 0.0 pure high, blended between.
+                val bassW = 1f - (lower + frac) / (HEIGHT_BANDS.size - 1).coerceAtLeast(1)
+                bassLamps[ch.channelId] = bassW.coerceIn(0f, 1f)
+                topLamps[ch.channelId] = (1f - bassW).coerceIn(0f, 1f)
+            }
+            gameBassLamps = bassLamps
+            gameTopLamps = topLamps
+
             // 2. Start the stream on the bridge (PUT action:start).
             // Passing our own application id lets the bridge tell "someone else has
             // this area" from "we already do" — a reconnect must still reclaim it.
@@ -1193,6 +1249,15 @@ class DirectLightSync(
         latestGesture = gest
         latestFrame = published
         latestFrameAt = System.nanoTime()
+        // The rhythm game charts against the very grid this frame will light up.
+        // Published alongside the volatile snapshot trio with the same discipline:
+        // a reference assignment, read by the game on the main thread, never
+        // mutated in place afterwards (BeatGrid and TrackScan are immutable).
+        chartSource = GameChartSource(
+            grid = grid,
+            scan = if (mapCommitted == true) activeScan else null,
+            frameTAudioS = if (pos.isNaN()) frame.tAudio else pos,
+        )
     }
 
     /**
@@ -2303,6 +2368,13 @@ class DirectLightSync(
      * show becomes, which is a reward that costs nothing to explain because it is
      * simply more of the thing the player already wanted.
      *
+     * [band] shapes *where* in the room the answer lands. A bass note favours the
+     * floor lamps, a hat the ceiling, a snare the whole room, and a melody note is
+     * a colour rotation with only a gentle brightness lift — the Hue guide book's
+     * rule that a colour transition may be quicker than a brightness one, applied
+     * to the reward. The previous hit's gate is never weakened: a later hit can
+     * only widen the shape.
+     *
      * Not scaled by the brightness ceiling. The engine has already applied that to
      * the frame this gate multiplies, and scaling here as well is what made the
      * first version dim the whole room instead of only its floor.
@@ -2310,7 +2382,7 @@ class DirectLightSync(
      * Called from the main thread; the fields are volatile and the render loop only
      * reads them, so there is nothing to lock.
      */
-    fun receiveGameHit(strength: Float, combo: Int) {
+    fun receiveGameHit(strength: Float, combo: Int, band: GameBand = GameBand.FULL) {
         val peak = strength.coerceIn(0f, 1f)
         if (peak <= 0f) return
         // Never let a new hit drop the room below where the last one has it. A weak
@@ -2319,6 +2391,95 @@ class DirectLightSync(
         gatePeak = maxOf(gameGate(), peak)
         gateHoldMs = GATE_HOLD_MS + (combo.coerceAtMost(GATE_HOLD_COMBO_CAP) * GATE_HOLD_PER_COMBO_MS)
         gateOpenedAtMs = System.currentTimeMillis()
+        gateBand = band
+    }
+
+    /**
+     * The sympathy floor: how much of the gate a lamp outside the hit's band still
+     * gets. Not zero — a room that goes black except for one lamp reads as a fault,
+     * and peripheral-vision flashes want company — but well under the band's own.
+     */
+    private val bandSympathy = 0.35f
+
+    /** Melody hits lift brightness by this much at most; the reward is the colour. */
+    private val colorBandBrightness = 0.6f
+
+    /** How far a melody hit rotates the room's hue, as a fraction of a turn. */
+    private val colorBandShift = 0.08f
+
+    /** Reusable HSV buffer for the melody lane's colour rotation, render thread only. */
+    private val gameHsv = FloatArray(3)
+
+    /**
+     * How strongly this lamp participates in [band]'s answer, 0..1.
+     *
+     * FULL is every lamp. BASS/TOP use the lamp's height-band blend computed once
+     * per session ([gameBassLamps]/[gameTopLamps]) — the same stacking the engine
+     * already performs, so a kick and the engine's own bass response agree on which
+     * lamps are low. Flat Hue floor plans put every lamp at the same height, in
+     * which case every lamp is an equal mix and the band degrades gracefully toward
+     * "the whole room, gently shaped".
+     */
+    private fun bandWeight(id: Int, band: GameBand): Float = when (band) {
+        GameBand.FULL -> 1f
+        GameBand.BASS -> gameBassLamps[id] ?: 0.5f
+        GameBand.TOP -> gameTopLamps[id] ?: 0.5f
+        GameBand.COLOR -> 1f
+    }
+
+    /**
+     * Hold the room at a dim floor, and open to the full show where the player has
+     * earned it — shaped by the struck note's band.
+     *
+     * The floor is a *floor*, not a ceiling: it lifts whatever the show is doing up
+     * to a dim minimum so the room is never black, and it never holds anything down.
+     * The gate above it is a plain multiplier on the engine's own frame, so at full
+     * open this returns the frame unchanged — the reaction is the show's, at the
+     * show's brightness, with the user's ceiling already applied to it upstream.
+     *
+     * Componentwise `max` rather than a blend toward a floor colour: a blend would
+     * wash the show's colours toward neutral in proportion to how dim they are,
+     * which is exactly backwards for a deep-blue verse.
+     */
+    private fun applyGameGate(field: Map<Int, Rgb>): Map<Int, Rgb> {
+        val gate = gameGate()
+        // Kept under the user's ceiling: a room limited to 5% must not have a 6%
+        // floor propping it up. Otherwise absolute, so the floor is the same dim
+        // room whatever the show is allowed to peak at.
+        val floor = minOf(GAME_FLOOR_LEVEL, layerBrightness)
+        val band = gateBand
+        val isColor = band == GameBand.COLOR
+        // A melody hit rotates hue rather than punching brightness. The shift is
+        // fixed (not scaled by the gate) so the sweep reads the same for a Good as
+        // for a Perfect — what scales is only how bright it rides.
+        val hueShift = if (isColor) colorBandShift else 0f
+        val out = HashMap<Int, Rgb>(field.size)
+        for ((id, c) in field) {
+            val w = bandWeight(id, band)
+            // Sympathy: lamps outside the band still get the gate, at a floor of
+            // the band's weight — the room moves together, just less so.
+            val shaped = if (isColor) {
+                colorBandBrightness
+            } else {
+                maxOf(w, bandSympathy)
+            }
+            var r = c.first * gate * shaped
+            var g = c.second * gate * shaped
+            var b = c.third * gate * shaped
+            if (hueShift > 0f && gate > 0.05f) {
+                rgbToHsvInto(c, gameHsv)
+                val shifted = hsvToRgb(wrap1(gameHsv[0] + hueShift), gameHsv[1], gameHsv[2])
+                r = shifted.first * gate * shaped
+                g = shifted.second * gate * shaped
+                b = shifted.third * gate * shaped
+            }
+            out[id] = Rgb(
+                maxOf(floor * FLOOR_TINT_R, r),
+                maxOf(floor * FLOOR_TINT_G, g),
+                maxOf(floor * FLOOR_TINT_B, b),
+            )
+        }
+        return out
     }
 
     /**
@@ -2343,37 +2504,6 @@ class DirectLightSync(
                 if (d >= 1f) 0f else peak * (1f - d) * (1f - d)
             }
         }
-    }
-
-    /**
-     * Hold the room at a dim floor, and open to the full show where the player has
-     * earned it.
-     *
-     * The floor is a *floor*, not a ceiling: it lifts whatever the show is doing up
-     * to a dim minimum so the room is never black, and it never holds anything down.
-     * The gate above it is a plain multiplier on the engine's own frame, so at full
-     * open this returns the frame unchanged — the reaction is the show's, at the
-     * show's brightness, with the user's ceiling already applied to it upstream.
-     *
-     * Componentwise `max` rather than a blend toward a floor colour: a blend would
-     * wash the show's colours toward neutral in proportion to how dim they are,
-     * which is exactly backwards for a deep-blue verse.
-     */
-    private fun applyGameGate(field: Map<Int, Rgb>): Map<Int, Rgb> {
-        val gate = gameGate()
-        // Kept under the user's ceiling: a room limited to 5% must not have a 6%
-        // floor propping it up. Otherwise absolute, so the floor is the same dim
-        // room whatever the show is allowed to peak at.
-        val floor = minOf(GAME_FLOOR_LEVEL, layerBrightness)
-        val out = HashMap<Int, Rgb>(field.size)
-        for ((id, c) in field) {
-            out[id] = Rgb(
-                maxOf(floor * FLOOR_TINT_R, c.first * gate),
-                maxOf(floor * FLOOR_TINT_G, c.second * gate),
-                maxOf(floor * FLOOR_TINT_B, c.third * gate),
-            )
-        }
-        return out
     }
 
 

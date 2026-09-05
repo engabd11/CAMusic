@@ -16,6 +16,7 @@ import com.engabd.sendpin.hue.ambience.VoicePool
 import com.engabd.sendpin.hue.ambience.panGains
 import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.exp
 import kotlin.math.sin
 
@@ -198,9 +199,13 @@ class LightTrainScript : AmbienceScript {
                 sin(2f * PI.toFloat() * head)
             } else head * 2f - 1f
             panGains(panPos, pan)
-            // Doppler: a little brighter coming, duller going.
-            val approaching = if (head < 0.5f) 1f else -1f
-            rumbleLp.setCutoff(150f + 45f * approaching, sampleRate)
+            // Doppler: a little brighter coming, duller going. A continuous function
+            // of the head's position, not the binary step it was - the step fired the
+            // low-pass coefficient across the divide in one sample, and a jump in a
+            // filter's cutoff is audible as a click exactly at the room's centre,
+            // every pass, forever. The cosine glides over the same range.
+            val doppler = cos(2f * PI.toFloat() * head)      // +1 approaching, -1 receding
+            rumbleLp.setCutoff(150f + 45f * doppler, sampleRate)
             val body = rumbleLp.lp(rumble.next()) * 2.4f
             val hiss = airLp.hp(air.next()) * 0.10f * intensity
             val s = (body + hiss) * level
@@ -220,6 +225,7 @@ class LightTrainScript : AmbienceScript {
             else e.azimuth * 2f - 1f
             panGains(panPos, pan)
             val v = voices.voiceFor(e) { it.reset() }
+            val entry = voices.entryGain(v, frames)
             v.filter.set(320f + 900f * e.gain, 6f, sampleRate)
             var j = 0
             while (j < frames) {
@@ -227,7 +233,7 @@ class LightTrainScript : AmbienceScript {
                 if (age >= 0f) {
                     val env = e.env.at(age)
                     if (env > 0f) {
-                        val s = v.filter.bp(v.noise.bipolar()) * env * e.gain * 0.35f
+                        val s = v.filter.bp(v.noise.bipolar()) * env * e.gain * entry * 0.35f
                         out[j * 2] += s * pan[0]
                         out[j * 2 + 1] += s * pan[1]
                     }

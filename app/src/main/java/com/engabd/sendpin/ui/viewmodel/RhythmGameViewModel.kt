@@ -6,8 +6,12 @@ import androidx.lifecycle.AndroidViewModel
 import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.audio.AnalysisFrame
 import com.engabd.sendpin.game.GameNote
+import com.engabd.sendpin.game.GameBand
 import com.engabd.sendpin.game.Judgement
 import com.engabd.sendpin.game.NoteGenerator
+import com.engabd.sendpin.game.bandOf
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -38,6 +42,28 @@ data class RhythmHud(
     val locked: Boolean = false,
     val bpm: Float = 0f,
 )
+
+/**
+ * One track's best rhythm-game run, persisted as a JSON map keyed by the scan
+ * store's track key (`TrackScanRepository.keyFor`), so records follow the track
+ * across backends. [bestScore] is what a "new record" is judged on.
+ */
+@kotlinx.serialization.Serializable
+data class GameRecord(
+    val bestScore: Int = 0,
+    val bestCombo: Int = 0,
+    val bestAccuracy: Float = 0f,
+    val plays: Int = 0,
+)
+
+/** Pure merge of a finished run into a track's record — unit-testable, no DataStore. */
+internal fun mergeRecord(old: GameRecord?, score: Int, combo: Int, accuracy: Float?): GameRecord =
+    GameRecord(
+        bestScore = maxOf(old?.bestScore ?: 0, score),
+        bestCombo = maxOf(old?.bestCombo ?: 0, combo),
+        bestAccuracy = maxOf(old?.bestAccuracy ?: 0f, accuracy ?: 0f),
+        plays = (old?.plays ?: 0) + 1,
+    )
 
 /**
  * Drives the rhythm game.
@@ -74,16 +100,54 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
     private val _notes = MutableStateFlow<List<GameNote>>(emptyList())
     val notes: StateFlow<List<GameNote>> = _notes.asStateFlow()
 
+    /**
+     * False while the active backend cannot measure an output latency (its
+     * AudioLead is null — capture and cast feeds), meaning the chart runs in
+     * analysis time and the whole game is shifted by the real latency. The
+     * screen shows a calibrate hint instead of leaving the player to wonder.
+     */
+    private val _leadKnown = MutableStateFlow(true)
+    val leadKnown: StateFlow<Boolean> = _leadKnown.asStateFlow()
+
     private val _hud = MutableStateFlow(RhythmHud())
     val hud: StateFlow<RhythmHud> = _hud.asStateFlow()
 
     private val _judgement = MutableStateFlow<JudgementEvent?>(null)
     val judgement: StateFlow<JudgementEvent?> = _judgement.asStateFlow()
 
+    /**
+     * The finished run, published on [finish] for the results sheet. Null while
+     * playing. Carries the record it merged into, so the screen can show a
+     * new-record badge without reading the store itself.
+     */
+    data class RunResult(
+        val hud: RhythmHud,
+        val record: GameRecord,
+        val newRecord: Boolean,
+        val trackKey: String?,
+    )
+
+    private val _result = MutableStateFlow<RunResult?>(null)
+    val result: StateFlow<RunResult?> = _result.asStateFlow()
+
+    /** The current track's persisted record, or null; read once at start. */
+    private var currentRecord: GameRecord? = null
+    private var currentTrackKey: String? = null
+
     /** How far notes fall before the line, so the UI can place them. */
     val lookAheadMs: Long get() = generator.lookAheadMs
 
-    private var eventId = 0L
+    /**
+     * The tap-timing offset, in ms, and the difficulty scale — both read from
+     * settings and applied at once, so a change lands on the very next frame
+     * rather than the next session. Positive offset = the player's taps arrive
+     * late, so the judged clock runs that much later.
+     */
+    private var timingOffsetMs = 0
+    private var difficultyScale = 1f
+    private var hapticsOn = true
+
+    private val eventId = java.util.concurrent.atomic.AtomicLong()
     private var publishedRevision = -1
     private var notesReached = 0
     private var notesStruck = 0
@@ -107,9 +171,107 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
         notesReached = 0
         notesStruck = 0
         _judgement.value = null
+        _result.value = null
         _hud.value = RhythmHud()
+        currentTrackKey = runCatching { directLightSync.currentGameTrackKey() }.getOrNull()
+        loadRecordsIfNeeded()
+        currentRecord = records[currentTrackKey]
         runCatching { directLightSync.setGameMode(true) }
     }
+
+    /**
+     * End the run and publish its result for the results sheet.
+     *
+     * Separate from [stop]: the screen calls this when the player backs out or
+     * the track ends, and it merges the run into the track's persisted record
+     * before the room comes back up. A run with nothing scored publishes nothing.
+     */
+    fun finish() {
+        if (!running) return
+        val hud = _hud.value
+        if (hud.score > 0 && currentTrackKey != null) {
+            val previousBest = currentRecord?.bestScore ?: 0
+            val merged = mergeRecord(currentRecord, hud.score, hud.bestCombo, hud.accuracy)
+            records = records + (currentTrackKey!! to merged)
+            persistRecords()
+            _result.value = RunResult(hud, merged, hud.score > previousBest, currentTrackKey)
+        }
+        stop()
+    }
+
+    /**
+     * The per-track records, keyed by scan key — a JSON map in SharedPreferences.
+     * Small by construction: one record per track actually played, four numbers
+     * each, so a thousand tracks is ~100 KB and only grows by what was played.
+     */
+    private var records: Map<String, GameRecord> = emptyMap()
+    private var recordsLoaded = false
+
+    private fun loadRecordsIfNeeded() {
+        if (recordsLoaded) return
+        recordsLoaded = true
+        runCatching {
+            val prefs = getApplication<Application>()
+                .getSharedPreferences("game_records", android.content.Context.MODE_PRIVATE)
+            val json = prefs.getString("records", null) ?: return
+            records = kotlinx.serialization.json.Json.decodeFromString(
+                            MapSerializer(String.serializer(), GameRecord.serializer()),
+                            json,
+                        )
+        }
+    }
+
+    private fun persistRecords() {
+        if (records.isEmpty()) return
+        runCatching {
+            val prefs = getApplication<Application>()
+                .getSharedPreferences("game_records", android.content.Context.MODE_PRIVATE)
+            val format = kotlinx.serialization.json.Json
+            prefs.edit()
+                            .putString("records", format.encodeToString(
+                                MapSerializer(String.serializer(), GameRecord.serializer()),
+                                records,
+                            ))
+                            .apply()
+        }
+    }
+
+    /**
+     * Fold in one analysis frame.
+     *
+     * [leadMs] is how long until this frame's audio is audible — see [NoteGenerator]
+     * for why the chart is written in audible time rather than analysis time.
+     *
+     * [leadKnown] is false when the backend could not measure an output latency at
+     * all (capture/cast feeds report a null AudioLead), in which case the chart
+     * silently runs in analysis time. Surfaced so the screen can tell the player
+     * to calibrate rather than let the game feel systematically off with no
+     * explanation.
+     */
+    fun onFrame(frame: AnalysisFrame, leadMs: Long, leadKnown: Boolean = leadMs != 0L) {
+        if (!running) return
+        if (leadKnown != _leadKnown.value) _leadKnown.value = leadKnown
+        generator.onFrame(frame, nowMs(), leadMs, directLightSync.gameChartSource())
+        publish()
+    }
+
+    /**
+     * [offset] shifts the judged clock; [scale] widens or narrows the judgement
+     * windows; [haptics] gates the vibration channel. All three are settings the
+     * screen (or a calibration flow) may change mid-session, so they are plain
+     * fields applied from the next frame on rather than constructor state.
+     */
+    fun applyTiming(offsetMs: Int, scale: Float, haptics: Boolean) {
+        timingOffsetMs = offsetMs.coerceIn(-300, 300)
+        difficultyScale = scale.coerceIn(0.4f, 2f)
+        hapticsOn = haptics
+    }
+
+    /** The offset currently applied, for the calibration flow's read-back. */
+    val appliedTimingOffsetMs: Int get() = timingOffsetMs
+
+    /** The difficulty scale currently applied. */
+    val appliedDifficultyScale: Float get() = difficultyScale
 
     /** Leave game mode and hand the room back to the music. */
     fun stop() {
@@ -125,18 +287,6 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
         // worst possible failure for this feature.
         stop()
         super.onCleared()
-    }
-
-    /**
-     * Fold in one analysis frame.
-     *
-     * [leadMs] is how long until this frame's audio is audible — see [NoteGenerator]
-     * for why the chart is written in audible time rather than analysis time.
-     */
-    fun onFrame(frame: AnalysisFrame, leadMs: Long) {
-        if (!running) return
-        generator.onFrame(frame, nowMs(), leadMs)
-        publish()
     }
 
     /**
@@ -157,9 +307,12 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
         hud = hud.copy(combo = 0, multiplier = 1, missed = hud.missed + missed.size)
         _hud.value = hud.withAccuracy()
         // One event for the run, not one per note: four notes expiring on the same
-        // frame is one mistake, and four "Miss" banners stacked on top of each other
-        // reads as a bug.
-        emit(Judgement.MISS, missed.first().lane, 0, now)
+        // frame is one mistake, and four "Miss" banners stacked on top of each
+        // other reads as a bug. The run is attributed to the lane of the note
+        // closest to the line — the one the player was most likely watching —
+        // rather than an arbitrary first element.
+        val nearest = missed.minByOrNull { it.triggerTimeMs }
+        emit(Judgement.MISS, nearest?.lane ?: -1, 0, now)
         publish()
     }
 
@@ -174,18 +327,26 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
      * A tap that *does* find a note always scores, because the window
      * [NoteGenerator.take] searches is the widest scoring window. A note the player
      * was too late for is not taken here at all — it is reaped by [tick] as a miss.
+     *
+     * The tap is judged against `now + timingOffsetMs`: the calibration offset is
+     * the player's own measured touch/output latency, and shifting the *judged*
+     * clock by it centres every window on how the player actually experiences the
+     * beat. The chart itself is untouched — a shifted chart would misplace notes
+     * relative to the lights as well.
      */
     fun tap(lane: Int, now: Long): Judgement? {
         if (!running) return null
-        val note = generator.take(lane, now) ?: return null
-        val delta = kotlin.math.abs(note.triggerTimeMs - now)
-        val judgement = Judgement.forDelta(delta)
+        val judgedNow = now + timingOffsetMs
+        val note = generator.take(lane, judgedNow, difficultyScale) ?: return null
+        val delta = kotlin.math.abs(note.triggerTimeMs - judgedNow)
+        val judgement = Judgement.forDelta(delta, difficultyScale)
         notesReached++
         notesStruck++
 
         var hud = _hud.value
         val combo = hud.combo + 1
         val multiplier = multiplierFor(combo)
+        val steppedUp = multiplier > hud.multiplier
         hud = hud.copy(
             score = hud.score + judgement.points * multiplier,
             combo = combo,
@@ -197,9 +358,32 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
         )
         _hud.value = hud.withAccuracy()
         emit(judgement, lane, combo, now)
+        if (hapticsOn) haptics(judgement, steppedUp)
         flashRoom(note, judgement, combo)
         publish()
         return judgement
+    }
+
+    /**
+     * The haptic channel: a tap's confirmation reaches the hand before the eye.
+     * Sharp for a Perfect, soft for the rest, a double pulse when the multiplier
+     * steps up — the one reward that works with no bridge and no screen attention.
+     */
+    private fun haptics(judgement: Judgement, steppedUp: Boolean) {
+        val vibrator = getApplication<Application>().getSystemService(android.content.Context.VIBRATOR_SERVICE)
+            as? android.os.Vibrator ?: return
+        if (!vibrator.hasVibrator()) return
+        runCatching {
+            when {
+                steppedUp -> vibrator.vibrate(
+                    android.os.VibrationEffect.createWaveform(longArrayOf(0, 24, 60, 24), -1),
+                )
+                judgement == Judgement.PERFECT -> vibrator.vibrate(
+                    android.os.VibrationEffect.createWaveform(longArrayOf(0, 28), -1),
+                )
+                else -> vibrator.vibrate(android.os.VibrationEffect.createOneShot(12, 96))
+            }
+        }
     }
 
     /**
@@ -216,6 +400,10 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
      * moves that a little as well: a note the music barely made was never going to
      * pay out much.
      *
+     * The note's band decides *where* in the room the answer lands — bass on the
+     * floor, hats at the ceiling, the melody lane as a colour sweep — so the room
+     * answers in the shape of the music rather than as one undifferentiated flash.
+     *
      * Best-effort by design: the game is playable with no bridge paired at all, and
      * a light that cannot be reached must not cost the player a note.
      */
@@ -224,6 +412,7 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
             directLightSync.receiveGameHit(
                 strength = (judgement.points / 100f) * (0.7f + note.intensity * 0.3f),
                 combo = combo,
+                band = bandOf(note.kind),
             )
         }
     }
@@ -250,7 +439,7 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun emit(judgement: Judgement, lane: Int, comboAfter: Int, atMs: Long) {
-        _judgement.value = JudgementEvent(++eventId, judgement, lane, comboAfter, atMs)
+        _judgement.value = JudgementEvent(eventId.incrementAndGet(), judgement, lane, comboAfter, atMs)
     }
 
     private fun RhythmHud.withAccuracy(): RhythmHud =

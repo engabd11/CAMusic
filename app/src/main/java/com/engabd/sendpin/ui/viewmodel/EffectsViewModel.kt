@@ -217,6 +217,7 @@ class EffectsViewModel(app: Application) : AndroidViewModel(app) {
 
             val mode = settings.effectsSoundMode.first()
             val vol = settings.effectsVolume.first() / 100f
+            liveLevel = vol
             val newActive = buildActiveAudio(app, effect, mode, vol)
             audio.install(newActive)
 
@@ -233,7 +234,18 @@ class EffectsViewModel(app: Application) : AndroidViewModel(app) {
                 },
                 // A nav prompt should duck the sound, not end the show. The lights
                 // are the point; the audio accompanies them.
-                onDuck = { ducking -> audio.setVolume(if (ducking) vol * 0.2f else vol) },
+                //
+                // The duck level is the *current* level, not `vol`, which is what the
+                // slider said when the show started. Capturing it here meant: duck,
+                // drag the level slider, unduck - and the volume snapped back to the
+                // drag's start value, silently discarding what the user had chosen.
+                // duckLevel is a plain volatile mirror kept in step by setVolume()
+                // below, so the focus listener - which is an ordinary callback on a
+                // binder thread, not a coroutine - reads it with no suspension.
+                onDuck = { ducking ->
+                    val now = if (ducking) liveLevel * 0.2f else liveLevel
+                    audio.setVolume(now)
+                },
             )
 
             // Exactly one of these is ever non-null, and which one decides what the
@@ -363,8 +375,19 @@ class EffectsViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             settings.setEffectsVolume(v)
             audio.setVolume(v / 100f)
+            // The duck mirror: whatever the slider last set is what un-ducking
+            // restores, however long the show has been running.
+            liveLevel = v / 100f
         }
     }
+
+    /**
+     * The listener's chosen level, mirrored out of [setVolume] so the audio-focus
+     * listener can read it without suspending. Initialised from the persisted
+     * setting at show start, which is exactly what the old captured `vol` was -
+     * the difference is that this one keeps moving when the slider does.
+     */
+    @Volatile private var liveLevel: Float = 0.7f
 
     fun setSleepMinutes(m: Int) {
         viewModelScope.launch {

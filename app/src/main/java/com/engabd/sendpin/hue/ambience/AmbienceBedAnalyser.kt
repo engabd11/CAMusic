@@ -100,7 +100,17 @@ class BedOnset {
  * room should draw is the clap's own envelope relative to its own peak. Conflating them
  * gave a room that either flashed at rain or dimmed through the middle of a roll.
  */
-class AmbienceBedAnalyser {
+class AmbienceBedAnalyser(
+    /**
+     * One analysis hop, in seconds.
+     *
+     * The tap's hop is a shared constant today, so the default is exactly right;
+     * taking it as a parameter is what stops every timing constant below
+     * (confirmation lag, back-dating) silently going wrong the day the hop
+     * changes. The session passes what its analysis source actually reports.
+     */
+    private val hopS: Double = 441.0 / 22_050.0,
+) {
 
     private val sample = BedSample()
     private val onset = BedOnset()
@@ -162,17 +172,17 @@ class AmbienceBedAnalyser {
         if (lowBand.fired()) {
             onset.low = true
             onset.lowStrength = lowBand.strength()
-            onset.atS = atS - lowBand.startedAgoS()
+            onset.atS = atS - lowBand.startedAgoS(hopS)
         }
         if (broad.fired()) {
             onset.broadband = true
             onset.broadbandStrength = broad.strength()
-            onset.atS = atS - broad.startedAgoS()
+            onset.atS = atS - broad.startedAgoS(hopS)
         }
         if (highBand.fired()) {
             onset.high = true
             onset.highStrength = highBand.strength()
-            onset.atS = atS - highBand.startedAgoS()
+            onset.atS = atS - highBand.startedAgoS(hopS)
         }
 
         return s to onset
@@ -308,7 +318,7 @@ class AmbienceBedAnalyser {
          * known exactly, so the event can be stamped where it happened rather than
          * where it was noticed.
          */
-        fun startedAgoS(): Double = CONFIRM_HOPS * HOP_S + SMOOTH_LAG_S
+        fun startedAgoS(hopS: Double): Double = CONFIRM_HOPS * hopS + SMOOTH_LAG_S
 
         /** How big the event was, 0..1, from how far over the floor it went. */
         fun strength() = ((peakRatio - TRIGGER_RATIO) / STRENGTH_SPAN).coerceIn(0f, 1f)
@@ -367,11 +377,8 @@ class AmbienceBedAnalyser {
          */
         const val CONFIRM_HOPS = 3
 
-        /** One analysis hop, in seconds. ~20 ms; see `ANALYSIS_HOP`. */
-        const val HOP_S = 441.0 / 22_050.0
-
         /** Group delay of the smoothing filter above, ~one hop at SMOOTH = 0.45. */
-        const val SMOOTH_LAG_S = 0.022
+        private const val SMOOTH_LAG_S = 0.022
 
         /** Ratio over the trigger at which an event counts as being as big as they get. */
         const val STRENGTH_SPAN = 1.4f

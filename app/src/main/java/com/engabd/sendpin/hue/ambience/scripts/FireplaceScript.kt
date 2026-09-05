@@ -121,6 +121,11 @@ class FireplaceScript : AmbienceScript {
 
     override fun bindBed(bed: AmbienceBedTrack?) { this.recording = bed }
 
+    /** The bed jumped: forget the previous pass's last pop. */
+    override fun onBedReset() {
+        lastPopS = Double.NaN
+    }
+
     /** A spit in the recording throws a spark off the embers. */
     override fun react(sample: BedSample, onset: BedOnset, emit: (AmbienceEvent) -> Unit) {
         if (!onset.high) return
@@ -289,6 +294,7 @@ class FireplaceScript : AmbienceScript {
             // No block-boundary skip: it would make the shared voices' state depend
             // on the buffer size. Gated per sample below instead.
             val v = voices.voiceFor(e) { it.reset() }
+            val entry = voices.entryGain(v, frames)
             v.filter.set(700f + 2200f * e.timbre, 4.5f, sampleRate)
             var j = 0
             while (j < frames) {
@@ -296,7 +302,8 @@ class FireplaceScript : AmbienceScript {
                 if (age >= 0f) {
                     val env = e.env.at(age)
                     if (env > 0f) {
-                        val s = v.filter.bp(v.noise.bipolar()) * env * e.gain * 0.5f
+                        // entry: the de-click ramp on a freshly recycled voice.
+                        val s = v.filter.bp(v.noise.bipolar()) * env * e.gain * entry * 0.5f
                         out[j * 2] += s * pan[0]
                         out[j * 2 + 1] += s * pan[1]
                     }

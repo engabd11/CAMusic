@@ -42,6 +42,7 @@ import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.game.GameNote
 import com.engabd.sendpin.game.Judgement
 import com.engabd.sendpin.ui.design.LocalAccent
+import com.engabd.sendpin.ui.design.Motion
 import com.engabd.sendpin.ui.design.TitleGap
 import com.engabd.sendpin.ui.design.navBarInset
 import com.engabd.sendpin.ui.theme.AppFont
@@ -50,6 +51,7 @@ import com.engabd.sendpin.ui.theme.TextFaint
 import com.engabd.sendpin.ui.theme.TextMuted
 import com.engabd.sendpin.ui.theme.TextPrimary
 import com.engabd.sendpin.ui.viewmodel.RhythmGameViewModel
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlin.math.abs
@@ -94,6 +96,7 @@ import kotlin.math.sin
 @Composable
 fun RhythmGameScreen(
     onBack: () -> Unit,
+    onOpenCalibration: () -> Unit = {},
     viewModel: RhythmGameViewModel = viewModel(),
 ) {
     val context = LocalContext.current
@@ -108,6 +111,31 @@ fun RhythmGameScreen(
     DisposableEffect(viewModel) {
         viewModel.start()
         onDispose { viewModel.stop() }
+    }
+
+    // Finish (persist the run, publish the results) on the back press, before
+    // the composable leaves — the onDispose path is the emergency exit that
+    // must not lose the score to a process-level navigation.
+    val back = {
+        viewModel.finish()
+        onBack()
+    }
+
+    // Timing settings feed the judged clock: offset, difficulty scale, haptics.
+    // Collected for the screen's lifetime so a mid-session change applies from
+    // the next tap rather than the next launch.
+    LaunchedEffect(viewModel) {
+        val app2 = context.applicationContext as SendpinApp
+        val s = com.engabd.sendpin.data.AppSettings(app2)
+        combine(
+            s.gameTimingOffsetMs,
+            s.gameDifficulty,
+            s.gameHaptics,
+        ) { offset, difficulty, haptics ->
+            Triple(offset, com.engabd.sendpin.game.DIFFICULTY_SCALE[difficulty] ?: 1f, haptics)
+        }.collect { (offset, scale, haptics) ->
+            viewModel.applyTiming(offset, scale, haptics)
+        }
     }
 
     DisposableEffect(Unit) {
@@ -135,8 +163,13 @@ fun RhythmGameScreen(
                     // audible time — see NoteGenerator — so this is the one number
                     // that decides whether the hit line lands on the beat or behind
                     // it.
-                    val lead = app.activeLightSyncSource.value.lead.leadMs?.toLong() ?: 0L
-                    viewModel.onFrame(frame, lead)
+                    val source = app.activeLightSyncSource.value
+                    val lead = source.lead
+                    viewModel.onFrame(
+                        frame,
+                        lead.leadMs?.toLong() ?: 0L,
+                        leadKnown = lead.leadMs != null,
+                    )
                 }
         }
     }
@@ -146,6 +179,7 @@ fun RhythmGameScreen(
     val notesState = viewModel.notes.collectAsStateWithLifecycle()
     val hud by viewModel.hud.collectAsStateWithLifecycle()
     val judgement by viewModel.judgement.collectAsStateWithLifecycle()
+    val result by viewModel.result.collectAsStateWithLifecycle()
 
     // The frame clock. Written every frame and read only inside draw lambdas and the
     // tap handler, so nothing here recomposes at 60 Hz.
@@ -166,11 +200,20 @@ fun RhythmGameScreen(
     // per hit and change nothing on screen.
     val bursts = remember { ArrayList<Burst>() }
     val lanePress = remember { LongArray(LANES) }
+    // When the last multiplier step happened, on the game's clock. Read inside
+    // draw lambdas only; writing it recomposes nothing.
+    val milestoneAtState = remember { mutableLongStateOf(0L) }
 
     LaunchedEffect(judgement?.id) {
         val event = judgement ?: return@LaunchedEffect
         if (bursts.size > MAX_BURSTS) bursts.subList(0, bursts.size - MAX_BURSTS).clear()
         bursts.add(Burst(event.lane, event.atMs, event.judgement))
+    }
+
+    // Stamp the milestone when the multiplier steps up - the ripple is the
+    // screen's own celebration of the run, distinct from the per-hit burst.
+    LaunchedEffect(hud.multiplier) {
+        if (hud.multiplier > 1) milestoneAtState.value = viewModel.nowMs()
     }
 
     Box(
@@ -184,7 +227,7 @@ fun RhythmGameScreen(
                 Modifier.fillMaxWidth().padding(start = 14.dp, end = 18.dp, top = 8.dp, bottom = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                CircleBtn(Icons.AutoMirrored.Filled.ArrowBack, "Back", onBack)
+                CircleBtn(Icons.AutoMirrored.Filled.ArrowBack, "Back", back)
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
                     Text(
@@ -203,6 +246,15 @@ fun RhythmGameScreen(
                         },
                         color = TextMuted, fontFamily = AppFont,
                         fontWeight = FontWeight.SemiBold, fontSize = 11.sp,
+                    )
+                }
+                // Calibration lives one tap away from the game, not buried in
+                // settings: the moment the game feels off is the moment to fix it.
+                androidx.compose.material3.TextButton(onClick = onOpenCalibration) {
+                    Text(
+                        "Timing",
+                        color = accent, fontFamily = AppFont,
+                        fontWeight = FontWeight.Bold, fontSize = 13.sp,
                     )
                 }
             }
@@ -253,6 +305,7 @@ fun RhythmGameScreen(
                         accent = accent,
                         combo = hud.combo,
                         multiplier = hud.multiplier,
+                        milestoneAt = milestoneAtState.value,
                     )
                 }
 
@@ -264,12 +317,36 @@ fun RhythmGameScreen(
                     modifier = Modifier.align(Alignment.Center),
                 )
 
+                // Results sheet: published when the player backs out with a score
+                // on the board. Dismiss = leave the game (the run is already saved).
+                result?.let { r ->
+                    ResultsSheet(
+                        result = r,
+                        accent = accent,
+                        onDismiss = back,
+                    )
+                }
+
                 if (!hud.locked && hud.score == 0) {
                     Text(
                         "Play something, then tap the pads as the notes reach the line.",
                         color = TextFaint, fontFamily = AppFont,
                         fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
                         modifier = Modifier.align(Alignment.TopCenter).padding(top = 40.dp),
+                    )
+                }
+
+                // The backend could not measure an output latency (capture/cast
+                // feeds), so the chart runs in analysis time and the whole game
+                // is shifted by the real latency. Telling the player beats them
+                // guessing whether the game or their speakers are wrong.
+                val leadKnown by viewModel.leadKnown.collectAsStateWithLifecycle()
+                if (!leadKnown && hud.locked) {
+                    Text(
+                        "Output latency unknown on this source — timing may feel off",
+                        color = TextFaint, fontFamily = AppFont,
+                        fontWeight = FontWeight.SemiBold, fontSize = 11.sp,
+                        modifier = Modifier.align(Alignment.TopCenter).padding(top = 64.dp),
                     )
                 }
             }
@@ -357,7 +434,10 @@ private fun JudgementBanner(
     LaunchedEffect(eventId) {
         if (eventId == null) return@LaunchedEffect
         anim.snapTo(1f)
-        anim.animateTo(0f, tween(durationMillis = 620, easing = FastOutSlowInEasing))
+        // A critically-damped spring, not a tween: Motion.effects() is the house
+        // spec for appearance (alpha/colour) changes, and this banner is pure
+        // appearance - punch out and settle, no overshoot past full opacity.
+        anim.animateTo(0f, Motion.effects())
     }
     val t = anim.value
     if (t <= 0.01f || judgement == null) return
@@ -415,6 +495,7 @@ private fun DrawScope.drawHighway(
     accent: Color,
     combo: Int,
     multiplier: Int,
+    milestoneAt: Long,
 ) {
     val w = size.width
     val h = size.height
@@ -622,6 +703,28 @@ private fun DrawScope.drawHighway(
         blendMode = BlendMode.Plus,
     )
 
+    // At a multiplier step (10/20/30 combo) an accent ripple washes out from the
+    // hit line's centre. Stamped when the multiplier steps and drawn here entirely
+    // from draw-phase state: no recomposition for an effect the canvas already
+    // redraws every frame.
+    val milestoneAge = now - milestoneAt
+    if (milestoneAge in 0..MILESTONE_MS) {
+        val mt = milestoneAge.toFloat() / MILESTONE_MS
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    accent.copy(alpha = 0.35f * (1f - mt)),
+                    Color.Transparent,
+                ),
+                center = Offset(centreX, hitY),
+                radius = w * (0.25f + mt * 0.65f),
+            ),
+            radius = w * (0.25f + mt * 0.65f),
+            center = Offset(centreX, hitY),
+            blendMode = BlendMode.Plus,
+        )
+    }
+
     // ── Bursts ──────────────────────────────────────────────────────────────
 
     for (burst in bursts) {
@@ -747,7 +850,90 @@ private fun DrawScope.drawNote(
     )
 }
 
+// ── Results ─────────────────────────────────────────────────────────────────
+
+/**
+ * The run's results, shown when the player leaves the game with a score.
+ *
+ * A modal sheet rather than an overlay on the board: the run is over, the room
+ * has come back up, and this is the moment the score is actually looked at —
+ * plus the record it just set, if it did.
+ */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun ResultsSheet(
+    result: RhythmGameViewModel.RunResult,
+    accent: Color,
+    onDismiss: () -> Unit,
+) {
+    val hud = result.hud
+    androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            if (result.newRecord) {
+                Text(
+                    "NEW RECORD",
+                    color = accent, fontFamily = AppFont,
+                    fontWeight = FontWeight.ExtraBold, fontSize = 12.sp,
+                    modifier = Modifier.padding(bottom = 4.dp),
+                )
+            }
+            Text(
+                hud.score.toString(),
+                color = TextPrimary, fontFamily = AppFont,
+                fontWeight = FontWeight.ExtraBold, fontSize = 44.sp,
+            )
+            Text(
+                buildString {
+                    append("${hud.perfect} perfect · ${hud.great} great · ${hud.good} good")
+                    if (hud.missed > 0) append(" · ${hud.missed} missed")
+                },
+                color = TextMuted, fontFamily = AppFont,
+                fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+            Row(
+                Modifier.fillMaxWidth().padding(top = 20.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+            ) {
+                Stat("BEST COMBO", hud.bestCombo.toString())
+                Stat("ACCURACY", hud.accuracy?.let { "${(it * 100).toInt()}%" } ?: "—")
+                Stat("PLAYS", result.record.plays.toString())
+            }
+            if (result.trackKey == null) {
+                Text(
+                    "Scores save when a track is identified",
+                    color = TextFaint, fontFamily = AppFont,
+                    fontWeight = FontWeight.SemiBold, fontSize = 11.sp,
+                    modifier = Modifier.padding(top = 16.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun Stat(label: String, value: String) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            value,
+            color = TextPrimary, fontFamily = com.engabd.sendpin.ui.theme.MonoFont,
+            fontWeight = FontWeight.Bold, fontSize = 17.sp,
+        )
+        Text(
+            label,
+            color = TextFaint, fontFamily = AppFont,
+            fontWeight = FontWeight.Bold, fontSize = 9.sp,
+        )
+    }
+}
+
 // ── Geometry and palette ────────────────────────────────────────────────────
+
+/** How long the combo-milestone ripple runs, in ms. */
+private const val MILESTONE_MS = 700L
 
 /** 0 at the horizon, 1 at the hit line, more than 1 once it has fallen past. */
 private fun progressOf(note: GameNote, now: Long, lookAheadMs: Long): Float =

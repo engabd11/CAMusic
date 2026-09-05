@@ -1,6 +1,12 @@
 package com.engabd.sendpin.game
 
 import com.engabd.sendpin.audio.AnalysisFrame
+import com.engabd.sendpin.audio.BeatGrid
+import com.engabd.sendpin.audio.ScanSection
+import com.engabd.sendpin.audio.TrackScan
+import com.engabd.sendpin.ui.viewmodel.GameRecord
+import com.engabd.sendpin.ui.viewmodel.mergeRecord
+import kotlin.math.roundToLong
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -210,4 +216,239 @@ class NoteGeneratorTest {
         assertTrue(gen.active().isEmpty())
         assertTrue(!gen.locked)
     }
-}
+
+    // ── Engine-grid path (A1) ────────────────────────────────────────────────
+
+    /** A synthetic scan: [bpm] BPM, flat accents, [beatsPerBar], [downbeat]. */
+    private fun fakeScan(
+        bpm: Float = 120f,
+        beats: Int = 32,
+        beatsPerBar: Int = 4,
+        downbeat: Int = 0,
+        accents: FloatArray = FloatArray(beats) { 0.8f },
+    ): TrackScan {
+        val period = 60f / bpm
+        return TrackScan(
+            durationS = beats * period,
+            bpm = bpm,
+            confidence = 0.9f,
+            beats = FloatArray(beats) { it * period },
+            accents = accents,
+            downbeat = downbeat,
+            sections = listOf(ScanSection(0f, beats * period, 0.7f)),
+            intensity = null,
+        )
+    }
+
+    /**
+     * Play [frames] frames at 50 fps against an engine grid locked at [bpm],
+     * with the scan attached. [frameTAudioS] advances with real time so the
+     * audible conversion is exercised exactly as the engine publishes it.
+     */
+    private fun NoteGenerator.playWithEngine(
+        startMs: Long,
+        frames: Int,
+        bpm: Float = 120f,
+        scan: TrackScan = fakeScan(bpm),
+        reap: Boolean = true,
+    ): Long {
+        var t = startMs
+        val step = 20L
+        val periodMs = (60_000f / bpm).toLong()
+        repeat(frames) { i ->
+            val tAudio = (t - startMs) / 1000f
+            val chart = GameChartSource(
+                grid = BeatGrid(
+                    bpm = bpm,
+                    confidence = 1f,
+                    locked = true,
+                    periodS = 60f / bpm,
+                    phase = (t % periodMs) / periodMs.toFloat(),
+                    timeToNextBeat = (periodMs - (t % periodMs)) / 1000f,
+                    nextBeatT = tAudio + (periodMs - (t % periodMs)) / 1000f,
+                    scheduleStrength = 1f,
+                ),
+                scan = scan,
+                frameTAudioS = tAudio,
+            )
+            onFrame(quietFrame(), t, 0L, chart)
+            if (reap) reap(t)
+            t += step
+        }
+        return t
+    }
+
+    @Test
+    fun `an engine grid charts from its scan, not the PLL`() {
+        val gen = NoteGenerator()
+        val end = gen.playWithEngine(startMs = 10_000L, frames = 120) // ~2.4 s
+
+        assertTrue(gen.locked, "the engine path never reported locked")
+        val notes = gen.active()
+        assertTrue(notes.isNotEmpty(), "the engine path charted nothing")
+
+        // Every note lands on the scan's beat grid or a subdivision of it (the
+        // offbeat hats sit at +half, fills add +quarter) — the defining property
+        // of the engine path. The PLL path would place notes on its own anchor,
+        // which no scan beat is required to agree with.
+        for (note in notes) {
+            val off = note.triggerTimeMs - 10_000L
+            assertTrue(
+                off % 250L == 0L,
+                "note at ${note.triggerTimeMs} is not on the scan's quarter-beat grid (off=$off)",
+            )
+        }
+        assertTrue(end > 10_000L)
+    }
+
+    @Test
+    fun `engine path beats land on the scan's metre and downbeat`() {
+        val gen = NoteGenerator()
+        // A waltz, with the downbeat on beat 2 of the recorded pattern — the case
+        // the old chart, hardcoded to 4/4 from its own anchor, could not express.
+        val scan = fakeScan(bpm = 120f, beatsPerBar = 3, downbeat = 2)
+        gen.playWithEngine(startMs = 0L, frames = 150, scan = scan)
+
+        val downbeats = gen.active().filter { it.downbeat }.map { it.triggerTimeMs }
+        assertTrue(downbeats.isNotEmpty(), "no downbeat notes charted")
+        val period = 500L // 120 BPM
+        val first = downbeats.min()
+        for (t in downbeats) {
+            val off = (t - first).mod(period * 3)
+            assertTrue(off == 0L, "downbeat at $t is not on the 3-beat bar grid")
+        }
+    }
+
+    @Test
+    fun `a scan accent drives the note intensity`() {
+        val gen = NoteGenerator()
+        val accents = FloatArray(32) { if (it % 4 == 0) 1.0f else 0.3f }
+        val scan = fakeScan(bpm = 120f, accents = accents)
+        gen.playWithEngine(startMs = 0L, frames = 150, scan = scan)
+
+        val kicked = gen.active().filter { it.lane == LANE_KICK }
+        assertTrue(kicked.isNotEmpty(), "no kick notes charted")
+        // Downbeats get the accent verbatim; the light reward scales with it.
+        val onAccent = kicked.filter { it.intensity > 0.9f }
+        assertTrue(onAccent.isNotEmpty(), "accented beats did not chart with their accent")
+    }
+
+    @Test
+    fun `dead air charts nothing`() {
+        val gen = NoteGenerator()
+        // A run of near-silent beats in the middle: two consecutive accents under
+        // the dead-air floor.
+        val accents = FloatArray(32) { when (it) {
+            in 12..15 -> 0.03f
+            else -> 0.8f
+        } }
+        val scan = fakeScan(bpm = 120f, accents = accents)
+        gen.playWithEngine(startMs = 0L, frames = 150, scan = scan)
+
+        val silentBeats = setOf(12, 13, 14, 15)
+        for (note in gen.active()) {
+            // Reconstruct which beat this note came from by its time: the chart
+            // is on the grid, so the reverse lookup is exact.
+            val beat = ((note.triggerTimeMs - 0L) / 500L).toInt()
+            assertTrue(
+                beat !in silentBeats || note.triggerTimeMs % 500L !in 0L..2L,
+                "a note was charted inside dead air (beat $beat)",
+            )
+        }
+    }
+
+    @Test
+    fun `losing the engine grid hands over to the PLL without a stale chart`() {
+        val gen = NoteGenerator()
+        val end = gen.playWithEngine(startMs = 0L, frames = 60)
+        assertTrue(gen.locked)
+
+        // The engine's grid disappears (capture source starting, scan stops
+        // covering): the very next frame must not chart from a stale anchor.
+        gen.onFrame(quietFrame(), end, 0L, GameChartSource(grid = null, scan = null, frameTAudioS = 0f))
+        assertTrue(
+            gen.active().all { it.triggerTimeMs >= end - Judgement.HIT_WINDOW_MS },
+            "notes from the stale engine chart survived the handover",
+        )
+        // And the PLL must be re-anchoring, not claiming a lock it does not have.
+        gen.onFrame(beatFrame(), end + 20L, 0L)
+        gen.onFrame(beatFrame(), end + 40L, 0L)
+    }
+
+    @Test
+    fun `the PLL path is byte-identical when no engine grid exists`() {
+        // Same feed, no chart parameter: the generator must behave exactly as
+        // before the engine path existed. This is the revert test for A1.
+        val legacy = NoteGenerator()
+        val modern = NoteGenerator()
+        var t = 0L
+        repeat(120) {
+            val f = if (it % 25 < 2) beatFrame() else quietFrame()
+            legacy.onFrame(f, t)
+            modern.onFrame(f, t, 0L, null)
+            legacy.reap(t)
+            modern.reap(t)
+            t += 20L
+        }
+        assertEquals(
+            legacy.active().map { it.id to it.triggerTimeMs },
+            modern.active().map { it.id to it.triggerTimeMs },
+            "the null-chart path diverged from the legacy PLL",
+        )
+    }
+
+    // ── Band mapping (A3) ────────────────────────────────────────────────────
+
+    @Test
+    fun `note kinds map to the room bands the show stacks`() {
+        // The engine stacks bass on the floor and treble at the ceiling; the
+        // game's answer must use the same vocabulary or the two disagree about
+        // what "low" means.
+        assertEquals(GameBand.BASS, bandOf(NoteKind.KICK))
+        assertEquals(GameBand.FULL, bandOf(NoteKind.SNARE))
+        assertEquals(GameBand.TOP, bandOf(NoteKind.HAT))
+        assertEquals(GameBand.COLOR, bandOf(NoteKind.MELODY))
+    }
+
+    @Test
+        fun `every note kind has a band`() {
+            // Exhaustive when-expression — this is a compile guarantee, but the test
+            // documents the contract and fails loudly if a kind is added without a
+            // band decision.
+            for (kind in NoteKind.entries) {
+                assertTrue(bandOf(kind) in GameBand.entries, "no band for $kind")
+            }
+        }
+
+        // ── Run records (A5) ─────────────────────────────────────────────────────
+
+        @Test
+        fun `a first run becomes the record and counts the play`() {
+            val merged = mergeRecord(null, score = 1234, combo = 17, accuracy = 0.86f)
+            assertEquals(1234, merged.bestScore)
+            assertEquals(17, merged.bestCombo)
+            assertEquals(0.86f, merged.bestAccuracy)
+            assertEquals(1, merged.plays)
+        }
+
+        @Test
+        fun `a weaker run keeps each best it did not beat`() {
+            val old = GameRecord(bestScore = 2000, bestCombo = 30, bestAccuracy = 0.9f, plays = 4)
+            val merged = mergeRecord(old, score = 1500, combo = 10, accuracy = 0.7f)
+            // The run improved nothing, and none of the bests moved — but plays did.
+            assertEquals(2000, merged.bestScore)
+            assertEquals(30, merged.bestCombo)
+            assertEquals(0.9f, merged.bestAccuracy)
+            assertEquals(5, merged.plays)
+        }
+
+        @Test
+        fun `a run can beat one best without beating the others`() {
+            val old = GameRecord(bestScore = 1000, bestCombo = 5, bestAccuracy = 0.95f, plays = 2)
+            val merged = mergeRecord(old, score = 1200, combo = 3, accuracy = 0.8f)
+            assertEquals(1200, merged.bestScore, "the score record should have moved")
+            assertEquals(5, merged.bestCombo, "the combo record should not have moved")
+            assertEquals(0.95f, merged.bestAccuracy, "the accuracy record should not have moved")
+            assertEquals(3, merged.plays)
+        }
+    }

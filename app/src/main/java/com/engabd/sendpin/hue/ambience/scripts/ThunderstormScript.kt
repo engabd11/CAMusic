@@ -148,6 +148,11 @@ class ThunderstormScript(
 
     override fun bindBed(bed: AmbienceBedTrack?) { this.recording = bed }
 
+    /** The bed jumped: forget the previous pass's last strike, or its refractory swallows this loop's onsets. */
+    override fun onBedReset() {
+        lastStrikeS = Double.NaN
+    }
+
     /**
      * A thunderclap in the recording becomes a strike in the room.
      *

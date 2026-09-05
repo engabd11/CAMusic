@@ -297,6 +297,30 @@ class AmbienceReactionTest {
             )
         }
     }
+
+    @Test
+    fun `a bed reset clears the refractory that would swallow the next loop`() {
+        // The looping-storm bug: media time leaps back by the whole file at the loop
+        // point, and from the moment the playhead climbed past the previous pass's
+        // last strike, every real onset sat inside that pass's refractory window.
+        // A looped storm flashed once and then went dark for a full loop.
+        val script = scriptFor(AmbienceEffect.THUNDERSTORM)
+        script.bind(RoomModel(ringRoom(8)), AmbienceParams(0.7f))
+        val (l, r) = synthStorm(20.0, listOf(Clap(8.0, near = 0.9f, pan = 0.3f)))
+        val out = react(script, l, r)
+        assertTrue(out.events.isNotEmpty(), "the first pass produced no strikes")
+
+        // The loop: same samples again, media time restarting at zero - which is
+        // exactly what AmbienceSession hands the script after its discontinuity
+        // branch calls onBedReset().
+        script.onBedReset()
+        val before = out.events.size
+        val second = react(script, l, r)
+        assertTrue(
+            second.events.isNotEmpty(),
+            "the second pass produced no strikes - the refractory survived the loop",
+        )
+    }
 }
 
 class AmbienceBedTrackTest {

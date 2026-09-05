@@ -135,6 +135,11 @@ class FireworksAmbienceScript(
 
     override fun bindBed(bed: AmbienceBedTrack?) { this.recording = bed }
 
+    /** The bed jumped: forget the previous pass's last burst. */
+    override fun onBedReset() {
+        lastBurstS = Double.NaN
+    }
+
     /**
      * A bang in the recording becomes a shell breaking over the room.
      *
