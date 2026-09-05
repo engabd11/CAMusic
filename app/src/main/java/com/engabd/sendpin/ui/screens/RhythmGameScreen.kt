@@ -42,6 +42,7 @@ import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.game.GameNote
 import com.engabd.sendpin.game.Judgement
 import com.engabd.sendpin.ui.design.LocalAccent
+import com.engabd.sendpin.ui.design.Motion
 import com.engabd.sendpin.ui.design.TitleGap
 import com.engabd.sendpin.ui.design.navBarInset
 import com.engabd.sendpin.ui.theme.AppFont
@@ -199,11 +200,20 @@ fun RhythmGameScreen(
     // per hit and change nothing on screen.
     val bursts = remember { ArrayList<Burst>() }
     val lanePress = remember { LongArray(LANES) }
+    // When the last multiplier step happened, on the game's clock. Read inside
+    // draw lambdas only; writing it recomposes nothing.
+    val milestoneAtState = remember { mutableLongStateOf(0L) }
 
     LaunchedEffect(judgement?.id) {
         val event = judgement ?: return@LaunchedEffect
         if (bursts.size > MAX_BURSTS) bursts.subList(0, bursts.size - MAX_BURSTS).clear()
         bursts.add(Burst(event.lane, event.atMs, event.judgement))
+    }
+
+    // Stamp the milestone when the multiplier steps up - the ripple is the
+    // screen's own celebration of the run, distinct from the per-hit burst.
+    LaunchedEffect(hud.multiplier) {
+        if (hud.multiplier > 1) milestoneAtState.value = viewModel.nowMs()
     }
 
     Box(
@@ -295,6 +305,7 @@ fun RhythmGameScreen(
                         accent = accent,
                         combo = hud.combo,
                         multiplier = hud.multiplier,
+                        milestoneAt = milestoneAtState.value,
                     )
                 }
 
@@ -423,7 +434,10 @@ private fun JudgementBanner(
     LaunchedEffect(eventId) {
         if (eventId == null) return@LaunchedEffect
         anim.snapTo(1f)
-        anim.animateTo(0f, tween(durationMillis = 620, easing = FastOutSlowInEasing))
+        // A critically-damped spring, not a tween: Motion.effects() is the house
+        // spec for appearance (alpha/colour) changes, and this banner is pure
+        // appearance - punch out and settle, no overshoot past full opacity.
+        anim.animateTo(0f, Motion.effects())
     }
     val t = anim.value
     if (t <= 0.01f || judgement == null) return
@@ -481,6 +495,7 @@ private fun DrawScope.drawHighway(
     accent: Color,
     combo: Int,
     multiplier: Int,
+    milestoneAt: Long,
 ) {
     val w = size.width
     val h = size.height
@@ -688,6 +703,28 @@ private fun DrawScope.drawHighway(
         blendMode = BlendMode.Plus,
     )
 
+    // At a multiplier step (10/20/30 combo) an accent ripple washes out from the
+    // hit line's centre. Stamped when the multiplier steps and drawn here entirely
+    // from draw-phase state: no recomposition for an effect the canvas already
+    // redraws every frame.
+    val milestoneAge = now - milestoneAt
+    if (milestoneAge in 0..MILESTONE_MS) {
+        val mt = milestoneAge.toFloat() / MILESTONE_MS
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    accent.copy(alpha = 0.35f * (1f - mt)),
+                    Color.Transparent,
+                ),
+                center = Offset(centreX, hitY),
+                radius = w * (0.25f + mt * 0.65f),
+            ),
+            radius = w * (0.25f + mt * 0.65f),
+            center = Offset(centreX, hitY),
+            blendMode = BlendMode.Plus,
+        )
+    }
+
     // ── Bursts ──────────────────────────────────────────────────────────────
 
     for (burst in bursts) {
@@ -894,6 +931,9 @@ private fun Stat(label: String, value: String) {
 }
 
 // ── Geometry and palette ────────────────────────────────────────────────────
+
+/** How long the combo-milestone ripple runs, in ms. */
+private const val MILESTONE_MS = 700L
 
 /** 0 at the horizon, 1 at the hit line, more than 1 once it has fallen past. */
 private fun progressOf(note: GameNote, now: Long, lookAheadMs: Long): Float =
