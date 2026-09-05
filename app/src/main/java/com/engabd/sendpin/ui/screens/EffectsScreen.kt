@@ -374,7 +374,14 @@ private fun LabeledSliderRow(
     }
 }
 
-private fun ambienceIcon(e: AmbienceEffect): ImageVector = when (e) {
+/**
+ * The glyph for each ambience effect.
+ *
+ * Internal rather than private since the Light Sync page draws the catalogue on its
+ * own tile: two lists of icons for the same nine effects would drift the first time
+ * one was added.
+ */
+internal fun ambienceIcon(e: AmbienceEffect): ImageVector = when (e) {
     AmbienceEffect.FIREWORKS, AmbienceEffect.FIREWORKS_2 -> Icons.Default.Celebration
     AmbienceEffect.THUNDERSTORM, AmbienceEffect.THUNDERSTORM_2 -> Icons.Default.Thunderstorm
     AmbienceEffect.UNDERWATER -> Icons.Default.Water

@@ -779,6 +779,10 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                             viewModel = lightSyncVm,
                             onOpenEffects = { navController.navigate("effects") },
                             onOpenRhythmGame = { navController.navigate("rhythm_game") },
+                            // The same view model the Effects screen drives, so the
+                            // Light Sync tile and that screen are two views of one
+                            // running show rather than two that can disagree.
+                            onStopAmbience = { effectsVm.stop() },
                         )
                     }
                     screen("effects") {

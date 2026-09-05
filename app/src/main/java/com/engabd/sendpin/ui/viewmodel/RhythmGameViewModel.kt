@@ -3,6 +3,7 @@ package com.engabd.sendpin.ui.viewmodel
 import android.app.Application
 import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
+import com.engabd.sendpin.game.GameRecords
 import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.audio.AnalysisFrame
 import com.engabd.sendpin.game.GameNote
@@ -11,8 +12,6 @@ import com.engabd.sendpin.game.Judgement
 import com.engabd.sendpin.game.NoteGenerator
 import com.engabd.sendpin.game.PausableClock
 import com.engabd.sendpin.game.bandOf
-import kotlinx.serialization.builtins.MapSerializer
-import kotlinx.serialization.builtins.serializer
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -241,9 +240,9 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * The per-track records, keyed by scan key — a JSON map in SharedPreferences.
-     * Small by construction: one record per track actually played, four numbers
-     * each, so a thousand tracks is ~100 KB and only grows by what was played.
+     * The per-track records, held here for the length of a run and owned by
+     * [GameRecords] — which the Light Sync tile also reads, to show a best score
+     * without starting a game to find one out.
      */
     private var records: Map<String, GameRecord> = emptyMap()
     private var recordsLoaded = false
@@ -251,31 +250,10 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
     private fun loadRecordsIfNeeded() {
         if (recordsLoaded) return
         recordsLoaded = true
-        runCatching {
-            val prefs = getApplication<Application>()
-                .getSharedPreferences("game_records", android.content.Context.MODE_PRIVATE)
-            val json = prefs.getString("records", null) ?: return
-            records = kotlinx.serialization.json.Json.decodeFromString(
-                            MapSerializer(String.serializer(), GameRecord.serializer()),
-                            json,
-                        )
-        }
+        records = GameRecords.load(getApplication())
     }
 
-    private fun persistRecords() {
-        if (records.isEmpty()) return
-        runCatching {
-            val prefs = getApplication<Application>()
-                .getSharedPreferences("game_records", android.content.Context.MODE_PRIVATE)
-            val format = kotlinx.serialization.json.Json
-            prefs.edit()
-                            .putString("records", format.encodeToString(
-                                MapSerializer(String.serializer(), GameRecord.serializer()),
-                                records,
-                            ))
-                            .apply()
-        }
-    }
+    private fun persistRecords() = GameRecords.save(getApplication(), records)
 
     /**
      * Fold in one analysis frame.
