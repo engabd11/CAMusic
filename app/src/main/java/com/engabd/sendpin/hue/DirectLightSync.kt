@@ -1907,10 +1907,16 @@ class DirectLightSync(
                 // bare — as this did — silently dropped them, so any Wi-Fi drop left a
                 // mixed-bulb room clamped to Gamut C for the rest of the session: every
                 // saturated colour subtly wrong, and nothing to indicate why.
+                // The previous encoder's chromaticity state crosses too: without it,
+                // every channel's xy jumped to the engine's current state in one frame,
+                // which is precisely the pop the slew limiter exists to prevent. The
+                // sequence counter does not cross — it belongs to the old session.
+                val carryXy = encoder?.snapshotXy()
                 encoder = HueStreamEncoder(
                     configId,
                     gamuts = channels.mapNotNull { ch -> ch.gamut?.let { ch.channelId to it } }.toMap(),
                 )
+                carryXy?.let { encoder?.restoreXy(it) }
                 sendFailures = 0
                 lastSent = null
                 delayQueue.clear()
