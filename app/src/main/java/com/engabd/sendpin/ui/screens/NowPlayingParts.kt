@@ -130,7 +130,16 @@ internal fun albumFlipKey(st: NowPlayingViewModel.State): String? =
  */
 @Stable
 class Scrubber internal constructor(
-    private val onSeek: (Float) -> Unit,
+    /**
+     * Where to seek to, in milliseconds into the track.
+     *
+     * Milliseconds and not the bar's fraction, because the fraction alone does not
+     * say what it is a fraction *of*: whoever received it had to multiply by a
+     * duration read again, later, from a flow free to have moved on — and the two
+     * multiplications could disagree, sending the player somewhere the magnifier had
+     * never named. The position here is the one the user was shown.
+     */
+    private val onSeek: (Long) -> Unit,
 ) {
     internal var scrubbing by mutableStateOf(false)
     internal var scrubPos by mutableStateOf(0L)
@@ -155,7 +164,7 @@ class Scrubber internal constructor(
         scrubPos = (fraction * durationMs).toLong()
         seekTarget = scrubPos
         scrubbing = false
-        onSeek(fraction)
+        onSeek(scrubPos)
     }
 }
 
