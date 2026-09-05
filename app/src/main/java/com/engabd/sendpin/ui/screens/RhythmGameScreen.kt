@@ -112,6 +112,14 @@ fun RhythmGameScreen(
         onDispose { viewModel.stop() }
     }
 
+    // Finish (persist the run, publish the results) on the back press, before
+    // the composable leaves — the onDispose path is the emergency exit that
+    // must not lose the score to a process-level navigation.
+    val back = {
+        viewModel.finish()
+        onBack()
+    }
+
     // Timing settings feed the judged clock: offset, difficulty scale, haptics.
     // Collected for the screen's lifetime so a mid-session change applies from
     // the next tap rather than the next launch.
@@ -170,6 +178,7 @@ fun RhythmGameScreen(
     val notesState = viewModel.notes.collectAsStateWithLifecycle()
     val hud by viewModel.hud.collectAsStateWithLifecycle()
     val judgement by viewModel.judgement.collectAsStateWithLifecycle()
+    val result by viewModel.result.collectAsStateWithLifecycle()
 
     // The frame clock. Written every frame and read only inside draw lambdas and the
     // tap handler, so nothing here recomposes at 60 Hz.
@@ -208,7 +217,7 @@ fun RhythmGameScreen(
                 Modifier.fillMaxWidth().padding(start = 14.dp, end = 18.dp, top = 8.dp, bottom = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                CircleBtn(Icons.AutoMirrored.Filled.ArrowBack, "Back", onBack)
+                CircleBtn(Icons.AutoMirrored.Filled.ArrowBack, "Back", back)
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
                     Text(
@@ -296,6 +305,16 @@ fun RhythmGameScreen(
                     accent = accent,
                     modifier = Modifier.align(Alignment.Center),
                 )
+
+                // Results sheet: published when the player backs out with a score
+                // on the board. Dismiss = leave the game (the run is already saved).
+                result?.let { r ->
+                    ResultsSheet(
+                        result = r,
+                        accent = accent,
+                        onDismiss = back,
+                    )
+                }
 
                 if (!hud.locked && hud.score == 0) {
                     Text(
@@ -792,6 +811,86 @@ private fun DrawScope.drawNote(
         cornerRadius = CornerRadius(halfH * 0.7f, halfH * 0.7f),
         style = Stroke(width = 1f + persp * 2f),
     )
+}
+
+// ── Results ─────────────────────────────────────────────────────────────────
+
+/**
+ * The run's results, shown when the player leaves the game with a score.
+ *
+ * A modal sheet rather than an overlay on the board: the run is over, the room
+ * has come back up, and this is the moment the score is actually looked at —
+ * plus the record it just set, if it did.
+ */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun ResultsSheet(
+    result: RhythmGameViewModel.RunResult,
+    accent: Color,
+    onDismiss: () -> Unit,
+) {
+    val hud = result.hud
+    androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            if (result.newRecord) {
+                Text(
+                    "NEW RECORD",
+                    color = accent, fontFamily = AppFont,
+                    fontWeight = FontWeight.ExtraBold, fontSize = 12.sp,
+                    modifier = Modifier.padding(bottom = 4.dp),
+                )
+            }
+            Text(
+                hud.score.toString(),
+                color = TextPrimary, fontFamily = AppFont,
+                fontWeight = FontWeight.ExtraBold, fontSize = 44.sp,
+            )
+            Text(
+                buildString {
+                    append("${hud.perfect} perfect · ${hud.great} great · ${hud.good} good")
+                    if (hud.missed > 0) append(" · ${hud.missed} missed")
+                },
+                color = TextMuted, fontFamily = AppFont,
+                fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+            Row(
+                Modifier.fillMaxWidth().padding(top = 20.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+            ) {
+                Stat("BEST COMBO", hud.bestCombo.toString())
+                Stat("ACCURACY", hud.accuracy?.let { "${(it * 100).toInt()}%" } ?: "—")
+                Stat("PLAYS", result.record.plays.toString())
+            }
+            if (result.trackKey == null) {
+                Text(
+                    "Scores save when a track is identified",
+                    color = TextFaint, fontFamily = AppFont,
+                    fontWeight = FontWeight.SemiBold, fontSize = 11.sp,
+                    modifier = Modifier.padding(top = 16.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun Stat(label: String, value: String) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            value,
+            color = TextPrimary, fontFamily = com.engabd.sendpin.ui.theme.MonoFont,
+            fontWeight = FontWeight.Bold, fontSize = 17.sp,
+        )
+        Text(
+            label,
+            color = TextFaint, fontFamily = AppFont,
+            fontWeight = FontWeight.Bold, fontSize = 9.sp,
+        )
+    }
 }
 
 // ── Geometry and palette ────────────────────────────────────────────────────

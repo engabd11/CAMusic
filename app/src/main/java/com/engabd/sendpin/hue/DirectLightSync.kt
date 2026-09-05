@@ -471,6 +471,13 @@ class DirectLightSync(
     fun gameChartSource(): GameChartSource? = chartSource
 
     /**
+     * A stable identity for the track the room is currently lit by — the same key
+     * the scan store uses, so the game's records line up with the tracks people
+     * actually played, across backends. Null when nothing identifiable is playing.
+     */
+    fun currentGameTrackKey(): String? = scanKeyOf(currentTrack)
+
+    /**
      * How far open the game's gate is, and since when.
      *
      * A single envelope over the whole room rather than a per-lamp overlay, because

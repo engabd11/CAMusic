@@ -10,6 +10,8 @@ import com.engabd.sendpin.game.GameBand
 import com.engabd.sendpin.game.Judgement
 import com.engabd.sendpin.game.NoteGenerator
 import com.engabd.sendpin.game.bandOf
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -40,6 +42,28 @@ data class RhythmHud(
     val locked: Boolean = false,
     val bpm: Float = 0f,
 )
+
+/**
+ * One track's best rhythm-game run, persisted as a JSON map keyed by the scan
+ * store's track key (`TrackScanRepository.keyFor`), so records follow the track
+ * across backends. [bestScore] is what a "new record" is judged on.
+ */
+@kotlinx.serialization.Serializable
+data class GameRecord(
+    val bestScore: Int = 0,
+    val bestCombo: Int = 0,
+    val bestAccuracy: Float = 0f,
+    val plays: Int = 0,
+)
+
+/** Pure merge of a finished run into a track's record — unit-testable, no DataStore. */
+internal fun mergeRecord(old: GameRecord?, score: Int, combo: Int, accuracy: Float?): GameRecord =
+    GameRecord(
+        bestScore = maxOf(old?.bestScore ?: 0, score),
+        bestCombo = maxOf(old?.bestCombo ?: 0, combo),
+        bestAccuracy = maxOf(old?.bestAccuracy ?: 0f, accuracy ?: 0f),
+        plays = (old?.plays ?: 0) + 1,
+    )
 
 /**
  * Drives the rhythm game.
@@ -91,6 +115,25 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
     private val _judgement = MutableStateFlow<JudgementEvent?>(null)
     val judgement: StateFlow<JudgementEvent?> = _judgement.asStateFlow()
 
+    /**
+     * The finished run, published on [finish] for the results sheet. Null while
+     * playing. Carries the record it merged into, so the screen can show a
+     * new-record badge without reading the store itself.
+     */
+    data class RunResult(
+        val hud: RhythmHud,
+        val record: GameRecord,
+        val newRecord: Boolean,
+        val trackKey: String?,
+    )
+
+    private val _result = MutableStateFlow<RunResult?>(null)
+    val result: StateFlow<RunResult?> = _result.asStateFlow()
+
+    /** The current track's persisted record, or null; read once at start. */
+    private var currentRecord: GameRecord? = null
+    private var currentTrackKey: String? = null
+
     /** How far notes fall before the line, so the UI can place them. */
     val lookAheadMs: Long get() = generator.lookAheadMs
 
@@ -128,8 +171,69 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
         notesReached = 0
         notesStruck = 0
         _judgement.value = null
+        _result.value = null
         _hud.value = RhythmHud()
+        currentTrackKey = runCatching { directLightSync.currentGameTrackKey() }.getOrNull()
+        loadRecordsIfNeeded()
+        currentRecord = records[currentTrackKey]
         runCatching { directLightSync.setGameMode(true) }
+    }
+
+    /**
+     * End the run and publish its result for the results sheet.
+     *
+     * Separate from [stop]: the screen calls this when the player backs out or
+     * the track ends, and it merges the run into the track's persisted record
+     * before the room comes back up. A run with nothing scored publishes nothing.
+     */
+    fun finish() {
+        if (!running) return
+        val hud = _hud.value
+        if (hud.score > 0 && currentTrackKey != null) {
+            val previousBest = currentRecord?.bestScore ?: 0
+            val merged = mergeRecord(currentRecord, hud.score, hud.bestCombo, hud.accuracy)
+            records = records + (currentTrackKey!! to merged)
+            persistRecords()
+            _result.value = RunResult(hud, merged, hud.score > previousBest, currentTrackKey)
+        }
+        stop()
+    }
+
+    /**
+     * The per-track records, keyed by scan key — a JSON map in SharedPreferences.
+     * Small by construction: one record per track actually played, four numbers
+     * each, so a thousand tracks is ~100 KB and only grows by what was played.
+     */
+    private var records: Map<String, GameRecord> = emptyMap()
+    private var recordsLoaded = false
+
+    private fun loadRecordsIfNeeded() {
+        if (recordsLoaded) return
+        recordsLoaded = true
+        runCatching {
+            val prefs = getApplication<Application>()
+                .getSharedPreferences("game_records", android.content.Context.MODE_PRIVATE)
+            val json = prefs.getString("records", null) ?: return
+            records = kotlinx.serialization.json.Json.decodeFromString(
+                            MapSerializer(String.serializer(), GameRecord.serializer()),
+                            json,
+                        )
+        }
+    }
+
+    private fun persistRecords() {
+        if (records.isEmpty()) return
+        runCatching {
+            val prefs = getApplication<Application>()
+                .getSharedPreferences("game_records", android.content.Context.MODE_PRIVATE)
+            val format = kotlinx.serialization.json.Json
+            prefs.edit()
+                            .putString("records", format.encodeToString(
+                                MapSerializer(String.serializer(), GameRecord.serializer()),
+                                records,
+                            ))
+                            .apply()
+        }
     }
 
     /**
@@ -203,9 +307,12 @@ class RhythmGameViewModel(app: Application) : AndroidViewModel(app) {
         hud = hud.copy(combo = 0, multiplier = 1, missed = hud.missed + missed.size)
         _hud.value = hud.withAccuracy()
         // One event for the run, not one per note: four notes expiring on the same
-        // frame is one mistake, and four "Miss" banners stacked on top of each other
-        // reads as a bug.
-        emit(Judgement.MISS, missed.first().lane, 0, now)
+        // frame is one mistake, and four "Miss" banners stacked on top of each
+        // other reads as a bug. The run is attributed to the lane of the note
+        // closest to the line — the one the player was most likely watching —
+        // rather than an arbitrary first element.
+        val nearest = missed.minByOrNull { it.triggerTimeMs }
+        emit(Judgement.MISS, nearest?.lane ?: -1, 0, now)
         publish()
     }
 

@@ -4,6 +4,8 @@ import com.engabd.sendpin.audio.AnalysisFrame
 import com.engabd.sendpin.audio.BeatGrid
 import com.engabd.sendpin.audio.ScanSection
 import com.engabd.sendpin.audio.TrackScan
+import com.engabd.sendpin.ui.viewmodel.GameRecord
+import com.engabd.sendpin.ui.viewmodel.mergeRecord
 import kotlin.math.roundToLong
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -409,12 +411,44 @@ class NoteGeneratorTest {
     }
 
     @Test
-    fun `every note kind has a band`() {
-        // Exhaustive when-expression — this is a compile guarantee, but the test
-        // documents the contract and fails loudly if a kind is added without a
-        // band decision.
-        for (kind in NoteKind.entries) {
-            assertTrue(bandOf(kind) in GameBand.entries, "no band for $kind")
+        fun `every note kind has a band`() {
+            // Exhaustive when-expression — this is a compile guarantee, but the test
+            // documents the contract and fails loudly if a kind is added without a
+            // band decision.
+            for (kind in NoteKind.entries) {
+                assertTrue(bandOf(kind) in GameBand.entries, "no band for $kind")
+            }
+        }
+
+        // ── Run records (A5) ─────────────────────────────────────────────────────
+
+        @Test
+        fun `a first run becomes the record and counts the play`() {
+            val merged = mergeRecord(null, score = 1234, combo = 17, accuracy = 0.86f)
+            assertEquals(1234, merged.bestScore)
+            assertEquals(17, merged.bestCombo)
+            assertEquals(0.86f, merged.bestAccuracy)
+            assertEquals(1, merged.plays)
+        }
+
+        @Test
+        fun `a weaker run keeps each best it did not beat`() {
+            val old = GameRecord(bestScore = 2000, bestCombo = 30, bestAccuracy = 0.9f, plays = 4)
+            val merged = mergeRecord(old, score = 1500, combo = 10, accuracy = 0.7f)
+            // The run improved nothing, and none of the bests moved — but plays did.
+            assertEquals(2000, merged.bestScore)
+            assertEquals(30, merged.bestCombo)
+            assertEquals(0.9f, merged.bestAccuracy)
+            assertEquals(5, merged.plays)
+        }
+
+        @Test
+        fun `a run can beat one best without beating the others`() {
+            val old = GameRecord(bestScore = 1000, bestCombo = 5, bestAccuracy = 0.95f, plays = 2)
+            val merged = mergeRecord(old, score = 1200, combo = 3, accuracy = 0.8f)
+            assertEquals(1200, merged.bestScore, "the score record should have moved")
+            assertEquals(5, merged.bestCombo, "the combo record should not have moved")
+            assertEquals(0.95f, merged.bestAccuracy, "the accuracy record should not have moved")
+            assertEquals(3, merged.plays)
         }
     }
-}
