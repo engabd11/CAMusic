@@ -80,6 +80,10 @@ enum class AmbienceEffect(
     AURORA(
         "aurora", "Aurora",
         "Slow curtains of colour, folding over each other. Nothing sudden.",
+    ),
+    COASTAL_RAIN(
+        "coastal_rain", "Coastal rain",
+        "Cool grey rain on the glass, headlights sweeping the wall now and then.",
     );
 
     companion object {
@@ -201,7 +205,9 @@ class AmbienceEvent(
         const val BURST = 2
         const val POP = 3
         const val CLACK = 4
-        const val SWELL = 5
+        /** A slow travelling wash — headlights on a rainy window, not a moment. */
+        const val SWEEP = 5
+        const val SWELL = 6
     }
 }
 
