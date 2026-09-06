@@ -321,6 +321,24 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      */
     private var navConnectJob: Job? = null
 
+    /**
+     * Which connect attempt is the current one.
+     *
+     * The staleness test used to be `source !== next` — "is the source I built still
+     * the one installed". That is not the same question, and the difference stranded
+     * onboarding. Saving a server writes `activeServerId`, whose collector calls
+     * [switchTo], whose [seedLocalFieldsFrom] calls [ensureSourceFor] and installs a
+     * *fresh, unprobed* source for the very same config. Nothing was superseded — but
+     * the in-flight connect came back to find a different object in [source], returned
+     * without clearing [_connecting], and the connect form sat on a disabled
+     * "Connecting…" for ever with no Continue and no error. The only way out was
+     * "Skip setup", by which point the server had already been saved.
+     *
+     * A counter answers the question actually being asked: has a *newer connect*
+     * started since this one? Rebuilding an equivalent source underneath it has not.
+     */
+    private var navConnectGen = 0
+
     /** Process-scoped, so Now Playing and the media notification see the same player. */
     val localPlayer = (app as SendpinApp).localPlayer
     val downloadManager = (app as SendpinApp).downloads
@@ -804,7 +822,14 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             settings.activeServerId.distinctUntilChanged().collect { id ->
                 if (!_booted.value || id.isBlank()) return@collect
-                if (activeConfig?.id == id && (source != null || _backend.value == Backend.MA)) return@collect
+                // `_connecting` counts as "already being dealt with". Saving a server
+                // from a setup form writes the active id and then switches and connects
+                // itself, so without this the collector arrives a moment later and
+                // switches on top of a connect that is already in flight for the very
+                // same server — tearing down its source mid-probe.
+                if (activeConfig?.id == id &&
+                    (source != null || _connecting.value || _backend.value == Backend.MA)
+                ) return@collect
                 val config = settings.activeServer.first() ?: return@collect
                 switchTo(config)
             }
@@ -1178,8 +1203,18 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             _connecting.value = true
             maApi.connect(url, token = null, username = _maUser.value.ifBlank { null }, password = _maPass.value.ifBlank { null })
             viewModelScope.launch {
-                maApi.state.first { it == MaApiClient.State.CONNECTED || it == MaApiClient.State.ERROR }
+                // Bounded. `MaApiClient` reconnects on its own, so a host that accepts
+                // the socket and then never answers the handshake can sit in CONNECTING
+                // indefinitely — and "Connecting…" is a *disabled* button on every
+                // setup form, so that state with no way out is a trap rather than a
+                // wait. Timing out reports it as a failure, which is what it is.
+                val settled = kotlinx.coroutines.withTimeoutOrNull(CONNECT_TIMEOUT_MS) {
+                    maApi.state.first { it == MaApiClient.State.CONNECTED || it == MaApiClient.State.ERROR }
+                }
                 _connecting.value = false
+                if (settled == null && _connError.value == null) {
+                    _connError.value = "Couldn't reach $url - no answer within ${CONNECT_TIMEOUT_MS / 1000}s"
+                }
             }
         } else {
             val url = _navUrl.value.trim()
@@ -1194,6 +1229,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             _connecting.value = true
             // Abandon whatever address was being tried before this one.
             navConnectJob?.cancel()
+            val gen = ++navConnectGen
             navConnectJob = viewModelScope.launch {
                 val config = resolveActiveConfig(url)
                 // The legacy Navidrome keys are written **only for a server that
@@ -1220,9 +1256,27 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                     ?: settings.navStreamFormat.first()
                 // Signing in, and asking what the server can do. Both can fail, and a
                 // failure here is a connection failure like any other.
+                //
+                // Bounded by [CONNECT_TIMEOUT_MS] because these are several requests,
+                // not one, so no per-request timeout puts a ceiling on the pair — and
+                // an unbounded wait here leaves every setup form on a disabled
+                // "Connecting…" with nothing to press. See that constant.
                 val err = try {
-                    activeConfig = MusicSources.prepare(next, config)
-                    next.probe()
+                    // The answer is written to a local rather than returned, because
+                    // `probe()` reports "no error" with null and so does
+                    // `withTimeoutOrNull` — returned directly, a successful connect and
+                    // a timed-out one would be the same value.
+                    var probeErr: SourceError? = null
+                    val finished = kotlinx.coroutines.withTimeoutOrNull(CONNECT_TIMEOUT_MS) {
+                        activeConfig = MusicSources.prepare(next, config)
+                        probeErr = next.probe()
+                        Unit
+                    } != null
+                    if (finished) probeErr
+                    else SourceError(
+                        "No answer within ${CONNECT_TIMEOUT_MS / 1000}s",
+                        isAuth = false,
+                    )
                 } catch (e: SourceAuthException) {
                     SourceError(e.message ?: "Sign-in was refused", isAuth = true)
                 } catch (e: Exception) {
@@ -1236,9 +1290,18 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 // suspension point, and a ping blocked on a TCP connect to an address
                 // with nothing on it may not reach one until the socket times out — so
                 // a superseded attempt can still arrive here with an answer nobody
-                // asked for. Whether it is stale is not a matter of timing: it is
-                // whether the source it used is still the current one.
-                if (source !== next) return@launch
+                // asked for. Whether it is stale is not a matter of timing and not a
+                // matter of object identity either — see [navConnectGen] — it is
+                // whether a newer connect has started.
+                if (gen != navConnectGen) return@launch
+                // Re-assert the probed source. Another path may have installed an
+                // unprobed one for this same config while the probe was in flight
+                // (`switchTo` does, from the `activeServerId` collector), and that one
+                // has not been through `prepare` — on Jellyfin it has no token.
+                if (source !== next) {
+                    source = next
+                    sourceOptions = localOptionsOf(config)
+                }
                 _connecting.value = false
                 if (err == null) {
                     _ready.value = true
@@ -3887,6 +3950,19 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private companion object {
         const val DOWNLOAD = "__dl__"
         const val DOWNLOADS_TITLE = "Downloads"
+
+        /**
+         * How long a connect attempt may sit in [_connecting] before it is called a
+         * failure.
+         *
+         * Longer than any single request's own timeout on purpose — signing into
+         * Jellyfin is a ping, an authenticate and a library listing, and a NAS
+         * spinning up can make each of them slow — but finite, because every setup
+         * form in the app renders `connecting` as a *disabled* button. An attempt that
+         * never resolves is therefore not a slow connect, it is a screen with no way
+         * forward, which is exactly what onboarding must never become.
+         */
+        const val CONNECT_TIMEOUT_MS = 45_000L
 
         /**
          * Discover rows the app already has a dedicated shelf for.
