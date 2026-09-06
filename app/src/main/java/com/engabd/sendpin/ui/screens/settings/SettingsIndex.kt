@@ -2,6 +2,7 @@ package com.engabd.sendpin.ui.screens.settings
 
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.DirectionsCar
@@ -175,8 +176,8 @@ internal fun subPagesFor(section: SettingsSection): List<SubPage> = when (sectio
         ),
         SubPage(
             SYS_ABOUT_ROUTE,
-            "About & statistics",
-            "Version, licence, the source, and what you have been listening to",
+            "About",
+            "Version, licence, and where the source lives",
             Icons.Default.Info,
         ),
     )
@@ -188,3 +189,63 @@ internal fun subPagesFor(section: SettingsSection): List<SubPage> = when (sectio
  */
 internal fun subPageTitle(section: SettingsSection, detail: String?): String? =
     detail?.let { route -> subPagesFor(section).firstOrNull { it.route == route }?.title }
+
+// ── The top-level index ───────────────────────────────────────────────────
+
+/**
+ * One row on the Settings index.
+ *
+ * Six of the seven are [SettingsSection]s, which open onto pages of controls. The
+ * seventh is Listening statistics, which is not a section at all: it opens a screen
+ * of charts, the way Downloads does from inside System & Storage.
+ *
+ * The distinction is why this exists rather than a seventh enum constant. A section
+ * is a place with a back arrow and a body; statistics has neither here, and giving it
+ * a constant would mean a dead branch in every `when (section)` in the screen — one of
+ * which is the restore path for a saved route, where a dead branch is a blank page.
+ */
+internal sealed interface IndexRow {
+    /** Stable across reorders and renames, for the list's item key. */
+    val key: String
+    val title: String
+    val subtitle: String
+    val icon: ImageVector
+
+    /** A settings category: its own index of pages, or its own body. */
+    data class Category(val section: SettingsSection) : IndexRow {
+        override val key get() = section.name
+        override val title get() = section.title
+        override val subtitle get() = section.subtitle
+        override val icon get() = section.icon
+    }
+
+    /** The listening history, which is a screen rather than a page of settings. */
+    data object Stats : IndexRow {
+        override val key = "listening_stats"
+        override val title = "Listening statistics"
+        override val subtitle =
+            "Your top artists, hours listened, when you listen, and the format breakdown"
+        override val icon = Icons.Default.BarChart
+    }
+}
+
+/**
+ * The seven rows of the Settings index, in order.
+ *
+ * Statistics used to be the second card on the "About & statistics" page: three taps
+ * from here, underneath the version number and the licence. That is not where anyone
+ * looks for what they have been listening to, and it is the one page in Settings that
+ * is *read* rather than set — so nobody browsing for a control was going to find it
+ * either. It now sits between Driving and System, which is where the reading ends and
+ * the housekeeping begins.
+ *
+ * Built by walking [SettingsSection.entries] and inserting the statistics row *before*
+ * a named section rather than at a fixed position, so reordering the enum later moves
+ * the sections and leaves this row where it was put.
+ */
+internal val settingsIndex: List<IndexRow> = buildList {
+    SettingsSection.entries.forEach { section ->
+        if (section == SettingsSection.SYSTEM_ABOUT) add(IndexRow.Stats)
+        add(IndexRow.Category(section))
+    }
+}
