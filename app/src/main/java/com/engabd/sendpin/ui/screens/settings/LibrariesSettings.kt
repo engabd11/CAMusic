@@ -15,6 +15,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -126,11 +127,14 @@ private fun ServerList(
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         PageIntro(
             title = "Your libraries",
-            lead = "Pick the one the Library tab browses.",
+            lead = "Pick the one the Library tab browses, and the order they come in.",
             info = "Switching does not remove anything. The others stay set up and keep their " +
-                "logins, ready to switch back to in one tap.\n\nDownloads play from whichever " +
-                "server they came from either way, so nothing on disk stops working when you " +
-                "switch.\n\nTip: keep Music Assistant and a direct library both set up if you " +
+                "logins, ready to switch back to in one tap.\n\nThe arrows set the order, and " +
+                "it is the same order the switcher in the Library tab offers — so the one " +
+                "you reach for most can be first in both places.\n\nDownloads play from " +
+                "whichever server they came from either way, so nothing on disk stops working " +
+                "when you switch.\n\nTip: keep Music Assistant and a direct library both " +
+                "set up if you " +
                 "have them. Switch to the direct one when you leave the house, since it works " +
                 "offline and Music Assistant does not.",
         )
@@ -148,11 +152,17 @@ private fun ServerList(
             )
         }
 
-        servers.forEach { server ->
+        servers.forEachIndexed { index, server ->
             ServerCard(
                 config = server,
                 active = server.id == activeId,
                 accent = accent,
+                // Nothing to reorder with one library, so the arrows stay off the card
+                // rather than sitting there permanently disabled.
+                reorderable = servers.size > 1,
+                canMoveUp = index > 0,
+                canMoveDown = index < servers.lastIndex,
+                onMove = { up -> scope.launch { settings.moveServer(server.id, up) } },
                 onOpen = { onDetail(server.id) },
                 onActivate = { scope.launch { settings.setActiveServer(server.id) } },
             )
@@ -211,6 +221,12 @@ private fun ServerCard(
     config: ServerConfig,
     active: Boolean,
     accent: Color,
+    /** False with a single library, where there is no order to have an opinion about. */
+    reorderable: Boolean,
+    canMoveUp: Boolean,
+    canMoveDown: Boolean,
+    /** True to move this server one place up the list, false for one place down. */
+    onMove: (Boolean) -> Unit,
     onOpen: () -> Unit,
     onActivate: () -> Unit,
 ) {
@@ -268,27 +284,81 @@ private fun ServerCard(
 
             Box(Modifier.padding(horizontal = 20.dp)) { CardDivider() }
 
+            // The foot of the card does two jobs, so it is two targets with a rule
+            // between them rather than one row with an ambiguous tap: the left half
+            // goes to this server's settings, the right half moves it in the list.
+            // Sharing a click handler between "open" and "reorder" is how a list gets
+            // reordered by someone who meant to open something.
             Row(
-                Modifier
-                    .fillMaxWidth()
-                    .clickable(onClick = onOpen)
-                    .padding(horizontal = 20.dp, vertical = 13.dp),
+                Modifier.fillMaxWidth().height(IntrinsicSize.Min),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                Icon(Icons.Default.Tune, null, tint = TextMuted, modifier = Modifier.size(17.dp))
-                Text(
-                    // Named, because two servers of the same kind are common and
-                    // "Settings" over a list of three says nothing about which.
-                    "${config.displayName} settings",
-                    color = TextSecondary, fontFamily = AppFont,
-                    style = MaterialTheme.typography.labelLarge,
-                    modifier = Modifier.weight(1f),
-                    maxLines = 1, overflow = TextOverflow.Ellipsis,
-                )
-                Icon(Icons.Default.ChevronRight, null, tint = TextMuted, modifier = Modifier.size(20.dp))
+                Row(
+                    Modifier
+                        .weight(1f)
+                        .clickable(onClick = onOpen)
+                        .padding(start = 20.dp, end = if (reorderable) 12.dp else 20.dp, top = 13.dp, bottom = 13.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Icon(Icons.Default.Tune, null, tint = TextMuted, modifier = Modifier.size(17.dp))
+                    Text(
+                        // Named, because two servers of the same kind are common and
+                        // "Settings" over a list of three says nothing about which.
+                        "${config.displayName} settings",
+                        color = TextSecondary, fontFamily = AppFont,
+                        style = MaterialTheme.typography.labelLarge,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    )
+                    Icon(Icons.Default.ChevronRight, null, tint = TextMuted, modifier = Modifier.size(20.dp))
+                }
+
+                if (reorderable) {
+                    Box(Modifier.width(1.dp).fillMaxHeight().background(Hairline))
+                    MoveButton(
+                        Icons.Default.KeyboardArrowUp,
+                        "Move ${config.displayName} up",
+                        canMoveUp,
+                    ) { onMove(true) }
+                    MoveButton(
+                        Icons.Default.KeyboardArrowDown,
+                        "Move ${config.displayName} down",
+                        canMoveDown,
+                    ) { onMove(false) }
+                }
             }
         }
+    }
+}
+
+/**
+ * One end of the reorder pair.
+ *
+ * Disabled rather than hidden at the ends of the list: a card whose arrow count
+ * changed with its position would make the first and last cards a different size from
+ * the rest, and the list would reflow under the finger every time something reached
+ * an end. A 44dp box around a 20dp glyph, because the two sit next to each other and
+ * next to a navigation row, and this is the smallest target that does not put "open
+ * settings" one pixel from "move down".
+ */
+@Composable
+private fun MoveButton(
+    icon: ImageVector,
+    label: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    Box(
+        Modifier.size(44.dp).clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            icon,
+            label.takeIf { enabled },
+            tint = if (enabled) TextSecondary else TextFaint.a(0.35f),
+            modifier = Modifier.size(20.dp),
+        )
     }
 }
 

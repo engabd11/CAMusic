@@ -494,6 +494,26 @@ class AppSettings(private val context: Context) {
             if (!auto) return null  // the user pinned a transport by hand
             return lightSyncModeFor(backend).takeIf { it != current }
         }
+
+        /**
+         * [list] with the server named by [id] moved one place [up], or down.
+         *
+         * Pulled out of [moveServer] for the same reason [lightSyncModeChange] was
+         * pulled out of its coordinator: the rules are worth a test and the DataStore
+         * around them is not. Everything interesting is here — that an unknown id and
+         * a move off either end both leave the list exactly as it was, and that
+         * nothing else in it shifts relative to anything else.
+         *
+         * Returns the *same instance* when there is nothing to do, so the caller can
+         * skip the write rather than rewriting the list it just read.
+         */
+        fun reorderServers(list: List<ServerConfig>, id: String, up: Boolean): List<ServerConfig> {
+            val from = list.indexOfFirst { it.id == id }
+            if (from < 0) return list
+            val to = from + if (up) -1 else 1
+            if (to !in list.indices) return list
+            return list.toMutableList().apply { add(to, removeAt(from)) }
+        }
     }
 
     // ── The server list ───────────────────────────────────────────────────
@@ -622,6 +642,41 @@ class AppSettings(private val context: Context) {
         context.dataStore.edit { prefs ->
             prefs[SERVERS] = encodeServers(list)
             mirrorLegacyKeys(prefs, list, resolveActiveId(prefs, list))
+        }
+    }
+
+    /**
+     * Move the server with [id] one place [up] the list, or one place down.
+     *
+     * The list's order is the order the Providers page lists libraries in *and* the
+     * order the Library tab's switcher offers them in — both render [servers] as they
+     * find it — so this is the one write that decides both. Someone with four
+     * libraries and one they actually use every day was stuck with whichever order
+     * they happened to add them in.
+     *
+     * A move rather than a [saveServers] of a list the caller has already reordered,
+     * for two reasons. The list is read back inside the same `edit`, so two taps in
+     * quick succession cannot both start from the order they were composed with and
+     * lose one of the moves. And the active server is pinned across the write: the
+     * [ACTIVE_SERVER] key is empty until something sets it, and [resolveActiveId]
+     * falls back to *the first matching entry in the list* — so on an install that has
+     * never switched libraries by hand, moving a server to the top would otherwise
+     * silently make it the one being browsed.
+     *
+     * An out-of-range move is a no-op. The buttons that call this are disabled at
+     * the ends of the list, but a second tap can still be in flight when the first
+     * one lands.
+     */
+    suspend fun moveServer(id: String, up: Boolean) {
+        context.dataStore.edit { prefs ->
+            val before = storedServers(prefs)
+            val after = reorderServers(before, id, up)
+            if (after === before) return@edit
+            // Read before the write, from the order the move started in. See above.
+            val activeId = resolveActiveId(prefs, before)
+            prefs[SERVERS] = encodeServers(after)
+            if (activeId.isNotEmpty()) prefs[ACTIVE_SERVER] = activeId
+            mirrorLegacyKeys(prefs, after, activeId)
         }
     }
 

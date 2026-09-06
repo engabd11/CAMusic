@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -34,6 +35,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -68,7 +70,11 @@ import java.io.OutputStreamWriter
  * "Servers" while the choice of whether to browse it lived under "Library".
  *
  * The six sections below are the questions someone actually arrives with, and each
- * one is now an *index* rather than a page. That second half is the more important
+ * one is now an *index* rather than a page. They are six of the seven rows on that
+ * index — Listening statistics is the seventh, and is a screen rather than a section,
+ * so it lives in [settingsIndex] instead of here.
+ *
+ * That second half is the more important
  * one: five categories over a single scroll each is not really two levels, and
  * "Audio Engine & DSP" had become nine cards spanning bit-perfect output, ReplayGain,
  * crossfade, DJ Radio, a road-safety feature with its own GPS subsystem, shake
@@ -133,7 +139,7 @@ enum class SettingsSection(
     ),
     SYSTEM_ABOUT(
         "System, Storage & About",
-        "Downloads, encrypted backup and restore, diagnostics, version, and statistics",
+        "Downloads, encrypted backup and restore, diagnostics, and the version",
         Icons.Default.Settings,
     ),
 }
@@ -223,7 +229,18 @@ fun SettingsScreen(
                 Text(
                     headerTitle(section, detail), color = TextPrimary, fontFamily = AppFont,
                     fontWeight = FontWeight.ExtraBold, fontSize = 26.sp, letterSpacing = (-0.5).sp,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
                 )
+                // Index only, which is the reach the card it replaced had. Inside a
+                // section the header is already carrying a back arrow and a page
+                // name, and the mode is not a thing you change halfway down one.
+                if (section == null) {
+                    Spacer(Modifier.width(12.dp))
+                    AdvancedPill(advanced, accent) {
+                        scope.launch { settings.setAdvancedSettings(!advanced) }
+                    }
+                }
             }
 
             LazyColumn(
@@ -234,7 +251,7 @@ fun SettingsScreen(
                 if (section == null) {
                     // Nothing set up yet: the index reads identically whether the app is
                     // configured or completely empty, and a new user's first question is
-                    // not which of six categories to browse.
+                    // not which of seven rows to browse.
                     if (state.servers == 0) {
                         item(key = "get-started") {
                             GetStartedCard(accent) { onSection(SettingsSection.PROVIDERS); onDetail(null) }
@@ -244,18 +261,32 @@ fun SettingsScreen(
                     // description of a category is a definition, and the reader already
                     // knows what "Downloads" means; what they do not know is whether
                     // theirs are taking a gigabyte or whether the bridge ever paired.
-                    item(key = "advanced-toggle") {
-                        AdvancedToggleCard(advanced, settings, accent, scope)
-                    }
-                    items(SettingsSection.entries, key = { it.name }, contentType = { "category" }) { s ->
+                    itemsIndexed(
+                        settingsIndex,
+                        key = { _, row -> row.key },
+                        contentType = { _, _ -> "category" },
+                    ) { i, row ->
                         // Each row takes its own swatch from the album palette, the same
-                        // way the library's category tiles do — so the six read as a set
-                        // of places rather than six repetitions of one accent, and both
+                        // way the library's category tiles do — so the seven read as a set
+                        // of places rather than seven repetitions of one accent, and both
                         // screens are visibly tinted by the record on the player.
-                        val hue = LocalPalette.current.swatch(s.ordinal)
+                        //
+                        // Keyed on the row's position rather than a section's ordinal, so
+                        // the statistics row between Driving and System takes a swatch of
+                        // its own instead of repeating a neighbour's.
+                        val hue = LocalPalette.current.swatch(i)
                         val tint by animateColorAsState(hue, Motion.effects(), label = "sectionHue")
-                        NavRow(s.icon, s.title, state.subtitleFor(s) ?: s.subtitle, tint) {
-                            onSection(s); onDetail(null)
+                        when (row) {
+                            is IndexRow.Category -> NavRow(
+                                row.icon, row.title,
+                                state.subtitleFor(row.section) ?: row.subtitle, tint,
+                            ) {
+                                onSection(row.section); onDetail(null)
+                            }
+                            // A screen, not a section — so it leaves Settings entirely
+                            // rather than opening a page underneath this one.
+                            IndexRow.Stats ->
+                                NavRow(row.icon, row.title, row.subtitle, tint, onClick = onOpenStats)
                         }
                     }
                 } else {
@@ -273,7 +304,6 @@ fun SettingsScreen(
                         haToken = haToken,
                         onHaToken = { haToken = it },
                         onOpenDownloads = onOpenDownloads,
-                        onOpenStats = onOpenStats,
                     )
                 }
             }
@@ -314,7 +344,6 @@ private fun LazyListScope.sectionItems(
     haToken: String,
     onHaToken: (String) -> Unit,
     onOpenDownloads: () -> Unit,
-    onOpenStats: () -> Unit,
 ) {
     // The section index: which pages are behind this category. Empty for the two
     // that are their own index — see [subPagesFor].
@@ -422,18 +451,10 @@ private fun LazyListScope.sectionItems(
             }
             SYS_BACKUP_ROUTE -> card("sys_backup") { BackupSection(settings, accent, scope) }
             SYS_DIAGNOSTICS_ROUTE -> card("sys_diagnostics") { DiagnosticsCard(accent) }
-            SYS_ABOUT_ROUTE -> {
-                card("sys_about") { AboutCard(accent) }
-                card("sys_stats") {
-                    NavRow(
-                        icon = Icons.Default.BarChart,
-                        title = "Listening statistics",
-                        subtitle = "Your recent top artists, total listening time, and format breakdown",
-                        accent = accent,
-                        onClick = onOpenStats,
-                    )
-                }
-            }
+            // Statistics used to be the second card here. It is a top-level row on
+            // the index now — see [settingsIndex] — so this page is the one subject
+            // its name always claimed.
+            SYS_ABOUT_ROUTE -> card("sys_about") { AboutCard(accent) }
         }
     }
 }
@@ -573,9 +594,9 @@ private fun rememberSettingsOverview(
 /**
  * The one card a phone with no library needs.
  *
- * Six categories, all of them about parts of a thing that has not been set up, is a
- * poor first screen: the app cannot browse, play, download or light anything until a
- * server exists, and none of the six rows says so.
+ * Seven rows, all of them about parts of a thing that has not been set up, is a poor
+ * first screen: the app cannot browse, play, download or light anything until a
+ * server exists, and none of the seven says so.
  */
 @Composable
 private fun GetStartedCard(accent: androidx.compose.ui.graphics.Color, onAddLibrary: () -> Unit) {
@@ -728,42 +749,50 @@ private fun BackupSection(settings: AppSettings, accent: Color, scope: Coroutine
     }
 }
 
-/** The master switch that reveals the full settings surface. */
+/**
+ * The master switch that reveals the full settings surface, as one word in the header.
+ *
+ * It was a full-width card at the top of the index: the first thing on the screen,
+ * ahead of every actual destination, spending a title and a subtitle explaining a
+ * question most people never ask. But it is not a destination and it is not a setting
+ * about the app — it is the *mode this screen is read in*, which is what a header
+ * control is for. So it says which mode is on, in one word, and tapping it swaps to
+ * the other. "Advanced" or "Basic" is the whole of it; the two lines of explanation
+ * were describing what the word already says.
+ *
+ * The label is animated because the two words are different widths, and a pill that
+ * jumps a few pixels every tap reads as a layout bug rather than a state change.
+ */
 @Composable
-private fun AdvancedToggleCard(
-    advanced: Boolean,
-    settings: AppSettings,
-    accent: Color,
-    scope: CoroutineScope,
-) {
-    GlassCard(radius = 16.dp) {
-        Row(
-            Modifier.fillMaxWidth()
-                .clickable { scope.launch { settings.setAdvancedSettings(!advanced) } }
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
-                Text(
-                    "Advanced settings",
-                    color = TextPrimary,
-                    fontFamily = AppFont,
-                    style = MaterialTheme.typography.titleLarge,
-                )
-                Text(
-                    if (advanced) "Showing every control and explanation" else "Showing only the everyday controls",
-                    color = TextFaint,
-                    fontFamily = AppFont,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            Box(
-                Modifier.size(44.dp, 24.dp).clip(RoundedCornerShape(100))
-                    .background(if (advanced) accent else Glass)
-                    .border(1.dp, if (advanced) accent.a(0.5f) else Hairline, RoundedCornerShape(100))
-                    .padding(2.dp),
-                contentAlignment = if (advanced) Alignment.CenterEnd else Alignment.CenterStart,
-            ) { Box(Modifier.size(18.dp).clip(CircleShape).background(if (advanced) Ink else TextMuted)) }
+private fun AdvancedPill(advanced: Boolean, accent: Color, onToggle: () -> Unit) {
+    val tint by animateColorAsState(
+        if (advanced) accent else TextMuted, Motion.effects(), label = "advancedTint",
+    )
+    Row(
+        Modifier
+            .clip(RoundedCornerShape(100))
+            .background(if (advanced) accent.a(0.14f) else Glass)
+            .border(1.dp, if (advanced) accent.a(0.45f) else Hairline, RoundedCornerShape(100))
+            .clickable(onClick = onToggle)
+            .padding(horizontal = 12.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Icon(Icons.Default.Tune, null, tint = tint, modifier = Modifier.size(15.dp))
+        AnimatedContent(
+            targetState = advanced,
+            transitionSpec = {
+                (fadeIn(Motion.effects()) togetherWith fadeOut(Motion.effects()))
+                    .using(SizeTransform(clip = false))
+            },
+            label = "advancedLabel",
+        ) { on ->
+            Text(
+                if (on) "Advanced" else "Basic",
+                color = tint, fontFamily = AppFont,
+                fontWeight = FontWeight.Bold, fontSize = 12.sp,
+                maxLines = 1,
+            )
         }
     }
 }
