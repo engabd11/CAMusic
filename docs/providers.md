@@ -143,17 +143,17 @@ seconds until plex.tv hands back a token or the user gives up.
 
 ### Experimental — streaming accounts
 
-**Spotify, Qobuz and Tidal** are next, marked `experimental` in `ServerKind` and shown in
-their own picker section. They are a different shape from everything above: an **account,
-not a server** — `ServerKind.cloudAccount` gives them a setup form with no address field.
-Nothing about them works yet; the implementation plan, per-provider API reality and risks
-live in `docs/plan/direct-streaming-providers.md`. Short version: no streaming service
-offers an official API a third-party player can stream from, so each arrives the way Music
-Assistant talks to them — Qobuz via its undocumented web-app endpoints (plain FLAC URLs,
-the easiest), Spotify via an embedded librespot client, Tidal via its reverse-engineered
-API with device sign-in. YouTube Music is deliberately absent: OAuth withdrawn, cookie +
-PO-token machinery, playback capture blocked on Android. No brand marks in the picker
-while experimental — a real Spotify logo on a greyed row reads as "supported".
+**Spotify, Qobuz and Tidal** are marked `experimental` in `ServerKind` and shown in their
+own picker section. They are a different shape from everything above: an **account, not a
+server** — `ServerKind.cloudAccount` gives them a setup form with no address field. All
+three now have client + source code on the branch (see
+`docs/plan/direct-streaming-providers.md` for the per-provider design): Qobuz via its
+undocumented web-app endpoints (plain FLAC URLs), Spotify via an embedded librespot
+client (real PCM in-process, Light Sync on its own tap), Tidal via device sign-in and its
+v1 API with BTS manifest playback. Live-account smoke tests are the last mile before the
+experimental tags come off. No brand marks in the picker while experimental — a real
+Spotify logo on a greyed row reads as "supported". YouTube Music is deliberately absent:
+OAuth withdrawn, cookie + PO-token machinery, playback capture blocked on Android.
 
 ### Planned — HTTP APIs
 

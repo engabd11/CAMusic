@@ -236,7 +236,23 @@ foreground lifetime).
 
 ## Phase 3 — Tidal
 
-### Task 3.1: Device-auth client
+**Status: LANDED** on `feat/direct-streaming-providers` (client, source, device sign-in
+row). Live smoke with a real Tidal account + this app's own developer registration is the
+outstanding step. Design decisions worth keeping:
+
+- **Device authorization flow** (RFC 8628 on `auth.tidal.com/v1/oauth2`): the app mints a
+  code, the user approves in a browser, the token pair + expiry + user id + country live in
+  `ServerConfig` options (`tidalAccessToken`/`tidalRefreshToken`/`tidalTokenExpiresAt`/
+  `tidalUserId`/`tidalCountryCode`). `TidalSignInRow` (the Plex PIN-row shape) drives it.
+- **Client credentials** are the app's own Tidal developer registration
+  (`tidalClientId`/`tidalClientSecret` options) — MA's are theirs, as with Qobuz.
+- **BTS manifests**: `playbackinfopostpaywall` answers are base64 JSON whose `uris` may be
+  AES-128-ECB encrypted (key = SHA-256(manifestKey + securityToken)); `streamUrl` walks
+  HI_RES → LOSSLESS → HIGH and decrypts where needed. Stream urls expire → same
+  `tidal://track/<id>` scheme-uri mechanism as Qobuz.
+- Favourites wrap payloads in an `item` envelope; the client parsers unwrap both shapes.
+
+### Task 3.1: Device-auth client ✅
 
 **Objective:** `tidal/TidalClient.kt` — device authorization flow (user opens a URL, enters
 a code), token storage in `ServerConfig` options, refresh handling.

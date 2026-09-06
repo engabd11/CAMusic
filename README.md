@@ -101,7 +101,10 @@ can add as many as you like and switch between them freely.
 
 🔬 **Experimental** — Spotify, Qobuz and Tidal are streaming *accounts* (no server address,
 just a sign-in) being built right now on `master`'s roadmap. Direct integration, played on
-the phone with light sync, no Music Assistant required. Not usable yet; the plan lives in
+the phone with light sync, no Music Assistant required. Client and source code for all
+three has landed (Spotify embedded librespot player, Qobuz web-app API, Tidal device
+sign-in + v1 API with BTS manifest playback); live-account smoke testing is the last
+mile before each one's "experimental" tag can come off. The plan lives in
 [docs/plan/direct-streaming-providers.md](docs/plan/direct-streaming-providers.md). There
 are no official third-party streaming APIs — each arrives through an embedded client or
 the service's own undocumented endpoints, and YouTube Music is deliberately absent (no
