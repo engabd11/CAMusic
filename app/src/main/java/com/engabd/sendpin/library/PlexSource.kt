@@ -18,7 +18,11 @@ import com.engabd.sendpin.plex.PlexClient
  * [Capability.SAVED_QUEUE] — none has a documented public endpoint worth relying on.
  * No [Capability.RICH_FORMAT]: Plex's `Media` element gives a codec, a bitrate and a
  * channel count, but never a sample rate or bit depth, so the badge would always be
- * missing half of what the capability promises.
+ * missing half of what the capability promises. No [Capability.REPLAY_GAIN] either:
+ * Plex does analyse loudness, but it keeps the result inside its own sonic-analysis
+ * store for Plexamp rather than exposing a per-track gain on the metadata a client
+ * can read — so there is nothing to level with, and a control here would be a
+ * promise about a number this app cannot get.
  */
 class PlexSource(private val client: PlexClient) : MusicSource {
 

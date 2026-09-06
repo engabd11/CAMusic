@@ -98,6 +98,13 @@ class JellyfinClient(
          */
         private const val CLIENT_CONTAINERS = "flac,mp3,aac,m4a,ogg,opus,wav"
 
+        /**
+         * The loudness Jellyfin normalises to, for turning a bare `LUFS` reading into
+         * a gain. Jellyfin's own default and the one its clients assume; only the
+         * pre-`NormalizationGain` servers need it — see [normalizationGain].
+         */
+        private const val TARGET_LUFS = -18f
+
         /** The codec to transcode *to* for a given container. */
         private fun codecFor(container: String): String = when (container) {
             "m4a" -> "aac"
@@ -805,6 +812,9 @@ class JellyfinClient(
      * the quality badge can read `FLAC • 96/24 • 3 Mb/s` with no derivation. The
      * bitrate arrives in bits per second and is converted, for the same reason MA's
      * parser does it — an unconverted one renders as "3011000k".
+     *
+     * The gain fields come from Jellyfin's own loudness scan rather than from a
+     * ReplayGain tag — see [normalizationGain].
      */
     private fun audioFormat(o: JsonObject): MaAudioFormat? {
         val source = o["MediaSources"]?.jsonArray.orEmpty().firstOrNull() as? JsonObject
@@ -822,12 +832,37 @@ class JellyfinClient(
             // didn't say" and "the server said stereo" are different answers.
             channels = stream?.int("Channels") ?: 0,
             sizeBytes = source?.long("Size") ?: 0L,
+            replayGainTrack = normalizationGain(o, "NormalizationGain", o.float("LUFS")),
+            replayGainAlbum = normalizationGain(o, "AlbumNormalizationGain", o.float("AlbumLUFS")),
         )
+    }
+
+    /**
+     * Jellyfin's answer to a ReplayGain tag, in dB.
+     *
+     * Jellyfin measures loudness itself rather than trusting a tag, and reports the
+     * correction as `NormalizationGain` — the same number, arrived at by the server's
+     * own scan, which is why it lands in [MaAudioFormat]'s ReplayGain fields and is
+     * applied by exactly the same scalar. `AlbumNormalizationGain` is the album-mode
+     * half and only exists on builds new enough to send it; an older server simply
+     * leaves album mode falling back to the track gain, which is what
+     * [com.engabd.sendpin.audio.ReplayGain.decibels] already does.
+     *
+     * [lufs] is the fallback for the first generation of the feature, which published
+     * the raw measurement and left the arithmetic to the client. The correction is
+     * then the distance to the target Jellyfin itself normalises against, −18 LUFS.
+     * A server that scanned nothing sends neither and the track is left alone: null
+     * here means "no measurement", never "0 dB".
+     */
+    private fun normalizationGain(o: JsonObject, key: String, lufs: Float?): Float? {
+        o.float(key)?.let { if (it.isFinite()) return it }
+        return lufs?.takeIf { it.isFinite() && it != 0f }?.let { TARGET_LUFS - it }
     }
 
     // ── JSON helpers, matching SubsonicClient's ───────────────────────────
 
     private fun JsonObject.str(k: String) = this[k]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+    private fun JsonObject.float(k: String) = this[k]?.jsonPrimitive?.doubleOrNull?.toFloat()
     private fun JsonObject.int(k: String) = this[k]?.jsonPrimitive?.let { it.intOrNull ?: it.doubleOrNull?.toInt() }
     private fun JsonObject.long(k: String) = this[k]?.jsonPrimitive?.let { it.longOrNull ?: it.doubleOrNull?.toLong() }
     private fun JsonObject.bool(k: String) = this[k]?.jsonPrimitive?.booleanOrNull

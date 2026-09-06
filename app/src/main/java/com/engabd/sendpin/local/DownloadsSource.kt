@@ -47,11 +47,18 @@ class DownloadsSource(private val downloads: DownloadManager) : MusicSource {
      * No `PLAYLIST_READ`, no `GENRES`, no `FAVORITES` — see [Capability]'s own note
      * that a shelf which is always empty is worse than the feature being absent.
      * `DOWNLOAD` in particular would be circular.
+     *
+     * [Capability.REPLAY_GAIN] holds because the measurement came down with the file:
+     * a download stores the `MaAudioFormat` the library reported, gain fields and all,
+     * so a track fetched from Navidrome or Jellyfin is still levelled with that
+     * server's own numbers when it plays with every server switched off. A file that
+     * arrived without a measurement is left alone, which is what the sheet says.
      */
     override val capabilities: Set<Capability> = setOf(
         Capability.SEARCH,
         Capability.TRACKS,
         Capability.RICH_FORMAT,
+        Capability.REPLAY_GAIN,
     )
 
     private fun all(): List<DownloadedTrack> = downloads.downloads.value
