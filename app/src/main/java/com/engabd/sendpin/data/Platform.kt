@@ -2,6 +2,7 @@ package com.engabd.sendpin.data
 
 import android.app.UiModeManager
 import android.content.Context
+import android.content.pm.PackageManager
 import android.content.res.Configuration
 import com.engabd.sendpin.BuildConfig
 
@@ -38,4 +39,26 @@ object Platform {
         BuildConfig.FLAVOR == "tv" ||
             (context.getSystemService(Context.UI_MODE_SERVICE) as? UiModeManager)
                 ?.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION
+
+    /**
+     * True on Android Automotive OS — a car whose head unit runs this APK itself.
+     *
+     * Not the same thing as Android Auto, and the distinction decides what the code
+     * either side of this can do. *Android Auto* projects from the phone, and the car
+     * draws Google's own media template from the browse tree in `car/` — that surface
+     * has no Activity, no Compose, and no layout this app is allowed to choose.
+     * *Automotive* installs the app on the car, so `MainActivity` is what the driver
+     * is looking at, and its layout is entirely ours. [com.engabd.sendpin.ui.screens.CarShell]
+     * is that layout.
+     *
+     * `FEATURE_AUTOMOTIVE` is the reliable half — every AAOS build declares it, on the
+     * emulator too. `UI_MODE_TYPE_CAR` is kept beside it for the same reason the
+     * television check keeps its UI-mode half: a head unit that reports car mode
+     * without the feature flag still wants the car layout, and the cost of asking is
+     * one system-service call at composition.
+     */
+    fun isAutomotive(context: Context): Boolean =
+        context.packageManager.hasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE) ||
+            (context.getSystemService(Context.UI_MODE_SERVICE) as? UiModeManager)
+                ?.currentModeType == Configuration.UI_MODE_TYPE_CAR
 }

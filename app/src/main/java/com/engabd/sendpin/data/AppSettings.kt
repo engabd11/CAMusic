@@ -164,6 +164,9 @@ class AppSettings(private val context: Context) {
         /** Enabled library ids, comma-separated, in the driver's own order. */
         private val AUTO_LIBRARIES = stringPreferencesKey("auto_libraries")
         private val AUTO_SEEK_SECONDS = stringPreferencesKey("auto_seek_seconds")
+        // Not part of the browse tree: this one is about the app's *own* screen on
+        // Android Automotive. See [carLayoutPreview].
+        private val CAR_LAYOUT_PREVIEW = booleanPreferencesKey("car_layout_preview")
         private val DRIVING_ENABLED = booleanPreferencesKey("driving_enabled")
         private val DRIVING_MECHANISM = stringPreferencesKey("driving_mechanism") // pip | overlay
         private val DRIVING_CAR_ADDRESS = stringPreferencesKey("driving_car_address") // bonded device MAC
@@ -1985,6 +1988,26 @@ class AppSettings(private val context: Context) {
 
     suspend fun setCarSeekSeconds(seconds: Int) = context.dataStore.edit {
         it[AUTO_SEEK_SECONDS] = seconds.coerceIn(0, 300).toString()
+    }
+
+    /**
+     * Draw the car's own layout on this phone.
+     *
+     * Everything else on the Android Auto page describes a tree the *car* renders, so
+     * it can be reasoned about from a screenshot. The Automotive layout cannot: it is
+     * a shell this app draws, and the branch into it is taken on
+     * [com.engabd.sendpin.data.Platform.isAutomotive] — a hardware feature no phone
+     * reports. Without this switch there is no way to see it short of a head unit, and
+     * the split it chooses depends on the window it is given, which a phone can
+     * reshape by being turned on its side.
+     *
+     * Off by default, and phone-only in effect: on a real head unit the car layout is
+     * already the one in use and this changes nothing.
+     */
+    val carLayoutPreview: Flow<Boolean> = pref { it[CAR_LAYOUT_PREVIEW] ?: false }
+
+    suspend fun setCarLayoutPreview(on: Boolean) = context.dataStore.edit {
+        it[CAR_LAYOUT_PREVIEW] = on
     }
 
     /** Put every Android Auto appearance setting back to the tree the app ships with. */

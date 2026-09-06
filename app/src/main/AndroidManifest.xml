@@ -106,6 +106,20 @@
     </queries>
 
     <!--
+      Android Automotive: a car whose head unit installs and runs this APK, as
+      opposed to Android Auto, where the phone runs it and projects a template.
+      Different surface, different code - see ui/screens/CarScreen.kt for the layout
+      the car gets, and data/Platform.isAutomotive for the branch into it.
+
+      required="false" is the load-bearing attribute. Declaring the feature is what
+      makes an AAOS build accept the app at all, and marking it required would make
+      it a *car-only* app - every phone on earth filtered out of the store listing,
+      to add a layout none of them can reach. One APK, two device classes, and the
+      branch decided at runtime.
+    -->
+    <uses-feature android:name="android.hardware.type.automotive" android:required="false" />
+
+    <!--
       Predictive back: targetSdk 36 expects an app to have opted in, and the M3
       motion work below relies on the back gesture being animated rather than
       cutting straight to the previous screen.
@@ -267,6 +281,21 @@
         -->
         <meta-data
             android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+
+        <!--
+          The same descriptor, read by Android Automotive rather than by projected
+          Auto. It declares this a media app to the *car's* system UI, which is what
+          puts it in the media-source switcher and lets the car's own now-playing
+          widget address the session in CarMediaLibraryService.
+
+          Worth having even though the car also runs this app's full UI: the widget
+          and the switcher are surfaces outside the app, and without this they do not
+          know it plays anything. The in-car layout itself needs no declaration - it
+          is an ordinary Activity on an ordinary launcher.
+        -->
+        <meta-data
+            android:name="com.android.automotive"
             android:resource="@xml/automotive_app_desc" />
 
         <service

@@ -31,6 +31,7 @@ import com.engabd.sendpin.car.CarLibraryAbilities
 import com.engabd.sendpin.car.CarRowStyle
 import com.engabd.sendpin.car.CarShelf
 import com.engabd.sendpin.data.AppSettings
+import com.engabd.sendpin.data.Platform
 import com.engabd.sendpin.ui.design.a
 import com.engabd.sendpin.ui.theme.*
 import kotlinx.coroutines.CoroutineScope
@@ -660,3 +661,73 @@ private fun nearestIndex(choices: List<Int>, value: Int): Int {
 
 /** Enough rows to show the grouping and the row shape, few enough to stay a preview. */
 private const val PREVIEW_ROWS = 5
+
+/**
+ * Android Automotive: the app's own screen, on the car's own hardware.
+ *
+ * A separate card from the three above it because it is a separate product. Those
+ * describe a tree that *Android Auto* renders — the phone is plugged in, the car draws
+ * Google's media template, and the only thing this app chooses is what goes in it.
+ * Automotive installs this APK on the head unit, so there is no template: the car is
+ * running `MainActivity` and every pixel is ours.
+ *
+ * Which is why the layout is what this card is about. There is no bottom nav on the
+ * car, because the two things a driver wants are both on the main screen at once — the
+ * player on one side, the library on the other — and the split follows the window the
+ * car gives the app rather than the orientation of its display, so an app sharing a
+ * portrait screen with another still gets two clean halves.
+ */
+@Composable
+internal fun AutomotiveLayoutCard(settings: AppSettings, accent: Color, scope: CoroutineScope) {
+    val context = LocalContext.current
+    val onCar = remember(context) { Platform.isAutomotive(context) }
+    val preview by settings.carLayoutPreview.collectAsStateWithLifecycle(initialValue = false)
+
+    SettingsCard(
+        title = "On a car that runs the app itself",
+        lead = "Android Automotive gets a two-pane screen instead of tabs.",
+        info = "Android Auto and Android Automotive are two different things, and this card is " +
+            "about the second. With Android Auto the phone does the work and the car draws " +
+            "Google's own media template — that is the browse tree the cards above " +
+            "configure.\n\nAndroid Automotive is the car running this app. There is no " +
+            "template to fill in and no phone in the loop, so the app draws its own screen, " +
+            "and the screen it draws is not the phone's. There is no bottom nav: the player " +
+            "and the library are both up at once, side by side on a landscape head unit and " +
+            "stacked on a portrait one. Settings is the one button in the player's " +
+            "corner.\n\nThe split follows the window rather than the display. A portrait " +
+            "head unit sharing its screen with another app hands this app a short, wide " +
+            "region — so it splits sideways there, and both halves stay usable.",
+    ) {
+        StatusRow("This device", if (onCar) "Android Automotive" else "Not a head unit")
+        StatusRow("Layout in use", if (onCar || preview) "Two panes, no tabs" else "Phone tabs")
+
+        ToggleRow(
+            "Preview the car layout here",
+            "Draw the two-pane car screen on this device. Turn the phone to see both splits.",
+            preview, accent,
+            enabled = !onCar,
+            info = "Nothing else on this page can be checked without a car, and this one is " +
+                "worse than the rest: the browse tree at least renders in a screenshot, " +
+                "while the Automotive layout is only reached on hardware reporting the " +
+                "automotive feature, which no phone does.\n\nSo this forces the branch. " +
+                "The layout itself needs no forcing — it is chosen from the size of the " +
+                "window, so turning the phone sideways shows the side-by-side split and " +
+                "upright shows the stacked one, which are the same two a head unit " +
+                "picks between.\n\nOff on a real head unit, where the car layout is " +
+                "already the one in use.",
+            onChange = { scope.launch { settings.setCarLayoutPreview(it) } },
+        )
+
+        if (onCar) {
+            Note("This is a head unit, so the car layout is already what you are looking at.")
+        }
+
+        Note(
+            "Not yet driven.",
+            title = "Status of this feature",
+            info = "The same caveat the browse tree carries, and for the same reason: this " +
+                "has been laid out and reasoned about, but never run on a head unit. The " +
+                "preview switch above is the honest way to judge it until one is to hand.",
+        )
+    }
+}

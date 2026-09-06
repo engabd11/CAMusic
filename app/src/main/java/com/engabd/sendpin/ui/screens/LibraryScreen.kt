@@ -121,6 +121,16 @@ fun LibraryScreen(
      * about, so that screen stays where it is and this is a second way into it.
      */
     onManageDownloads: (() -> Unit)? = null,
+    /**
+     * Offer the library switcher as a full-width bar above the shelves, as well as the
+     * badge beside the title.
+     *
+     * For the car, which reuses this screen whole - see [CarLibrarySwitchBar] for why
+     * the badge alone is the wrong target at 60mph. Off everywhere else: on a phone the
+     * badge is already under the thumb, and a bar would cost a shelf's worth of height
+     * to say what the badge says.
+     */
+    prominentLibrarySwitch: Boolean = false,
 ) {
     val ready by viewModel.ready.collectAsStateWithLifecycle()
     val booted by viewModel.booted.collectAsStateWithLifecycle()
@@ -210,6 +220,18 @@ fun LibraryScreen(
                 searching = searching,
                 onLibraryBadgeClick = { showLibrarySwitch = true },
             )
+            // Only once there is a library to switch *from*: above the connect form
+            // it would offer a choice between servers none of which have answered.
+            if (prominentLibrarySwitch && ready) {
+                Box(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+                    CarLibrarySwitchBar(
+                        kind = activeServerConfig?.kind,
+                        label = activeServerConfig?.displayName
+                            ?: if (backend == Backend.SUBSONIC) "Library" else "Music Assistant",
+                        onClick = { showLibrarySwitch = true },
+                    )
+                }
+            }
             // Only offer the connect form once we know there's nothing to connect
             // to. Showing it while a saved server is still handshaking made every
             // visit to this tab flash what looks like the onboarding screen.

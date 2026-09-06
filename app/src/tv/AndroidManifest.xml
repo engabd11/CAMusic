@@ -17,6 +17,11 @@
     <uses-feature android:name="android.software.leanback" android:required="true" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 
+    <!-- A TV is not a car. Removed rather than left at required="false" for the same
+         reason the components below are: a declaration nothing can reach is a line
+         someone has to work out the meaning of later. -->
+    <uses-feature android:name="android.hardware.type.automotive" tools:node="remove" />
+
     <!-- Light Sync reacting to other apps (MediaProjection capture) is not part of
          the TV release - see capture/PlaybackCaptureService below. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" tools:node="remove" />
@@ -72,6 +77,11 @@
              a car. -->
         <service android:name=".car.CarMediaLibraryService" tools:node="remove" />
         <meta-data android:name="com.google.android.gms.car.application" tools:node="remove" />
+        <!-- Android Automotive goes with it, and for a stronger reason: that one
+             declares the app a media source to a *car's* system UI, and also carries
+             the two-pane in-car layout, neither of which a set-top box has. The
+             <uses-feature> half is removed above the <application> tag. -->
+        <meta-data android:name="com.android.automotive" tools:node="remove" />
         <!-- Its cover-art provider goes with it: nothing on a TV holds a token to
              ask this about, and a provider with no caller is a component to
              instantiate at every process start for nothing. -->
