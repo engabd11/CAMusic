@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.engabd.sendpin.hue.GenrePresetRule
 import com.engabd.sendpin.hue.ShowPreset
+import com.engabd.sendpin.hue.TrackShowRule
 import com.engabd.sendpin.ui.design.SectionLabel
 import com.engabd.sendpin.ui.design.a
 import com.engabd.sendpin.ui.screens.settings.Note
@@ -58,6 +59,18 @@ internal fun SavedShows(
      * said nothing at all when a genre rule applied a preset by itself.
      */
     activeId: String?,
+    /**
+     * The show pinned to whatever is playing, or null when nothing is.
+     *
+     * Held here rather than derived, because "which preset is pinned to this song" and
+     * "which preset is on the room" are different questions with different answers - a
+     * pinned show stays pinned after a slider has moved the room off it.
+     */
+    songRule: TrackShowRule?,
+    /** "Title - Artist", or blank when there is no song to pin a show to. */
+    songLabel: String,
+    /** False when nothing is playing, so there is no song to file a show under. */
+    canPinSong: Boolean,
     accent: Color,
     onApply: (ShowPreset) -> Unit,
     onSave: (String) -> Unit,
@@ -66,6 +79,10 @@ internal fun SavedShows(
     onGenreAuto: (Boolean) -> Unit,
     onAddRule: (String, ShowPreset) -> Unit,
     onRemoveRule: (GenrePresetRule) -> Unit,
+    /** Pin the show that is on the room right now to the playing song. */
+    onPinSong: () -> Unit,
+    /** Forget the pinned show, so this song follows the ordinary rules again. */
+    onUnpinSong: () -> Unit,
 ) {
     var saving by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<ShowPreset?>(null) }
@@ -106,6 +123,17 @@ internal fun SavedShows(
     )
 
     Spacer(Modifier.height(14.dp))
+    SongShowRow(
+        rule = songRule,
+        presets = presets,
+        songLabel = songLabel,
+        canPin = canPinSong,
+        accent = accent,
+        onPin = onPinSong,
+        onUnpin = onUnpinSong,
+    )
+
+    Spacer(Modifier.height(14.dp))
     FeatureRow(
         title = "Pick a show by genre",
         gist = "Change the room to match what is playing.",
@@ -115,7 +143,9 @@ internal fun SavedShows(
             "servers agree on genre strings: a rule for \"jazz\" catches \"Vocal Jazz\", and a " +
             "rule for \"Progressive House\" is caught by a track tagged \"house\".\n\nA track " +
             "with no genre, or one nothing matches, leaves the room exactly as it is - " +
-            "rather than resetting to a default halfway through a record.\n\nTip: two or " +
+            "rather than resetting to a default halfway through a record.\n\nA show saved " +
+            "for one particular song wins over any genre rule that also matches it, " +
+            "because it is the narrower statement of the two.\n\nTip: two or " +
             "three broad rules beat a dozen narrow ones. The point is that a quiet album " +
             "does not light the room like a club.",
         checked = genreAuto,
@@ -322,4 +352,85 @@ private fun PresetActionsDialog(
             }
         },
     )
+}
+
+/**
+ * "Remember this show for this song."
+ *
+ * The narrowest of the three ways a show gets chosen, and the one people ask for
+ * first: album colours are already corrected per record and kept — see
+ * [com.engabd.sendpin.hue.CoverPaletteOverride] — so a listener who has decided that
+ * *this* song wants Subtle at 40% reasonably expects the same treatment to be
+ * available. A pinned show is looked up ahead of the genre rules and wins, because
+ * "this record" is a narrower statement than "this kind of music".
+ *
+ * It saves the show that is on the room **now**, not one picked from a list. That is
+ * the whole affordance: get the room right by hand, then keep it. Which saved show
+ * that happens to be, if any, is what the row reports back afterwards.
+ */
+@Composable
+private fun SongShowRow(
+    rule: TrackShowRule?,
+    presets: List<ShowPreset>,
+    songLabel: String,
+    canPin: Boolean,
+    accent: Color,
+    onPin: () -> Unit,
+    onUnpin: () -> Unit,
+) {
+    val pinnedName = rule?.let { r -> presets.firstOrNull { it.id == r.presetId }?.name }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(if (rule != null) accent.a(0.10f) else Glass)
+            .border(
+                1.dp,
+                if (rule != null) accent.a(0.30f) else Hairline,
+                RoundedCornerShape(14.dp),
+            )
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Text(
+            "Remember this show for this song",
+            color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 13.sp,
+        )
+        Text(
+            when {
+                !canPin -> "Play something to save a show against it."
+                // A rule whose preset has since been deleted fires nothing, so it is
+                // reported as what it is rather than as a working pin.
+                rule != null && pinnedName == null ->
+                    "The show saved for this song has been deleted. Save again to replace it."
+                rule != null && rule.label.isNotBlank() ->
+                    "${rule.label} plays on $pinnedName, whatever else is set."
+                rule != null -> "This song plays on $pinnedName, whatever else is set."
+                songLabel.isNotBlank() ->
+                    "Save the room as it is now, and $songLabel lights it this way every time."
+                else -> "Save the room as it is now, and this song lights it this way every time."
+            },
+            color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 11.sp,
+        )
+        Spacer(Modifier.height(4.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OledButton(
+                if (rule != null) "Save again" else "Save for this song",
+                enabled = canPin,
+                accent = accent,
+                outline = true,
+                modifier = Modifier.weight(1f),
+                onClick = onPin,
+            )
+            if (rule != null) {
+                OledButton(
+                    "Forget",
+                    accent = accent,
+                    outline = true,
+                    modifier = Modifier.weight(1f),
+                    onClick = onUnpin,
+                )
+            }
+        }
+    }
 }

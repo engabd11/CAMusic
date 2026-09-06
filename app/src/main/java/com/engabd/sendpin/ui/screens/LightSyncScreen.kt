@@ -42,9 +42,60 @@ import com.engabd.sendpin.ha.LightArea
 import com.engabd.sendpin.ha.LightSyncRepository
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
+import com.engabd.sendpin.ui.theme.LocalSendspinColors
 import com.engabd.sendpin.ui.viewmodel.LightSyncViewModel
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
+
+/**
+ * How much darker this page's album wash is than the player's - see [MeltBackdrop].
+ *
+ * Both Light Sync routes take it. Now Playing puts a full-width cover where the wash
+ * is brightest and its text below it; this page puts a header, a hero card and several
+ * paragraphs of 11sp body copy up there instead, and on a bright sleeve they were being
+ * read off an over-saturated blur.
+ *
+ * Measured rather than eyeballed. Over the brightest plausible cover the old wash left
+ * `TextPrimary` at 5.2:1, `TextSecondary` at 3.5:1 and `TextFaint` at **1.9:1** - not
+ * "a bit low", unreadable. At this scrim they are 17:1, 8.8:1 and 2.9:1.
+ *
+ * Deliberately not higher: past about 0.6 the curve flattens (0.8 buys `TextMuted` a
+ * further 0.08:1) and every point costs the page the record it is lit by, which is most
+ * of what this page looks like. The remaining gap is closed from the other side - see
+ * [washSafeInk].
+ */
+private const val PAGE_SCRIM = 0.72f
+
+/**
+ * This page's ink, lifted off the wash.
+ *
+ * The scrim alone cannot finish the job, and the reason is worth stating: at 32% white,
+ * `TextFaint` tops out around 2.9:1 **however dark the background gets**, because the
+ * text is then the limiting term rather than what is behind it. No amount of scrim
+ * fixes it; only the ink does.
+ *
+ * Raising the three weak levels by a fixed step keeps the hierarchy - faint is still
+ * fainter than muted, muted than secondary - while putting every one of them past
+ * 4.5:1 over the brightest cover. Done here, through the theme's own composition local,
+ * rather than at the thirty-odd call sites on this page: `TextFaint` and friends are
+ * accessors over [LocalSendspinColors] precisely so a surface can answer differently,
+ * and this way the settings-page composables this screen borrows ([Note], [FeatureRow])
+ * are lifted too without knowing about it.
+ *
+ * Alpha, not a lighter grey, so it works on the light theme as well: there the ink is
+ * black over an off-white page and more alpha is likewise more contrast.
+ */
+@Composable
+private fun washSafeInk(): com.engabd.sendpin.ui.theme.SendspinColors {
+    val base = LocalSendspinColors.current
+    return remember(base) {
+        base.copy(
+            textFaint = base.textFaint.copy(alpha = maxOf(base.textFaint.alpha, 0.52f)),
+            textMuted = base.textMuted.copy(alpha = maxOf(base.textMuted.alpha, 0.66f)),
+            textSecondary = base.textSecondary.copy(alpha = maxOf(base.textSecondary.alpha, 0.80f)),
+        )
+    }
+}
 
 private val ModeFallback = listOf("auto", "subtle", "medium", "high", "intense", "extreme")
 private val EffectFallback = listOf("music", "movies", "fireworks")
@@ -162,6 +213,10 @@ private fun HaLightSyncScreen(onBack: () -> Unit, viewModel: LightSyncViewModel)
 
     val enabled = area?.enabled == true
 
+    // Every text colour on this page, lifted off the wash - see [washSafeInk]. The
+    // body below is deliberately left at its old indentation: re-indenting eight
+    // hundred lines to add one wrapper would bury the change that matters.
+    CompositionLocalProvider(LocalSendspinColors provides washSafeInk()) {
     Box(Modifier.fillMaxSize().background(Ink)) {
         // The full album wash, the same one Now Playing wears - see [AlbumWash].
         // This was a single flat bloom, which was already an improvement on the fixed
@@ -176,6 +231,9 @@ private fun HaLightSyncScreen(onBack: () -> Unit, viewModel: LightSyncViewModel)
             palette = LocalPalette.current,
             bloom = chameleonBloom,
             dim = idleFade(idle = !enabled, dimmed = 0.55f),
+            // Heavier than the player's, because this page is mostly text and the
+            // player is mostly a cover — see [MeltBackdrop]'s `scrim`.
+            scrim = PAGE_SCRIM,
         )
 
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars)) {
@@ -500,6 +558,7 @@ private fun HaLightSyncScreen(onBack: () -> Unit, viewModel: LightSyncViewModel)
             }
         }
     }
+    }
 }
 
 /**
@@ -588,6 +647,7 @@ private fun DirectLightSyncScreen(
     val speakerOffsetMs by settings.lightSyncSpeakerOffsetMs.collectAsState(initial = 0)
     val captureState by com.engabd.sendpin.capture.PlaybackCapture.state.collectAsStateWithLifecycle()
     val coverOverrides by settings.coverPaletteOverrides.collectAsState(initial = emptyMap())
+    val trackRules by settings.trackShowRules.collectAsState(initial = emptyList())
     // Which saved show the room is actually on. Compared rather than remembered, so
     // the highlight is right after leaving the tab, after a genre rule fires on its
     // own, and — the point — stops being right the moment a tunable moves. See
@@ -615,6 +675,23 @@ private fun DirectLightSyncScreen(
     }
     var paletteEditorOpen by remember { mutableStateOf(false) }
 
+    // This song, as the per-song shows file it — built from exactly the fields
+    // [SendpinApp]'s applier reads, and from nothing else, so a show saved here is
+    // one the applier can look up again. Same discipline as `paletteKeys` above.
+    val songTitle = lightSource.trackTitle?.takeIf { it.isNotBlank() }
+        ?: lightSource.scanTrack?.title?.takeIf { it.isNotBlank() }
+        ?: maNow?.title?.takeIf { it.isNotBlank() }
+    val songArtist = lightSource.paletteArtist?.takeIf { it.isNotBlank() }
+        ?: lightSource.scanTrack?.artist?.takeIf { it.isNotBlank() }
+        ?: maNow?.artist?.takeIf { it.isNotBlank() }
+    val songKeys = com.engabd.sendpin.hue.TrackShowRule.keysFor(
+        title = songTitle,
+        artist = songArtist,
+        trackId = lightSource.scanTrack?.id,
+    )
+    val songRule = trackRules.firstOrNull { it.matches(songKeys) }
+    val songLabel = listOfNotNull(songTitle, songArtist).joinToString(" — ")
+
     // Entertainment areas, read from the process-scoped [DirectLightSync] rather than
     // fetched here. This screen is a NavHost destination, so screen-local state is
     // dropped every time the tab is left — the list emptied, a spinner appeared and
@@ -629,6 +706,9 @@ private fun DirectLightSyncScreen(
     // screen or left running from a previous visit is reflected here without this
     // screen having to have been the thing that started it.
     val ambienceRunning by direct.ambienceRunning.collectAsStateWithLifecycle()
+    // Which rung Auto is on this second. Null unless Auto is both selected and
+    // actually choosing — see [DirectLightSync.autoLevel].
+    val autoLevel by direct.autoLevel.collectAsStateWithLifecycle()
     val chameleonBloom by settings.chameleonBloom.collectAsStateWithLifecycle(initialValue = false)
 
     // The best run on whatever is playing, for the Rhythm Lights tile. Read once per
@@ -662,6 +742,10 @@ private fun DirectLightSyncScreen(
         captureBlocked = captureState == com.engabd.sendpin.capture.PlaybackCapture.State.BLOCKED,
     )
 
+    // Every text colour on this page, lifted off the wash - see [washSafeInk]. The
+    // body below is deliberately left at its old indentation: re-indenting eight
+    // hundred lines to add one wrapper would bury the change that matters.
+    CompositionLocalProvider(LocalSendspinColors provides washSafeInk()) {
     Box(Modifier.fillMaxSize().background(Ink)) {
         // The same wash Now Playing wears, over the same album — see [AlbumWash]. This
         // page used to paint a single flat [PageBloom] and was the one art-bearing
@@ -675,6 +759,8 @@ private fun DirectLightSyncScreen(
             palette = LocalPalette.current,
             bloom = chameleonBloom,
             dim = idleFade(idle = !live, dimmed = 0.55f),
+            // See the Home Assistant route above, and [MeltBackdrop]'s `scrim`.
+            scrim = PAGE_SCRIM,
         )
 
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars)) {
@@ -783,7 +869,7 @@ private fun DirectLightSyncScreen(
                                         .padding(horizontal = 16.dp, vertical = 10.dp),
                                 ) {
                                     Text(
-                                        "Start listening",
+                                        "Sync the lights with other apps",
                                         color = accent, fontWeight = FontWeight.Bold, fontSize = 13.sp,
                                     )
                                 }
@@ -803,7 +889,14 @@ private fun DirectLightSyncScreen(
 
                                 LightPill(
                                     label = "Level",
-                                    value = if (intensity == AUTO_INTENSITY) "Auto" else intensity.label(),
+                                    // "Auto" alone said only that the control existed. The
+                                    // rung it has landed on is the thing worth reading, and
+                                    // it moves with the music.
+                                    value = when {
+                                        intensity != AUTO_INTENSITY -> intensity.label()
+                                        autoLevel != null -> "Auto · ${autoLevel!!.wire.label()}"
+                                        else -> "Auto"
+                                    },
                                     icon = Icons.Default.GraphicEq,
                                     tint = LocalPalette.current.swatch(1),
                                     expanded = openPill == "level",
@@ -887,12 +980,36 @@ private fun DirectLightSyncScreen(
                                             )
                                         }
                                         Spacer(Modifier.height(12.dp))
-                                        Text("Auto may use", color = TextMuted, fontSize = 12.sp)
+                                        Row(
+                                            Modifier.fillMaxWidth(),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Text(
+                                                "Auto may use", color = TextMuted, fontSize = 12.sp,
+                                                modifier = Modifier.weight(1f),
+                                            )
+                                            // Which of them it is on, said in words as well as
+                                            // by the ring below: the chips are a checklist of
+                                            // what is *allowed*, and without this there was
+                                            // nothing anywhere saying what was chosen.
+                                            autoLevel?.let {
+                                                Text(
+                                                    "On ${it.wire.label()} now",
+                                                    color = accent,
+                                                    fontWeight = FontWeight.Bold, fontSize = 11.sp,
+                                                )
+                                            }
+                                        }
                                         Spacer(Modifier.height(8.dp))
                                         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                             com.engabd.sendpin.hue.SyncMode.entries.forEach { m ->
                                                 val on = m.wire in autoLevels
-                                                Pill(m.wire.label(), on) {
+                                                LivePill(
+                                                    label = m.wire.label(),
+                                                    selected = on,
+                                                    live = autoLevel == m,
+                                                    accent = accent,
+                                                ) {
                                                     // Never let the selection empty out - Auto with
                                                     // nothing to choose from has no answer to give.
                                                     val next = if (on) autoLevels - m.wire else autoLevels + m.wire
@@ -932,11 +1049,21 @@ private fun DirectLightSyncScreen(
                     }
                 }
 
-                item(key = "ls_tiles", contentType = "section") {
-                    // The two things on this page you *go and do*, rather than set.
-                    // They were a pair of chevron rows that said nothing about
-                    // themselves - see [FeatureTiles].
-                    Spacer(Modifier.height(18.dp))
+                item(key = "ls_tabs", contentType = "section") {
+                    Spacer(Modifier.height(20.dp))
+                    LightTabs(
+                        tabs = LightTab.entries,
+                        selected = tab,
+                        accent = accent,
+                    ) { tab = it }
+                }
+
+                if (tab == LightTab.EXTRAS) item(key = "ls_tiles", contentType = "section") {
+                    // The two things on this page you *go and do*, rather than set —
+                    // see [FeatureTiles]. Behind a tab now rather than pinned above
+                    // the strip: they are not part of the show this page configures,
+                    // and standing between the hero and every control said they were.
+                    Spacer(Modifier.height(22.dp))
                     FeatureTiles(
                         ambienceRunning = ambienceRunning,
                         rhythmBest = rhythmBest,
@@ -945,15 +1072,13 @@ private fun DirectLightSyncScreen(
                         onStopAmbience = onStopAmbience,
                         onOpenRhythm = onOpenRhythmGame,
                     )
-                }
-
-                item(key = "ls_tabs", contentType = "section") {
-                    Spacer(Modifier.height(20.dp))
-                    LightTabs(
-                        tabs = LightTab.entries,
-                        selected = tab,
-                        accent = accent,
-                    ) { tab = it }
+                    Spacer(Modifier.height(10.dp))
+                    Note(
+                        "Ambience runs its own show on the lights, with its own sound. It " +
+                            "plays alongside whatever music is on rather than stopping it, so " +
+                            "a thunderstorm can sit under a record — turn that off under " +
+                            "Ambience if you would rather it had the room to itself.",
+                    )
                 }
 
                 if (tab == LightTab.LOOK) item(key = "ls_colour", contentType = "section") {
@@ -1190,6 +1315,9 @@ private fun DirectLightSyncScreen(
                         rules = genreRules,
                         genreAuto = genreAuto,
                         activeId = activePresetId,
+                        songRule = songRule,
+                        songLabel = songLabel,
+                        canPinSong = songKeys.isNotEmpty(),
                         accent = accent,
                         onApply = { preset -> scope.launch { settings.applyShowPreset(preset) } },
                         onSave = { name ->
@@ -1226,6 +1354,39 @@ private fun DirectLightSyncScreen(
                         },
                         onRemoveRule = { rule ->
                             scope.launch { settings.saveGenrePresetRules(genreRules - rule) }
+                        },
+                        onPinSong = {
+                            scope.launch {
+                                // The room as it is, not a preset from the list — see
+                                // SongShowRow. It is captured as a saved show too, so
+                                // the pinned show has a name and can be applied by hand
+                                // later; the name is the song's, which is what anyone
+                                // scanning the chip row would expect it to say.
+                                val captured = settings.captureShowPreset(
+                                    songLabel.takeIf { it.isNotBlank() } ?: "This song",
+                                )
+                                // Reuse the preset already pinned to this song rather
+                                // than growing a chip per re-save.
+                                val existing = songRule?.presetId
+                                    ?.let { id -> presets.firstOrNull { it.id == id } }
+                                val preset =
+                                    if (existing != null && existing.id != com.engabd.sendpin.hue.ShowPreset.DEFAULT_ID) {
+                                        captured.copy(id = existing.id, name = existing.name)
+                                    } else {
+                                        captured
+                                    }
+                                settings.saveShowPresets(
+                                    if (presets.any { it.id == preset.id }) {
+                                        presets.map { if (it.id == preset.id) preset else it }
+                                    } else {
+                                        presets + preset
+                                    },
+                                )
+                                settings.setTrackShowRule(songKeys, songLabel, preset)
+                            }
+                        },
+                        onUnpinSong = {
+                            scope.launch { settings.setTrackShowRule(songKeys, songLabel, null) }
                         },
                     )
                 }
@@ -1396,6 +1557,7 @@ private fun DirectLightSyncScreen(
                 onClose = { paletteEditorOpen = false },
             )
         }
+    }
     }
 }
 
@@ -1959,7 +2121,7 @@ private fun AlbumColoursCard(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         Text(
-                            "Album colours",
+                            "Album colour extraction editor",
                             color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp,
                         )
                         if (saved != null) {
@@ -1980,10 +2142,12 @@ private fun AlbumColoursCard(
                                 "Song draws its colours from the music itself, not the sleeve, so " +
                                     "album colours are not in use. Corrections are kept, and apply " +
                                     "again on Album art."
-                            saved != null && label != null -> "Your colours for $label."
+                            saved != null && label != null ->
+                                "Your colours for $label, in place of the extracted ones."
                             saved != null -> "Your colours, not the artwork's."
-                            label != null -> "Change the colours $label lights the room with."
-                            else -> "Change the colours this album lights the room with."
+                            label != null ->
+                                "Change the extracted colours of $label for the light show."
+                            else -> "Change the extracted colours of this album for the light show."
                         },
                         color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
                     )

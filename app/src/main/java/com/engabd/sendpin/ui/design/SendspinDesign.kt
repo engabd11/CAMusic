@@ -132,10 +132,21 @@ fun rememberArtRequest(url: String?, pixels: Int? = null): ImageRequest? {
  * past recognition and over-saturated, then drowned in a scrim that reaches
  * pure #000 before the bottom — so on an OLED panel the art has no edge, it just
  * stops emitting. Sampled small on purpose: it is never seen in focus.
+ *
+ * [scrim] darkens it further, 0 for the player's own treatment and 1 for as dark as
+ * this goes. Not a knob for taste: the default is tuned for Now Playing, where the
+ * top of the wash sits behind a full-width album cover and the body text below it is
+ * over the part of the gradient that has already reached Ink. A page that puts *text*
+ * up there — the Light Sync page and its paragraphs of `TextFaint`, which is 32%
+ * white — is asking that text to be read over an over-saturated cover at 62% alpha
+ * behind a 28% scrim, which it cannot be on a bright sleeve. Contrast is the
+ * background's job; raising the text colours instead would fix one page and leave the
+ * wash still eating anything else laid over it.
  */
 @Composable
-fun BoxScope.MeltBackdrop(url: String?, intensity: Float = 1f) {
+fun BoxScope.MeltBackdrop(url: String?, intensity: Float = 1f, scrim: Float = 0f) {
     val art = rememberArtRequest(url, pixels = 192)
+    val s = scrim.coerceIn(0f, 1f)
     // Recorded as the backdrop for every glass surface on this screen — see Backdrop.kt.
     // Applied here rather than at each of the five call sites so any screen that has a
     // wash gets real glass by having one, and a screen without one leaves the layer
@@ -153,14 +164,14 @@ fun BoxScope.MeltBackdrop(url: String?, intensity: Float = 1f) {
                     .matchParentSize()
                     .scale(1.3f)
                     .blur(64.dp, BlurredEdgeTreatment.Unbounded)
-                    .alpha(0.62f * intensity.coerceIn(0f, 1f)),
+                    .alpha(0.62f * (1f - 0.42f * s) * intensity.coerceIn(0f, 1f)),
             )
         }
         Box(
             Modifier.matchParentSize().background(
                 Brush.verticalGradient(
-                    0f to Ink.a(0.28f),
-                    0.46f to Ink.a(0.66f),
+                    0f to Ink.a(0.28f + 0.62f * s),
+                    0.46f to Ink.a(0.66f + 0.30f * s),
                     0.88f to Ink,
                     1f to Ink,
                 )

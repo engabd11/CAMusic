@@ -112,7 +112,12 @@ object MusicSources {
 
         // No stream settings: MPD plays its own music to its own outputs, and
         // this app drives it. There is nothing here for a transcode to apply to.
-        ServerKind.MPD -> MpdSource(MpdClient(address = config.url, password = config.password))
+        // The context is for the app-side favourites store, which MPD needs because it
+        // has no starred concept of its own — see [MpdSource].
+        ServerKind.MPD -> MpdSource(
+            MpdClient(address = config.url, password = config.password),
+            context.applicationContext,
+        )
 
         // Decoded with the same helper that encodes it. This used to `split("|")` a
         // string the settings screen wrote as a JSON array, and `Uri.parse` never

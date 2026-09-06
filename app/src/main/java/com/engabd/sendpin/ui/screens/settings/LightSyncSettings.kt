@@ -34,7 +34,6 @@ import com.engabd.sendpin.audio.ScanFailureNote
 import com.engabd.sendpin.audio.ScanProgress
 import com.engabd.sendpin.audio.TrackScan
 import com.engabd.sendpin.data.AppSettings
-import com.engabd.sendpin.library.ServerKind
 import com.engabd.sendpin.hue.DiscoveredBridge
 import com.engabd.sendpin.hue.LinkButtonNotPressed
 import com.engabd.sendpin.ui.design.MeterBar
@@ -111,10 +110,6 @@ internal fun LightSyncSection(
     onHaUrl: (String) -> Unit,
     haToken: String,
     onHaToken: (String) -> Unit,
-    /** Opens the Ambience screen, which is a screen rather than a settings page. */
-    onOpenAmbience: () -> Unit,
-    /** Opens a server's own page under Media Providers, for the cross-link below. */
-    onOpenServer: (String) -> Unit,
 ) {
     when (detail) {
         BRIDGE_ROUTE -> { DirectBridgeSetup(settings, scope, accent); return }
@@ -130,8 +125,6 @@ internal fun LightSyncSection(
     val auto by settings.lightSyncModeAuto.collectAsStateWithLifecycle(initialValue = true)
     val direct = mode == AppSettings.MODE_DIRECT
     val bridgeIp by settings.hueBridgeIp.collectAsStateWithLifecycle(initialValue = "")
-    val servers by settings.servers.collectAsStateWithLifecycle(initialValue = emptyList())
-    val maServerId = servers.firstOrNull { it.kind == ServerKind.MUSIC_ASSISTANT }?.id
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         SettingsCard(
@@ -226,27 +219,15 @@ internal fun LightSyncSection(
             accent,
         ) { onDetail(LISTEN_ROUTE) }
 
-        NavRow(
-            Icons.Default.Waves,
-            "Ambience & room shows",
-            "Rain, fire, a storm — a lit room with its own sound, and no music needed.",
-            accent,
-            onClick = onOpenAmbience,
-        )
-
-        // The phone's own identity as a Music Assistant player — its name, the codec
-        // it advertises, and the latency trim that lines it up against the rest of a
-        // group — lives with the server it belongs to rather than here. This row is
-        // the signpost, because "the lights are late on the multi-room group" is a
-        // question people arrive at this page with.
-        maServerId?.let { id ->
-            NavRow(
-                Icons.Default.Speaker,
-                "Multi-room timing",
-                "Latency trim and this phone's player settings, on the Music Assistant server.",
-                accent,
-            ) { onOpenServer(id) }
-        }
+        // Neither "Ambience & room shows" nor "Multi-room timing" is here any more.
+        //
+        // Both were signposts to somewhere else, and both were in the wrong place.
+        // Ambience is not a setting at all — it is a show you start, and it now lives
+        // where the other one does, on the Lights tab's Extras tab. Multi-room timing
+        // pointed at the Music Assistant server's own page, which is reachable under
+        // Media Providers and is where anyone looking for a player's latency trim
+        // already goes. A settings page whose rows mostly send you elsewhere is a
+        // table of contents wearing a page's clothes.
     }
 }
 

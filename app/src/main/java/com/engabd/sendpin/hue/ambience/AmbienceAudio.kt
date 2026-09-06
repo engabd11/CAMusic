@@ -184,3 +184,24 @@ class AudioFocusGate(
 
     override fun abandon() { runCatching { am.abandonAudioFocusRequest(request) } }
 }
+
+/**
+ * The focus gate for a show that plays **over** the music rather than instead of it.
+ *
+ * It takes no focus at all, and that is the whole design. Android does not require
+ * focus to play — focus is an agreement between apps about who gets the room, and this
+ * show is deliberately not asking for it. Anything else would defeat the purpose:
+ * `AUDIOFOCUS_GAIN` evicts whoever holds it (which, in this process, is routinely the
+ * Sendspin path — see [AudioFocusGate]), and `GAIN_TRANSIENT_MAY_DUCK` ducks the very
+ * music the listener wanted to keep.
+ *
+ * What is given up by not asking is the platform telling this show to stop or duck for
+ * a phone call or a nav prompt. That is the right trade for a bed sitting at a fraction
+ * of its usual level underneath a record: it is quiet enough not to be the thing in the
+ * way, and the show is one tap from stopping. A show started with nothing playing takes
+ * real focus through [AudioFocusGate] as it always has.
+ */
+object SharedOutputGate : FocusGate {
+    override fun request(): Boolean = true
+    override fun abandon() = Unit
+}

@@ -91,9 +91,11 @@ internal fun BoxScope.AlbumWash(
     palette: AlbumPalette,
     bloom: Boolean,
     dim: State<Float>,
+    /** How much darker than the player's own wash this page needs — see [MeltBackdrop]. */
+    scrim: Float = 0f,
 ) {
-    MeltBackdrop(artUrl, intensity = dim.value)
-    if (bloom) ChameleonBloom(palette, dim.value)
+    MeltBackdrop(artUrl, intensity = dim.value, scrim = scrim)
+    if (bloom) ChameleonBloom(palette, dim.value * (1f - 0.4f * scrim.coerceIn(0f, 1f)))
 }
 
 internal fun albumFlipKey(st: NowPlayingViewModel.State): String? =

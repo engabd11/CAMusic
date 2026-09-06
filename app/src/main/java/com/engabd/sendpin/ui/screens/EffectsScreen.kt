@@ -57,6 +57,7 @@ fun EffectsScreen(onBack: () -> Unit, viewModel: EffectsViewModel) {
     val accent = LocalAccent.current
     val running by viewModel.running.collectAsStateWithLifecycle()
     val soundMode by viewModel.soundMode.collectAsStateWithLifecycle()
+    val overMusic by viewModel.overMusic.collectAsStateWithLifecycle()
     val volume by viewModel.volume.collectAsStateWithLifecycle()
     val intensities by viewModel.intensities.collectAsStateWithLifecycle()
     val clips by viewModel.clips.collectAsStateWithLifecycle()
@@ -251,6 +252,25 @@ fun EffectsScreen(onBack: () -> Unit, viewModel: EffectsViewModel) {
                                         label = "${(v * 100).toInt()}%",
                                         onChange = { vDrag = it },
                                         onCommit = { vDrag = null; viewModel.setVolume((it * 100).toInt()) },
+                                    )
+
+                                    Spacer(Modifier.height(14.dp))
+                                    Text("Play over music", color = TextSecondary, fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold)
+                                    Spacer(Modifier.height(8.dp))
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Pill("Under the music", overMusic) { viewModel.setOverMusic(true) }
+                                        Pill("Instead of it", !overMusic) { viewModel.setOverMusic(false) }
+                                    }
+                                    Spacer(Modifier.height(6.dp))
+                                    Text(
+                                        if (overMusic)
+                                            "A record keeps playing and the bed sits underneath it, " +
+                                                "quietly. Nothing is paused and nothing is taken over."
+                                        else
+                                            "Starting a show stops whatever is playing and takes the " +
+                                                "output, which is what a show playing on its own wants.",
+                                        color = TextFaint, fontSize = 11.sp, lineHeight = 15.sp,
                                     )
                                 }
 

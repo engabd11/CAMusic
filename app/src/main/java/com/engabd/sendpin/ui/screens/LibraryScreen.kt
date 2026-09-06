@@ -139,6 +139,8 @@ fun LibraryScreen(
     // Collected here as well as in [Browse] because the sheet is a sibling of the
     // grid rather than a child of it.
     val capabilities by viewModel.sourceCapabilities.collectAsStateWithLifecycle()
+    // And its hearts, for the same reason: the sheet's own favourite row.
+    val favorites by viewModel.favorites.collectAsStateWithLifecycle()
     val showCreatePlaylist by viewModel.showCreatePlaylist.collectAsStateWithLifecycle()
     val addingToPlaylist by viewModel.addingToPlaylist.collectAsStateWithLifecycle()
     val playlistChoices by viewModel.playlistChoices.collectAsStateWithLifecycle()
@@ -262,6 +264,15 @@ fun LibraryScreen(
                 // backend owns the one picked.
                 onDelete = if (picked.mediaType == "playlist") {
                     { viewModel.deletePlaylist(picked) }
+                } else null,
+                // The same rule the row's own heart uses. Here as well, because a
+                // library whose albums are drawn as cover tiles had no heart anywhere
+                // — which is most libraries, and every one of them on the Albums page.
+                isFavourite = if (isFavouritable(picked, capabilities)) {
+                    picked.itemId in favorites
+                } else null,
+                onToggleFavourite = if (isFavouritable(picked, capabilities)) {
+                    { viewModel.toggleFavorite(picked) }
                 } else null,
             )
         }
@@ -445,7 +456,10 @@ private fun Browse(
     }
     // A list that holds more than one kind of thing, split into its kinds. Empty for
     // the ordinary node, which holds one — see [typedGroups].
-    val groups = remember(node.items) { typedGroups(node.items) }
+    // The loader's own sections win where it supplied any — Podcasts and Radio
+    // stations, which hold one media type and yet are plainly two shelves. See
+    // [LibraryViewModel.Node.sections].
+    val groups = remember(node) { node.sections.ifEmpty { typedGroups(node.items) } }
     // The front page's shelves, as data. Seven near-identical calls became a list you
     // can reorder or add to in one line, and the empty ones are filtered out here
     // rather than by each shelf checking itself.
@@ -612,8 +626,9 @@ private fun Browse(
             return@LazyVerticalGrid
         }
 
-        // A mixed list — Starred, chiefly — reads as sections rather than as one run
-        // of rows. See [typedGroups].
+        // A list that reads as sections rather than as one run of rows: Starred, which
+        // holds several kinds of thing, and Podcasts and Radio stations, where the
+        // loader knows which ones you follow. See [typedGroups] and [Node.sections].
         if (groups.isNotEmpty()) {
             groups.forEach { (title, list) ->
                 typedSection(
