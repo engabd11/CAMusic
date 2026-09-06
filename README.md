@@ -279,6 +279,9 @@ variety, streaks, lossless share, and where your music actually came from.
   the car always plays on *this phone*, never on a speaker in another room, and for a Music
   Assistant track it moves the speaker selection here too, so the car's transport buttons
   address the player it just started.
+- **Android Automotive.** For a car with the app installed on its own built-in head unit,
+  rather than projected from a phone: a two-pane layout puts the player and the library
+  side by side, sized and inset for a driver's glance rather than a phone screen.
 - **Android TV.** A dedicated `tv` flavour with a D-pad Now Playing, Library, Queue, Light Sync,
   onboarding and Settings, compiled from the same business logic as the phone app.
 - **LG webOS.** A native webOS television app with a ten-foot UI, multi-library playback and a
@@ -289,6 +292,21 @@ variety, streaks, lossless share, and where your music actually came from.
   permission-free default, with a full-width overlay behind it, triggered by the car's Bluetooth.
 - **Home-screen widget** with artwork and transport controls.
 - **Tablets and foldables** get an adaptive grid layout.
+
+<p align="center">
+  <em>Android Auto</em><br>
+  <img src="docs/screenshots/android-auto-library.jpg" width="24%" />
+  <img src="docs/screenshots/android-auto-now-playing.jpg" width="24%" />
+</p>
+<p align="center">
+  <em>Android Automotive — player and library side by side on the car's own screen</em><br>
+  <img src="docs/screenshots/android-automotive-library.jpg" width="70%" />
+</p>
+<p align="center">
+  <em>Android TV</em>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<em>Tablet</em><br>
+  <img src="docs/screenshots/tv-now-playing.jpg" width="45%" />
+  <img src="docs/screenshots/tablet-now-playing.jpg" width="35%" />
+</p>
 
 ---
 
