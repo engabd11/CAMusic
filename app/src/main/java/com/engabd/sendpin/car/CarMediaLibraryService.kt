@@ -6,10 +6,13 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaLibraryService
 import com.engabd.sendpin.SendpinApp
+import com.engabd.sendpin.data.AppSettings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.launch
 
 /**
  * Android Auto's entry point into this app: a browse tree ([CarLibraryBridge]) and a
@@ -35,13 +38,41 @@ class CarMediaLibraryService : MediaLibraryService() {
         super.onCreate()
         val player = CarSessionPlayer(Looper.getMainLooper(), scope).also { it.start() }
         carPlayer = player
-        val sessionCallback = CarLibrarySessionCallback(CarLibraryBridge(SendpinApp.instance))
+        val libraryBridge = CarLibraryBridge(SendpinApp.instance)
+        val sessionCallback = CarLibrarySessionCallback(libraryBridge)
         callback = sessionCallback
         mediaLibrarySession = MediaLibrarySession.Builder(this, player, sessionCallback)
             // Must differ from LocalPlaybackService's "local" and SendspinService's
             // "sendspin" - a media3 MediaSession id has to be unique per process.
             .setId("auto")
             .build()
+        watchBrowseOptions(libraryBridge)
+    }
+
+    /**
+     * Rebuild the car's screen when its settings change on the phone.
+     *
+     * Android Auto subscribes to the root once and then trusts it: a browse tree that
+     * only re-read its settings on the next connection meant changing the layout with
+     * the phone plugged in did nothing visible until the cable was pulled, which reads
+     * as a setting that does not work rather than one that is deferred. `drop(1)` skips
+     * the flow's own first emission — that is the state the tree was just built from,
+     * not a change to it.
+     *
+     * The cached rows go with it: each was built with the old options, down to whether
+     * it carries a cover.
+     */
+    private fun watchBrowseOptions(libraryBridge: CarLibraryBridge) {
+        val settings = AppSettings(this)
+        scope.launch {
+            settings.carBrowseOptions.drop(1).collect {
+                libraryBridge.invalidate()
+                // Int.MAX_VALUE, not a real count: the browser is being told the root
+                // changed, not how much of it. It comes back through onGetChildren for
+                // the answer, which is where the count is decided anyway.
+                mediaLibrarySession?.notifyChildrenChanged(CarMediaId.ROOT, Int.MAX_VALUE, null)
+            }
+        }
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? = mediaLibrarySession

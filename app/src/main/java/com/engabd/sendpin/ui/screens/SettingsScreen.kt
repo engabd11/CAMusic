@@ -422,7 +422,16 @@ private fun LazyListScope.sectionItems(
         SettingsSection.DRIVING -> when (detail) {
             DRIVE_MODE_ROUTE -> card("drive_mode") { DrivingModeCard(settings, accent, scope) }
             DRIVE_SAFETY_ROUTE -> card("drive_safety") { SafetyCard(settings, accent, scope) }
-            DRIVE_AUTO_ROUTE -> card("drive_auto") { AndroidAutoCard(settings, accent) }
+            DRIVE_AUTO_ROUTE -> {
+                card("drive_auto") { AndroidAutoCard(settings, accent) }
+                // Three cards rather than one long page: the first answers "will it
+                // work", and these three are the three separate decisions — how it
+                // looks, what is in it, what the buttons do — that used not to exist
+                // at all. See AndroidAutoSettings.kt.
+                card("drive_auto_layout") { AndroidAutoLayoutCard(settings, accent, scope) }
+                card("drive_auto_content") { AndroidAutoContentCard(settings, accent, scope) }
+                card("drive_auto_transport") { AndroidAutoTransportCard(settings, accent, scope) }
+            }
         }
 
         SettingsSection.SYSTEM_ABOUT -> when (detail) {

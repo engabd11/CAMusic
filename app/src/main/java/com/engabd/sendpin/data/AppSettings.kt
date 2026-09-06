@@ -8,6 +8,8 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.engabd.sendpin.audio.LocalDsp
+import com.engabd.sendpin.car.CarBrowseOptions
+import com.engabd.sendpin.car.CarBrowseStyle
 import com.engabd.sendpin.audio.LoFiProcessor
 import com.engabd.sendpin.audio.OldRadioProcessor
 import com.engabd.sendpin.audio.VinylNoiseProcessor
@@ -148,6 +150,19 @@ class AppSettings(private val context: Context) {
         private val KEEP_ALIVE_ANNOUNCEMENTS = booleanPreferencesKey("keep_alive_announcements") // persist connection for TTS
 
         // Driving mode — a slim always-on-top transport for a phone in a cradle.
+        // Android Auto's appearance. All nine default to the tree the feature
+        // shipped with, so an install that never opens this page is unchanged.
+        private val AUTO_BROWSE_STYLE = stringPreferencesKey("auto_browse_style")   // adaptive | grid | list
+        private val AUTO_PEOPLE_CIRCLES = booleanPreferencesKey("auto_people_circles")
+        private val AUTO_GROUP_TITLES = booleanPreferencesKey("auto_group_titles")
+        private val AUTO_ARTWORK = booleanPreferencesKey("auto_artwork")
+        private val AUTO_FLATTEN_SINGLE = booleanPreferencesKey("auto_flatten_single")
+        private val AUTO_SHELF_ITEMS = stringPreferencesKey("auto_shelf_items")
+        /** Enabled shelf keys, comma-separated, in the driver's own order. */
+        private val AUTO_SHELVES = stringPreferencesKey("auto_shelves")
+        /** Enabled library ids, comma-separated, in the driver's own order. */
+        private val AUTO_LIBRARIES = stringPreferencesKey("auto_libraries")
+        private val AUTO_SEEK_SECONDS = stringPreferencesKey("auto_seek_seconds")
         private val DRIVING_ENABLED = booleanPreferencesKey("driving_enabled")
         private val DRIVING_MECHANISM = stringPreferencesKey("driving_mechanism") // pip | overlay
         private val DRIVING_CAR_ADDRESS = stringPreferencesKey("driving_car_address") // bonded device MAC
@@ -1812,6 +1827,80 @@ class AppSettings(private val context: Context) {
 
     suspend fun setPauseForCalls(on: Boolean) {
         context.dataStore.edit { it[PAUSE_FOR_CALLS] = on }
+    }
+
+    // ── Android Auto ─────────────────────────────────────────────────────────
+    //
+    // Everything the car's own screen looks like. Read by [CarLibraryBridge] on each
+    // browse request and by [CarSessionPlayer] for the transport, and watched by
+    // [CarMediaLibraryService] so a change made on the phone reaches a car that is
+    // already plugged in.
+    //
+    // One [pref] over the whole snapshot rather than nine flows combined: DataStore
+    // hands the entire `Preferences` to every read anyway, so nine reads of it is
+    // nine subscriptions to answer one question, and `combine` past five sources
+    // loses its types.
+
+    val carBrowseOptions: Flow<CarBrowseOptions> = pref { prefs -> readCarOptions(prefs) }
+
+    /** The same answer as [carBrowseOptions], for a caller that only needs it once. */
+    suspend fun carBrowseOptionsNow(): CarBrowseOptions = carBrowseOptions.first()
+
+    private fun readCarOptions(prefs: Preferences) = CarBrowseOptions(
+        style = CarBrowseStyle.byKey(prefs[AUTO_BROWSE_STYLE]),
+        peopleAsCircles = prefs[AUTO_PEOPLE_CIRCLES] ?: true,
+        groupTitles = prefs[AUTO_GROUP_TITLES] ?: true,
+        artwork = prefs[AUTO_ARTWORK] ?: true,
+        flattenSingleLibrary = prefs[AUTO_FLATTEN_SINGLE] ?: true,
+        shelfItemLimit = prefs[AUTO_SHELF_ITEMS]?.toIntOrNull()
+            ?.coerceIn(CarBrowseOptions.MIN_SHELF_ITEMS, CarBrowseOptions.MAX_SHELF_ITEMS)
+            ?: CarBrowseOptions.DEFAULT_SHELF_ITEMS,
+        shelfKeys = CarBrowseOptions.decodeKeys(prefs[AUTO_SHELVES]),
+        libraryIds = CarBrowseOptions.decodeKeys(prefs[AUTO_LIBRARIES]),
+        seekSeconds = prefs[AUTO_SEEK_SECONDS]?.toIntOrNull()?.coerceIn(0, 300) ?: 0,
+    )
+
+    suspend fun setCarBrowseStyle(style: CarBrowseStyle) =
+        context.dataStore.edit { it[AUTO_BROWSE_STYLE] = style.key }
+
+    suspend fun setCarPeopleAsCircles(on: Boolean) = context.dataStore.edit { it[AUTO_PEOPLE_CIRCLES] = on }
+
+    suspend fun setCarGroupTitles(on: Boolean) = context.dataStore.edit { it[AUTO_GROUP_TITLES] = on }
+
+    suspend fun setCarArtwork(on: Boolean) = context.dataStore.edit { it[AUTO_ARTWORK] = on }
+
+    suspend fun setCarFlattenSingleLibrary(on: Boolean) = context.dataStore.edit { it[AUTO_FLATTEN_SINGLE] = on }
+
+    suspend fun setCarShelfItemLimit(value: Int) = context.dataStore.edit {
+        it[AUTO_SHELF_ITEMS] =
+            value.coerceIn(CarBrowseOptions.MIN_SHELF_ITEMS, CarBrowseOptions.MAX_SHELF_ITEMS).toString()
+    }
+
+    /** An empty list means "every shelf this library offers", which is the default. */
+    suspend fun setCarShelves(keys: List<String>) = context.dataStore.edit {
+        it[AUTO_SHELVES] = CarBrowseOptions.encodeKeys(keys)
+    }
+
+    /** An empty list means "every configured library", which is the default. */
+    suspend fun setCarLibraries(ids: List<String>) = context.dataStore.edit {
+        it[AUTO_LIBRARIES] = CarBrowseOptions.encodeKeys(ids)
+    }
+
+    suspend fun setCarSeekSeconds(seconds: Int) = context.dataStore.edit {
+        it[AUTO_SEEK_SECONDS] = seconds.coerceIn(0, 300).toString()
+    }
+
+    /** Put every Android Auto appearance setting back to the tree the app ships with. */
+    suspend fun resetCarBrowseOptions() = context.dataStore.edit {
+        it.remove(AUTO_BROWSE_STYLE)
+        it.remove(AUTO_PEOPLE_CIRCLES)
+        it.remove(AUTO_GROUP_TITLES)
+        it.remove(AUTO_ARTWORK)
+        it.remove(AUTO_FLATTEN_SINGLE)
+        it.remove(AUTO_SHELF_ITEMS)
+        it.remove(AUTO_SHELVES)
+        it.remove(AUTO_LIBRARIES)
+        it.remove(AUTO_SEEK_SECONDS)
     }
 
     suspend fun setLightSyncEnabled(on: Boolean) {

@@ -270,9 +270,15 @@ variety, streaks, lossless share, and where your music actually came from.
 ## Everywhere you listen
 
 - **Android Auto.** A full browse tree over every configured library server, with search and
-  voice. A track tapped in the car always plays on *this phone*, never on a speaker in another
-  room, and for a Music Assistant track it moves the speaker selection here too, so the car's
-  transport buttons address the player it just started.
+  voice, and cover art on the browse rows — served through an opaque `content://` address so
+  the credentials inside a Subsonic or Jellyfin cover URL never leave the phone. The whole
+  layout is configurable under Settings › Driving & Android Auto › Android Auto: grid or list
+  rows, round artwork for artists, grouped shelves, which libraries and shelves reach the car
+  and in what order, how many items a shelf loads, whether a single library gets a folder at
+  all, and whether the car's transport row carries rewind and fast-forward. A track tapped in
+  the car always plays on *this phone*, never on a speaker in another room, and for a Music
+  Assistant track it moves the speaker selection here too, so the car's transport buttons
+  address the player it just started.
 - **Android TV.** A dedicated `tv` flavour with a D-pad Now Playing, Library, Queue, Light Sync,
   onboarding and Settings, compiled from the same business logic as the phone app.
 - **LG webOS.** A native webOS television app with a ten-foot UI, multi-library playback and a

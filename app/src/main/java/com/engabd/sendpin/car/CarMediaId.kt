@@ -52,11 +52,32 @@ sealed class CarMediaId {
                 .build().toString()
     }
 
+    /**
+     * A row that is not content — "No libraries set up", "Nothing here yet".
+     *
+     * A car that opens an empty folder shows an empty folder, and the driver is left
+     * to work out from the driver's seat whether the library is empty, the server is
+     * unreachable or the app is broken. Android Auto's own guidance is to say which,
+     * and the only way to say anything in a browse tree is to be a row in it.
+     *
+     * Carries its words in the id rather than in a table keyed by one, because every
+     * other id here resolves statelessly and `onGetItem` may ask about this one long
+     * after the folder that produced it was left.
+     */
+    data class Message(val title: String, val subtitle: String?) : CarMediaId() {
+        override fun encode(): String =
+            Uri.Builder().scheme(SCHEME).authority(AUTH_MESSAGE)
+                .appendQueryParameter("t", title)
+                .apply { subtitle?.let { appendQueryParameter("s", it) } }
+                .build().toString()
+    }
+
     companion object {
         private const val SCHEME = "cmid"
         private const val AUTH_SERVER = "server"
         private const val AUTH_SHELF = "shelf"
         private const val AUTH_ITEM = "item"
+        private const val AUTH_MESSAGE = "msg"
 
         const val ROOT = "cmid://root"
         const val MORE = "cmid://more"
@@ -72,6 +93,7 @@ sealed class CarMediaId {
                     val key = uri.getQueryParameter("key") ?: return null
                     Shelf(srv, key)
                 }
+                AUTH_MESSAGE -> uri.getQueryParameter("t")?.let { Message(it, uri.getQueryParameter("s")) }
                 AUTH_ITEM -> {
                     val srv = uri.getQueryParameter("srv") ?: return null
                     val provider = uri.getQueryParameter("p") ?: return null
