@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -19,7 +20,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.navigationBars
-import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
@@ -336,73 +337,98 @@ private fun CarPlayerPane(
     val washDim = idleFade(st.idle, 0.5f)
     val artGlow = idleFade(st.idle, 0.18f, 0.45f)
 
-    BoxWithConstraints(modifier.background(Ink)) {
+    Box(modifier.background(Ink)) {
+        // Outside the inset padding on purpose: the wash is the pane's background and
+        // should run under the car's bars to the edges of the screen. Only the
+        // controls are held clear of them.
         AlbumWash(art.url, palette, chameleonBloom, washDim)
 
-        // What the pane can afford, in the order it can afford to lose it. The
-        // transport row is the part that must never go, so the cover goes first and
-        // the volume slider second — a car has a knob for that, and this app is not
-        // the only thing reaching for it.
+        // Measured *inside* the insets rather than outside, which is the whole reason
+        // this is a second box.
         //
-        // 470dp is the fixed chrome measured on a head unit rather than guessed: the
-        // top bar, the title block, the seek row and a full-size transport row come to
-        // about 340dp, and a cover worth drawing needs another 130. Below that the
-        // pane both drops the cover and takes the controls down a size, because the
-        // failure it is avoiding is the play button clipped by the bottom edge — the
-        // one control in the app that must always be hittable.
-        val compact = maxHeight < 470.dp
-        val showCover = !compact
-        val showVolume = maxHeight >= 620.dp
-
-        Column(
-            Modifier
-                .fillMaxSize()
-                .windowInsetsPadding(WindowInsets.statusBars)
-                .padding(horizontal = 18.dp)
-                .padding(top = 8.dp, bottom = if (compact) 10.dp else 18.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = if (showCover) Arrangement.Top else Arrangement.Center,
+        // A head unit's system bars are not a phone's: this one spends 76dp on a
+        // status bar and 84dp on a navigation bar, both opaque. Reading the pane's raw
+        // height here said 792dp when 632dp was available, so the pane believed it had
+        // room for a cover, a volume slider and a full-size transport row — and laid
+        // all three out into space the car's own navigation bar was standing on. The
+        // play button was cut in half by it.
+        //
+        // `windowInsetsPadding` only applies the part of an inset that actually
+        // overlaps this composable, so the same call is right for both layouts: in a
+        // side-by-side split the pane meets both bars, and in a stacked one the player
+        // is the top half and meets only the status bar.
+        BoxWithConstraints(
+            Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars),
         ) {
-            if (!connected && !st.isLocalSession) OfflineBanner()
+            // What the pane can afford. Only two things here actually cost height:
+            // the controls, which are sized down below [CAR_COMPACT_HEIGHT], and the
+            // volume slider, which is dropped outright. Everything else the pane can
+            // spend is spent by the cover, and the cover is free — it is the Column's
+            // one weighted child, so it takes the slack that is left and collapses to
+            // nothing when there is none. It can never push the transport row off the
+            // bottom, which is why it is drawn unconditionally now: gating it as well
+            // only left a short pane centring its controls in a field of black.
+            //
+            // 470dp is measured rather than guessed. A full-size top bar, title block,
+            // seek row and transport row come to about 340dp; below 470 there is not
+            // enough left over for a cover *and* enough slack to be sure of the
+            // controls, and that is the failure that matters — a play button clipped
+            // by an edge is the one control in the app that must always be hittable.
+            //
+            // Read from inside the insets, and worth stating in numbers because the
+            // reported density lies: the AAOS landscape unit this was tuned on is
+            // 1408x792 physical, `wm density` says 160, and the *activity* runs at
+            // 229dpi. So the window is 984x554dp, not 1408x792, and this pane has 442
+            // usable. Never size a car threshold off `wm density`.
+            val compact = maxHeight < 470.dp
+            val showVolume = maxHeight >= 620.dp
 
-            // The gear floats over the bar rather than taking a column of it. Given a
-            // weight of its own it stole 56dp from the width [TopBar] centres the
-            // player pill within, so the pill sat half a gear left of the middle of
-            // the pane — visible on a screen where it is the only thing on its line.
-            // Overlaid, the pill is centred on the pane and the gear is still in the
-            // corner; the pill's widthIn cap keeps the two from ever meeting.
-            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                TopBar(
-                    playerName = st.playerName,
-                    isSelf = st.isSelf,
-                    groupSize = st.groupSize,
-                    localSession = st.isLocalSession,
-                    onTap = { if (st.isLocalSession) sheets.device = true else sheets.speakers = true },
-                    // No source badge. On the phone it fills the corner opposite the
-                    // speaker pill; here the gear has that corner, and the two
-                    // together squeezed the pill until the player's own name
-                    // truncated. Which backend is playing is also the one thing on
-                    // that bar a driver never needs — and the library pane beside this
-                    // one is already wearing the same badge.
-                    source = null,
-                )
-                // Everything the car does not need on its main screen, behind one
-                // target in the corner furthest from the road.
-                Box(
-                    Modifier
-                        .align(Alignment.CenterEnd)
-                        .size(CarTarget)
-                        .clip(CircleShape)
-                        .background(Glass)
-                        .clickable(onClick = onOpenSettings),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(Icons.Default.Settings, "Settings", modifier = Modifier.size(24.dp))
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 18.dp)
+                    .padding(top = 8.dp, bottom = if (compact) 10.dp else 18.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                if (!connected && !st.isLocalSession) OfflineBanner()
+
+                // The gear floats over the bar rather than taking a column of it. Given a
+                // weight of its own it stole 56dp from the width [TopBar] centres the
+                // player pill within, so the pill sat half a gear left of the middle of
+                // the pane — visible on a screen where it is the only thing on its line.
+                // Overlaid, the pill is centred on the pane and the gear is still in the
+                // corner; the pill's widthIn cap keeps the two from ever meeting.
+                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    TopBar(
+                        playerName = st.playerName,
+                        isSelf = st.isSelf,
+                        groupSize = st.groupSize,
+                        localSession = st.isLocalSession,
+                        onTap = { if (st.isLocalSession) sheets.device = true else sheets.speakers = true },
+                        // No source badge. On the phone it fills the corner opposite the
+                        // speaker pill; here the gear has that corner, and the two
+                        // together squeezed the pill until the player's own name
+                        // truncated. Which backend is playing is also the one thing on
+                        // that bar a driver never needs — and the library pane beside this
+                        // one is already wearing the same badge.
+                        source = null,
+                    )
+                    // Everything the car does not need on its main screen, behind one
+                    // target in the corner furthest from the road.
+                    Box(
+                        Modifier
+                            .align(Alignment.CenterEnd)
+                            .size(CarTarget)
+                            .clip(CircleShape)
+                            .background(Glass)
+                            .clickable(onClick = onOpenSettings),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(Icons.Default.Settings, "Settings", modifier = Modifier.size(24.dp))
+                    }
                 }
-            }
 
-            if (showCover) {
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(if (compact) 6.dp else 10.dp))
                 AlbumArt(
                     art = art,
                     glow = palette.accent,
@@ -410,30 +436,30 @@ private fun CarPlayerPane(
                     radius = 16.dp,
                     glowAlpha = artGlow.value,
                 )
-                Spacer(Modifier.height(14.dp))
-            }
+                Spacer(Modifier.height(if (compact) 8.dp else 14.dp))
 
-            // The idle notice is a sentence, and a sentence is the first thing to go
-            // when the pane is short — it says "browse", and in this layout the
-            // library it would send you to is already on screen beside the player.
-            if (st.idle && !compact) {
-                IdleNotice(st.playerName, st.blank, onBrowse = {})
-                Spacer(Modifier.height(12.dp))
-            }
+                // The idle notice is a sentence, and a sentence is the first thing to go
+                // when the pane is short — it says "browse", and in this layout the
+                // library it would send you to is already on screen beside the player.
+                if (st.idle && !compact) {
+                    IdleNotice(st.playerName, st.blank, onBrowse = {})
+                    Spacer(Modifier.height(12.dp))
+                }
 
-            TrackTitleBlock(st, showComposer = false)
+                TrackTitleBlock(st, showComposer = false)
 
-            Spacer(Modifier.height(if (compact) 8.dp else 14.dp))
+                Spacer(Modifier.height(if (compact) 8.dp else 14.dp))
 
-            SeekRow(scrubber, st.durationMs, playing = st.isPlaying)
+                SeekRow(scrubber, st.durationMs, playing = st.isPlaying)
 
-            Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
+                Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
 
-            CarTransportRow(st, viewModel, compact = compact)
+                CarTransportRow(st, viewModel, compact = compact)
 
-            if (showVolume) {
-                Spacer(Modifier.height(16.dp))
-                VolumeRow(st.volume) { viewModel.setVolume(it) }
+                if (showVolume) {
+                    Spacer(Modifier.height(16.dp))
+                    VolumeRow(st.volume) { viewModel.setVolume(it) }
+                }
             }
         }
     }
@@ -498,15 +524,38 @@ private fun CarLibraryPane(
     libraryVm: LibraryViewModel,
     onManageDownloads: () -> Unit,
 ) {
-    Box(modifier) {
+    BoxWithConstraints(modifier) {
+        // Measured, not padded. [LibraryScreen] handles its own insets — its header
+        // clears the status bar and its grid reserves the navigation bar — so this
+        // pane must not pad, and only subtracts the bottom bar to ask how much room
+        // the pane really has. Conservative by the status bar's height in a stacked
+        // layout, where the library is the lower half and never meets it; that pane
+        // is the tall one anyway, so the answer does not change.
+        val bottomBar = WindowInsets.systemBars.asPaddingValues().calculateBottomPadding()
         LibraryScreen(
             viewModel = libraryVm,
             gridCols = 6,
             onManageDownloads = onManageDownloads,
-            prominentLibrarySwitch = true,
+            prominentLibrarySwitch = maxHeight - bottomBar >= LibrarySwitchBarMinHeight,
         )
     }
 }
+
+/**
+ * How much room the library pane needs before the switcher is worth a bar of its own.
+ *
+ * The bar costs about 92dp. Above it sit the title row and the search field, another
+ * 126dp between them, so it is only paying for itself if what is left still holds a
+ * couple of rows of tiles and something to scroll — call it 540dp in the pane.
+ *
+ * Which is the difference between the two head units this was checked on. A portrait
+ * unit stacks, and its library pane has around 570dp: the bar earns its place. The
+ * landscape unit is 984x554dp once its real density is accounted for, so a
+ * side-by-side library pane has under 500dp of it — there the bar is a fifth of the
+ * pane spent saying the name of the library the badge above it is already showing.
+ * The badge stays clickable in both, so nothing is unreachable either way.
+ */
+private val LibrarySwitchBarMinHeight = 540.dp
 
 /**
  * Switching library, as a bar across the whole pane.
