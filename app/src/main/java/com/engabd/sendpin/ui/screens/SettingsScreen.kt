@@ -442,6 +442,11 @@ private fun LazyListScope.sectionItems(
                 card("drive_auto_layout") { AndroidAutoLayoutCard(settings, accent, scope) }
                 card("drive_auto_content") { AndroidAutoContentCard(settings, accent, scope) }
                 card("drive_auto_transport") { AndroidAutoTransportCard(settings, accent, scope) }
+                // A fifth card, and the odd one out: the four above configure a tree
+                // the *car* draws over a projected connection, while this one is
+                // about the screen the app draws itself on Android Automotive. Same
+                // page because "the car" is where anyone would look for either.
+                card("drive_automotive") { AutomotiveLayoutCard(settings, accent, scope) }
             }
         }
 

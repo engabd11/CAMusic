@@ -75,6 +75,7 @@ import com.engabd.sendpin.library.MusicSources
 import com.engabd.sendpin.ui.viewmodel.LightSyncViewModel
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
 import com.engabd.sendpin.ui.screens.AlbumDetailScreen
+import com.engabd.sendpin.ui.screens.CarShell
 import com.engabd.sendpin.ui.screens.albumFlipKey
 import com.engabd.sendpin.ui.screens.EffectsScreen
 import com.engabd.sendpin.ui.screens.DownloadsScreen
@@ -100,6 +101,7 @@ import com.engabd.sendpin.ui.theme.ThemeChoice
 import com.engabd.sendpin.ui.theme.parseAccent
 import com.engabd.sendpin.ui.viewmodel.PlayerViewModel
 import com.engabd.sendpin.data.AppSettings
+import com.engabd.sendpin.data.Platform
 import kotlinx.coroutines.flow.first
 
 private val TabTabs = listOf(
@@ -575,6 +577,36 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
         // out once at the full inset and jump.
         val compactChrome = currentRoute == "rhythm_game"
         val miniBarHeight = if (compactChrome) CompactMiniBarHeight else MiniBarHeight
+
+        // The car takes a different shell entirely, and takes it here — above the
+        // NavHost, because the whole of what it changes is that there isn't one. See
+        // [CarShell]: the player and the library are both on the main screen, so
+        // there are no tabs to navigate between and no bottom bar to hold them.
+        //
+        // `carLayoutPreview` is the only way to look at that shell without a head
+        // unit, and it is genuinely the only way: the layout is chosen from the app's
+        // own window, which an emulator can reshape, but the *branch* is chosen from
+        // hardware a phone does not have. See Settings > Android Auto.
+        val carPreview by settings.carLayoutPreview.collectAsState(initial = false)
+        val isCar = remember(context) { Platform.isAutomotive(context) } || carPreview
+        if (isCar) {
+            CompositionLocalProvider(
+                LocalAccent provides appAccent,
+                LocalPalette provides animatedAppPalette,
+                // No mini player and no tab bar, so nothing is owed the bottom of the
+                // screen — every pane may run to the edge of its own half.
+                LocalMiniBarInset provides 0.dp,
+                LocalBottomChrome provides bottomChrome,
+            ) {
+                CarShell(
+                    playerVm = playerVm,
+                    nowPlayingVm = nowPlayingVm,
+                    libraryVm = libraryVm,
+                    art = npArt,
+                )
+            }
+            return@SendspinTheme
+        }
 
         CompositionLocalProvider(
             LocalAccent provides appAccent,
