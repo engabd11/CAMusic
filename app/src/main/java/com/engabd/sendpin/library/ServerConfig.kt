@@ -308,5 +308,16 @@ data class ServerConfig(
         const val OPT_QOBUZ_APP_ID = "qobuzAppId"
         const val OPT_QOBUZ_APP_SECRET = "qobuzAppSecret"
 
+        /** Tidal: the client credentials of this app's own developer registration. */
+        const val OPT_TIDAL_CLIENT_ID = "tidalClientId"
+        const val OPT_TIDAL_CLIENT_SECRET = "tidalClientSecret"
+
+        /** Tidal: the device-flow session, persisted so sign-in survives restarts. */
+        const val OPT_TIDAL_ACCESS_TOKEN = "tidalAccessToken"
+        const val OPT_TIDAL_REFRESH_TOKEN = "tidalRefreshToken"
+        const val OPT_TIDAL_TOKEN_EXPIRES_AT = "tidalTokenExpiresAt"
+        const val OPT_TIDAL_USER_ID = "tidalUserId"
+        const val OPT_TIDAL_COUNTRY_CODE = "tidalCountryCode"
+
     }
 }

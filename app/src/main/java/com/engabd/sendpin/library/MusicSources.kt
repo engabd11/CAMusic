@@ -10,6 +10,7 @@ import com.engabd.sendpin.mpd.MpdClient
 import com.engabd.sendpin.plex.PlexClient
 import com.engabd.sendpin.qobuz.QobuzClient
 import com.engabd.sendpin.subsonic.SubsonicClient
+import com.engabd.sendpin.tidal.TidalClient
 import kotlinx.coroutines.flow.first
 
 /**
@@ -159,6 +160,21 @@ object MusicSources {
             config.password,
         )
 
+        // Tidal signs in on Tidal's own page (device authorization flow) and keeps
+        // the token pair in the config; the client credentials are the app's own
+        // developer registration, like Qobuz's app id/secret.
+        ServerKind.TIDAL -> TidalSource(
+            TidalClient(
+                clientId = config.option(ServerConfig.OPT_TIDAL_CLIENT_ID).orEmpty(),
+                clientSecret = config.option(ServerConfig.OPT_TIDAL_CLIENT_SECRET).orEmpty(),
+                accessToken = config.option(ServerConfig.OPT_TIDAL_ACCESS_TOKEN).orEmpty(),
+                refreshToken = config.option(ServerConfig.OPT_TIDAL_REFRESH_TOKEN).orEmpty(),
+                tokenExpiresAt = config.option(ServerConfig.OPT_TIDAL_TOKEN_EXPIRES_AT)?.toLongOrNull() ?: 0,
+                userId = config.option(ServerConfig.OPT_TIDAL_USER_ID).orEmpty(),
+                countryCode = config.option(ServerConfig.OPT_TIDAL_COUNTRY_CODE).orEmpty().ifBlank { "US" },
+            ),
+        )
+
         // Music Assistant is not a MusicSource — it owns a server-side queue and
         // plays to speakers this app never decodes for. See MusicSource's docs.
         ServerKind.MUSIC_ASSISTANT -> null
@@ -290,6 +306,15 @@ object MusicSources {
         }
 
         is SpotifySource -> {
+            val error = source.probe()
+            if (error != null) {
+                if (error.isAuth) throw SourceAuthException(error.message)
+                throw Exception(error.message)
+            }
+            config
+        }
+
+        is TidalSource -> {
             val error = source.probe()
             if (error != null) {
                 if (error.isAuth) throw SourceAuthException(error.message)
