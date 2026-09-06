@@ -152,7 +152,28 @@ working integration elsewhere is evidence of what the endpoint accepts).
 
 ## Phase 2 — Spotify via embedded librespot (route B)
 
-### Task 2.1: Dependency + module wiring
+**Status: LANDED** on `feat/direct-streaming-providers` (dependency, engine, sink, source,
+remote transport, Light Sync feed). Live smoke with a real Premium account is the
+outstanding step — all unit tests are fixture-based. Design decisions worth keeping:
+
+- **The dependency must be `librespot-player:1.6.5:thin`** plus a
+  `resolutionStrategy.force("kotlin-stdlib:2.2.21")`: the default artifact shades the whole
+  kotlin-stdlib (built against 2.4) into its jar, which defeats any version force and
+  flags every enum `entries` use in the codebase as needing opt-in. Thin is shade-free.
+- **Spotify is the MPD shape, not the scheme-uri shape:** `remotePlayback()` hands
+  `LocalPlayer` a `SpotifyRemote` transport; librespot's `Player` owns playback
+  (`load/play/pause/seek/volume`), and the app mirrors the queue for display. Scheme uris
+  (`spotify://track/<id>`) stamp queue items but nothing resolves them through ExoPlayer.
+- **Audio leaves librespot through `SpotifySink`** (a `SinkOutput`): AudioTrack write +
+  big-endian→little-endian pair swap (desktop sinks are SourceDataLine-shaped; wrong swap
+  = full-scale noise) + feed of `SpotifyEngine.tap` via `analyseExternal` in the same
+  write. New feed `LightSyncFeed.SPOTIFY_PCM` ranks with the real-audio feeds;
+  `SpotifyEngine.playing` (driven by librespot's EventsListener) picks it.
+- **No Spotify developer app exists in this path**: browsing rides the Web API with the
+  user's own session token (`session.tokens().getToken().accessToken`); search rides
+  librespot's `SearchManager` (Gson → kotlinx bridge into the Web API parsers).
+
+### Task 2.1: Dependency + module wiring ✅
 
 **Objective:** librespot-java `lib` (and its Android sink/decoder modules from
 `devgianlu/librespot-android`) available to the app.
