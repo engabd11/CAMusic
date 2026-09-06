@@ -268,6 +268,26 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.10.1")
     implementation("androidx.media3:media3-session:1.10.1")
 
+    // The embedded Spotify client (experimental direct Spotify source). The
+    // coordinates are the ones librespot-android proves work on Android: the
+    // desktop `sink`/`api`/`dacp` modules, the log4j backend and lmax disruptor
+    // are excluded and slf4j routes to Android's logcat. The player module carries
+    // the pure-Java jorbis/jlayer decoders, so no NDK decoder is needed; audio
+    // leaves through our own SinkOutput into the app's engine (see SpotifySession).
+    //
+    // The `thin` classifier is load-bearing, not an optimisation: the default
+    // artifact SHADES the whole kotlin-stdlib into itself (1.6.5 is built against
+    // stdlib 2.4), and those shaded classes win over the real ones on the compile
+    // classpath — flagging every enum `entries` use in this codebase as needing an
+    // opt-in that never existed. Thin is the shade-free artifact, plus the
+    // resolutionStrategy force below, which the shaded jar would defeat.
+    implementation("xyz.gianlu.librespot:librespot-player:1.6.5:thin") {
+        exclude(group = "xyz.gianlu.librespot", module = "librespot-sink")
+        exclude(group = "com.lmax", module = "disruptor")
+        exclude(group = "org.apache.logging.log4j")
+    }
+    implementation("uk.uuid.slf4j:slf4j-android:1.7.30-0")
+
     // Room: offline download index and local media cache.
     val roomVersion = "2.7.1"
     implementation("androidx.room:room-runtime:$roomVersion")
@@ -309,4 +329,15 @@ dependencies {
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test:core-ktx:1.6.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
+}
+
+// librespot's transitives drag kotlin-stdlib to 2.4.x, newer than this project's
+// 2.2.21 compiler — and the newer stdlib flags previously-stable declarations
+// (enum `entries`) experimental again, breaking existing files with bogus opt-in
+// errors. Constraints cannot help (resolution picks the highest request), so the
+// version is forced back down. Remove when the project's compiler reaches 2.4.
+configurations.all {
+    resolutionStrategy {
+        force("org.jetbrains.kotlin:kotlin-stdlib:2.2.21")
+    }
 }
