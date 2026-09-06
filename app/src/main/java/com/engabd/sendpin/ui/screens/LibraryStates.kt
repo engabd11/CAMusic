@@ -295,6 +295,19 @@ internal fun ConnectForm(viewModel: LibraryViewModel, backend: Backend, activeSe
             GlassField("Server URL", url, viewModel::setMaUrl, "http://192.168.0.10:8095")
             GlassField("Username", user, viewModel::setMaUser)
             GlassField("Password", pass, viewModel::setMaPass, secret = true)
+        } else if (activeConfig?.kind?.cloudAccount == true) {
+            // A streaming account: the login is the address, so this form asks for
+            // credentials and nothing else. Needs its own branch rather than falling
+            // through to the server form below — a cloud library has no URL field —
+            // and arriving before the addressless branch, which is "This device"'s
+            // audio-permission card, not an account form.
+            SectionLabel(activeConfig.kind.label)
+            Text(
+                "Direct mode plays on this phone and can download for offline, and it works even when Music Assistant is down.",
+                color = TextMuted, style = MaterialTheme.typography.bodyMedium,
+            )
+            GlassField("Email", viewModel.navUser.collectAsStateWithLifecycle().value, viewModel::setNavUser)
+            GlassField("Password", viewModel.navPass.collectAsStateWithLifecycle().value, viewModel::setNavPass, secret = true)
         } else if (activeConfig?.kind?.needsAddress == false) {
             // Music already on the phone has no address, sign-in or password to ask
             // for. What it *does* need is the audio permission, and until this asked

@@ -104,7 +104,19 @@ each phase registers its own source when it has a real client behind it.
 
 ## Phase 1 — Qobuz (easiest real provider)
 
-### Task 1.1: API client skeleton
+**Status: LANDED** on `feat/direct-streaming-providers` (client + source + player glue).
+Live smoke against a real Qobuz account is the only outstanding step — unit tests are
+all fixture-based. Two design decisions worth keeping:
+
+- **Stream urls are `qobuz://track/<id>` scheme uris, resolved at player-open time** via
+  `StreamSchemes` + `StreamSchemeResolver` (see Phase 2 note below): the signed
+  `track/getFileUrl` urls expire within minutes, so they are fetched fresh per track and
+  never cached. Quality walks MA's chain (27→7→6→5) with a re-sign per attempt.
+- **No app credentials are bundled.** MA's app id/secret are registered to their project
+  and explicitly not for reuse; Qobuz app credentials come from `ServerConfig` options
+  (`qobuzAppId`/`qobuzAppSecret`) — Abdullah to supply CAMusic's own registered pair.
+
+### Task 1.1: API client skeleton ✅
 
 **Objective:** `qobuz/QobuzClient.kt` — base URL (`https://www.qobuz.com/api.json/0.2/`),
 app-id + auth handling, request signing exactly as MA's `music_assistant/providers/qobuz/`

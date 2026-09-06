@@ -543,16 +543,18 @@ private fun ServerDetail(
 
         SettingsCard(
             title = "Connection",
-            lead = when (config.kind.auth) {
-                AuthStyle.OPTIONAL_USER_PASSWORD ->
+            lead = when {
+                config.kind.cloudAccount ->
+                    "Your ${config.kind.label} account. The login is the address — there is no server to name."
+                config.kind.auth == AuthStyle.OPTIONAL_USER_PASSWORD ->
                     "The address of the server. Credentials only if yours asks for them."
-                AuthStyle.TOKEN -> "The address, and a token generated in the server's own settings."
-                AuthStyle.LINKED_ACCOUNT -> "Signing in happens on the provider's own page."
-                AuthStyle.NONE -> "Nothing to connect to, this reads music already on the phone."
-                AuthStyle.USER_PASSWORD -> "The address of the server, and the login you use for it."
+                config.kind.auth == AuthStyle.TOKEN -> "The address, and a token generated in the server's own settings."
+                config.kind.auth == AuthStyle.LINKED_ACCOUNT -> "Signing in happens on the provider's own page."
+                config.kind.auth == AuthStyle.NONE -> "Nothing to connect to, this reads music already on the phone."
+                else -> "The address of the server, and the login you use for it."
             },
         ) {
-            if (config.kind.auth != AuthStyle.NONE) {
+            if (config.kind.hasAddress) {
                 OledField(url, { url = it }, "Server address", config.kind.urlHint, accent)
             }
             if (config.kind == ServerKind.MPD) {

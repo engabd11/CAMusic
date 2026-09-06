@@ -8,6 +8,7 @@ import com.engabd.sendpin.jellyfin.JellyfinException
 import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.mpd.MpdClient
 import com.engabd.sendpin.plex.PlexClient
+import com.engabd.sendpin.qobuz.QobuzClient
 import com.engabd.sendpin.subsonic.SubsonicClient
 import kotlinx.coroutines.flow.first
 
@@ -137,6 +138,18 @@ object MusicSources {
             (context.applicationContext as com.engabd.sendpin.SendpinApp).downloads,
         )
 
+        // Qobuz is an account, not a server: the login is the address, and the app
+        // id/secret for the signed API calls ride the options until this
+        // experimental kind earns a settings form of its own.
+        ServerKind.QOBUZ -> QobuzSource(
+            QobuzClient(
+                username = config.username,
+                password = config.password,
+                appId = config.option(ServerConfig.OPT_QOBUZ_APP_ID).orEmpty(),
+                appSecret = config.option(ServerConfig.OPT_QOBUZ_APP_SECRET).orEmpty(),
+            ),
+        )
+
         // Music Assistant is not a MusicSource — it owns a server-side queue and
         // plays to speakers this app never decodes for. See MusicSource's docs.
         ServerKind.MUSIC_ASSISTANT -> null
@@ -254,6 +267,15 @@ object MusicSources {
             if (error != null) {
                 if (error.isAuth) throw SourceAuthException(error.message ?: "MPD refused that password")
                 throw error
+            }
+            config
+        }
+
+        is QobuzSource -> {
+            val error = source.probe()
+            if (error != null) {
+                if (error.isAuth) throw SourceAuthException(error.message)
+                throw Exception(error.message)
             }
             config
         }

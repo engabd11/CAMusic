@@ -304,5 +304,9 @@ data class ServerConfig(
         /** Jellyfin/Emby: which of the server's libraries to browse. Plex: the music section's key. */
         const val OPT_LIBRARY_ID = "libraryId"
 
+        /** Qobuz: the app id + secret registered to this app, for the signed API calls. */
+        const val OPT_QOBUZ_APP_ID = "qobuzAppId"
+        const val OPT_QOBUZ_APP_SECRET = "qobuzAppSecret"
+
     }
 }

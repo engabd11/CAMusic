@@ -194,7 +194,7 @@ class QobuzClient(
         get(
             "playlist/getUserPlaylists",
             mapOf("limit" to limit.toString(), "offset" to offset.toString()),
-        )?.get("playlists")?.jsonObject?.items().orEmpty().mapNotNull { parsePlaylist(it) }
+        ).get("playlists")?.jsonObject?.items().orEmpty().mapNotNull { parsePlaylist(it) }
 
     /** One album's full metadata and its tracks. */
     suspend fun album(id: String): JsonObject =
@@ -223,6 +223,10 @@ class QobuzClient(
         } else {
             get("playlist/get", mapOf("playlist_id" to id))
         }
+
+    /** One track's full metadata. */
+    suspend fun track(id: String): JsonObject =
+        get("track/get", mapOf("track_id" to id))
 
     // ── Streaming ─────────────────────────────────────────────────────────
 
