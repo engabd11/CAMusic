@@ -61,6 +61,8 @@ import com.engabd.sendpin.ui.design.MiniBarHeight
 import com.engabd.sendpin.ui.design.LocalPalette
 import com.engabd.sendpin.ui.design.ProvideBackdrop
 import androidx.compose.material3.windowsizeclass.WindowSizeClass
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
 import androidx.compose.animation.SharedTransitionLayout
 import com.engabd.sendpin.ui.design.LocalSharedTransitionScope
@@ -75,6 +77,7 @@ import com.engabd.sendpin.library.MusicSources
 import com.engabd.sendpin.ui.viewmodel.LightSyncViewModel
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
 import com.engabd.sendpin.ui.screens.AlbumDetailScreen
+import com.engabd.sendpin.ui.screens.CarFontScale
 import com.engabd.sendpin.ui.screens.CarShell
 import com.engabd.sendpin.ui.screens.albumFlipKey
 import com.engabd.sendpin.ui.screens.EffectsScreen
@@ -590,6 +593,18 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
         val carPreview by settings.carLayoutPreview.collectAsState(initial = false)
         val isCar = remember(context) { Platform.isAutomotive(context) } || carPreview
         if (isCar) {
+            // Text one size up for the whole car shell, boxes left alone — see
+            // [CarFontScale]. Provided here rather than inside [CarShell] because it
+            // has to sit above the pane split's own measurements, and because this is
+            // already where the car branch provides everything else it changes.
+            //
+            // Multiplied into the car's own font scale, never replacing it: a driver
+            // who has turned text up in the head unit's accessibility settings still
+            // gets that, and this on top.
+            val density = LocalDensity.current
+            val carDensity = remember(density) {
+                Density(density.density, density.fontScale * CarFontScale)
+            }
             CompositionLocalProvider(
                 LocalAccent provides appAccent,
                 LocalPalette provides animatedAppPalette,
@@ -597,6 +612,7 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
                 // screen — every pane may run to the edge of its own half.
                 LocalMiniBarInset provides 0.dp,
                 LocalBottomChrome provides bottomChrome,
+                LocalDensity provides carDensity,
             ) {
                 CarShell(
                     playerVm = playerVm,

@@ -26,12 +26,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.RepeatOne
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -45,14 +47,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.engabd.sendpin.data.AppSettings
+import com.engabd.sendpin.library.ServerKind
 import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ui.design.AlbumArt
+import com.engabd.sendpin.ui.design.LocalAccent
 import com.engabd.sendpin.ui.design.LocalPalette
 import com.engabd.sendpin.ui.design.PlayButton
+import com.engabd.sendpin.ui.design.ServerKindGlyph
 import com.engabd.sendpin.ui.design.SettledArt
 import com.engabd.sendpin.ui.theme.AppFont
 import com.engabd.sendpin.ui.theme.Glass
@@ -60,6 +66,7 @@ import com.engabd.sendpin.ui.theme.GlassStrong
 import com.engabd.sendpin.ui.theme.Hairline
 import com.engabd.sendpin.ui.theme.Ink
 import com.engabd.sendpin.ui.theme.TextPrimary
+import com.engabd.sendpin.ui.theme.TextSecondary
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
 import com.engabd.sendpin.ui.viewmodel.PlayerViewModel
 
@@ -92,6 +99,29 @@ private const val PLAYER_WEIGHT_TALL = 0.45f
 
 /** The smallest thing worth aiming at from a driver's seat. */
 private val CarTarget = 56.dp
+
+/**
+ * How much larger every piece of text is in the car than on the phone.
+ *
+ * Applied as a `fontScale` on the density the whole car shell composes under, rather
+ * than as a size on any particular label. Two reasons it has to be that and not a
+ * hundred edits: the car reuses the phone's screens wholesale — the library pane *is*
+ * [LibraryScreen] — so there is no set of call sites to change, and a scale composes
+ * with whatever the driver has already chosen in the car's own accessibility settings
+ * instead of overriding it.
+ *
+ * What it deliberately does not scale is the boxes. A category tile stays 96dp and a
+ * cover stays a cover, so the text grows *within* the shapes rather than pushing them
+ * around — which is the point: at a glance from the driver's seat those tiles were
+ * large blocks of colour carrying phone-sized captions. Everything in the panes is
+ * single-line and ellipsised, so the worst a long name can now do is truncate one
+ * character sooner, and the two places that size themselves from text — the shelf
+ * tile's label strip, the "Done" pill — already read `fontScale` and grow with it.
+ *
+ * 1.3 rather than more: the fixed-height tiles have about 19dp of slack under their
+ * captions, and this spends roughly a quarter of it.
+ */
+internal const val CarFontScale = 1.3f
 
 /**
  * How to cut the car's screen, given the size of the window the app actually has.
@@ -335,27 +365,32 @@ private fun CarPlayerPane(
         ) {
             if (!connected && !st.isLocalSession) OfflineBanner()
 
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.weight(1f)) {
-                    TopBar(
-                        playerName = st.playerName,
-                        isSelf = st.isSelf,
-                        groupSize = st.groupSize,
-                        localSession = st.isLocalSession,
-                        onTap = { if (st.isLocalSession) sheets.device = true else sheets.speakers = true },
-                        // No source badge. On the phone it fills the corner opposite
-                        // the speaker pill; here the gear has that corner, and the two
-                        // together squeezed the pill until the player's own name
-                        // truncated. Which backend is playing is also the one thing on
-                        // that bar a driver never needs — and the library pane beside
-                        // this one is already wearing the same badge.
-                        source = null,
-                    )
-                }
+            // The gear floats over the bar rather than taking a column of it. Given a
+            // weight of its own it stole 56dp from the width [TopBar] centres the
+            // player pill within, so the pill sat half a gear left of the middle of
+            // the pane — visible on a screen where it is the only thing on its line.
+            // Overlaid, the pill is centred on the pane and the gear is still in the
+            // corner; the pill's widthIn cap keeps the two from ever meeting.
+            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                TopBar(
+                    playerName = st.playerName,
+                    isSelf = st.isSelf,
+                    groupSize = st.groupSize,
+                    localSession = st.isLocalSession,
+                    onTap = { if (st.isLocalSession) sheets.device = true else sheets.speakers = true },
+                    // No source badge. On the phone it fills the corner opposite the
+                    // speaker pill; here the gear has that corner, and the two
+                    // together squeezed the pill until the player's own name
+                    // truncated. Which backend is playing is also the one thing on
+                    // that bar a driver never needs — and the library pane beside this
+                    // one is already wearing the same badge.
+                    source = null,
+                )
                 // Everything the car does not need on its main screen, behind one
                 // target in the corner furthest from the road.
                 Box(
                     Modifier
+                        .align(Alignment.CenterEnd)
                         .size(CarTarget)
                         .clip(CircleShape)
                         .background(Glass)
@@ -468,6 +503,74 @@ private fun CarLibraryPane(
             viewModel = libraryVm,
             gridCols = 6,
             onManageDownloads = onManageDownloads,
+            prominentLibrarySwitch = true,
         )
+    }
+}
+
+/**
+ * Switching library, as a bar across the whole pane.
+ *
+ * The badge beside the Library title is the phone's control for this, and on the
+ * phone it is the right one — it sits where it is *about*, and it is a thumb's width
+ * from where the thumb already is. In the car it was a 110×28 target in the top
+ * corner of a pane, which is a thing to lean towards and aim at.
+ *
+ * This is the same action with the two properties a moving car needs. It is wide:
+ * the whole pane is the target, so there is no aiming along the horizontal at all.
+ * And it is in the middle of the screen — a bar at the top of the library pane is
+ * exactly the middle of a stacked layout, and the nearest edge of the far pane in a
+ * side-by-side one, which are the two most reachable places on a dashboard.
+ *
+ * The badge stays exactly as it is, and stays clickable. It is still the answer to
+ * "which library am I looking at", it keeps saying so while the title above it turns
+ * into whatever folder is open, and a second smaller route to the same sheet costs
+ * nothing — it simply stops being the only one.
+ */
+@Composable
+internal fun CarLibrarySwitchBar(
+    kind: ServerKind?,
+    label: String,
+    onClick: () -> Unit,
+) {
+    val accent = LocalAccent.current
+    val shape = RoundedCornerShape(18.dp)
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 68.dp)
+            .clip(shape)
+            .background(accent.copy(alpha = 0.13f))
+            .border(1.dp, accent.copy(alpha = 0.38f), shape)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 18.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        if (kind != null) {
+            ServerKindGlyph(kind, tint = TextPrimary, modifier = Modifier.size(24.dp))
+        } else {
+            Icon(Icons.Default.LibraryMusic, null, tint = TextPrimary, modifier = Modifier.size(24.dp))
+        }
+        Column(Modifier.weight(1f)) {
+            Text(
+                label,
+                color = TextPrimary,
+                fontFamily = AppFont,
+                fontWeight = FontWeight.Bold,
+                fontSize = 18.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                "Tap to switch library",
+                color = TextSecondary,
+                fontFamily = AppFont,
+                fontSize = 13.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Icon(Icons.Default.SwapHoriz, null, tint = accent, modifier = Modifier.size(26.dp))
     }
 }
