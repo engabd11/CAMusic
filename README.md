@@ -39,6 +39,30 @@ Runs on phones and tablets, Android TV, Android Auto and LG webOS televisions.
   <img src="docs/screenshots/light-sync.jpg" width="30%" />
   <img src="docs/screenshots/library.jpg" width="30%" />
 </p>
+<p align="center">
+  <img src="docs/screenshots/artist.jpg" width="18%" />
+  <img src="docs/screenshots/dj-radio.jpg" width="18%" />
+  <img src="docs/screenshots/library-home.jpg" width="18%" />
+  <img src="docs/screenshots/speakers.jpg" width="18%" />
+  <img src="docs/screenshots/settings.jpg" width="18%" />
+</p>
+<p align="center">
+  <img src="docs/screenshots/light-sync-tuning.jpg" width="24%" />
+  <img src="docs/screenshots/light-sync-extras.jpg" width="24%" />
+  <img src="docs/screenshots/light-sync-colors.jpg" width="24%" />
+  <img src="docs/screenshots/light-sync-shows.jpg" width="24%" />
+</p>
+<p align="center">
+  <em>Android Auto</em>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<em>Android Automotive</em><br>
+  <img src="docs/screenshots/android-auto-library.jpg" width="21%" />
+  <img src="docs/screenshots/android-auto-now-playing.jpg" width="21%" />
+  <img src="docs/screenshots/android-automotive-library.jpg" width="50%" />
+</p>
+<p align="center">
+  <em>Android TV</em>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<em>Tablet</em><br>
+  <img src="docs/screenshots/tv-now-playing.jpg" width="45%" />
+  <img src="docs/screenshots/tablet-now-playing.jpg" width="35%" />
+</p>
 
 ---
 
@@ -292,21 +316,6 @@ variety, streaks, lossless share, and where your music actually came from.
   permission-free default, with a full-width overlay behind it, triggered by the car's Bluetooth.
 - **Home-screen widget** with artwork and transport controls.
 - **Tablets and foldables** get an adaptive grid layout.
-
-<p align="center">
-  <em>Android Auto</em><br>
-  <img src="docs/screenshots/android-auto-library.jpg" width="24%" />
-  <img src="docs/screenshots/android-auto-now-playing.jpg" width="24%" />
-</p>
-<p align="center">
-  <em>Android Automotive — player and library side by side on the car's own screen</em><br>
-  <img src="docs/screenshots/android-automotive-library.jpg" width="70%" />
-</p>
-<p align="center">
-  <em>Android TV</em>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<em>Tablet</em><br>
-  <img src="docs/screenshots/tv-now-playing.jpg" width="45%" />
-  <img src="docs/screenshots/tablet-now-playing.jpg" width="35%" />
-</p>
 
 ---
 
