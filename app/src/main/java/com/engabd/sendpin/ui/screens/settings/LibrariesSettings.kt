@@ -579,18 +579,22 @@ private fun ServerDetail(
                         PlexSignInRow(hasToken = token.isNotBlank(), onToken = { token = it }, accent = accent, scope = scope)
                     // Tidal's device flow: the app mints a code, the user approves it
                     // in a browser, and the resulting tokens ride the config options.
-                    // The full customOptions save happens through the sign-in row's
-                    // callback, which writes them directly — see TidalSignInRow.
-                    ServerKind.TIDAL -> {
-                        // The row writes the finished token set into the config's
-                        // options itself; nothing else to collect here.
-                        TidalSignInRow(
-                            config = config,
-                            accent = accent,
-                            scope = scope,
-                            onConfig = { config = it; libraryVm.switchTo(it); libraryVm.connect() },
-                        )
-                    }
+                    // The row saves them itself — there is no form field to hold a
+                    // token pair, so handing them up as state would lose them.
+                    ServerKind.TIDAL -> TidalSignInRow(
+                        config = config,
+                        accent = accent,
+                        scope = scope,
+                        onSave = { next ->
+                            config = next
+                            scope.launch {
+                                save(makeActive = true, customOptions = next.options)
+                                if (isNew) onSaved(next.id)
+                                libraryVm.switchTo(next)
+                                libraryVm.connect()
+                            }
+                        },
+                    )
                     else -> Unit
                 }
                 else -> Unit
@@ -621,7 +625,9 @@ private fun ServerDetail(
                     accent = accent,
                 ) {
                     scope.launch {
-                        save(makeActive = true)
+                        // customOptions preserves Tidal's token pair here too — the
+                        // addressless branch is shared with the cloud kinds.
+                        save(makeActive = true, customOptions = config.options)
                         if (isNew) onSaved(config.id)
                         libraryVm.switchTo(edited())
                         libraryVm.connect()
@@ -634,12 +640,20 @@ private fun ServerDetail(
                         isNew -> "Save & connect"
                         else -> "Save & reconnect"
                     },
-                    enabled = url.isNotBlank() && !(connecting && isActive) &&
-                        (config.kind.auth != AuthStyle.LINKED_ACCOUNT || token.isNotBlank()),
+                    // Cloud accounts have no URL to be non-blank; their readiness is
+                    // credentials (Qobuz/Spotify) or a signed-in token (Tidal).
+                    enabled = (!config.kind.hasAddress || url.isNotBlank()) &&
+                        (!config.kind.cloudAccount ||
+                            config.option(ServerConfig.OPT_TIDAL_ACCESS_TOKEN) != null ||
+                            (user.isNotBlank() && pass.isNotBlank())) &&
+                        !(connecting && isActive),
                     accent = accent,
                 ) {
                     scope.launch {
-                        save(makeActive = true)
+                        // customOptions carries whatever the Tidal sign-in row wrote
+                        // into the config: edited() rebuilds from the form fields and
+                        // would silently drop the token pair on the first save.
+                        save(makeActive = true, customOptions = config.options)
                         if (isNew) onSaved(config.id)
                         libraryVm.switchTo(edited())
                         libraryVm.connect()
@@ -1069,7 +1083,7 @@ private fun TidalSignInRow(
     config: ServerConfig,
     accent: Color,
     scope: CoroutineScope,
-    onConfig: (ServerConfig) -> Unit,
+    onSave: (ServerConfig) -> Unit,
 ) {
     val context = LocalContext.current
     var working by remember { mutableStateOf(false) }
@@ -1123,7 +1137,7 @@ private fun TidalSignInRow(
                         )
                     signedIn.userId?.let { updated = updated.withOption(ServerConfig.OPT_TIDAL_USER_ID, it) }
                     signedIn.countryCode?.let { updated = updated.withOption(ServerConfig.OPT_TIDAL_COUNTRY_CODE, it) }
-                    onConfig(updated)
+                    onSave(updated)
                     status = "Signed in. Connecting…"
                 } else {
                     status = "Timed out waiting for Tidal. Try again."

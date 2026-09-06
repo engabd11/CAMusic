@@ -103,6 +103,9 @@ class SpotifyWebApi(
         request(pathAndQuery, tokenProvider())
     }
 
+    /** Bare-endpoint fetch, for source paths that need one (artist metadata). */
+    suspend fun artist(id: String): MaItem? = parseArtist(get("artists/$id"))
+
     /** A `paging` object's items, descending into the Spotify page envelope. */
     private suspend fun paging(pathAndQuery: String): List<JsonObject> {
         val body = get(pathAndQuery)

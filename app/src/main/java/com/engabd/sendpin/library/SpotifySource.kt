@@ -84,10 +84,10 @@ class SpotifySource(
     override suspend fun playlists(): List<MaItem> =
         withContext_IO { api().playlists() }
 
-    /** Saved tracks double as the artist-less library listing. */
+    /** The artist's own metadata plus their album list, two round-trips. */
     override suspend fun artistDetail(id: String): Pair<MaItem?, List<MaItem>> {
         val api = api()
-        val artist = withContext_IO { runCatching { api.search(id, 1).artists.firstOrNull() }.getOrNull() }
+        val artist = withContext_IO { runCatching { api.artist(id) }.getOrNull() }
         val albums = withContext_IO { api.artistAlbums(id) }
         return artist to albums
     }
