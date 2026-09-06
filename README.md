@@ -27,10 +27,10 @@ it into part of the listening.
 
 | | |
 |---|---|
-| 🎵 **A player** | Navidrome, Subsonic, Jellyfin, Emby, Plex, MPD, Music Assistant and on-device files. Gapless playback, a ten band equaliser, high resolution output, ReplayGain and offline downloads. |
-| 💡 **A light show** | Philips Hue Entertainment, driven straight to the bridge at 60 frames a second from the audio that is playing. |
-| ✨ **An atmosphere** | Ambience shows with their own sound, ready whenever you want the room without the music. |
-| 🔊 **A speaker** | Music Assistant can stream to this phone as a clock synced player, so it joins a grouped, multi-room setup. |
+|  **A player** | Navidrome, Subsonic, Jellyfin, Emby, Plex, MPD, Music Assistant and on-device files. Gapless playback, a ten band equaliser, high resolution output, ReplayGain and offline downloads. |
+|  **A light show** | Philips Hue Entertainment, driven straight to the bridge at 60 frames a second from the audio that is playing. |
+|  **An atmosphere** | Ambience shows with their own sound, ready whenever you want the room without the music. |
+|  **A speaker** | Music Assistant can stream to this phone as a clock synced player, so it joins a grouped, multi-room setup. |
 
 Runs on phones and tablets, Android TV, Android Auto and LG webOS televisions.
 
@@ -53,7 +53,7 @@ Runs on phones and tablets, Android TV, Android Auto and LG webOS televisions.
   <img src="docs/screenshots/light-sync-shows.jpg" width="24%" />
 </p>
 <p align="center">
-  <em>Android Auto</em>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<em>Android Automotive</em><br>
+  <em>Android Auto</em>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
   <img src="docs/screenshots/android-auto-library.jpg" width="21%" />
   <img src="docs/screenshots/android-auto-now-playing.jpg" width="21%" />
   <img src="docs/screenshots/android-automotive-library.jpg" width="50%" />
@@ -303,7 +303,7 @@ variety, streaks, lossless share, and where your music actually came from.
   the car always plays on *this phone*, never on a speaker in another room, and for a Music
   Assistant track it moves the speaker selection here too, so the car's transport buttons
   address the player it just started.
-- **Android Automotive.** For a car with the app installed on its own built-in head unit,
+- **Android Auto.** For a car with the app installed on its own built-in head unit,
   rather than projected from a phone: a two-pane layout puts the player and the library
   side by side, sized and inset for a driver's glance rather than a phone screen.
 - **Android TV.** A dedicated `tv` flavour with a D-pad Now Playing, Library, Queue, Light Sync,
