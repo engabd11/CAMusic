@@ -30,6 +30,12 @@ import com.engabd.sendpin.mpd.MpdRemote
  * and no [Capability.DOWNLOAD]: MPD serves audio to its own outputs and has no
  * endpoint that hands a file over.
  *
+ * [Capability.REPLAY_GAIN] is here for a different reason from every other provider
+ * that declares it: MPD does not report a gain for the app to apply, it *applies*
+ * one. `replay_gain_mode` is a server-side setting, and the Now Playing sheet drives
+ * it through [MpdRemote.setReplayGain] — which is also why the app's own scalar is
+ * left out of the path on an MPD session, since the audio never reaches this phone.
+ *
  * ## Favourites, which MPD does not have
  *
  * [Capability.FAVORITES] *is* declared, and the app keeps the list itself — see
@@ -79,6 +85,12 @@ class MpdSource(
         add(Capability.PLAYLIST_READ)
         add(Capability.TRACKS)
         add(Capability.RICH_FORMAT)
+        // MPD applies ReplayGain itself, in its own mixer, from the tags on the
+        // files it scanned — `replay_gain_mode`, driven by [MpdRemote.setReplayGain].
+        // It is the one provider where the correction never passes through this
+        // phone at all, and the only one where the app's own scalar would be acting
+        // on a signal that isn't here.
+        add(Capability.REPLAY_GAIN)
         // Only when there is somewhere to keep them — see the class docs.
         if (context != null) add(Capability.FAVORITES)
     }

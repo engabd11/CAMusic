@@ -19,6 +19,7 @@ import com.engabd.sendpin.discovery.PlayerIdentity
 import com.engabd.sendpin.local.db.LocalMediaDatabase
 import com.engabd.sendpin.local.db.PlayHistoryEntity
 import com.engabd.sendpin.ma.MaApiClient
+import com.engabd.sendpin.ma.MaConfigEntry
 import com.engabd.sendpin.ma.MaDspDetails
 import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ma.MaLoudness
@@ -39,6 +40,7 @@ import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonElement
 
 /**
  * Now-Playing as a **controller**: reflects and controls the currently *selected*
@@ -184,6 +186,19 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
          * rest of the output chain.
          */
         val replayGain: String = ReplayGain.ALBUM,
+        /**
+         * The library this phone is playing from has loudness levelling of its own —
+         * [com.engabd.sendpin.library.Capability.REPLAY_GAIN].
+         *
+         * What decides whether the player options sheet offers the control at all on
+         * a local session. It used to be offered only for [serverPlayer], which is
+         * MPD and nothing else, so a Navidrome or Jellyfin listener — the two
+         * libraries that actually measure loudness per track — had the setting two
+         * screens away in Settings while MPD had it beside the player. The gate is
+         * now what the *server* can do rather than which one it is: a library with no
+         * measurement behind it still shows nothing, which is the point of asking.
+         */
+        val libraryReplayGain: Boolean = false,
     )
 
     /** A panel's load state — the UI has to tell "empty" from "not fetched yet". */
@@ -325,6 +340,8 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
     private data class ServerPlayback(
         val active: Boolean = false,
         val replayGain: String = ReplayGain.ALBUM,
+        /** See [State.libraryReplayGain]. */
+        val libraryGain: Boolean = false,
     )
 
     // [toggleSnap] itself — the property, not the type above — is declared much
@@ -443,8 +460,15 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
      * here rather than up there with them.
      */
     private val serverPlayback: StateFlow<ServerPlayback> =
-        combine(local.remoteActive, settings.replayGainMode) { active, gain ->
-            ServerPlayback(active, gain)
+        combine(
+            local.remoteActive,
+            settings.replayGainMode,
+            // The holder, not a snapshot: the source is null for a moment around a
+            // reconnect, and a value read once at construction would leave the
+            // control missing until the process restarted.
+            (app as SendpinApp).musicSource.map { it?.has(Capability.REPLAY_GAIN) == true },
+        ) { active, gain, libraryGain ->
+            ServerPlayback(active, gain, libraryGain)
         }.stateIn(viewModelScope, SharingStarted.Eagerly, ServerPlayback())
 
     /** See [LoFiSnap]'s doc — this is the slot-saving trick that makes room for Old Radio. */
@@ -777,6 +801,7 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
             serverOutputFormat = l.outputFormat,
             serverOutputDeviceName = l.outputDeviceName,
             replayGain = toggles.server.replayGain,
+            libraryReplayGain = toggles.server.libraryGain,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, State())
 
@@ -1843,6 +1868,65 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // --- Music Assistant's own loudness levelling ---------------------------
+
+    /**
+     * Music Assistant's volume-normalization settings for the player being shown.
+     *
+     * MA's answer to ReplayGain, and it is not the app's three modes: the server
+     * measures every track in LUFS, keeps the reading in its own library and corrects
+     * towards a target as it streams — so what there is to control is whether that
+     * runs for this player, in which mode, and at what target. Those are per-player
+     * `ConfigEntry` values, and they are rendered from what the server declared for
+     * the same reason the gapless and crossfade rows in Settings are: MA has renamed
+     * and re-shaped them across versions, and a hard-coded row is a guess that goes
+     * stale in a way nobody notices.
+     *
+     * Matched on the subject rather than an exact key list, which is what survives
+     * the wrapping (`<sub>||protocol||volume_normalization`) and the next rename.
+     * Empty means this build of MA declares none, and the sheet then shows nothing —
+     * an honest answer, and the same one a server too old for the setting deserves.
+     *
+     * Loaded on demand, when the sheet asks. It is a round trip per open, and the
+     * settings live on the server where MA's own UI can change them, so a value
+     * cached across opens would be a value that is quietly wrong.
+     */
+    private val _normalization = MutableStateFlow<Load<List<MaConfigEntry>>>(Load.Idle)
+    val normalization: StateFlow<Load<List<MaConfigEntry>>> = _normalization
+
+    fun loadNormalization() {
+        if (isLocal) { _normalization.value = Load.Ready(emptyList<MaConfigEntry>()); return }
+        _normalization.value = Load.Loading
+        viewModelScope.launch {
+            _normalization.value = try {
+                Load.Ready(
+                    repo.playerConfigEntries(targetId())
+                        .filter { !it.hidden && NORMALIZATION_KEY in it.plainKey },
+                )
+            } catch (e: Exception) {
+                Load.Failed(e.message ?: "Couldn't read Music Assistant's loudness settings")
+            }
+        }
+    }
+
+    /**
+     * Write one of them back, then re-read.
+     *
+     * Re-read rather than assumed, exactly as `PlayerViewModel.setPlaybackConfig`
+     * does: `config/players/save` is an **admin** command, so a non-admin login is
+     * refused every time, and a UI that painted the change on regardless would be
+     * showing a setting the server does not hold. So the refusal is spoken — a toast,
+     * because this is driven from a sheet that can be closed before the re-read lands
+     * — and the rows then snap back to whatever Music Assistant actually holds.
+     */
+    fun setNormalization(entry: MaConfigEntry, value: JsonElement) {
+        viewModelScope.launch {
+            runCatching { repo.savePlayerConfigValue(targetId(), entry.key, value) }
+                .onFailure { _toast.tryEmit(it.message ?: "Music Assistant refused that change") }
+            loadNormalization()
+        }
+    }
+
     /** Play a specific copy of the current track, in place of the one playing. */
     fun playVersion(version: MaItem) {
         val uri = version.uri ?: return
@@ -2100,6 +2184,14 @@ class NowPlayingViewModel(app: Application) : AndroidViewModel(app) {
          * way it doesn't inflate a scrobble.
          */
         const val HISTORY_THRESHOLD_MS = 4 * 60 * 1000L
+
+        /**
+         * The subject every Music Assistant loudness setting is spelled around —
+         * `volume_normalization`, `volume_normalization_mode`,
+         * `volume_normalization_target`, and whichever ones the next build adds.
+         * Matched as a substring for the reason [normalization] gives.
+         */
+        const val NORMALIZATION_KEY = "volume_normalization"
     }
 
     /**

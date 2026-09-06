@@ -26,6 +26,14 @@ import com.engabd.sendpin.ma.MaSearchResults
  * [similarSongs]. Everything else it does *better* than plain Subsonic:
  * its per-track `MediaStreams` carry a full format reading, which is why
  * [Capability.RICH_FORMAT] is unconditional here and probed on Subsonic.
+ *
+ * [Capability.REPLAY_GAIN] likewise: Jellyfin measures loudness itself and reports
+ * the correction per item as `NormalizationGain` (and `AlbumNormalizationGain` on a
+ * build new enough to have it) — the same number a ReplayGain tag carries, arrived at
+ * by the server's own scan. `JellyfinClient.audioFormat` reads it, so the app's own
+ * scalar levels a Jellyfin library exactly as it levels a Navidrome one. A server too
+ * old to have scanned anything sends no gain, and a track with no measurement is left
+ * alone rather than guessed at.
  */
 class JellyfinSource(private val client: JellyfinClient) : MusicSource {
 
@@ -56,6 +64,7 @@ class JellyfinSource(private val client: JellyfinClient) : MusicSource {
         Capability.HISTORY,
         Capability.SCROBBLE,
         Capability.RICH_FORMAT,
+        Capability.REPLAY_GAIN,
     )
 
     override suspend fun probe(): SourceError? = client.pingResult()?.let {

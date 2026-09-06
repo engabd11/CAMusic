@@ -19,6 +19,13 @@ import com.engabd.sendpin.ma.MaSearchResults
  * [Capability.SAVED_QUEUE]. [Capability.RICH_FORMAT] holds unconditionally: Emby's
  * `MediaSources[].MediaStreams[]` carries the same complete format reading
  * Jellyfin's does.
+ *
+ * No [Capability.REPLAY_GAIN], and this is the one place the shared shape with
+ * Jellyfin stops. Jellyfin scans loudness and reports `NormalizationGain` per item;
+ * Emby's server has no normalization of any kind — it is still an open feature
+ * request — so there is no measurement to read and nothing for a ReplayGain control
+ * to act on. Declaring it because the DTOs otherwise match would offer a switch that
+ * levels nothing on every Emby library there is.
  */
 class EmbySource(private val client: EmbyClient) : MusicSource {
 

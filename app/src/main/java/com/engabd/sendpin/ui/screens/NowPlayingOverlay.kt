@@ -494,6 +494,24 @@ fun NowPlayingOverlay(
                         ) {
                             sheets.panel = if (sheets.panel == Panel.DSP) null else Panel.DSP
                         }
+                        // Radio mode, which this layout never had. It is a parameter of
+                        // `play_media`, so it colours what you play *next* rather than
+                        // the queue already running — the toast on toggle says so. Same
+                        // gate as the tab layout's copy: hidden on the local player,
+                        // which has no radio generation behind it and offers its own
+                        // stand-in ("Keep the music going") on the options sheet.
+                        //
+                        // It sat in the tab layout alone for as long as both layouts
+                        // have existed, so choosing the overlay quietly cost a control
+                        // — the class of drift the equaliser chip above was already
+                        // fixed for.
+                        if (!st.isLocalSession) {
+                            IconChip(
+                                Icons.Default.Radio,
+                                if (st.radioMode) "Radio mode on" else "Radio mode off",
+                                active = st.radioMode,
+                            ) { viewModel.toggleRadioMode() }
+                        }
                     }
                 }
 

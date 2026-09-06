@@ -115,4 +115,13 @@ class MpdUrlTest {
         assertFalse(source.has(Capability.FAVORITES))
         assertTrue(source.has(Capability.RICH_FORMAT), "tags carry codec, rate and depth")
     }
+
+    @Test
+    fun `MPD levels loudness itself, so it declares ReplayGain`() {
+        // `replay_gain_mode` is MPD's own setting and the correction happens in its
+        // mixer, never on this phone. The capability is what puts the control on the
+        // Now Playing sheet instead of two screens away in Settings, where it would
+        // have been describing a scalar acting on a signal that isn't here.
+        assertTrue(MpdSource(client("192.168.0.202:6600")).has(Capability.REPLAY_GAIN))
+    }
 }

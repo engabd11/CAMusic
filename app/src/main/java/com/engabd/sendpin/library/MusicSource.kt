@@ -300,4 +300,23 @@ enum class Capability {
     SAVED_QUEUE,
     /** The library reports codec, rate, depth and bitrate per track. */
     RICH_FORMAT,
+
+    /**
+     * The server has loudness levelling of its own, and it is worth offering.
+     *
+     * Deliberately narrow: this is not "the app could level this if it wanted to",
+     * which is true of anything with a volume control. It is that *this server*
+     * measured the music, or applies the correction itself — Navidrome's
+     * OpenSubsonic `replayGain` object, Jellyfin's `NormalizationGain`, MPD's own
+     * `replay_gain_mode`. Where it holds, the Now Playing sheet offers the control
+     * next to the player; where it doesn't, it offers nothing, because a ReplayGain
+     * switch over a library with no measurements is a control that can only ever do
+     * nothing and never say why.
+     *
+     * Emby and Plex are the honest absences. Emby has no normalization in the server
+     * at all (it is still a feature request), and Plex keeps its loudness analysis
+     * behind Plexamp rather than in any documented metadata field — so neither
+     * declares this, and neither gets a switch.
+     */
+    REPLAY_GAIN,
 }

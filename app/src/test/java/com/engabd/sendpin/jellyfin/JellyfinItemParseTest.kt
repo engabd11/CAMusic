@@ -72,6 +72,86 @@ class JellyfinItemParseTest {
         assertEquals("c3", album.parentId)
     }
 
+    /**
+     * Jellyfin's own loudness scan, read into the fields the app's ReplayGain scalar
+     * uses. `NormalizationGain` *is* a ReplayGain track gain — Jellyfin publishes the
+     * file's `REPLAYGAIN_TRACK_GAIN` there when there is one and its own measurement
+     * otherwise — so it lands in [MaAudioFormat.replayGainTrack] rather than in a
+     * Jellyfin-shaped field nothing downstream would read.
+     */
+    @Test
+    fun `NormalizationGain and AlbumNormalizationGain are read as ReplayGain`() {
+        val track = client.item(
+            obj(
+                """
+                {
+                  "Id": "a1", "Name": "Singapore", "Type": "Audio",
+                  "NormalizationGain": -7.5, "AlbumNormalizationGain": -6.25,
+                  "MediaSources": [{
+                    "Container": "flac", "Size": 28000000,
+                    "MediaStreams": [{
+                      "Type": "Audio", "Codec": "flac", "SampleRate": 44100,
+                      "BitDepth": 16, "Channels": 2, "BitRate": 900000
+                    }]
+                  }]
+                }
+                """
+            )
+        )
+        assertNotNull(track)
+        val format = assertNotNull(track.audioFormat)
+        assertEquals(-7.5f, format.replayGainTrack)
+        assertEquals(-6.25f, format.replayGainAlbum)
+    }
+
+    /**
+     * The first generation of the feature published the raw measurement and left the
+     * arithmetic to the client, so a server that sends `LUFS` and no gain still gets
+     * levelled — against the −18 LUFS target Jellyfin normalises to.
+     */
+    @Test
+    fun `a bare LUFS reading becomes the distance to the target`() {
+        val track = client.item(
+            obj(
+                """
+                {
+                  "Id": "a1", "Name": "Clap Hands", "Type": "Audio", "LUFS": -12.0,
+                  "MediaSources": [{ "Container": "flac", "MediaStreams": [
+                    { "Type": "Audio", "Codec": "flac", "SampleRate": 44100 }
+                  ]}]
+                }
+                """
+            )
+        )
+        assertNotNull(track)
+        assertEquals(-6f, assertNotNull(track.audioFormat).replayGainTrack)
+    }
+
+    /**
+     * A server that has never scanned says nothing, and "nothing" is not 0 dB: a
+     * gain of zero is a track measured and found to need no correction, which is a
+     * different claim from an unmeasured one.
+     */
+    @Test
+    fun `an unscanned track carries no gain rather than a zero one`() {
+        val track = client.item(
+            obj(
+                """
+                {
+                  "Id": "a1", "Name": "Jockey Full of Bourbon", "Type": "Audio",
+                  "MediaSources": [{ "Container": "flac", "MediaStreams": [
+                    { "Type": "Audio", "Codec": "flac", "SampleRate": 44100 }
+                  ]}]
+                }
+                """
+            )
+        )
+        assertNotNull(track)
+        val format = assertNotNull(track.audioFormat)
+        assertNull(format.replayGainTrack)
+        assertNull(format.replayGainAlbum)
+    }
+
     @Test
     fun `an unknown item type is dropped rather than guessed at`() {
         assertNull(client.item(obj("""{ "Id": "x", "Name": "A Film", "Type": "Movie" }""")))
