@@ -1445,7 +1445,13 @@ fun WaveSeekBar(
         animationSpec = infiniteRepeatable(tween(WAVE_PERIOD_MS, easing = LinearEasing)),
         label = "phase",
     )
-    val phase = if (reduced) 0f else travelling
+    // Paused shares the reduced-motion gate: with the amplitude tweened to 0 the
+    // phase has nothing to modulate, but reading `travelling` here — in composition,
+    // not just in the draw lambda — kept the whole Canvas scope invalidating at the
+    // display refresh rate on a screen the user perceives as static. Same pattern as
+    // the glowPulse gate below; the transition itself keeps running unread, which is
+    // harmless — nothing recomposes or redraws from it.
+    val phase = if (reduced || !playing) 0f else travelling
     val amplitudeDp by animateFloatAsState(
         targetValue = if (playing) WaveAmplitude.value else 0f,
         animationSpec = tween(WAVE_AMPLITUDE_MS),
