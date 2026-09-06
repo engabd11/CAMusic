@@ -72,6 +72,10 @@
              a car. -->
         <service android:name=".car.CarMediaLibraryService" tools:node="remove" />
         <meta-data android:name="com.google.android.gms.car.application" tools:node="remove" />
+        <!-- Its cover-art provider goes with it: nothing on a TV holds a token to
+             ask this about, and a provider with no caller is a component to
+             instantiate at every process start for nothing. -->
+        <provider android:name=".car.CarArtworkProvider" tools:node="remove" />
 
     </application>
 </manifest>

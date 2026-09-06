@@ -14,6 +14,7 @@ import coil.imageLoader
 import coil.request.ImageRequest
 import coil.request.SuccessResult
 import com.engabd.sendpin.SendpinApp
+import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.service.UnifiedNowPlaying
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
@@ -52,7 +53,18 @@ class CarSessionPlayer(looper: Looper, private val scope: CoroutineScope) : Simp
     private val playback get() = app.playback
     private val maNowPlaying get() = app.maNowPlaying
 
-    private val availableCommands = Player.Commands.Builder()
+    /**
+     * How far a rewind / fast-forward press moves, or 0 for no such buttons.
+     *
+     * Read from settings and re-read while the car is connected, because the buttons
+     * appearing at all is what the setting controls: media3 derives the legacy
+     * session's `ACTION_REWIND` / `ACTION_FAST_FORWARD` from whether this player
+     * advertises [Player.COMMAND_SEEK_BACK] / [Player.COMMAND_SEEK_FORWARD], and
+     * Android Auto draws its transport row from those actions.
+     */
+    private var seekIncrementMs: Long = 0L
+
+    private fun availableCommands(): Player.Commands = Player.Commands.Builder()
         .addAll(
             Player.COMMAND_PLAY_PAUSE,
             Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
@@ -77,12 +89,22 @@ class CarSessionPlayer(looper: Looper, private val scope: CoroutineScope) : Simp
             Player.COMMAND_SET_MEDIA_ITEM,
             Player.COMMAND_PREPARE,
         )
+        // Only when the driver asked for them. Two extra targets on a screen glanced
+        // at from behind the wheel is a real cost on a three-minute song and a real
+        // gain on a two-hour set, which is exactly the kind of call the app should
+        // not be making on someone's behalf.
+        .apply {
+            if (seekIncrementMs > 0) {
+                addAll(Player.COMMAND_SEEK_BACK, Player.COMMAND_SEEK_FORWARD)
+            }
+        }
         .build()
 
     private var artworkBytes: ByteArray? = null
     private var loadedArtworkUrl: String? = null
     private var artworkJob: Job? = null
     private var collectJob: Job? = null
+    private var settingsJob: Job? = null
 
     /** Begin reflecting [UnifiedNowPlaying]. Call once the session/player is attached. */
     fun start() {
@@ -96,10 +118,19 @@ class CarSessionPlayer(looper: Looper, private val scope: CoroutineScope) : Simp
                 invalidateState()
             }
         }
+        settingsJob = scope.launch {
+            AppSettings(app).carBrowseOptions.collect { options ->
+                if (options.seekMs != seekIncrementMs) {
+                    seekIncrementMs = options.seekMs
+                    invalidateState()
+                }
+            }
+        }
     }
 
     fun stopObserving() {
         collectJob?.cancel(); collectJob = null
+        settingsJob?.cancel(); settingsJob = null
         artworkJob?.cancel(); artworkJob = null
     }
 
@@ -107,7 +138,7 @@ class CarSessionPlayer(looper: Looper, private val scope: CoroutineScope) : Simp
         val snapshot = unifiedNowPlaying.state.value
         val current = mediaItemData(snapshot, uid = "current")
         return State.Builder()
-            .setAvailableCommands(availableCommands)
+            .setAvailableCommands(availableCommands())
             .setPlaybackState(if (snapshot.title.isBlank()) STATE_IDLE else STATE_READY)
             .setPlayWhenReady(snapshot.isPlaying, Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST)
             .setShuffleModeEnabled(snapshot.shuffleOn)
@@ -116,6 +147,10 @@ class CarSessionPlayer(looper: Looper, private val scope: CoroutineScope) : Simp
             // whether a skip restarts the current item or moves back a track is a
             // server/engine decision, never this facade's to make on its own.
             .setMaxSeekToPreviousPositionMs(Long.MAX_VALUE)
+            // Zero is not a legal increment, so the "off" case still has to name one —
+            // the commands above are what decide whether the buttons exist at all.
+            .setSeekBackIncrementMs(seekIncrementMs.takeIf { it > 0 } ?: DEFAULT_SEEK_MS)
+            .setSeekForwardIncrementMs(seekIncrementMs.takeIf { it > 0 } ?: DEFAULT_SEEK_MS)
             .setPlaylist(
                 listOf(mediaItemData(snapshot, uid = "placeholder-prev"), current, mediaItemData(snapshot, uid = "placeholder-next")),
             )
@@ -235,5 +270,8 @@ class CarSessionPlayer(looper: Looper, private val scope: CoroutineScope) : Simp
 
     private companion object {
         const val ART_PX = 512
+
+        /** Only ever reported, never used: see the call site. */
+        const val DEFAULT_SEEK_MS = 15_000L
     }
 }

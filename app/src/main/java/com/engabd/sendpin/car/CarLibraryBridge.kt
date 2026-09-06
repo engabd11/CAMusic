@@ -1,12 +1,14 @@
 package com.engabd.sendpin.car
 
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.os.SystemClock
 import androidx.annotation.OptIn
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.session.MediaConstants
+import androidx.media3.session.MediaLibraryService.LibraryParams
 import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.PlayerIdentity
@@ -20,9 +22,11 @@ import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.ma.MaRepository
 import com.engabd.sendpin.ma.MaSearchResults
 import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -36,11 +40,18 @@ import kotlinx.coroutines.withTimeoutOrNull
  * *this phone* (see [play]); reusing `LibraryViewModel` unmodified would let a track
  * tapped in the car start playing on a speaker elsewhere in the house.
  *
- * No `MediaItem` this class returns ever carries a real stream/cover URL (see
- * [toMediaItem]/[browsableItem]): `CarMediaLibraryService` is `exported="true"` for
- * Android Auto to bind to, and Subsonic/Jellyfin URLs embed credentials in their
- * query string. Metadata only, matching how `SendspinService`'s `ShadePlayer`
- * already treats the one facade this app ships today.
+ * **What the driver sees is [CarBrowseOptions]' to decide**, not this class's: which
+ * libraries appear and in what order, which shelves each one offers, how many items
+ * a shelf loads, whether rows are covers or names, whether artists are circles,
+ * whether the shelves are headed, and whether a single library gets a folder of its
+ * own at all. Every one of those is a setting under Settings › Driving & Android
+ * Auto › Android Auto, and every default here is the tree as it shipped.
+ *
+ * No `MediaItem` this class returns ever carries a credentialed URL. Subsonic,
+ * Jellyfin, Emby and Plex all put an account secret in their stream *and* cover
+ * URLs, and `CarMediaLibraryService` is `exported="true"` for Android Auto to bind
+ * to. Streams are resolved at play time inside this process; covers go out as
+ * opaque `content://` URIs that [CarArtworkProvider] resolves — see [CarArtwork].
  */
 @OptIn(UnstableApi::class)
 class CarLibraryBridge(private val app: SendpinApp) {
@@ -53,20 +64,89 @@ class CarLibraryBridge(private val app: SendpinApp) {
     // at once. A plain HashMap resized under that is a corrupted map, not a lost entry.
     private val sourceCache = ConcurrentHashMap<String, MusicSource>()
 
+    /**
+     * What a browsed folder last returned, keyed by its media id.
+     *
+     * Not an optimisation so much as a correctness fix that pays for itself twice.
+     * `onGetChildren` is called **once per page** — a browser that asks for fifty
+     * items twenty at a time called this three times, and each call re-ran the whole
+     * network fetch and then threw away everything outside its slice. In a car that
+     * is three round trips to a home server for one screen, over whatever signal the
+     * phone has at the time, and the three answers need not even agree with each
+     * other.
+     *
+     * Short-lived and never negative: an empty answer is not cached, so a shelf that
+     * failed because the Wi-Fi dropped out of range of the house retries the moment
+     * the driver taps it again.
+     */
+    private val childCache = ConcurrentHashMap<String, CachedChildren>()
+
+    /**
+     * The edge length the browser wants artwork at, from its root hints.
+     *
+     * Android Auto states its own figure and it varies by head unit; asking a home
+     * server for a 1000 px cover to draw it at 240 is bandwidth spent on a mobile
+     * connection for nothing. [CarArtworkProvider.DEFAULT_PX] until a browser says
+     * otherwise.
+     */
+    @Volatile
+    private var artworkPx: Int = CarArtworkProvider.DEFAULT_PX
+
+    fun setArtworkSizeHint(px: Int) {
+        if (px > 0) artworkPx = px.coerceIn(CarArtworkProvider.MIN_PX, CarArtworkProvider.MAX_PX)
+    }
+
+    /**
+     * Drop everything remembered about the tree.
+     *
+     * Called when the appearance settings change under a car that is already plugged
+     * in — every cached row was built with the old options, down to whether it has a
+     * cover on it. See [CarMediaLibraryService].
+     */
+    fun invalidate() {
+        childCache.clear()
+        cachedSearch = null
+    }
+
     // ── Root / browse tree ──────────────────────────────────────────────────
 
-    suspend fun children(parentId: String, rootChildrenLimit: Int): List<MediaItem> = when (parentId) {
-        CarMediaId.ROOT -> {
-            val (shown, overflow) = splitServers(rootChildrenLimit)
-            shown.map { serverTabItem(it) } + if (overflow.isNotEmpty()) listOf(moreFolderItem()) else emptyList()
+    suspend fun children(parentId: String, rootChildrenLimit: Int): List<MediaItem> {
+        val options = settings.carBrowseOptionsNow()
+        return when (parentId) {
+            CarMediaId.ROOT -> rootChildren(options, rootChildrenLimit)
+            CarMediaId.MORE -> {
+                val overflow = options.splitForRoot(visibleLibraries(options), rootChildrenLimit).second
+                overflow.map { libraryItem(it, options) }
+            }
+            else -> when (val id = CarMediaId.parse(parentId)) {
+                is CarMediaId.Server -> shelvesFor(id.serverId, options)
+                is CarMediaId.Shelf -> shelfChildren(id, options)
+                is CarMediaId.Item -> itemChildren(id, options).map { it.toMediaItem(id.serverId, options) }
+                is CarMediaId.Message, null -> emptyList()
+            }
         }
-        CarMediaId.MORE -> splitServers(rootChildrenLimit).second.map { serverTabItem(it) }
-        else -> when (val id = CarMediaId.parse(parentId)) {
-            is CarMediaId.Server -> shelvesFor(id)
-            is CarMediaId.Shelf -> shelfItems(id).map { it.toMediaItem(id.serverId) }
-            is CarMediaId.Item -> itemChildren(id).map { it.toMediaItem(id.serverId) }
-            null -> emptyList()
+    }
+
+    /**
+     * The car's first screen.
+     *
+     * Three shapes, in order of how common the setup is. One library and
+     * [CarBrowseOptions.flattenSingleLibrary] on — which is almost everybody —
+     * hoists that library's shelves to the root, so the first tap in the car is
+     * "Recently added" rather than the name of the only server there is. Several
+     * libraries get a folder each, capped by what the browser said it can draw, with
+     * the rest behind "More libraries". None at all gets a sentence explaining that,
+     * rather than a blank screen.
+     */
+    private suspend fun rootChildren(options: CarBrowseOptions, limit: Int): List<MediaItem> {
+        val libraries = visibleLibraries(options)
+        if (libraries.isEmpty()) return listOf(noLibrariesItem())
+        if (options.flattenSingleLibrary && libraries.size == 1) {
+            return shelvesFor(libraries.first().id, options)
         }
+        val (shown, overflow) = options.splitForRoot(libraries, limit)
+        return shown.map { libraryItem(it, options) } +
+            if (overflow.isNotEmpty()) listOf(moreFolderItem(options)) else emptyList()
     }
 
     /**
@@ -77,21 +157,23 @@ class CarLibraryBridge(private val app: SendpinApp) {
      * and an unanswered one comes back as an error rather than as a row.
      */
     suspend fun item(mediaId: String): MediaItem? {
-        if (mediaId == CarMediaId.ROOT) return rootItem()
-        if (mediaId == CarMediaId.MORE) return moreFolderItem()
+        val options = settings.carBrowseOptionsNow()
+        if (mediaId == CarMediaId.ROOT) return rootItem(options)
+        if (mediaId == CarMediaId.MORE) return moreFolderItem(options)
         return when (val id = CarMediaId.parse(mediaId)) {
-            is CarMediaId.Server -> configFor(id.serverId)?.let { serverTabItem(it) }
-            is CarMediaId.Shelf -> shelfItem(id)
-            is CarMediaId.Item -> resolve(id).toMediaItem(id.serverId)
+            is CarMediaId.Server -> configFor(id.serverId)?.let { libraryItem(it, options) }
+            is CarMediaId.Shelf -> shelfItem(id, options)
+            is CarMediaId.Item -> resolve(id).toMediaItem(id.serverId, options)
+            is CarMediaId.Message -> messageItem(id.title, id.subtitle)
             null -> null
         }
     }
 
-    private suspend fun shelfItem(id: CarMediaId.Shelf): MediaItem? {
+    private suspend fun shelfItem(id: CarMediaId.Shelf, options: CarBrowseOptions): MediaItem? {
         val config = configFor(id.serverId) ?: return null
-        val source = if (config.kind == ServerKind.MUSIC_ASSISTANT) null else sourceFor(id.serverId)
-        val spec = shelfSpecs(config, source).firstOrNull { it.key == id.key } ?: return null
-        return browsableItem(CarMediaId.Shelf(id.serverId, spec.key).encode(), spec.title, grid = spec.grid)
+        val shelf = options.shelves(CarShelf.offeredBy(abilitiesOf(config))).firstOrNull { it.key == id.key }
+            ?: return null
+        return shelfMediaItem(id.serverId, shelf, options)
     }
 
     /**
@@ -113,98 +195,155 @@ class CarLibraryBridge(private val app: SendpinApp) {
         return if (placeholder.uri != null) placeholder else placeholder.copy(uri = id.itemId)
     }
 
-    fun rootItem(): MediaItem = MediaItem.Builder()
+    /**
+     * The browse root, carrying the app-wide content style the driver chose.
+     *
+     * Android Auto reads the style hints on the root as the default for every row
+     * that does not override them, which is what makes "Compact list" mean the whole
+     * tree rather than the shelves this app happened to remember to tag.
+     */
+    private fun rootItem(options: CarBrowseOptions): MediaItem = MediaItem.Builder()
         .setMediaId(CarMediaId.ROOT)
         .setMediaMetadata(
             MediaMetadata.Builder()
                 .setTitle("CAMusic")
                 .setIsBrowsable(true)
                 .setIsPlayable(false)
+                .setExtras(defaultStyleExtras(options))
                 .build(),
         )
         .build()
 
-    private suspend fun splitServers(limit: Int): Pair<List<ServerConfig>, List<ServerConfig>> {
-        val servers = settings.servers.first()
-        val cap = limit.coerceAtLeast(1)
-        if (servers.size <= cap) return servers to emptyList()
-        val shown = servers.take((cap - 1).coerceAtLeast(1))
-        return shown to servers.drop(shown.size)
+    /**
+     * The same defaults again, as [LibraryParams].
+     *
+     * Both are needed and neither is redundant. media3's legacy path — which is what
+     * Android Auto is — turns these params into the `BrowserRoot` extras bundle,
+     * which is where the platform documents the app-wide content style as living;
+     * the root `MediaItem`'s own extras are what a modern `MediaBrowser` reads. The
+     * same bundle, offered twice, because two generations of browser look in two
+     * places for it.
+     */
+    private fun rootParams(options: CarBrowseOptions): LibraryParams =
+        LibraryParams.Builder().setExtras(defaultStyleExtras(options)).build()
+
+    /** The root and its params together, so a caller reads the settings once. */
+    suspend fun rootResult(): Pair<MediaItem, LibraryParams> {
+        val options = settings.carBrowseOptionsNow()
+        return rootItem(options) to rootParams(options)
     }
 
-    private suspend fun shelvesFor(id: CarMediaId.Server): List<MediaItem> {
-        val config = configFor(id.serverId) ?: return emptyList()
-        val source = if (config.kind == ServerKind.MUSIC_ASSISTANT) null else sourceFor(id.serverId)
-        return shelfSpecs(config, source).map { spec ->
-            browsableItem(CarMediaId.Shelf(id.serverId, spec.key).encode(), spec.title, grid = spec.grid)
-        }
+    /**
+     * The app-wide default: how a folder row looks, and how a track row looks, for
+     * everything below the root that says nothing of its own.
+     */
+    private fun defaultStyleExtras(options: CarBrowseOptions): Bundle = CarContentStyle.extras(
+        browsableChildren = options.folderStyle(),
+        playableChildren = options.itemStyle("track"),
+    )
+
+    private suspend fun visibleLibraries(options: CarBrowseOptions): List<ServerConfig> =
+        options.libraries(settings.servers.first()) { it.id }
+
+    private suspend fun shelvesFor(serverId: String, options: CarBrowseOptions): List<MediaItem> {
+        val config = configFor(serverId) ?: return listOf(noLibrariesItem())
+        val shelves = options.shelves(CarShelf.offeredBy(abilitiesOf(config)))
+        if (shelves.isEmpty()) return listOf(messageItem("Nothing to show", "This library offers no shelves"))
+        return shelves.map { shelfMediaItem(serverId, it, options) }
     }
 
-    private data class ShelfSpec(val key: String, val title: String, val grid: Boolean)
-
-    private fun shelfSpecs(config: ServerConfig, source: MusicSource?): List<ShelfSpec> {
-        val specs = mutableListOf(ShelfSpec("recentlyAdded", "Recently added", grid = true))
+    /** What a configured library can actually fill a shelf from. See [CarShelf.offeredBy]. */
+    private suspend fun abilitiesOf(config: ServerConfig): CarLibraryAbilities {
         if (config.kind == ServerKind.MUSIC_ASSISTANT) {
-            specs += ShelfSpec("recentlyPlayed", "Recently played", grid = true)
-            specs += ShelfSpec("favoriteAlbums", "Favorite albums", grid = true)
-            specs += ShelfSpec("favoriteArtists", "Favorite artists", grid = true)
-            specs += ShelfSpec("favoritePlaylists", "Favorite playlists", grid = true)
-            specs += ShelfSpec("favoriteTracks", "Favorite tracks", grid = false)
-        } else {
-            if (source?.has(Capability.FAVORITES) == true) {
-                specs += ShelfSpec("favoriteAlbums", "Favorite albums", grid = true)
-                specs += ShelfSpec("favoriteArtists", "Favorite artists", grid = true)
-                specs += ShelfSpec("favoritePlaylists", "Favorite playlists", grid = true)
-                specs += ShelfSpec("favoriteTracks", "Favorite tracks", grid = false)
-            }
-            specs += ShelfSpec("artists", "Artists", grid = false)
-            specs += ShelfSpec("albums", "Albums", grid = true)
-            if (source?.has(Capability.PLAYLIST_READ) == true) {
-                specs += ShelfSpec("playlists", "Playlists", grid = true)
-            }
+            return CarLibraryAbilities(musicAssistant = true, favourites = true, playlists = true)
         }
-        return specs
+        val source = sourceFor(config.id)
+        return CarLibraryAbilities(
+            musicAssistant = false,
+            favourites = source?.has(Capability.FAVORITES) == true,
+            playlists = source?.has(Capability.PLAYLIST_READ) == true,
+        )
     }
 
-    private suspend fun shelfItems(id: CarMediaId.Shelf): List<MaItem> = runCatching {
-        val config = configFor(id.serverId) ?: return@runCatching emptyList()
-        if (config.kind == ServerKind.MUSIC_ASSISTANT) {
-            if (!maReady(config)) return@runCatching emptyList()
-            when (id.key) {
-                "recentlyAdded" -> maRepo.recentlyAdded(SHELF_LIMIT)
-                "recentlyPlayed" -> maRepo.recentlyPlayed(SHELF_LIMIT)
-                "favoriteAlbums" -> maRepo.favoriteAlbums(SHELF_LIMIT)
-                "favoriteArtists" -> maRepo.favoriteArtists(SHELF_LIMIT)
-                "favoritePlaylists" -> maRepo.favoritePlaylists(SHELF_LIMIT)
-                "favoriteTracks" -> maRepo.favoriteTracks(TRACK_SHELF_LIMIT)
-                else -> emptyList()
-            }
-        } else {
-            val source = sourceFor(id.serverId) ?: return@runCatching emptyList()
-            when (id.key) {
-                "recentlyAdded" -> source.recentlyAdded(SHELF_LIMIT)
-                "artists" -> source.artists()
-                "albums" -> source.albums(limit = SHELF_LIMIT)
-                "playlists" -> source.playlists()
-                "favoriteAlbums" -> source.favorites().albums
-                "favoriteArtists" -> source.favorites().artists
-                "favoritePlaylists" -> source.favorites().playlists
-                "favoriteTracks" -> source.favorites().tracks
-                else -> emptyList()
-            }
+    private suspend fun shelfChildren(id: CarMediaId.Shelf, options: CarBrowseOptions): List<MediaItem> {
+        val items = cached(id.encode()) { shelfItems(id, options) }
+        if (items.isEmpty()) {
+            val shelf = CarShelf.byKey(id.key)
+            return listOf(messageItem("Nothing here yet", shelf?.title?.let { "$it is empty" }))
         }
-    }.getOrDefault(emptyList())
+        return items.map { it.toMediaItem(id.serverId, options) }
+    }
 
-    private suspend fun itemChildren(id: CarMediaId.Item): List<MaItem> = runCatching {
-        val placeholder = id.toPlaceholderItem()
-        if (MusicSources.isLocalProvider(id.provider)) {
-            sourceFor(id.serverId)?.children(placeholder) ?: emptyList()
-        } else {
-            val config = configFor(id.serverId) ?: return@runCatching emptyList()
-            if (!maReady(config)) return@runCatching emptyList()
-            maRepo.children(placeholder)
+    private suspend fun shelfItems(id: CarMediaId.Shelf, options: CarBrowseOptions): List<MaItem> = runCatching {
+        val config = configFor(id.serverId) ?: return@runCatching emptyList<MaItem>()
+        val limit = options.shelfItemLimit
+        val trackLimit = options.trackItemLimit
+        withTimeoutOrNull(BROWSE_TIMEOUT_MS) {
+            if (config.kind == ServerKind.MUSIC_ASSISTANT) {
+                if (!maReady(config)) return@withTimeoutOrNull emptyList<MaItem>()
+                when (id.key) {
+                    CarShelf.RECENTLY_ADDED.key -> maRepo.recentlyAdded(limit)
+                    CarShelf.RECENTLY_PLAYED.key -> maRepo.recentlyPlayed(limit)
+                    CarShelf.FAVOURITE_ALBUMS.key -> maRepo.favoriteAlbums(limit)
+                    CarShelf.FAVOURITE_ARTISTS.key -> maRepo.favoriteArtists(limit)
+                    CarShelf.FAVOURITE_PLAYLISTS.key -> maRepo.favoritePlaylists(limit)
+                    CarShelf.FAVOURITE_TRACKS.key -> maRepo.favoriteTracks(trackLimit)
+                    else -> emptyList()
+                }
+            } else {
+                val source = sourceFor(id.serverId) ?: return@withTimeoutOrNull emptyList<MaItem>()
+                when (id.key) {
+                    CarShelf.RECENTLY_ADDED.key -> source.recentlyAdded(limit)
+                    CarShelf.ARTISTS.key -> source.artists().take(limit)
+                    CarShelf.ALBUMS.key -> source.albums(limit = limit)
+                    CarShelf.PLAYLISTS.key -> source.playlists().take(limit)
+                    CarShelf.FAVOURITE_ALBUMS.key -> source.favorites().albums.take(limit)
+                    CarShelf.FAVOURITE_ARTISTS.key -> source.favorites().artists.take(limit)
+                    CarShelf.FAVOURITE_PLAYLISTS.key -> source.favorites().playlists.take(limit)
+                    CarShelf.FAVOURITE_TRACKS.key -> source.favorites().tracks.take(trackLimit)
+                    else -> emptyList()
+                }
+            }
+        }.orEmpty()
+    }.getOrDefault(emptyList<MaItem>())
+
+    private suspend fun itemChildren(id: CarMediaId.Item, options: CarBrowseOptions): List<MaItem> =
+        cached(id.encode()) {
+            runCatching {
+                val placeholder = id.toPlaceholderItem()
+                withTimeoutOrNull(BROWSE_TIMEOUT_MS) {
+                    if (MusicSources.isLocalProvider(id.provider)) {
+                        sourceFor(id.serverId)?.children(placeholder) ?: emptyList()
+                    } else {
+                        val config = configFor(id.serverId) ?: return@withTimeoutOrNull emptyList<MaItem>()
+                        if (!maReady(config)) return@withTimeoutOrNull emptyList<MaItem>()
+                        maRepo.children(placeholder)
+                    }
+                }.orEmpty().take(options.trackItemLimit)
+            }.getOrDefault(emptyList<MaItem>())
         }
-    }.getOrDefault(emptyList())
+
+    /**
+     * One folder's contents, from cache when it is fresh enough.
+     *
+     * A failure is never remembered — see [childCache] — and the whole map is dropped
+     * rather than trimmed once it grows past [CHILDREN_CACHE_MAX]. Evicting the least
+     * recently used entry would be better and is not worth a second data structure
+     * here: the cap is dozens of folders, reaching it means a long browse session,
+     * and the cost of being wrong is one re-fetch of a folder that is about to be
+     * asked for anyway.
+     */
+    private suspend fun cached(key: String, fetch: suspend () -> List<MaItem>): List<MaItem> {
+        childCache[key]?.let { entry ->
+            if (SystemClock.elapsedRealtime() - entry.atMs < CHILDREN_CACHE_MS) return entry.items
+        }
+        val items = fetch()
+        if (items.isNotEmpty()) {
+            if (childCache.size >= CHILDREN_CACHE_MAX) childCache.clear()
+            childCache[key] = CachedChildren(items, SystemClock.elapsedRealtime())
+        }
+        return items
+    }
 
     // ── Search ───────────────────────────────────────────────────────────────
 
@@ -231,17 +370,22 @@ class CarLibraryBridge(private val app: SendpinApp) {
     }
 
     private suspend fun searchAll(query: String): List<MediaItem> = coroutineScope {
-        val servers = settings.servers.first()
+        val options = settings.carBrowseOptionsNow()
+        val servers = visibleLibraries(options)
         servers.map { config ->
             async {
                 runCatching {
-                    withTimeoutOrNull(SEARCH_TIMEOUT_MS) { searchOne(config, query) } ?: emptyList()
+                    withTimeoutOrNull(SEARCH_TIMEOUT_MS) { searchOne(config, query, options) } ?: emptyList()
                 }.getOrDefault(emptyList())
             }
         }.map { it.await() }.flatten().take(SEARCH_RESULT_CAP)
     }
 
-    private suspend fun searchOne(config: ServerConfig, query: String): List<MediaItem> {
+    private suspend fun searchOne(
+        config: ServerConfig,
+        query: String,
+        options: CarBrowseOptions,
+    ): List<MediaItem> {
         val results: MaSearchResults = if (config.kind == ServerKind.MUSIC_ASSISTANT) {
             if (!maReady(config)) return emptyList()
             maRepo.search(query, SEARCH_PER_SOURCE_LIMIT)
@@ -251,7 +395,7 @@ class CarLibraryBridge(private val app: SendpinApp) {
             source.search(query, SEARCH_PER_SOURCE_LIMIT)
         }
         return (results.tracks + results.albums + results.artists + results.playlists)
-            .map { it.toMediaItem(config.id) }
+            .map { it.toMediaItem(config.id, options, mixedList = true) }
     }
 
     // ── Playback — always this phone, never a remote MA speaker ────────────
@@ -389,34 +533,125 @@ class CarLibraryBridge(private val app: SendpinApp) {
         mediaType = mediaType, subtitle = null, image = null, duration = null,
     )
 
+    // ── Artwork ─────────────────────────────────────────────────────────────
+
+    /**
+     * Let a browser read the covers it was just handed, and nothing else.
+     *
+     * [CarArtworkProvider] is not exported, so a `content://` URI in a browse row is
+     * unreadable until the package holding it is granted access to that exact URI.
+     * Granting per item rather than by prefix is a binder call per row with a cover,
+     * paid once when a folder is first opened — and it is the form of the grant the
+     * platform documents as working, which for a feature whose failure mode is a
+     * silently blank thumbnail is worth more than the calls saved.
+     */
+    suspend fun grantArtwork(packageName: String?, items: List<MediaItem>) {
+        if (packageName.isNullOrBlank()) return
+        val uris = items.mapNotNull { it.mediaMetadata.artworkUri }
+        if (uris.isEmpty()) return
+        // Off the callback's main dispatcher: each grant is a blocking call into
+        // ActivityManager, and a folder of fifty covers is fifty of them. Awaited
+        // rather than launched, because the browser starts reading the URIs the
+        // moment this result reaches it.
+        withContext(Dispatchers.IO) {
+            for (uri in uris) {
+                runCatching { app.grantUriPermission(packageName, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+            }
+        }
+    }
+
+    private fun artworkUri(url: String?, options: CarBrowseOptions): Uri? =
+        if (!options.artwork) null else CarArtworkProvider.uriFor(app, url, artworkPx)
+
     // ── MediaItem construction ──────────────────────────────────────────────
 
-    private fun serverTabItem(config: ServerConfig): MediaItem =
-        browsableItem(CarMediaId.Server(config.id).encode(), config.displayName, grid = false)
+    /** A library folder. What is inside it is shelves, which are folder rows. */
+    private fun libraryItem(config: ServerConfig, options: CarBrowseOptions): MediaItem =
+        browsableItem(
+            id = CarMediaId.Server(config.id).encode(),
+            title = config.displayName,
+            extras = CarContentStyle.extras(browsableChildren = options.folderStyle()),
+        )
 
-    private fun moreFolderItem(): MediaItem =
-        browsableItem(CarMediaId.MORE, "More libraries", grid = false)
+    private fun moreFolderItem(options: CarBrowseOptions): MediaItem =
+        browsableItem(
+            id = CarMediaId.MORE,
+            title = "More libraries",
+            extras = CarContentStyle.extras(browsableChildren = options.folderStyle()),
+        )
 
-    private fun browsableItem(id: String, title: String, grid: Boolean): MediaItem = MediaItem.Builder()
+    /**
+     * A shelf. Its own shape comes from the library folder above it; what it declares
+     * is how the albums, artists or tracks *inside* it should be laid out — which is
+     * what [CarShelf.grid] has always described.
+     */
+    private fun shelfMediaItem(serverId: String, shelf: CarShelf, options: CarBrowseOptions): MediaItem {
+        val childStyle = options.shelfChildStyle(shelf)
+        return browsableItem(
+            id = CarMediaId.Shelf(serverId, shelf.key).encode(),
+            title = shelf.title,
+            extras = CarContentStyle.extras(
+                browsableChildren = childStyle,
+                playableChildren = childStyle,
+                group = if (options.groupTitles) shelf.group.title else null,
+            ),
+        )
+    }
+
+    private fun noLibrariesItem(): MediaItem =
+        messageItem("No libraries set up", "Open CAMusic on your phone to add one")
+
+    /**
+     * A row that says why there is nothing to tap.
+     *
+     * Browsable and unplayable both false, so the car draws it as a plain,
+     * unactionable line rather than as a folder that opens onto more nothing.
+     */
+    private fun messageItem(title: String, subtitle: String?): MediaItem = MediaItem.Builder()
+        .setMediaId(CarMediaId.Message(title, subtitle).encode())
+        .setMediaMetadata(
+            MediaMetadata.Builder()
+                .setTitle(title)
+                .setSubtitle(subtitle)
+                .setIsBrowsable(false)
+                .setIsPlayable(false)
+                .build(),
+        )
+        .build()
+
+    /**
+     * A folder row: a library, a shelf, "More libraries".
+     *
+     * No artwork, deliberately. None of these *is* a record — a cover on a folder
+     * would have to be one of the covers inside it, which is a decision this app has
+     * no basis for making and the car has no space to show.
+     */
+    private fun browsableItem(id: String, title: String, extras: Bundle): MediaItem = MediaItem.Builder()
         .setMediaId(id)
         .setMediaMetadata(
             MediaMetadata.Builder()
                 .setTitle(title)
                 .setIsBrowsable(true)
                 .setIsPlayable(false)
-                .setExtras(contentStyleExtras(grid))
+                .setExtras(extras)
                 .build(),
         )
         .build()
 
     /**
-     * No artwork URI: Subsonic/Jellyfin cover URLs embed credentials the same way
-     * their stream URLs do (see this class's own doc), and Music Assistant's image
-     * proxy is authenticated by a header this exported binder has no way to attach.
-     * A browse row without a thumbnail is a fair trade against handing either kind
-     * of URL to anything that can bind a `MediaBrowser` to this service.
+     * A library row, with its cover as a `content://` URI rather than the URL it was
+     * built from — see [CarArtwork] for why the URL itself can never leave.
+     *
+     * [mixedList] is what a search result is: a list where a track sits next to an
+     * album next to an artist, and no single hint from the folder above can be right
+     * for all three. Only there does a row declare its own shape; an ordinary browse
+     * row inherits its shelf's, which is what keeps a shelf looking like one thing.
      */
-    private fun MaItem.toMediaItem(serverId: String): MediaItem {
+    private fun MaItem.toMediaItem(
+        serverId: String,
+        options: CarBrowseOptions,
+        mixedList: Boolean = false,
+    ): MediaItem {
         val mid = CarMediaId.Item(
             serverId = serverId,
             provider = provider,
@@ -424,6 +659,7 @@ class CarLibraryBridge(private val app: SendpinApp) {
             itemId = itemId,
             uri = uri.takeUnless { MusicSources.isLocalProvider(provider) },
         ).encode()
+        val childStyle = options.childStyleFor(mediaType)
         return MediaItem.Builder()
             .setMediaId(mid)
             .setMediaMetadata(
@@ -433,41 +669,51 @@ class CarLibraryBridge(private val app: SendpinApp) {
                     .setSubtitle(subtitle)
                     .setIsBrowsable(browsable)
                     .setIsPlayable(playable)
-                    .apply { if (browsable) setExtras(contentStyleExtras(grid = mediaType in GRID_CHILD_TYPES)) }
+                    .setArtworkUri(artworkUri(image, options))
+                    .setExtras(
+                        CarContentStyle.extras(
+                            // Only a folder has children to describe.
+                            browsableChildren = if (browsable) childStyle else null,
+                            playableChildren = if (browsable) childStyle else null,
+                            self = if (mixedList) options.itemStyle(mediaType) else null,
+                        ),
+                    )
                     .build(),
             )
             .build()
     }
 
-    private fun contentStyleExtras(grid: Boolean): Bundle {
-        val style = if (grid) {
-            MediaConstants.EXTRAS_VALUE_CONTENT_STYLE_GRID_ITEM
-        } else {
-            MediaConstants.EXTRAS_VALUE_CONTENT_STYLE_LIST_ITEM
-        }
-        return Bundle().apply {
-            putInt(MediaConstants.EXTRAS_KEY_CONTENT_STYLE_BROWSABLE, style)
-            putInt(MediaConstants.EXTRAS_KEY_CONTENT_STYLE_PLAYABLE, style)
-        }
-    }
-
     /** The last query and what it returned — see [search]. */
     private class CachedSearch(val query: String, val results: List<MediaItem>, val atMs: Long)
+
+    private class CachedChildren(val items: List<MaItem>, val atMs: Long)
 
     private var cachedSearch: CachedSearch? = null
 
     private companion object {
         const val MA_CONNECT_TIMEOUT_MS = 6_000L
-        const val SHELF_LIMIT = 50
-        const val TRACK_SHELF_LIMIT = 100
         const val SEARCH_PER_SOURCE_LIMIT = 15
         const val SEARCH_RESULT_CAP = 50
         const val SEARCH_TIMEOUT_MS = 7_000L
+
+        /**
+         * How long a folder's contents may take before the car gets an answer anyway.
+         *
+         * There was no limit at all: a server that had gone unreachable since the
+         * phone left the house left `onGetChildren` waiting on a socket timeout, and
+         * Android Auto showed a spinner for as long as that took. An empty shelf with
+         * a line saying so, in seven seconds, is the better answer at 70 km/h.
+         */
+        const val BROWSE_TIMEOUT_MS = 7_000L
+
         /**
          * Long enough to cover the two calls one query makes, short enough that a
          * library which has changed since is not answered from it — see [search].
          */
         const val SEARCH_CACHE_MS = 30_000L
-        val GRID_CHILD_TYPES = setOf("artist", "album", "playlist", "genre")
+
+        /** Long enough to cover a paged browse and a scroll back up. See [childCache]. */
+        const val CHILDREN_CACHE_MS = 120_000L
+        const val CHILDREN_CACHE_MAX = 64
     }
 }

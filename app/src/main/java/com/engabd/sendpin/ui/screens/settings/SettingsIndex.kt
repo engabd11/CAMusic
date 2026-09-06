@@ -149,7 +149,7 @@ internal fun subPagesFor(section: SettingsSection): List<SubPage> = when (sectio
         SubPage(
             DRIVE_AUTO_ROUTE,
             "Android Auto",
-            "What the car's own screen will show, and where a track tapped there plays",
+            "The car screen's layout, which libraries and shelves reach it, and its buttons",
             Icons.Default.DirectionsCar,
         ),
     )

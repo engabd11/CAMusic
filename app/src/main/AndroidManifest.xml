@@ -309,6 +309,28 @@
           the grant is per-URI, read-only and lives only as long as the receiving
           activity. Scoped to one cache subdirectory - see res/xml/shared_files.xml.
         -->
+        <!--
+          Cover art for Android Auto's browse rows.
+
+          Not exported: a browser reads these URIs only because the browse service
+          grants it read access to the exact URIs it was just handed (see
+          CarLibraryBridge.grantArtwork), which is a narrower door than the browse
+          service itself has to leave open. grantUriPermissions is what makes that
+          grant possible at all.
+
+          It exists because the URLs cannot go out. A Subsonic or Jellyfin cover URL
+          carries the account credentials in its query string and Music Assistant's
+          image proxy answers only to a bearer header, so handing either to Android
+          Auto was never an option — which is why the browse tree shipped with no
+          artwork whatsoever. This resolves an opaque token back to the URL inside
+          this process and answers with plain JPEG bytes. See car/CarArtwork.kt.
+        -->
+        <provider
+            android:name=".car.CarArtworkProvider"
+            android:authorities="${applicationId}.carart"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.shared"

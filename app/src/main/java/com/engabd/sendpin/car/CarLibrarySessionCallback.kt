@@ -59,10 +59,20 @@ class CarLibrarySessionCallback(private val bridge: CarLibraryBridge) : MediaLib
             ?.getInt(MediaConstants.EXTRAS_KEY_ROOT_CHILDREN_LIMIT, DEFAULT_ROOT_CHILDREN_LIMIT)
             ?.takeIf { it > 0 }
             ?.let { rootChildrenLimit = it }
+        // The other hint worth having, and the one the platform documents rather than
+        // media3: how large the browser intends to draw a thumbnail. Read as a plain
+        // key because it belongs to `MediaBrowserServiceCompat.BrowserRoot` — media3
+        // has no constant for it — and passed to the bridge so a cover is fetched at
+        // the size the car will use rather than at whatever the server defaults to.
+        params?.extras
+            ?.getInt(EXTRA_MEDIA_ART_SIZE_HINT_PIXELS, 0)
+            ?.takeIf { it > 0 }
+            ?.let { bridge.setArtworkSizeHint(it) }
         // Not awaited: the root itself is answered from settings alone, and the
         // browser is kept waiting for that answer before it can ask for anything else.
         scope.launch { runCatching { bridge.warmUp() } }
-        LibraryResult.ofItem(bridge.rootItem(), null)
+        val (root, rootParams) = bridge.rootResult()
+        LibraryResult.ofItem(root, rootParams)
     }
 
     override fun onGetChildren(
@@ -73,8 +83,9 @@ class CarLibrarySessionCallback(private val bridge: CarLibraryBridge) : MediaLib
         pageSize: Int,
         params: LibraryParams?,
     ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> = future {
-        val children = bridge.children(parentId, rootChildrenLimit)
-        LibraryResult.ofItemList(children.page(page, pageSize), null)
+        val children = bridge.children(parentId, rootChildrenLimit).page(page, pageSize)
+        bridge.grantArtwork(browser.packageName, children)
+        LibraryResult.ofItemList(children, null)
     }
 
     override fun onGetItem(
@@ -82,7 +93,9 @@ class CarLibrarySessionCallback(private val bridge: CarLibraryBridge) : MediaLib
         browser: MediaSession.ControllerInfo,
         mediaId: String,
     ): ListenableFuture<LibraryResult<MediaItem>> = future {
-        bridge.item(mediaId)?.let { LibraryResult.ofItem(it, null) }
+        bridge.item(mediaId)
+            ?.also { bridge.grantArtwork(browser.packageName, listOf(it)) }
+            ?.let { LibraryResult.ofItem(it, null) }
             ?: LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
     }
 
@@ -94,7 +107,9 @@ class CarLibrarySessionCallback(private val bridge: CarLibraryBridge) : MediaLib
         pageSize: Int,
         params: LibraryParams?,
     ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> = future {
-        LibraryResult.ofItemList(bridge.search(query).page(page, pageSize), null)
+        val hits = bridge.search(query).page(page, pageSize)
+        bridge.grantArtwork(browser.packageName, hits)
+        LibraryResult.ofItemList(hits, null)
     }
 
     override fun onSearch(
@@ -164,5 +179,15 @@ class CarLibrarySessionCallback(private val bridge: CarLibraryBridge) : MediaLib
 
     private companion object {
         const val DEFAULT_ROOT_CHILDREN_LIMIT = 4
+
+        /**
+         * `MediaBrowserServiceCompat.BrowserRoot.EXTRA_MEDIA_ART_SIZE_HINT_PIXELS`.
+         *
+         * Spelled out rather than imported: this app depends on media3, not on the
+         * legacy `media-compat` artifact the constant lives in, and media3 has no
+         * equivalent of its own. The string is part of the platform's browser
+         * protocol and is as fixed as any of the ids in [CarMediaId].
+         */
+        const val EXTRA_MEDIA_ART_SIZE_HINT_PIXELS = "android.media.extras.MEDIA_ART_SIZE_HINT_PIXELS"
     }
 }
