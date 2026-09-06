@@ -141,6 +141,27 @@ it needed instead of credential fields — it mints a PIN via `PlexAuth.requestP
 opens `PlexAuth.authUrl` in the browser, and polls `PlexAuth.pollPin` every couple of
 seconds until plex.tv hands back a token or the user gives up.
 
+### Loudness levelling, which is different on every one of them
+
+There is no shared ReplayGain. Each provider either measured the music or it didn't,
+and where it did it says so in its own way — so `Capability.REPLAY_GAIN` is what the
+Now Playing options sheet asks before it offers the control at all, and a library with
+no measurement behind it gets no switch rather than one that silently levels nothing.
+
+| Provider | What it has | Where the correction happens |
+|---|---|---|
+| **Navidrome / OpenSubsonic** | the `replayGain` object (`trackGain`, `albumGain`) on every song, gated behind the OpenSubsonic extensions | this phone — `ReplayGain.factor` is a scalar on the player's volume |
+| **Jellyfin** | its own loudness scan, published as `NormalizationGain` and `AlbumNormalizationGain` (older builds: a bare `LUFS`, corrected against −18) | this phone, through the same scalar |
+| **MPD** | `replay_gain_mode`, a server-side setting | MPD's own mixer — no audio passes through the phone at all |
+| **Music Assistant** | per-player volume normalization: LUFS measured at ingest, corrected to a target while it streams | MA's own pipeline; the sheet renders whatever `volume_normalization*` config entries the server declares |
+| **Downloads** | whatever the file's library measured, stored with it | this phone |
+| **Emby** | nothing — normalization is still an open feature request there | — |
+| **Plex** | loudness analysis exists, but stays inside Plexamp's sonic-analysis store rather than on readable metadata | — |
+
+The two absences are the point of the capability: Emby's DTOs are otherwise
+Jellyfin's, so a source that declared this because the shapes match would put a dead
+control on screen for every Emby user there is.
+
 ### Planned — HTTP APIs
 
 These are the same shape as what exists and should be adapters, not projects.

@@ -22,8 +22,11 @@ data class MaAudioFormat(
     val sizeBytes: Long = 0,
     /**
      * ReplayGain track-level adjustment in dB, off OpenSubsonic's `replayGain`
-     * object. Null when the server didn't supply it — plain Subsonic servers omit
-     * it entirely, so callers must read null as "no measurement" rather than 0 dB.
+     * object — or Jellyfin's `NormalizationGain`, which is the same number reached
+     * by the server's own loudness scan rather than by a tag on the file. Null when
+     * the server didn't supply it — plain Subsonic servers omit it entirely, and so
+     * does a Jellyfin that has never scanned, so callers must read null as "no
+     * measurement" rather than 0 dB.
      *
      * Not populated on the Music Assistant path, and it should not be: MA reports
      * level under a different name and a different model. `streamdetails` carries
@@ -34,7 +37,8 @@ data class MaAudioFormat(
      */
     val replayGainTrack: Float? = null,
     /**
-     * ReplayGain album-level adjustment in dB. Null when absent. Album gain is
+     * ReplayGain album-level adjustment in dB — OpenSubsonic's `albumGain`, or
+     * Jellyfin's `AlbumNormalizationGain`. Null when absent. Album gain is
      * preferred for whole-album playback; track gain for shuffle.
      */
     val replayGainAlbum: Float? = null,

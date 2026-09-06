@@ -68,6 +68,11 @@ class SubsonicSource(
             // them all, which is the whole reason the quality card is worth opening.
             if ("formatRestrictions" in extensions || "songLyrics" in extensions) {
                 add(Capability.RICH_FORMAT)
+                // The `replayGain` object rides in on the same OpenSubsonic response
+                // the format fields do, so the gate is the same one: a server that
+                // sends neither has no measurement to offer and gets no ReplayGain
+                // control, rather than a switch that silently levels nothing.
+                add(Capability.REPLAY_GAIN)
             }
         }
 

@@ -8,8 +8,10 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -20,6 +22,7 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -35,9 +38,12 @@ import androidx.compose.ui.unit.sp
 import com.engabd.sendpin.audio.ExclusiveOutput
 import com.engabd.sendpin.audio.OutputMode
 import com.engabd.sendpin.audio.ReplayGain
+import com.engabd.sendpin.ma.MaConfigEntry
 import com.engabd.sendpin.ui.design.*
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.NowPlayingViewModel
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonPrimitive
 import kotlin.math.roundToInt
 
 /**
@@ -206,47 +212,54 @@ fun BoxScope.PlayerOptionsSheet(onClose: () -> Unit, viewModel: NowPlayingViewMo
                     }
                 }
 
-                // Loudness levelling, for a library that plays its own music.
+                // Loudness levelling — whichever kind the server behind this session
+                // actually has, and nothing where it has none.
                 //
-                // On this phone's own playback ReplayGain is a scalar on the output
-                // volume and lives in Settings with the rest of the output chain. When
-                // the server is the player that implementation has nothing to act on —
-                // no signal passes through this phone at all — so the preference is
-                // handed to the server, which reads the same tags off the same files
-                // and applies them in its own mixer. It is on this sheet because this
-                // is where the controls that reach *that* player live, and because a
-                // level control two screens away from the player it governs is how the
-                // setting came to be describing something that wasn't happening.
-                if (st.serverPlayer) {
-                    Column {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                Icons.Default.VolumeUp, null, tint = TextMuted,
-                                modifier = Modifier.size(17.dp),
-                            )
-                            Spacer(Modifier.width(12.dp))
-                            Text(
-                                "Loudness", color = TextPrimary, fontFamily = AppFont,
-                                style = MaterialTheme.typography.titleLarge,
-                                modifier = Modifier.weight(1f),
-                            )
-                        }
-                        Spacer(Modifier.height(10.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            ReplayGainModes.forEach { (mode, label) ->
-                                ToggleChip(label, st.replayGain == mode) {
-                                    viewModel.setReplayGain(mode)
-                                }
-                            }
-                        }
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            "ReplayGain, applied by the server as it decodes. Album keeps a " +
-                                "record's own quiet and loud tracks in proportion; track levels " +
-                                "every song to the same loudness.",
-                            color = TextFaint, fontFamily = AppFont, fontSize = 11.sp,
-                        )
-                    }
+                // The control was here for MPD alone, because MPD is the one player
+                // where a scalar on this phone's output would act on a signal that
+                // isn't here: no audio passes through the phone at all, so the
+                // preference is handed to the server and applied in its own mixer.
+                // That reasoning was about *where* the correction happens and was read
+                // as being about which server it was — so Navidrome and Jellyfin, the
+                // two libraries that measure every track, had the setting two screens
+                // away in Settings while MPD had it beside the player.
+                //
+                // Each branch is a different server's own implementation, which is why
+                // this is a `when` and not one control with flags: MPD applies a mode
+                // it is told, Navidrome and Jellyfin publish a measurement this phone
+                // applies, and Music Assistant runs its own LUFS normalisation per
+                // player and has no ReplayGain modes at all. A server with none of
+                // those — Emby, Plex — shows nothing, because a level switch over a
+                // library with no measurement can only ever do nothing and never say
+                // why. See Capability.REPLAY_GAIN.
+                when {
+                    // MPD: `replay_gain_mode`, applied server-side as it decodes.
+                    st.serverPlayer -> ReplayGainBlock(
+                        mode = st.replayGain,
+                        note = "ReplayGain, applied by the server as it decodes. Album keeps a " +
+                            "record's own quiet and loud tracks in proportion; track levels " +
+                            "every song to the same loudness.",
+                        onMode = viewModel::setReplayGain,
+                    )
+
+                    // Navidrome / Jellyfin / a download that came from one of them:
+                    // the server measured the track and this phone applies the
+                    // correction — see ReplayGain, which is that multiply.
+                    st.isLocalSession && st.libraryReplayGain -> ReplayGainBlock(
+                        mode = st.replayGain,
+                        note = libraryGainNote(st.source) + " Album keeps a record's own quiet " +
+                            "and loud tracks in proportion; track levels every song to the " +
+                            "same loudness.",
+                        // What it comes to on the track playing right now. The setting
+                        // used to be describable only in the abstract, two screens
+                        // away, and "is this doing anything" was unanswerable without
+                        // opening the quality card.
+                        applied = appliedGainLine(st),
+                        onMode = viewModel::setReplayGain,
+                    )
+
+                    // Music Assistant levels server-side, per player, in LUFS.
+                    !st.isLocalSession -> MaLoudnessBlock(viewModel)
                 }
 
                 // No playback rate where the server is the player: there is no signal
@@ -378,6 +391,234 @@ private fun VersionPicker(viewModel: NowPlayingViewModel) {
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * The three ReplayGain modes, with a line underneath saying who applies them.
+ *
+ * One block for two different implementations — MPD's own `replay_gain_mode` and the
+ * scalar this phone multiplies onto its output — because from the listener's side
+ * they are the same choice, and [note] is where the difference belongs. Which of them
+ * is in force is not a detail the chips should be spelling differently.
+ */
+@Composable
+private fun ReplayGainBlock(
+    mode: String,
+    note: String,
+    onMode: (String) -> Unit,
+    /** What the setting comes to on the track playing now, when that is knowable. */
+    applied: String? = null,
+) {
+    val accent = LocalAccent.current
+    Column {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.VolumeUp, null, tint = TextMuted, modifier = Modifier.size(17.dp))
+            Spacer(Modifier.width(12.dp))
+            Text(
+                "Loudness", color = TextPrimary, fontFamily = AppFont,
+                style = MaterialTheme.typography.titleLarge,
+                modifier = Modifier.weight(1f),
+            )
+            applied?.let {
+                Text(it, color = accent, fontFamily = MonoFont, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ReplayGainModes.forEach { (value, label) ->
+                ToggleChip(label, mode == value) { onMode(value) }
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(note, color = TextFaint, fontFamily = AppFont, fontSize = 11.sp)
+    }
+}
+
+/**
+ * Who measured the levels this phone is applying, said in one sentence.
+ *
+ * Named rather than left generic because it is the answer to the question the control
+ * raises — a ReplayGain switch over a library that measured nothing does nothing, and
+ * the only way to tell the two apart is to be told which library this is. A download
+ * is the odd one: the measurement travelled with the file, and naming the session
+ * ("Offline") as the thing that measured it would be a claim about the wrong party.
+ */
+private fun libraryGainNote(source: String): String = when {
+    source.isBlank() || source.equals("Offline", ignoreCase = true) ->
+        "ReplayGain, applied by CAMusic from the levels stored with each file."
+    else -> "ReplayGain, applied by CAMusic from the levels $source measured."
+}
+
+/**
+ * What the chosen mode is worth on the track playing right now, or null.
+ *
+ * Null in three different situations that all mean the same thing to a reader — the
+ * mode is off, nothing is playing, or the file carries no measurement — so the line
+ * simply isn't drawn rather than saying "0.0 dB", which claims a correction was made.
+ * The "no measurement" case gets words instead of a number, because a library that
+ * has scanned some of its tracks and not others is a real state and silence there
+ * looks like the setting failing.
+ */
+private fun appliedGainLine(st: NowPlayingViewModel.State): String? {
+    if (st.replayGain == ReplayGain.OFF || !st.hasTrack) return null
+    val source = st.sourceQuality ?: return null
+    if (source.activeGain == null) return "no measurement"
+    val db = ReplayGain.decibels(source, st.replayGain) ?: return "no measurement"
+    return "%+.1f dB".format(db)
+}
+
+/**
+ * Music Assistant's own loudness levelling, for the player being shown.
+ *
+ * Not the three ReplayGain modes, and deliberately not dressed up as them: MA measures
+ * every track in LUFS as it ingests it and corrects towards a target while it streams,
+ * so what there is to control is whether that runs for *this* player, in which mode,
+ * and at what target. Handing those to the same three chips would be inventing a
+ * mapping the server does not have.
+ *
+ * Every row is built from what the server declared — its label, its help text, its
+ * permitted options — the same way the gapless and crossfade rows in Settings are, so
+ * a build that renames one of these or grows a fourth mode needs no release here. A
+ * server that declares none shows nothing at all.
+ */
+@Composable
+private fun MaLoudnessBlock(viewModel: NowPlayingViewModel) {
+    val load by viewModel.normalization.collectAsStateWithLifecycle()
+
+    // Once per open, and again whenever the sheet is reopened: these live on the
+    // server, where MA's own UI and every other client can change them.
+    LaunchedEffect(Unit) { viewModel.loadNormalization() }
+
+    val entries = when (val l = load) {
+        is NowPlayingViewModel.Load.Ready -> l.value
+        else -> emptyList()
+    }
+    // Nothing to say and nothing being fetched — an older MA, or a player with no
+    // normalisation of its own. Leaving the header out is the honest answer.
+    if (load is NowPlayingViewModel.Load.Idle) return
+    if (load is NowPlayingViewModel.Load.Ready && entries.isEmpty()) return
+
+    Column {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.VolumeUp, null, tint = TextMuted, modifier = Modifier.size(17.dp))
+            Spacer(Modifier.width(12.dp))
+            Text(
+                "Loudness", color = TextPrimary, fontFamily = AppFont,
+                style = MaterialTheme.typography.titleLarge,
+                modifier = Modifier.weight(1f),
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+        when (val l = load) {
+            is NowPlayingViewModel.Load.Failed ->
+                Text(l.message, color = TextFaint, fontFamily = AppFont, fontSize = 11.sp)
+            NowPlayingViewModel.Load.Loading ->
+                Text(
+                    "Reading Music Assistant's settings…",
+                    color = TextFaint, fontFamily = AppFont, fontSize = 11.sp,
+                )
+            else -> Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                entries.forEach { entry ->
+                    MaLoudnessRow(entry) { viewModel.setNormalization(entry, it) }
+                }
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Music Assistant measures every track in LUFS and corrects towards a target as " +
+                "it streams. These are its settings for this player, and saving one needs an " +
+                "admin login.",
+            color = TextFaint, fontFamily = AppFont, fontSize = 11.sp,
+        )
+    }
+}
+
+/** One server-declared loudness setting, rendered by whatever type MA said it is. */
+@Composable
+private fun MaLoudnessRow(entry: MaConfigEntry, onChange: (JsonElement) -> Unit) {
+    val accent = LocalAccent.current
+    when {
+        entry.type.equals("boolean", ignoreCase = true) -> OptionRow(
+            icon = Icons.Default.VolumeUp,
+            title = entry.label,
+            // MA's own help text, of unknown length and sometimes absent. Trimmed to
+            // one sentence rather than summarised: this sheet is not the place for a
+            // paragraph, and rewriting the server's words would be worse than cutting
+            // them.
+            subtitle = entry.description?.substringBefore(". ")?.takeIf { it.isNotBlank() }
+                ?: "Level every track to the same loudness",
+            checked = entry.boolValue == true,
+            onChange = { onChange(JsonPrimitive(it)) },
+        )
+
+        entry.options.isNotEmpty() -> Column {
+            Text(entry.label, color = TextSecondary, fontFamily = AppFont, fontSize = 12.sp)
+            Spacer(Modifier.height(8.dp))
+            Row(
+                Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                entry.options.forEach { (value, title) ->
+                    // Not coerced to a default: a value the server holds that isn't in
+                    // the options it declared — or one it hasn't set — lights none of
+                    // them rather than reporting a setting MA does not have.
+                    ToggleChip(title, entry.stringValue == value) { onChange(JsonPrimitive(value)) }
+                }
+            }
+        }
+
+        // A number with a stated range — the target LUFS is the one that matters.
+        entry.rangeMin != null && entry.rangeMax != null -> {
+            val min = entry.rangeMin!!
+            val max = entry.rangeMax!!
+            val current = entry.numberValue ?: min
+            val float = entry.type.equals("float", ignoreCase = true)
+            var drag by remember(entry.key) { mutableStateOf<Float?>(null) }
+            val shown = drag?.let { min + it * (max - min) } ?: current
+            Column {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        entry.label, color = TextSecondary, fontFamily = AppFont,
+                        fontSize = 12.sp, modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        if (float) "%.1f".format(shown) else "${shown.toInt()}",
+                        color = accent, fontFamily = MonoFont,
+                        fontWeight = FontWeight.Bold, fontSize = 12.sp,
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                HSlider(
+                    value = if (max > min) ((current - min) / (max - min)).toFloat() else 0f,
+                    onChange = { drag = it },
+                    // Committed on release, not per frame: each one is a round trip to
+                    // the server and an admin-gated write, and a drag would spend
+                    // dozens of them to reach one value the listener wanted.
+                    onCommit = { f ->
+                        drag = null
+                        val raw = min + f * (max - min)
+                        // Rounded only where MA said the setting is an integer —
+                        // rounding a target in dB would make half its range
+                        // unreachable.
+                        onChange(
+                            if (float) JsonPrimitive(Math.round(raw * 10) / 10.0)
+                            else JsonPrimitive(Math.round(raw)),
+                        )
+                    },
+                )
+            }
+        }
+
+        // A type this sheet has no control for. Saying what MA holds is more use than
+        // leaving it out, and it keeps the block honest about what is set.
+        else -> Column {
+            Text(entry.label, color = TextSecondary, fontFamily = AppFont, fontSize = 12.sp)
+            Text(
+                entry.stringValue ?: "Set in Music Assistant",
+                color = TextFaint, fontFamily = AppFont, fontSize = 11.sp,
+            )
         }
     }
 }
