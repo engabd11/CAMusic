@@ -150,6 +150,15 @@ object MusicSources {
             ),
         )
 
+        // Spotify is an account, not a server: the login opens the embedded
+        // librespot session, which is also what mints the Web API token the
+        // browser uses. No server address, no developer app.
+        ServerKind.SPOTIFY -> SpotifySource(
+            context,
+            config.username,
+            config.password,
+        )
+
         // Music Assistant is not a MusicSource — it owns a server-side queue and
         // plays to speakers this app never decodes for. See MusicSource's docs.
         ServerKind.MUSIC_ASSISTANT -> null
@@ -272,6 +281,15 @@ object MusicSources {
         }
 
         is QobuzSource -> {
+            val error = source.probe()
+            if (error != null) {
+                if (error.isAuth) throw SourceAuthException(error.message)
+                throw Exception(error.message)
+            }
+            config
+        }
+
+        is SpotifySource -> {
             val error = source.probe()
             if (error != null) {
                 if (error.isAuth) throw SourceAuthException(error.message)
