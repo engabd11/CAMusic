@@ -53,7 +53,7 @@ Runs on phones and tablets, Android TV, Android Auto and LG webOS televisions.
   <img src="docs/screenshots/light-sync-shows.jpg" width="24%" />
 </p>
 <p align="center">
-  <em>Android Auto</em>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<em>Android Automotive</em><br>
+  <em>Android Auto</em>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<em><br>
   <img src="docs/screenshots/android-auto-library.jpg" width="21%" />
   <img src="docs/screenshots/android-auto-now-playing.jpg" width="21%" />
   <img src="docs/screenshots/android-automotive-library.jpg" width="50%" />
