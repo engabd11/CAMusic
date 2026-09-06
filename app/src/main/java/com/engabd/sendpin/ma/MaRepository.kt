@@ -255,6 +255,34 @@ class MaRepository(
             serverUrl,
         )
 
+    /**
+     * The podcasts marked favourite, for the top of the Podcasts page.
+     *
+     * The same `favorite = true` filter every other favourites query uses, on the same
+     * `library_items` command the plain listing already calls — so this costs one
+     * request and needs nothing new on the server.
+     */
+    suspend fun favoritePodcasts(limit: Int = 200) =
+        MaParse.items(
+            api.sendCommand(
+                "music/podcasts/library_items",
+                libraryArgs(0, limit, favorite = true),
+                timeoutMs = LIBRARY_TIMEOUT_MS,
+            ),
+            serverUrl,
+        )
+
+    /** The radio stations marked favourite, for the top of the Radio stations page. */
+    suspend fun favoriteRadios(limit: Int = 200) =
+        MaParse.items(
+            api.sendCommand(
+                "music/radios/library_items",
+                libraryArgs(0, limit, favorite = true),
+                timeoutMs = LIBRARY_TIMEOUT_MS,
+            ),
+            serverUrl,
+        )
+
     /** Feeds the library's "Favourite albums" shelf. */
     suspend fun favoriteAlbums(limit: Int = 12, orderBy: String? = null) =
         MaParse.items(

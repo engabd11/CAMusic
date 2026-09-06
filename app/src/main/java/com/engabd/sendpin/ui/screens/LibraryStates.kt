@@ -75,7 +75,10 @@ internal fun PlayAllBar(
         ) {
             Icon(Icons.Default.PlayArrow, null, tint = accent, modifier = Modifier.size(18.dp))
             Text(
-                "Play all $count tracks", color = accent, fontFamily = AppFont,
+                // Grouped, because this now counts whole libraries rather than a
+                // hundred-track sample — "Play all 4213 tracks" is a number nobody
+                // reads at a glance. Locale-aware, so it groups the way the phone does.
+                "Play all %,d tracks".format(count), color = accent, fontFamily = AppFont,
                 fontWeight = FontWeight.Bold, fontSize = 13.sp,
             )
         }

@@ -15,6 +15,7 @@ import com.engabd.sendpin.audio.OldRadioProcessor
 import com.engabd.sendpin.audio.VinylNoiseProcessor
 import com.engabd.sendpin.hue.GenrePresetRule
 import com.engabd.sendpin.hue.ShowPreset
+import com.engabd.sendpin.hue.TrackShowRule
 import com.engabd.sendpin.library.ServerConfig
 import com.engabd.sendpin.library.ServerKind
 import kotlinx.coroutines.flow.Flow
@@ -270,6 +271,15 @@ class AppSettings(private val context: Context) {
         private val GENRE_PRESETS_ENABLED = booleanPreferencesKey("light_show_genre_auto")
 
         /**
+         * Per-song shows, as a JSON list of [com.engabd.sendpin.hue.TrackShowRule].
+         *
+         * No enable switch beside it, unlike the genre rules: pinning a show to one
+         * song is an explicit act on that one song, so there is nothing to opt into
+         * and the way to stop it is to forget the song again.
+         */
+        private val TRACK_SHOW_RULES = stringPreferencesKey("light_show_track_rules")
+
+        /**
          * Whether tracks are analysed ahead of the show.
          *
          * On by default. Everything the direct path could learn from a live tap
@@ -321,6 +331,16 @@ class AppSettings(private val context: Context) {
         private val EFFECTS_VOLUME = stringPreferencesKey("effects_volume")
         /** Minutes until the show stops itself; 0 is off. */
         private val EFFECTS_SLEEP_MINUTES = stringPreferencesKey("effects_sleep_minutes")
+
+        /**
+         * Whether an ambience show plays *over* the music rather than instead of it.
+         *
+         * On by default, and that default is the point of the feature: a thunderstorm
+         * under a record is a thing people want, and the previous behaviour — pause
+         * whatever is playing, then take exclusive audio focus — made it impossible
+         * rather than merely awkward.
+         */
+        private val EFFECTS_OVER_MUSIC = booleanPreferencesKey("effects_over_music")
         private val EMOTIONAL_ARC_ENABLED = booleanPreferencesKey("emotional_arc_enabled")
         private val PHANTOM_STAGE_ENABLED = booleanPreferencesKey("phantom_stage_enabled")
         private val PHONE_CONDUCTOR_ENABLED = booleanPreferencesKey("phone_conductor_enabled")
@@ -1647,6 +1667,9 @@ class AppSettings(private val context: Context) {
         it[EFFECTS_VOLUME]?.toIntOrNull()?.coerceIn(0, 100) ?: 70
     }
 
+    /** Let an ambience show sit under the music instead of stopping it. */
+    val effectsOverMusic: Flow<Boolean> = pref { it[EFFECTS_OVER_MUSIC] ?: true }
+
     /**
      * Minutes until an effect stops itself. Sixty by default, and that default is doing
      * real work: a show is a 60 Hz render loop, a 48 kHz synth, a partial wake lock, a
@@ -1944,6 +1967,10 @@ class AppSettings(private val context: Context) {
         context.dataStore.edit { it[EFFECTS_VOLUME] = v.coerceIn(0, 100).toString() }
     }
 
+    suspend fun setEffectsOverMusic(on: Boolean) {
+        context.dataStore.edit { it[EFFECTS_OVER_MUSIC] = on }
+    }
+
     suspend fun setEffectsSleepMinutes(m: Int) {
         context.dataStore.edit { it[EFFECTS_SLEEP_MINUTES] = m.coerceIn(0, 480).toString() }
     }
@@ -2090,6 +2117,35 @@ class AppSettings(private val context: Context) {
 
     suspend fun setGenrePresetsEnabled(on: Boolean) {
         context.dataStore.edit { it[GENRE_PRESETS_ENABLED] = on }
+    }
+
+    /** Shows pinned to one song each. See [com.engabd.sendpin.hue.TrackShowRule]. */
+    val trackShowRules: Flow<List<TrackShowRule>> = pref { prefs ->
+        prefs[TRACK_SHOW_RULES]?.let { TrackShowRule.decode(it) } ?: emptyList()
+    }
+
+    /**
+     * Pin [preset] to the song named by [keys], replacing any show already pinned to
+     * it — or forget the song when [preset] is null.
+     *
+     * Written under **every** key rather than the best one, for the reason
+     * [setCoverPaletteOverrideForKeys] does the same: what the app knows about a
+     * playing track depends on which backend is playing it, and a rule filed only
+     * under the identity that happened to be available at save time is a rule the
+     * engine can never look up again.
+     */
+    suspend fun setTrackShowRule(keys: List<String>, label: String, preset: ShowPreset?) {
+        if (keys.isEmpty()) return
+        context.dataStore.edit { prefs ->
+            val existing = prefs[TRACK_SHOW_RULES]?.let { TrackShowRule.decode(it) } ?: emptyList()
+            // Any rule sharing *any* key is this same song under another name, so it
+            // goes rather than being left behind to win a later lookup.
+            val kept = existing.filterNot { rule -> rule.keys.any { it in keys } }
+            val next = if (preset == null) kept else {
+                listOf(TrackShowRule(keys = keys, presetId = preset.id, label = label)) + kept
+            }
+            prefs[TRACK_SHOW_RULES] = TrackShowRule.encode(next)
+        }
     }
 
     /**

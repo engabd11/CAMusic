@@ -182,13 +182,25 @@ internal fun PillPanel(visible: Boolean, content: @Composable () -> Unit) {
  * Only the selected tab's items are emitted, so this is also the cheapest thing on the
  * screen — the sections that are not on show are not composed, measured or collecting.
  *
- * [SHOWS] is absent on the Home Assistant route, which has neither saved shows nor the
- * light-show layers. A tab that opens on nothing is worse than one that is not offered.
+ * [SHOWS] and [EXTRAS] are absent on the Home Assistant route, which has neither saved
+ * shows, nor the light-show layers, nor a per-frame stream to script an ambience show
+ * on. A tab that opens on nothing is worse than one that is not offered.
  */
 internal enum class LightTab(val label: String) {
     LOOK("Look"),
     SHOWS("Shows"),
     TUNING("Tuning"),
+
+    /**
+     * Ambience and Rhythm Lights.
+     *
+     * These two were a pair of large tiles pinned above the tab strip, which gave the
+     * page two headline features before it had said anything about the show the page
+     * is *for* — and they are the two things here that are not settings at all. Behind
+     * a tab of their own they are still one tap away and no longer the first thing
+     * between the hero and the controls.
+     */
+    EXTRAS("Extras"),
 }
 
 /**
@@ -520,4 +532,56 @@ internal fun PanelDivider() {
     Spacer(Modifier.height(12.dp))
     Box(Modifier.fillMaxWidth().height(1.dp).background(Hairline))
     Spacer(Modifier.height(12.dp))
+}
+
+// --- the Auto ladder's live rung ------------------------------------------
+
+/**
+ * A [com.engabd.sendpin.ui.design.Pill] that can also say "and this is the one in use
+ * right now".
+ *
+ * The Auto checklist needs two states at once and [com.engabd.sendpin.ui.design.Pill]
+ * only has one: whether a rung is *allowed* is a setting the listener changed, and
+ * which rung Auto is *on* is a fact about the music this second. Drawing the live one
+ * as merely selected would have said the listener had turned the other two off.
+ *
+ * So: selected is the filled pill it always was, and live adds a ring and a dot
+ * outside it. A rung can be live without being selected for one frame after the
+ * checklist changes, which is why the two are independent rather than an enum.
+ */
+@Composable
+internal fun LivePill(
+    label: String,
+    selected: Boolean,
+    live: Boolean,
+    accent: Color,
+    onClick: () -> Unit,
+) {
+    val ring by animateColorAsState(
+        if (live) accent else Color.Transparent, Motion.effects(), label = "livePillRing",
+    )
+    Row(
+        Modifier
+            .clip(RoundedCornerShape(100))
+            .background(if (selected) accent else Glass)
+            .border(2.dp, if (live) ring else if (selected) accent else Hairline, RoundedCornerShape(100))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        if (live) {
+            Box(
+                Modifier.size(6.dp).clip(CircleShape)
+                    .background(if (selected) Ink else accent),
+            )
+        }
+        Text(
+            label,
+            color = if (selected) Ink else TextSecondary,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = if (live) FontWeight.Bold else FontWeight.Normal,
+            maxLines = 1,
+        )
+    }
 }

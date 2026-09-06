@@ -124,9 +124,25 @@ data class ShowPreset(
          */
         fun default(): ShowPreset = ShowPreset(id = DEFAULT_ID, name = "Default")
 
-        /** Presets a listener has not made yet, so the feature is not an empty list. */
+        /**
+         * Presets a listener has not made yet, so the feature is not an empty list.
+         *
+         * **Their ids are fixed, and that is load-bearing.** [showPresets] falls back to
+         * this list for as long as nothing has been saved, and it is re-read on *every*
+         * DataStore write — so with a fresh [UUID] per call, every starter changed
+         * identity whenever any setting anywhere in the app changed. Tying "jazz" to
+         * Dinner therefore wrote a rule against an id that had already stopped existing
+         * by the time the row was drawn: the rule showed "Jazz → (deleted)" and
+         * [GenrePresetRule.presetFor] could never resolve it, which is the whole of the
+         * "pick a show by genre does nothing" report.
+         *
+         * Same reasoning as [DEFAULT_ID], applied to the three shows beside it.
+         *
+         * @see com.engabd.sendpin.data.AppSettings.showPresets
+         */
         fun starters(): List<ShowPreset> = listOf(
             ShowPreset(
+                id = "__starter_dinner__",
                 name = "Dinner",
                 intensity = "subtle",
                 autoLevels = listOf("subtle"),
@@ -134,6 +150,7 @@ data class ShowPreset(
                 emotionalArc = true,
             ),
             ShowPreset(
+                id = "__starter_party__",
                 name = "Party",
                 intensity = "extreme",
                 autoLevels = listOf("high", "intense", "extreme"),
@@ -142,6 +159,7 @@ data class ShowPreset(
                 spatial = true,
             ),
             ShowPreset(
+                id = "__starter_film_score__",
                 name = "Film score",
                 intensity = "medium",
                 autoLevels = listOf("subtle", "medium"),
@@ -217,6 +235,79 @@ data class GenrePresetRule(
         ): ShowPreset? {
             val genre = trackGenre?.takeIf { it.isNotBlank() } ?: return null
             val rule = rules.firstOrNull { it.matches(genre) } ?: return null
+            return presets.firstOrNull { it.id == rule.presetId }
+        }
+    }
+}
+
+/**
+ * A show a listener pinned to one particular song.
+ *
+ * The narrowest of the three ways a show gets chosen, and deliberately the one that
+ * wins: a genre rule is a statement about a *kind* of music, and this is a statement
+ * about this record. So [presetFor] is consulted before [GenrePresetRule.presetFor],
+ * and a song with a show of its own is never overruled by the genre it happens to
+ * carry.
+ *
+ * Modelled on [com.engabd.sendpin.hue.CoverPaletteOverride], which solves the same
+ * problem for the same reason — "which song is this" is answered differently
+ * depending on which backend is playing it, so a save is filed under **every**
+ * identity available at the time and a lookup tries each in turn. See [keysFor].
+ */
+@Serializable
+data class TrackShowRule(
+    /** Every identity this song was known by when the show was saved. See [keysFor]. */
+    val keys: List<String> = emptyList(),
+    val presetId: String = "",
+    /** "Title — Artist", for the row that offers to forget it again. */
+    val label: String = "",
+) {
+    fun matches(candidates: List<String>): Boolean =
+        keys.isNotEmpty() && candidates.any { it in keys }
+
+    companion object {
+        private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+
+        fun encode(list: List<TrackShowRule>): String =
+            json.encodeToString(ListSerializer(serializer()), list)
+
+        /** Null on a decode failure, never an empty list — see [ShowPreset.decode]. */
+        fun decode(raw: String): List<TrackShowRule>? = runCatching {
+            json.decodeFromString(ListSerializer(serializer()), raw)
+        }.getOrNull()
+
+        /**
+         * The keys this song could be filed under, best first.
+         *
+         * Title-and-artist leads because it is the only identity that survives both
+         * per-track artwork churn and a backend handover — the same song played from
+         * Navidrome one evening and through Music Assistant the next has two different
+         * ids and one name. The library id is the fallback, and is all there is for a
+         * track whose tags are blank.
+         *
+         * Lower-cased and trimmed: servers disagree about capitalisation of the same
+         * tag far more often than they disagree about the tag.
+         */
+        fun keysFor(title: String?, artist: String?, trackId: String?): List<String> =
+            listOfNotNull(
+                title?.trim()?.takeIf { it.isNotEmpty() }
+                    ?.let { "t:${it.lowercase()}|${artist?.trim()?.lowercase().orEmpty()}" },
+                trackId?.takeIf { it.isNotBlank() }?.let { "id:$it" },
+            )
+
+        /**
+         * The preset saved for this song, or null to leave the show alone.
+         *
+         * Null rather than a default for the same reason [GenrePresetRule.presetFor]
+         * answers null: a song nobody has pinned a show to should not reset the room.
+         */
+        fun presetFor(
+            rules: List<TrackShowRule>,
+            presets: List<ShowPreset>,
+            keys: List<String>,
+        ): ShowPreset? {
+            if (keys.isEmpty()) return null
+            val rule = rules.firstOrNull { it.matches(keys) } ?: return null
             return presets.firstOrNull { it.id == rule.presetId }
         }
     }

@@ -15,6 +15,7 @@ import com.engabd.sendpin.hue.ambience.AmbienceParams
 import com.engabd.sendpin.hue.ambience.AmbienceSyncOwnership
 import com.engabd.sendpin.hue.ambience.AudioFocusGate
 import com.engabd.sendpin.hue.ambience.AudioTrackSink
+import com.engabd.sendpin.hue.ambience.SharedOutputGate
 import com.engabd.sendpin.service.EffectsService
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -39,6 +40,18 @@ import kotlinx.coroutines.sync.withLock
  * stopped because the user glanced at the Library tab would be a poor ambience effect.
  */
 class EffectsViewModel(app: Application) : AndroidViewModel(app) {
+
+    private companion object {
+        /**
+         * How loud a bed is when it is sharing the room with a record.
+         *
+         * A fifth. Ambience beds are broadband and continuous - rain, a fire, a room
+         * tone - which is exactly the signal that masks music worst at equal level.
+         * Low enough to be weather rather than a second track, and the slider is still
+         * there for anyone who wants more of it.
+         */
+        const val UNDER_MUSIC_GAIN = 0.2f
+    }
 
     private val settings = AppSettings(app)
     private val lights = (app as SendpinApp).directLightSync
@@ -71,6 +84,10 @@ class EffectsViewModel(app: Application) : AndroidViewModel(app) {
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
     val sleepMinutes: StateFlow<Int> = settings.effectsSleepMinutes
         .stateIn(viewModelScope, SharingStarted.Eagerly, 60)
+
+    /** Whether a show sits under the music rather than replacing it. See [startLocked]. */
+    val overMusic: StateFlow<Boolean> = settings.effectsOverMusic
+        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
 
     /**
      * The effect the screen should open on: the last one started.
@@ -199,6 +216,13 @@ class EffectsViewModel(app: Application) : AndroidViewModel(app) {
      * `AUDIOFOCUS_GAIN` evicts the Sendspin path, which reads the eviction as another
      * app taking over and releases its engine. Announcing the handover first turns that
      * into an ordinary internal switch.
+     *
+     * **Unless the music is meant to keep playing.** `effectsOverMusic` is on by
+     * default, and when something is already making sound it takes the other branch
+     * entirely: nothing is paused, no focus is requested (see [SharedOutputGate]) and
+     * the bed is mixed in at [UNDER_MUSIC_GAIN] so it sits beneath the record instead
+     * of over it. Rain under an album, a storm under a film score - the reason anybody
+     * wanted a room with its own sound in the first place.
      */
     fun start(effect: AmbienceEffect) {
         viewModelScope.launch {
@@ -210,18 +234,36 @@ class EffectsViewModel(app: Application) : AndroidViewModel(app) {
         mutatingSelfDepth++
         try {
             val app = getApplication<Application>() as SendpinApp
-            // 1. Say the output is changing hands, so the loser knows it was us.
-            runCatching { app.playbackOwner.noteTakingOutput() }
-            // 2. Stop the music properly rather than letting focus loss do it.
-            runCatching { app.playbackOwner.pause() }
+            // Whether this show shares the output with something already playing.
+            // Read once, here, and used three times below: sampling it again later
+            // could have the show take focus it had already decided not to, or duck a
+            // bed that is running at full level.
+            //
+            // `anyPlaying` as well as the setting, because with nothing playing there
+            // is nothing to sit under - a show that then quietly declined focus and
+            // ran at a fifth of its level would simply sound broken.
+            val shareOutput = settings.effectsOverMusic.first() &&
+                app.playbackOwner.state.value.anyPlaying
+            if (!shareOutput) {
+                // 1. Say the output is changing hands, so the loser knows it was us.
+                runCatching { app.playbackOwner.noteTakingOutput() }
+                // 2. Stop the music properly rather than letting focus loss do it.
+                runCatching { app.playbackOwner.pause() }
+            }
 
             val mode = settings.effectsSoundMode.first()
-            val vol = settings.effectsVolume.first() / 100f
+            // Under the music, the bed is a bed. At the level the slider names it is
+            // the loudest thing in the room, which is right for a show playing alone
+            // and wrong for one accompanying a record.
+            sharedGain = if (shareOutput) UNDER_MUSIC_GAIN else 1f
+            val vol = settings.effectsVolume.first() / 100f * sharedGain
             liveLevel = vol
             val newActive = buildActiveAudio(app, effect, mode, vol)
             audio.install(newActive)
 
-            val gate = if (newActive == null) null else AudioFocusGate(
+            // Null for a silent show, which has nothing to hold focus for, and null
+            // again for one sharing the output, which deliberately asks for none.
+            val exclusive = if (newActive == null || shareOutput) null else AudioFocusGate(
                 context = app,
                 onLoss = { stop() },
                 onTransientLoss = {
@@ -247,6 +289,10 @@ class EffectsViewModel(app: Application) : AndroidViewModel(app) {
                     audio.setVolume(now)
                 },
             )
+            // A show playing over the music still needs a gate - the session takes one
+            // and refuses to start without a grant - it just needs one that grants
+            // without evicting anybody. See [SharedOutputGate] for what that gives up.
+            val gate = exclusive ?: SharedOutputGate.takeIf { newActive != null && shareOutput }
 
             // Exactly one of these is ever non-null, and which one decides what the
             // show is clocked on and where its events come from.
@@ -374,10 +420,27 @@ class EffectsViewModel(app: Application) : AndroidViewModel(app) {
     fun setVolume(v: Int) {
         viewModelScope.launch {
             settings.setEffectsVolume(v)
-            audio.setVolume(v / 100f)
+            // Scaled by the same factor the show started with, so dragging the slider
+            // during a show that is sitting under a record does not lift it back out.
+            val level = v / 100f * sharedGain
+            audio.setVolume(level)
             // The duck mirror: whatever the slider last set is what un-ducking
             // restores, however long the show has been running.
-            liveLevel = v / 100f
+            liveLevel = level
+        }
+    }
+
+    /**
+     * Choose whether a show plays over the music or instead of it.
+     *
+     * A running show is restarted, for the same reason a sound-mode change restarts
+     * one: which focus gate it holds, and whether the music was paused, are both
+     * decided at start time and cannot be changed under a live session.
+     */
+    fun setOverMusic(on: Boolean) {
+        viewModelScope.launch {
+            settings.setEffectsOverMusic(on)
+            AmbienceEffect.fromWire(running.value)?.let { start(it) }
         }
     }
 
@@ -388,6 +451,16 @@ class EffectsViewModel(app: Application) : AndroidViewModel(app) {
      * the difference is that this one keeps moving when the slider does.
      */
     @Volatile private var liveLevel: Float = 0.7f
+
+    /**
+     * [UNDER_MUSIC_GAIN] while the running show is sharing the output, else 1.
+     *
+     * Held rather than recomputed, because the question it answers is "what did this
+     * show start as" and the answer must not change when the music stops halfway
+     * through - a bed swelling to full level the moment a record ended would be the
+     * most startling thing in the app.
+     */
+    @Volatile private var sharedGain: Float = 1f
 
     fun setSleepMinutes(m: Int) {
         viewModelScope.launch {

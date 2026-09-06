@@ -149,7 +149,25 @@ internal const val CATEGORY_PROVIDER = "__cat__"
 class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     enum class Backend { MA, SUBSONIC }
-    data class Node(val title: String, val items: List<MaItem>)
+
+    /**
+     * One page of the browse stack.
+     *
+     * [items] is everything on it, flat, and is what every play, download and count
+     * still reads — nothing that acts on a node has to know about [sections].
+     *
+     * [sections] is how it should be *read*, when the loader knows something the list
+     * itself does not. The screen already splits a mixed list by media type, which is
+     * enough for Starred; it is not enough for Podcasts, where every item is a podcast
+     * and yet "the ones you follow" and "everything the server has" are plainly two
+     * different shelves. Empty for every ordinary node, which is one kind of thing and
+     * reads better as the flat list it already is.
+     */
+    data class Node(
+        val title: String,
+        val items: List<MaItem>,
+        val sections: List<Pair<String, List<MaItem>>> = emptyList(),
+    )
 
     private val settings = AppSettings(app)
     /**
@@ -689,7 +707,17 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * the node a [pushNode] published knows how it was built, but its parent's
      * loader is only recoverable if it was put somewhere first.
      */
-    private data class Reload(val title: String, val load: suspend ((List<MaItem>) -> Unit) -> List<MaItem>)
+    /**
+     * How to build the node that is on screen again, for pull-to-refresh.
+     *
+     * [load] returns the same pair [pushSectionedNode]'s loader does, so a refresh of
+     * a sectioned page — Podcasts, Radio stations — comes back sectioned rather than
+     * collapsing into one flat run of rows the second time it is read.
+     */
+    private data class Reload(
+        val title: String,
+        val load: suspend ((List<MaItem>) -> Unit) -> Pair<List<MaItem>, List<Pair<String, List<MaItem>>>>,
+    )
     private var reload: Reload? = null
     private val reloadStack = ArrayDeque<Reload?>()
 
@@ -724,11 +752,13 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun reloadNode(target: Reload) {
         _loading.value = true; _error.value = null
         try {
-            fun publish(items: List<MaItem>) {
+            fun publish(items: List<MaItem>, sections: List<Pair<String, List<MaItem>>>) {
                 rememberFavorites(items)
-                _node.value = Node(target.title, items)
+                _node.value = Node(target.title, items, sections)
             }
-            publish(target.load { partial -> if (partial.isNotEmpty()) publish(partial) })
+            val (items, sections) =
+                target.load { partial -> if (partial.isNotEmpty()) publish(partial, emptyList()) }
+            publish(items, sections)
         } catch (e: Exception) {
             _error.value = e.message ?: "Failed to refresh"
         }
@@ -3132,9 +3162,15 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             reloadStack.addLast(reload)
             // Reads the in-memory index rather than the server, but refreshing it is
             // still the right answer to "this list looks stale".
-            reload = Reload(DOWNLOADS_TITLE) { downloadItems(downloads.value) }
+            reload = Reload(DOWNLOADS_TITLE) { downloadItems(downloads.value) to emptyList() }
             _node.value = Node(DOWNLOADS_TITLE, downloadItems(downloads.value))
             _depth.value = stack.size
+            return
+        }
+        // Podcasts and Radio stations are the two MA categories where the library
+        // listing alone is a misleading answer — see [maCollectionNode].
+        if (_backend.value == Backend.MA && (id == "podcasts" || id == "radios")) {
+            pushSectionedNode(title) { onPartial -> maCollectionNode(id, onPartial) }
             return
         }
         pushNode(title) { onPartial ->
@@ -3209,7 +3245,21 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                     "starred" -> sc.favorites().let {
                         it.artists + it.albums + it.playlists + it.tracks
                     }
-                    "random" -> sc.randomSongs(100)
+                    // The whole library, shuffled — not a hundred of it.
+                    //
+                    // `randomSongs(100)` is what this was, and it made the page an
+                    // honest liar: the bar above the list read "Play all 100 tracks"
+                    // on a library of four thousand, under a category called Shuffle
+                    // all. The server's random-songs endpoint is a *sample*, which is
+                    // the right primitive for the "something else" shelf and the wrong
+                    // one for a category whose whole promise is everything.
+                    //
+                    // Paged and published as it goes, exactly as the Tracks category
+                    // already is — that path is proven on a large library and this is
+                    // the same call. Each published batch is shuffled rather than only
+                    // the final list, so the page is in a random order from the first
+                    // frame instead of arriving alphabetical and then jumping.
+                    "random" -> shuffleAll(sc, onPartial)
                     else -> emptyList()
                 }
             }
@@ -3243,6 +3293,114 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         onPartial: (List<MaItem>) -> Unit,
         cap: Int = 20_000,
     ): List<MaItem> = allPages(onPartial, cap) { offset, limit -> sc.tracks(offset, limit) }
+
+    /**
+     * Every track in the library, in a random order, published as it arrives.
+     *
+     * Rows never move once drawn, which is why this is not simply
+     * `allTracks(...).shuffled()`: `allTracks` publishes its running total after each
+     * page, so re-shuffling the whole accumulated list on every page would have the
+     * screen reorder itself under the reader half a dozen times on the way in. Each
+     * new page is shuffled and appended instead. The result is not a uniform shuffle
+     * of the library — a track from the first page cannot land last — but it is a
+     * random order that is stable while it loads, and the queue this feeds is what
+     * "shuffle all" is actually about.
+     */
+    private suspend fun shuffleAll(
+        sc: MusicSource,
+        onPartial: (List<MaItem>) -> Unit,
+    ): List<MaItem> {
+        val out = mutableListOf<MaItem>()
+        var taken = 0
+        allTracks(sc, { running ->
+            if (running.size > taken) {
+                out += running.subList(taken, running.size).shuffled()
+                taken = running.size
+                onPartial(out.toList())
+            }
+        })
+        return out
+    }
+
+    /**
+     * The Podcasts or Radio stations page, in sections.
+     *
+     * Both pages had the same two problems, and they are the same problem twice.
+     *
+     * **The favourites were mixed in with everything else.** A listener with two
+     * hundred stations in their library and six they actually listen to had no way to
+     * find the six. They lead now, in a section of their own, and the rest of the
+     * library follows underneath in the same page rather than somewhere else.
+     *
+     * **What the server had beyond the library was unreachable.** Music Assistant's
+     * recommendation rows carry trending and popular podcasts — they were on the
+     * library's front page, and tapping through to Podcasts showed *fewer* things than
+     * the page you came from, which reads as the category being broken. The rows are
+     * already loaded for the root shelf ([loadDiscoverRows]), so folding the ones that
+     * hold this media type into this page costs no extra request: they are simply the
+     * server's own answer to "what else is there", filed where somebody looking for
+     * more would go.
+     *
+     * The flat list deliberately excludes the discover rows. It is what Play all and
+     * the row count act on, and "everything in your library" is a claim those can
+     * honestly make about it; "everything in your library plus whatever the server is
+     * promoting today" is not.
+     */
+    private suspend fun maCollectionNode(
+        id: String,
+        onPartial: (List<MaItem>) -> Unit,
+    ): Pair<List<MaItem>, List<Pair<String, List<MaItem>>>> {
+        val favouriteTitle = if (id == "podcasts") "Favourite podcasts" else "Favourite stations"
+        val restTitle = if (id == "podcasts") "All podcasts" else "All stations"
+        val wantedType = if (id == "podcasts") "podcast" else "radio"
+
+        val favourites = try {
+            if (id == "podcasts") maRepo.favoritePodcasts() else maRepo.favoriteRadios()
+        } catch (_: Exception) { emptyList() }
+        val favouriteIds = favourites.mapTo(HashSet()) { it.itemId }
+        if (favourites.isNotEmpty()) onPartial(favourites)
+
+        val page: suspend (Int, Int) -> List<MaItem> =
+            if (id == "podcasts") { o, l -> maRepo.podcasts(o, l) }
+            else { o, l -> maRepo.radios(o, l) }
+        // Published as the pages land, with the favourites still on top, so the page
+        // is never emptier than it was a moment ago.
+        val all = try {
+            maRepo.allLibraryItems(page, onPage = { partial ->
+                onPartial(favourites + partial.filterNot { it.itemId in favouriteIds })
+            })
+        } catch (_: Exception) { emptyList() }
+
+        val rest = all.filterNot { it.itemId in favouriteIds }
+        val flat = favourites + rest
+
+        // The server's own rows, for the same media type, without asking for them
+        // again — [loadDiscoverRows] filled these at connect.
+        val discovered = discover.value
+            .mapNotNull { shelf ->
+                val matching = shelf.items.filter { it.mediaType == wantedType }
+                // Half, not one: a row is "about" podcasts when podcasts are what it
+                // is mostly made of, and MA's mixed rows would otherwise each
+                // contribute a one-item section.
+                if (matching.size * 2 < shelf.items.size || matching.isEmpty()) null
+                else shelf.title to matching
+            }
+        discovered.forEach { (_, items) -> rememberFavorites(items) }
+
+        val sections = buildList {
+            if (favourites.isNotEmpty()) add(favouriteTitle to favourites)
+            if (rest.isNotEmpty()) add(restTitle to rest)
+            addAll(discovered)
+            // Distinct by title, because the screen keys its section headers on it and
+            // a duplicate key is a LazyGrid crash rather than a cosmetic problem. The
+            // titles above are fixed; a server free to name its own rows is not, and a
+            // provider offering a row called "All podcasts" should not take the page
+            // down.
+        }.distinctBy { it.first }
+        // One section is not a sectioned page: a library with no favourites yet reads
+        // better as the plain list it already was.
+        return flat to (if (sections.size > 1) sections else emptyList())
+    }
 
     /**
      * Walk a paged listing to its end, publishing each running batch.
@@ -3284,11 +3442,29 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private fun pushNode(
         title: String,
         loader: suspend ((List<MaItem>) -> Unit) -> List<MaItem>,
+    ) = pushSectionedNode(title, { onPartial -> loader(onPartial).let { it to emptyList() } })
+
+    /**
+     * [pushNode] for a loader that also says how the page should be sectioned.
+     *
+     * The loader hands back the flat list *and* the sections, rather than the sections
+     * alone, because they are not the same thing: the flat list is what Play all,
+     * Download all and the row count act on, and deriving it by concatenating the
+     * sections would double anything a loader deliberately shows in two of them.
+     *
+     * `onPartial` still takes a flat list. A partial result has no sections yet by
+     * construction — the sections are decided once the loader knows what it has — and
+     * a page that grew and re-sectioned itself as it loaded would reorder under the
+     * reader.
+     */
+    private fun pushSectionedNode(
+        title: String,
+        loader: suspend ((List<MaItem>) -> Unit) -> Pair<List<MaItem>, List<Pair<String, List<MaItem>>>>,
     ) {
         viewModelScope.launch {
             _loading.value = true; _error.value = null
             var pushed = false
-            fun publish(items: List<MaItem>) {
+            fun publish(items: List<MaItem>, sections: List<Pair<String, List<MaItem>>>) {
                 rememberFavorites(items)
                 if (!pushed) {
                     stack.addLast(_node.value)
@@ -3299,16 +3475,17 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                     pushed = true
                     _depth.value = stack.size
                 }
-                _node.value = Node(title, items)
+                _node.value = Node(title, items, sections)
             }
             try {
-                val items = loader { partial -> if (partial.isNotEmpty()) publish(partial) }
-                publish(items)
+                val (items, sections) =
+                    loader { partial -> if (partial.isNotEmpty()) publish(partial, emptyList()) }
+                publish(items, sections)
             } catch (e: Exception) {
                 // A partial result is better than an error page: keep what did arrive
                 // and say what went wrong alongside it.
                 _error.value = e.message ?: "Failed to load"
-                if (!pushed) publish(emptyList())
+                if (!pushed) publish(emptyList(), emptyList())
             }
             _loading.value = false
         }

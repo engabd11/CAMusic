@@ -167,15 +167,6 @@ fun SettingsScreen(
     onOpenDownloads: () -> Unit = {},
     /** Stats gets a screen of its own for the same reason. */
     onOpenStats: () -> Unit = {},
-    /**
-     * The Ambience screen, cross-linked from Illumination.
-     *
-     * Ambience is reached from the Lights tab and always has been, but somebody
-     * setting up the lights in Settings has no way to know it exists — so the
-     * Illumination index points at it rather than describing it and leaving the
-     * reader to go looking.
-     */
-    onOpenAmbience: () -> Unit = {},
 ) {
     // Back unwinds one level at a time, so a server's page returns to the server list
     // rather than all the way out of Settings.
@@ -283,11 +274,6 @@ fun SettingsScreen(
                         onHaToken = { haToken = it },
                         onOpenDownloads = onOpenDownloads,
                         onOpenStats = onOpenStats,
-                        onOpenAmbience = onOpenAmbience,
-                        onOpenServer = { id ->
-                            onSection(SettingsSection.PROVIDERS)
-                            onDetail(id)
-                        },
                     )
                 }
             }
@@ -329,8 +315,6 @@ private fun LazyListScope.sectionItems(
     onHaToken: (String) -> Unit,
     onOpenDownloads: () -> Unit,
     onOpenStats: () -> Unit,
-    onOpenAmbience: () -> Unit,
-    onOpenServer: (String) -> Unit,
 ) {
     // The section index: which pages are behind this category. Empty for the two
     // that are their own index — see [subPagesFor].
@@ -374,8 +358,6 @@ private fun LazyListScope.sectionItems(
                 onHaUrl = onHaUrl,
                 haToken = haToken,
                 onHaToken = onHaToken,
-                onOpenAmbience = onOpenAmbience,
-                onOpenServer = onOpenServer,
             )
         }
 

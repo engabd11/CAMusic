@@ -12,6 +12,8 @@ import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.LibraryAdd
@@ -102,6 +104,17 @@ fun BoxScope.MediaActionsSheet(
     onDelete: (() -> Unit)? = null,
     /** Null leaves the row out. Lets the user correct the Light Sync palette for this album. */
     onEditLightSyncColours: (() -> Unit)? = null,
+    /**
+     * Null leaves the row out; otherwise it says whether [item] is starred now.
+     *
+     * The heart on a list row only ever existed on a list row, so anything drawn as a
+     * cover tile — which is most albums and every playlist in a library with artwork —
+     * could not be starred from the library at all. Here it is, on the gesture every
+     * tile already answers.
+     */
+    isFavourite: Boolean? = null,
+    /** Null leaves the row out. See [isFavourite]. */
+    onToggleFavourite: (() -> Unit)? = null,
 ) {
     HideBottomChrome()
     BackHandler(onBack = onClose)
@@ -201,6 +214,13 @@ fun BoxScope.MediaActionsSheet(
                     Icons.Default.GraphicEq, "More like this",
                     "Tracks that sound like this one",
                 ) { onClose(); more() }
+            }
+            if (isFavourite != null && onToggleFavourite != null) {
+                ActionRow(
+                    if (isFavourite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                    if (isFavourite) "Remove from favourites" else "Add to favourites",
+                    if (whole) "Keeps it on the Starred page" else "Keeps it on the Starred page",
+                ) { onClose(); onToggleFavourite() }
             }
             onShare?.let { share ->
                 ActionRow(Icons.Default.Share, "Share", item.name) { onClose(); share() }

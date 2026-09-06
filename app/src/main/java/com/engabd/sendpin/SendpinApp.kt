@@ -182,7 +182,7 @@ class SendpinApp : Application(), ImageLoaderFactory {
             // From `Playback` rather than `MaNowPlaying` because these two are written
             // in the same `nowPlaying` collect as `artworkUrl` above, so the album and
             // the cover a palette is keyed on can never come from different tracks.
-            playback.album, playback.artist,
+            playback.album, playback.artist, playback.trackTitle,
         ) { values ->
             @Suppress("UNCHECKED_CAST")
             val localTrack = values[0] as com.engabd.sendpin.audio.LocalTrack?
@@ -194,6 +194,7 @@ class SendpinApp : Application(), ImageLoaderFactory {
             val phoneAudioFeed = values[6] as String
             val maAlbum = (values[7] as String).takeIf { it.isNotBlank() }
             val maArtist = (values[8] as String).takeIf { it.isNotBlank() }
+            val maTitle = (values[9] as String).takeIf { it.isNotBlank() }
             val maTap = owner.sendspinTap
             // MPD is playing and this phone is only its remote — see
             // `PlaybackOwner.State.soundIsReadable`, which is the same question the
@@ -230,6 +231,7 @@ class SendpinApp : Application(), ImageLoaderFactory {
                         tap = maTap!!.first, lead = maTap.second, artUrl = maArtUrl,
                         scanTrack = null,
                         paletteAlbum = maAlbum, paletteArtist = maArtist,
+                        trackTitle = maTitle,
                         feed = feed,
                     )
                 // Another app's audio, through MediaProjection. Its own tap instance,
@@ -267,6 +269,7 @@ class SendpinApp : Application(), ImageLoaderFactory {
                         // what MA says it is playing.
                         paletteAlbum = if (mpdScanDriving || mpdHoldsSound) localTrack?.album else maAlbum,
                         paletteArtist = if (mpdScanDriving || mpdHoldsSound) localTrack?.artist else maArtist,
+                        trackTitle = if (mpdScanDriving || mpdHoldsSound) localTrack?.title else maTitle,
                         feed = feed,
                     )
                 else ->
@@ -274,6 +277,7 @@ class SendpinApp : Application(), ImageLoaderFactory {
                         tap = localPlayer.audioAnalysisTap, lead = localPlayer.audioLead,
                         artUrl = localTrack?.artUrl, scanTrack = localTrack,
                         paletteAlbum = localTrack?.album, paletteArtist = localTrack?.artist,
+                        trackTitle = localTrack?.title,
                         feed = feed,
                     )
             }
@@ -284,6 +288,7 @@ class SendpinApp : Application(), ImageLoaderFactory {
                 artUrl = localPlayer.current.value?.artUrl, scanTrack = localPlayer.current.value,
                 paletteAlbum = localPlayer.current.value?.album,
                 paletteArtist = localPlayer.current.value?.artist,
+                trackTitle = localPlayer.current.value?.title,
             ),
         )
     }
@@ -747,24 +752,61 @@ class SendpinApp : Application(), ImageLoaderFactory {
             AppSettings(this@SendpinApp).localDsp.collect { localPlayer.localDsp.setConfig(it) }
         }
 
-        // Genre-driven show presets. Here rather than inside DirectLightSync
-        // because that class only ever *reads* settings, and this writes them —
-        // the show it picks arrives back through the collectors DirectLightSync
-        // already has, so there is one direction of flow and no new coupling.
+        // Show presets chosen for you: this song's own, else this song's genre.
         //
-        // Keyed on the genre rather than on the track: a whole album of one genre
-        // applies its preset once, at the first track, and re-applying the same
-        // show between every track would re-roll a Song-scheme palette each time.
+        // Here rather than inside DirectLightSync because that class only ever
+        // *reads* settings, and this writes them — the show it picks arrives back
+        // through the collectors DirectLightSync already has, so there is one
+        // direction of flow and no new coupling.
+        //
+        // Keyed on the *song* now rather than on the genre alone, which is what
+        // makes a per-song show possible at all. The genre half keeps its old
+        // behaviour by keying its own `distinctUntilChanged` on the genre string:
+        // a whole album of one genre still applies its preset once, at the first
+        // track, because re-applying the same show between two tracks off one
+        // record would re-roll a Song-scheme palette each time.
         appScope.launch {
             val settings = AppSettings(this@SendpinApp)
+            var lastGenre: String? = null
             activeLightSyncSource
-                .map { it.scanTrack?.genre }
+                .map { source ->
+                    Triple(
+                        com.engabd.sendpin.hue.TrackShowRule.keysFor(
+                            title = source.trackTitle ?: source.scanTrack?.title,
+                            artist = source.paletteArtist ?: source.scanTrack?.artist,
+                            trackId = source.scanTrack?.id,
+                        ),
+                        source.scanTrack?.genre,
+                        // Only so that two different songs with neither tags nor a
+                        // genre are still two emissions rather than one.
+                        source.artUrl,
+                    )
+                }
                 .distinctUntilChanged()
-                .collect { genre ->
+                .collect { (songKeys, genre, _) ->
+                    val presets = settings.showPresets.first()
+                    // A show pinned to this one song wins outright. A genre rule is a
+                    // statement about a kind of music; this is a statement about this
+                    // record, and the narrower one is the one that was meant.
+                    val pinned = com.engabd.sendpin.hue.TrackShowRule.presetFor(
+                        rules = settings.trackShowRules.first(),
+                        presets = presets,
+                        keys = songKeys,
+                    )
+                    if (pinned != null) {
+                        // Cleared so that leaving a pinned song for another track of
+                        // the same genre re-applies that genre's show, rather than
+                        // being swallowed as "the genre has not changed".
+                        lastGenre = null
+                        settings.applyShowPreset(pinned)
+                        return@collect
+                    }
+                    if (genre == lastGenre) return@collect
+                    lastGenre = genre
                     if (!settings.genrePresetsEnabled.first()) return@collect
                     val preset = com.engabd.sendpin.hue.GenrePresetRule.presetFor(
                         rules = settings.genrePresetRules.first(),
-                        presets = settings.showPresets.first(),
+                        presets = presets,
                         trackGenre = genre,
                     ) ?: return@collect
                     settings.applyShowPreset(preset)

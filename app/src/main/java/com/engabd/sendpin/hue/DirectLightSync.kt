@@ -295,6 +295,14 @@ data class ActiveLightSyncSource(
     val paletteAlbum: String? = null,
     val paletteArtist: String? = null,
     /**
+     * The song's own title, for the per-song shows — see [TrackShowRule.keysFor].
+     *
+     * Beside [paletteAlbum] rather than read from [scanTrack] for the same reason
+     * that field exists: the Music Assistant feed carries no [LocalTrack] and yet
+     * knows perfectly well what is playing, from `Playback`'s metadata.
+     */
+    val trackTitle: String? = null,
+    /**
      * Which of the four feeds this is. [tap] stays non-null for all of them — for
      * [LightSyncFeed.SCAN_REMOTE] it is simply the local player's tap, which is
      * receiving nothing, so wiring it is harmless and saves making every reader of
@@ -756,6 +764,23 @@ class DirectLightSync(
     private val _framesFresh = MutableStateFlow(false)
     val framesFresh: StateFlow<Boolean> = _framesFresh.asStateFlow()
 
+    /**
+     * The rung Auto is on right now, or null when Auto is not choosing.
+     *
+     * Null covers three cases that are all "there is nothing to report": the level is
+     * a fixed rung the user picked, the show is not running, or it is running and no
+     * frame has reached the picker yet.
+     *
+     * Published from inside the render loop for the same reason [framesFresh] is —
+     * the picker is a per-frame decision made here, and a screen that recomputed it
+     * would be showing a second, differently-fed picker's opinion. "Auto" alone was
+     * the whole of what the Lights tab could say, which is a control reporting only
+     * that it exists: the one thing worth knowing about Auto is which rung it landed
+     * on and when that changes.
+     */
+    private val _autoLevel = MutableStateFlow<SyncMode?>(null)
+    val autoLevel: StateFlow<SyncMode?> = _autoLevel.asStateFlow()
+
     /** Error state, surfaced to the UI. */
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
@@ -1148,6 +1173,11 @@ class DirectLightSync(
 
         renderJob?.cancel(); renderJob = null
         keepaliveJob?.cancel(); keepaliveJob = null
+
+        // Nothing is choosing a rung with the loop gone, and a level left on screen
+        // over a dark room is the kind of stale reading `framesFresh` exists to
+        // prevent.
+        _autoLevel.value = null
 
         engine = null
         encoder = null
@@ -1851,6 +1881,7 @@ class DirectLightSync(
             eng.mode = picked
             selectLimiter(picked)
         }
+        if (_autoLevel.value != picked) _autoLevel.value = picked
     }
 
     /**
@@ -2157,10 +2188,14 @@ class DirectLightSync(
                     // Let the picker choose from the next frame rather than
                     // holding whatever rung was showing when Auto was selected.
                     picker.reset()
+                    _autoLevel.value = null
                 } else {
                     val mode = SyncMode.fromWire(wire)
                     engine?.mode = mode
                     selectLimiter(mode)
+                    // Nothing is being chosen any more, and a stale rung under a
+                    // fixed level would read as Auto still running.
+                    _autoLevel.value = null
                 }
             }
         }

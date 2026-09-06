@@ -99,7 +99,7 @@ private val CHAR_BAND_ANCHORS = arrayOf(
  */
 private val RUNG_SHARE = floatArrayOf(0.07f, 0.16f, 0.38f, 0.36f, 0.03f)
 
-private const val PICK_HYST_FRAC = 0.35f
+private const val PICK_HYST_FRAC = 0.30f
 private const val PICK_DWELL_S = 3.5f
 private const val PICK_BIG_JUMP = 2
 private const val PICK_BIG_DWELL_S = 1.0f
@@ -112,7 +112,20 @@ internal const val PICK_BPM_LO = 85.0f
 internal const val PICK_BPM_HI = 150.0f
 private const val PICK_DYN_REF = 0.26f
 private const val PICK_MOOD_MAX = 0.16f
-private const val PICK_PEAK_GAMMA = 1.3f
+private const val PICK_PEAK_GAMMA = 1.15f
+
+/**
+ * How much of its window the flattest possible master still gets to sweep.
+ *
+ * The [PICK_DYN_REF] term exists so a song that does not move does not send the room
+ * up and down the ladder pretending it does. Uncapped, though, it was the second half
+ * of "Auto picks one rung and sits there all song": a modern loudness-war master
+ * measures around 0.06–0.10 of true p95−p10 spread, which pinned the operating point
+ * within a few percent of the middle of the window — narrower than the dead-band, so
+ * nothing could ever cross an edge. A floor keeps the honesty (a flat song still moves
+ * less than a dynamic one) while leaving it somewhere to move.
+ */
+private const val PICK_DYN_FLOOR = 0.55f
 
 /**
  * How far a song's spectral tilt and tempo slide the picker's operating point.
@@ -193,11 +206,11 @@ internal fun intensitySignal(energy: Float, salience: Float, tempo: Float, perc:
 /**
  * Resolve Auto to a concrete rung from what the music actually is.
  *
- * Three layers. The song's absolute **character** decides the band of the ladder
- * it earns; its own **moment** then moves within that band; and the **enabled
- * set** rescales the axis rather than clipping it, so a heavy track reaches the
- * top of the selection, a chill one stays low in it, and no song is forced to
- * use every rung enabled.
+ * Three layers. The song's absolute **character** decides which run of rungs it
+ * earns out of the **enabled set** — see [windowFor] — and its own **moment** then
+ * sweeps the full width of that window. So a heavy track reaches the top of the
+ * selection, a chill one stays low in it, no song is forced to use every rung
+ * enabled, and every song has somewhere to move.
  *
  * The point of the character layer is that a chill track's ceiling is Medium
  * however loud its own chorus gets. Without it, per-track normalisation means
@@ -348,7 +361,46 @@ class AutoIntensityPicker {
         return CHAR_NEUTRAL + (raw - CHAR_NEUTRAL) * w
     }
 
-    /** Place this moment on the ladder, then on the enabled set, with hysteresis. */
+    /** Which cell of [edges] a ladder-axis position falls in. */
+    private fun cellOf(pos: Float, edges: FloatArray): Int {
+        var i = 0
+        while (i < edges.size && pos >= edges[i]) i++
+        return i
+    }
+
+    /**
+     * The contiguous run of [rungs] a song of this character may use, inclusive.
+     *
+     * **This is the layer that was missing, and its absence is the whole of "Auto
+     * sticks to one setting for the entire song".** The character band and the rung
+     * cells used to be measured on the same 0..1 axis, and the two do not line up: a
+     * mid-character song earns roughly 0.22..0.72 of the axis while the default
+     * Subtle/Medium/High selection cuts it at 0.115 and 0.377, so the song could
+     * reach exactly two rungs at best — and once the [PICK_DYN_REF] compressor had
+     * pulled the moment toward the middle of that band, routinely only one. Subtle
+     * was unreachable for *every* song at that character, whatever it did.
+     *
+     * Resolving the band to a window of whole rungs and letting the moment sweep the
+     * full width of it keeps every property the band was for — a chill track's
+     * ceiling is still Medium however loud its chorus gets, a heavy one still reaches
+     * the top of the selection — and gives the moment somewhere to go inside it.
+     *
+     * A one-rung window is deliberately left alone rather than widened to give Auto
+     * something to do. It means a genuinely uniform song, or a selection narrow enough
+     * that the song's whole band falls inside one rung, holds that rung for the length
+     * of the track. That is the correct answer and not the bug this fixes: widening it
+     * would raise a chill track's ceiling by a rung in exactly the case the character
+     * layer exists to hold it down. With the default three rungs every character from
+     * ambient to EDM already earns two or more.
+     */
+    private fun windowFor(rungs: List<SyncMode>, character: Float): IntRange {
+        val (edges, _) = rungCells(rungs)
+        val (floor, ceiling) = characterBand(character)
+        val lo = cellOf(floor, edges)
+        return lo..max(lo, cellOf(ceiling, edges))
+    }
+
+    /** Place this moment inside the window this song earned, with hysteresis. */
     private fun resolve(
         sig: Float,
         allowed: List<SyncMode>,
@@ -360,28 +412,29 @@ class AutoIntensityPicker {
     ): SyncMode {
         val rungs = allowed.filter { it in LADDER }.sortedBy { LADDER.indexOf(it) }
             .ifEmpty { DEFAULT_AUTO_LEVELS }
-        val n = rungs.size
+        val window = windowFor(rungs, character)
+        val sub = rungs.subList(window.first, window.last + 1)
+        val n = sub.size
         val span = max(1e-3f, hi - lo)
         var p = unit((sig - lo) / span)
         if (dynamics != null) {
-            // How much of its band this song has earned: 0 flat, 1 dynamic.
-            val w = unit(dynamics / PICK_DYN_REF)
+            // How much of its window this song has earned: [PICK_DYN_FLOOR] flat, 1
+            // dynamic. Floored rather than allowed to reach zero — see the constant.
+            val w = PICK_DYN_FLOOR + (1f - PICK_DYN_FLOOR) * unit(dynamics / PICK_DYN_REF)
             p = 0.5f + w * (p - 0.5f)
         }
         p = unit(p + mood.coerceIn(-PICK_MOOD_MAX, PICK_MOOD_MAX))
-        val (floor, ceiling) = characterBand(character)
-        val pos = floor + (ceiling - floor) * p.pow(PICK_PEAK_GAMMA)
+        // The window *is* the axis now, so the moment spans all of it. The character
+        // band chose which rungs those are; it no longer also has to squeeze the
+        // moment into a slice of a ladder drawn for every song at once.
+        val pos = p.pow(PICK_PEAK_GAMMA)
 
-        val (edges, widths) = rungCells(rungs)
-        var b = rungs.indexOf(level).takeIf { it >= 0 } ?: run {
-            var i = 0
-            while (i < n - 1 && pos >= edges[i]) i++
-            i
-        }
+        val (edges, widths) = rungCells(sub)
+        var b = sub.indexOf(level).takeIf { it >= 0 } ?: cellOf(pos, edges)
         // Dead-band scaled to the cell, so switches stay stable without making a
         // narrow cell unreachable.
         while (b < n - 1 && pos > edges[b] + PICK_HYST_FRAC * min(widths[b], widths[b + 1])) b++
         while (b > 0 && pos < edges[b - 1] - PICK_HYST_FRAC * min(widths[b - 1], widths[b])) b--
-        return rungs[b]
+        return sub[b]
     }
 }
