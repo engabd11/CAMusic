@@ -35,6 +35,13 @@ private fun serverKindIcon(kind: ServerKind): ImageVector = when (kind) {
     ServerKind.JELLYFIN -> Icons.Default.Theaters
     ServerKind.EMBY -> Icons.Default.VideoLibrary
     ServerKind.PLEX -> Icons.Default.PlayCircleFilled
+    // The streaming accounts have brand marks in dashboard-icons, but none are
+    // used while the kinds are experimental: a real (Spotify-green) logo on a
+    // greyed roadmap row reads as "supported". Distinct generic glyphs instead —
+    // Spotify the radio dial, Qobuz the equaliser, Tidal the cloud queue.
+    ServerKind.SPOTIFY -> Icons.Default.Radio
+    ServerKind.QOBUZ -> Icons.Default.Equalizer
+    ServerKind.TIDAL -> Icons.Default.CloudSync
     ServerKind.AUDIOBOOKSHELF -> Icons.AutoMirrored.Filled.MenuBook
     ServerKind.KODI -> Icons.Default.Tv
     ServerKind.SMB -> Icons.Default.FolderShared
@@ -76,6 +83,8 @@ private fun serverKindLogoRes(kind: ServerKind): Int? = when (kind) {
     ServerKind.BOX -> R.drawable.ic_logo_box
     ServerKind.SMB, ServerKind.WEBDAV, ServerKind.PCLOUD, ServerKind.LOCAL, ServerKind.DOWNLOADS,
     ServerKind.MPD,
+    // No brand marks while experimental — see serverKindIcon.
+    ServerKind.SPOTIFY, ServerKind.QOBUZ, ServerKind.TIDAL,
     -> null
 }
 

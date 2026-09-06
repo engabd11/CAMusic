@@ -391,12 +391,25 @@ private fun ProviderPicker(accent: Color, onPick: (ServerKind) -> Unit) {
         }
 
         Spacer(Modifier.height(4.dp))
+        FieldLabel("Experimental")
+        Note(
+            "Streaming accounts being built right now — an account and a sign-in rather " +
+                "than a server, playing on this phone with light sync. Not usable yet; the " +
+                "plan lives in docs/plan/direct-streaming-providers.md.",
+        )
+        ServerKind.entries.filter { it.experimental }.forEach { kind ->
+            Box(Modifier.alpha(0.4f)) {
+                ProviderRow(kind, accent, enabled = false) {}
+            }
+        }
+
+        Spacer(Modifier.height(4.dp))
         FieldLabel("Not yet supported")
         Note(
             "Planned adapters rather than maybes. The endpoints and sign-in each one needs " +
                 "are written up in docs/providers.md.",
         )
-        ServerKind.planned.forEach { kind ->
+        ServerKind.plannedNotExperimental.forEach { kind ->
             Box(Modifier.alpha(0.4f)) {
                 ProviderRow(kind, accent, enabled = false) {}
             }

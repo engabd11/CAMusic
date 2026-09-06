@@ -134,7 +134,7 @@ class ServerConfigTest {
     }
 
     @Test
-    fun `only kinds with credentials need an address`() {
+    fun `device libraries need neither credentials nor an address`() {
         assertTrue(ServerKind.NAVIDROME.needsAddress)
         assertTrue(ServerKind.MUSIC_ASSISTANT.needsAddress)
         // The two that read what is already on the phone. This is what stops the
@@ -143,10 +143,78 @@ class ServerConfigTest {
         assertFalse(ServerKind.DOWNLOADS.needsAddress)
     }
 
+    // ─── Direct streaming kinds (Spotify / Qobuz / Tidal) ────────────────────
+
+    /**
+     * The streaming services are *accounts*, not servers: there is no host to
+     * point at, but there are credentials to ask for. `needsAddress` is what stops
+     * the connect forms demanding a URL a cloud library can never give, and it
+     * must not be the same question as "this kind has a form" — Spotify's form
+     * exists and holds a username and password and not one field more.
+     */
+    @Test
+    fun `streaming accounts need credentials but no address`() {
+        for (kind in listOf(ServerKind.SPOTIFY, ServerKind.QOBUZ, ServerKind.TIDAL)) {
+            assertTrue(kind.needsCredentials, "${kind.name} has a form to fill in")
+            assertFalse(kind.needsAddress, "${kind.name} has no host to type")
+            assertTrue(kind.playsLocally, "${kind.name} is played by this phone, not by a server")
+            assertFalse(kind.supported, "${kind.name} stays roadmap greyed until its source lands")
+        }
+    }
+
+    /**
+     * `ServerKind.from` feeds the source wiring, not just the picker: a stored
+     * config's kind name has to resolve for a streaming source to be built from
+     * it in the phase that makes it playable.
+     */
+    @Test
+    fun `the streaming kinds resolve by name`() {
+        assertEquals(ServerKind.SPOTIFY, ServerKind.from("SPOTIFY"))
+        assertEquals(ServerKind.QOBUZ, ServerKind.from("QOBUZ"))
+        assertEquals(ServerKind.TIDAL, ServerKind.from("TIDAL"))
+    }
+
+    @Test
+    fun `a streaming account config survives a round trip`() {
+        val original = ServerConfig(
+            kind = ServerKind.QOBUZ,
+            username = "abdullah@example.com",
+            password = "hunter2",
+        )
+        assertEquals(listOf(original), roundTrip(listOf(original)))
+    }
+
+    /**
+     * Experimental is a visible status, not a third word for unsupported: these
+     * kinds render in their own picker section with the tag on them, so nobody
+     * reads a polished brand row as "works today". Everything experimental is
+     * also planned (no source behind it yet); the flag only changes how the
+     * roadmap row is presented and what the docs claim.
+     */
+    @Test
+    fun `the streaming kinds are flagged experimental and stay unplanned-plus-unaddable`() {
+        assertEquals(
+            listOf(ServerKind.SPOTIFY, ServerKind.QOBUZ, ServerKind.TIDAL),
+            ServerKind.entries.filter { it.experimental },
+        )
+        ServerKind.entries.filter { it.experimental }.forEach {
+            assertTrue(it in ServerKind.planned, "${it.name} has no source yet, so it is still planned")
+            assertTrue(it !in ServerKind.addable, "${it.name} cannot be added yet")
+            assertFalse(it.supported, "${it.name} is not supported yet")
+        }
+        // The "not yet supported" section is for genuinely unstarted ideas; the
+        // experimental ones are shown separately, so the planned list the picker
+        // renders there must not contain them twice.
+        assertEquals(
+            ServerKind.planned.filterNot { it.experimental },
+            ServerKind.plannedNotExperimental,
+        )
+    }
+
     @Test
     fun `an unknown kind name resolves to null rather than throwing`() {
         assertEquals(ServerKind.NAVIDROME, ServerKind.from("NAVIDROME"))
-        assertNull(ServerKind.from("TIDAL"))
+        assertNull(ServerKind.from("NOSUCHKIND"))
         assertNull(ServerKind.from(null))
     }
 }

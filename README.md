@@ -97,6 +97,15 @@ can add as many as you like and switch between them freely.
 | **MPD** | ✅ | ✅ | — | — |
 | **Music Assistant** | ✅ | ✅ | n/a | ✅ |
 | **On-device files** | ✅ | ✅ | n/a | n/a |
+| **Spotify · Qobuz · Tidal** | 🔬 | — | — | — |
+
+🔬 **Experimental** — Spotify, Qobuz and Tidal are streaming *accounts* (no server address,
+just a sign-in) being built right now on `master`'s roadmap. Direct integration, played on
+the phone with light sync, no Music Assistant required. Not usable yet; the plan lives in
+[docs/plan/direct-streaming-providers.md](docs/plan/direct-streaming-providers.md). There
+are no official third-party streaming APIs — each arrives through an embedded client or
+the service's own undocumented endpoints, and YouTube Music is deliberately absent (no
+viable path).
 
 Artists, albums, playlists, radio, podcasts and audiobooks, with search across all of them.
 Multi-disc albums group properly, liner notes and biographies appear where the server has

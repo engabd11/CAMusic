@@ -24,10 +24,25 @@ enum class ServerKind(
     /** One line, for the picker row. Says what it is, not how it works. */
     val blurb: String,
     val supported: Boolean = false,
+    /**
+     * Shown with an "experimental" tag rather than silently mixed in: a streaming
+     * account whose adapter is still being built. Experimental kinds are also
+     * [planned] — the flag only changes how the roadmap row is presented and what
+     * the docs claim, never whether a source can be built from the kind.
+     */
+    val experimental: Boolean = false,
     /** Roughly what a URL for this looks like, for the address field's placeholder. */
     val urlHint: String = "",
     /** How the user proves who they are — decides which fields the form shows. */
     val auth: AuthStyle = AuthStyle.USER_PASSWORD,
+    /**
+     * True for a streaming **account** rather than a server: the kind has a form
+     * (credentials) but no host to point at, because the service's address is
+     * fixed and well-known. Drives [hasAddress]; the cloud drives in the planned
+     * list are the same shape of thing and should take this when their adapters
+     * are built.
+     */
+    val cloudAccount: Boolean = false,
 ) {
     MUSIC_ASSISTANT(
         "Music Assistant",
@@ -76,6 +91,36 @@ enum class ServerKind(
         auth = AuthStyle.OPTIONAL_USER_PASSWORD,
     ),
 
+    // ── Direct streaming. Accounts, not servers: credentials, no address. ────
+    // Roadmap entries like the planned libraries below — greyed in the picker
+    // until each one's MusicSource lands (docs/plan/direct-streaming-providers.md).
+    // No streaming service offers an official API a third-party player can stream
+    // from, so each arrives the way Music Assistant talks to them: an embedded
+    // client or the service's own undocumented endpoints. YouTube Music is
+    // deliberately absent — no viable path (OAuth withdrawn, cookie + PO-token
+    // machinery, playback capture blocked on Android).
+    SPOTIFY(
+        "Spotify",
+        "Your Premium account, played by this phone through an embedded Spotify client. Light sync included.",
+        experimental = true,
+        auth = AuthStyle.USER_PASSWORD,
+        cloudAccount = true,
+    ),
+    QOBUZ(
+        "Qobuz",
+        "Streaming in FLAC up to 24 bit / 192 kHz, straight from your Qobuz subscription.",
+        experimental = true,
+        auth = AuthStyle.USER_PASSWORD,
+        cloudAccount = true,
+    ),
+    TIDAL(
+        "Tidal",
+        "Your Tidal library, signed in on the provider's own page.",
+        experimental = true,
+        auth = AuthStyle.LINKED_ACCOUNT,
+        cloudAccount = true,
+    ),
+
     // ── Planned. Listed so the roadmap is visible where it is asked about. ──
     AUDIOBOOKSHELF(
         "Audiobookshelf",
@@ -120,14 +165,29 @@ enum class ServerKind(
     val playsLocally: Boolean get() = this != MUSIC_ASSISTANT
 
     /**
-     * Whether a setup form asking for a host has anything to ask for.
+     * Whether this kind points at a host the user types an address for.
+     *
+     * Deliberately not the same question as "has a setup form": a streaming account
+     * (Spotify, Qobuz, Tidal) has a form and no host — it is an account, not a
+     * server. The two questions were one property (`auth != NONE`), which held while
+     * every credentialed kind happened to live on someone's LAN and broke the moment
+     * a library's answer to "where is it" was a login instead of a URL.
+     */
+    val hasAddress: Boolean get() = !cloudAccount && auth != AuthStyle.NONE
+
+    /** Whether a setup form has credentials to ask for. */
+    val needsCredentials: Boolean get() = auth != AuthStyle.NONE
+
+    /**
+     * Whether a blank URL is a reason to refuse to connect.
      *
      * Replaces the hardcoded `== ServerKind.LOCAL` tests that used to gate "does this
      * library count as configured" and "is a blank url a reason to bail out of
      * connecting". Both were about there being nothing to type, not about that one
-     * kind, and every kind that reads something already on the phone hits them.
+     * kind, and every kind that reads something already on the phone hits them. A
+     * streaming account belongs with them: its login *is* the address.
      */
-    val needsAddress: Boolean get() = auth != AuthStyle.NONE
+    val needsAddress: Boolean get() = hasAddress && needsCredentials
 
     companion object {
         /** The ones a user can actually add today, in the order the picker shows them. */
@@ -142,6 +202,14 @@ enum class ServerKind(
 
         /** The rest, so the picker can show where this is going. */
         val planned: List<ServerKind> get() = entries.filterNot { it.supported }
+
+        /**
+         * The planned kinds that are *not* flagged experimental — the ones the
+         * "not yet supported" section can render without an experiment badge.
+         * The streaming services are shown in their own experimental section
+         * instead, so they are never in this list.
+         */
+        val plannedNotExperimental: List<ServerKind> get() = planned.filterNot { it.experimental }
 
         fun from(name: String?): ServerKind? = entries.firstOrNull { it.name == name }
     }
