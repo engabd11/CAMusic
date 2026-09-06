@@ -3,6 +3,9 @@ package com.engabd.sendpin.spotify
 import android.content.Context
 import com.engabd.sendpin.audio.AudioAnalysisTap
 import com.engabd.sendpin.audio.AudioLead
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import xyz.gianlu.librespot.audio.decoders.AudioQuality
 import xyz.gianlu.librespot.core.Session
 import xyz.gianlu.librespot.player.Player
@@ -50,6 +53,16 @@ object SpotifyEngine {
     private var player: Player? = null
 
     /**
+     * Whether the embedded player is producing sound — the light-sync feed
+     * picker's question, answered from librespot's own events rather than
+     * app-side bookkeeping so pause/resume from any transport path agrees.
+     * Driven by the listener installed in [get]; defaults to false before the
+     * first session exists.
+     */
+    val playing: StateFlow<Boolean> get() = _playing.asStateFlow()
+    private val _playing = MutableStateFlow(false)
+
+    /**
      * The live session, creating it if necessary. Blocking network work — call
      * off the main thread.
      *
@@ -80,7 +93,47 @@ object SpotifyEngine {
             .setPreferredQuality(AudioQuality.VERY_HIGH)
             .setEnableNormalisation(false)
             .build()
-        player = Player(pconf, s)
+        val p = Player(pconf, s)
+        p.addEventsListener(
+            object : Player.EventsListener {
+                override fun onContextChanged(player: Player, newUri: String) = Unit
+                override fun onTrackChanged(
+                    player: Player,
+                    id: xyz.gianlu.librespot.metadata.PlayableId,
+                    metadata: xyz.gianlu.librespot.audio.MetadataWrapper?,
+                    userInitiated: Boolean,
+                ) = Unit
+
+                override fun onPlaybackEnded(player: Player) {
+                    _playing.value = false
+                }
+
+                override fun onPlaybackPaused(player: Player, trackTime: Long) {
+                    _playing.value = false
+                }
+
+                override fun onPlaybackResumed(player: Player, trackTime: Long) {
+                    _playing.value = true
+                }
+
+                override fun onPlaybackFailed(player: Player, e: Exception) {
+                    _playing.value = false
+                }
+
+                override fun onTrackSeeked(player: Player, trackTime: Long) = Unit
+                override fun onMetadataAvailable(player: Player, metadata: xyz.gianlu.librespot.audio.MetadataWrapper) = Unit
+                override fun onPlaybackHaltStateChanged(player: Player, halted: Boolean, trackTime: Long) = Unit
+                override fun onInactiveSession(player: Player, timeout: Boolean) = Unit
+                override fun onVolumeChanged(player: Player, volume: Float) = Unit
+                override fun onPanicState(player: Player) {
+                    _playing.value = false
+                }
+
+                override fun onStartedLoading(player: Player) = Unit
+                override fun onFinishedLoading(player: Player) = Unit
+            },
+        )
+        player = p
         return s
     }
 
@@ -90,6 +143,7 @@ object SpotifyEngine {
     /** Tear down session and player. Safe to call when nothing is live. */
     @Synchronized
     fun close() {
+        _playing.value = false
         player?.close()
         player = null
         session?.close()

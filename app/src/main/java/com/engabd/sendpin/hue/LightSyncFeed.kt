@@ -16,6 +16,14 @@ enum class LightSyncFeed {
     SENDSPIN_PCM,
 
     /**
+     * The embedded Spotify client playing in this process. Real PCM — decoded by
+     * librespot and written to the phone's own AudioTrack — but never through the
+     * ExoPlayer chain, so it is a distinct feed with its own tap rather than a
+     * LOCAL_PCM variant. See [com.engabd.sendpin.spotify.SpotifyEngine].
+     */
+    SPOTIFY_PCM,
+
+    /**
      * A Music Assistant queue playing on a *remote* speaker, or a library — MPD —
      * playing itself with this phone only as its remote.
      *
@@ -80,10 +88,22 @@ object LightSyncFeedPicker {
          * [ShowStatusRules] was holding the words for and never got to say.
          */
         remoteHoldsSound: Boolean = false,
+        /**
+         * The embedded Spotify client is playing — real PCM in this process, but
+         * on its own tap ([com.engabd.sendpin.spotify.SpotifyEngine.tap]), not the
+         * local player's. Ranked with the other real-audio feeds, ahead of both
+         * capture (this app's own audio cannot be captured by definition) and the
+         * scan (a schedule is never preferable to actual sound). Ahead of
+         * [localPlaying] too, because the two are mutually exclusive in practice —
+         * the local player is either decoding or driving the remote — and picking
+         * the local tap for Spotify audio would show a silent idle show.
+         */
+        spotifyPlaying: Boolean = false,
     ): LightSyncFeed {
         return when (phoneAudioFeed) {
             "internal" -> when {
                 sendspinPlayingHere && hasSendspinTap -> LightSyncFeed.SENDSPIN_PCM
+                spotifyPlaying -> LightSyncFeed.SPOTIFY_PCM
                 localPlaying -> LightSyncFeed.LOCAL_PCM
                 scanDriving -> LightSyncFeed.SCAN_REMOTE
                 remoteHoldsSound -> LightSyncFeed.SCAN_REMOTE
@@ -91,12 +111,14 @@ object LightSyncFeedPicker {
             }
             "projection" -> when {
                 captureRunning -> LightSyncFeed.CAPTURE
+                spotifyPlaying -> LightSyncFeed.SPOTIFY_PCM
                 scanDriving -> LightSyncFeed.SCAN_REMOTE
                 remoteHoldsSound -> LightSyncFeed.SCAN_REMOTE
                 else -> LightSyncFeed.LOCAL_PCM
             }
             else -> when { // "auto" and anything unexpected
                 sendspinPlayingHere && hasSendspinTap -> LightSyncFeed.SENDSPIN_PCM
+                spotifyPlaying -> LightSyncFeed.SPOTIFY_PCM
                 localPlaying -> LightSyncFeed.LOCAL_PCM
                 captureRunning -> LightSyncFeed.CAPTURE
                 scanDriving -> LightSyncFeed.SCAN_REMOTE
