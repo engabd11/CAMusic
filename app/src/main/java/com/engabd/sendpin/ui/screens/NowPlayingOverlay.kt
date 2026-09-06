@@ -454,7 +454,7 @@ fun NowPlayingOverlay(
                             .widthIn(min = rowMinWidth)
                             .padding(horizontal = 10.dp),
                         horizontalArrangement =
-                            Arrangement.spacedBy(9.dp, Alignment.CenterHorizontally),
+                            Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         // Favourite
@@ -511,11 +511,11 @@ fun NowPlayingOverlay(
                 // under the fold on a short phone, which the tab layout has room for.
                 TrackTitleBlock(st, showComposer = false)
 
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(1.dp))
 
                 SeekRow(scrubber, st.durationMs, playing = st.isPlaying)
 
-                Spacer(Modifier.height(14.dp))
+                Spacer(Modifier.height(24.dp))
 
                 TransportRow(st, viewModel) { sheets.quality = true }
 
