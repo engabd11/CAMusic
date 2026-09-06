@@ -130,6 +130,11 @@ fun TvServerSetupScreen(
     // straight out of the app instead of back to the source picker.
     BackHandler(onBack = onBack)
 
+    // Set once the library has been written to the list, which the first Connect does
+    // before it so much as opens a socket. From then on there is a way forward whether
+    // or not the server answers — see the Continue button below.
+    var saved by remember(kind) { mutableStateOf(false) }
+
     fun connect() {
         val config = ServerConfig(
             id = configId,
@@ -151,6 +156,7 @@ fun TvServerSetupScreen(
                 else existing + config,
             )
             settings.setActiveServer(config.id)
+            saved = true
             libraryViewModel.switchTo(config)
             libraryViewModel.connect()
         }
@@ -210,20 +216,41 @@ fun TvServerSetupScreen(
             )
         }
 
+        // `ready` is the view model's and outlives this form, so a connect made before
+        // a Back and a change of source would otherwise report itself here.
+        val connectedHere = saved && ready && !connecting
+
         connError?.let {
-            Spacer(Modifier.height(14.dp))
-            Text(it, color = TvError, style = MaterialTheme.typography.bodySmall)
+            if (!connectedHere) {
+                Spacer(Modifier.height(14.dp))
+                Text(it, color = TvError, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        if (saved && !connecting && !connectedHere) {
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "The library is saved either way. Carry on and fix the connection in " +
+                    "Settings → Libraries.",
+                color = TextMuted,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.width(480.dp),
+            )
         }
 
         Spacer(Modifier.height(24.dp))
         androidx.compose.foundation.layout.Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
             val canConnect = !connecting && (kind != ServerKind.LOCAL || audioGranted)
             TvButton(onClick = ::connect, enabled = canConnect) {
-                Text(if (connecting) "Connecting…" else if (ready) "Connected" else "Connect")
+                Text(if (connecting) "Connecting…" else if (connectedHere) "Connected" else "Connect")
             }
             TvButton(onClick = onBack) { Text("Back") }
-            if (ready) {
-                TvButton(onClick = onConnected) { Text("Continue") }
+            // Offered as soon as the library exists, not only when it answered. Gating
+            // this on `ready` made a server that was saved correctly but momentarily
+            // unreachable a screen with nothing to press but Back.
+            if (saved && !connecting) {
+                TvButton(onClick = onConnected) {
+                    Text(if (connectedHere) "Continue" else "Continue anyway")
+                }
             }
         }
     }

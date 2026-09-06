@@ -262,7 +262,13 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
         val connected by playerVm.connected.collectAsStateWithLifecycle()
         val hasSavedServer by playerVm.hasSavedServer.collectAsStateWithLifecycle()
         val bootChecked by playerVm.bootChecked.collectAsStateWithLifecycle()
-        val onboardingCompleted by themeSettings.onboardingCompleted.collectAsState(initial = false)
+        // Seeded from the synchronous mirror for the same reason `onboardingSkipped`
+        // below is, and it matters more now the gate latches: starting at `false` for
+        // someone who finished setup long ago means the gate's first reading says
+        // "needs onboarding", and a latched gate cannot take that back.
+        val onboardingCompleted by themeSettings.onboardingCompleted.collectAsState(
+            initial = themeSettings.hasCompletedOnboarding,
+        )
         // Seeded from the synchronous mirror rather than from `false`, so the first
         // frame already knows and nobody who dismissed the wizard sees a flash of it.
         val onboardingSkipped by themeSettings.onboardingSkipped.collectAsState(
@@ -310,7 +316,28 @@ fun App(windowSizeClass: WindowSizeClass? = null) {
         // `onboardingSkipped` is the persisted half and `skipped` the same-session one.
         // Without the former, a force-close after skipping setup brought the wizard
         // back — rememberSaveable does not outlive the process being killed.
-        if (!onboardingCompleted && !onboardingSkipped && !hasSavedServer && !connected && !skipped) {
+        //
+        // Latched, and that is the load-bearing part. Every one of these conditions is
+        // something the *wizard itself* changes as the user works through it:
+        // `hasSavedServer` mirrors the stored Music Assistant address, which
+        // `saveServers` writes the instant Connect is pressed, and `connected` flips
+        // when the player socket opens. Read live, the wizard therefore deleted itself
+        // mid-flow on the Music Assistant path — the user tapped Connect and was
+        // dropped into the app, never seeing Light Sync, speakers or the permission
+        // step, and with `ONBOARDING_COMPLETED` still unwritten. Whether setup is
+        // needed is a question about the state the app *launched* in; once shown, the
+        // wizard comes down when it says so and not before.
+        val wizardWanted = rememberSaveable {
+            mutableStateOf(
+                !onboardingCompleted && !onboardingSkipped && !connected &&
+                    // `hasSavedServer` only knows about a Music Assistant address, so
+                    // on its own it asked a Navidrome or Jellyfin user who had never
+                    // reached the end of the wizard to set the app up again, library
+                    // and all, on every launch.
+                    !hasSavedServer && !themeSettings.hasConfiguredLibrary,
+            )
+        }
+        if (wizardWanted.value && !skipped) {
             CompositionLocalProvider(LocalAccent provides accent, LocalPalette provides bootPalette) {
                 OnboardingWizard(
                     playerVm = playerVm,

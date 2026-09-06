@@ -643,6 +643,7 @@ class AppSettings(private val context: Context) {
             prefs[SERVERS] = encodeServers(list)
             mirrorLegacyKeys(prefs, list, resolveActiveId(prefs, list))
         }
+        bootPrefs.edit().putBoolean(HAS_LIBRARY, list.isNotEmpty()).apply()
     }
 
     /**
@@ -1227,6 +1228,9 @@ class AppSettings(private val context: Context) {
      */
     private val bootPrefs = context.getSharedPreferences("sendpin_boot", Context.MODE_PRIVATE)
 
+    /** [bootPrefs] key behind [hasConfiguredLibrary]. */
+    private val HAS_LIBRARY = "has_library"
+
     val bootTheme: String get() = bootPrefs.getString("theme", "oled") ?: "oled"
 
     suspend fun setTheme(key: String) {
@@ -1413,6 +1417,21 @@ class AppSettings(private val context: Context) {
      * permission dialog in front of someone who has not yet seen the app.
      */
     val hasCompletedOnboarding: Boolean get() = bootPrefs.getBoolean("onboarded", false)
+
+    /**
+     * Synchronous mirror of "at least one library is configured", for the wizard gate.
+     *
+     * The gate's only test for this was `Playback.hasSavedServer`, which mirrors the
+     * *Music Assistant* address and nothing else — so someone who set up Navidrome and
+     * then force-closed before finishing the wizard was asked to set up again on every
+     * launch, with a working library already on file. It needs to be synchronous for
+     * the same reason the two above do: the gate latches on the first frame, and a
+     * collector seeded with `false` would latch the wrong answer.
+     *
+     * Written by [saveServers], so it back-fills on an existing install at that
+     * install's first edit rather than needing a migration pass.
+     */
+    val hasConfiguredLibrary: Boolean get() = bootPrefs.getBoolean(HAS_LIBRARY, false)
 
     /** Takes effect on the next connect — the format list is sent in the hello. */
     suspend fun setPreferHiRes(value: Boolean) {

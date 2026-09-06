@@ -51,6 +51,7 @@ import com.engabd.sendpin.ui.screens.settings.OledField
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.theme.accentTextFieldColors
 import com.engabd.sendpin.ui.viewmodel.PlayerViewModel
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import android.Manifest
@@ -59,6 +60,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
@@ -123,6 +125,13 @@ fun OnboardingWizard(
         from == 4 && !needsSpeakers -> 2
         else -> from - 1
     }
+
+    // The system Back key, which until now walked straight out of the app from
+    // whichever step the user had reached — throwing away a half-filled server form
+    // for what everywhere else in the app means "up one level". Left disabled on the
+    // first step so Back there still leaves, which is what it should do from a screen
+    // with nothing behind it.
+    BackHandler(enabled = step > 0) { step = previous(step) }
 
     Box(Modifier.fillMaxSize().background(Ink)) {
         Bloom(accent, 460.dp, 40.dp, (-80).dp, 0.34f)
@@ -201,7 +210,11 @@ fun OnboardingWizard(
                         onDone = { finish() },
                         onBack = { step = previous(4) },
                     )
-                    else -> finish()
+                    // Unreachable as the steps stand, and written as an effect rather
+                    // than a bare call so it stays harmless if that ever changes:
+                    // `finish()` in a composition body would fire on every
+                    // recomposition instead of once.
+                    else -> LaunchedEffect(Unit) { finish() }
                 }
             }
 
@@ -343,6 +356,28 @@ private fun ConfigStep(
     var token by remember(config.id) { mutableStateOf(config.token) }
     var folderUris by remember(config.id) { mutableStateOf(parseFolderUris(config.option(LocalMediaSource.OPT_FOLDER_URIS))) }
 
+    // Whether Connect has been pressed for *this* source. The view model's connect
+    // state is app-wide and outlives a step, so without this a failure against
+    // Navidrome was still on screen after going back and picking Jellyfin — an error
+    // about a server the form was no longer describing.
+    var attempted by remember(config.id) { mutableStateOf(false) }
+    // Set once the server has been written to the list, which happens on the first
+    // Connect. From that point there is always a way forward, whatever the network
+    // did: the library exists and is editable in Settings.
+    var saved by remember(config.id) { mutableStateOf(false) }
+
+    // Device-local libraries read MediaStore, which answers an ungranted query with an
+    // empty list — so without this "no permission" and "no music on this phone" are
+    // the same screen, and Connect fails with LocalMediaSource's own error. Settings →
+    // Libraries and the TV setup screen both already ask; onboarding was the one entry
+    // point that did not.
+    var audioGranted by remember {
+        mutableStateOf(kind.needsAddress || LocalMediaSource.hasAudioPermission(context))
+    }
+    val audioPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted -> audioGranted = granted }
+
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { treeUri ->
         treeUri ?: return@rememberLauncherForActivityResult
         runCatching {
@@ -355,13 +390,23 @@ private fun ConfigStep(
     val ready by libraryVm.ready.collectAsStateWithLifecycle()
     val connError by libraryVm.connError.collectAsStateWithLifecycle()
 
+    /** What the form is currently describing, for both the save and the hand-off. */
+    fun formConfig(): ServerConfig = config.copy(
+        label = label.ifBlank { kind.label },
+        url = url.trim(),
+        username = user,
+        password = pass,
+        token = token,
+        options = if (kind == ServerKind.LOCAL) mapOf(LocalMediaSource.OPT_FOLDER_URIS to encodeFolderUris(folderUris)) else emptyMap(),
+    )
+
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text("Connect to ${kind.label}", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 18.sp)
         Spacer(Modifier.height(6.dp))
         Text(kind.blurb, color = TextMuted, fontSize = 13.sp, textAlign = TextAlign.Center, modifier = Modifier.widthIn(max = 300.dp))
         Spacer(Modifier.height(18.dp))
 
-        if (kind != ServerKind.LOCAL) {
+        if (kind.needsAddress) {
             OutlinedTextField(
                 value = url, onValueChange = { url = it },
                 label = { Text("Server address") },
@@ -395,6 +440,25 @@ private fun ConfigStep(
         }
 
         if (kind == ServerKind.LOCAL) {
+            if (!audioGranted) {
+                Spacer(Modifier.height(10.dp))
+                Column(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Glass)
+                        .border(1.dp, HairlineSoft, RoundedCornerShape(14.dp)).padding(16.dp),
+                ) {
+                    Text("Access to your music", color = TextPrimary, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Android has to allow this app to read audio files before anything can be " +
+                            "listed. Nothing is uploaded — the files are read straight off the phone.",
+                        color = TextMuted, fontSize = 12.sp, lineHeight = 16.sp,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    OledButton("Allow access", accent = accent, outline = true) {
+                        audioPermission.launch(LocalMediaSource.AUDIO_PERMISSION)
+                    }
+                }
+            }
             Spacer(Modifier.height(10.dp))
             Box(
                 Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Glass)
@@ -405,7 +469,7 @@ private fun ConfigStep(
                     Text("Music folder", color = TextPrimary, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        if (folderUris.isEmpty()) "Tap to choose a folder."
+                        if (folderUris.isEmpty()) "Optional. Tap to narrow it to one folder, or leave it to use every audio file on the phone."
                         else folderUris.joinToString { it.lastPathSegment ?: it.toString() },
                         color = if (folderUris.isEmpty()) TextMuted else TextSecondary,
                         fontSize = 13.sp,
@@ -414,7 +478,15 @@ private fun ConfigStep(
             }
         }
 
-        if (connError != null) {
+        // Whether *this* form got the library connected. `ready` on its own is
+        // app-wide and outlives the step, so after a successful connect, a Back and a
+        // different source it would have said "Connected" about a form nobody had
+        // filled in yet — and offered to carry it forward.
+        val connectedHere = saved && ready && !connecting
+
+        // Only after an attempt of this form's own, and only while one isn't running —
+        // the previous failure is not news about the address being tried now.
+        if (attempted && !connecting && !connectedHere && connError != null) {
             Spacer(Modifier.height(12.dp))
             Text(connError!!, color = ErrorRed, fontSize = 13.sp, textAlign = TextAlign.Center)
         }
@@ -423,40 +495,60 @@ private fun ConfigStep(
         OledButton(
             when {
                 connecting -> "Connecting…"
-                ready -> "Connected"
+                connectedHere -> "Connected"
+                attempted -> "Try again"
                 else -> "Connect"
             },
-            enabled = !connecting && (kind == ServerKind.LOCAL || url.isNotBlank()),
+            enabled = !connecting &&
+                (!kind.needsAddress || url.isNotBlank()) &&
+                (kind != ServerKind.LOCAL || audioGranted),
             accent = accent,
         ) {
-            val next = config.copy(
-                label = label.ifBlank { kind.label },
-                url = url.trim(),
-                username = user,
-                password = pass,
-                token = token,
-                options = if (kind == ServerKind.LOCAL) mapOf(LocalMediaSource.OPT_FOLDER_URIS to encodeFolderUris(folderUris)) else emptyMap(),
-            )
+            val next = formConfig()
+            attempted = true
             scope.launch {
-                settings.saveServers(listOf(next))
+                // Read-modify-write rather than replacing the list. The wizard can be
+                // reached again by an install that saved a library and never finished
+                // setup, and a whole-list write there deletes what is already there.
+                // Same replace-by-id-or-append the TV setup screen and Settings use.
+                val existing = settings.servers.first()
+                settings.saveServers(
+                    if (existing.any { it.id == next.id }) existing.map { if (it.id == next.id) next else it }
+                    else existing + next,
+                )
                 settings.setActiveServer(next.id)
+                saved = true
                 libraryVm.switchTo(next)
                 libraryVm.connect()
             }
         }
 
-        if (ready) {
+        // The way forward, and there is always one. Connecting can fail for reasons
+        // this screen cannot fix — a server that is off, a VPN, a typo in a port — and
+        // gating Continue on `ready` made the whole wizard a dead end when it did: the
+        // only control left was "Skip setup", which abandons the rest of setup even
+        // though the library had already been saved and was perfectly correct.
+        if (saved && !connecting) {
             Spacer(Modifier.height(16.dp))
-            val finalConfig = rememberUpdatedState(config.copy(
-                label = label.ifBlank { kind.label },
-                url = url.trim(),
-                username = user,
-                password = pass,
-                token = token,
-                options = if (kind == ServerKind.LOCAL) mapOf(LocalMediaSource.OPT_FOLDER_URIS to encodeFolderUris(folderUris)) else emptyMap(),
-            ))
-            OledButton("Continue", accent = accent, outline = true) { onNext(finalConfig.value) }
+            if (!connectedHere) {
+                Text(
+                    "Saved as \"${label.ifBlank { kind.label }}\". You can carry on with setup and " +
+                        "fix the connection later in Settings → Libraries — nothing else here depends on it.",
+                    color = TextMuted, fontSize = 12.sp, lineHeight = 16.sp,
+                    textAlign = TextAlign.Center, modifier = Modifier.widthIn(max = 300.dp),
+                )
+                Spacer(Modifier.height(10.dp))
+            }
+            val finalConfig = rememberUpdatedState(formConfig())
+            OledButton(
+                if (connectedHere) "Continue" else "Continue anyway",
+                accent = accent,
+                outline = true,
+            ) { onNext(finalConfig.value) }
         }
+
+        Spacer(Modifier.height(10.dp))
+        OledButton("Back", accent = accent, outline = true, onClick = onBack)
     }
 }
 
@@ -512,17 +604,22 @@ private fun LightSyncStep(
         }
 
         Spacer(Modifier.height(24.dp))
-        OledButton("Continue", accent = accent) {
-            scope.launch {
-                if (setupHa && haUrl.isNotBlank() && haToken.isNotBlank()) {
-                    settings.setHomeAssistant(haUrl.trim(), haToken.trim())
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            OledButton("Back", accent = accent, outline = true, modifier = Modifier.weight(1f), onClick = onBack)
+            OledButton("Continue", accent = accent, modifier = Modifier.weight(1f)) {
+                scope.launch {
+                    val haReady = setupHa && haUrl.isNotBlank() && haToken.isNotBlank()
+                    if (haReady) settings.setHomeAssistant(haUrl.trim(), haToken.trim())
+                    // Only a mode that has something behind it. Flicking the Home
+                    // Assistant switch and leaving the fields empty used to put Light
+                    // Sync into "ha" mode with no address and no token — a feature
+                    // reporting itself as set up while it had nothing to talk to.
+                    when {
+                        setupDirect -> settings.setLightSyncMode("direct")
+                        haReady -> settings.setLightSyncMode("ha")
+                    }
+                    onNext()
                 }
-                if (setupDirect) {
-                    settings.setLightSyncMode("direct")
-                } else if (setupHa) {
-                    settings.setLightSyncMode("ha")
-                }
-                onNext()
             }
         }
     }
@@ -706,6 +803,7 @@ private fun SpeakersStep(
 
         Spacer(Modifier.height(20.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            OledButton("Back", accent = accent, outline = true, modifier = Modifier.weight(1f), onClick = onBack)
             OledButton("Skip", accent = accent, outline = true, modifier = Modifier.weight(1f)) { onNext() }
             OledButton(
                 "Register",
