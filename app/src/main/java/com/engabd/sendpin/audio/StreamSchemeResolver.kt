@@ -1,5 +1,7 @@
 package com.engabd.sendpin.audio
 
+import androidx.annotation.OptIn
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.ResolvingDataSource
 
@@ -21,6 +23,7 @@ import androidx.media3.datasource.ResolvingDataSource
  * opened, which is the one moment per track this can afford a blocking round-trip:
  * the handler runs under [StreamSchemes.resolve]'s Dispatchers.IO hop.
  */
+@OptIn(UnstableApi::class)
 object StreamSchemeResolver {
 
     /** The uri schemes this phone plays natively without resolving. */
