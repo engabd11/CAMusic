@@ -140,6 +140,16 @@ android {
             version = "3.22.1"
         }
     }
+
+    // librespot-player (thin) and librespot-lib both ship a root-level log4j2.xml.
+    // The log4j backend is excluded above and slf4j routes to logcat, so the file
+    // is dead weight - and two copies of it abort mergeJavaResource with "2 files
+    // found with path 'log4j2.xml'". Nothing reads it at runtime.
+    packaging {
+        resources {
+            excludes += "log4j2.xml"
+        }
+    }
 }
 
 // The offline-analysis harness (`ScanHarnessTest`) reads a directory of decoded
