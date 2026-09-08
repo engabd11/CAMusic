@@ -74,7 +74,7 @@ object ShowStatusRules {
     ): ShowStatus {
         if (!enabled || !sessionOpen) return ShowStatus.OFF
         return when (feed) {
-            LightSyncFeed.LOCAL_PCM, LightSyncFeed.SENDSPIN_PCM ->
+            LightSyncFeed.LOCAL_PCM, LightSyncFeed.SENDSPIN_PCM, LightSyncFeed.SPOTIFY_PCM ->
                 if (framesFresh) ShowStatus.LIVE_PCM else ShowStatus.WAITING
 
             LightSyncFeed.CAPTURE -> when {

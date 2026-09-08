@@ -38,6 +38,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.data.rememberIsIgnoringBatteryOptimizations
+import com.engabd.sendpin.library.ProviderAppCredentials
 import com.engabd.sendpin.library.ServerConfig
 import com.engabd.sendpin.library.ServerKind
 import com.engabd.sendpin.local.LocalMediaSource
@@ -48,6 +49,7 @@ import com.engabd.sendpin.ui.design.TitleGap
 import com.engabd.sendpin.ui.design.a
 import com.engabd.sendpin.ui.screens.settings.OledButton
 import com.engabd.sendpin.ui.screens.settings.OledField
+import com.engabd.sendpin.ui.screens.settings.TidalSignInRow
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.theme.accentTextFieldColors
 import com.engabd.sendpin.ui.viewmodel.PlayerViewModel
@@ -308,6 +310,50 @@ private fun SourceStep(
             blurb = "Music already on the phone or SD card, indexed by MediaStore.",
             accent = accent,
         ) { onPick(ServerKind.LOCAL) }
+
+        // The streaming accounts, set apart rather than mixed in. They are an
+        // account and a sign-in rather than a server, and they are experimental —
+        // no streaming service publishes an API for a player like this one, so
+        // each leans on undocumented endpoints. Saying that here is cheaper than
+        // a first-run user discovering it when a provider changes something.
+        Spacer(Modifier.height(16.dp))
+        Text(
+            "Streaming accounts",
+            color = TextSecondary,
+            fontWeight = FontWeight.Bold,
+            fontSize = 13.sp,
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            "Experimental: played by this phone, with light sync. Unofficial clients, so a " +
+                "provider's next change can break one.",
+            color = TextMuted,
+            fontSize = 12.sp,
+            lineHeight = 16.sp,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(6.dp))
+
+        SourceRow(
+            icon = Icons.Default.Radio,
+            label = ServerKind.SPOTIFY.label,
+            blurb = ServerKind.SPOTIFY.blurb,
+            accent = accent,
+        ) { onPick(ServerKind.SPOTIFY) }
+
+        SourceRow(
+            icon = Icons.Default.Equalizer,
+            label = ServerKind.QOBUZ.label,
+            blurb = ServerKind.QOBUZ.blurb,
+            accent = accent,
+        ) { onPick(ServerKind.QOBUZ) }
+
+        SourceRow(
+            icon = Icons.Default.CloudSync,
+            label = ServerKind.TIDAL.label,
+            blurb = ServerKind.TIDAL.blurb,
+            accent = accent,
+        ) { onPick(ServerKind.TIDAL) }
     }
 }
 
@@ -355,6 +401,12 @@ private fun ConfigStep(
     var pass by remember(config.id) { mutableStateOf(config.password) }
     var token by remember(config.id) { mutableStateOf(config.token) }
     var folderUris by remember(config.id) { mutableStateOf(parseFolderUris(config.option(LocalMediaSource.OPT_FOLDER_URIS))) }
+    // A streaming account's setup does not all fit in the form fields above: the
+    // app's own Qobuz/Tidal registration and Tidal's signed-in token set live in
+    // the config's options, and the sign-in row writes them itself. Holding the
+    // whole config here keeps them together and hands them to formConfig(), which
+    // rebuilds from the fields and would otherwise drop them on Connect.
+    var cloudConfig by remember(config.id) { mutableStateOf(config) }
 
     // Whether Connect has been pressed for *this* source. The view model's connect
     // state is app-wide and outlives a step, so without this a failure against
@@ -397,7 +449,11 @@ private fun ConfigStep(
         username = user,
         password = pass,
         token = token,
-        options = if (kind == ServerKind.LOCAL) mapOf(LocalMediaSource.OPT_FOLDER_URIS to encodeFolderUris(folderUris)) else emptyMap(),
+        options = when {
+            kind == ServerKind.LOCAL -> mapOf(LocalMediaSource.OPT_FOLDER_URIS to encodeFolderUris(folderUris))
+            kind.cloudAccount -> cloudConfig.options
+            else -> emptyMap()
+        },
     )
 
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -417,6 +473,40 @@ private fun ConfigStep(
             Spacer(Modifier.height(10.dp))
         }
 
+        // Qobuz and Tidal identify the calling application as well as the account,
+        // with a pair this build was not given — so ask, rather than fail at
+        // Connect with what reads like a refused login. A build carrying a pair
+        // (gradle properties → BuildConfig) never renders this.
+        if (ProviderAppCredentials.asksUser(kind)) {
+            val qobuz = kind == ServerKind.QOBUZ
+            val idKey = if (qobuz) ServerConfig.OPT_QOBUZ_APP_ID else ServerConfig.OPT_TIDAL_CLIENT_ID
+            val secretKey = if (qobuz) ServerConfig.OPT_QOBUZ_APP_SECRET else ServerConfig.OPT_TIDAL_CLIENT_SECRET
+            Spacer(Modifier.height(10.dp))
+            OutlinedTextField(
+                value = cloudConfig.option(idKey).orEmpty(),
+                onValueChange = { cloudConfig = cloudConfig.withOption(idKey, it) },
+                label = { Text(if (qobuz) "App ID" else "Client ID") },
+                singleLine = true, modifier = Modifier.fillMaxWidth(),
+                colors = accentTextFieldColors(accent),
+            )
+            Spacer(Modifier.height(10.dp))
+            OutlinedTextField(
+                value = cloudConfig.option(secretKey).orEmpty(),
+                onValueChange = { cloudConfig = cloudConfig.withOption(secretKey, it) },
+                label = { Text(if (qobuz) "App secret" else "Client secret") },
+                singleLine = true, modifier = Modifier.fillMaxWidth(),
+                visualTransformation = PasswordVisualTransformation(),
+                colors = accentTextFieldColors(accent),
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "${kind.label} identifies the app making the call with a registration of its " +
+                    "own, separate from your account. This build carries none, so paste yours " +
+                    "— it is kept with this library.",
+                color = TextMuted, fontSize = 12.sp, lineHeight = 16.sp,
+            )
+        }
+
         when (kind.auth) {
             com.engabd.sendpin.library.AuthStyle.USER_PASSWORD, com.engabd.sendpin.library.AuthStyle.OPTIONAL_USER_PASSWORD -> {
                 OutlinedTextField(value = user, onValueChange = { user = it }, label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth(), colors = accentTextFieldColors(accent))
@@ -434,6 +524,17 @@ private fun ConfigStep(
                     label = { Text("Access token") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
                     visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
                     colors = accentTextFieldColors(accent),
+                )
+            }
+            com.engabd.sendpin.library.AuthStyle.LINKED_ACCOUNT -> if (kind == ServerKind.TIDAL) {
+                // The same row Settings → Libraries uses: mint a code, open Tidal,
+                // poll, and write the token set into the config. It saves into
+                // `cloudConfig`, which Connect then carries forward.
+                TidalSignInRow(
+                    config = cloudConfig,
+                    accent = accent,
+                    scope = scope,
+                    onSave = { cloudConfig = it },
                 )
             }
             else -> Unit
@@ -491,6 +592,16 @@ private fun ConfigStep(
             Text(connError!!, color = ErrorRed, fontSize = 13.sp, textAlign = TextAlign.Center)
         }
 
+        // What a streaming account needs before Connect means anything: Tidal a
+        // token from the sign-in above, the other two a filled login. Without this
+        // the button is live on an empty form, and the first thing a first-run
+        // user gets from their new library is a refusal.
+        val cloudReady = when {
+            !kind.cloudAccount -> true
+            kind == ServerKind.TIDAL -> cloudConfig.option(ServerConfig.OPT_TIDAL_ACCESS_TOKEN) != null
+            else -> user.isNotBlank() && pass.isNotBlank()
+        }
+
         Spacer(Modifier.height(20.dp))
         OledButton(
             when {
@@ -499,7 +610,7 @@ private fun ConfigStep(
                 attempted -> "Try again"
                 else -> "Connect"
             },
-            enabled = !connecting &&
+            enabled = !connecting && cloudReady &&
                 (!kind.needsAddress || url.isNotBlank()) &&
                 (kind != ServerKind.LOCAL || audioGranted),
             accent = accent,

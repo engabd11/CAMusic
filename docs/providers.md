@@ -162,6 +162,31 @@ The two absences are the point of the capability: Emby's DTOs are otherwise
 Jellyfin's, so a source that declared this because the shapes match would put a dead
 control on screen for every Emby user there is.
 
+### Experimental — streaming accounts
+
+**Spotify, Qobuz and Tidal** are `supported` and `experimental` in `ServerKind` — two
+independent flags. `supported` says a source can be built from the kind, so they are
+addable, in the first-run wizard and in Settings → Libraries under an "Experimental"
+heading; `experimental` says how settled they are, which is the honest label for adapters
+built on wire formats their providers never published. They are a different shape from
+everything above: an **account, not a server** — `ServerKind.cloudAccount` gives them a
+setup form with no address field, and `ServerKind.addableStable` / `addableExperimental`
+are what the picker's two lists render (every addable kind is in exactly one of them, so
+a working source cannot go unreachable again).
+
+Per-provider design is in `docs/plan/direct-streaming-providers.md`: Qobuz via its
+undocumented web-app endpoints (plain FLAC URLs), Spotify via an embedded librespot
+client (real PCM in-process, Light Sync on its own tap), Tidal via device sign-in and its
+v1 API with BTS manifest playback. Live-account smoke tests are still outstanding.
+
+Qobuz and Tidal need the *calling application's* own credentials alongside the user's
+account. `ProviderAppCredentials` resolves them: the config's own options first, then
+whatever `BuildConfig` was given from gradle properties. A build with no pair is not
+broken — the connect form asks for one. No brand marks in the picker while experimental —
+a real Spotify logo reads as "as supported as Navidrome". YouTube Music is deliberately
+absent: OAuth withdrawn, cookie + PO-token machinery, playback capture blocked on
+Android.
+
 ### Planned — HTTP APIs
 
 These are the same shape as what exists and should be adapters, not projects.

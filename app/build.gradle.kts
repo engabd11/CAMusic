@@ -37,6 +37,40 @@ android {
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
         }
+
+        // Streaming-provider *application* credentials. Qobuz and Tidal both want
+        // the calling app's own registered pair alongside the user's account, and
+        // neither pair can live in this repository: Qobuz's is issued per project
+        // and Music Assistant's is explicitly not for reuse. So they arrive as
+        // gradle properties — set them in ~/.gradle/gradle.properties (or pass -P
+        // on the command line) and every build of that machine carries them:
+        //
+        //     camusic.qobuz.appId=...        camusic.qobuz.appSecret=...
+        //     camusic.tidal.clientId=...     camusic.tidal.clientSecret=...
+        //
+        // Blank is the normal state for a fork or a CI runner, and it is not a
+        // build failure: the connect form asks for the pair itself when the build
+        // carries none, so a user with their own credentials can still sign in.
+        buildConfigField(
+            "String",
+            "QOBUZ_APP_ID",
+            "\"${providers.gradleProperty("camusic.qobuz.appId").getOrElse("")}\"",
+        )
+        buildConfigField(
+            "String",
+            "QOBUZ_APP_SECRET",
+            "\"${providers.gradleProperty("camusic.qobuz.appSecret").getOrElse("")}\"",
+        )
+        buildConfigField(
+            "String",
+            "TIDAL_CLIENT_ID",
+            "\"${providers.gradleProperty("camusic.tidal.clientId").getOrElse("")}\"",
+        )
+        buildConfigField(
+            "String",
+            "TIDAL_CLIENT_SECRET",
+            "\"${providers.gradleProperty("camusic.tidal.clientSecret").getOrElse("")}\"",
+        )
         externalNativeBuild {
             cmake {
                 cppFlags += "-std=c++17"
@@ -138,6 +172,16 @@ android {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
             version = "3.22.1"
+        }
+    }
+
+    // librespot-player (thin) and librespot-lib both ship a root-level log4j2.xml.
+    // The log4j backend is excluded above and slf4j routes to logcat, so the file
+    // is dead weight - and two copies of it abort mergeJavaResource with "2 files
+    // found with path 'log4j2.xml'". Nothing reads it at runtime.
+    packaging {
+        resources {
+            excludes += "log4j2.xml"
         }
     }
 }
@@ -268,6 +312,26 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.10.1")
     implementation("androidx.media3:media3-session:1.10.1")
 
+    // The embedded Spotify client (experimental direct Spotify source). The
+    // coordinates are the ones librespot-android proves work on Android: the
+    // desktop `sink`/`api`/`dacp` modules, the log4j backend and lmax disruptor
+    // are excluded and slf4j routes to Android's logcat. The player module carries
+    // the pure-Java jorbis/jlayer decoders, so no NDK decoder is needed; audio
+    // leaves through our own SinkOutput into the app's engine (see SpotifySession).
+    //
+    // The `thin` classifier is load-bearing, not an optimisation: the default
+    // artifact SHADES the whole kotlin-stdlib into itself (1.6.5 is built against
+    // stdlib 2.4), and those shaded classes win over the real ones on the compile
+    // classpath — flagging every enum `entries` use in this codebase as needing an
+    // opt-in that never existed. Thin is the shade-free artifact, plus the
+    // resolutionStrategy force below, which the shaded jar would defeat.
+    implementation("xyz.gianlu.librespot:librespot-player:1.6.5:thin") {
+        exclude(group = "xyz.gianlu.librespot", module = "librespot-sink")
+        exclude(group = "com.lmax", module = "disruptor")
+        exclude(group = "org.apache.logging.log4j")
+    }
+    implementation("uk.uuid.slf4j:slf4j-android:1.7.30-0")
+
     // Room: offline download index and local media cache.
     val roomVersion = "2.7.1"
     implementation("androidx.room:room-runtime:$roomVersion")
@@ -309,4 +373,15 @@ dependencies {
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test:core-ktx:1.6.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
+}
+
+// librespot's transitives drag kotlin-stdlib to 2.4.x, newer than this project's
+// 2.2.21 compiler — and the newer stdlib flags previously-stable declarations
+// (enum `entries`) experimental again, breaking existing files with bogus opt-in
+// errors. Constraints cannot help (resolution picks the highest request), so the
+// version is forced back down. Remove when the project's compiler reaches 2.4.
+configurations.all {
+    resolutionStrategy {
+        force("org.jetbrains.kotlin:kotlin-stdlib:2.2.21")
+    }
 }

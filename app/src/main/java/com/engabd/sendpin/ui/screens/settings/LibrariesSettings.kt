@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.library.AuthStyle
+import com.engabd.sendpin.library.ProviderAppCredentials
 import com.engabd.sendpin.library.ServerConfig
 import com.engabd.sendpin.library.ServerKind
 import com.engabd.sendpin.local.LocalFolders
@@ -386,7 +387,19 @@ private fun ProviderPicker(accent: Color, onPick: (ServerKind) -> Unit) {
                 "you are.",
         )
 
-        ServerKind.addable.forEach { kind ->
+        ServerKind.addableStable.forEach { kind ->
+            ProviderRow(kind, accent) { onPick(kind) }
+        }
+
+        Spacer(Modifier.height(4.dp))
+        FieldLabel("Experimental")
+        Note(
+            "Streaming accounts: an account and a sign-in rather than a server, played by " +
+                "this phone with light sync. These work — but no streaming service offers " +
+                "an API for a player like this one, so they lean on undocumented endpoints " +
+                "and are the first thing a provider's next change will break.",
+        )
+        ServerKind.addableExperimental.forEach { kind ->
             ProviderRow(kind, accent) { onPick(kind) }
         }
 
@@ -530,16 +543,18 @@ private fun ServerDetail(
 
         SettingsCard(
             title = "Connection",
-            lead = when (config.kind.auth) {
-                AuthStyle.OPTIONAL_USER_PASSWORD ->
+            lead = when {
+                config.kind.cloudAccount ->
+                    "Your ${config.kind.label} account. The login is the address — there is no server to name."
+                config.kind.auth == AuthStyle.OPTIONAL_USER_PASSWORD ->
                     "The address of the server. Credentials only if yours asks for them."
-                AuthStyle.TOKEN -> "The address, and a token generated in the server's own settings."
-                AuthStyle.LINKED_ACCOUNT -> "Signing in happens on the provider's own page."
-                AuthStyle.NONE -> "Nothing to connect to, this reads music already on the phone."
-                AuthStyle.USER_PASSWORD -> "The address of the server, and the login you use for it."
+                config.kind.auth == AuthStyle.TOKEN -> "The address, and a token generated in the server's own settings."
+                config.kind.auth == AuthStyle.LINKED_ACCOUNT -> "Signing in happens on the provider's own page."
+                config.kind.auth == AuthStyle.NONE -> "Nothing to connect to, this reads music already on the phone."
+                else -> "The address of the server, and the login you use for it."
             },
         ) {
-            if (config.kind.auth != AuthStyle.NONE) {
+            if (config.kind.hasAddress) {
                 OledField(url, { url = it }, "Server address", config.kind.urlHint, accent)
             }
             if (config.kind == ServerKind.MPD) {
@@ -550,6 +565,38 @@ private fun ServerDetail(
                         "queue. Nothing streams to the phone, so nothing plays out of it.",
                 )
             }
+            // Qobuz and Tidal sign their calls as an *application* as well as an
+            // account, and this build shipped without a registered pair — so the
+            // form asks for one rather than failing at connect time with what
+            // reads like a refused login. A build given a pair (gradle properties
+            // → BuildConfig) never shows this. See [ProviderAppCredentials].
+            if (ProviderAppCredentials.asksUser(config.kind)) {
+                val qobuz = config.kind == ServerKind.QOBUZ
+                val idKey = if (qobuz) ServerConfig.OPT_QOBUZ_APP_ID else ServerConfig.OPT_TIDAL_CLIENT_ID
+                val secretKey = if (qobuz) ServerConfig.OPT_QOBUZ_APP_SECRET else ServerConfig.OPT_TIDAL_CLIENT_SECRET
+                FieldLabel("This app's ${config.kind.label} registration")
+                Note(
+                    "Separate from your account: ${config.kind.label} identifies the calling app " +
+                        "with a pair of its own, and this build carries none. Paste yours and it " +
+                        "is kept with this library.",
+                )
+                OledField(
+                    config.option(idKey).orEmpty(),
+                    { config = config.withOption(idKey, it) },
+                    if (qobuz) "App ID" else "Client ID",
+                    "",
+                    accent,
+                )
+                SecretField(
+                    config.option(secretKey).orEmpty(),
+                    { config = config.withOption(secretKey, it) },
+                    if (qobuz) "App secret" else "Client secret",
+                    accent,
+                    secretVisible,
+                    { secretVisible = it },
+                )
+            }
+
             when (config.kind.auth) {
                 AuthStyle.USER_PASSWORD, AuthStyle.OPTIONAL_USER_PASSWORD -> {
                     OledField(user, { user = it }, "Username", "", accent)
@@ -557,8 +604,28 @@ private fun ServerDetail(
                 }
                 AuthStyle.TOKEN ->
                     SecretField(token, { token = it }, "Access token", accent, secretVisible, { secretVisible = it })
-                AuthStyle.LINKED_ACCOUNT -> if (config.kind == ServerKind.PLEX) {
-                    PlexSignInRow(hasToken = token.isNotBlank(), onToken = { token = it }, accent = accent, scope = scope)
+                AuthStyle.LINKED_ACCOUNT -> when (config.kind) {
+                    ServerKind.PLEX ->
+                        PlexSignInRow(hasToken = token.isNotBlank(), onToken = { token = it }, accent = accent, scope = scope)
+                    // Tidal's device flow: the app mints a code, the user approves it
+                    // in a browser, and the resulting tokens ride the config options.
+                    // The row saves them itself — there is no form field to hold a
+                    // token pair, so handing them up as state would lose them.
+                    ServerKind.TIDAL -> TidalSignInRow(
+                        config = config,
+                        accent = accent,
+                        scope = scope,
+                        onSave = { next ->
+                            config = next
+                            scope.launch {
+                                save(makeActive = true, customOptions = next.options)
+                                if (isNew) onSaved(next.id)
+                                libraryVm.switchTo(next)
+                                libraryVm.connect()
+                            }
+                        },
+                    )
+                    else -> Unit
                 }
                 else -> Unit
             }
@@ -588,7 +655,9 @@ private fun ServerDetail(
                     accent = accent,
                 ) {
                     scope.launch {
-                        save(makeActive = true)
+                        // customOptions preserves Tidal's token pair here too — the
+                        // addressless branch is shared with the cloud kinds.
+                        save(makeActive = true, customOptions = config.options)
                         if (isNew) onSaved(config.id)
                         libraryVm.switchTo(edited())
                         libraryVm.connect()
@@ -601,12 +670,20 @@ private fun ServerDetail(
                         isNew -> "Save & connect"
                         else -> "Save & reconnect"
                     },
-                    enabled = url.isNotBlank() && !(connecting && isActive) &&
-                        (config.kind.auth != AuthStyle.LINKED_ACCOUNT || token.isNotBlank()),
+                    // Cloud accounts have no URL to be non-blank; their readiness is
+                    // credentials (Qobuz/Spotify) or a signed-in token (Tidal).
+                    enabled = (!config.kind.hasAddress || url.isNotBlank()) &&
+                        (!config.kind.cloudAccount ||
+                            config.option(ServerConfig.OPT_TIDAL_ACCESS_TOKEN) != null ||
+                            (user.isNotBlank() && pass.isNotBlank())) &&
+                        !(connecting && isActive),
                     accent = accent,
                 ) {
                     scope.launch {
-                        save(makeActive = true)
+                        // customOptions carries whatever the Tidal sign-in row wrote
+                        // into the config: edited() rebuilds from the form fields and
+                        // would silently drop the token pair on the first save.
+                        save(makeActive = true, customOptions = config.options)
                         if (isNew) onSaved(config.id)
                         libraryVm.switchTo(edited())
                         libraryVm.connect()

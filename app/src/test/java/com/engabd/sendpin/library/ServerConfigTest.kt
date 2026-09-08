@@ -114,6 +114,9 @@ class ServerConfigTest {
                 ServerKind.EMBY,
                 ServerKind.PLEX,
                 ServerKind.MPD,
+                ServerKind.SPOTIFY,
+                ServerKind.QOBUZ,
+                ServerKind.TIDAL,
                 ServerKind.LOCAL,
                 ServerKind.DOWNLOADS,
             ),
@@ -134,7 +137,7 @@ class ServerConfigTest {
     }
 
     @Test
-    fun `only kinds with credentials need an address`() {
+    fun `device libraries need neither credentials nor an address`() {
         assertTrue(ServerKind.NAVIDROME.needsAddress)
         assertTrue(ServerKind.MUSIC_ASSISTANT.needsAddress)
         // The two that read what is already on the phone. This is what stops the
@@ -143,10 +146,93 @@ class ServerConfigTest {
         assertFalse(ServerKind.DOWNLOADS.needsAddress)
     }
 
+    // ─── Direct streaming kinds (Spotify / Qobuz / Tidal) ────────────────────
+
+    /**
+     * The streaming services are *accounts*, not servers: there is no host to
+     * point at, but there are credentials to ask for. `needsAddress` is what stops
+     * the connect forms demanding a URL a cloud library can never give, and it
+     * must not be the same question as "this kind has a form" — Spotify's form
+     * exists and holds a username and password and not one field more.
+     */
+    @Test
+    fun `streaming accounts need credentials but no address`() {
+        for (kind in listOf(ServerKind.SPOTIFY, ServerKind.QOBUZ, ServerKind.TIDAL)) {
+            assertTrue(kind.needsCredentials, "${kind.name} has a form to fill in")
+            assertFalse(kind.needsAddress, "${kind.name} has no host to type")
+            assertTrue(kind.playsLocally, "${kind.name} is played by this phone, not by a server")
+            assertTrue(kind.supported, "${kind.name} has a source behind it and can be added")
+        }
+    }
+
+    /**
+     * `ServerKind.from` feeds the source wiring, not just the picker: a stored
+     * config's kind name has to resolve for a streaming source to be built from
+     * it in the phase that makes it playable.
+     */
+    @Test
+    fun `the streaming kinds resolve by name`() {
+        assertEquals(ServerKind.SPOTIFY, ServerKind.from("SPOTIFY"))
+        assertEquals(ServerKind.QOBUZ, ServerKind.from("QOBUZ"))
+        assertEquals(ServerKind.TIDAL, ServerKind.from("TIDAL"))
+    }
+
+    @Test
+    fun `a streaming account config survives a round trip`() {
+        val original = ServerConfig(
+            kind = ServerKind.QOBUZ,
+            username = "abdullah@example.com",
+            password = "hunter2",
+        )
+        assertEquals(listOf(original), roundTrip(listOf(original)))
+    }
+
+    /**
+     * Experimental says how settled a kind is, never whether it can be built: the
+     * three streaming accounts are addable and are offered under their own picker
+     * heading with the tag on them, so nobody reads one as being as sturdy as a
+     * Navidrome on the LAN. The flag and [ServerKind.supported] are independent —
+     * conflating them is what left working adapters unreachable.
+     */
+    @Test
+    fun `the streaming kinds are experimental and addable`() {
+        assertEquals(
+            listOf(ServerKind.SPOTIFY, ServerKind.QOBUZ, ServerKind.TIDAL),
+            ServerKind.entries.filter { it.experimental },
+        )
+        ServerKind.entries.filter { it.experimental }.forEach {
+            assertTrue(it.supported, "${it.name} has a source behind it")
+            assertTrue(it in ServerKind.addable, "${it.name} can be added")
+            assertTrue(it !in ServerKind.planned, "${it.name} is built, so it is no longer a roadmap row")
+        }
+    }
+
+    /**
+     * The picker renders the addable kinds as two lists, one heading each. Every
+     * addable kind has to appear in exactly one of them — a kind in neither is a
+     * source a user cannot reach, which is the failure this split exists to make
+     * impossible to reintroduce quietly.
+     */
+    @Test
+    fun `the picker's two addable lists partition the addable kinds`() {
+        assertEquals(
+            ServerKind.addable.toSet(),
+            (ServerKind.addableStable + ServerKind.addableExperimental).toSet(),
+        )
+        assertTrue(
+            ServerKind.addableStable.none { it in ServerKind.addableExperimental },
+            "no kind is listed under both headings",
+        )
+        assertEquals(
+            listOf(ServerKind.SPOTIFY, ServerKind.QOBUZ, ServerKind.TIDAL),
+            ServerKind.addableExperimental,
+        )
+    }
+
     @Test
     fun `an unknown kind name resolves to null rather than throwing`() {
         assertEquals(ServerKind.NAVIDROME, ServerKind.from("NAVIDROME"))
-        assertNull(ServerKind.from("TIDAL"))
+        assertNull(ServerKind.from("NOSUCHKIND"))
         assertNull(ServerKind.from(null))
     }
 }

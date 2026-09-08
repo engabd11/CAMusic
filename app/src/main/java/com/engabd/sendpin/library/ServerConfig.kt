@@ -24,10 +24,31 @@ enum class ServerKind(
     /** One line, for the picker row. Says what it is, not how it works. */
     val blurb: String,
     val supported: Boolean = false,
+    /**
+     * Addable, but young: the adapter works and the picker offers it, under its own
+     * heading and with the tag on the row. These are the reverse-engineered
+     * streaming services — no official third-party API exists for any of them, so
+     * they are the kinds most likely to break when a provider changes its wire
+     * format, and the honest thing is to say so where the user chooses one rather
+     * than after it fails.
+     *
+     * Orthogonal to [supported]: this says how settled a kind is, not whether it
+     * can be built. A kind that is [supported] and experimental is offered; one
+     * that is neither is on the roadmap.
+     */
+    val experimental: Boolean = false,
     /** Roughly what a URL for this looks like, for the address field's placeholder. */
     val urlHint: String = "",
     /** How the user proves who they are — decides which fields the form shows. */
     val auth: AuthStyle = AuthStyle.USER_PASSWORD,
+    /**
+     * True for a streaming **account** rather than a server: the kind has a form
+     * (credentials) but no host to point at, because the service's address is
+     * fixed and well-known. Drives [hasAddress]; the cloud drives in the planned
+     * list are the same shape of thing and should take this when their adapters
+     * are built.
+     */
+    val cloudAccount: Boolean = false,
 ) {
     MUSIC_ASSISTANT(
         "Music Assistant",
@@ -76,6 +97,39 @@ enum class ServerKind(
         auth = AuthStyle.OPTIONAL_USER_PASSWORD,
     ),
 
+    // ── Direct streaming. Accounts, not servers: credentials, no address. ────
+    // No streaming service offers an official API a third-party player can stream
+    // from, so each arrives the way Music Assistant talks to them: an embedded
+    // client or the service's own undocumented endpoints. That is what keeps them
+    // flagged [experimental] now that their sources have landed — they work, and
+    // they are the first things a provider's next wire change will break.
+    // YouTube Music is deliberately absent — no viable path (OAuth withdrawn,
+    // cookie + PO-token machinery, playback capture blocked on Android).
+    SPOTIFY(
+        "Spotify",
+        "Your Premium account, played by this phone through an embedded Spotify client. Light sync included.",
+        supported = true,
+        experimental = true,
+        auth = AuthStyle.USER_PASSWORD,
+        cloudAccount = true,
+    ),
+    QOBUZ(
+        "Qobuz",
+        "Streaming in FLAC up to 24 bit / 192 kHz, straight from your Qobuz subscription.",
+        supported = true,
+        experimental = true,
+        auth = AuthStyle.USER_PASSWORD,
+        cloudAccount = true,
+    ),
+    TIDAL(
+        "Tidal",
+        "Your Tidal library, signed in on the provider's own page.",
+        supported = true,
+        experimental = true,
+        auth = AuthStyle.LINKED_ACCOUNT,
+        cloudAccount = true,
+    ),
+
     // ── Planned. Listed so the roadmap is visible where it is asked about. ──
     AUDIOBOOKSHELF(
         "Audiobookshelf",
@@ -120,14 +174,29 @@ enum class ServerKind(
     val playsLocally: Boolean get() = this != MUSIC_ASSISTANT
 
     /**
-     * Whether a setup form asking for a host has anything to ask for.
+     * Whether this kind points at a host the user types an address for.
+     *
+     * Deliberately not the same question as "has a setup form": a streaming account
+     * (Spotify, Qobuz, Tidal) has a form and no host — it is an account, not a
+     * server. The two questions were one property (`auth != NONE`), which held while
+     * every credentialed kind happened to live on someone's LAN and broke the moment
+     * a library's answer to "where is it" was a login instead of a URL.
+     */
+    val hasAddress: Boolean get() = !cloudAccount && auth != AuthStyle.NONE
+
+    /** Whether a setup form has credentials to ask for. */
+    val needsCredentials: Boolean get() = auth != AuthStyle.NONE
+
+    /**
+     * Whether a blank URL is a reason to refuse to connect.
      *
      * Replaces the hardcoded `== ServerKind.LOCAL` tests that used to gate "does this
      * library count as configured" and "is a blank url a reason to bail out of
      * connecting". Both were about there being nothing to type, not about that one
-     * kind, and every kind that reads something already on the phone hits them.
+     * kind, and every kind that reads something already on the phone hits them. A
+     * streaming account belongs with them: its login *is* the address.
      */
-    val needsAddress: Boolean get() = auth != AuthStyle.NONE
+    val needsAddress: Boolean get() = hasAddress && needsCredentials
 
     companion object {
         /** The ones a user can actually add today, in the order the picker shows them. */
@@ -142,6 +211,17 @@ enum class ServerKind(
 
         /** The rest, so the picker can show where this is going. */
         val planned: List<ServerKind> get() = entries.filterNot { it.supported }
+
+        /**
+         * The addable kinds that are settled — the picker's main list. The
+         * experimental ones are equally addable and are offered right below,
+         * under their own heading, so the split is presentational: one list, two
+         * headings, nothing hidden.
+         */
+        val addableStable: List<ServerKind> get() = addable.filterNot { it.experimental }
+
+        /** The addable kinds still flagged [experimental]. */
+        val addableExperimental: List<ServerKind> get() = addable.filter { it.experimental }
 
         fun from(name: String?): ServerKind? = entries.firstOrNull { it.name == name }
     }
@@ -235,6 +315,21 @@ data class ServerConfig(
 
         /** Jellyfin/Emby: which of the server's libraries to browse. Plex: the music section's key. */
         const val OPT_LIBRARY_ID = "libraryId"
+
+        /** Qobuz: the app id + secret registered to this app, for the signed API calls. */
+        const val OPT_QOBUZ_APP_ID = "qobuzAppId"
+        const val OPT_QOBUZ_APP_SECRET = "qobuzAppSecret"
+
+        /** Tidal: the client credentials of this app's own developer registration. */
+        const val OPT_TIDAL_CLIENT_ID = "tidalClientId"
+        const val OPT_TIDAL_CLIENT_SECRET = "tidalClientSecret"
+
+        /** Tidal: the device-flow session, persisted so sign-in survives restarts. */
+        const val OPT_TIDAL_ACCESS_TOKEN = "tidalAccessToken"
+        const val OPT_TIDAL_REFRESH_TOKEN = "tidalRefreshToken"
+        const val OPT_TIDAL_TOKEN_EXPIRES_AT = "tidalTokenExpiresAt"
+        const val OPT_TIDAL_USER_ID = "tidalUserId"
+        const val OPT_TIDAL_COUNTRY_CODE = "tidalCountryCode"
 
     }
 }

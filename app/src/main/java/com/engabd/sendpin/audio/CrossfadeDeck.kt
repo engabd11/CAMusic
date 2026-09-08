@@ -248,7 +248,12 @@ class CrossfadeDeck(
         return ExoPlayer.Builder(context)
             .setLoadControl(loadControl)
             .setMediaSourceFactory(
-                DefaultMediaSourceFactory(DefaultDataSource.Factory(context, httpFactory)),
+                // StreamSchemeResolver rewrites only uris whose scheme a streaming
+                // source registered (see [StreamSchemes]); everything else passes
+                // through unchanged.
+                DefaultMediaSourceFactory(StreamSchemeResolver.factory(
+                    DefaultDataSource.Factory(context, httpFactory),
+                )),
             )
             // handleAudioFocus = false, deliberately. The main player already holds
             // focus for this playback; a second request from the same process is the

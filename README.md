@@ -27,7 +27,7 @@ it into part of the listening.
 
 | | |
 |---|---|
-|  **A player** | Navidrome, Subsonic, Jellyfin, Emby, Plex, MPD, Music Assistant and on-device files. Gapless playback, a ten band equaliser, high resolution output, ReplayGain and offline downloads. |
+|  **A player** | Navidrome, Subsonic, Jellyfin, Emby, Plex, MPD, Music Assistant and on-device files — plus Spotify, Qobuz and Tidal accounts (experimental). Gapless playback, a ten band equaliser, high resolution output, ReplayGain and offline downloads. |
 |  **A light show** | Philips Hue Entertainment, driven straight to the bridge at 60 frames a second from the audio that is playing. |
 |  **An atmosphere** | Ambience shows with their own sound, ready whenever you want the room without the music. |
 |  **A speaker** | Music Assistant can stream to this phone as a clock synced player, so it joins a grouped, multi-room setup. |
@@ -97,6 +97,12 @@ can add as many as you like and switch between them freely.
 | **MPD** | ✅ | ✅ | — | — |
 | **Music Assistant** | ✅ | ✅ | n/a | ✅ |
 | **On-device files** | ✅ | ✅ | n/a | n/a |
+| **Spotify · Qobuz · Tidal** | 🔬 | 🔬 | — | — |
+
+🔬 **Experimental** — these three are streaming *accounts* rather than servers, played on
+this phone with light sync and no Music Assistant required. Addable from first-run setup
+and from Settings → Libraries, under their own heading. See the
+[Streaming services](#streaming-services-experimental) section below.
 
 Artists, albums, playlists, radio, podcasts and audiobooks, with search across all of them.
 Multi-disc albums group properly, liner notes and biographies appear where the server has
@@ -120,6 +126,65 @@ does for any other server driving a speaker in another room.
 **Continue listening** leads the library with the albums and songs you were last in the
 middle of, including Jellyfin's own resume shelf. Anything can be taken offline for the train,
 with a storage cap and a Wi-Fi only option, and downloads browse as a library of their own.
+
+---
+
+## Streaming services (experimental)
+
+You do not run a server to listen to Spotify, Qobuz or Tidal — so CAMusic treats them as
+**accounts, not servers**: a sign-in instead of an address, the music played on this phone
+by the same engine the self-hosted libraries use, and Light Sync riding on it as normal.
+No Music Assistant required, and nothing about your account leaves the phone.
+
+All three are **experimental**, and the tag is doing real work: no streaming service
+publishes an API a player like this one may use, so each of these rides an unofficial
+client or the service's own undocumented endpoints, and a provider's next change can
+break one. They are offered under their own heading — in first-run setup and in
+Settings → Libraries — rather than mixed in with the servers.
+
+**Qobuz and Tidal also want the *app's* own registration**, separate from your account.
+A build carries whatever pair it was given at build time (gradle properties, see
+[docs/plan/direct-streaming-providers.md](docs/plan/direct-streaming-providers.md));
+when it carries none — a fork, or an APK built from a plain checkout — the connect form
+asks for one, so you can use credentials of your own. Spotify needs no such pair:
+librespot signs in as your own client.
+
+The engineering detail lives in
+[docs/plan/direct-streaming-providers.md](docs/plan/direct-streaming-providers.md).
+
+### Spotify 🔬
+
+Plays through an **embedded librespot client** — the same open-source Spotify client Music
+Assistant uses — so the audio is decoded inside CAMusic itself. That makes it the only
+streaming service here whose output feeds Light Sync's analysis tap directly, with no
+capture prompt and no second app involved. Browsing covers your saved tracks and albums,
+playlists, artist pages and search; a Premium account is required (free accounts cannot
+stream), and sign-in uses your Spotify credentials without any Spotify developer app
+involved. Queue editing mid-playback and instant seek are on the roadmap.
+
+### Qobuz 🔬
+
+Browses the API Qobuz's own web player uses and streams **FLAC up to 24 bit / 192 kHz** —
+the only one of the three with lossless at the top tier. Your favourites *are* your library
+(artists, albums, tracks), alongside your playlists and full search. Requires a Qobuz
+subscription and, for the moment, app credentials entered alongside your login (see the
+plan doc).
+
+### Tidal 🔬
+
+Signs in the way Tidal's own TV clients do: the app shows you a code, you approve it at
+link.tidal.com in a browser, and no password is ever typed here. Browses your favourites
+and playlists with full search, and plays through Tidal's own playback manifests — from
+AAC 320 up to lossless FLAC, depending on what your subscription serves for the track.
+
+### What to expect while experimental
+
+Nothing here is guaranteed: these services offer no official third-party APIs, so each
+integration talks to endpoints that can change without notice, exactly the way Music
+Assistant's integrations do. If a provider breaks, it breaks *openly* — the status screen
+says what it cannot hear, and the fix usually lands in a day or two upstream. YouTube Music
+is deliberately not on the roadmap: Google withdrew the sign-in path third-party clients
+relied on, and its apps refuse the audio capture the other routes would need.
 
 ---
 

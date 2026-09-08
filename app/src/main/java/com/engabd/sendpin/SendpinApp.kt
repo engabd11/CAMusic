@@ -183,6 +183,9 @@ class SendpinApp : Application(), ImageLoaderFactory {
             // in the same `nowPlaying` collect as `artworkUrl` above, so the album and
             // the cover a palette is keyed on can never come from different tracks.
             playback.album, playback.artist, playback.trackTitle,
+            // The embedded Spotify client's state: its playing flag picks the feed,
+            // its own tap is the thing the show would wire to.
+            com.engabd.sendpin.spotify.SpotifyEngine.playing,
         ) { values ->
             @Suppress("UNCHECKED_CAST")
             val localTrack = values[0] as com.engabd.sendpin.audio.LocalTrack?
@@ -196,6 +199,7 @@ class SendpinApp : Application(), ImageLoaderFactory {
             val maArtist = (values[8] as String).takeIf { it.isNotBlank() }
             val maTitle = (values[9] as String).takeIf { it.isNotBlank() }
             val maTap = owner.sendspinTap
+            val spotifyPlaying = values[10] as Boolean
             // MPD is playing and this phone is only its remote — see
             // `PlaybackOwner.State.soundIsReadable`, which is the same question the
             // other way round.
@@ -224,6 +228,7 @@ class SendpinApp : Application(), ImageLoaderFactory {
                 // "waiting for audio" about audio that is coming out of a DAC across
                 // the house.
                 remoteHoldsSound = mpdHoldsSound,
+                spotifyPlaying = spotifyPlaying,
             )
             when (feed) {
                 com.engabd.sendpin.hue.LightSyncFeed.SENDSPIN_PCM ->
@@ -232,6 +237,22 @@ class SendpinApp : Application(), ImageLoaderFactory {
                         scanTrack = null,
                         paletteAlbum = maAlbum, paletteArtist = maArtist,
                         trackTitle = maTitle,
+                        feed = feed,
+                    )
+                // The embedded Spotify client: real decoded PCM in this process, on
+                // its own tap (single-producer contract — the sink is its only
+                // writer). Metadata rides librespot's events, which the remote
+                // transport surfaces through the normal local-player state, so the
+                // palette keys off the local track when one is loaded.
+                com.engabd.sendpin.hue.LightSyncFeed.SPOTIFY_PCM ->
+                    com.engabd.sendpin.hue.ActiveLightSyncSource(
+                        tap = com.engabd.sendpin.spotify.SpotifyEngine.tap,
+                        lead = com.engabd.sendpin.spotify.SpotifyEngine.lead,
+                        artUrl = localTrack?.artUrl,
+                        scanTrack = localTrack,
+                        paletteAlbum = localTrack?.album,
+                        paletteArtist = localTrack?.artist,
+                        trackTitle = localTrack?.title,
                         feed = feed,
                     )
                 // Another app's audio, through MediaProjection. Its own tap instance,
@@ -338,7 +359,10 @@ class SendpinApp : Application(), ImageLoaderFactory {
         combine(
             localPlayer.playing, playback.isPlaying, scanFrameSource.driving,
             com.engabd.sendpin.capture.PlaybackCapture.running,
-        ) { local, ma, scanning, capturing -> local || ma || scanning || capturing }
+            com.engabd.sendpin.spotify.SpotifyEngine.playing,
+        ) { local, ma, scanning, capturing, spotify ->
+            local || ma || scanning || capturing || spotify
+        }
             .stateIn(appScope, SharingStarted.Eagerly, false)
     }
 

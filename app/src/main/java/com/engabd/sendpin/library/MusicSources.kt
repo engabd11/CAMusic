@@ -8,7 +8,9 @@ import com.engabd.sendpin.jellyfin.JellyfinException
 import com.engabd.sendpin.ma.MaItem
 import com.engabd.sendpin.mpd.MpdClient
 import com.engabd.sendpin.plex.PlexClient
+import com.engabd.sendpin.qobuz.QobuzClient
 import com.engabd.sendpin.subsonic.SubsonicClient
+import com.engabd.sendpin.tidal.TidalClient
 import kotlinx.coroutines.flow.first
 
 /**
@@ -137,6 +139,43 @@ object MusicSources {
             (context.applicationContext as com.engabd.sendpin.SendpinApp).downloads,
         )
 
+        // Qobuz is an account, not a server: the login is the address. The app
+        // id/secret for the signed API calls come from the build, or from the
+        // config's own options when the build shipped without a pair — see
+        // [ProviderAppCredentials].
+        ServerKind.QOBUZ -> QobuzSource(
+            QobuzClient(
+                username = config.username,
+                password = config.password,
+                appId = ProviderAppCredentials.qobuzAppId(config),
+                appSecret = ProviderAppCredentials.qobuzAppSecret(config),
+            ),
+        )
+
+        // Spotify is an account, not a server: the login opens the embedded
+        // librespot session, which is also what mints the Web API token the
+        // browser uses. No server address, no developer app.
+        ServerKind.SPOTIFY -> SpotifySource(
+            context,
+            config.username,
+            config.password,
+        )
+
+        // Tidal signs in on Tidal's own page (device authorization flow) and keeps
+        // the token pair in the config; the client credentials are the app's own
+        // developer registration, resolved like Qobuz's app id/secret.
+        ServerKind.TIDAL -> TidalSource(
+            TidalClient(
+                clientId = ProviderAppCredentials.tidalClientId(config),
+                clientSecret = ProviderAppCredentials.tidalClientSecret(config),
+                accessToken = config.option(ServerConfig.OPT_TIDAL_ACCESS_TOKEN).orEmpty(),
+                refreshToken = config.option(ServerConfig.OPT_TIDAL_REFRESH_TOKEN).orEmpty(),
+                tokenExpiresAt = config.option(ServerConfig.OPT_TIDAL_TOKEN_EXPIRES_AT)?.toLongOrNull() ?: 0,
+                userId = config.option(ServerConfig.OPT_TIDAL_USER_ID).orEmpty(),
+                countryCode = config.option(ServerConfig.OPT_TIDAL_COUNTRY_CODE).orEmpty().ifBlank { "US" },
+            ),
+        )
+
         // Music Assistant is not a MusicSource — it owns a server-side queue and
         // plays to speakers this app never decodes for. See MusicSource's docs.
         ServerKind.MUSIC_ASSISTANT -> null
@@ -256,6 +295,52 @@ object MusicSources {
                 throw error
             }
             config
+        }
+
+        is QobuzSource -> {
+            val error = source.probe()
+            if (error != null) {
+                if (error.isAuth) throw SourceAuthException(error.message)
+                throw Exception(error.message)
+            }
+            config
+        }
+
+        is SpotifySource -> {
+            val error = source.probe()
+            if (error != null) {
+                if (error.isAuth) throw SourceAuthException(error.message)
+                throw Exception(error.message)
+            }
+            config
+        }
+
+        is TidalSource -> {
+            val error = source.probe()
+            if (error != null) {
+                if (error.isAuth) throw SourceAuthException(error.message)
+                throw Exception(error.message)
+            }
+            // probe() runs `ensureSignedIn`, which refreshes an expired token — and
+            // Tidal can hand back a *new* refresh token when it does. That refresh
+            // lands in the client's fields and nowhere else, so without writing it
+            // back here the next cold start would reload the expired pair from the
+            // config: a wasted refresh round-trip every launch at best, and at
+            // worst, once Tidal rotates the refresh token, a library stuck asking
+            // for a hand sign-in it should never have needed. Jellyfin and Emby
+            // above persist their renewed credentials for exactly this reason.
+            val client = source.tidal
+            if (client.accessToken == config.option(ServerConfig.OPT_TIDAL_ACCESS_TOKEN)) {
+                config
+            } else {
+                config
+                    .withOption(ServerConfig.OPT_TIDAL_ACCESS_TOKEN, client.accessToken)
+                    .withOption(ServerConfig.OPT_TIDAL_REFRESH_TOKEN, client.refreshToken)
+                    .withOption(
+                        ServerConfig.OPT_TIDAL_TOKEN_EXPIRES_AT,
+                        client.tokenExpiresAt.toString(),
+                    )
+            }
         }
 
         else -> config

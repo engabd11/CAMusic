@@ -596,7 +596,10 @@ class LocalPlayer(private val context: Context) {
             .setConnectTimeoutMs(15_000)
             .setReadTimeoutMs(30_000)
         val mediaSourceFactory = DefaultMediaSourceFactory(
-            DefaultDataSource.Factory(context, httpFactory),
+            // StreamSchemeResolver rewrites only uris whose scheme a streaming source
+            // registered (see [StreamSchemes]); https/file/content pass through
+            // untouched, so this changes nothing for the self-hosted sources.
+            StreamSchemeResolver.factory(DefaultDataSource.Factory(context, httpFactory)),
         )
 
         return ExoPlayer.Builder(context, renderers)
