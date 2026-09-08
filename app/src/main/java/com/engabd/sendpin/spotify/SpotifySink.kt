@@ -87,9 +87,13 @@ class SpotifySink(private val tapHolder: SpotifyEngine.TapHolder) : SinkOutput {
             }
         }
         t.write(buffer, offset, len)
-        // The analysis copy must not alias the buffer the player reuses, and must
-        // not be swapped *after* we swapped in place — duplicate first, feed with
-        // the same byte order the output got.
+        // A view, not a copy: `wrap(...).slice()` aliases the player's own array.
+        // That is safe because `analyseExternal` -> `feedRing` reads every frame
+        // into the analysis ring synchronously, on this thread, before returning —
+        // nothing downstream keeps a reference to these bytes. It must stay that
+        // way: an analysis path that ever defers its read would be reading a
+        // buffer librespot has already refilled. Taken after the in-place swap
+        // above, so the tap sees the same byte order the output did.
         val analysis = ByteBuffer.wrap(buffer, offset, len)
             .order(ByteOrder.LITTLE_ENDIAN)
             .slice()

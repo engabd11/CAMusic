@@ -320,7 +320,26 @@ object MusicSources {
                 if (error.isAuth) throw SourceAuthException(error.message)
                 throw Exception(error.message)
             }
-            config
+            // probe() runs `ensureSignedIn`, which refreshes an expired token — and
+            // Tidal can hand back a *new* refresh token when it does. That refresh
+            // lands in the client's fields and nowhere else, so without writing it
+            // back here the next cold start would reload the expired pair from the
+            // config: a wasted refresh round-trip every launch at best, and at
+            // worst, once Tidal rotates the refresh token, a library stuck asking
+            // for a hand sign-in it should never have needed. Jellyfin and Emby
+            // above persist their renewed credentials for exactly this reason.
+            val client = source.tidal
+            if (client.accessToken == config.option(ServerConfig.OPT_TIDAL_ACCESS_TOKEN)) {
+                config
+            } else {
+                config
+                    .withOption(ServerConfig.OPT_TIDAL_ACCESS_TOKEN, client.accessToken)
+                    .withOption(ServerConfig.OPT_TIDAL_REFRESH_TOKEN, client.refreshToken)
+                    .withOption(
+                        ServerConfig.OPT_TIDAL_TOKEN_EXPIRES_AT,
+                        client.tokenExpiresAt.toString(),
+                    )
+            }
         }
 
         else -> config

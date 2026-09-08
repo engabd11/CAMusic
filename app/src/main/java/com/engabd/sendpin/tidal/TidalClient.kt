@@ -195,7 +195,15 @@ class TidalClient(
             when {
                 response.code == 200 -> tokenFromResponse(obj)
                     ?: throw TidalException("Tidal answered the login without a token")
-                error == "authorization_pending" || error == "slow_down" || error == "expired_token" -> null
+                // `expired_token` is terminal, not pending: the device code has died
+                // and no amount of further polling will mint a token. Lumping it in
+                // with the pending errors left the caller looping out its whole
+                // five-minute deadline before reporting a timeout, when Tidal had
+                // already given the real answer. `slow_down` stays pending — it asks
+                // for a longer interval, which is the caller's to lengthen.
+                error == "authorization_pending" || error == "slow_down" -> null
+                error == "expired_token" ->
+                    throw TidalException("That Tidal sign-in code expired — start again")
                 else -> throw TidalException("Tidal device sign-in failed: ${error ?: "HTTP ${response.code}"}")
             }
         }

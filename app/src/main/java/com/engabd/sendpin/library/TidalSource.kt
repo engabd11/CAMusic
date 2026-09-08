@@ -43,6 +43,9 @@ class TidalSource(private val client: TidalClient) : MusicSource {
             Capability.METADATA,
         )
 
+    /** The underlying client, for setup flows that need Tidal itself. */
+    val tidal: TidalClient get() = client
+
     /** Register the player-open resolver; call once the client holds a token. */
     fun open() {
         StreamSchemes.register(TIDAL_SCHEME) { id -> client.streamUrl(id) }
