@@ -25,10 +25,16 @@ enum class ServerKind(
     val blurb: String,
     val supported: Boolean = false,
     /**
-     * Shown with an "experimental" tag rather than silently mixed in: a streaming
-     * account whose adapter is still being built. Experimental kinds are also
-     * [planned] — the flag only changes how the roadmap row is presented and what
-     * the docs claim, never whether a source can be built from the kind.
+     * Addable, but young: the adapter works and the picker offers it, under its own
+     * heading and with the tag on the row. These are the reverse-engineered
+     * streaming services — no official third-party API exists for any of them, so
+     * they are the kinds most likely to break when a provider changes its wire
+     * format, and the honest thing is to say so where the user chooses one rather
+     * than after it fails.
+     *
+     * Orthogonal to [supported]: this says how settled a kind is, not whether it
+     * can be built. A kind that is [supported] and experimental is offered; one
+     * that is neither is on the roadmap.
      */
     val experimental: Boolean = false,
     /** Roughly what a URL for this looks like, for the address field's placeholder. */
@@ -92,16 +98,17 @@ enum class ServerKind(
     ),
 
     // ── Direct streaming. Accounts, not servers: credentials, no address. ────
-    // Roadmap entries like the planned libraries below — greyed in the picker
-    // until each one's MusicSource lands (docs/plan/direct-streaming-providers.md).
     // No streaming service offers an official API a third-party player can stream
     // from, so each arrives the way Music Assistant talks to them: an embedded
-    // client or the service's own undocumented endpoints. YouTube Music is
-    // deliberately absent — no viable path (OAuth withdrawn, cookie + PO-token
-    // machinery, playback capture blocked on Android).
+    // client or the service's own undocumented endpoints. That is what keeps them
+    // flagged [experimental] now that their sources have landed — they work, and
+    // they are the first things a provider's next wire change will break.
+    // YouTube Music is deliberately absent — no viable path (OAuth withdrawn,
+    // cookie + PO-token machinery, playback capture blocked on Android).
     SPOTIFY(
         "Spotify",
         "Your Premium account, played by this phone through an embedded Spotify client. Light sync included.",
+        supported = true,
         experimental = true,
         auth = AuthStyle.USER_PASSWORD,
         cloudAccount = true,
@@ -109,6 +116,7 @@ enum class ServerKind(
     QOBUZ(
         "Qobuz",
         "Streaming in FLAC up to 24 bit / 192 kHz, straight from your Qobuz subscription.",
+        supported = true,
         experimental = true,
         auth = AuthStyle.USER_PASSWORD,
         cloudAccount = true,
@@ -116,6 +124,7 @@ enum class ServerKind(
     TIDAL(
         "Tidal",
         "Your Tidal library, signed in on the provider's own page.",
+        supported = true,
         experimental = true,
         auth = AuthStyle.LINKED_ACCOUNT,
         cloudAccount = true,
@@ -204,12 +213,15 @@ enum class ServerKind(
         val planned: List<ServerKind> get() = entries.filterNot { it.supported }
 
         /**
-         * The planned kinds that are *not* flagged experimental — the ones the
-         * "not yet supported" section can render without an experiment badge.
-         * The streaming services are shown in their own experimental section
-         * instead, so they are never in this list.
+         * The addable kinds that are settled — the picker's main list. The
+         * experimental ones are equally addable and are offered right below,
+         * under their own heading, so the split is presentational: one list, two
+         * headings, nothing hidden.
          */
-        val plannedNotExperimental: List<ServerKind> get() = planned.filterNot { it.experimental }
+        val addableStable: List<ServerKind> get() = addable.filterNot { it.experimental }
+
+        /** The addable kinds still flagged [experimental]. */
+        val addableExperimental: List<ServerKind> get() = addable.filter { it.experimental }
 
         fun from(name: String?): ServerKind? = entries.firstOrNull { it.name == name }
     }

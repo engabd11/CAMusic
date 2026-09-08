@@ -22,10 +22,9 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.library.AuthStyle
+import com.engabd.sendpin.library.ProviderAppCredentials
 import com.engabd.sendpin.library.ServerConfig
 import com.engabd.sendpin.library.ServerKind
-import com.engabd.sendpin.tidal.TidalClient
-import com.engabd.sendpin.tidal.TidalClient.TokenResponse
 import com.engabd.sendpin.local.LocalFolders
 import com.engabd.sendpin.local.LocalMediaSource
 import com.engabd.sendpin.ma.LibraryViewModel
@@ -388,21 +387,20 @@ private fun ProviderPicker(accent: Color, onPick: (ServerKind) -> Unit) {
                 "you are.",
         )
 
-        ServerKind.addable.forEach { kind ->
+        ServerKind.addableStable.forEach { kind ->
             ProviderRow(kind, accent) { onPick(kind) }
         }
 
         Spacer(Modifier.height(4.dp))
         FieldLabel("Experimental")
         Note(
-            "Streaming accounts being built right now — an account and a sign-in rather " +
-                "than a server, playing on this phone with light sync. Not usable yet; the " +
-                "plan lives in docs/plan/direct-streaming-providers.md.",
+            "Streaming accounts: an account and a sign-in rather than a server, played by " +
+                "this phone with light sync. These work — but no streaming service offers " +
+                "an API for a player like this one, so they lean on undocumented endpoints " +
+                "and are the first thing a provider's next change will break.",
         )
-        ServerKind.entries.filter { it.experimental }.forEach { kind ->
-            Box(Modifier.alpha(0.4f)) {
-                ProviderRow(kind, accent, enabled = false) {}
-            }
+        ServerKind.addableExperimental.forEach { kind ->
+            ProviderRow(kind, accent) { onPick(kind) }
         }
 
         Spacer(Modifier.height(4.dp))
@@ -411,7 +409,7 @@ private fun ProviderPicker(accent: Color, onPick: (ServerKind) -> Unit) {
             "Planned adapters rather than maybes. The endpoints and sign-in each one needs " +
                 "are written up in docs/providers.md.",
         )
-        ServerKind.plannedNotExperimental.forEach { kind ->
+        ServerKind.planned.forEach { kind ->
             Box(Modifier.alpha(0.4f)) {
                 ProviderRow(kind, accent, enabled = false) {}
             }
@@ -567,6 +565,38 @@ private fun ServerDetail(
                         "queue. Nothing streams to the phone, so nothing plays out of it.",
                 )
             }
+            // Qobuz and Tidal sign their calls as an *application* as well as an
+            // account, and this build shipped without a registered pair — so the
+            // form asks for one rather than failing at connect time with what
+            // reads like a refused login. A build given a pair (gradle properties
+            // → BuildConfig) never shows this. See [ProviderAppCredentials].
+            if (ProviderAppCredentials.asksUser(config.kind)) {
+                val qobuz = config.kind == ServerKind.QOBUZ
+                val idKey = if (qobuz) ServerConfig.OPT_QOBUZ_APP_ID else ServerConfig.OPT_TIDAL_CLIENT_ID
+                val secretKey = if (qobuz) ServerConfig.OPT_QOBUZ_APP_SECRET else ServerConfig.OPT_TIDAL_CLIENT_SECRET
+                FieldLabel("This app's ${config.kind.label} registration")
+                Note(
+                    "Separate from your account: ${config.kind.label} identifies the calling app " +
+                        "with a pair of its own, and this build carries none. Paste yours and it " +
+                        "is kept with this library.",
+                )
+                OledField(
+                    config.option(idKey).orEmpty(),
+                    { config = config.withOption(idKey, it) },
+                    if (qobuz) "App ID" else "Client ID",
+                    "",
+                    accent,
+                )
+                SecretField(
+                    config.option(secretKey).orEmpty(),
+                    { config = config.withOption(secretKey, it) },
+                    if (qobuz) "App secret" else "Client secret",
+                    accent,
+                    secretVisible,
+                    { secretVisible = it },
+                )
+            }
+
             when (config.kind.auth) {
                 AuthStyle.USER_PASSWORD, AuthStyle.OPTIONAL_USER_PASSWORD -> {
                     OledField(user, { user = it }, "Username", "", accent)
@@ -1066,91 +1096,5 @@ private fun PlexSignInRow(
     Note(
         status ?: if (hasToken) "Signed in. Sign in again if playback ever stops working."
         else "Opens plex.tv in your browser to sign in, then comes back here on its own.",
-    )
-}
-
-/**
- * Tidal's device sign-in, the Plex row's shape: one button, a browser round trip,
- * and the result written straight into the config. Differences are Tidal's — the
- * user is shown a code as well as a URL (device authorization grant), the poll is
- * bounded at five minutes like Plex's, and the finished token set lands in the
- * config's options (alongside the client credentials the app ships per-install)
- * rather than in the single `token` field, because Tidal's session is a *pair* plus
- * expiry, user id and country.
- */
-@Composable
-private fun TidalSignInRow(
-    config: ServerConfig,
-    accent: Color,
-    scope: CoroutineScope,
-    onSave: (ServerConfig) -> Unit,
-) {
-    val context = LocalContext.current
-    var working by remember { mutableStateOf(false) }
-    var status by remember { mutableStateOf<String?>(null) }
-    val hasToken = config.option(ServerConfig.OPT_TIDAL_ACCESS_TOKEN) != null
-
-    OledButton(
-        when {
-            working -> "Waiting for Tidal…"
-            hasToken -> "Signed in — sign in again"
-            else -> "Sign in with Tidal"
-        },
-        enabled = !working,
-        accent = accent,
-    ) {
-        working = true
-        status = null
-        scope.launch {
-            try {
-                val client = TidalClient(
-                    clientId = config.option(ServerConfig.OPT_TIDAL_CLIENT_ID).orEmpty(),
-                    clientSecret = config.option(ServerConfig.OPT_TIDAL_CLIENT_SECRET).orEmpty(),
-                )
-                if (client.clientId.isBlank()) {
-                    status = "This build has no Tidal client credentials — add them in the plan's setup step."
-                    return@launch
-                }
-                val (deviceCode, userCode, verificationUrl) = client.startDeviceLogin()
-                context.startActivity(
-                    Intent(Intent.ACTION_VIEW, Uri.parse(verificationUrl))
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                )
-                status = "Enter this code on the Tidal page: $userCode"
-                var tokens: TidalClient.TokenResponse? = null
-                var attempts = 0
-                while (tokens == null && attempts < 150) {
-                    delay(2000)
-                    tokens = client.pollDeviceLoginOnce(deviceCode)
-                    attempts++
-                }
-                val signedIn = tokens
-                if (signedIn != null) {
-                    // One merged option map, one onConfig call: the callback both
-                    // persists and connects, so calling it twice would connect twice.
-                    var updated = config
-                        .withOption(ServerConfig.OPT_TIDAL_ACCESS_TOKEN, signedIn.accessToken)
-                        .withOption(ServerConfig.OPT_TIDAL_REFRESH_TOKEN, signedIn.refreshToken.orEmpty())
-                        .withOption(
-                            ServerConfig.OPT_TIDAL_TOKEN_EXPIRES_AT,
-                            (System.currentTimeMillis() / 1000 + signedIn.expiresIn).toString(),
-                        )
-                    signedIn.userId?.let { updated = updated.withOption(ServerConfig.OPT_TIDAL_USER_ID, it) }
-                    signedIn.countryCode?.let { updated = updated.withOption(ServerConfig.OPT_TIDAL_COUNTRY_CODE, it) }
-                    onSave(updated)
-                    status = "Signed in. Connecting…"
-                } else {
-                    status = "Timed out waiting for Tidal. Try again."
-                }
-            } catch (e: Exception) {
-                status = e.message ?: "Couldn't reach Tidal"
-            } finally {
-                working = false
-            }
-        }
-    }
-    Note(
-        status ?: if (hasToken) "Signed in. Sign in again if playback ever stops working."
-        else "Opens Tidal in your browser; enter the code shown here to approve this device.",
     )
 }

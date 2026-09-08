@@ -61,11 +61,16 @@ best-effort), and no DRM circumvention anywhere.
 **Status: LANDED** (on `feat/direct-streaming-providers`) with two deviations from the
 original shape below, both for the better:
 
-- The three kinds ship as **`experimental = true`, `supported = false`** — visible in the
-  picker's own "Experimental" section, greyed, never addable until each provider's source
-  lands. No skeleton `MusicSource` implementations were registered: `MusicSources.create`'s
-  existing `else -> null` already answers an unbuilt kind, and a dead skeleton would only
-  have to be replaced wholesale in its phase anyway.
+- The three kinds shipped **`experimental = true`, `supported = false`** while their
+  sources were being built — greyed in the picker's own "Experimental" section, never
+  addable. Now that all three sources have landed they are **`supported = true`,
+  `experimental = true`**: the flags are independent, so `supported` opens the source and
+  `experimental` keeps the honest label on the row. Leaving `supported = false` after the
+  adapters landed was what made ~3,300 lines of working code unreachable from the UI —
+  `addableStable` / `addableExperimental` and a test that they partition `addable` exist
+  so that cannot recur quietly. No skeleton `MusicSource` implementations were registered:
+  `MusicSources.create`'s existing `else -> null` already answers an unbuilt kind, and a
+  dead skeleton would only have to be replaced wholesale in its phase anyway.
 - "Needs an address" turned out to be a *derived* question, not an `AuthStyle` one:
   `ServerKind` gained `cloudAccount` (account, not server — Plex is LINKED_ACCOUNT *and*
   has a host, so auth style alone never separated them), with `hasAddress = !cloudAccount &&
@@ -82,7 +87,7 @@ original shape below, both for the better:
   - `SPOTIFY("Spotify", "Your Premium account, played by this device via an embedded Spotify client. Light sync included.", auth = USER_PASSWORD)` — urlHint empty (no address field; hide it for address-less kinds or use a placeholder explaining it's unused).
   - `QOBUZ("Qobuz", "Streaming in FLAC up to 24/192 from your Qobuz subscription.", auth = USER_PASSWORD)`.
   - `TIDAL("Tidal", "Your Tidal library via device sign-in.", auth = LINKED_ACCOUNT)`.
-  - All three `supported = true`.
+  - All three `supported = true`. ✅ — done, with `experimental = true` kept alongside.
 - Settings form: for address-less kinds (`SPOTIFY`) the address field must not be required —
   check how `ServerConfig` ids servers (generated id, so URL is not the identity — verify in
   code before assuming the form can omit the field).
@@ -113,8 +118,21 @@ all fixture-based. Two design decisions worth keeping:
   `track/getFileUrl` urls expire within minutes, so they are fetched fresh per track and
   never cached. Quality walks MA's chain (27→7→6→5) with a re-sign per attempt.
 - **No app credentials are bundled.** MA's app id/secret are registered to their project
-  and explicitly not for reuse; Qobuz app credentials come from `ServerConfig` options
-  (`qobuzAppId`/`qobuzAppSecret`) — Abdullah to supply CAMusic's own registered pair.
+  and explicitly not for reuse. `ProviderAppCredentials` resolves them in two steps: the
+  config's own options (`qobuzAppId`/`qobuzAppSecret`, `tidalClientId`/`tidalClientSecret`)
+  first, then `BuildConfig`, which `app/build.gradle.kts` fills from gradle properties:
+
+  ```properties
+  # ~/.gradle/gradle.properties — never committed
+  camusic.qobuz.appId=...
+  camusic.qobuz.appSecret=...
+  camusic.tidal.clientId=...
+  camusic.tidal.clientSecret=...
+  ```
+
+  A build with no pair is not broken: the connect form (Settings → Libraries, and the
+  first-run wizard) asks for one, so a fork or a plain checkout can still sign in with
+  credentials of its own. Abdullah to supply CAMusic's own registered pair the same way.
 
 ### Task 1.1: API client skeleton ✅
 

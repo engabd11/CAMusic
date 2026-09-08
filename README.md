@@ -97,10 +97,11 @@ can add as many as you like and switch between them freely.
 | **MPD** | ✅ | ✅ | — | — |
 | **Music Assistant** | ✅ | ✅ | n/a | ✅ |
 | **On-device files** | ✅ | ✅ | n/a | n/a |
-| **Spotify · Qobuz · Tidal** | 🔬 | — | — | — |
+| **Spotify · Qobuz · Tidal** | 🔬 | 🔬 | — | — |
 
 🔬 **Experimental** — these three are streaming *accounts* rather than servers, played on
-this phone with light sync and no Music Assistant required. See the
+this phone with light sync and no Music Assistant required. Addable from first-run setup
+and from Settings → Libraries, under their own heading. See the
 [Streaming services](#streaming-services-experimental) section below.
 
 Artists, albums, playlists, radio, podcasts and audiobooks, with search across all of them.
@@ -135,8 +136,19 @@ You do not run a server to listen to Spotify, Qobuz or Tidal — so CAMusic trea
 by the same engine the self-hosted libraries use, and Light Sync riding on it as normal.
 No Music Assistant required, and nothing about your account leaves the phone.
 
-All three are **experimental** — the client and source code has landed and ships greyed in
-the library picker, but each still needs live-account testing before the tag comes off.
+All three are **experimental**, and the tag is doing real work: no streaming service
+publishes an API a player like this one may use, so each of these rides an unofficial
+client or the service's own undocumented endpoints, and a provider's next change can
+break one. They are offered under their own heading — in first-run setup and in
+Settings → Libraries — rather than mixed in with the servers.
+
+**Qobuz and Tidal also want the *app's* own registration**, separate from your account.
+A build carries whatever pair it was given at build time (gradle properties, see
+[docs/plan/direct-streaming-providers.md](docs/plan/direct-streaming-providers.md));
+when it carries none — a fork, or an APK built from a plain checkout — the connect form
+asks for one, so you can use credentials of your own. Spotify needs no such pair:
+librespot signs in as your own client.
+
 The engineering detail lives in
 [docs/plan/direct-streaming-providers.md](docs/plan/direct-streaming-providers.md).
 

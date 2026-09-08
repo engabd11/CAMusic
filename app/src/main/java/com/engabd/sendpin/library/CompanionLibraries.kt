@@ -127,11 +127,20 @@ class CompanionLibraries(
          * want of files but because the callers search the download index directly
          * and by identity, which is both cheaper and a better match than a text
          * search over the same rows.
+         *
+         * The streaming accounts are here for a second reason: [build] would find
+         * out on its own that they advertise no DOWNLOAD and write them off, but
+         * only after signing in — and Spotify's sign-in stands a whole librespot
+         * session up. Their urls expire per request (Qobuz, Tidal) or never exist
+         * as a file at all (Spotify), so there was never a companion here to find.
          */
         val CANNOT_SERVE = setOf(
             ServerKind.MPD,
             ServerKind.DOWNLOADS,
             ServerKind.MUSIC_ASSISTANT,
+            ServerKind.SPOTIFY,
+            ServerKind.QOBUZ,
+            ServerKind.TIDAL,
         )
     }
 }

@@ -139,15 +139,16 @@ object MusicSources {
             (context.applicationContext as com.engabd.sendpin.SendpinApp).downloads,
         )
 
-        // Qobuz is an account, not a server: the login is the address, and the app
-        // id/secret for the signed API calls ride the options until this
-        // experimental kind earns a settings form of its own.
+        // Qobuz is an account, not a server: the login is the address. The app
+        // id/secret for the signed API calls come from the build, or from the
+        // config's own options when the build shipped without a pair — see
+        // [ProviderAppCredentials].
         ServerKind.QOBUZ -> QobuzSource(
             QobuzClient(
                 username = config.username,
                 password = config.password,
-                appId = config.option(ServerConfig.OPT_QOBUZ_APP_ID).orEmpty(),
-                appSecret = config.option(ServerConfig.OPT_QOBUZ_APP_SECRET).orEmpty(),
+                appId = ProviderAppCredentials.qobuzAppId(config),
+                appSecret = ProviderAppCredentials.qobuzAppSecret(config),
             ),
         )
 
@@ -162,11 +163,11 @@ object MusicSources {
 
         // Tidal signs in on Tidal's own page (device authorization flow) and keeps
         // the token pair in the config; the client credentials are the app's own
-        // developer registration, like Qobuz's app id/secret.
+        // developer registration, resolved like Qobuz's app id/secret.
         ServerKind.TIDAL -> TidalSource(
             TidalClient(
-                clientId = config.option(ServerConfig.OPT_TIDAL_CLIENT_ID).orEmpty(),
-                clientSecret = config.option(ServerConfig.OPT_TIDAL_CLIENT_SECRET).orEmpty(),
+                clientId = ProviderAppCredentials.tidalClientId(config),
+                clientSecret = ProviderAppCredentials.tidalClientSecret(config),
                 accessToken = config.option(ServerConfig.OPT_TIDAL_ACCESS_TOKEN).orEmpty(),
                 refreshToken = config.option(ServerConfig.OPT_TIDAL_REFRESH_TOKEN).orEmpty(),
                 tokenExpiresAt = config.option(ServerConfig.OPT_TIDAL_TOKEN_EXPIRES_AT)?.toLongOrNull() ?: 0,

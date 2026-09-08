@@ -37,6 +37,40 @@ android {
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
         }
+
+        // Streaming-provider *application* credentials. Qobuz and Tidal both want
+        // the calling app's own registered pair alongside the user's account, and
+        // neither pair can live in this repository: Qobuz's is issued per project
+        // and Music Assistant's is explicitly not for reuse. So they arrive as
+        // gradle properties — set them in ~/.gradle/gradle.properties (or pass -P
+        // on the command line) and every build of that machine carries them:
+        //
+        //     camusic.qobuz.appId=...        camusic.qobuz.appSecret=...
+        //     camusic.tidal.clientId=...     camusic.tidal.clientSecret=...
+        //
+        // Blank is the normal state for a fork or a CI runner, and it is not a
+        // build failure: the connect form asks for the pair itself when the build
+        // carries none, so a user with their own credentials can still sign in.
+        buildConfigField(
+            "String",
+            "QOBUZ_APP_ID",
+            "\"${providers.gradleProperty("camusic.qobuz.appId").getOrElse("")}\"",
+        )
+        buildConfigField(
+            "String",
+            "QOBUZ_APP_SECRET",
+            "\"${providers.gradleProperty("camusic.qobuz.appSecret").getOrElse("")}\"",
+        )
+        buildConfigField(
+            "String",
+            "TIDAL_CLIENT_ID",
+            "\"${providers.gradleProperty("camusic.tidal.clientId").getOrElse("")}\"",
+        )
+        buildConfigField(
+            "String",
+            "TIDAL_CLIENT_SECRET",
+            "\"${providers.gradleProperty("camusic.tidal.clientSecret").getOrElse("")}\"",
+        )
         externalNativeBuild {
             cmake {
                 cppFlags += "-std=c++17"

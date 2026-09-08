@@ -114,6 +114,9 @@ class ServerConfigTest {
                 ServerKind.EMBY,
                 ServerKind.PLEX,
                 ServerKind.MPD,
+                ServerKind.SPOTIFY,
+                ServerKind.QOBUZ,
+                ServerKind.TIDAL,
                 ServerKind.LOCAL,
                 ServerKind.DOWNLOADS,
             ),
@@ -158,7 +161,7 @@ class ServerConfigTest {
             assertTrue(kind.needsCredentials, "${kind.name} has a form to fill in")
             assertFalse(kind.needsAddress, "${kind.name} has no host to type")
             assertTrue(kind.playsLocally, "${kind.name} is played by this phone, not by a server")
-            assertFalse(kind.supported, "${kind.name} stays roadmap greyed until its source lands")
+            assertTrue(kind.supported, "${kind.name} has a source behind it and can be added")
         }
     }
 
@@ -185,29 +188,44 @@ class ServerConfigTest {
     }
 
     /**
-     * Experimental is a visible status, not a third word for unsupported: these
-     * kinds render in their own picker section with the tag on them, so nobody
-     * reads a polished brand row as "works today". Everything experimental is
-     * also planned (no source behind it yet); the flag only changes how the
-     * roadmap row is presented and what the docs claim.
+     * Experimental says how settled a kind is, never whether it can be built: the
+     * three streaming accounts are addable and are offered under their own picker
+     * heading with the tag on them, so nobody reads one as being as sturdy as a
+     * Navidrome on the LAN. The flag and [ServerKind.supported] are independent —
+     * conflating them is what left working adapters unreachable.
      */
     @Test
-    fun `the streaming kinds are flagged experimental and stay unplanned-plus-unaddable`() {
+    fun `the streaming kinds are experimental and addable`() {
         assertEquals(
             listOf(ServerKind.SPOTIFY, ServerKind.QOBUZ, ServerKind.TIDAL),
             ServerKind.entries.filter { it.experimental },
         )
         ServerKind.entries.filter { it.experimental }.forEach {
-            assertTrue(it in ServerKind.planned, "${it.name} has no source yet, so it is still planned")
-            assertTrue(it !in ServerKind.addable, "${it.name} cannot be added yet")
-            assertFalse(it.supported, "${it.name} is not supported yet")
+            assertTrue(it.supported, "${it.name} has a source behind it")
+            assertTrue(it in ServerKind.addable, "${it.name} can be added")
+            assertTrue(it !in ServerKind.planned, "${it.name} is built, so it is no longer a roadmap row")
         }
-        // The "not yet supported" section is for genuinely unstarted ideas; the
-        // experimental ones are shown separately, so the planned list the picker
-        // renders there must not contain them twice.
+    }
+
+    /**
+     * The picker renders the addable kinds as two lists, one heading each. Every
+     * addable kind has to appear in exactly one of them — a kind in neither is a
+     * source a user cannot reach, which is the failure this split exists to make
+     * impossible to reintroduce quietly.
+     */
+    @Test
+    fun `the picker's two addable lists partition the addable kinds`() {
         assertEquals(
-            ServerKind.planned.filterNot { it.experimental },
-            ServerKind.plannedNotExperimental,
+            ServerKind.addable.toSet(),
+            (ServerKind.addableStable + ServerKind.addableExperimental).toSet(),
+        )
+        assertTrue(
+            ServerKind.addableStable.none { it in ServerKind.addableExperimental },
+            "no kind is listed under both headings",
+        )
+        assertEquals(
+            listOf(ServerKind.SPOTIFY, ServerKind.QOBUZ, ServerKind.TIDAL),
+            ServerKind.addableExperimental,
         )
     }
 
