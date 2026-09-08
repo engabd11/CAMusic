@@ -6,8 +6,9 @@
 
 **Amended after the P0 fixes landed (#165).** Implementing F1 and F2 proved two things in
 §6 wrong, and both are corrected in place: §6.1's draw-only gate does not stop the churn
-(the read is in composition), and §6.2's "leave the full player scrolling" carve-out was
-the larger half of F2. F1's 907-frame measurement also carries an attribution caveat now —
+(the read is in composition — and the composition-level gate has to key off the
+amplitude, not `playing`, or the wave jumps sideways on every pause), and §6.2's "leave
+the full player scrolling" carve-out was the larger half of F2. F1's 907-frame measurement also carries an attribution caveat now —
 see the note under F1 in §5. The findings themselves stand; the fix advice and the split
 between F1 and F2 are what changed.
 
@@ -178,20 +179,34 @@ The documented rationale (background connection **is** the HA TTS announcement f
 **1448**, in **composition**, not only inside the `Canvas`. A draw-only gate stops the
 draws and leaves the recomposition — ~60/s — running underneath them.
 
-The fix is the one-liner the `glowPulse` comparison below already points at: gate the
-read itself, exactly as the sibling slider does.
+The fix is to gate the read itself — but **on the amplitude, not on `playing`**:
 
 ```kotlin
-// SendspinDesign.kt:1448
-val phase = if (reduced || !playing) 0f else travelling
+// SendspinDesign.kt — amplitudeDp declared above phase
+val phase = if (reduced || amplitudeDp <= 0f) 0f else travelling
 ```
 
-Zero visual change (the amplitude has already tweened to 0 when paused, so the phase has
-nothing left to modulate). The infinite transition above it can stay as it is: once
-nothing reads `travelling`, nothing recomposes or redraws from it.
+`!playing` looks like the obvious gate (and shipped first) but is wrong, for the reason
+`WaveSeekBar`'s own header gives: it snaps the phase to 0 the instant playback stops,
+while the amplitude still has `WAVE_AMPLITUDE_MS` = 500 ms of flattening left at full
+height. With `WAVE_PERIOD_MS` = 1600 that is the curve jumping sideways by up to a whole
+wavelength on every pause, and back on resume. The amplitude gate keeps the wave
+travelling the whole way down, so it settles onto the rail; the phase read drops out at
+zero amplitude, which is exactly when the phase stops meaning anything on screen.
+
+Cost: `amplitudeDp` becomes a composition read, so each half-second transition
+recomposes ~30 times — against 60 times a second for as long as the screen is up. The
+infinite transition above can stay as it is: once nothing reads `travelling`, nothing
+recomposes or redraws from it.
+
+The `glowPulse` gate at line 1673 is *not* the precedent it appears to be — it swaps an
+alpha, a scalar with no shape to jump. A phase is a shape parameter.
 
 **Measured, controlled A/B on the audit emulator** (paused full player, Wave style, short
-title, 15 s windows): stock **905 frames** → **0 frames**.
+title, 15 s windows): stock **905 frames** → **0 frames**. Measured with the `!playing`
+gate; the amplitude gate above is the same steady state (the read is gone once the wave
+is flat) and differs only across the 500 ms flatten, where it is the version that does
+not jump.
 
 ### 6.2 F2 — Pause the mini-player marquee when nothing is playing (P0, ~10 lines)
 
