@@ -4,6 +4,13 @@
 **Date:** September 06, 2026
 **Scope:** Live runtime audit of v0.12.0 (commit `4d03f7b`) on an Android emulator: background execution and battery cost, memory/leak analysis, rendering and composition churn, and an ANR investigation. Both backends exercised — Music Assistant (Sendspin/Oboe path) and Navidrome (ExoPlayer path). Every code-level root cause below was verified against the source; all line numbers are current at `4d03f7b`. No source changes were made — this document is the deliverable, with suggested fixes in §6.
 
+**Amended after the P0 fixes landed (#165).** Implementing F1 and F2 proved two things in
+§6 wrong, and both are corrected in place: §6.1's draw-only gate does not stop the churn
+(the read is in composition), and §6.2's "leave the full player scrolling" carve-out was
+the larger half of F2. F1's 907-frame measurement also carries an attribution caveat now —
+see the note under F1 in §5. The findings themselves stand; the fix advice and the split
+between F1 and F2 are what changed.
+
 ---
 
 ## 1. Executive Summary
@@ -74,6 +81,14 @@ The idle baseline is excellent: the background Sendspin connection costs CPU-tim
 The amplitude fades to zero when paused, but the phase keeps advancing and the draw lambda keeps re-running at display refresh rate, recomputing a flat line 60 times a second.
 
 **Measured:** Now Playing screen, playback paused, nothing else animating: **907 frames in 15 s** (~60 fps), RenderThread 15–27% CPU + main thread ~11%. On a screen the user perceives as static.
+
+> **Attribution caveat (added while implementing #165).** This number may not be the wave's
+> alone. `WaveSeekBar` is only composed under the **Wave** seek style; with the **Line**
+> style it never enters the composition at all — and a paused Now Playing under Line, with
+> the wave fix already in, still measured **862 frames / 15 s** from the title marquee (F2)
+> by itself. Unless this session's install was on the Wave style, some or most of the 907
+> frames above belong to F2. The two findings are both real and both fixed; only the split
+> between them is uncertain.
 
 Contrast with the sibling slider: `glowPulse` (line **1660**) gates its read at line **1673** — `val effectiveGlow = if (reduced || !playing) 0.5f else pulseAlpha` — so when paused nothing reads the animating value and no redraw is driven. `WaveSeekBar` is missing exactly that gate.
 
@@ -158,22 +173,25 @@ The documented rationale (background connection **is** the HA TTS announcement f
 
 ### 6.1 F1 — Gate `WaveSeekBar` phase on playing state (P0, ~5 lines)
 
-Minimal, zero visual change: when amplitude has animated to 0, draw the static rail and **stop reading `phase`**, which stops the per-frame invalidation. In `SendspinDesign.kt`, inside the `Canvas`:
+**Corrected after implementation (#165).** This section originally proposed gating the
+*draw lambda* on `amplitudePx <= 0`. That is not sufficient: `phase` is read at line
+**1448**, in **composition**, not only inside the `Canvas`. A draw-only gate stops the
+draws and leaves the recomposition — ~60/s — running underneath them.
+
+The fix is the one-liner the `glowPulse` comparison below already points at: gate the
+read itself, exactly as the sibling slider does.
 
 ```kotlin
-val amplitudePx = amplitudeDp.dp.toPx()
-
-if (amplitudePx <= 0f) {
-    // Paused (or reduced motion): the wave has collapsed onto the rail.
-    // Draw once and stop reading `phase`, so nothing invalidates per frame.
-    drawLine(trackColor, Offset(0f, centerY), Offset(size.width, centerY), strokePx, cap = StrokeCap.Round)
-    drawLine(accentBrush, Offset(0f, centerY), Offset(size.width * fill, centerY), strokePx, cap = StrokeCap.Round)
-} else {
-    // existing wave path — unchanged
-}
+// SendspinDesign.kt:1448
+val phase = if (reduced || !playing) 0f else travelling
 ```
 
-Optionally also skip creating the transition when it can never run (`if (!reduced) rememberInfiniteTransition(...)` guarded behind a static `0f` phase), but the draw-level gate above is sufficient to stop the churn and is the lower-risk change. This mirrors the existing `glowPulse` gate at line 1673.
+Zero visual change (the amplitude has already tweened to 0 when paused, so the phase has
+nothing left to modulate). The infinite transition above it can stay as it is: once
+nothing reads `travelling`, nothing recomposes or redraws from it.
+
+**Measured, controlled A/B on the audit emulator** (paused full player, Wave style, short
+title, 15 s windows): stock **905 frames** → **0 frames**.
 
 ### 6.2 F2 — Pause the mini-player marquee when nothing is playing (P0, ~10 lines)
 
@@ -186,11 +204,25 @@ fun Modifier.titleMarquee(running: Boolean = true, restMs: Int = TITLE_MARQUEE_R
     return this.basicMarquee(iterations = Int.MAX_VALUE, ...)
 }
 
-// NowPlayingOverlay.kt:636 (MiniPlayerBar title)
-modifier = Modifier.titleMarquee(running = st.playing)
+// every call site, e.g. NowPlayingOverlay.kt (MiniPlayerBar title)
+modifier = Modifier.titleMarquee(running = st.isPlaying)
 ```
 
-The full Now Playing screen (which the user *is* looking at) can keep `running = true` if the motion is wanted there; the battery-sensitive mini bar — visible app-wide — should scroll only while playing, and ideally also only while the hosting screen is resumed (Compose already suspends marquee when the window isn't visible, which covers the screen-off case).
+**Corrected after implementation (#165).** This section originally scoped the gate to the
+mini bar and argued the full Now Playing screen could keep scrolling because "the user *is*
+looking at it". That carve-out turned out to be the larger half of the finding: a paused
+full player is not being watched either, and it churned hardest of all — **862 frames / 15 s**
+on the audit install with a long title and the F1 fix already in.
+
+So the gate belongs on **every** marquee, not just the mini bar: the full player's title,
+artist and album, the mini bar, and the TV Now Playing screen's title. A paused screen is a
+still screen, on every screen of the app. (Compose already suspends a marquee when the
+window is not visible, so screen-off and backgrounded were covered; `running` closes the
+paused-and-visible case.)
+
+**Measured after gating all of them:** every paused configuration — wave/marquee ×
+Line/Wave seek style, short/long title — renders **0 frames / 15 s**. Playing is untouched
+(1505 frames / 25 s, all animations live).
 
 Also worth measuring after this change: whether the ~59 recompositions/s are the marquee offset being read in composition. If churn persists, isolate the scrolling text in `Modifier.graphicsLayer { }` reads so invalidation stays on its own layer.
 
