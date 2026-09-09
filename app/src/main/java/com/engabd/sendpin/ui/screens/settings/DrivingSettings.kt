@@ -297,17 +297,56 @@ private fun SpeedFeaturesRow(settings: AppSettings, accent: Color, scope: Corout
     val fixStatus by com.engabd.sendpin.SendpinApp.instance.speedMonitor
         .fixStatus.collectAsState(initial = null)
 
+    // What the toggle was in the middle of doing when it had to stop and ask for
+    // permission, so the grant can finish it.
+    //
+    // Without this, turning either switch on for the first time was a dead end:
+    // `requestThenSet` launched the permission dialog and returned, the setting was
+    // never written, and the callback here only called `speedMonitor.start()` — which
+    // starts a monitor gated on the very setting that is still false. Worse, it could
+    // not be recovered by tapping again: `granted` above is a plain permission read
+    // with no snapshot state behind it, so granting in the system dialog recomposes
+    // nothing, `granted` stays false for the rest of this composition, and every
+    // subsequent tap took the same early return. The switch could only be turned on
+    // by leaving the screen and coming back — which nobody has any reason to do,
+    // because the switch looks like it simply does not work.
+    //
+    // `PauseForCallsRow` above has always completed its own request properly; this
+    // is the same shape.
+    var pending by remember { mutableStateOf<(suspend () -> Unit)?>(null) }
+    // Forced true by a grant, so this composition sees it without waiting for a
+    // recomposition that nothing is going to trigger. The `||` keeps the re-read
+    // above as well, which is what catches a grant made in system Settings.
+    var justGranted by remember { mutableStateOf(false) }
+    val hasLocation = granted || justGranted
+
     val askLocation = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
-    ) { ok -> if (ok) com.engabd.sendpin.SendpinApp.instance.speedMonitor.start() }
+    ) { ok ->
+        val finish = pending
+        pending = null
+        if (ok) {
+            justGranted = true
+            // Write the setting the user actually asked for, then start the monitor
+            // — in that order, since the monitor's gate reads the setting.
+            scope.launch {
+                finish?.invoke()
+                com.engabd.sendpin.SendpinApp.instance.speedMonitor.start()
+            }
+        }
+    }
 
     fun requestThenSet(on: Boolean, set: suspend () -> Unit) {
-        if (on && !granted) { askLocation.launch(Manifest.permission.ACCESS_FINE_LOCATION); return }
+        if (on && !hasLocation) {
+            pending = set
+            askLocation.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+            return
+        }
         scope.launch { set() }
     }
 
     // The description line under "Speed limit alert" — shows what's in effect right now.
-    val alertDescription = if (alertEnabled && granted) {
+    val alertDescription = if (alertEnabled && hasLocation) {
         val effective = activeLimit
         if (effective != null && effective > 0) {
             val trigger = com.engabd.sendpin.service.SpeedAlert.triggerSpeedKmh(effective, tolerancePct).toInt() + 1
@@ -323,16 +362,16 @@ private fun SpeedFeaturesRow(settings: AppSettings, accent: Color, scope: Corout
             "Set a limit below to activate"
         }
     } else {
-        "A gentle tone if your GPS speed goes well over a limit you set"
+        "A tone, a buzz and a warning on screen if your GPS speed goes over the limit"
     }
 
     ToggleRow(
         "Speed limit alert",
         alertDescription,
-        alertEnabled && granted, accent,
+        alertEnabled && hasLocation, accent,
     ) { on -> requestThenSet(on) { settings.setSpeedLimitAlertEnabled(on) } }
 
-    if (alertEnabled && granted) {
+    if (alertEnabled && hasLocation) {
         // ── Warning sound ─────────────────────────────────────────────────
         val soundId by settings.speedAlertSound.collectAsState(initial = AppSettings.SPEED_ALERT_TONE)
         val soundOptions = com.engabd.sendpin.service.SpeedAlertSound.OPTIONS
@@ -344,28 +383,59 @@ private fun SpeedFeaturesRow(settings: AppSettings, accent: Color, scope: Corout
             accent = accent,
             placeholder = "Choose a sound",
         ) { i -> scope.launch { settings.setSpeedAlertSound(soundOptions[i].id) } }
-        OledButton("Preview \"$soundLabel\"", accent = accent, outline = true) {
+        OledButton("Preview the alert", accent = accent, outline = true) {
+            // The whole alert, not just the sound. The point of a preview is to
+            // answer "would I notice this while driving", and a button that played
+            // the tone alone could not tell you whether the notification appears,
+            // whether the phone buzzes, or whether notifications are switched off
+            // for this app — which is exactly the uncertainty this feature's bug
+            // report was written in ("or maybe the music was covering the sound").
             com.engabd.sendpin.service.SpeedAlertSound.play(context, soundId)
+            com.engabd.sendpin.service.SpeedAlertNotifier.alert(
+                context,
+                speedKmh = 71,
+                limitKmh = 60,
+                autoDetected = false,
+            )
         }
         Note(
-            "Plays over the music, on the same output the music is on — the track " +
-                "ducks for it and comes back after.",
+            "\"$soundLabel\" plays over the music, on the same output the music is on — " +
+                "the track ducks for it and comes back after — and the phone buzzes and " +
+                "shows the warning at the same time. Try it now: whatever you do not " +
+                "notice here, you will not notice at 100 km/h.",
         )
 
         // ── Is it actually watching? ───────────────────────────────────────
         Note(
-            fixStatus ?: "Not watching — starts when the car connects and something is playing.",
+            fixStatus ?: "Not watching — starts when anything is playing, or when your car connects.",
             title = "GPS",
-            info = "Driving mode watches your speed while the car is connected (or " +
-                "the switch above is on by hand) and something is playing.\n\nWhile " +
-                "it is watching, a notification says so: that is what keeps Android " +
-                "delivering GPS fixes once you switch to your map. Android stops " +
-                "sending location to an app that is not on screen and has no such " +
-                "notification, which is why the alert used to go quiet the moment " +
-                "you opened Google Maps.\n\nIf this line says it is waiting for a " +
-                "fix for more than a minute or two, check that Location is on and " +
-                "that the phone can see the sky.",
+            info = "Your speed is watched whenever anything is playing on this phone — " +
+                "this app, Spotify, a podcast, anything — or whenever the car you " +
+                "picked in Driving connects, or you turn driving mode on by hand. Any " +
+                "one of those is enough; you do not need all three, and you do not " +
+                "need driving mode set up at all.\n\nWhile it is watching, a " +
+                "notification says so: that is what keeps Android delivering GPS " +
+                "fixes once you switch to your map. Android stops sending location " +
+                "to an app that is not on screen and has no such notification, which " +
+                "is why the alert used to go quiet the moment you opened Google " +
+                "Maps.\n\nIf this line says it is waiting for a fix for more than a " +
+                "minute or two, check that Location is on and that the phone can see " +
+                "the sky.",
         )
+
+        // The warning is a sound, a buzz and a notification. Only the last of those
+        // needs a permission, and it is the one a driver actually sees — so say when
+        // it is missing rather than letting two thirds of an alert look like all of it.
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            StatusLine(
+                "Notifications are off for CAMusic, so the on-screen warning cannot appear. " +
+                    "The sound and the buzz still work.",
+                health = Health.WARN,
+                accent = WarnAmber,
+            )
+        }
 
         // ── Limit source toggle: Auto-detect vs Manual ──────────────────────
         FieldLabel("Limit source")
@@ -439,7 +509,7 @@ private fun SpeedFeaturesRow(settings: AppSettings, accent: Color, scope: Corout
     ToggleRow(
         "Speed-adaptive volume",
         "Nudges volume up at speed to compensate for road noise, fading back down when you slow.",
-        adaptiveEnabled && granted, accent,
+        adaptiveEnabled && hasLocation, accent,
         info = "Road and wind noise rise with speed, so a level that was right in traffic is " +
             "too quiet on the motorway and much too loud coming off it. This moves the " +
             "volume with the speed instead of leaving you to.\n\nIt moves by a few steps, " +
@@ -448,7 +518,7 @@ private fun SpeedFeaturesRow(settings: AppSettings, accent: Color, scope: Corout
             "turning either on is what starts location; turning both off stops it.",
     ) { on -> requestThenSet(on) { settings.setSpeedAdaptiveVolume(on) } }
 
-    if ((alertEnabled || adaptiveEnabled) && !granted) {
+    if ((alertEnabled || adaptiveEnabled) && !hasLocation) {
         Note("Needs location permission. GPS speed only, and nothing is stored or sent anywhere.")
         OledButton("Allow location", accent = accent, outline = true) {
             askLocation.launch(Manifest.permission.ACCESS_FINE_LOCATION)

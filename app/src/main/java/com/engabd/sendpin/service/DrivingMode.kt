@@ -116,27 +116,38 @@ class DrivingMode(private val app: Context) {
     }.distinctUntilChanged().stateIn(scope, SharingStarted.Eagerly, false)
 
     /**
-     * Whether the GPS-driven speed features should be watching.
+     * Whether *driving mode itself* says a drive is under way.
      *
-     * [active] minus the bar's own dismissal. The X on the driving bar means "I do
-     * not want this transport over my map for the rest of this drive"; it does not
-     * mean "stop warning me about the speed limit", and reading it as both is how
-     * pressing X quietly switched a safety feature off with nothing on screen to say
-     * so. Everything else [active] requires still applies — driving mode is on, the
-     * car or the user asked for it, and there is something playing — because a GPS
-     * subscription held with nothing to duck is battery spent for no one.
+     * The car is connected, or the driver switched driving mode on by hand. That is
+     * all this answers now, and the narrowing is the point.
      *
-     * [SpeedMonitor] gates on this. Nothing else should: the bar itself must keep
+     * It used to be [active] minus the bar's dismissal — driving mode enabled, **and**
+     * the car connected or the tile tapped, **and** CAMusic itself holding the media
+     * session — and [SpeedMonitor] gated the speed-limit alert on the whole of it.
+     * Three of those four conditions have nothing to do with a speed warning, and
+     * each was its own silent way for the alert never to fire:
+     *
+     *  * **The "Driving controls" switch.** The speed alert lives on a different
+     *    settings page whose own copy says it is "not tied to driving mode's own
+     *    switch". It was tied to it. Someone who wanted a speed warning and no bar
+     *    over their map got neither.
+     *  * **A car that connected first.** [carReceiver] only ever sees ACL
+     *    *transitions*, and nothing asks the adapter what is connected at startup.
+     *    Get into the car, let Bluetooth pair, then open the app — the ordinary
+     *    order — and `carConnected` is false for the whole drive.
+     *  * **Music from another app.** `sessionOwner` is CAMusic's own session and
+     *    nothing else. A driver listening to Spotify, the radio, or a podcast is
+     *    still a driver going 20 over.
+     *
+     * [SpeedMonitor] now treats this as one of several ways in rather than the only
+     * one — see its own gate. Nothing else should read it: the bar itself must keep
      * following [active], dismissal and all.
      */
     val speedWatchActive: StateFlow<Boolean> = combine(
-        settings.drivingEnabled,
         carConnected,
         manualOverride,
-        owner.state,
-    ) { enabled, car, manual, playback ->
-        enabled && (car || manual) && playback.sessionOwner != PlaybackOwner.Who.NONE
-    }.distinctUntilChanged().stateIn(scope, SharingStarted.Eagerly, false)
+    ) { car, manual -> car || manual }
+        .distinctUntilChanged().stateIn(scope, SharingStarted.Eagerly, false)
 
     /** Turn it on or off by hand, for the tile and the Settings switch. */
     fun setManual(on: Boolean) {

@@ -13,24 +13,55 @@ import com.engabd.sendpin.audio.SpeedAdaptiveGain
 import com.engabd.sendpin.data.AppSettings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 /**
  * GPS speed, shared by the speed-limit alert (3.1) and speed-adaptive volume
  * (3.4) — one location subscription rather than two, and one place both features'
  * opt-in gating lives.
  *
- * Active only while [DrivingMode.speedWatchActive] is true *and* at least one of the
- * two features is turned on — nothing here asks for a location fix, or even keeps
- * its `ACCESS_FINE_LOCATION` permission live in any meaningful sense, for someone
- * who has both switched off.
+ * ## When it watches
+ *
+ * At least one of the two features has to be switched on — nothing here asks for a
+ * location fix, or even keeps its `ACCESS_FINE_LOCATION` permission live in any
+ * meaningful sense, for someone who has both switched off. That is the necessary
+ * half, and it has always been right.
+ *
+ * The other half is "is this a drive", and it used to be a single condition:
+ * [DrivingMode.speedWatchActive], which at the time meant driving mode's own switch
+ * **and** the nominated car connected or the tile tapped **and** CAMusic itself
+ * holding the media session. Every one of those could be false during a real drive
+ * with a real driver really speeding — see that property's own doc for the three
+ * ways — and when one was, the alert did not fire late or quietly. It did not fire
+ * at all, with no location subscription ever taken and nothing on any screen to say
+ * so.
+ *
+ * There are now three ways in, and any one of them is enough:
+ *
+ *  * driving mode says a drive is under way — the car is connected, or the driver
+ *    turned it on by hand;
+ *  * CAMusic holds a media session, playing or paused;
+ *  * **anything at all is playing audio on this phone** — Spotify, a podcast, a
+ *    navigation voice — per `AudioManager.isMusicActive`, which is the only global
+ *    answer the platform will give an ordinary app. See [otherAudioPlaying].
+ *
+ * What all three have in common is that the phone is in use for a journey, which is
+ * the honest version of the condition. What none of them is, any more, is a
+ * *requirement* that the driver first set up a feature they did not ask for.
  *
  * Speed-limit source: when [AppSettings.speedLimitAutoDetect] is enabled, the
  * alert uses [OfflineSpeedLimitProvider] to look up the posted limit from GPS
@@ -126,14 +157,34 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
 
     private val locationListener = LocationListener { location -> onLocation(location) }
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     fun start() {
         gateJob?.cancel()
         gateJob = scope.launch {
             combine(
-                drivingMode.speedWatchActive,
                 settings.speedLimitAlertEnabled,
                 settings.speedAdaptiveVolume,
-            ) { active, alert, adaptive -> active && (alert || adaptive) }
+            ) { alert, adaptive -> alert || adaptive }
+                .distinctUntilChanged()
+                // `flatMapLatest`, so the journey flows below — one of which polls —
+                // exist only while a feature that wants them is switched on. With
+                // both off this collapses to a constant and nothing runs at all,
+                // which is the promise in the class doc.
+                .flatMapLatest { featureOn ->
+                    if (!featureOn) {
+                        flowOf(false)
+                    } else {
+                        combine(
+                            drivingMode.speedWatchActive,
+                            SendpinApp.instance.playbackOwner.state,
+                            otherAudioPlaying(),
+                        ) { driving, playback, otherAudio ->
+                            driving ||
+                                playback.sessionOwner != PlaybackOwner.Who.NONE ||
+                                otherAudio
+                        }
+                    }
+                }
                 .distinctUntilChanged()
                 .collect { shouldRun -> if (shouldRun) startLocationUpdates() else stopLocationUpdates() }
         }
@@ -163,6 +214,35 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
         stopLocationUpdates()
     }
 
+    /**
+     * Whether some *other* app is playing audio out of this phone.
+     *
+     * A driver listening to Spotify, a podcast or the radio is the ordinary case,
+     * not the exotic one, and until now it was invisible here: the only playback
+     * signal the gate had was CAMusic's own session, so the speed alert was
+     * effectively a feature for people who both wanted a speed warning and happened
+     * to be playing music through this particular app at the time.
+     *
+     * `isMusicActive` is the only global answer available. `registerAudioPlaybackCallback`
+     * looks like the better tool and is not: since Android 9 an app without
+     * `MODIFY_AUDIO_ROUTING` is shown its own playback configurations and nothing
+     * else, so it would report exactly the thing we already know. So this polls.
+     *
+     * Cheap enough to be uninteresting — one binder call every [AUDIO_POLL_MS] — and
+     * it runs only while the alert or the adaptive volume is switched on, because
+     * the gate `flatMapLatest`es it away otherwise. The interval is the delay before
+     * a watch *starts* after the driver presses play in another app; it costs a
+     * driver nothing, since the confirmation window they then have to hold a speed
+     * over is measured from the first fix either way.
+     */
+    private fun otherAudioPlaying(): Flow<Boolean> = flow {
+        val audio = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
+        while (true) {
+            emit(runCatching { audio?.isMusicActive == true }.getOrDefault(false))
+            delay(AUDIO_POLL_MS)
+        }
+    }.distinctUntilChanged()
+
     private fun startLocationUpdates() {
         if (listening) return
         // Inline rather than through [DrivingLocationService.hasLocationPermission],
@@ -174,6 +254,10 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
             ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) !=
             PackageManager.PERMISSION_GRANTED
         ) {
+            // Said out loud rather than returned silently. This is one of the two
+            // ways the watch can decline to start, and a settings card reporting
+            // nothing at all is what made every such refusal look identical.
+            _fixStatus.value = "Location permission is not granted, so speed cannot be read."
             return
         }
         listening = true
@@ -185,8 +269,9 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
         // first would spend the gap being the very background request the service
         // exists to prevent.
         DrivingLocationService.start(context)
-        // Lazily initialise the speed-limit provider. It opens the database if present;
-        // if not, it just returns null for all queries until the user downloads the data.
+        // Lazily initialise the speed-limit provider. It opens the database if it has
+        // already been expanded out of the APK; if not, it expands it on IO and
+        // answers null for every query until that lands.
         if (speedLimitProvider == null) {
             val provider = OfflineSpeedLimitProvider(context)
             speedLimitProvider = provider
@@ -194,7 +279,12 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
             // so the settings card can say "unpacking" and then name the data.
             statusJob?.cancel()
             statusJob = scope.launch {
-                provider.ready.collect { _limitDataStatus.value = provider.statusDescription() }
+                // Both flows, not just `ready`. A failed unpack never moves `ready`,
+                // so on `ready` alone the card would sit on "Unpacking speed-limit
+                // data…" for as long as the app was open and never say why not.
+                combine(provider.ready, provider.failure) { _, _ -> provider.statusDescription() }
+                    .distinctUntilChanged()
+                    .collect { _limitDataStatus.value = it }
             }
         }
         // The fused provider is the platform's own blend of GPS, the sensors and the
@@ -317,7 +407,16 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
         if (limit == null || limit <= 0) return
         val trigger = SpeedAlert.triggerSpeedKmh(limit, tolerancePct)
         if (alertTracker.onReading(kmh, trigger, nowMs)) {
+            // Heard, seen and felt — see [SpeedAlertNotifier]'s doc. A tone alone
+            // is the one warning a car is worst at delivering, and the report this
+            // came from could not even say whether it had fired.
             SpeedAlertSound.play(context, alertSoundId)
+            SpeedAlertNotifier.alert(
+                context,
+                speedKmh = kmh.roundToInt(),
+                limitKmh = limit,
+                autoDetected = autoDetect && _detectedLimitKmh.value != null,
+            )
         }
     }
 
@@ -384,5 +483,15 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
 
         /** Two fixes further apart than this are a resumed subscription, not a journey. */
         private const val MAX_DERIVE_GAP_MS = 30_000L
+
+        /**
+         * How often another app's playback is checked for. See [otherAudioPlaying].
+         *
+         * Ten seconds is a compromise between a binder call that costs nothing and
+         * one that runs constantly. It bounds how long after pressing play in
+         * another app the watch begins, and nothing else: it is not in the path of
+         * any fix, any lookup or any alert once watching has started.
+         */
+        private const val AUDIO_POLL_MS = 10_000L
     }
 }

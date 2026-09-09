@@ -52,6 +52,7 @@ class OfflineSpeedLimitProvider(
     private val cache = SpeedLimitCache(maxSize = 256)
 
     override val ready: StateFlow<Boolean> = database.ready
+    override val failure: StateFlow<String?> = database.failure
 
     init {
         // Open the file if a previous session already expanded it.
@@ -93,6 +94,12 @@ class OfflineSpeedLimitProvider(
 
     override fun statusDescription(): String {
         if (!ready.value) {
+            // A known failure beats a progress message. This used to say
+            // "Unpacking…" in every not-ready case, including the ones that were
+            // never going to finish, so a driver whose phone had no room for 78 MB
+            // watched a progress line forever and had nothing to report but "it
+            // doesn't work".
+            failure.value?.let { return it }
             return if (database.isDatabasePresent()) "Speed-limit data, opening…"
             else "Unpacking speed-limit data…"
         }

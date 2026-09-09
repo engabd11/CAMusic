@@ -379,6 +379,8 @@ variety, streaks, lossless share, and where your music actually came from.
 - **Driving mode.** Large targets, swipe anywhere, and GPS speed-limit awareness from an offline
   geohashed database of 471,569 zones that ships inside the app. Picture-in-Picture is the
   permission-free default, with a full-width overlay behind it, triggered by the car's Bluetooth.
+  The speed alert is independent of all that: it watches whenever anything is playing on the
+  phone, and warns with a sound, a buzz and an on-screen notification at once.
 - **Home-screen widget** with artwork and transport controls.
 - **Tablets and foldables** get an adaptive grid layout.
 

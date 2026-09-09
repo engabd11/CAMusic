@@ -44,8 +44,22 @@ interface SpeedLimitProvider {
     val ready: kotlinx.coroutines.flow.StateFlow<Boolean>
 
     /**
+     * Why the data is unavailable, or null when there is nothing wrong.
+     *
+     * [ready] alone cannot distinguish "still unpacking" from "will never unpack",
+     * and the settings card said the former for both — so an unpack that failed for
+     * any reason (no room on the device, a truncated read, a build with no asset in
+     * it) reported perpetual progress on a step that was never going to finish.
+     * This is the second half of that answer, and it is a flow so the card updates
+     * the moment a failure is known rather than waiting on a [ready] that never comes.
+     */
+    val failure: kotlinx.coroutines.flow.StateFlow<String?>
+
+    /**
      * Human-readable description of the data source for the UI — e.g.
-     * "Victoria speed zones (July 2026)" or "Not downloaded yet".
+     * "Victoria speed zones (July 2026)" or why there is none.
+     *
+     * Re-read whenever [ready] or [failure] changes.
      */
     fun statusDescription(): String
 
