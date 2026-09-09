@@ -86,12 +86,8 @@ fun TvNowPlayingScreen(viewModel: NowPlayingViewModel = viewModel()) {
                 // One line here, not two: a marquee scrolls its content as a single
                 // row, so a two-line title would be laid out on one line and only the
                 // first screenful ever shown. Scrolling one line shows all of it.
-                //
-                // And it only scrolls while something is playing, the same rule the
-                // phone's screens follow — more so here, if anything: a paused TV
-                // sits on this screen for as long as the room leaves it there.
                 maxLines = 1, overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.titleMarquee(running = state.isPlaying),
+                modifier = Modifier.titleMarquee(),
             )
             Text(
                 state.artist.ifBlank { "Unknown artist" },

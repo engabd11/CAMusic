@@ -328,7 +328,7 @@ fun TrackTitleBlock(state: NowPlayingViewModel.State, showComposer: Boolean = tr
             fontFamily = AppFont, fontWeight = FontWeight.ExtraBold,
             fontSize = 27.sp, letterSpacing = (-0.5).sp, maxLines = 1,
             overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
-            modifier = Modifier.titleMarquee(running = state.isPlaying),
+            modifier = Modifier.titleMarquee(),
         )
     }
     if (state.artist.isNotBlank()) {
@@ -338,7 +338,7 @@ fun TrackTitleBlock(state: NowPlayingViewModel.State, showComposer: Boolean = tr
                 state.artist, color = inkOn(0.62f), fontFamily = AppFont,
                 fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1,
                 overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
-                modifier = Modifier.titleMarquee(running = state.isPlaying),
+                modifier = Modifier.titleMarquee(),
             )
         }
     }
@@ -355,7 +355,7 @@ fun TrackTitleBlock(state: NowPlayingViewModel.State, showComposer: Boolean = tr
             Text(
                 state.album, color = TextFaint, style = MaterialTheme.typography.bodyMedium,
                 maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
-                modifier = Modifier.titleMarquee(running = state.isPlaying),
+                modifier = Modifier.titleMarquee(),
             )
         }
     }
