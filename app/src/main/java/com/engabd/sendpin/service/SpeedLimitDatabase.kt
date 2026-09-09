@@ -11,11 +11,14 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.zip.GZIPInputStream
 
 /**
  * Manages the offline speed-limit SQLite database on the device.
@@ -29,13 +32,20 @@ import java.util.concurrent.atomic.AtomicBoolean
  *  - `meta` — version, source, generation date
  *
  * The database **ships with the app**. `app/src/main/assets/speed_zones.sqlite3.gz`
- * is what is committed, but the asset this code opens is called
+ * is what is committed (in git-lfs), but the asset this code opens is called
  * `speed_zones.sqlite3`, without the suffix, and arrives already expanded:
- * **AGP's asset merger gunzips any `.gz` under `assets/` at build time.** So the
- * gzip is purely a way to keep 78 MB out of the git history - AAPT then deflates
- * it back down to ~39 MB inside the APK on its own, and neither end needs a
- * `GZIPInputStream`. Do not "fix" the missing suffix here; the file genuinely is
- * not there at runtime.
+ * **AGP's asset merger gunzips any `.gz` under `assets/` at build time.** The gzip
+ * is purely a way to keep 78 MB out of the git history — AAPT then deflates it back
+ * down to ~39 MB inside the APK on its own, and neither end needs a
+ * `GZIPInputStream`. The proof that the merge step is real is in `.github/workflows`:
+ * a checkout without `lfs: true` fails at `mergeAssets` with "Not in GZIP format",
+ * because the merger tried to gunzip a 130-byte pointer file.
+ *
+ * So the missing suffix is correct and must not be "fixed". [expandAsset] does now
+ * accept either name and gunzips or does not according to the bytes rather than the
+ * suffix — see [ASSET_NAMES] and [GZIP_MAGIC] — but that is belt-and-braces against
+ * a build-tool behaviour this code cannot see and does not control, not a fix for
+ * anything that was failing.
  *
  * It is copied into the app's files directory once, the first time driving mode
  * actually needs it - not at install time, and never on the main thread. SQLite
@@ -43,10 +53,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * It used to be described as a downloaded asset, and SpeedLimitDownloadManager was
  * written to fetch it. Nothing ever instantiated that class and no URL was ever
- * configured, so `ready` was false on every device that has run this code, and
- * auto-detect silently fell back to the manually-typed limit while the settings
- * page promised a monthly-updated download. Bundling is what makes the claim
- * true; the downloader is gone.
+ * configured, so the settings page promised a monthly-updated download that no code
+ * path could perform. Bundling is what makes the claim true; the downloader is gone.
  */
 class SpeedLimitDatabase(context: Context) {
 
@@ -55,6 +63,17 @@ class SpeedLimitDatabase(context: Context) {
 
     private val _ready = MutableStateFlow(false)
     val ready: StateFlow<Boolean> = _ready.asStateFlow()
+
+    /**
+     * Why the data is not available, or null while it is fine or still arriving.
+     *
+     * The settings card could previously only ever say "Unpacking speed-limit
+     * data…", and said it forever when the unpack could not succeed — which is
+     * precisely the state every device was in. A failure that the driver can read
+     * is the difference between a bug report and a shrug.
+     */
+    private val _failure = MutableStateFlow<String?>(null)
+    val failure: StateFlow<String?> = _failure.asStateFlow()
 
     private var db: SQLiteDatabase? = null
 
@@ -105,8 +124,21 @@ class SpeedLimitDatabase(context: Context) {
         if (_ready.value || !expanding.compareAndSet(false, true)) return
         scope.launch {
             try {
+                // A file that is present but not a database is worse than no file:
+                // `dbFile.exists()` is the only thing standing between a bad expand
+                // and another attempt, so a half-written or truncated one has to be
+                // cleared here or auto-detect stays broken until the app is
+                // reinstalled. [looksLikeSqlite] is what tells the two apart.
+                if (dbFile.exists() && !looksLikeSqlite(dbFile)) dbFile.delete()
                 if (!dbFile.exists()) expandAsset()
-                open()
+                if (!open()) {
+                    // Expanded but unopenable. Drop it so the next start retries
+                    // rather than inheriting the same unusable file forever.
+                    if (dbFile.exists()) {
+                        dbFile.delete()
+                        if (_failure.value == null) _failure.value = "Speed-limit data could not be opened."
+                    }
+                }
             } finally {
                 expanding.set(false)
             }
@@ -116,25 +148,54 @@ class SpeedLimitDatabase(context: Context) {
     /**
      * Copy the shipped asset out to [dbFile], where SQLite can open it.
      *
-     * A plain stream copy: the asset is stored deflated in the APK and
-     * `AssetManager.open` already inflates it (see the class doc on the `.gz`
-     * suffix disappearing at build time).
+     * ## Both names, and the bytes decide
+     *
+     * The asset is looked for under [ASSET_NAMES] in order, and whether to gunzip is
+     * decided by *sniffing its first two bytes* rather than by its suffix. Neither
+     * is load-bearing today — a normal build hands us the plain, already-expanded
+     * name — but the alternative is a runtime that silently produces no speed limits
+     * if the merger's gunzip behaviour ever changes, which is not a failure anyone
+     * would connect back to a build tool. Both questions are cheap and both are
+     * answered from the file itself.
      *
      * Written to a temp file and renamed, so being killed mid-copy leaves no
-     * half-written database for [open] to find and fail on.
+     * half-written database for [open] to find and fail on — and verified before the
+     * rename, so a truncated stream never becomes a permanently broken install.
+     * That last part is the one that was genuinely missing: [prepare] only re-expands
+     * when the file is *absent*, so any bad expand used to be permanent.
      */
     private fun expandAsset() {
         val tmp = File(dbFile.parentFile, DB_FILENAME + ".tmp")
         try {
             tmp.parentFile?.mkdirs()
-            appContext.assets.open(ASSET_NAME).use { input ->
-                FileOutputStream(tmp).use { output -> input.copyTo(output) }
+            val opened = ASSET_NAMES.firstNotNullOfOrNull { name ->
+                runCatching { appContext.assets.open(name) }.getOrNull()
             }
-            if (!tmp.renameTo(dbFile)) tmp.delete()
+            if (opened == null) {
+                _failure.value = "No speed-limit data in this build of the app."
+                return
+            }
+            opened.use { raw ->
+                decompressIfGzipped(raw).use { input ->
+                    FileOutputStream(tmp).use { output -> input.copyTo(output) }
+                }
+            }
+            if (!looksLikeSqlite(tmp)) {
+                _failure.value = "Speed-limit data is damaged; auto-detect is using your manual limit."
+                tmp.delete()
+                return
+            }
+            if (tmp.renameTo(dbFile)) {
+                _failure.value = null
+            } else {
+                _failure.value = "Speed-limit data could not be saved to this phone."
+                tmp.delete()
+            }
         } catch (e: Exception) {
-            // No asset in this build, no room on the device, a truncated stream:
-            // all of them mean the same thing to the caller, which is that
-            // auto-detect has no data and the manual limit stands.
+            // No room on the device, a truncated stream, a read error: all of them
+            // mean the same thing to the caller, which is that auto-detect has no
+            // data and the manual limit stands. The message is for the driver.
+            _failure.value = "Speed-limit data could not be unpacked (${e.javaClass.simpleName})."
             runCatching { tmp.delete() }
         }
     }
@@ -313,9 +374,66 @@ class SpeedLimitDatabase(context: Context) {
         }
 
         /**
-         * The database asset as it exists at runtime - no `.gz`, because AGP
-         * expanded it at build time. See the class doc.
+         * Where the bundled database might be, most-likely first.
+         *
+         * The plain name is what a normal build produces, because AGP's asset merger
+         * has already gunzipped the committed `.gz` — see the class doc. The `.gz`
+         * name is a fallback for a build that did not, and costs one failed
+         * `assets.open` when it is not needed.
          */
-        const val ASSET_NAME = "speed_zones.sqlite3"
+        val ASSET_NAMES = listOf("speed_zones.sqlite3", "speed_zones.sqlite3.gz")
+
+        /**
+         * The stream, gunzipped if it is gzip.
+         *
+         * Sniffed rather than assumed. `AssetManager.open` already undoes the APK's own
+         * deflate, so what arrives here is whatever was committed — and that is the
+         * thing worth checking, because the committed file's name and the committed
+         * file's format have disagreed once already.
+         */
+        internal fun decompressIfGzipped(raw: InputStream): InputStream {
+            val buffered = BufferedInputStream(raw)
+            buffered.mark(GZIP_MAGIC.size)
+            val head = readExactly(buffered, GZIP_MAGIC.size)
+            buffered.reset()
+            return if (head != null && head.contentEquals(GZIP_MAGIC)) GZIPInputStream(buffered) else buffered
+        }
+
+        /**
+         * Whether [file] starts with SQLite's own header.
+         *
+         * The cheapest possible answer to "did the expand actually produce a database",
+         * and the guard that keeps one bad unpack from being permanent: [prepare] only
+         * ever re-expands when the file is missing, so a 40-byte truncation would
+         * otherwise sit there failing to open for the life of the install.
+         */
+        internal fun looksLikeSqlite(file: File): Boolean = runCatching {
+            file.inputStream().use { stream -> readExactly(stream, SQLITE_MAGIC.size)?.contentEquals(SQLITE_MAGIC) == true }
+        }.getOrDefault(false)
+
+        /**
+         * [count] bytes from [stream], or null if it ends first.
+         *
+         * A loop rather than one `read`, because a single `read(ByteArray)` is allowed
+         * to return fewer bytes than asked for and both callers here are comparing the
+         * result against a fixed magic number — a short read would quietly read as "not
+         * gzip" or "not a database" and take the wrong branch on a perfectly good file.
+         */
+        private fun readExactly(stream: InputStream, count: Int): ByteArray? {
+            val buffer = ByteArray(count)
+            var filled = 0
+            while (filled < count) {
+                val read = stream.read(buffer, filled, count - filled)
+                if (read <= 0) return null
+                filled += read
+            }
+            return buffer
+        }
+
+        /** gzip's two-byte header. See [decompressIfGzipped]. */
+        private val GZIP_MAGIC = byteArrayOf(0x1f, 0x8b.toByte())
+
+        /** The first six bytes of `SQLite format 3\u0000`. See [looksLikeSqlite]. */
+        private val SQLITE_MAGIC = "SQLite".toByteArray(Charsets.US_ASCII)
     }
 }

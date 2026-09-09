@@ -1,10 +1,18 @@
 package com.engabd.sendpin.service
 
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.zip.GZIPOutputStream
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 
 /**
  * The wire format between `tools/build_speed_db.py` and the speed-limit reader.
@@ -108,5 +116,86 @@ class SpeedLimitDatabaseTest {
     fun `an empty blob is no segments rather than an exception`() {
         assertTrue(SpeedLimitDatabase.parseSegments(ByteArray(0)).isEmpty())
         assertTrue(SpeedLimitDatabase.parseSegments(byteArrayOf(0x01)).isEmpty())
+    }
+
+    // ── Unpacking the bundled asset ──────────────────────────────────────────
+    //
+    // The two questions [expandAsset] answers from the bytes rather than from a
+    // filename. A normal build hands it an already-gunzipped asset, so neither
+    // branch is exercised on the happy path — which is exactly why they are worth
+    // pinning here: a wrong answer to either shows up as "auto-detect just doesn't
+    // work", on a phone, in a car, with nothing on screen to say why.
+
+    @Rule
+    @JvmField
+    val temp = TemporaryFolder()
+
+    private fun gzip(bytes: ByteArray): ByteArray {
+        val out = ByteArrayOutputStream()
+        GZIPOutputStream(out).use { it.write(bytes) }
+        return out.toByteArray()
+    }
+
+    @Test
+    fun `a gzipped stream is expanded`() {
+        val payload = "SQLite format 3\u0000and then some".toByteArray()
+
+        val out = SpeedLimitDatabase.decompressIfGzipped(ByteArrayInputStream(gzip(payload)))
+            .use { it.readBytes() }
+
+        assertArrayEquals(payload, out)
+    }
+
+    @Test
+    fun `a plain stream is passed through untouched`() {
+        // The case a normal build actually hits: AGP's asset merger has already
+        // gunzipped the committed file, so what arrives is the database itself.
+        val payload = "SQLite format 3\u0000plain".toByteArray()
+
+        val out = SpeedLimitDatabase.decompressIfGzipped(ByteArrayInputStream(payload))
+            .use { it.readBytes() }
+
+        assertArrayEquals(payload, out)
+    }
+
+    @Test
+    fun `a stream too short to hold a magic number is passed through, not dropped`() {
+        val out = SpeedLimitDatabase.decompressIfGzipped(ByteArrayInputStream(byteArrayOf(0x1f)))
+            .use { it.readBytes() }
+
+        assertArrayEquals(byteArrayOf(0x1f), out)
+    }
+
+    @Test
+    fun `a real database header is recognised`() {
+        val file = temp.newFile()
+        file.writeBytes("SQLite format 3\u0000".toByteArray())
+
+        assertTrue(SpeedLimitDatabase.looksLikeSqlite(file))
+    }
+
+    @Test
+    fun `an lfs pointer checked in instead of the database is not`() {
+        // What a clone without `git lfs pull` leaves behind. It is caught at build
+        // time today, but the check costs nothing and the failure it prevents —
+        // a non-database file that `prepare` will never replace, because `prepare`
+        // only re-expands when the file is *missing* — is permanent.
+        val file = temp.newFile()
+        file.writeBytes("version https://git-lfs.github.com/spec/v1\n".toByteArray())
+
+        assertFalse(SpeedLimitDatabase.looksLikeSqlite(file))
+    }
+
+    @Test
+    fun `a truncated expand is not mistaken for a database`() {
+        val file = temp.newFile()
+        file.writeBytes("SQL".toByteArray())
+
+        assertFalse(SpeedLimitDatabase.looksLikeSqlite(file))
+    }
+
+    @Test
+    fun `a file that is not there is not a database`() {
+        assertFalse(SpeedLimitDatabase.looksLikeSqlite(File(temp.root, "nothing-here")))
     }
 }
