@@ -349,13 +349,29 @@ fun rememberReducedMotion(): Boolean {
  * already gates the shimmer and the artwork drift; a scrolling title is exactly the kind
  * of ambient movement that setting exists to stop.
  *
+ * It does not run while playback is paused or idle. Callers pass [running] from the
+ * player state: a paused screen is a still screen, the title is not going anywhere the
+ * listener is following, and the per-frame invalidation a scrolling title costs is pure
+ * battery on a display the user is not watching. The mini bar and the full player both
+ * gate on `st.isPlaying`.
+ *
  * Note for callers: a marquee needs a bounded width, and it left-aligns once it starts
  * moving. Centre the *container* rather than the text, or a centred title will appear to
  * jump left as the animation begins.
  */
 @Composable
-fun Modifier.titleMarquee(restMs: Int = TITLE_MARQUEE_REST_MS): Modifier {
-    if (LocalReducedMotion.current) return this
+fun Modifier.titleMarquee(
+    running: Boolean = true,
+    restMs: Int = TITLE_MARQUEE_REST_MS,
+): Modifier {
+    // Paused shares the reduced-motion gate: a marquee is ambient movement, and with
+    // nothing playing the listener is not listening and the title is not going
+    // anywhere. A paused screen is a still screen (the same rule WaveSeekBar's phase
+    // gate follows) — the churn this stops was measurable: a paused full player with
+    // a long title held ~60 fps for the marquee alone. Compose already suspends a
+    // marquee when the window is not visible, so screen-off and backgrounded were
+    // covered; `running` closes the paused-and-visible case.
+    if (!running || LocalReducedMotion.current) return this
     return this.basicMarquee(
         iterations = Int.MAX_VALUE,
         // Both delays, not just the repeat: the first pass should not start the instant
