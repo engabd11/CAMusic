@@ -16,16 +16,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
-import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -34,34 +32,34 @@ import kotlin.math.roundToInt
  * (3.4) — one location subscription rather than two, and one place both features'
  * opt-in gating lives.
  *
- * ## When it watches
+ * ## When it watches — and when it absolutely does not
  *
- * At least one of the two features has to be switched on — nothing here asks for a
- * location fix, or even keeps its `ACCESS_FINE_LOCATION` permission live in any
- * meaningful sense, for someone who has both switched off. That is the necessary
- * half, and it has always been right.
+ * Two things have to agree, and [SpeedWatchGate.shouldWatch] is the whole policy:
  *
- * The other half is "is this a drive", and it used to be a single condition:
- * [DrivingMode.speedWatchActive], which at the time meant driving mode's own switch
- * **and** the nominated car connected or the tile tapped **and** CAMusic itself
- * holding the media session. Every one of those could be false during a real drive
- * with a real driver really speeding — see that property's own doc for the three
- * ways — and when one was, the alert did not fire late or quietly. It did not fire
- * at all, with no location subscription ever taken and nothing on any screen to say
- * so.
+ *  * at least one of the two features is switched on — nothing here asks for a
+ *    location fix, or even keeps its `ACCESS_FINE_LOCATION` permission live in any
+ *    meaningful sense, for someone who has both switched off;
+ *  * **the phone is connected to the designated car Bluetooth device** — the bonded
+ *    MAC the user nominated in Settings, per [DrivingMode.carConnected].
  *
- * There are now three ways in, and any one of them is enough:
+ * The second condition is strict, on purpose, and it is where this class's battery
+ * story used to leak. There were once three ways in, any one of which started a
+ * fix-a-second subscription: driving mode's car-or-manual override, CAMusic
+ * holding a media session, and *anything at all playing audio on the phone* —
+ * Spotify, a podcast, a navigation voice, polled every ten seconds via
+ * `AudioManager.isMusicActive`. All three read "audio is playing", which is not
+ * evidence of a journey. Music at a desk, a podcast on a train, a speaker playing
+ * in the kitchen — any of them kept GPS warm for as long as the audio ran, and GPS
+ * is the single most expensive sensor a phone has. The car link is the one signal
+ * that actually means a drive, and the platform delivers it for free: ACL
+ * broadcasts start the watch the moment the car connects and tear it down the
+ * moment it severs, with no polling and no delay in either direction.
  *
- *  * driving mode says a drive is under way — the car is connected, or the driver
- *    turned it on by hand;
- *  * CAMusic holds a media session, playing or paused;
- *  * **anything at all is playing audio on this phone** — Spotify, a podcast, a
- *    navigation voice — per `AudioManager.isMusicActive`, which is the only global
- *    answer the platform will give an ordinary app. See [otherAudioPlaying].
- *
- * What all three have in common is that the phone is in use for a journey, which is
- * the honest version of the condition. What none of them is, any more, is a
- * *requirement* that the driver first set up a feature they did not ask for.
+ * The deliberate cost of the strictness: a manual tile tap no longer starts GPS
+ * (it still shows the driving bar — that is about controls, not about being in a
+ * car), and neither does playback. A driver in a car with a broken Bluetooth
+ * stereo gets no speed features until they nominate a device that connects; that
+ * is the honest price of never burning battery for a phone that is not in a car.
  *
  * Speed-limit source: when [AppSettings.speedLimitAutoDetect] is enabled, the
  * alert uses [OfflineSpeedLimitProvider] to look up the posted limit from GPS
@@ -166,23 +164,22 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
                 settings.speedAdaptiveVolume,
             ) { alert, adaptive -> alert || adaptive }
                 .distinctUntilChanged()
-                // `flatMapLatest`, so the journey flows below — one of which polls —
-                // exist only while a feature that wants them is switched on. With
-                // both off this collapses to a constant and nothing runs at all,
-                // which is the promise in the class doc.
+                // `flatMapLatest`, so the car-link flow below is subscribed only
+                // while a feature that wants it is switched on. With both off this
+                // collapses to a constant and nothing runs at all, which is the
+                // promise in the class doc.
                 .flatMapLatest { featureOn ->
                     if (!featureOn) {
                         flowOf(false)
                     } else {
-                        combine(
-                            drivingMode.speedWatchActive,
-                            SendpinApp.instance.playbackOwner.state,
-                            otherAudioPlaying(),
-                        ) { driving, playback, otherAudio ->
-                            driving ||
-                                playback.sessionOwner != PlaybackOwner.Who.NONE ||
-                                otherAudio
-                        }
+                        // The strict battery gate: GPS only while the phone is
+                        // connected to the designated car Bluetooth device. The
+                        // connection lives in [DrivingMode], fed by ACL broadcasts
+                        // and the startup query — no polling, no audio sniffing.
+                        // A severance flows through here in the same main-loop
+                        // dispatch, so `stopLocationUpdates` runs the moment the
+                        // link drops.
+                        drivingMode.carConnected.map { SpeedWatchGate.shouldWatch(featureOn, it) }
                     }
                 }
                 .distinctUntilChanged()
@@ -213,35 +210,6 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
         settingsJob?.cancel()
         stopLocationUpdates()
     }
-
-    /**
-     * Whether some *other* app is playing audio out of this phone.
-     *
-     * A driver listening to Spotify, a podcast or the radio is the ordinary case,
-     * not the exotic one, and until now it was invisible here: the only playback
-     * signal the gate had was CAMusic's own session, so the speed alert was
-     * effectively a feature for people who both wanted a speed warning and happened
-     * to be playing music through this particular app at the time.
-     *
-     * `isMusicActive` is the only global answer available. `registerAudioPlaybackCallback`
-     * looks like the better tool and is not: since Android 9 an app without
-     * `MODIFY_AUDIO_ROUTING` is shown its own playback configurations and nothing
-     * else, so it would report exactly the thing we already know. So this polls.
-     *
-     * Cheap enough to be uninteresting — one binder call every [AUDIO_POLL_MS] — and
-     * it runs only while the alert or the adaptive volume is switched on, because
-     * the gate `flatMapLatest`es it away otherwise. The interval is the delay before
-     * a watch *starts* after the driver presses play in another app; it costs a
-     * driver nothing, since the confirmation window they then have to hold a speed
-     * over is measured from the first fix either way.
-     */
-    private fun otherAudioPlaying(): Flow<Boolean> = flow {
-        val audio = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
-        while (true) {
-            emit(runCatching { audio?.isMusicActive == true }.getOrDefault(false))
-            delay(AUDIO_POLL_MS)
-        }
-    }.distinctUntilChanged()
 
     private fun startLocationUpdates() {
         if (listening) return
@@ -323,7 +291,7 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
         DrivingLocationService.stop(context)
         // Close the speed-limit provider to release the SQLite file handle. It
         // will be re-opened lazily when location updates resume. Keeping it open
-        // while driving mode is off wastes a file descriptor for no purpose.
+        // while the car is not connected wastes a file descriptor for no purpose.
         statusJob?.cancel()
         statusJob = null
         _limitDataStatus.value = null
@@ -483,15 +451,5 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
 
         /** Two fixes further apart than this are a resumed subscription, not a journey. */
         private const val MAX_DERIVE_GAP_MS = 30_000L
-
-        /**
-         * How often another app's playback is checked for. See [otherAudioPlaying].
-         *
-         * Ten seconds is a compromise between a binder call that costs nothing and
-         * one that runs constantly. It bounds how long after pressing play in
-         * another app the watch begins, and nothing else: it is not in the path of
-         * any fix, any lookup or any alert once watching has started.
-         */
-        private const val AUDIO_POLL_MS = 10_000L
     }
 }

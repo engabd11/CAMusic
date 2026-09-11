@@ -34,9 +34,11 @@ import com.engabd.sendpin.MainActivity
  * car went. There was nothing to see: no error, no callback, no beep.
  *
  * This service is one line of purpose and a notification. It runs only while
- * [SpeedMonitor] is actually listening — which is itself gated on driving mode being
- * on *and* one of the two speed features being enabled *and* the location permission
- * being granted — and it stops the moment that stops being true.
+ * [SpeedMonitor] is actually listening — which is itself gated on the designated
+ * car Bluetooth device being *connected*, one of the two speed features being
+ * enabled, and the location permission being granted — and it stops the moment
+ * any of those stops being true. The Bluetooth link going down tears the whole
+ * thing down with it: no subscription, no service, no notification, no battery.
  *
  * ## What it deliberately does not do
  *
