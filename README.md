@@ -582,10 +582,11 @@ anything that makes the light show look better in a real room.
 
 ## Credits
 
-CAMusic is developed by Cyborg Automation AU. It builds on
-[Music Assistant](https://music-assistant.io), the Sendspin protocol, and
-[syncoV2](https://github.com/oliverhoefling/syncoV2), whose colour extraction and effect model
-the direct light path is a port of. Clock sync follows MassDroid's approach.
+CAMusic would not have gotten through its first month of development without two projects that were already solving the same problems, in the open.
+
+[Music Assistant (music-assistant.io)](https://github.com/music-assistant/server)
+
+[MassDroid](https://github.com/sfortis/massdroid_native) by Dionysis Fortis
 
 ## License
 
