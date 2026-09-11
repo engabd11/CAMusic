@@ -1,11 +1,17 @@
 package com.engabd.sendpin.service
 
+import android.Manifest
+import android.annotation.SuppressLint
 import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothProfile
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.os.Build
+import androidx.core.content.ContextCompat
 import com.engabd.sendpin.data.AppSettings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -55,8 +61,28 @@ class DrivingMode(private val app: Context) {
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private val settings = AppSettings(app)
 
-    /** The car is connected, per [carReceiver]. */
-    private val carConnected = MutableStateFlow(false)
+    /**
+     * The nominated car is connected, per [carReceiver] and [refreshCarConnection].
+     * Mutable only on the main thread — the receiver, the settings collector and
+     * the profile-proxy callbacks all run there, which is also what keeps the
+     * epoch guard in [applyConnectionQuery] honest without any locking.
+     */
+    private val _carConnected = MutableStateFlow(false)
+
+    /**
+     * Whether the phone is connected to the *designated* car Bluetooth device.
+     *
+     * This is the strict battery gate for GPS: [SpeedMonitor] holds no location
+     * subscription unless this is true (and one of the speed features is on). It
+     * used to answer "car connected **or** the tile tapped" — the old
+     * `speedWatchActive` — and that "or" was the expensive part: a tile tap on the
+     * way to the shops kept a fix-a-second GPS subscription running for the rest
+     * of the day, and there was no way for the subscription to notice that no car
+     * was involved. A manual override still raises the driving bar — that is about
+     * having big controls on screen, not about being in a car — but it
+     * deliberately no longer starts GPS. Only the designated device does.
+     */
+    val carConnected: StateFlow<Boolean> = _carConnected
 
     /**
      * Switched on by hand — the tile, or the Settings switch.
@@ -93,6 +119,15 @@ class DrivingMode(private val app: Context) {
          * plausible "got out, got back in".
          */
         const val RECONNECT_DEBOUNCE_MS = 30_000L
+
+        /**
+         * The profiles [refreshCarConnection] consults for "is the car connected
+         * right now". A car stereo always speaks at least one of these: A2DP for
+         * media, HFP/HSP for calls. Both are asked because a head unit can bring
+         * either up without the other, and because a "no" from A2DP alone would
+         * not mean much before the hands-free answer came back.
+         */
+        val QUERIED_PROFILES = intArrayOf(BluetoothProfile.A2DP, BluetoothProfile.HEADSET)
     }
 
     /**
@@ -114,40 +149,6 @@ class DrivingMode(private val app: Context) {
         // vanish the moment it became most useful.
         enabled && (car || manual) && !hidden && playback.sessionOwner != PlaybackOwner.Who.NONE
     }.distinctUntilChanged().stateIn(scope, SharingStarted.Eagerly, false)
-
-    /**
-     * Whether *driving mode itself* says a drive is under way.
-     *
-     * The car is connected, or the driver switched driving mode on by hand. That is
-     * all this answers now, and the narrowing is the point.
-     *
-     * It used to be [active] minus the bar's dismissal — driving mode enabled, **and**
-     * the car connected or the tile tapped, **and** CAMusic itself holding the media
-     * session — and [SpeedMonitor] gated the speed-limit alert on the whole of it.
-     * Three of those four conditions have nothing to do with a speed warning, and
-     * each was its own silent way for the alert never to fire:
-     *
-     *  * **The "Driving controls" switch.** The speed alert lives on a different
-     *    settings page whose own copy says it is "not tied to driving mode's own
-     *    switch". It was tied to it. Someone who wanted a speed warning and no bar
-     *    over their map got neither.
-     *  * **A car that connected first.** [carReceiver] only ever sees ACL
-     *    *transitions*, and nothing asks the adapter what is connected at startup.
-     *    Get into the car, let Bluetooth pair, then open the app — the ordinary
-     *    order — and `carConnected` is false for the whole drive.
-     *  * **Music from another app.** `sessionOwner` is CAMusic's own session and
-     *    nothing else. A driver listening to Spotify, the radio, or a podcast is
-     *    still a driver going 20 over.
-     *
-     * [SpeedMonitor] now treats this as one of several ways in rather than the only
-     * one — see its own gate. Nothing else should read it: the bar itself must keep
-     * following [active], dismissal and all.
-     */
-    val speedWatchActive: StateFlow<Boolean> = combine(
-        carConnected,
-        manualOverride,
-    ) { car, manual -> car || manual }
-        .distinctUntilChanged().stateIn(scope, SharingStarted.Eagerly, false)
 
     /** Turn it on or off by hand, for the tile and the Settings switch. */
     fun setManual(on: Boolean) {
@@ -174,6 +175,13 @@ class DrivingMode(private val app: Context) {
      * The address is compared rather than the name. Names are user-editable and
      * duplicated across a household's devices; a bonded MAC is the identity the user
      * actually picked.
+     *
+     * This receiver is the trigger *and* the teardown for GPS: connect raises
+     * [_carConnected], which [SpeedMonitor] turns into a location subscription
+     * (plus its foreground-service anchor); disconnect clears it, and the gate
+     * tears both down immediately — `removeUpdates` and the service stop run in
+     * the same main-loop pass as this `onReceive`, with no delay, no debounce and
+     * no grace period. GPS is for the drive, and the drive ends when the car does.
      */
     private val carReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -191,7 +199,10 @@ class DrivingMode(private val app: Context) {
                 // A fresh drive starts clean — a dismissal from the last one must
                 // not carry over and leave the bar silently missing on this trip.
                 BluetoothDevice.ACTION_ACL_CONNECTED -> {
-                    carConnected.value = true
+                    // Invalidate any in-flight connection query: a broadcast is
+                    // newer information than a proxy answer that started earlier.
+                    connectionQueryEpoch++
+                    _carConnected.value = true
                     // …but only a *fresh* drive. A multi-profile head unit announces
                     // ACL connect once per profile (hands-free, then A2DP, sometimes
                     // more), several seconds apart. Clearing the dismissal on each of
@@ -201,8 +212,15 @@ class DrivingMode(private val app: Context) {
                     if (now - lastCarConnectAtMs > RECONNECT_DEBOUNCE_MS) dismissed.value = false
                     lastCarConnectAtMs = now
                 }
+                // DISCONNECT_REQUESTED arrives moments before DISCONNECTED — the
+                // remote side has said it is hanging up. Treating it as severed
+                // starts the GPS teardown a beat earlier; if the disconnect is
+                // aborted, a subsequent broadcast (or the next query) restores the
+                // state, and nothing here is expensive to redo.
+                BluetoothDevice.ACTION_ACL_DISCONNECT_REQUESTED,
                 BluetoothDevice.ACTION_ACL_DISCONNECTED -> {
-                    carConnected.value = false
+                    connectionQueryEpoch++
+                    _carConnected.value = false
                     // Leaving the car ends the drive, and with it any manual
                     // override. Otherwise a tile tap on the way to the shops would
                     // leave the bar up for the rest of the day.
@@ -219,6 +237,15 @@ class DrivingMode(private val app: Context) {
     @Volatile private var lastCarConnectAtMs: Long = 0L
 
     /**
+     * Bumped on every event that makes an in-flight [refreshCarConnection] answer
+     * stale: the receiver handling an ACL event for the car, or a new query being
+     * issued. A proxy query can take hundreds of milliseconds to answer (the bind
+     * to the Bluetooth service is a real IPC round trip), and an answer that
+     * belonged to the world before a broadcast must not overwrite it.
+     */
+    @Volatile private var connectionQueryEpoch: Long = 0L
+
+    /**
      * The chosen mechanism, mirrored for callers that cannot suspend.
      *
      * [DrivingPip.maybeEnter] runs inside `onUserLeaveHint`, which has to decide in
@@ -232,7 +259,13 @@ class DrivingMode(private val app: Context) {
         scope.launch {
             settings.drivingCarAddress.collect { address ->
                 wantedCarAddress = address
-                if (address.isBlank()) carConnected.value = false
+                // A new (or cleared) nomination ends the previous car's claim
+                // immediately — the old device must stop being treated as "the car"
+                // the moment it is no longer the one nominated, and the query below
+                // re-establishes the flag if the *new* car is already connected.
+                connectionQueryEpoch++
+                _carConnected.value = false
+                refreshCarConnection(address)
             }
         }
         // Registered once, for the life of the process. The receiver itself is cheap
@@ -249,6 +282,9 @@ class DrivingMode(private val app: Context) {
             val filter = IntentFilter().apply {
                 addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
                 addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
+                // Handled identically to DISCONNECTED above — the head start is
+                // the point — so it has to be in the filter or it never arrives.
+                addAction(BluetoothDevice.ACTION_ACL_DISCONNECT_REQUESTED)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 app.registerReceiver(carReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
@@ -294,6 +330,93 @@ class DrivingMode(private val app: Context) {
                     // enters. MainActivity watches [active] and enters on its way to
                     // the background instead — see its onUserLeaveHint.
                 }
+        }
+    }
+
+    /**
+     * Asks the adapter whether the nominated car is connected *right now*.
+     *
+     * [carReceiver] only ever sees ACL *transitions*, and nothing else replays the
+     * past: get into the car, let it pair, then open the app — the ordinary order —
+     * or have the process killed and restarted by the media service mid-drive, and
+     * no broadcast is coming. Without this query `carConnected` reads false for the
+     * whole drive, and the GPS gate — now strictly this flag — would keep the speed
+     * features dark for a trip that is already under way. It runs at process start,
+     * and again whenever the nomination changes.
+     *
+     * The answer arrives through profile proxies (see [QUERIED_PROFILES] for why
+     * there are two), which means a real IPC round trip — so nothing here blocks:
+     * the bind is async and the answer lands in [applyConnectionQuery] on the main
+     * thread. After that the receiver owns the state again; nothing is polled.
+     *
+     * Every exit is silent: a blank nomination, a missing `BLUETOOTH_CONNECT`
+     * grant, no adapter or an off one all leave the flag exactly where it was —
+     * false — which is the correct "no designated car" answer, and the next ACL
+     * broadcast repairs it the moment one arrives.
+     */
+    @SuppressLint("MissingPermission")
+    private fun refreshCarConnection(address: String) {
+        if (address.isBlank()) return
+        if (ContextCompat.checkSelfPermission(app, Manifest.permission.BLUETOOTH_CONNECT) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        val adapter = runCatching {
+            (app.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+        }.getOrNull() ?: return
+        if (!adapter.isEnabled) return
+        val queryEpoch = ++connectionQueryEpoch
+        val answers = mutableMapOf<Int, Boolean>()
+        for (profile in QUERIED_PROFILES) {
+            runCatching {
+                adapter.getProfileProxy(
+                    app,
+                    object : BluetoothProfile.ServiceListener {
+                        override fun onServiceConnected(profileId: Int, proxy: BluetoothProfile) {
+                            val connected = runCatching {
+                                proxy.connectedDevices.any { it.address == address }
+                            }.getOrDefault(false)
+                            runCatching { adapter.closeProfileProxy(profileId, proxy) }
+                            applyConnectionQuery(queryEpoch, answers, profileId, connected, address)
+                        }
+
+                        override fun onServiceDisconnected(profileId: Int) {
+                            // The proxy binding died, not the car link; ACL
+                            // broadcasts remain the authority on that.
+                        }
+                    },
+                    profile,
+                )
+            }
+        }
+    }
+
+    /**
+     * Fold one profile's answer into [_carConnected] — unless the world moved on
+     * while it was in flight.
+     *
+     * The guards are the epoch and the still-current nomination: a newer query, an
+     * ACL broadcast for the car, or a changed setting all invalidate the answer
+     * (each bumps or re-issues the epoch). A "yes" applies alone — any queried
+     * profile carrying the nominated device is a connected car. A "no" only
+     * demotes once *every* queried profile has answered, so a slow hands-free bind
+     * cannot briefly tear down a link A2DP has just reported.
+     */
+    private fun applyConnectionQuery(
+        queryEpoch: Long,
+        answers: MutableMap<Int, Boolean>,
+        profileId: Int,
+        connected: Boolean,
+        address: String,
+    ) {
+        if (queryEpoch != connectionQueryEpoch) return
+        if (wantedCarAddress != address) return
+        if (connected) {
+            _carConnected.value = true
+        } else {
+            answers[profileId] = false
+            if (answers.size == QUERIED_PROFILES.size) _carConnected.value = false
         }
     }
 }
