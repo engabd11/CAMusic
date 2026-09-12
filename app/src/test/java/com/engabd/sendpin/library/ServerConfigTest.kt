@@ -114,6 +114,7 @@ class ServerConfigTest {
                 ServerKind.EMBY,
                 ServerKind.PLEX,
                 ServerKind.MPD,
+                ServerKind.FOOBAR2000,
                 ServerKind.SPOTIFY,
                 ServerKind.QOBUZ,
                 ServerKind.TIDAL,
@@ -197,7 +198,7 @@ class ServerConfigTest {
     @Test
     fun `the streaming kinds are experimental and addable`() {
         assertEquals(
-            listOf(ServerKind.SPOTIFY, ServerKind.QOBUZ, ServerKind.TIDAL),
+            listOf(ServerKind.FOOBAR2000, ServerKind.SPOTIFY, ServerKind.QOBUZ, ServerKind.TIDAL),
             ServerKind.entries.filter { it.experimental },
         )
         ServerKind.entries.filter { it.experimental }.forEach {
@@ -224,7 +225,7 @@ class ServerConfigTest {
             "no kind is listed under both headings",
         )
         assertEquals(
-            listOf(ServerKind.SPOTIFY, ServerKind.QOBUZ, ServerKind.TIDAL),
+            listOf(ServerKind.FOOBAR2000, ServerKind.SPOTIFY, ServerKind.QOBUZ, ServerKind.TIDAL),
             ServerKind.addableExperimental,
         )
     }
@@ -296,6 +297,7 @@ class ServerConfigTest {
         assertNull(ServerKind.SPOTIFY.family)
         assertNull(ServerKind.QOBUZ.family)
         assertNull(ServerKind.TIDAL.family)
+        assertNull(ServerKind.FOOBAR2000.family)
         assertNull(ServerKind.DOWNLOADS.family)
         assertNull(ServerKind.AUDIOBOOKSHELF.family)
     }

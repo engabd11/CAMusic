@@ -97,6 +97,16 @@ enum class ServerKind(
         urlHint = "http://192.168.0.10:6600",
         auth = AuthStyle.OPTIONAL_USER_PASSWORD,
     ),
+    FOOBAR2000(
+        "foobar2000",
+        "Desktop player with the Beefweb plugin. Browses its library and drives its transport over REST.",
+        supported = true,
+        // Built against the Beefweb API document, never yet run against a real
+        // foobar2000 — experimental until someone with the plugin reports back.
+        experimental = true,
+        urlHint = "http://192.168.0.10:8880",
+        auth = AuthStyle.OPTIONAL_USER_PASSWORD,
+    ),
 
     // ── Direct streaming. Accounts, not servers: credentials, no address. ────
     // No streaming service offers an official API a third-party player can stream

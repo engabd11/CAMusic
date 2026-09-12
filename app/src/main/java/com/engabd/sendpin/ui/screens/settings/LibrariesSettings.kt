@@ -397,10 +397,13 @@ private fun ProviderPicker(accent: Color, onPick: (ServerKind) -> Unit) {
         Spacer(Modifier.height(4.dp))
         FieldLabel("Experimental")
         Note(
-            "Streaming accounts: an account and a sign-in rather than a server, played by " +
-                "this phone with light sync. These work — but no streaming service offers " +
-                "an API for a player like this one, so they lean on undocumented endpoints " +
-                "and are the first thing a provider's next change will break.",
+            "Built and tested, but not yet proven in the wild. foobar2000 was written to " +
+                "the Beefweb plugin's API document and has not been run against a real " +
+                "install. The streaming accounts — an account and a sign-in rather than a " +
+                "server, played by this phone with light sync — work, but no streaming " +
+                "service offers an API for a player like this one, so they lean on " +
+                "undocumented endpoints and are the first thing a provider's next change " +
+                "will break.",
         )
         ServerKind.addableExperimental.forEach { kind ->
             ProviderRow(kind, accent) { onPick(kind) }
@@ -578,6 +581,14 @@ private fun ServerDetail(
                         "password is the Subsonic one from your account page — the web login won't work. " +
                         "Funkwhale: Settings → Subsonic API → Request a password generates the one " +
                         "this field wants.",
+                )
+            }
+            if (config.kind == ServerKind.FOOBAR2000) {
+                Note(
+                    "foobar2000 plays this itself, through whatever output device its own " +
+                        "config names. This phone browses the library and works the transport " +
+                        "over the Beefweb plugin's REST API. Nothing streams to the phone, " +
+                        "so nothing plays out of it.",
                 )
             }
             // Qobuz and Tidal sign their calls as an *application* as well as an
@@ -773,7 +784,7 @@ private fun ServerDetail(
         // with, decided in mpd.conf and not negotiable per request, so a picker
         // here would be a setting that changes nothing — the exact dishonesty the
         // settings audit went through this screen to remove.
-        if (config.kind.playsLocally && config.kind != ServerKind.LOCAL && config.kind != ServerKind.MPD) {
+        if (config.kind.playsLocally && config.kind != ServerKind.LOCAL && config.kind != ServerKind.MPD && config.kind != ServerKind.FOOBAR2000) {
             SettingsCard(
                 title = "Stream quality",
                 lead = "What this server is asked to send. Downloads always take the original " +
