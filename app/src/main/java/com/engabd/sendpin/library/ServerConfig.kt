@@ -65,7 +65,7 @@ enum class ServerKind(
     ),
     SUBSONIC(
         "Subsonic-compatible",
-        "Any Subsonic or OpenSubsonic server: Gonic, Airsonic, Astiga, Ampache's Subsonic API.",
+        "Any Subsonic or OpenSubsonic server: Gonic, Airsonic, Astiga, Ampache, Funkwhale or epoupon's LMS.",
         supported = true,
         urlHint = "http://192.168.0.10:4040",
     ),
@@ -91,7 +91,8 @@ enum class ServerKind(
 
     MPD(
         "MPD",
-        "Music Player Daemon. Browses the library MPD already scanned and streams over its HTTP output.",
+        "Music Player Daemon. moOde, Volumio, piCorePlayer and Mopidy are MPD underneath. " +
+            "Playback stays on the DAC box; the phone browses and controls.",
         supported = true,
         urlHint = "http://192.168.0.10:6600",
         auth = AuthStyle.OPTIONAL_USER_PASSWORD,
@@ -170,8 +171,43 @@ enum class ServerKind(
         auth = AuthStyle.NONE,
     );
 
-    /** Music Assistant is the one kind the app does not play itself. See [MusicSource]. */
-    val playsLocally: Boolean get() = this != MUSIC_ASSISTANT
+    /**
+         * Music Assistant is the one kind the app does not play itself. See [MusicSource].
+         */
+        val playsLocally: Boolean get() = this != MUSIC_ASSISTANT
+
+        /**
+         * Which picker heading this kind sits under, or null when it is not in the
+         * grouped list at all: the streaming accounts render under Experimental, the
+         * planned kinds under Not yet supported, and [DOWNLOADS] is never offered as a
+         * row. Family is presentational — it groups the stable kinds people recognise
+         * servers by, it never decides what can be built or played.
+         */
+        val family: Family? get() = Family.entries.firstOrNull { this in it.kinds }
+
+        /**
+         * The families the stable picker groups its rows under, in display order.
+         *
+         * The point is recognition at setup time: someone running moOde or Ampache or
+         * Funkwhale does not know which API their server speaks, so "MPD" or
+         * "Subsonic-compatible" alone does not answer them. Naming the servers a
+         * family covers — in the heading where one is needed, in the blurb where the
+         * row is the family — is what makes them see theirs.
+         *
+         * Single-member families ([MUSIC_ASSISTANT], [MPD], [LOCAL_DEVICE]) exist so
+         * every row renders through one loop; their labels are skipped by the picker,
+         * since a heading reading "Music Assistant" directly above the Music Assistant
+         * row is noise.
+         */
+        enum class Family(val label: String, val kinds: Set<ServerKind>) {
+            // `ServerKind.` is not decoration: Family declares entries with the same
+            // names (MUSIC_ASSISTANT, MPD), and unqualified they would resolve to those.
+            MUSIC_ASSISTANT("Music Assistant", setOf(ServerKind.MUSIC_ASSISTANT)),
+            SUBSONIC_COMPATIBLE("Subsonic servers", setOf(ServerKind.NAVIDROME, ServerKind.SUBSONIC)),
+            MEDIA_SERVER("Media servers", setOf(ServerKind.JELLYFIN, ServerKind.EMBY, ServerKind.PLEX)),
+            MPD("MPD", setOf(ServerKind.MPD)),
+            LOCAL_DEVICE("This device", setOf(ServerKind.LOCAL)),
+        }
 
     /**
      * Whether this kind points at a host the user types an address for.

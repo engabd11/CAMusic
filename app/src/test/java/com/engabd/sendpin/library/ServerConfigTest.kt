@@ -229,6 +229,103 @@ class ServerConfigTest {
         )
     }
 
+    // ─── Families ────────────────────────────────────────────────────────────
+
+    /**
+     * The picker groups the addable kinds under family headings: one Navidrome row,
+     * then the other servers that speak the same API; the media servers; MPD and
+     * everything that is one underneath. The grouping is presentational — it must
+     * not add, drop or reorder anything out of existence.
+     */
+    @Test
+    fun `the families cover the stable addable kinds exactly once`() {
+        assertEquals(ServerKind.addableStable.toSet(), ServerKind.Family.entries.flatMap { it.kinds }.toSet())
+        assertEquals(
+            ServerKind.addableStable.size,
+            ServerKind.Family.entries.flatMap { it.kinds }.size,
+            "a kind listed under two families is a duplicate row",
+        )
+        assertTrue(ServerKind.Family.entries.none { it.kinds.isEmpty() }, "an empty heading is noise")
+        assertEquals(
+            listOf(
+                ServerKind.Family.MUSIC_ASSISTANT,
+                ServerKind.Family.SUBSONIC_COMPATIBLE,
+                ServerKind.Family.MEDIA_SERVER,
+                ServerKind.Family.MPD,
+                ServerKind.Family.LOCAL_DEVICE,
+            ),
+            ServerKind.Family.entries.toList(),
+        )
+    }
+
+    /**
+     * Only the multi-member families render a heading — a heading reading
+     * "Music Assistant" directly above the Music Assistant row is noise. The
+     * single-member families exist so their kinds still render through the same
+     * loop; the picker skips their label.
+     */
+    @Test
+    fun `only the multi member families get a heading`() {
+        assertEquals(
+            listOf("Subsonic servers", "Media servers"),
+            ServerKind.Family.entries.filter { it.kinds.size > 1 }.map { it.label },
+        )
+    }
+
+    /**
+     * Navidrome keeps a row of its own: it is the reference server, the one people
+     * already have, and the one whose name carries the extension set the others are
+     * measured against. "Subsonic-compatible" is the family for everyone *else* who
+     * speaks the API, not a bucket Navidrome disappears into.
+     */
+    @Test
+    fun `navidrome keeps its own row inside the subsonic family`() {
+        assertEquals(ServerKind.Family.SUBSONIC_COMPATIBLE, ServerKind.NAVIDROME.family)
+        assertEquals(ServerKind.Family.SUBSONIC_COMPATIBLE, ServerKind.SUBSONIC.family)
+        assertTrue(ServerKind.NAVIDROME != ServerKind.SUBSONIC)
+    }
+
+    /**
+     * Family is a picker concept: it groups the stable rows a user can add today.
+     * The streaming accounts render under their own Experimental heading, the
+     * planned kinds under Not yet supported, and Downloads is never an addable row
+     * at all — none of them belong under a family heading, so none of them has one.
+     */
+    @Test
+    fun `kinds outside the stable picker have no family`() {
+        assertNull(ServerKind.SPOTIFY.family)
+        assertNull(ServerKind.QOBUZ.family)
+        assertNull(ServerKind.TIDAL.family)
+        assertNull(ServerKind.DOWNLOADS.family)
+        assertNull(ServerKind.AUDIOBOOKSHELF.family)
+    }
+
+    /** The whole point of the Subsonic-compatible row: say who else it works with. */
+    @Test
+    fun `the subsonic blurb names the servers that speak its api`() {
+        for (name in listOf("Gonic", "Airsonic", "Ampache", "Funkwhale", "LMS")) {
+            assertTrue(
+                ServerKind.SUBSONIC.blurb.contains(name, ignoreCase = true),
+                "the Subsonic blurb should name $name",
+            )
+        }
+    }
+
+    /**
+     * moOde, Volumio, piCorePlayer and Mopidy are all MPD underneath, and their
+     * support forums answer "is there an app?" with a browser tab. The MPD row is
+     * where those users have to recognise themselves.
+     */
+    @Test
+    fun `the mpd blurb names the distributions that are mpd underneath`() {
+        for (name in listOf("moOde", "Volumio", "piCorePlayer", "Mopidy")) {
+            assertTrue(
+                ServerKind.MPD.blurb.contains(name, ignoreCase = true),
+                "the MPD blurb should name $name",
+            )
+        }
+    }
+
     @Test
     fun `an unknown kind name resolves to null rather than throwing`() {
         assertEquals(ServerKind.NAVIDROME, ServerKind.from("NAVIDROME"))
