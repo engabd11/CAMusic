@@ -335,7 +335,15 @@ Android NDK build, this means:
 
 ---
 
-## What I need from you, Sir
+### What appears on the Apple TV screen
+
+The AirPlay RAOP protocol carries DMAP-tagged metadata via `SET_PARAMETER`
+requests. `RaopSender::setNowPlaying(title, artist, album, cover, coverMime)`
+pushes this to the receiver, and the Apple TV renders its own Now Playing
+screen from it: album artwork as a full-screen blurred background with a
+centred art card, track title, artist and album. We control the *content*
+(text + artwork), not the *layout* — the Apple TV always renders its own
+Now Playing UI. This is a protocol limitation, not a library one.
 
 1. **Chromecast stance**: The earlier question timed out. My recommendation is
    **gate it behind GMS availability** — implement it, but invisible on
