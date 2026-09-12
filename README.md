@@ -27,7 +27,7 @@ it into part of the listening.
 
 | | |
 |---|---|
-|  **A player** | Navidrome, Subsonic, Jellyfin, Emby, Plex, MPD, Music Assistant and on-device files — plus Spotify, Qobuz and Tidal accounts (experimental). Gapless playback, a ten band equaliser, high resolution output, ReplayGain and offline downloads. |
+|  **A player** | Navidrome, Subsonic-compatible (Gonic, Airsonic, Ampache, Funkwhale, epoupon's LMS), Jellyfin, Emby, Plex, MPD (moOde, Volumio, piCorePlayer and Mopidy are all MPD underneath), Music Assistant and on-device files — plus Spotify, Qobuz and Tidal accounts (experimental). Gapless playback, a ten band equaliser, high resolution output, ReplayGain and offline downloads. |
 |  **A light show** | Philips Hue Entertainment, driven straight to the bridge at 60 frames a second from the audio that is playing. |
 |  **An atmosphere** | Ambience shows with their own sound, ready whenever you want the room without the music. |
 |  **A speaker** | Music Assistant can stream to this phone as a clock synced player, so it joins a grouped, multi-room setup. |
@@ -90,7 +90,8 @@ can add as many as you like and switch between them freely.
 
 | Server | Browse | Play | Download | Scrobble |
 |---|:---:|:---:|:---:|:---:|
-| **Navidrome / Subsonic** | ✅ | ✅ | ✅ | ✅ |
+| **Navidrome** | ✅ | ✅ | ✅ | ✅ |
+| **Subsonic-compatible** — Gonic, Airsonic, Ampache, Funkwhale, LMS | ✅ | ✅ | ✅ | ✅ |
 | **Jellyfin** | ✅ | ✅ | ✅ | ✅ |
 | **Emby** | ✅ | ✅ | ✅ | ✅ |
 | **Plex** | ✅ | ✅ | ✅ | ✅ |
@@ -111,9 +112,18 @@ them, and each server shows its own brand mark everywhere it is listed.
 Plex signs in through a plex.tv PIN: tap **Sign in with Plex**, finish it in the browser, and
 your Plex password stays at plex.tv where it belongs.
 
-MPD is the one library that plays its own music. Every other server hands out a URL per track
-and the phone decodes it; MPD is already a player, usually on the box the DAC is plugged into,
-so the sound stays there and the phone becomes the remote — play, pause, seek, skip, the queue,
+**Subsonic-compatible** is Navidrome's API by another name, so anything speaking it works the
+same way — Gonic, Airsonic, Ampache, Funkwhale, epoupon's LMS. Each server answers with what
+it has: lyrics, ReplayGain and exact formats ride the OpenSubsonic extensions, so an older
+server just loses those extras rather than showing empty panes. Two need one thing the others
+don't: Ampache keeps its Subsonic API switched off until you enable it in Preferences →
+System, and Funkwhale won't take your account password — Settings → Subsonic API →
+Request a password generates the one CAMusic wants.
+
+MPD is the one library that plays its own music, and moOde, Volumio, piCorePlayer and Mopidy are
+all MPD underneath, so the one row is their app as much as MPD's. Every other server hands out a URL
+per track and the phone decodes it; MPD is already a player, usually on the box the DAC is plugged
+into, so the sound stays there and the phone becomes the remote — play, pause, seek, skip, the queue,
 shuffle and repeat, all of it addressing MPD. Point it at the protocol port (6600) and that is
 the whole setup: no `httpd` output, no stream, nothing to configure twice. ReplayGain is MPD's
 own, set from the loudness control in the Now Playing options sheet. Covers come down the
