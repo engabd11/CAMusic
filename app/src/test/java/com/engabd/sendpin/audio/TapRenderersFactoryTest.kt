@@ -29,6 +29,7 @@ class TapRenderersFactoryTest {
             vinylNoise = vinylNoise,
             oldRadio = oldRadio,
             tap = tap,
+            airPlay = null,
             sonic = null,
         )
 
@@ -62,6 +63,7 @@ class TapRenderersFactoryTest {
             vinylNoise = vinylNoise,
             oldRadio = oldRadio,
             tap = tap,
+            airPlay = null,
             sonic = sonic,
         )
 
@@ -83,6 +85,7 @@ class TapRenderersFactoryTest {
             vinylNoise = null,
             oldRadio = null,
             tap = null,
+            airPlay = null,
             sonic = null,
         )
         assertEquals(listOf(loFi), ordered)

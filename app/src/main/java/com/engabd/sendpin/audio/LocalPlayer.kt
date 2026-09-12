@@ -254,6 +254,25 @@ class LocalPlayer(private val context: Context) {
      */
     val oldRadio = OldRadioProcessor()
 
+    /**
+     * The AirPlay output — streams decoded PCM to an AirPlay receiver over
+     * the network. Process-scoped so it survives Activity recreation and the
+     * media notification can reach it. Null (never loaded) when the native
+     * library is not compiled or the ABI doesn't match.
+     *
+     * Set by `SendpinApp` at construction. The [AirPlayOutputProcessor] taps
+     * the ExoPlayer chain and feeds it when [AirPlayOutput.isConnected] is true.
+     */
+    val airPlayOutput: AirPlayOutput? = if (AirPlayOutput.available()) AirPlayOutput() else null
+
+    /**
+     * The AirPlay PCM tap, in the audio chain after [audioAnalysisTap]. A
+     * pass-through that copies 16-bit PCM to [airPlayOutput]'s native ring
+     * buffer when AirPlay is connected. Null when the native library is not
+     * available or in exclusive mode (see [TapRenderersFactory]).
+     */
+    val airPlayProcessor: AirPlayOutputProcessor? = airPlayOutput?.let { AirPlayOutputProcessor(it) }
+
     /** The user's own volume, kept apart from the ReplayGain factor multiplied onto it. */
     private var userVolume = 1f
 
@@ -567,6 +586,7 @@ class LocalPlayer(private val context: Context) {
             wowFlutter = if (exclusive) null else wowFlutter,
             loFi = if (exclusive) null else loFiProcessor,
             oldRadio = if (exclusive) null else oldRadio,
+            airPlay = if (exclusive) null else airPlayProcessor,
             exclusive = exclusive,
             aaudioBitperfect = useAaudioBitperfect,
         ).setEnableAudioFloatOutput(bitPerfect || exclusive) as TapRenderersFactory

@@ -100,6 +100,15 @@ class TapRenderersFactory(
     /** Old Radio mode, the last coloration stage before the tap. See [OldRadioProcessor]. */
     private val oldRadio: OldRadioProcessor? = null,
     /**
+     * AirPlay output tap, after [tap] so it sees the same treated audio the
+     * analysis tap does. Pass-through — copies PCM to the [AirPlayOutput]'s
+     * native ring buffer when AirPlay is connected, no-op otherwise.
+     *
+     * Null in exclusive mode for the same reason the other processors are:
+     * nothing of this app's between the decoder and the DAC.
+     */
+    private val airPlay: AirPlayOutputProcessor? = null,
+    /**
      * [ExclusiveOutput] is on: leave the fixed-output-rate Sonic resampler out
      * of the chain too, explicitly, rather than trusting [OutputRate.hz] to
      * happen to be 0 — the two are set independently, by different settings.
@@ -132,6 +141,7 @@ class TapRenderersFactory(
             vinylNoise: AudioProcessor?,
             oldRadio: AudioProcessor?,
             tap: AudioProcessor?,
+            airPlay: AudioProcessor?,
             sonic: AudioProcessor?,
         ): List<AudioProcessor> = listOfNotNull(
             if (aaudioBitperfect) null else dsp,
@@ -140,6 +150,7 @@ class TapRenderersFactory(
             if (aaudioBitperfect) null else vinylNoise,
             if (aaudioBitperfect) null else oldRadio,
             if (aaudioBitperfect) null else tap,
+            if (aaudioBitperfect) null else airPlay,
             sonic,
         )
     }
@@ -155,7 +166,7 @@ class TapRenderersFactory(
         }
         val sink = DefaultAudioSink.Builder(context)
             .setAudioProcessors(
-                orderedProcessors(aaudioBitperfect, dsp, wowFlutter, loFi, vinylNoise, oldRadio, tap, sonic)
+                orderedProcessors(aaudioBitperfect, dsp, wowFlutter, loFi, vinylNoise, oldRadio, tap, airPlay, sonic)
                     .toTypedArray(),
             )
             .setEnableFloatOutput(enableFloatOutput)
