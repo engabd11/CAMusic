@@ -61,6 +61,8 @@ interface NetworkOutput {
         airplay2: Boolean = true,
         deviceId: String = "",
         credentialsJson: String = "",
+        /** RTSP digest password for `pw=true` receivers. Empty otherwise. */
+        password: String = "",
     )
 
     /** Stop streaming and release the session. */
@@ -113,6 +115,8 @@ enum class AuthMode(val nativeValue: Int) {
     PASSWORD(1),
     /** MFiSAP one-shot POST (AirPort Express gen 2), reply ignored. */
     AUTH_SETUP(2),
+    /** Pre-HomeKit "fruit" SRP-2048 PIN (not implemented in the library, fails fast). */
+    LEGACY_PIN(3),
     /** HAP transient pairing, fixed PIN 3939 (HomePod / macOS). */
     HAP_TRANSIENT(4),
     /** HAP on-screen 4-digit PIN (Apple TV 4+); stored creds skip it. */

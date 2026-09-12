@@ -126,10 +126,11 @@ class AirPlayOutput : NetworkOutput {
         airplay2: Boolean,
         deviceId: String,
         credentialsJson: String,
+        password: String,
     ) {
         if (nativePtr == 0L) return
         _deviceName.value = name
-        nativeStart(host, port, name, authMode.nativeValue, airplay2, deviceId, credentialsJson, "")
+        nativeStart(host, port, name, authMode.nativeValue, airplay2, deviceId, credentialsJson, password)
     }
 
     override suspend fun disconnect() {

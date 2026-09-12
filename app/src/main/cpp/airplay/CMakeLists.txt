@@ -28,13 +28,13 @@ set(USE_SHARED_MBEDTLS_LIBRARY OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(mbedtls
     GIT_REPOSITORY https://github.com/Mbed-TLS/mbedtls.git
     GIT_TAG        2ca6c285a0dd3f33982dd57299012dacab1ff206   # v3.6.0, pinned by commit
-    GIT_SHALLOW    TRUE)
+    GIT_SHALLOW    FALSE)   # shallow fetch may not find a pinned commit
 FetchContent_MakeAvailable(mbedtls)
 
 # --- orlp/ed25519 (zlib, vendored): the one primitive Mbed TLS lacks ---
 # Drop seed.c and define ED25519_NO_SEED: ed25519_create_seed() is never
 # called (all seeds come from Mbed TLS CTR-DRBG).
-file(GLOB ED25519_SRC ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ed25519/src/*.c)
+file(GLOB ED25519_SRC CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ed25519/src/*.c)
 list(FILTER ED25519_SRC EXCLUDE REGEX "/seed\\.c$")
 add_library(ed25519 STATIC ${ED25519_SRC})
 target_compile_definitions(ed25519 PRIVATE ED25519_NO_SEED)

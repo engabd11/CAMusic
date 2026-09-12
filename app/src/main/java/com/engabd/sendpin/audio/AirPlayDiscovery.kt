@@ -5,10 +5,6 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.callbackFlow
 
 /**
  * Discovers AirPlay receivers on the local network via mDNS.
@@ -31,13 +27,11 @@ import kotlinx.coroutines.flow.callbackFlow
  *
  * - `pw=true` → [AuthMode.PASSWORD] (RTSP digest auth)
  * - `am=AirPort*` → [AuthMode.AUTH_SETUP] (MFiSAP, AirPort Express gen 2)
- * - `sf` flag with HomeKit bits (bit 0xx80) → [AuthMode.HAP_PIN] (Apple TV)
- * - No special flags → [AuthMode.HAP_TRANSIENT] (HomePod / macOS) or
- *   [AuthMode.NONE] for very old receivers
+ * - `sf` flag with HomeKit bits (bit 0x4) → [AuthMode.HAP_PIN] (Apple TV)
+ * - `features` flag with HomeKit bit (0x10000) → [AuthMode.HAP_TRANSIENT]
+ * - No special flags → [AuthMode.NONE] for very old receivers
  *
- * The `features` flag is a 64-bit hex bitmask. Bit 0x10000 (HomeKit) and
- * the `sf` (status flags) field together determine the auth path. See
- * `raop_auth.h` for the C++ enum this maps to.
+ * See `raop_auth.h` for the C++ enum this maps to.
  *
  * ## Android NsdManager
  *
@@ -69,7 +63,42 @@ class AirPlayDiscovery(private val context: Context) {
     )
 
     /**
-     * Discovers AirPlay receivers on the network.
+     * Parse the `features` TXT record field.
+     *
+     * AirPlay `features` can be:
+     * - A plain hex number: `0x4A8F00`
+     * - Comma-separated 32-bit sections (high,low): `0x124D2,0x4A8F00`
+     * - With or without `0x` prefix
+     *
+     * We combine the sections into a single 64-bit value (high section
+     * first, low section second). If parsing fails, returns 0.
+     */
+    private fun parseFeatures(raw: String): Long {
+        val sections = raw.split(",").map { it.trim() }
+        var result = 0L
+        for (section in sections) {
+            val hex = section.removePrefix("0x").removePrefix("0X")
+            val value = hex.toLongOrNull(16) ?: 0L
+            // Shift previous sections up and OR in the new one.
+            // For two sections (high, low), the first is the high 32 bits.
+            result = (result shl 32) or (value and 0xFFFFFFFFL)
+        }
+        return result
+    }
+
+    /**
+     * Parse the `sf` (status flags) TXT record field.
+     *
+     * `sf` is typically a decimal number (0, 4, 8) but some implementations
+     * use hex with `0x` prefix. Handle both.
+     */
+    private fun parseSf(raw: String): Int {
+        val trimmed = raw.trim().removePrefix("0x").removePrefix("0X")
+        return trimmed.toIntOrNull(16) ?: trimmed.toIntOrNull() ?: 0
+    }
+
+    /**
+     * Discover AirPlay receivers on the network.
      *
      * Emits the full list of discovered devices whenever a device is
      * found, lost, or updated. The flow remains active until the
@@ -77,6 +106,8 @@ class AirPlayDiscovery(private val context: Context) {
      */
     fun discover(): Flow<List<AirPlayDevice>> = callbackFlow {
         val nsd = context.getSystemService(Context.NSD_SERVICE) as NsdManager
+        // Keyed by service name (the mDNS instance name), which is stable
+        // across resolve calls and matches what onServiceLost provides.
         val devices = mutableMapOf<String, AirPlayDevice>()
 
         fun emitList() {
@@ -90,21 +121,19 @@ class AirPlayDiscovery(private val context: Context) {
             override fun onDiscoveryStopped(serviceType: String?) {}
 
             override fun onServiceFound(serviceInfo: NsdServiceInfo) {
-                // Resolve to get the host, port, and TXT record.
                 nsd.resolveService(serviceInfo, object : NsdManager.ResolveListener {
                     override fun onResolveFailed(si: NsdServiceInfo?, errorCode: Int) {}
                     override fun onServiceResolved(si: NsdServiceInfo) {
                         val host = si.host?.hostAddress ?: return
                         val port = si.port.takeIf { it > 0 } ?: 7000
                         val name = si.serviceName
-                        val deviceId = si.serviceName // instance name = device id for creds
+                        val deviceId = si.serviceName
                         val txt = si.attributes
 
-                        // Resolve auth mode from TXT record.
                         val pw = txt["pw"]?.let { String(it) } == "true"
                         val am = txt["am"]?.let { String(it) } ?: ""
-                        val sf = txt["sf"]?.let { String(it) }?.toIntOrNull() ?: 0
-                        val features = txt["features"]?.let { String(it) }?.toLongOrNull(16) ?: 0L
+                        val sf = txt["sf"]?.let { String(it) }?.let(::parseSf) ?: 0
+                        val features = txt["features"]?.let { String(it) }?.let(::parseFeatures) ?: 0L
 
                         val authMode = when {
                             pw -> AuthMode.PASSWORD
@@ -116,31 +145,25 @@ class AirPlayDiscovery(private val context: Context) {
                             else -> AuthMode.NONE
                         }
 
-                        // AirPlay 2 if the device advertises HomeKit features.
                         val airplay2 = (features and 0x10000L) != 0L
 
                         val device = AirPlayDevice(host, port, name, deviceId, authMode, airplay2)
-                        devices[host] = device
+                        devices[name] = device
                         emitList()
                     }
                 })
             }
 
             override fun onServiceLost(serviceInfo: NsdServiceInfo) {
-                // Remove by name — we may not have the host here.
-                val toRemove = devices.entries.firstOrNull { it.value.name == serviceInfo.serviceName }?.key
-                if (toRemove != null) {
-                    devices.remove(toRemove)
-                    emitList()
-                }
+                // Keyed by service name — matches what onServiceResolved stored.
+                devices.remove(serviceInfo.serviceName)
+                emitList()
             }
         }
 
         try {
             nsd.discoverServices("_raop._tcp", NsdManager.PROTOCOL_DNS_SD, listener)
         } catch (e: Exception) {
-            // NsdManager can throw if discovery is already running or the
-            // network is unavailable. Close the flow gracefully.
             close(e)
             return@callbackFlow
         }
