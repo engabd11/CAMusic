@@ -399,6 +399,16 @@ class LocalPlayer(private val context: Context) {
                 setPreferredDevice(AudioOutputs.resolve(am, id))
             }
         }
+        // Wire AirPlay connection state to the audio processor's feeding
+        // gate. The processor stays in the chain always, but only copies PCM
+        // to the native ring when AirPlay is connected — zero overhead otherwise.
+        airPlayOutput?.let { out ->
+            airPlayProcessor?.let { proc ->
+                scope.launch {
+                    out.connected.collect { connected -> proc.setFeeding(connected) }
+                }
+            }
+        }
         scope.launch {
             settings.replayGainMode.collect { mode ->
                 replayGainMode = mode

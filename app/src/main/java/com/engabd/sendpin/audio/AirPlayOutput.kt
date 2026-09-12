@@ -42,6 +42,16 @@ import kotlinx.coroutines.launch
  *
  * AirPort Express and older RAOP speakers use AirPlay 1 (no pairing).
  *
+ * ## What appears on the Apple TV screen
+ *
+ * The AirPlay protocol carries DMAP-tagged metadata via `SET_PARAMETER`
+ * requests. When [setNowPlaying] is called with title, artist, album and
+ * cover art, the Apple TV renders its own Now Playing screen from that
+ * data — album artwork as a full-screen blurred background with a
+ * centred art card, track title, artist and album. We control the
+ * *content* (text + artwork), not the *layout* — the Apple TV always
+ * renders its own Now Playing UI.
+ *
  * ## Threading
  *
  * - [writePcm] is called on ExoPlayer's audio thread (real-time, must
@@ -74,45 +84,37 @@ class AirPlayOutput : NetworkOutput {
     private val _waitingForPin = MutableStateFlow(false)
     val waitingForPin: StateFlow<Boolean> get() = _waitingForPin.asStateFlow()
 
-    /** The PIN the user needs to enter, or null when not pairing. */
+    /** The device name for the PIN dialog, or null when not pairing. */
     private val _pinDeviceName = MutableStateFlow<String?>(null)
     val pinDeviceName: StateFlow<String?> get() = _pinDeviceName.asStateFlow()
 
     init {
-        if (!loadNative()) {
-            // The library failed to load — the native build is either not
-            // compiled or the ABI doesn't match. This is not a crash: the
-            // AirPlay button simply won't appear.
-            // See AirPlayOutput.available for the gating check.
-        }
+        loadNative()
     }
 
-    private fun loadNative(): Boolean = try {
-        System.loadLibrary("airplay_sendpin")
-        nativePtr = nativeInit()
-        nativePtr != 0L
-    } catch (e: UnsatisfiedLinkError) {
-        false
+    private fun loadNative(): Boolean {
+        if (nativePtr != 0L) return true
+        return try {
+            System.loadLibrary("airplay_sendpin")
+            nativePtr = nativeInit()
+            nativePtr != 0L
+        } catch (e: UnsatisfiedLinkError) {
+            false
+        }
     }
 
     companion object {
         /**
-         * Whether the AirPlay native library is loaded and ready.
-         *
-         * The AirPlay button in Now Playing checks this before showing.
-         * If the native build is not compiled (e.g. on a CI runner without
-         * the NDK), the feature is simply absent.
+         * Whether the AirPlay native library can be loaded. The AirPlay
+         * button in Now Playing checks this before showing. If the native
+         * build is not compiled (e.g. on a CI runner without the NDK),
+         * the feature is simply absent — no crash, no error.
          */
         fun available(): Boolean = try {
             System.loadLibrary("airplay_sendpin")
             true
-        } catch (e: UnsatisfiedLinkError) {
+        } catch (_: UnsatisfiedLinkError) {
             false
-        }
-
-        init {
-            // Best-effort preload so available() is a cheap check.
-            try { System.loadLibrary("airplay_sendpin") } catch (_: UnsatisfiedLinkError) {}
         }
     }
 
@@ -175,13 +177,20 @@ class AirPlayOutput : NetworkOutput {
         return nativeIsActive()
     }
 
-    protected fun finalize() {
+    fun destroy() {
         if (nativePtr != 0L) {
             nativeDestroy()
+            nativePtr = 0L
         }
     }
 
+    protected fun finalize() {
+        destroy()
+    }
+
     // ── Native callbacks (called from the native poll loop thread) ──────
+    // The JNI side looks these up by name and signature. The names and
+    // parameter types are the contract — see airplay_jni.cpp's nativeInit.
 
     /**
      * Called by the native side when the AirPlay session is launched
@@ -236,9 +245,6 @@ class AirPlayOutput : NetworkOutput {
     @Suppress("unused")
     private fun onCredentials(deviceId: String, credsJson: String) {
         scope.launch {
-            // Persist credentials — the caller (SendpinApp or a settings
-            // store) wires this to DataStore. For now, we just surface it
-            // as a flow so the UI can save it.
             _onCredentials?.invoke(deviceId, credsJson)
         }
     }
