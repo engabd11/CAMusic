@@ -33,6 +33,10 @@ that, and everything downstream of the decision was wrong. The music came out of
 the DAC MPD was configured for *and* out of the phone, a second apart. The scrub
 bar had nothing to scrub. Pause paused the phone while MPD played on.
 
+moOde, Volumio, piCorePlayer and Mopidy are all MPD underneath, which makes this provider
+theirs too: point CAMusic at the box's 6600 and it browses whatever those front ends have
+already scanned, with the transport living where the DAC lives.
+
 So the transport goes the other way:
 
 - `MusicSource.remotePlayback()` returns a `RemotePlayback` for a source that
@@ -129,7 +133,7 @@ they need no device.
 | Provider | Auth | Notes |
 |---|---|---|
 | **Navidrome** | Subsonic token (`t=md5(password+salt)`) | The reference implementation. OpenSubsonic extensions give lyrics, ReplayGain and full format data. |
-| **Subsonic-compatible** | Same | Gonic, Airsonic, Astiga, Ampache's Subsonic API. Same client; capabilities probed via `getOpenSubsonicExtensions`, so an older server loses lyrics rather than offering a pane it can't fill. |
+| **Subsonic-compatible** | Same | Gonic, Airsonic, Astiga, Ampache, Funkwhale, epoupon's LMS. Same client; capabilities probed via `getOpenSubsonicExtensions`, so an older server loses lyrics rather than offering a pane it can't fill. Ampache ships with the Subsonic backend disabled (Admin → Server Config) and authenticates with the Subsonic password from the account page, not the web login; Funkwhale issues its own Subsonic password rather than accepting the account one — both quirks are named on the connect form. |
 | **Jellyfin** | `POST /Users/AuthenticateByName`, `Authorization: MediaBrowser …` | Token and user id both persisted — the user id is in the *path* of most endpoints. `MediaSources[].MediaStreams[]` carries a complete format reading. |
 | **Emby** | `POST /Users/AuthenticateByName`, `X-Emby-Authorization` header | Jellyfin's ancestor: near-identical `/Items` DTOs, but no `/universal` negotiator — a transcode names its container in the path, `/Audio/{id}/stream.mp3`, instead. |
 | **Plex** | plex.tv PIN flow (`PlexAuth`) → `X-Plex-Token`; no server password is ever typed | `/library/sections` → `/library/sections/{id}/all?type=8\|9\|10` (artist/album/track), read from whichever of `Metadata`/`Directory` the response used. Streaming needs the track's own metadata first — see `PlexClient`'s class doc — so `item()` caches each track's `Media[].Part[].key` and cover path as it's parsed. No favourites, playlist writes, lyrics or rich format reading; see `PlexSource`'s class doc for why each is left out rather than faked. |
