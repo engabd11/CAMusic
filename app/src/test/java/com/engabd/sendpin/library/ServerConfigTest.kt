@@ -114,6 +114,7 @@ class ServerConfigTest {
                 ServerKind.EMBY,
                 ServerKind.PLEX,
                 ServerKind.MPD,
+                ServerKind.FOOBAR2000,
                 ServerKind.SPOTIFY,
                 ServerKind.QOBUZ,
                 ServerKind.TIDAL,

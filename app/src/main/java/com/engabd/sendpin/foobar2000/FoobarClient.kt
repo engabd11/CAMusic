@@ -139,7 +139,7 @@ class FoobarClient(
         internal fun buildTrack(columns: List<String>): MaItem {
             val path = columns.getOrNull(COL_PATH) ?: ""
             val title = columns.getOrNull(COL_TITLE)?.takeIf { it.isNotBlank() }
-                ?: path.substringAfterLast('/').substringBeforeLast('.')
+                ?: path.substringAfterLast('/').substringAfterLast('\\').substringBeforeLast('.')
             val artist = columns.getOrNull(COL_ARTIST)?.takeIf { it.isNotBlank() }
                 ?: columns.getOrNull(COL_ALBUM_ARTIST)?.takeIf { it.isNotBlank() }
             val album = columns.getOrNull(COL_ALBUM)?.takeIf { it.isNotBlank() }
