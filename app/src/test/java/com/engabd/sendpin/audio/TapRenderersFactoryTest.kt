@@ -29,6 +29,7 @@ class TapRenderersFactoryTest {
             vinylNoise = vinylNoise,
             oldRadio = oldRadio,
             tap = tap,
+            airPlay = null,
             sonic = null,
         )
 
@@ -62,6 +63,7 @@ class TapRenderersFactoryTest {
             vinylNoise = vinylNoise,
             oldRadio = oldRadio,
             tap = tap,
+            airPlay = null,
             sonic = sonic,
         )
 
@@ -83,8 +85,57 @@ class TapRenderersFactoryTest {
             vinylNoise = null,
             oldRadio = null,
             tap = null,
+            airPlay = null,
             sonic = null,
         )
         assertEquals(listOf(loFi), ordered)
+    }
+
+    @Test
+    fun `airPlay processor sits after the analysis tap and before sonic`() {
+        val tap = AudioAnalysisTap(AudioLead())
+        val airPlay = AirPlayOutputProcessor(AirPlayOutput())
+        val sonic = androidx.media3.common.audio.SonicAudioProcessor()
+
+        val ordered = TapRenderersFactory.orderedProcessors(
+            aaudioBitperfect = false,
+            dsp = null,
+            wowFlutter = null,
+            loFi = null,
+            vinylNoise = null,
+            oldRadio = null,
+            tap = tap,
+            airPlay = airPlay,
+            sonic = sonic,
+        )
+
+        val tapIndex = ordered.indexOf(tap)
+        val airPlayIndex = ordered.indexOf(airPlay)
+        val sonicIndex = ordered.indexOf(sonic)
+
+        assertTrue(tapIndex < airPlayIndex, "analysis tap should run before AirPlay output")
+        assertTrue(airPlayIndex < sonicIndex, "AirPlay should run before the output-rate resampler")
+        assertEquals(3, ordered.size)
+    }
+
+    @Test
+    fun `airPlay processor is dropped in aaudio bitperfect mode`() {
+        val airPlay = AirPlayOutputProcessor(AirPlayOutput())
+        val sonic = androidx.media3.common.audio.SonicAudioProcessor()
+
+        val ordered = TapRenderersFactory.orderedProcessors(
+            aaudioBitperfect = true,
+            dsp = null,
+            wowFlutter = null,
+            loFi = null,
+            vinylNoise = null,
+            oldRadio = null,
+            tap = null,
+            airPlay = airPlay,
+            sonic = sonic,
+        )
+
+        assertTrue(airPlay !in ordered, "AirPlay should be dropped when aaudioBitperfect is on")
+        assertEquals(listOf(sonic), ordered)
     }
 }

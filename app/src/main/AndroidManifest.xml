@@ -4,6 +4,9 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Wi-Fi-only downloads read the active network's transport. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- AirPlay mDNS discovery: NsdManager needs multicast to receive Bonjour
+         advertisements. Some OEMs drop mDNS packets without this. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />

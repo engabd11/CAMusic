@@ -36,3 +36,8 @@ target_link_libraries(sendspin_output
 # 16 KB page sizes apply to every native library built here.
 target_link_options(sendspin_aaudio PRIVATE "-Wl,-z,max-page-size=16384")
 target_link_options(sendspin_output PRIVATE "-Wl,-z,max-page-size=16384")
+
+# AirPlay 2 sender (vendored airplay2-sender-cpp, Apache-2.0).
+# Builds libairplay_sendpin.so — the JNI bridge to the RAOP sender.
+# Fetches Mbed TLS 3.6 at configure time (network needed once).
+add_subdirectory(airplay)
