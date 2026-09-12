@@ -387,8 +387,11 @@ private fun ProviderPicker(accent: Color, onPick: (ServerKind) -> Unit) {
                 "you are.",
         )
 
-        ServerKind.addableStable.forEach { kind ->
-            ProviderRow(kind, accent) { onPick(kind) }
+        ServerKind.Family.entries.forEach { family ->
+            if (family.kinds.size > 1) FieldLabel(family.label)
+            family.kinds.forEach { kind ->
+                ProviderRow(kind, accent) { onPick(kind) }
+            }
         }
 
         Spacer(Modifier.height(4.dp))
@@ -563,6 +566,16 @@ private fun ServerDetail(
                         "the point of running it on a box with a DAC. This phone browses the " +
                         "library and works the transport: play, pause, seek, skip and the " +
                         "queue. Nothing streams to the phone, so nothing plays out of it.",
+                )
+            }
+            if (config.kind == ServerKind.SUBSONIC) {
+                // The two answers people need before a failed login makes any sense.
+                // Ampache keeps the API off by default; Funkwhale refuses the account
+                // password and issues its own. Named here rather than in a forum.
+                Note(
+                    "Ampache: enable its Subsonic API in Preferences → System first. " +
+                        "Funkwhale: leave your account password out — Settings → Subsonic " +
+                        "API → Request a password generates the one this field wants.",
                 )
             }
             // Qobuz and Tidal sign their calls as an *application* as well as an
