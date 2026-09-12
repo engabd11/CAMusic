@@ -3,8 +3,6 @@ package com.engabd.sendpin.foobar2000
 import com.engabd.sendpin.library.Capability
 import com.engabd.sendpin.library.FoobarSource
 import com.engabd.sendpin.library.ServerKind
-import com.engabd.sendpin.ma.MaAudioFormat
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlin.test.Test
