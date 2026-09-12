@@ -814,23 +814,3 @@ internal fun escapeJson(s: String): String = buildString(s.length + 2) {
         }
     }
 }
-
-/** Get the content of a JsonElement as a String, or null. */
-internal val JsonElement.contentOrNull: String?
-    get() = (this as? JsonPrimitive)?.content
-
-/** Get the content of a JsonElement as an Int, or null. */
-internal val JsonElement.intOrNull: Int?
-    get() = (this as? JsonPrimitive)?.content?.toIntOrNull()
-
-/** Get the content of a JsonElement as a Long, or null. */
-internal val JsonElement.longOrNull: Long?
-    get() = (this as? JsonPrimitive)?.content?.toLongOrNull()
-
-/** Get the content of a JsonElement as a Double, or null. */
-internal val JsonElement.doubleOrNull: Double?
-    get() = (this as? JsonPrimitive)?.content?.toDoubleOrNull()
-
-/** Get the content of a JsonElement as a Boolean, or null. */
-internal val JsonElement.booleanOrNull: Boolean?
-    get() = (this as? JsonPrimitive)?.content?.toBooleanStrictOrNull()
