@@ -101,6 +101,9 @@ enum class ServerKind(
         "foobar2000",
         "Desktop player with the Beefweb plugin. Browses its library and drives its transport over REST.",
         supported = true,
+        // Built against the Beefweb API document, never yet run against a real
+        // foobar2000 — experimental until someone with the plugin reports back.
+        experimental = true,
         urlHint = "http://192.168.0.10:8880",
         auth = AuthStyle.OPTIONAL_USER_PASSWORD,
     ),

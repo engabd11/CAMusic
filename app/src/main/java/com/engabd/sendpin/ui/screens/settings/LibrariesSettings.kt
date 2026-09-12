@@ -397,10 +397,13 @@ private fun ProviderPicker(accent: Color, onPick: (ServerKind) -> Unit) {
         Spacer(Modifier.height(4.dp))
         FieldLabel("Experimental")
         Note(
-            "Streaming accounts: an account and a sign-in rather than a server, played by " +
-                "this phone with light sync. These work — but no streaming service offers " +
-                "an API for a player like this one, so they lean on undocumented endpoints " +
-                "and are the first thing a provider's next change will break.",
+            "Built and tested, but not yet proven in the wild. foobar2000 was written to " +
+                "the Beefweb plugin's API document and has not been run against a real " +
+                "install. The streaming accounts — an account and a sign-in rather than a " +
+                "server, played by this phone with light sync — work, but no streaming " +
+                "service offers an API for a player like this one, so they lean on " +
+                "undocumented endpoints and are the first thing a provider's next change " +
+                "will break.",
         )
         ServerKind.addableExperimental.forEach { kind ->
             ProviderRow(kind, accent) { onPick(kind) }
