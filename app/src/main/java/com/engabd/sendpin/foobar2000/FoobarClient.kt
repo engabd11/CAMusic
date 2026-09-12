@@ -431,7 +431,7 @@ class FoobarClient(
      * Beefweb's `SetPlayerStateRequest` takes `position` in seconds.
      */
     suspend fun seekTo(seconds: Double) =
-        post("/player", """{"position":$seconds}"")
+        post("/player", "{\"position\":$seconds}")
 
     /**
      * Set the volume to an absolute value in Beefweb's own scale.
@@ -441,7 +441,7 @@ class FoobarClient(
      * right range.
      */
     suspend fun setVolume(value: Double) =
-        post("/player", """{"volume":$value}""")
+        post("/player", "{\"volume\":$value}")
 
     // ── Playlists ─────────────────────────────────────────────────────────
 
@@ -522,7 +522,7 @@ class FoobarClient(
         val itemsJson = items.joinToString(",") { "\"${escapeJson(it)}\"" }
         post(
             "/playlists/$playlistId/items/add",
-            """{"items":[$itemsJson],"replace":true,"play":$play}""",
+            "{\"items\":[$itemsJson],\"replace\":true,\"play\":$play}",
         )
         if (play && startIndex > 0) {
             playItem(playlistId, startIndex)
@@ -533,7 +533,7 @@ class FoobarClient(
     suspend fun addItems(playlistId: String, items: List<String>) {
         if (items.isEmpty()) return
         val itemsJson = items.joinToString(",") { "\"${escapeJson(it)}\"" }
-        post("/playlists/$playlistId/items/add", """{"items":[$itemsJson]}""")
+        post("/playlists/$playlistId/items/add", "{\"items\":[$itemsJson]}")
     }
 
     /**
@@ -545,7 +545,7 @@ class FoobarClient(
     suspend fun addItemsAt(playlistId: String, items: List<String>, index: Int) {
         if (items.isEmpty()) return
         val itemsJson = items.joinToString(",") { "\"${escapeJson(it)}\"" }
-        post("/playlists/$playlistId/items/add", """{"items":[$itemsJson],"index":$index}""")
+        post("/playlists/$playlistId/items/add", "{\"items\":[$itemsJson],\"index\":$index}")
     }
 
     /**
@@ -556,14 +556,14 @@ class FoobarClient(
     suspend fun removeItems(playlistId: String, indices: List<Int>) {
         if (indices.isEmpty()) return
         val indicesJson = indices.joinToString(",")
-        post("/playlists/$playlistId/items/remove", """{"items":[$indicesJson]}""")
+        post("/playlists/$playlistId/items/remove", "{\"items\":[$indicesJson]}")
     }
 
     /** Move an item from one position to another within a playlist. */
     suspend fun moveItem(playlistId: String, from: Int, to: Int) {
         post(
             "/playlists/$playlistId/items/move",
-            """{"items":[$from],"targetIndex":$to}""",
+            "{\"items\":[$from],\"targetIndex\":$to}",
         )
     }
 
@@ -577,7 +577,7 @@ class FoobarClient(
 
     /** Create a new playlist, returning its id. */
     suspend fun createPlaylist(title: String): String? {
-        val response = postWithResponse("/playlists/add", """{"title":"${escapeJson(title)}"}""")
+        val response = postWithResponse("/playlists/add", "{\"title\":\"${escapeJson(title)}\"}")
         return response?.get("id")?.jsonPrimitive?.contentOrNull
     }
 
