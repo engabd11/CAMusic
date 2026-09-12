@@ -56,6 +56,7 @@ private fun serverKindIcon(kind: ServerKind): ImageVector = when (kind) {
     ServerKind.LOCAL -> Icons.Default.Smartphone
     ServerKind.DOWNLOADS -> Icons.Default.DownloadDone
     ServerKind.MPD -> Icons.AutoMirrored.Filled.QueueMusic
+    ServerKind.FOOBAR2000 -> Icons.Default.GraphicEq
 }
 
 /**
@@ -85,6 +86,7 @@ private fun serverKindLogoRes(kind: ServerKind): Int? = when (kind) {
     ServerKind.BOX -> R.drawable.ic_logo_box
     ServerKind.SMB, ServerKind.WEBDAV, ServerKind.PCLOUD, ServerKind.LOCAL, ServerKind.DOWNLOADS,
     ServerKind.MPD,
+    ServerKind.FOOBAR2000,
     // No brand marks while experimental — see serverKindIcon.
     ServerKind.SPOTIFY, ServerKind.QOBUZ, ServerKind.TIDAL,
     -> null

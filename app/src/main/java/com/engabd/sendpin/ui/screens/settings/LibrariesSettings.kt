@@ -580,6 +580,14 @@ private fun ServerDetail(
                         "this field wants.",
                 )
             }
+            if (config.kind == ServerKind.FOOBAR2000) {
+                Note(
+                    "foobar2000 plays this itself, through whatever output device its own " +
+                        "config names. This phone browses the library and works the transport " +
+                        "over the Beefweb plugin's REST API. Nothing streams to the phone, " +
+                        "so nothing plays out of it.",
+                )
+            }
             // Qobuz and Tidal sign their calls as an *application* as well as an
             // account, and this build shipped without a registered pair — so the
             // form asks for one rather than failing at connect time with what
@@ -773,7 +781,7 @@ private fun ServerDetail(
         // with, decided in mpd.conf and not negotiable per request, so a picker
         // here would be a setting that changes nothing — the exact dishonesty the
         // settings audit went through this screen to remove.
-        if (config.kind.playsLocally && config.kind != ServerKind.LOCAL && config.kind != ServerKind.MPD) {
+        if (config.kind.playsLocally && config.kind != ServerKind.LOCAL && config.kind != ServerKind.MPD && config.kind != ServerKind.FOOBAR2000) {
             SettingsCard(
                 title = "Stream quality",
                 lead = "What this server is asked to send. Downloads always take the original " +

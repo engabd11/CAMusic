@@ -3,6 +3,8 @@ package com.engabd.sendpin.library
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.emby.EmbyClient
 import com.engabd.sendpin.emby.EmbyException
+import com.engabd.sendpin.foobar2000.FoobarClient
+import com.engabd.sendpin.foobar2000.FoobarSource
 import com.engabd.sendpin.jellyfin.JellyfinClient
 import com.engabd.sendpin.jellyfin.JellyfinException
 import com.engabd.sendpin.ma.MaItem
@@ -40,6 +42,7 @@ object MusicSources {
         EmbyClient.PROVIDER,
         PlexClient.PROVIDER,
         MpdClient.PROVIDER,
+        FoobarClient.PROVIDER,
         "local",
     )
 
@@ -118,6 +121,15 @@ object MusicSources {
         // has no starred concept of its own — see [MpdSource].
         ServerKind.MPD -> MpdSource(
             MpdClient(address = config.url, password = config.password),
+            context.applicationContext,
+        )
+
+        // Same shape as MPD: foobar2000 plays its own audio to its own output
+        // (the DAC on the PC), and this phone drives the transport over
+        // Beefweb's REST API. The context is for the app-side favourites store,
+        // which foobar2000 needs for the same reason MPD does.
+        ServerKind.FOOBAR2000 -> FoobarSource(
+            FoobarClient(address = config.url, password = config.password),
             context.applicationContext,
         )
 
@@ -292,6 +304,18 @@ object MusicSources {
             val error = source.mpd.pingResult()
             if (error != null) {
                 if (error.isAuth) throw SourceAuthException(error.message ?: "MPD refused that password")
+                throw error
+            }
+            config
+        }
+
+        is FoobarSource -> {
+            // Same as MPD: Beefweb's optional basic auth is sent on every
+            // request. A 401 surfaces as SourceAuthException; anything else
+            // is shown directly.
+            val error = source.foobar.pingResult()
+            if (error != null) {
+                if (error.isAuth) throw SourceAuthException(error.message ?: "foobar2000 refused that password")
                 throw error
             }
             config
