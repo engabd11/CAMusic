@@ -116,9 +116,10 @@ your Plex password stays at plex.tv where it belongs.
 same way — Gonic, Airsonic, Ampache, Funkwhale, epoupon's LMS. Each server answers with what
 it has: lyrics, ReplayGain and exact formats ride the OpenSubsonic extensions, so an older
 server just loses those extras rather than showing empty panes. Two need one thing the others
-don't: Ampache keeps its Subsonic API switched off until you enable it in Preferences →
-System, and Funkwhale won't take your account password — Settings → Subsonic API →
-Request a password generates the one CAMusic wants.
+don't: Ampache needs an admin to switch its Subsonic backend on (Admin → Server Config) and
+wants the Subsonic password from your account page rather than the web login, and Funkwhale
+won't take your account password either — Settings → Subsonic API → Request a password
+generates the one CAMusic wants.
 
 MPD is the one library that plays its own music, and moOde, Volumio, piCorePlayer and Mopidy are
 all MPD underneath, so the one row is their app as much as MPD's. Every other server hands out a URL
