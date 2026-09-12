@@ -4,7 +4,6 @@ import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.emby.EmbyClient
 import com.engabd.sendpin.emby.EmbyException
 import com.engabd.sendpin.foobar2000.FoobarClient
-import com.engabd.sendpin.foobar2000.FoobarSource
 import com.engabd.sendpin.jellyfin.JellyfinClient
 import com.engabd.sendpin.jellyfin.JellyfinException
 import com.engabd.sendpin.ma.MaItem
