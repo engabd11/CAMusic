@@ -520,7 +520,7 @@ class FoobarClient(
             post("/playlists/$playlistId/clear")
             return
         }
-        val itemsJson = items.joinToString(",") { "\"${Json.escape(it)}\"" }
+        val itemsJson = items.joinToString(",") { "\"${escapeJson(it)}\"" }
         post(
             "/playlists/$playlistId/items/add",
             """{"items":[$itemsJson],"replace":true,"play":$play}""",
@@ -533,7 +533,7 @@ class FoobarClient(
     /** Append items to a playlist, leaving what is playing alone. */
     suspend fun addItems(playlistId: String, items: List<String>) {
         if (items.isEmpty()) return
-        val itemsJson = items.joinToString(",") { "\"${Json.escape(it)}\"" }
+        val itemsJson = items.joinToString(",") { "\"${escapeJson(it)}\"" }
         post("/playlists/$playlistId/items/add", """{"items":[$itemsJson]}""")
     }
 
@@ -545,7 +545,7 @@ class FoobarClient(
      */
     suspend fun addItemsAt(playlistId: String, items: List<String>, index: Int) {
         if (items.isEmpty()) return
-        val itemsJson = items.joinToString(",") { "\"${Json.escape(it)}\"" }
+        val itemsJson = items.joinToString(",") { "\"${escapeJson(it)}\"" }
         post("/playlists/$playlistId/items/add", """{"items":[$itemsJson],"index":$index}""")
     }
 
@@ -578,7 +578,7 @@ class FoobarClient(
 
     /** Create a new playlist, returning its id. */
     suspend fun createPlaylist(title: String): String? {
-        val response = postWithResponse("/playlists/add", """{"title":"${Json.escape(title)}"}""")
+        val response = postWithResponse("/playlists/add", """{"title":"${escapeJson(title)}"}""")
         return response?.get("id")?.jsonPrimitive?.contentOrNull
     }
 
@@ -798,7 +798,7 @@ data class FoobarOutput(
  * the control characters — so the result is safe inside a `"..."` pair without
  * pulling in kotlinx.serialization's whole encoder for a one-line body.
  */
-private fun Json.Companion.escape(s: String): String = buildString(s.length + 2) {
+internal fun escapeJson(s: String): String = buildString(s.length + 2) {
     for (c in s) {
         when (c) {
             '\\' -> append("\\\\")
@@ -815,26 +815,22 @@ private fun Json.Companion.escape(s: String): String = buildString(s.length + 2)
     }
 }
 
-/** Get the content of a JsonPrimitive as a String, or null. */
-private val JsonPrimitive.contentOrNull: String?
-    get() = if (this is JsonPrimitive) content else null
-
 /** Get the content of a JsonElement as a String, or null. */
-private val JsonElement.contentOrNull: String?
+internal val JsonElement.contentOrNull: String?
     get() = (this as? JsonPrimitive)?.content
 
 /** Get the content of a JsonElement as an Int, or null. */
-private val JsonElement.intOrNull: Int?
-    get() = (this as? JsonPrimitive)?.intOrNull
+internal val JsonElement.intOrNull: Int?
+    get() = (this as? JsonPrimitive)?.content?.toIntOrNull()
 
 /** Get the content of a JsonElement as a Long, or null. */
-private val JsonElement.longOrNull: Long?
-    get() = (this as? JsonPrimitive)?.longOrNull
+internal val JsonElement.longOrNull: Long?
+    get() = (this as? JsonPrimitive)?.content?.toLongOrNull()
 
 /** Get the content of a JsonElement as a Double, or null. */
-private val JsonElement.doubleOrNull: Double?
-    get() = (this as? JsonPrimitive)?.doubleOrNull
+internal val JsonElement.doubleOrNull: Double?
+    get() = (this as? JsonPrimitive)?.content?.toDoubleOrNull()
 
 /** Get the content of a JsonElement as a Boolean, or null. */
-private val JsonElement.booleanOrNull: Boolean?
-    get() = (this as? JsonPrimitive)?.booleanOrNull
+internal val JsonElement.booleanOrNull: Boolean?
+    get() = (this as? JsonPrimitive)?.content?.toBooleanStrictOrNull()
