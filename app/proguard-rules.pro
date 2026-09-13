@@ -33,3 +33,17 @@
 -dontwarn org.bouncycastle.**
 -dontwarn org.openjsse.**
 -dontwarn androidx.media3.**
+
+# AirPlay's JNI bridge calls back into AirPlayOutput *by name* — GetMethodID in
+# airplay_jni.cpp for onLaunched/onClosed/onPinRequired/onCredentials. They are
+# private and never called from Kotlin, so R8 sees four dead methods and strips
+# them, and nativeInit() then throws NoSuchMethodError from AirPlayOutput's
+# constructor — which the player builds lazily at app start, so the minified
+# build died before its first frame. Native methods are already kept by
+# proguard-android-optimize.txt; it is only these callbacks that need naming.
+-keepclassmembers class com.engabd.sendpin.audio.AirPlayOutput {
+    private void onLaunched(boolean, java.lang.String);
+    private void onClosed();
+    private void onPinRequired(java.lang.String);
+    private void onCredentials(java.lang.String, java.lang.String);
+}
