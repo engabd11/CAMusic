@@ -52,6 +52,17 @@ class EmotionalArcLayer : LightShowLayer {
         structureSeen = false
     }
 
+    /**
+     * "One-way within a track" — and only within it. The chain is only reset at a
+     * session boundary, so a drop in one track used to leave every later track of
+     * the session reading `STEADY` as "the calm between the loud parts" and tinting
+     * an ambient album cool for its whole length. The temperature is left to ease
+     * out on its own so the boundary is not a snap.
+     */
+    override fun onTrackChanged() {
+        structureSeen = false
+    }
+
     private val hsv = FloatArray(3)
 
     override fun apply(
