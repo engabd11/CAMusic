@@ -129,7 +129,7 @@ internal fun subPagesFor(section: SettingsSection): List<SubPage> = when (sectio
         SubPage(
             LOOK_MOTION_ROUTE,
             "Motion & bloom",
-            "How much the app animates, and whether the album lights the screen around it",
+            "How much the app animates, whether the album lights the screen around it, and glass blur",
             Icons.Default.Animation,
         ),
     )

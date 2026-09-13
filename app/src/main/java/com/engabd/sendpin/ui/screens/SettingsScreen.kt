@@ -458,6 +458,7 @@ private fun LazyListScope.sectionItems(
             }
             LOOK_MOTION_ROUTE -> {
                 card("look_bloom") { ChameleonCard(settings, accent, scope) }
+                card("look_glass") { GlassBlurCard(settings, accent, scope) }
                 // Behind the advanced switch, as it always was: the system's own
                 // setting is right for almost everybody, and this only exists to
                 // disagree with it.
