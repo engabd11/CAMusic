@@ -106,6 +106,15 @@ data class PlayerStateInfo(
     val volume: Int = 100,
     val muted: Boolean = false,
     @SerialName("static_delay_ms") val staticDelayMs: Int = 0,
+    /**
+     * `set_static_delay` is advertised here, at the state level, where the spec
+     * puts it (hello may only list volume/mute). Without it Music Assistant never
+     * creates the "Static playback delay (ms)" setting for this player — the one
+     * knob the Sendspin docs give for trimming a room into sync did not exist for
+     * the phone, while the client already honoured the command and the engine
+     * applied it.
+     */
+    @SerialName("supported_commands") val supportedCommands: List<String> = listOf("set_static_delay"),
 )
 
 @Serializable

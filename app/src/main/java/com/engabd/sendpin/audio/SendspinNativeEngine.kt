@@ -505,8 +505,15 @@ class SendspinNativeEngine(
     }
 
     override fun endOfStream(drain: Boolean) {
+        // Set on both paths: the server has ended the stream, so nothing more is
+        // coming until the next `stream/start`, and the playback loop's idle stop
+        // keys off this flag. It used to be set only when draining, which is the
+        // end of a track. A pause discards the tail instead, and so never asked for
+        // the idle stop at all — a paused session kept the output stream started
+        // and this engine's loop polling an empty queue for as long as it stayed
+        // paused.
+        endOfStreamSignalled = true
         if (drain) {
-            endOfStreamSignalled = true
             drainSignalled = true
             // Schedule idle stop for when the drain completes — the playback
             // loop will call scheduleIdleStop itself once the queue empties.
@@ -744,16 +751,22 @@ class SendspinNativeEngine(
     private fun timingPlan(serverTimestampUs: Long): TimingPlan {
         val outputLatencyUs = nativeOutput.outputLatencyUs()
         val local = computeLocalPlan(serverTimestampUs, outputLatencyUs)
-        // Acoustic correction and unreported HAL gap exist ONLY for SYNC
-        // (group timeline alignment). DIRECT is pure FIFO.
-        // routeAcousticExtraUs is not configured in CAMusic (no acoustic
-        // calibration), so staticDelayUs is always 0 for now.
+        // Acoustic correction exists ONLY for SYNC (group timeline alignment).
+        // DIRECT is pure FIFO. routeAcousticExtraUs is not configured in CAMusic
+        // (no acoustic calibration), so staticDelayUs is always 0 for now.
         val staticDelayUs = 0L
-        val unreportedLatencyUs = if (isSync) {
-            (halOutputLatencyUs - outputLatencyUs).coerceAtLeast(0L)
-        } else {
-            0L
-        }
+        // No "unreported HAL latency" term any more. It was
+        // `halOutputLatencyUs - outputLatencyUs`, applied in SYNC only, on the
+        // theory that getTimestamp under-reports and AudioManager.getOutputLatency
+        // knows better. It does not: that hidden API describes the *primary*,
+        // deep-buffer output (109 ms on an S22 Ultra), not the MMAP stream this
+        // engine plays through, whose own calculateLatencyMillis is a stable 13 ms
+        // and holds clockErr at 0. Subtracting the 96 ms between them made this
+        // phone play 96 ms *early* in every group and never solo — heard as "the
+        // phone is ahead the whole song" against a PC Sendspin client on the same
+        // server clock. [halOutputLatencyUs] stays for the diagnostic log; any real
+        // acoustic offset is what the per-player static delay is for.
+        val unreportedLatencyUs = 0L
         // Static delay: positive = this path adds latency = play earlier (subtract).
         val staticDelayOffsetUs = staticDelayMs.toLong() * 1000L
         val presentationUs = local.localOutputUs +
@@ -852,6 +865,13 @@ class SendspinNativeEngine(
             // Start buffer gate (only before first startTrack).
             if (!playbackStarted) {
                 if (!startupReady()) {
+                    // A stream that has ended cannot fill this buffer: a pause cuts
+                    // the tail, which clears `playbackStarted` and lands the loop
+                    // here, and here it spun — a hundred times a second, with the
+                    // output stream started under it — until the next stream/start.
+                    // The idle stop was only ever armed from the poll branch below,
+                    // which this gate never let it reach.
+                    if (endOfStreamSignalled && frameQueue.isEmpty() && decoderMarks.isEmpty()) scheduleIdleStop()
                     sleepMs(10)
                     continue
                 }
@@ -1203,16 +1223,37 @@ class SendspinNativeEngine(
 
     private val idleStopRunnable = Runnable { stopOutputForIdle() }
 
+    /** Whether [idleStopRunnable] is posted. Guards [scheduleIdleStop] against re-arming. */
+    @Volatile private var idleStopArmed = false
+
+    /**
+     * Arm the idle stop, once.
+     *
+     * The playback loop asks for this on *every* empty poll after a stream has
+     * ended — one poll every ten milliseconds — and this used to answer each one
+     * with `removeCallbacks` + `postDelayed`, which restarted the five-second
+     * countdown ten milliseconds into itself. It could never reach zero while the
+     * loop that requested it was still running, which is exactly when it was
+     * needed. So a paused Music Assistant session kept its Oboe stream started,
+     * rendering silence five hundred times a second, and this loop polling an
+     * empty queue, until the next `stream/start` — indefinitely, with the screen
+     * off. Measured at six to seven per cent of a core for a phone doing nothing.
+     */
     private fun scheduleIdleStop() {
-        mainHandler.removeCallbacks(idleStopRunnable)
+        if (idleStopArmed) return
+        idleStopArmed = true
         mainHandler.postDelayed(idleStopRunnable, IDLE_OUTPUT_STOP_GRACE_MS)
     }
 
     private fun cancelIdleStop() {
+        idleStopArmed = false
         mainHandler.removeCallbacks(idleStopRunnable)
     }
 
     private fun stopOutputForIdle() {
+        // Disarmed either way: a stop that finds a reason to wait (a tail still
+        // draining) lets the loop arm the next one, rather than being the last.
+        idleStopArmed = false
         if (playbackStarted || outputPausedForIdle) return
         if (frameQueue.isNotEmpty()) return // still have encoded frames to decode
         if (nativeOutput.bufferedFrames() > 0) return // still have PCM in the ring
