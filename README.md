@@ -27,10 +27,10 @@ it into part of the listening.
 
 | | |
 |---|---|
-|  **A player** | Navidrome, Subsonic-compatible (Gonic, Airsonic, Ampache, Funkwhale, epoupon's LMS), Jellyfin, Emby, Plex, MPD (moOde, Volumio, piCorePlayer and Mopidy are all MPD underneath), Music Assistant and on-device files — plus Spotify, Qobuz and Tidal accounts (experimental). Gapless playback, a ten band equaliser, high resolution output, ReplayGain and offline downloads. |
+|  **A player** | Navidrome, Subsonic-compatible (Gonic, Airsonic, Ampache, Funkwhale, epoupon's LMS), Jellyfin, Emby, Plex, MPD (moOde, Volumio, piCorePlayer and Mopidy are all MPD underneath), Music Assistant and on-device files — plus Spotify, Qobuz and Tidal accounts and foobar2000 over its Beefweb plugin (experimental). Gapless playback, a ten band equaliser, high resolution output, ReplayGain and offline downloads. |
 |  **A light show** | Philips Hue Entertainment, driven straight to the bridge at 60 frames a second from the audio that is playing. |
 |  **An atmosphere** | Ambience shows with their own sound, ready whenever you want the room without the music. |
-|  **A speaker** | Music Assistant can stream to this phone as a clock synced player, so it joins a grouped, multi-room setup. |
+|  **A speaker** | Music Assistant can stream to this phone as a clock synced player, so it joins a grouped, multi-room setup. And what the phone plays itself can go out over **AirPlay** to an Apple TV or HomePod, from the top-left of Now Playing. |
 
 Runs on phones and tablets, Android TV, Android Auto and LG webOS televisions.
 
@@ -99,15 +99,22 @@ can add as many as you like and switch between them freely.
 | **Music Assistant** | ✅ | ✅ | n/a | ✅ |
 | **On-device files** | ✅ | ✅ | n/a | n/a |
 | **Spotify · Qobuz · Tidal** | 🔬 | 🔬 | — | — |
+| **foobar2000** (via Beefweb) | 🔬 | 🔬 | — | — |
 
-🔬 **Experimental** — these three are streaming *accounts* rather than servers, played on
-this phone with light sync and no Music Assistant required. Addable from first-run setup
-and from Settings → Libraries, under their own heading. See the
-[Streaming services](#streaming-services-experimental) section below.
+🔬 **Experimental** — the three streaming *accounts* are played on this phone with light
+sync and no Music Assistant required (see [Streaming services](#streaming-services-experimental));
+foobar2000 works like MPD — the desktop player keeps the sound and the phone drives it over
+the [Beefweb](https://github.com/hyperblast/beefweb) plugin's REST API — and is marked
+experimental only because it has not yet been run against a real install. All of them are
+offered in first-run setup and in Settings → Libraries, under their own heading.
 
 Artists, albums, playlists, radio, podcasts and audiobooks, with search across all of them.
 Multi-disc albums group properly, liner notes and biographies appear where the server has
-them, and each server shows its own brand mark everywhere it is listed.
+them, and each server shows its own brand mark everywhere it is listed. The picker groups
+servers into families — Subsonic servers, media servers, MPD — so a moOde or Funkwhale owner
+finds theirs without knowing which API it speaks, and **every server's settings page is dressed
+in that server's own colours**: Jellyfin's purple-to-cyan, Emby's green, Plex's gold, Music
+Assistant's blue, and the streaming services in their full brand palettes.
 
 Plex signs in through a plex.tv PIN: tap **Sign in with Plex**, finish it in the browser, and
 your Plex password stays at plex.tv where it belongs.
@@ -159,6 +166,13 @@ A build carries whatever pair it was given at build time (gradle properties, see
 when it carries none — a fork, or an APK built from a plain checkout — the connect form
 asks for one, so you can use credentials of your own. Spotify needs no such pair:
 librespot signs in as your own client.
+
+Each account has a settings page of its own, in the service's colours, with the settings
+its client actually exposes rather than a generic stream-quality toggle: Spotify's audio
+quality, normalisation, autoplay, crossfade, preload and Spotify Connect device name;
+Qobuz's format tiers (MP3, CD, Hi-Res, Hi-Res+); Tidal's tiers (Low, High, HiFi, Max). Each
+page also shows who is signed in and what the plan streams up to, and warns when the chosen
+tier is above it.
 
 The engineering detail lives in
 [docs/plan/direct-streaming-providers.md](docs/plan/direct-streaming-providers.md).
@@ -341,6 +355,21 @@ like any other speaker, including inside a synced group.
   of or behind the rest of the room.
 - **Play at original quality** streams the untouched file straight from your library server when
   MA would otherwise have transcoded it for the phone.
+- **The progress bar follows the official Music Assistant app's model**: server readings anchor
+  it, a local projection ticks between them, and a seek or skip on this phone holds the bar
+  until the new stream's first chunk arrives. It also knows the one thing MA gets wrong — on a
+  track short enough to send in one burst, MA's own clock never starts — and keeps ticking.
+
+### AirPlay
+
+Whatever this phone decodes itself — a Navidrome, Jellyfin, Emby or Plex library, files on the
+phone, a streaming account — can be sent to an **AirPlay** receiver: an Apple TV, a HomePod, an
+AirPlay speaker. The control sits in the top-left of Now Playing; tap it for the receivers on
+the network, enter the PIN an Apple TV shows the first time, and the phone remembers the
+pairing. The phone goes quiet while the receiver plays, the volume slider follows it, and the
+receiver's own Now Playing shows the track. The sender is `airplay2-sender-cpp` (AirPlay 2 and
+legacy RAOP), vendored and built as part of the app. A Music Assistant queue plays to MA's own
+speakers and does not pass through here.
 
 ---
 
@@ -379,7 +408,7 @@ variety, streaks, lossless share, and where your music actually came from.
   the car always plays on *this phone*, never on a speaker in another room, and for a Music
   Assistant track it moves the speaker selection here too, so the car's transport buttons
   address the player it just started.
-- **Android Auto.** For a car with the app installed on its own built-in head unit,
+- **Android Automotive.** For a car with the app installed on its own built-in head unit,
   rather than projected from a phone: a two-pane layout puts the player and the library
   side by side, sized and inset for a driver's glance rather than a phone screen.
 - **Android TV.** A dedicated `tv` flavour with a D-pad Now Playing, Library, Queue, Light Sync,
@@ -400,13 +429,16 @@ variety, streaks, lossless share, and where your music actually came from.
 ## Setup
 
 1. Install the APK from [Releases](https://github.com/engabd11/CAMusic/releases).
-2. Open it and follow the onboarding: point it at a server, and optionally pair a Hue bridge by
-   pressing the button on the bridge when asked.
+2. Open it and follow the onboarding: pick a server or a streaming account, sign in, and
+   optionally pair a Hue bridge by pressing the button on the bridge when asked. A Music
+   Assistant server that needs a login says so on the spot rather than pretending to connect.
 3. Start listening. A server address is the whole of it.
 
-**Requirements:** Android 12 or newer. Any Subsonic, Jellyfin, Emby, Plex, MPD or Music Assistant
-server for the library, a Hue bridge with an entertainment area for Light Sync, and a Music
-Assistant server for multi-room grouping. Each one is optional and independent of the others.
+**Requirements:** Android 12 or newer. Any Subsonic, Jellyfin, Emby, Plex, MPD, foobar2000
+(with Beefweb) or Music Assistant server for the library — or a Spotify Premium, Qobuz or Tidal
+account — a Hue bridge with an entertainment area for Light Sync, a Music Assistant server for
+multi-room grouping, and an AirPlay receiver for casting. Each one is optional and independent
+of the others.
 
 Settings, servers and credentials can be exported as a password-encrypted file and imported on
 another device, where the credentials are re-encrypted under that device's Keystore.
@@ -461,9 +493,10 @@ Package and install with the webOS CLI. The steps are in [webos/README.md](webos
             └────────────────┘  → feeds the light engine
 ```
 
-Position on every path comes from `PlayerPositionTracker`. On Music Assistant it is anchored on
-the server's own `elapsed_time` rather than on a local counter, so the progress bar agrees with
-the server.
+Position on the Music Assistant path comes from one `MaPlayhead` (owned by `MaNowPlaying`, read
+by the screen, the notification, Android Auto and the car alike), anchored on the server's own
+`elapsed_time` and its capture time rather than on a local counter, so the progress bar agrees
+with the server and cannot disagree with itself.
 
 ### Audio pipeline
 
@@ -481,7 +514,8 @@ Music Assistant ──ws──► SendspinClient ──► SendspinTimeline (dec
 
 Library servers ──► ExoPlayer ──► LocalDsp ──► TapRenderersFactory ──► AudioTrack
 and local files                                        │
-                                                       └──► AudioAnalysisTap ──► Light Sync
+                                                       ├──► AudioAnalysisTap ──► Light Sync
+                                                       └──► AirPlayOutputProcessor ──► AirPlay receiver
 ```
 
 Both paths feed the same analysis tap, which is what lets one light engine serve whichever is
@@ -491,12 +525,21 @@ playing. `LocalDsp` sits ahead of the tap so the show reacts to what you actuall
 
 ## Recent releases
 
-**Unreleased**, on top of v0.11.5, brings **Rhythm Lights** (a tap-along game that gates the
-real light show instead of replacing it), the **output ladder** that collapses three
-overlapping switches into one dial, **hand-correctable album colours**, a **Simple/Advanced**
-split for Settings, an on-device **sonic "more like this"** for tracks no server has an
-opinion on, DJ Radio's six-song opening picker with mood briefs, and a pass of MPD transport,
-queue and Light Sync fixes.
+**Unreleased**, on top of v0.12.1: the **Music Assistant progress bar** rebuilt on the official
+app's model (no more snapping after a seek, and short tracks no longer loop back to 0:00);
+**AirPlay from Now Playing**; a settings page for each streaming account with the service's own
+settings and every server page in its server's colours; **foobar2000** as a remote player over
+Beefweb; server families in the picker and the setup wizard; and an onboarding fix for Music
+Assistant servers that require a login.
+
+**v0.12.1**: Driving Mode only holds the GPS while the designated car is connected.
+**v0.12.0**: **Spotify, Qobuz and Tidal** as streaming accounts (experimental, played on the
+phone); a two-pane **Android Automotive** layout; libraries orderable and statistics on the
+Settings index; the Light Sync page rebuilt; no dead ends in onboarding.
+**v0.11.8–v0.11.6**: **Rhythm Lights** (a tap-along game that gates the real light show), the
+**output ladder** that collapses three overlapping switches into one dial, hand-correctable
+album colours, a Simple/Advanced split for Settings, an on-device sonic "more like this", DJ
+Radio's six-song opening picker, and a pass of MPD transport, queue and Light Sync fixes.
 
 **v0.11.5**: DJ Radio starts the instant you tap it, with no flicker on the way in.
 **v0.11.4**: **DJ Radio** ships — a set that chooses by genre, energy, tempo and key and mixes
@@ -522,6 +565,8 @@ Full history: [docs/release-history.md](docs/release-history.md).
 
 ### Next up
 
+- Chromecast, the way AirPlay landed
+- Artwork on an AirPlay receiver's own Now Playing
 - Wear OS companion
 - Audiobookshelf and Kodi as libraries
 - Network filesystems: SMB, WebDAV and the major cloud drives
@@ -556,12 +601,15 @@ git clone https://github.com/engabd11/CAMusic.git
 cd CAMusic
 ./gradlew assembleMobileDebug          # phone and tablet
 ./gradlew assembleTvDebug              # Android TV
-./gradlew testMobileDebugUnitTest      # ~1,000 unit tests
+./gradlew testMobileDebugUnitTest      # ~1,600 unit tests
 ```
 
-Requires JDK 17 or newer and the Android SDK. The native audio engine builds through CMake as
-part of the normal Gradle build, so there is nothing extra to install. The speed-zone database
-is stored in git-lfs, so run `git lfs pull` after cloning.
+Requires JDK 17 or newer and the Android SDK with the NDK. The native audio engine and the
+AirPlay sender build through CMake as part of the normal Gradle build; the AirPlay build fetches
+Mbed TLS once at configure time, so the first build needs network access. The speed-zone
+database is stored in git-lfs, so run `git lfs pull` after cloning. Qobuz and Tidal app
+credentials come from gradle properties (`camusic.qobuz.*`, `camusic.tidal.*`); a build without
+them asks for a pair on the account's settings page instead.
 
 Flavours are `mobile` (the default, and the one every release ships as) and `tv`, so Gradle
 tasks are flavour qualified. `-PsideBySide` adds a `.freshtest` application id suffix for
