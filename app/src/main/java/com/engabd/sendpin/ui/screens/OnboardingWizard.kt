@@ -285,70 +285,53 @@ private fun SourceStep(
         Text("You can add more later in Settings → Libraries.", color = TextMuted, fontSize = 13.sp, textAlign = TextAlign.Center)
         Spacer(Modifier.height(20.dp))
 
-        // The same glass tiles as the library switcher this list leads to — each
-        // kind's own mark on its own colour — so the first screen and the one used
-        // every day agree on what a Jellyfin or a Navidrome looks like.
-        SourceRow(
-            kind = ServerKind.MUSIC_ASSISTANT,
-            blurb = "Play to any speaker on the network with grouping and a server-side queue.",
-        ) { onPick(ServerKind.MUSIC_ASSISTANT) }
+        // The same rows as the settings picker, grouped the same way, so the wizard
+        // offers every server the app can add rather than the four it started with.
+        // Someone running Plex, Emby or an MPD box used to be told to skip setup and
+        // find it later. A family with one member renders bare; the heading would
+        // only repeat the row. The rows are the same glass tiles as the library
+        // switcher this list leads to, so the first screen and the one used every
+        // day agree on what a Jellyfin or a Navidrome looks like.
+        ServerKind.Family.entries.forEach { family ->
+            val kinds = ServerKind.addableStable.filter { it.family == family }
+            if (kinds.isEmpty()) return@forEach
+            if (kinds.size > 1) {
+                Spacer(Modifier.height(10.dp))
+                Text(family.label, color = TextSecondary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                Spacer(Modifier.height(2.dp))
+            }
+            kinds.forEach { kind -> SourceRow(kind) { onPick(kind) } }
+        }
 
-        SourceRow(
-            kind = ServerKind.NAVIDROME,
-            blurb = "A fast self-hosted Subsonic server, with synced lyrics and ReplayGain.",
-        ) { onPick(ServerKind.NAVIDROME) }
-
-        SourceRow(
-            kind = ServerKind.JELLYFIN,
-            blurb = "Open-source media server with a music library and original-file streaming.",
-        ) { onPick(ServerKind.JELLYFIN) }
-
-        SourceRow(
-            kind = ServerKind.LOCAL,
-            label = "This device",
-            blurb = "Music already on the phone or SD card, indexed by MediaStore.",
-        ) { onPick(ServerKind.LOCAL) }
-
-        // The streaming accounts, set apart rather than mixed in. They are an
-        // account and a sign-in rather than a server, and they are experimental —
-        // no streaming service publishes an API for a player like this one, so
-        // each leans on undocumented endpoints. Saying that here is cheaper than
-        // a first-run user discovering it when a provider changes something.
+        // The experimental kinds, set apart rather than mixed in: the streaming
+        // accounts are an account and a sign-in rather than a server, and no
+        // streaming service publishes an API for a player like this one, so each
+        // leans on undocumented endpoints. Saying that here is cheaper than a
+        // first-run user discovering it when a provider changes something.
         Spacer(Modifier.height(16.dp))
-        Text(
-            "Streaming accounts",
-            color = TextSecondary,
-            fontWeight = FontWeight.Bold,
-            fontSize = 13.sp,
-        )
+        Text("Experimental", color = TextSecondary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
         Spacer(Modifier.height(2.dp))
         Text(
-            "Experimental: played by this phone, with light sync. Unofficial clients, so a " +
-                "provider's next change can break one.",
+            "Built and tested, not yet proven in the wild. The streaming accounts are played " +
+                "by this phone, with light sync, through unofficial clients — a provider's next " +
+                "change can break one.",
             color = TextMuted,
             fontSize = 12.sp,
             lineHeight = 16.sp,
             textAlign = TextAlign.Center,
         )
         Spacer(Modifier.height(6.dp))
-
-        SourceRow(kind = ServerKind.SPOTIFY, blurb = ServerKind.SPOTIFY.blurb) { onPick(ServerKind.SPOTIFY) }
-        SourceRow(kind = ServerKind.QOBUZ, blurb = ServerKind.QOBUZ.blurb) { onPick(ServerKind.QOBUZ) }
-        SourceRow(kind = ServerKind.TIDAL, blurb = ServerKind.TIDAL.blurb) { onPick(ServerKind.TIDAL) }
+        ServerKind.addableExperimental.forEach { kind -> SourceRow(kind) { onPick(kind) } }
     }
 }
 
+/** One source: the picker's row with the kind's own mark, the wizard's spacing. */
 @Composable
-private fun SourceRow(
-    kind: ServerKind,
-    blurb: String,
-    label: String = kind.label,
-    onClick: () -> Unit,
-) {
+private fun SourceRow(kind: ServerKind, onClick: () -> Unit) {
     ServerKindTile(
         kind = kind,
-        title = label,
-        subtitle = blurb,
+        title = kind.label,
+        subtitle = kind.blurb,
         modifier = Modifier.padding(vertical = 6.dp),
         subtitleMaxLines = 3,
         trailing = { Icon(Icons.Default.ChevronRight, null, tint = TextFaint, modifier = Modifier.size(20.dp)) },

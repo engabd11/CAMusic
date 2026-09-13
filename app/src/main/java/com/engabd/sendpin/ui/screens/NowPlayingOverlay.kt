@@ -652,8 +652,10 @@ fun MiniPlayerBar(
                     overflow = TextOverflow.Ellipsis,
                     // Only the title. The bar is 14sp of text in a strip across the
                     // bottom of every screen, and two lines scrolling at once there
-                    // would be movement the listener never asked to look at.
-                    modifier = Modifier.titleMarquee(),
+                    // would be movement the listener never asked to look at. And it
+                    // only scrolls while something is playing — a paused bar is a
+                    // still bar, wherever the user happens to be standing in the app.
+                    modifier = Modifier.titleMarquee(running = st.isPlaying),
                 )
                 // Artist on its own line, then which speaker this is playing on below
                 // it, parenthesised and quieter — the same thing the full player pins
