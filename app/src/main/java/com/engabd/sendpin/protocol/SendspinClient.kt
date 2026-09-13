@@ -130,10 +130,10 @@ class SendspinClient(
     private var handshakeFailures = 0
 
     /**
-     * Whether this client is in **idle mode** — no audio is flowing, so the timer
-     * loops relax to [IDLE_TIME_SYNC_MS] to reduce background CPU and network
-     * traffic. The clock filter and sync gate still run; they just sample less often.
-     * A `stream/start` flips this back to fast cadence via [setIdleMode].
+     * Whether this client is in **idle mode** — no audio is flowing, so the local
+     * mute decision polls the clock at [GATE_IDLE_POLL_MS] instead of [GATE_POLL_MS].
+     * The clock bursts themselves keep the reference cadence either way; see
+     * [startTimeSync]. A `stream/start` flips this back via [setIdleMode].
      */
     @Volatile private var idleMode = false
 
@@ -1084,25 +1084,10 @@ class SendspinClient(
         startSyncGate()
     }
 
+    /** A `server/time` reply belongs to the burst that sent its `client/time`; see [timeBurst]. */
     private fun onServerTime(msg: SendspinIncoming.ServerTime) {
         val p = msg.payload
-        val rttUs = (msg.clientReceivedUs - p.clientTransmitted) - (p.serverTransmitted - p.serverReceived)
-        // Reject an absurdly slow round-trip, but only during cold-start convergence:
-        // past a few good samples the filter's own variance handles ordinary jitter.
-        if (rttUs > STARTUP_RTT_REJECT_US && clock.filter.sampleCount < STARTUP_REJECT_SAMPLE_CEILING) {
-            clock.markStartupRejected()
-            return
-        }
-        clock.onServerTime(p.clientTransmitted, p.serverReceived, p.serverTransmitted, msg.clientReceivedUs)
-        // Persist the clock offset every ~100 samples when error < 2 ms, so a
-        // reconnect can seed the filter and skip cold-start convergence. Stored as
-        // server-minus-wall (reboot-safe).
-        val sc = clock.filter.sampleCount
-        if (sc > 0 && sc % 100 == 0 && clock.errorUs() < 2_000L) {
-            val bootUs = MonotonicClock.nowUs()
-            val wallUs = System.currentTimeMillis() * 1000L
-            onClockOffsetPersist?.invoke(clock.currentOffsetUs() + bootUs - wallUs)
-        }
+        timeReplies.trySend(TimeSample(p.clientTransmitted, p.serverReceived, p.serverTransmitted, msg.clientReceivedUs))
     }
 
     private fun onPlayerCommand(p: PlayerCommandPayload) {
@@ -1191,34 +1176,47 @@ class SendspinClient(
     // --- Timers --------------------------------------------------------------------------
 
     /**
-     * Tell the client whether audio is flowing, so its timer loops can adapt. Idle mode
-     * relaxes the time-sync cadence; a stream starting (idle → active) is exactly when
-     * a fresh clock sample is most valuable.
+     * Tell the client whether audio is flowing. A stream starting (idle → active) is
+     * exactly when a fresh clock sample is most valuable, so it triggers a burst now.
      */
     fun setIdleMode(idle: Boolean) {
         idleMode = idle
         if (!idle) resyncClock()
     }
 
+    /** One `server/time` reply: the four NTP timestamps, microseconds. */
+    private class TimeSample(val t1: Long, val t2: Long, val t3: Long, val t4: Long) {
+        val rttUs: Long get() = (t4 - t1) - (t3 - t2)
+    }
+
+    /** Replies from the socket to the burst in progress; drained before each burst. */
+    private val timeReplies = Channel<TimeSample>(Channel.UNLIMITED)
+
+    /**
+     * The clock loop, on the time-filter library's recommended burst strategy: a
+     * burst of [TIME_BURST_SIZE] exchanges sent one at a time, each waiting for its
+     * reply, and only the sample with the smallest round-trip fed to the filter.
+     *
+     * The point of the burst is the transport. Sendspin runs over an ordered
+     * WebSocket, so one delayed message delays every message behind it and the
+     * samples in a burst are not independent: the fastest of eight is the one least
+     * likely to have been queued behind anything, and the filter converges faster on
+     * eight of those than on sixty-four singles. Bursts run back to back until the
+     * filter is fit to schedule against, then every [TIME_BURST_INTERVAL_MS] — the
+     * reference's cadence, and cheaper than it looks, since the socket's own keepalive
+     * already wakes the radio every five seconds.
+     */
     private fun startTimeSync() {
         timeJob?.cancel()
         timeJob = scope.launch {
             while (isActive) {
-                if (steady) {
-                    val t1 = MonotonicClock.nowUs()
-                    sendJson(json.encodeToString(SendspinClientTime(payload = ClientTimePayload(t1))))
-                }
-                // Fast while the filter cannot be scheduled against, relaxed once it
-                // can. Keyed on **readiness**, not only on the sample count: a
-                // connection that has been up for hours can still be knocked out of
-                // convergence, and that is exactly when samples are worth paying for.
-                val settled = clock.filter.sampleCount >= 50 && clock.isReadyForPlaybackStart()
-                val backoff = clock.startupBackoffMs()
+                val fed = if (steady) timeBurst() else false
+                // A burst that got nothing back (a server mid-restart, say) is not
+                // repeated at full tilt.
                 val cadence = when {
-                    !settled && backoff > 0L -> backoff
-                    !settled -> FAST_TIME_SYNC_MS
-                    idleMode -> IDLE_TIME_SYNC_MS
-                    else -> SLOW_TIME_SYNC_MS
+                    !steady || (!fed && !clock.isReadyForPlaybackStart()) -> TIME_RETRY_MS
+                    !clock.isReadyForPlaybackStart() -> TIME_STARTUP_GAP_MS
+                    else -> TIME_BURST_INTERVAL_MS
                 }
                 // A resync request cuts the wait short — see [resyncClock].
                 withTimeoutOrNull(cadence) { timeKick.receive() }
@@ -1226,9 +1224,38 @@ class SendspinClient(
         }
     }
 
+    /** One burst; true if a sample reached the filter. */
+    private suspend fun timeBurst(): Boolean {
+        while (timeReplies.tryReceive().isSuccess) { /* stale replies from an earlier burst */ }
+        var best: TimeSample? = null
+        for (i in 0 until TIME_BURST_SIZE) {
+            val t1 = MonotonicClock.nowUs()
+            if (!sendJson(json.encodeToString(SendspinClientTime(payload = ClientTimePayload(t1))))) break
+            val reply = withTimeoutOrNull(TIME_REPLY_TIMEOUT_MS) {
+                // Only the reply to *this* request counts; anything else is a straggler.
+                var r = timeReplies.receive()
+                while (r.t1 != t1) r = timeReplies.receive()
+                r
+            } ?: break
+            if (best == null || reply.rttUs < best.rttUs) best = reply
+        }
+        val sample = best ?: return false
+        clock.onServerTime(sample.t1, sample.t2, sample.t3, sample.t4)
+        // Persist the clock offset now and then once the estimate is tight, so a
+        // reconnect can seed the filter and skip cold-start convergence. Stored as
+        // server-minus-wall (reboot-safe).
+        val sc = clock.filter.sampleCount
+        if (sc > 0 && sc % CLOCK_PERSIST_EVERY == 0 && clock.errorUs() < 2_000L) {
+            val bootUs = MonotonicClock.nowUs()
+            val wallUs = System.currentTimeMillis() * 1000L
+            onClockOffsetPersist?.invoke(clock.currentOffsetUs() + bootUs - wallUs)
+        }
+        return true
+    }
+
     /**
-     * Ask for a `client/time` round-trip now rather than at the next tick — when a
-     * stream is about to start, which is the one moment the offset is about to be used.
+     * Run a clock burst now rather than at the next tick — when a stream is about to
+     * start, which is the one moment the offset is about to be used.
      */
     fun resyncClock() {
         timeKick.trySend(Unit)
@@ -1256,8 +1283,8 @@ class SendspinClient(
                 _syncMuted.value = d.muted
                 delay(when {
                     !ready -> 300L
-                    idleMode -> IDLE_TIME_SYNC_MS
-                    else -> SLOW_TIME_SYNC_MS
+                    idleMode -> GATE_IDLE_POLL_MS
+                    else -> GATE_POLL_MS
                 })
             }
         }
@@ -1290,28 +1317,27 @@ class SendspinClient(
         /** Nothing reopens the player socket faster than this. */
         const val RECONNECT_MIN_GAP_MS = 750L
 
-        /** `client/time` cadence while the clock is not fit to schedule against — the reference's burst rate. */
-        const val FAST_TIME_SYNC_MS = 200L
+        /** Exchanges per burst, sent one at a time — the time-filter library's recommended eight. */
+        const val TIME_BURST_SIZE = 8
 
-        /**
-         * RTT above this during cold start is rejected rather than fed into the
-         * filter — a round-trip this slow would seed (or re-seed) the offset from a
-         * measurement whose own error bar is too wide to be worth much.
-         */
-        const val STARTUP_RTT_REJECT_US = 150_000L
+        /** Between bursts once the filter is fit to schedule against — the library's "every ~10 seconds". */
+        const val TIME_BURST_INTERVAL_MS = 10_000L
 
-        /** [STARTUP_RTT_REJECT_US] only gates cold start — past this sample count the filter's own variance handles jitter. */
-        const val STARTUP_REJECT_SAMPLE_CEILING = 5
+        /** Between bursts while it is not: back to back, give or take. */
+        const val TIME_STARTUP_GAP_MS = 50L
 
-        /** …and once it is: enough to hold a converged filter, and no more. */
-        const val SLOW_TIME_SYNC_MS = 2_000L
+        /** After a burst that got no reply at all. */
+        const val TIME_RETRY_MS = 1_000L
 
-        /**
-         * …and when idle (no audio flowing): the clock filter doesn't need frequent
-         * samples when nothing schedules against it. 30s keeps it warm enough to
-         * converge within one or two fast samples when a stream starts.
-         */
-        const val IDLE_TIME_SYNC_MS = 30_000L
+        /** How long one exchange may take before the burst gives up on it. */
+        const val TIME_REPLY_TIMEOUT_MS = 500L
+
+        /** Persist the offset every this many filter samples (bursts) — about every three minutes. */
+        const val CLOCK_PERSIST_EVERY = 20
+
+        /** The local mute decision re-checks the clock this often while playing, and while idle. */
+        const val GATE_POLL_MS = 2_000L
+        const val GATE_IDLE_POLL_MS = 30_000L
 
         /** How long the initial `client/state` waits for the clock; the server's own limit is 5 s. */
         const val INITIAL_STATE_DEADLINE_MS = 4_000L

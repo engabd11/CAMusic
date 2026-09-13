@@ -80,6 +80,23 @@ stream/start → binary type 4 chunks → stream/clear / stream/end …
   enqueued timestamp) are dropped. A stream that had to start on the local anchor is
   re-gated onto the server timeline the moment the filter converges (one-shot resync).
 
+## Synchronisation, against the spec's normative text
+
+| Spec | Implementation |
+|---|---|
+| Clients MUST use the time-filter algorithm | `ClockKalmanFilter` is the reference filter with the reference `Config` (max_error_scale 0.5, adaptive cutoff 3, forget factor 2, offset process noise 0, drift process noise 1e-11). `ClockKalmanFilterReferenceTest` feeds 80 mixed-RTT exchanges to aiosendspin's port and to ours and pins offset, error and `compute_client_time` to the microsecond. On top: a step detector that re-seeds after a confirmed clock jump, and a persisted-offset seed; neither touches the steady-state estimate. |
+| `client/time` often enough to keep the filter convergent; the library's burst strategy is the baseline | Bursts of 8 sequential exchanges, the lowest-RTT sample fed to the filter; back to back until the filter is ready, then every 10 s (`SendspinClient.timeBurst`). A stream start triggers a burst. |
+| `available: true` only once the filter has converged | Reported once, on `isReadyForPlaybackStart` (8 samples cold, 3 seeded, error ≤ 5 ms, no step suspected) — ~110 ms after activation on a LAN. |
+| Timestamp = server time the first sample is output; translate via the filter; subtract `static_delay_ms`; compensate known output delays | `presentation = serverToLocal(ts) − static_delay`; the native callback aligns each frame's DAC presentation time (Oboe `getTimestamp`) to it, so HAL latency is compensated by measurement, not by a constant. |
+| Steady-state error within ±1 ms (MUST), ±0.5 ms target, measured at the output against the filter's prediction | The native drift (`intended − DAC`) is exactly that error. Dead band 300 µs, then proportional resampling. Measured on the S22 Ultra: mean +0.09 ms, range −0.55…+0.88 ms over 90 s, nothing beyond ±1 ms. |
+| Speed within ±0.5 % over a 150 ms sliding window for continuous correction | Resampler capped at 0.5 % (was 3 %); gain 0.06 %/ms of error, saturating at ~8 ms. |
+| Discrete one-shot resync only for startup, `stream/start`/`clear`, underrun or an error too large to correct smoothly; MUST be rare | Snap (whole-frame skip/insert) at ≥ 10 ms of error or while the output is muted at a stream head; the local-anchor re-anchor is the same one-shot. |
+| Late chunks dropped | A chunk whose whole slot has passed is dropped before the write (`SendspinNativeEngine.writeChunk`); the startup trim covers the stream head. |
+| No startup warble | The output is muted from `stream/start` until the native lock (a silent snap, one callback) and lifts before the first audible sample at any sane lead. |
+| `static_delay_ms` persisted locally | DataStore (`AppSettings.staticDelayMs`), pushed to the client on every session. |
+
+Deliberate deviation: the local clock is `CLOCK_BOOTTIME`, not `CLOCK_MONOTONIC_RAW`. `MONOTONIC` stops during suspend on Android, which put the filter seconds out after every doze; `BOOTTIME` does not, and any NTP slew shows up in the drift term.
+
 ## The legacy dialect (MA ≤ 2.9, `aiosendspin` 6.0.5)
 
 Picked from MA's unauthenticated `/info`: `schema_version` ≥ 45 (MA 2.10+) is

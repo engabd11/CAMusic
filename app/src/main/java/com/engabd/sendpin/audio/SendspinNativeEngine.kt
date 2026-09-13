@@ -354,6 +354,7 @@ class SendspinNativeEngine(
     @Volatile private var activeChannels = 2
     @Volatile private var lastEnqueuedTimestampUs = 0L
     private var duplicateFrameCount = 0L
+    private var lateChunkCount = 0L
     @Volatile private var estimatedFrameDurationUs = 20_000L
     @Volatile private var startupWaitStartedMs = 0L
     @Volatile private var halOutputLatencyUs = 0L
@@ -1143,6 +1144,21 @@ class SendspinNativeEngine(
         if (length <= 0 || generation != playbackGeneration || paused) return
         if (chunkGeneration != configureGeneration) return
         val plan = timingPlan(serverTimestampUs)
+
+        // A chunk whose whole slot has already passed cannot be played in sync, and
+        // the spec says to drop it rather than play it late ("clients should drop
+        // these late chunks to maintain sync"). Only the wholly late are dropped here:
+        // one that is partly late is written, and the native callback skips into it.
+        // The startup trim handles the head of a stream before this point is reached.
+        val bytesPerFrame = activeChannels * (if (activeBitDepth == 24 && activeCodec == "pcm") 3 else 2)
+        val chunkDurationUs = length.toLong() / bytesPerFrame.coerceAtLeast(1) * 1_000_000L / activeSampleRate
+        if (plan.presentationUs + chunkDurationUs < nowUs() + plan.outputLatencyUs) {
+            if (lateChunkCount++ % 50 == 0L) {
+                Log.w(TAG, "dropping late chunk: serverTs=${serverTimestampUs / 1000}ms " +
+                    "late by ${(nowUs() + plan.outputLatencyUs - plan.presentationUs - chunkDurationUs) / 1000}ms (#$lateChunkCount)")
+            }
+            return
+        }
 
         // 24-bit PCM → 16-bit conversion (native output only supports int16).
         val writePcm: ByteArray

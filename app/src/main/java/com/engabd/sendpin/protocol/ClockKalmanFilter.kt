@@ -11,11 +11,13 @@ import kotlin.math.sqrt
  * `server/time` round-trips, so audio can be scheduled sample-accurately across
  * grouped players.
  *
- * Clean-room Kotlin port of the algorithm in the Sendspin reference `sendspin-js`
- * (`time-filter.ts`) — the same filter shipped by the massdroid client
- * (MIT, github.com/sfortis/massdroid_native) and MA's own mobile app (Apache-2.0),
- * both studied as references. Pure Kotlin (no Android/coroutine deps) so it is
- * unit-tested on the JVM.
+ * Kotlin port of the Sendspin reference time filter
+ * (github.com/Sendspin-Protocol/time-filter; aiosendspin carries the same port),
+ * with the reference's default `Config`. Pure Kotlin (no Android/coroutine deps)
+ * so it is unit-tested on the JVM. Two things sit on top of the reference: a step
+ * detector that re-seeds after a confirmed clock jump instead of forgetting its way
+ * across it, and a persisted-offset seed for a fast cold start — neither touches the
+ * estimate in steady state.
  *
  * Feed each `server/time` reply into [processTimeResponse] with the four NTP
  * timestamps in microseconds (the client stamps **T4** at the WebSocket
@@ -32,10 +34,25 @@ class ClockKalmanFilter(
 ) {
 
     private companion object {
-        const val ADAPTIVE_FORGETTING_CUTOFF = 2.0
-        const val OFFSET_PROCESS_STD_DEV = 0.01
-        const val FORGET_FACTOR = 1.1
+        // The reference library's defaults (github.com/Sendspin-Protocol/time-filter,
+        // `Config`; aiosendspin's port carries the same numbers). They used to differ
+        // here — a 2× cutoff, a 1.1 forgetting factor, an offset process noise and no
+        // drift process noise, and the round-trip half-delay taken unscaled as the
+        // measurement's standard deviation — which converged more slowly and, on a
+        // disturbance, recovered differently from every other player on the server.
+        // A group only stays in step if every member's filter answers the same
+        // question the same way.
+        /** Multiple of `max_error` a residual must exceed to trigger forgetting. */
+        const val ADAPTIVE_FORGETTING_CUTOFF = 3.0
+        /** Offset random-walk diffusion, µs/√µs. Zero: the offset is not expected to wander on its own. */
+        const val OFFSET_PROCESS_STD_DEV = 0.0
+        /** Drift random-walk diffusion, 1/√µs — the crystal's frequency wander, which keeps the drift term adaptable. */
+        const val DRIFT_PROCESS_STD_DEV = 1e-11
+        /** Covariances are multiplied by this² when a large residual is detected past warm-up. */
+        const val FORGET_FACTOR = 2.0
         const val DRIFT_SIGNIFICANCE_THRESHOLD = 2.0
+        /** The half round-trip overestimates the measurement noise; the reference scales it by this. */
+        const val MAX_ERROR_SCALE = 0.5
         const val MAX_DRIFT = 0.999          // guards the (1 + drift) divisor
         const val READY_MIN_SAMPLES = 8
         const val READY_MAX_ERROR_US = 5_000L
@@ -50,13 +67,12 @@ class ClockKalmanFilter(
          * that it has not moved since. Three of those is plenty, and the error bar and
          * the step detector in [isReadyForPlaybackStart] still have to agree.
          *
-         * Demanding the full eight was costing audio, not buying safety. At the 300 ms
-         * cold-start cadence it is around 1.8 s of waiting, during which Music Assistant
-         * is already streaming — and [com.engabd.sendpin.audio.SendspinNativeEngine]'s
-         * startup trim then drops every frame whose slot passed during the wait. The
-         * result was a grouped speaker starting each track a second or two in, with the
-         * intro simply gone. Three samples is roughly 0.9 s, and what remains to trim is
-         * a fraction of a second.
+         * Demanding the full eight was costing audio, not buying safety: with single
+         * exchanges every 300 ms it was 1.8 s of waiting during which Music Assistant
+         * was already streaming, and [com.engabd.sendpin.audio.SendspinNativeEngine]'s
+         * startup trim dropped every frame whose slot passed. Samples now arrive as
+         * back-to-back bursts and the wait is a fraction of that either way, but the
+         * principle stands: a seed needs corroborating, not rediscovering.
          */
         const val READY_SEEDED_MIN_SAMPLES = 3
 
@@ -73,11 +89,6 @@ class ClockKalmanFilter(
          */
         const val STEP_RESIDUAL_FACTOR = 8.0
         const val STEP_MIN_RESIDUAL_US = 50_000.0
-
-        /** [startupBackoffMs] tiers, keyed by consecutive rejection count. */
-        const val STARTUP_BACKOFF_TIER_1_MS = 600L
-        const val STARTUP_BACKOFF_TIER_2_MS = 1_200L
-        const val STARTUP_BACKOFF_TIER_3_MS = 3_000L
     }
 
     private var offset = 0.0
@@ -100,14 +111,8 @@ class ClockKalmanFilter(
      */
     private var suspectResidual = 0.0
 
-    /**
-     * Consecutive `server/time` replies the caller rejected before feeding them in
-     * (e.g. an RTT gate during cold start) — see [markStartupRejected]. Reset the
-     * moment a sample actually reaches [processTimeResponse].
-     */
-    private var consecutiveStartupRejections = 0
-
     private val offsetProcessVariance = OFFSET_PROCESS_STD_DEV * OFFSET_PROCESS_STD_DEV
+    private val driftProcessVariance = DRIFT_PROCESS_STD_DEV * DRIFT_PROCESS_STD_DEV
     private val forgetVarianceFactor = FORGET_FACTOR * FORGET_FACTOR
     private val driftSignificanceSquared = DRIFT_SIGNIFICANCE_THRESHOLD * DRIFT_SIGNIFICANCE_THRESHOLD
 
@@ -151,33 +156,6 @@ class ClockKalmanFilter(
     private var seeded = false
 
     /**
-     * The caller dropped a `server/time` reply without feeding it into the filter —
-     * an RTT gate during cold start rejecting a slow round-trip, say — rather than
-     * this class rejecting anything itself. Without this, a server slow enough to
-     * keep tripping that gate never sees the cadence back off: [sampleCount] never
-     * advances, so a caller keyed on it (like ours) stays at the fast cadence and
-     * re-sends every 300ms indefinitely. [startupBackoffMs] ramps in response;
-     * [processTimeResponse] clears the streak the moment a sample is actually
-     * accepted, so a transient spike doesn't leave the cadence backed off longer
-     * than the spike itself.
-     */
-    fun markStartupRejected() {
-        consecutiveStartupRejections++
-    }
-
-    /**
-     * Extra delay [markStartupRejected] wants before the next `client/time` request,
-     * on top of whatever cadence the caller would otherwise use. Zero once the
-     * rejection streak is still short enough that the ordinary fast cadence is fine.
-     */
-    fun startupBackoffMs(): Long = when {
-        consecutiveStartupRejections < 3 -> 0L
-        consecutiveStartupRejections < 6 -> STARTUP_BACKOFF_TIER_1_MS
-        consecutiveStartupRejections < 12 -> STARTUP_BACKOFF_TIER_2_MS
-        else -> STARTUP_BACKOFF_TIER_3_MS
-    }
-
-    /**
      * Feed one `server/time` round-trip. All args in microseconds:
      *  - [clientTransmittedUs] T1 — client send, local clock
      *  - [serverReceivedUs]    T2 — server receive, server clock
@@ -195,12 +173,13 @@ class ClockKalmanFilter(
         val measurement = ((serverReceivedUs - clientTransmittedUs) +
             (serverTransmittedUs - clientReceivedUs)) / 2.0
         val maxError = (lastRttUs / 2.0).coerceAtLeast(1.0)
-        val measurementVariance = maxError * maxError
+        // The measurement's standard deviation is the half round-trip scaled down: the
+        // offset error is bounded by the half-delay, but is not usually that large.
+        val updateStdDev = maxError * MAX_ERROR_SCALE
+        val measurementVariance = updateStdDev * updateStdDev
 
-        if (clientReceivedUs == lastUpdateUs) return
-        // Any sample that reaches here was actually fed in, so whatever streak of
-        // caller-side rejections preceded it is over.
-        consecutiveStartupRejections = 0
+        // A non-monotonic T4 would put a negative dt into the prediction.
+        if (clientReceivedUs <= lastUpdateUs) return
         val dt = (clientReceivedUs - lastUpdateUs).toDouble()
         lastUpdateUs = clientReceivedUs
 
@@ -230,7 +209,7 @@ class ClockKalmanFilter(
         var pOffCov = offsetCovariance + 2 * offsetDriftCovariance * dt +
             driftCovariance * dt2 + dt * offsetProcessVariance
         var pOffDriftCov = offsetDriftCovariance + driftCovariance * dt
-        var pDriftCov = driftCovariance
+        var pDriftCov = driftCovariance + dt * driftProcessVariance
 
         val residual = measurement - predictedOffset
 
@@ -348,7 +327,6 @@ class ClockKalmanFilter(
         useDrift = false
         lastRttUs = 0L
         suspectResidual = 0.0
-        consecutiveStartupRejections = 0
         // A full reset throws the offset away, so any seed that was standing behind it
         // is gone too — the next start has to earn the full sample count again.
         seeded = false
