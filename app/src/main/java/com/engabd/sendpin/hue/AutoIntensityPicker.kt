@@ -4,6 +4,7 @@ import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
+import kotlin.math.sqrt
 
 /**
  * The rungs, ascending. The 0..1 ladder axis below is divided across these.
@@ -199,8 +200,45 @@ private fun rungCells(rungs: List<SyncMode>): Pair<FloatArray, FloatArray> {
  */
 internal fun intensitySignal(energy: Float, salience: Float, tempo: Float, perc: Float): Float {
     val loud = unit(energy)
-    val moment = loud * (0.55f + 0.45f * unit(salience))
-    return unit(0.68f * moment + 0.16f * unit(tempo) + 0.16f * unit(perc))
+    val moment = loud * (SIG_SALIENCE_BASE + SIG_SALIENCE_LIFT * unit(salience))
+    return unit(SIG_MOMENT_W * moment + SIG_TEMPO_W * unit(tempo) + SIG_PERC_W * unit(perc))
+}
+
+/**
+ * The blend inside [intensitySignal], named so that [loudnessForIntensity] can
+ * invert it exactly and a change to one cannot silently orphan the other.
+ *
+ * The tempo and percussiveness terms are the reason the inverse exists at all:
+ * together they put a *floor* under the signal that has nothing to do with how
+ * loud the music is. A track at 120 BPM with a tracked grid reads around 0.19 in
+ * dead silence, which is fine for a light show — a steady lift is what those
+ * terms are for — and useless to anything asking "has the song stopped yet".
+ */
+internal const val SIG_MOMENT_W = 0.68f
+internal const val SIG_TEMPO_W = 0.16f
+internal const val SIG_PERC_W = 0.16f
+internal const val SIG_SALIENCE_BASE = 0.55f
+internal const val SIG_SALIENCE_LIFT = 0.45f
+
+/**
+ * The loudness that produced [intensity] under [intensitySignal], given the
+ * [tempo] and [perc] terms that were added to it — the exact inverse, for the
+ * case where salience was the loudness itself (which is how the offline profile
+ * calls it; see `buildIntensityProfile`).
+ *
+ * With `salience == energy`, `moment = L · (base + lift · L)`, a quadratic in `L`
+ * whose positive root is taken here. The outer `unit()` clamp in the forward
+ * direction cannot be undone, so a signal pinned at 1.0 comes back as whatever
+ * loudness *first* reaches it — irrelevant to the one caller, which is looking
+ * for the quiet end of the scale.
+ */
+internal fun loudnessForIntensity(intensity: Float, tempo: Float, perc: Float): Float {
+    val moment = ((intensity - SIG_TEMPO_W * unit(tempo) - SIG_PERC_W * unit(perc)) / SIG_MOMENT_W)
+        .coerceAtLeast(0f)
+    if (moment <= 0f) return 0f
+    val b = SIG_SALIENCE_BASE
+    val a = SIG_SALIENCE_LIFT
+    return unit((-b + sqrt(b * b + 4f * a * moment)) / (2f * a))
 }
 
 /**

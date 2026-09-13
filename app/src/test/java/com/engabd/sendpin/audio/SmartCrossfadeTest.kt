@@ -1,5 +1,9 @@
 package com.engabd.sendpin.audio
 
+import com.engabd.sendpin.hue.PICK_BPM_HI
+import com.engabd.sendpin.hue.PICK_BPM_LO
+import com.engabd.sendpin.hue.intensitySignal
+import com.engabd.sendpin.hue.loudnessForIntensity
 import kotlin.math.abs
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -19,7 +23,12 @@ class SmartCrossfadeTest {
 
     /**
      * A scan of a [durationS] track at [bpm] whose music runs from [startsS] to
-     * [endsS], with everything outside that below the silence floor.
+     * [endsS] and is digitally silent outside that.
+     *
+     * The intensity curve is built the way the analyser builds it — the light
+     * show's blend of loudness, tempo and beat rate, smoothed and decimated — and
+     * not as a bare loudness. That matters: the blend holds a real scan's curve
+     * near 0.2 through silence, which is the trap the planner has to see past.
      */
     private fun scan(
         durationS: Float = 240f,
@@ -33,11 +42,16 @@ class SmartCrossfadeTest {
     ): TrackScan {
         val beat = 60f / bpm
         val beats = FloatArray((durationS / beat).toInt()) { it * beat }
-        val rate = 10f
-        val curve = FloatArray((durationS * rate).toInt()) { i ->
-            val t = i / rate
-            if (t >= startsS && t < endsS) 0.6f else 0f
+        val rate = CURVE_RATE_HZ
+        val frames = (durationS / FRAME_PERIOD).toInt()
+        val tempo = ((bpm - PICK_BPM_LO) / (PICK_BPM_HI - PICK_BPM_LO)).coerceIn(0f, 1f)
+        val perc = beatRateCurve(beats, frames)
+        val raw = FloatArray(frames) { i ->
+            val t = i * FRAME_PERIOD
+            val energy = if (t >= startsS && t < endsS) 1f else 0f
+            intensitySignal(energy, energy, tempo, perc[i])
         }
+        val curve = decimate(centredMovingAverage(raw, 70), FRAME_PERIOD, rate)
         return TrackScan(
             durationS = durationS,
             bpm = bpm,
@@ -48,13 +62,20 @@ class SmartCrossfadeTest {
             sections = listOf(ScanSection(0f, durationS, 0.5f)),
             intensity = IntensityProfile(
                 sigLo = 0.2f, sigHi = 0.8f, dynamics = 0.5f, tilt = 0f,
-                tempo = 0.5f, character = 0.5f,
+                tempo = tempo, character = 0.5f,
                 curve = curve, curveRateHz = rate,
             ),
             beatsPerBar = beatsPerBar,
             analysedS = if (complete) durationS else durationS / 2f,
         )
     }
+
+    /**
+     * The analyser smooths its curve over 1.4 s, so an edge in the music lands in
+     * the curve up to ~0.7 s later (at the tail) or earlier (at the head). Both are
+     * the conservative direction — a little less trimmed, never more.
+     */
+    private val smoothing = 0.75f
 
     // ── Where the music actually is ────────────────────────────────────────
 
@@ -63,13 +84,46 @@ class SmartCrossfadeTest {
         // 240 s of file, 232 s of music. Crossfading over the last 6 s of a track
         // like this mixes the new song into silence — which is the reported "cut".
         val s = scan(durationS = 240f, endsS = 232f)
-        assertEquals(232f, SmartCrossfade.musicEndsAtS(s, 240f), 0.15f)
+        assertEquals(232f, SmartCrossfade.musicEndsAtS(s, 240f), smoothing)
+    }
+
+    @Test
+    fun `the light show's tempo lift is not music`() {
+        // The bug this whole fixture exists to state. A real scan's curve never
+        // reaches zero: the intensity blend adds a steady lift for tempo and beat
+        // rate, so a 128 BPM track reads well above any sane floor in dead
+        // silence. Read the curve raw and a fade-out is never found; read the
+        // loudness underneath it and it is.
+        val s = scan(durationS = 240f, bpm = 128f, endsS = 232f)
+        val raw = s.intensity!!.curve
+        assertTrue(raw.last() > SmartCrossfade.SILENCE_FLOOR, "raw curve in silence was ${raw.last()}")
+        assertEquals(232f, SmartCrossfade.musicEndsAtS(s, 240f), smoothing)
+        // And the loudness itself really is zero there — not merely lower.
+        val loud = loudnessCurve(s)!!
+        assertEquals(0f, loud.last(), 0.01f)
+        assertEquals(1f, loud[loud.size / 2], 0.02f)
+    }
+
+    @Test
+    fun `the loudness blend inverts exactly`() {
+        // Forward then back, across the range, both with and without the grid term.
+        for (l in listOf(0f, 0.02f, 0.05f, 0.1f, 0.3f, 0.6f, 0.9f)) {
+            for (tempo in listOf(0f, 0.5f, 1f)) {
+                for (perc in listOf(0f, 0.4f, 0.8f)) {
+                    val back = loudnessForIntensity(intensitySignal(l, l, tempo, perc), tempo, perc)
+                    assertEquals(l, back, 0.001f, "l=$l tempo=$tempo perc=$perc")
+                }
+            }
+        }
     }
 
     @Test
     fun `a track that ends cleanly ends where the file does`() {
         val s = scan(durationS = 240f)
         assertEquals(240f, SmartCrossfade.musicEndsAtS(s, 240f), 0.15f)
+        // A slow one too: the tempo lift is smallest here, and the beat grid's
+        // share of the floor is what a naive "subtract the tempo" would miss.
+        assertEquals(240f, SmartCrossfade.musicEndsAtS(scan(durationS = 240f, bpm = 80f), 240f), 0.15f)
     }
 
     @Test
@@ -89,7 +143,7 @@ class SmartCrossfadeTest {
         // Twelve seconds of fade-out on a four-minute song is ordinary, and a flat
         // cap short enough to protect a thirty-second interlude would have refused
         // to see it.
-        assertEquals(228f, SmartCrossfade.musicEndsAtS(scan(durationS = 240f, endsS = 228f), 240f), 0.15f)
+        assertEquals(228f, SmartCrossfade.musicEndsAtS(scan(durationS = 240f, endsS = 228f), 240f), smoothing)
         // The same twelve seconds off a forty-second interlude is the scan being
         // wrong about a third of the piece, and is refused.
         assertTrue(SmartCrossfade.maxTailTrimS(40f) < 12f)
@@ -105,7 +159,7 @@ class SmartCrossfadeTest {
 
     @Test
     fun `dead air at the front is trimmed, an intro is not`() {
-        assertEquals(3f, SmartCrossfade.musicStartsAtS(scan(startsS = 3f)), 0.15f)
+        assertEquals(3f, SmartCrossfade.musicStartsAtS(scan(startsS = 3f)), smoothing)
         assertEquals(0f, SmartCrossfade.musicStartsAtS(scan()), 0.15f)
         // Ten seconds of "quiet" at the front is a song, not padding — capped.
         assertEquals(
@@ -195,8 +249,10 @@ class SmartCrossfadeTest {
         val incoming = scan(durationS = 200f, startsS = 2.5f)
         val plan = SmartCrossfade.plan(out, incoming, 240_000, 2, smart = true)
         assertNotNull(plan)
+        // At or a little before the first note — never past it, which would be a
+        // song starting late on every play.
         assertTrue(
-            abs(plan.incomingStartMs - 2_500) <= 200,
+            plan.incomingStartMs in (2_500 - (smoothing * 1000).toLong())..2_500,
             "expected to enter at the first note, got ${plan.incomingStartMs}ms",
         )
     }

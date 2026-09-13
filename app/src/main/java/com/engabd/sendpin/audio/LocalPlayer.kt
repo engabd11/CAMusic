@@ -143,6 +143,16 @@ class LocalPlayer(private val context: Context) {
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
     /**
+     * The second deck, built once and reused: it holds no decoder between
+     * transitions (see [CrossfadeDeck.cancel]) so an idle one costs an object.
+     *
+     * Declared up here, ahead of `init`, for the reason [playerListener] gives:
+     * [applyGain] reads it, and [applyGain] is reachable from the collectors `init`
+     * starts. Property initialisers run in source order.
+     */
+    private val deck = CrossfadeDeck(context, scope)
+
+    /**
      * The live player, rebuilt on demand after a [release].
      *
      * A `by lazy` here was a one-way door, and the identical shape had already been
@@ -476,6 +486,13 @@ class LocalPlayer(private val context: Context) {
             _positionMs.value = 0
             _durationMs.value = track?.durationMs ?: 0
             perTrackFadeSeconds = computeBeatAlignedFadeSeconds(track)
+            // A deck armed for a hand-over that never came. The track ran out first
+            // — the deck was still opening when the window closed, or the listener
+            // seeked into the last second — and ExoPlayer moved on by itself. Left
+            // alone, the deck would sit decoding the *old* track silently, being
+            // aligned against the new track's clock, and hand over into the wrong
+            // song if the new one ran long enough to reach the stale plan.
+            if (crossfadeArmed && !fadeInPending) dropCrossfade()
             // Which track a DJ Radio fade-in belongs to is decided here, because this
             // is the one place that knows which track actually arrived. A hand-over
             // set [fadeInPending] a moment ago and this consumes it; a transition
@@ -1625,7 +1642,19 @@ class LocalPlayer(private val context: Context) {
         }
         val factor = ReplayGain.factor(_current.value?.sourceQuality, replayGainMode)
         player.volume = (userVolume * factor * fadeFactor * speedGainFactor).coerceIn(0f, 1f)
+        // The tail is the same listener's volume on a different track: its own
+        // ReplayGain, none of this player's fade. Kept in step here rather than at
+        // arm time only, so a volume change mid-mix moves both songs at once.
+        if (deck.active) deck.setGain(userVolume * deckReplayGain * speedGainFactor)
     }
+
+    /**
+     * The outgoing track's ReplayGain factor, held from the moment the deck was
+     * armed: [applyGain] cannot ask [_current] for it, because from the hand-over
+     * on that is the incoming track.
+     */
+    @Volatile
+    private var deckReplayGain: Float = 1f
 
     /**
      * Where [speedGainFactor] is ramping toward — set by [SendpinApp.speedMonitor]
@@ -1674,12 +1703,6 @@ class LocalPlayer(private val context: Context) {
      */
     @Volatile
     var beatMatchedFade: Boolean = false
-
-    /**
-     * The second deck, built once and reused: it holds no decoder between
-     * transitions (see [CrossfadeDeck.cancel]) so an idle one costs an object.
-     */
-    private val deck = CrossfadeDeck(context, scope)
 
     /**
      * Seconds of **overlapping** crossfade, or 0 for none. DJ Radio's, and only
@@ -1868,10 +1891,16 @@ class LocalPlayer(private val context: Context) {
             if (!SmartCrossfade.shouldArm(positionMs, plan, SmartCrossfade.prerollFor(local))) return
             crossfadeFor = track.id
             mixPlan = plan
-            val gain = (userVolume * ReplayGain.factor(track.sourceQuality, replayGainMode))
-                .coerceIn(0f, 1f)
+            deckReplayGain = ReplayGain.factor(track.sourceQuality, replayGainMode)
+            val gain = (userVolume * deckReplayGain * speedGainFactor).coerceIn(0f, 1f)
             crossfadeArmed = deck.start(source, positionMs, gain, preferredOutput, _speed.value)
             if (!crossfadeArmed) mixPlan = null
+            android.util.Log.d(
+                CROSSFADE_TAG,
+                "armed at ${positionMs}ms of ${durationMs}ms: ${if (plan.smart) "smart" else "standard"} " +
+                    "hand-over at ${plan.handOverAtMs}ms, ${plan.windowS}s window, " +
+                    "incoming from ${plan.incomingStartMs}ms, deck ${if (crossfadeArmed) "rolling" else "failed"}",
+            )
             return
         }
 
@@ -1879,7 +1908,7 @@ class LocalPlayer(private val context: Context) {
         if (!SmartCrossfade.shouldHandOver(positionMs, plan)) {
             // Still in the pre-roll: keep the two copies together while it is free
             // to do so — see [CrossfadeDeck.align].
-            deck.align(positionMs)
+            deck.align(positionMs, plan.handOverAtMs)
             return
         }
 
@@ -1894,10 +1923,16 @@ class LocalPlayer(private val context: Context) {
             if (positionMs >= SmartCrossfade.handOverDeadlineMs(plan)) abandonCrossfade()
             return
         }
+        // Ready, but too far out of step to fix in the time left — a stream that
+        // spent the whole pre-roll opening. See [CrossfadeDeck.misaligned].
+        if (deck.misaligned) {
+            abandonCrossfade()
+            return
+        }
 
         // The swap. The deck comes up as this player leaves, and the incoming track
         // enters where the plan says its music actually starts.
-        deck.handOver(plan.windowS)
+        deck.handOver(plan.windowS, positionMs)
         crossfadeArmed = false
         mixPlan = null
         fadeInPending = true
@@ -2119,6 +2154,9 @@ class LocalPlayer(private val context: Context) {
          * is most of a beat at any club tempo.
          */
         const val CROSSFADE_TICK_MS = 40L
+
+        /** One line per transition, at arm time — the plan, so a bad join can be read off logcat. */
+        const val CROSSFADE_TAG = "Crossfade"
 
         /**
          * How often a remote player is asked what it is doing.
