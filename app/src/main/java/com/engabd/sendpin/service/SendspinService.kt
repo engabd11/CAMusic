@@ -20,6 +20,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.common.SimpleBasePlayer
+import androidx.media3.common.SimpleBasePlayer.PositionSupplier
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaStyleNotificationHelper
@@ -82,6 +83,13 @@ class SendspinService : Service() {
         const val ACTION_IDLE_MEDIA = "com.engabd.sendpin.IDLE_MEDIA"
 
         /**
+         * How far a projected position may land from where the published
+         * extrapolation already was before the session is told. Wider than the
+         * tracker's own tick, narrower than anything a listener would see as a jump.
+         */
+        const val POSITION_REANCHOR_MS = 600L
+
+        /**
          * How long the notification survives with nothing playing.
          *
          * The Sendspin server ends the stream between *every* track, so a skip looks
@@ -89,6 +97,12 @@ class SendspinService : Service() {
          * before retiring the notification is what tells them apart.
          */
         const val IDLE_GRACE_MS = 60_000L
+
+        /** How often a session kept alive by a pause re-checks that it is still one. */
+        const val PAUSED_RECHECK_MS = 30_000L
+
+        /** How long a session outlives its stream while there is still an item to resume. */
+        const val PAUSED_KEEP_MS = 30L * 60_000L
 
         /** Start the media notification (called when a stream starts). */
         fun startMedia(context: android.content.Context) {
@@ -281,6 +295,25 @@ class SendspinService : Service() {
         if (!mediaActive || idleJob != null) return
         idleJob = scope.launch {
             delay(IDLE_GRACE_MS)
+            // A pause is not the end of listening. Music Assistant ends the Sendspin
+            // stream for a pause exactly as it does between tracks and at a stop, so
+            // this timer used to fire a minute into every pause and take the
+            // session with it — after which the lock screen showed nothing and a
+            // headset's play button went to whichever other app had a session
+            // (YouTube Music, in the test that found this).
+            //
+            // "Paused" cannot be read off the server: for a Sendspin player Music
+            // Assistant reports pause and stop identically — player and queue both
+            // `idle`, the current item and its elapsed time kept, and `play` resumes
+            // from that elapsed either way. So what keeps the session is the thing
+            // both share: an item still there to resume. Bounded by
+            // [PAUSED_KEEP_MS], because the same reading persists after the last
+            // track of a queue has finished, and a notification for an album that
+            // ended half a day ago is not a paused session.
+            val since = android.os.SystemClock.elapsedRealtime()
+            while (ma.now.value != null &&
+                android.os.SystemClock.elapsedRealtime() - since < PAUSED_KEEP_MS
+            ) delay(PAUSED_RECHECK_MS)
             idleJob = null
             stopForegroundAndSelf()
         }
@@ -344,15 +377,41 @@ class SendspinService : Service() {
             )
             .build()
 
-        /** Kept current by [observe]'s position collector; [getState] reads it synchronously. */
-        @Volatile var latestPositionMs: Long = 0L
+        /**
+         * The last projected position handed over, and when. [getState] publishes
+         * these as an extrapolating [PositionSupplier] rather than a number, so
+         * every controller — the shade, the lock screen, a watch, a car — runs the
+         * bar forward itself between anchors instead of being told a new number.
+         */
+        @Volatile var anchorPositionMs: Long = 0L
+        @Volatile var anchorAtMs: Long = android.os.SystemClock.elapsedRealtime()
+
+        /** The playing flag the last published state carried — what the extrapolation runs at. */
+        @Volatile private var publishedPlaying = false
 
         /** [invalidateState] is protected; this is what the outer service calls instead. */
         fun refresh() = invalidateState()
 
+        /**
+         * A tick from the projection. Cheap on purpose: the tracker emits four times
+         * a second, and each of those used to be a full [invalidateState] — three
+         * media items rebuilt (media3 clones the artwork bytes into every one), the
+         * whole `State` diffed, and a `PlayerInfo` shipped to every controller over
+         * binder — with the screen off, for the life of a track. The supplier means
+         * a tick that lands where the extrapolation already was is no news at all;
+         * only a re-anchor (a seek, a stall, a resync) is published.
+         */
+        fun onPositionTick(positionMs: Long) {
+            val now = android.os.SystemClock.elapsedRealtime()
+            val expected = if (publishedPlaying) anchorPositionMs + (now - anchorAtMs) else anchorPositionMs
+            anchorPositionMs = positionMs
+            anchorAtMs = now
+            if (kotlin.math.abs(positionMs - expected) > POSITION_REANCHOR_MS) invalidateState()
+        }
+
         override fun getState(): State {
             val shade = currentShade()
-            val current = mediaItemData(shade, uid = "current")
+            publishedPlaying = shade.isPlaying
             return State.Builder()
                 .setAvailableCommands(availableCommands)
                 .setPlaybackState(if (shade.title.isBlank() && !pb.connected.value) STATE_IDLE else STATE_READY)
@@ -366,11 +425,11 @@ class SendspinService : Service() {
                 // no client-side threshold), so this must never trigger the restart
                 // branch on its own.
                 .setMaxSeekToPreviousPositionMs(Long.MAX_VALUE)
-                .setPlaylist(
-                    listOf(mediaItemData(shade, uid = "placeholder-prev"), current, mediaItemData(shade, uid = "placeholder-next")),
-                )
+                .setPlaylist(playlist(shade))
                 .setCurrentMediaItemIndex(1)
-                .setContentPositionMs(latestPositionMs)
+                .setContentPositionMs(
+                    PositionSupplier.getExtrapolating(anchorPositionMs, if (shade.isPlaying) 1f else 0f),
+                )
                 // REMOTE when a speaker is playing, so the OS shows a "casting" volume
                 // slider rather than pretending this is the phone's own output; LOCAL
                 // when this phone *is* the Sendspin player, where it genuinely is.
@@ -431,25 +490,40 @@ class SendspinService : Service() {
             invalidateState()
         }
 
-        private fun mediaItemData(shade: Shade, uid: String) = MediaItemData.Builder(uid)
-            .setMediaItem(
-                MediaItem.Builder()
-                    .setMediaId(uid)
-                    .setMediaMetadata(
-                        MediaMetadata.Builder()
-                            .setTitle(shade.title.ifBlank { "CAMusic" })
-                            .setArtist(shade.artist)
-                            .setAlbumTitle(shade.album)
-                            .apply {
-                                cachedArtworkBytes?.let { setArtworkData(it, MediaMetadata.PICTURE_TYPE_FRONT_COVER) }
-                            }
-                            .build()
-                    )
+        /** What the cached [MediaItemData]s were built from. */
+        private var itemsKey: Any? = null
+        private var items: List<MediaItemData> = emptyList()
+
+        /**
+         * The three-item playlist, rebuilt only when what it shows has changed.
+         *
+         * `MediaMetadata.Builder.setArtworkData` copies the bytes, so building the
+         * items afresh on every [getState] cloned the cover three times per call —
+         * and [getState] runs on every invalidation. The key is everything the items
+         * are built from, artwork identity included (the bytes are replaced, never
+         * mutated, so identity is enough).
+         */
+        private fun playlist(shade: Shade): List<MediaItemData> {
+            val art = cachedArtworkBytes
+            val key = listOf(shade.title, shade.artist, shade.album, shade.durationMs, System.identityHashCode(art))
+            if (key != itemsKey) {
+                itemsKey = key
+                val meta = MediaMetadata.Builder()
+                    .setTitle(shade.title.ifBlank { "CAMusic" })
+                    .setArtist(shade.artist)
+                    .setAlbumTitle(shade.album)
+                    .apply { art?.let { setArtworkData(it, MediaMetadata.PICTURE_TYPE_FRONT_COVER) } }
                     .build()
-            )
-            .setDurationUs(shade.durationMs.takeIf { it > 0 }?.let { it * 1000L } ?: C.TIME_UNSET)
-            .setIsSeekable(true)
-            .build()
+                items = listOf("placeholder-prev", "current", "placeholder-next").map { uid ->
+                    MediaItemData.Builder(uid)
+                        .setMediaItem(MediaItem.Builder().setMediaId(uid).setMediaMetadata(meta).build())
+                        .setDurationUs(shade.durationMs.takeIf { it > 0 }?.let { it * 1000L } ?: C.TIME_UNSET)
+                        .setIsSeekable(true)
+                        .build()
+                }
+            }
+            return items
+        }
 
         override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
             // A toggle either way, matching the old onPlay()/onPause() - both of
@@ -516,9 +590,12 @@ class SendspinService : Service() {
             // `elapsed_time_last_updated` via the tracker in [MaNowPlaying],
             // whether this phone is the player or a remote speaker is.
             // The Sendspin path no longer sources position independently.
-            ma.positionMs.collect { pos ->
-                shadePlayer?.let { it.latestPositionMs = pos; it.refresh() }
-            }
+            ma.positionMs.collect { pos -> shadePlayer?.onPositionTick(pos) }
+        }
+        // Play/pause is what the extrapolation runs at, so it is published on its
+        // own — the position ticks used to carry it for free, and no longer do.
+        scope.launch {
+            shade.map { it.isPlaying }.distinctUntilChanged().collect { shadePlayer?.refresh() }
         }
         // Volume is its own collector: it changes without the metadata changing, and
         // the session has to be re-published or the OS volume UI shows a stale level.

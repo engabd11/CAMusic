@@ -238,7 +238,13 @@ class MaNowPlaying(private val app: Context) {
                 .mapNotNull { MaParse.event(it) }
                 .filter { it.isPlayerOrQueue }
                 .sample(300)
-                .collect { refresh() }
+                // Gated the same way as the poll below. Music Assistant sends every
+                // client every event, so a speaker playing in another room had this
+                // re-reading `players/all` and `player_queues/all` about once a second
+                // — parsed on the main thread — with the phone in a pocket, its screen
+                // off and nothing of its own playing. The poll had already been taught
+                // not to; the event path had not.
+                .collect { if (wantsLiveReads()) refresh() }
         }
         // The playhead reads the events themselves, unsampled: a `queue_updated`
         // names the new track with its elapsed and stamp, a `queue_time_updated`
@@ -277,9 +283,7 @@ class MaNowPlaying(private val app: Context) {
                     // cost when nobody is. A remote player that *is* playing still
                     // needs the poll so the notification's seek bar stays live; a
                     // backgrounded app with nothing playing does not.
-                    val remoteActive = now.value?.isPlaying == true
-                    val backgrounded = !(AppLifecycleObserver.get()?.foreground?.value ?: true)
-                    if (!backgrounded || remoteActive) {
+                    if (wantsLiveReads()) {
                         refresh()
                     }
                 }
@@ -383,6 +387,16 @@ class MaNowPlaying(private val app: Context) {
      * [MaApiClient] completes pending requests with null on a drop, which parses to an
      * empty list, and taking that would blank the notification mid-track.
      */
+    /**
+     * Whether anything would notice a fresh read: someone is looking at the app, or
+     * the selected player is playing and the notification's bar has to follow it.
+     */
+    private fun wantsLiveReads(): Boolean {
+        val remoteActive = now.value?.isPlaying == true
+        val backgrounded = !(AppLifecycleObserver.get()?.foreground?.value ?: true)
+        return !backgrounded || remoteActive
+    }
+
     private fun refresh() {
         if (!refreshing.compareAndSet(false, true)) { refreshQueued.set(true); return }
         scope.launch {
