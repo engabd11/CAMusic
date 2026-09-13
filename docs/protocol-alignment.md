@@ -23,7 +23,7 @@ server/hello {name}
 client/hello {name, device_info, supported_roles, player@v1_support,
               trust_level, supported_pair_methods, unpaired_access}
 server/activate {activities, active_roles?, pairing?}
-client/time ⇄ server/time                          200 ms bursts until the filter is ready
+client/time ⇄ server/time                          bursts of 8, back to back until the filter is ready, then every 10 s
 client/state {available:true, player:{volume, muted, static_delay_ms,
               required_lead_time_ms, min_buffer_ms, supported_commands}}
 stream/start → binary type 4 chunks → stream/clear / stream/end …
