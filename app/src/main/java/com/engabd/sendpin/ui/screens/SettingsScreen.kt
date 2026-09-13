@@ -9,6 +9,12 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -50,6 +56,7 @@ import com.engabd.sendpin.ui.design.LocalAccent
 import com.engabd.sendpin.ui.design.LocalPalette
 import com.engabd.sendpin.ui.design.Motion
 import com.engabd.sendpin.ui.design.navBarInset
+import com.engabd.sendpin.library.ServerConfig
 import com.engabd.sendpin.ui.screens.settings.*
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.ui.viewmodel.PlayerViewModel
@@ -193,6 +200,33 @@ fun SettingsScreen(
     val scope = rememberCoroutineScope()
     val settings = remember(context) { AppSettings(context) }
     val advanced by settings.advancedSettings.collectAsStateWithLifecycle(initialValue = false)
+    val servers by settings.servers.collectAsStateWithLifecycle(initialValue = emptyList())
+
+    // One list state for every page, and two rules about it.
+    //
+    // A new page starts at the top. The list keeps its scroll offset across a change
+    // of route — Providers and Illumination hand their whole body over as one item,
+    // so a server page opened from a picker scrolled halfway down inherited that
+    // offset and opened with its title cut off, and going back landed the list at
+    // the depth the page had been read to. Neither is where a page begins.
+    //
+    // Scrolling drops focus. A focused text field asks its scrollable to keep it in
+    // view whenever it is laid out again, and a settings page lays its fields out
+    // again on every status change while it connects — so a field tapped at the top
+    // of a server page could pull the list back up to itself while the user was
+    // reading the bottom. The user scrolling is the one gesture that means "I am
+    // done with that field".
+    val listState = rememberLazyListState()
+    LaunchedEffect(section, detail) { listState.scrollToItem(0) }
+    val focusManager = LocalFocusManager.current
+    val dropFocusOnScroll = remember(focusManager) {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if (source == NestedScrollSource.UserInput && available.y != 0f) focusManager.clearFocus()
+                return Offset.Zero
+            }
+        }
+    }
 
     // Home Assistant's credentials are read once and held here rather than inside the
     // Light Sync section, so navigating into the bridge page and back doesn't lose a
@@ -227,7 +261,7 @@ fun SettingsScreen(
                     Spacer(Modifier.width(12.dp))
                 }
                 Text(
-                    headerTitle(section, detail), color = TextPrimary, fontFamily = AppFont,
+                    headerTitle(section, detail, servers), color = TextPrimary, fontFamily = AppFont,
                     fontWeight = FontWeight.ExtraBold, fontSize = 26.sp, letterSpacing = (-0.5).sp,
                     maxLines = 2, overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
@@ -244,7 +278,8 @@ fun SettingsScreen(
             }
 
             LazyColumn(
-                Modifier.weight(1f).fillMaxWidth(),
+                Modifier.weight(1f).fillMaxWidth().nestedScroll(dropFocusOnScroll),
+                state = listState,
                 contentPadding = PaddingValues(start = 18.dp, end = 18.dp, bottom = navBarInset() + 16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
@@ -638,14 +673,16 @@ private fun parentDetail(detail: String): String? = serverIdOfPlayerRoute(detail
  * front of them, so the sub-pages that have a name of their own use it.
  */
 @Composable
-private fun headerTitle(section: SettingsSection?, detail: String?): String = when {
+private fun headerTitle(section: SettingsSection?, detail: String?, servers: List<ServerConfig>): String = when {
     section == null -> "Settings"
     section == SettingsSection.PROVIDERS && detail == PICK_ROUTE -> "Add a server"
     section == SettingsSection.PROVIDERS && serverIdOfPlayerRoute(detail) != null -> "This phone"
-    section == SettingsSection.PROVIDERS && detail != null -> "Server"
+    // The kind's own name — "Spotify", "Navidrome" — since that is what the page is.
+    section == SettingsSection.PROVIDERS && detail != null -> serverKindOfRoute(detail, servers)?.label ?: "Server"
     section == SettingsSection.LIGHTS_SYNC && detail == BRIDGE_ROUTE -> "Hue Bridge"
     section == SettingsSection.LIGHTS_SYNC && detail == HA_ROUTE -> "Home Assistant"
     section == SettingsSection.LIGHTS_SYNC && detail == ANALYSIS_ROUTE -> "Track analysis"
+    section == SettingsSection.LIGHTS_SYNC && detail == LISTEN_ROUTE -> "Phone audio"
     else -> subPageTitle(section, detail) ?: section.title
 }
 

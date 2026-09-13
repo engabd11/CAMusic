@@ -71,8 +71,20 @@ object SpotifyEngine {
      */
     @Synchronized
     @Throws(IOException::class)
-    fun get(context: Context, username: String, password: String): Session {
-        session?.let { if (it.reconnecting()) return it }
+    fun get(
+        context: Context,
+        username: String,
+        password: String,
+        prefs: com.engabd.sendpin.library.ProviderSettings.SpotifyPrefs =
+            com.engabd.sendpin.library.ProviderSettings.SpotifyPrefs(),
+    ): Session {
+        // A live session is reused only while it was built for the same account
+        // and the same settings: the quality, normalisation, crossfade and device
+        // name are baked into the player and the session at construction, so a
+        // change on the settings page means a rebuild.
+        session?.let {
+            if (it.reconnecting() && builtFor == Triple(username, password, prefs)) return it
+        }
         close()
         val conf = Session.Configuration.Builder()
             .setCacheEnabled(true)
@@ -80,18 +92,32 @@ object SpotifyEngine {
             .setDoCacheCleanUp(true)
             .build()
         val s = Session.Builder(conf)
-            .setDeviceName("CAMusic")
-            .setDeviceId(com.engabd.sendpin.discovery.PlayerIdentity.getPlayerId(context))
+            .setDeviceName(prefs.deviceName)
+            // librespot insists on a 40-character hex device id (Spotify's own are
+            // SHA-1s). The app's player id is a UUID — 36 characters — and handing it
+            // over verbatim failed every login with "Device ID must be 40 chars long"
+            // before a single packet went out. Hash it: stable per install, right shape.
+            .setDeviceId(spotifyDeviceId(com.engabd.sendpin.discovery.PlayerIdentity.getPlayerId(context)))
             .setPreferredLocale("en")
             .userPass(username, password)
             .create()
         session = s
+        builtFor = Triple(username, password, prefs)
         val pconf = PlayerConfiguration.Builder()
             .setOutput(PlayerConfiguration.AudioOutput.CUSTOM)
             .setOutputClass(SpotifySink::class.java.name)
             .setOutputClassParams(arrayOf<Any>(tapHolder))
-            .setPreferredQuality(AudioQuality.VERY_HIGH)
-            .setEnableNormalisation(false)
+            .setPreferredQuality(
+                when (prefs.quality) {
+                    com.engabd.sendpin.library.ProviderSettings.SpotifyQuality.NORMAL -> AudioQuality.NORMAL
+                    com.engabd.sendpin.library.ProviderSettings.SpotifyQuality.HIGH -> AudioQuality.HIGH
+                    com.engabd.sendpin.library.ProviderSettings.SpotifyQuality.VERY_HIGH -> AudioQuality.VERY_HIGH
+                },
+            )
+            .setEnableNormalisation(prefs.normalise)
+            .setAutoplayEnabled(prefs.autoplay)
+            .setCrossfadeDuration(prefs.crossfadeSeconds * 1000)
+            .setPreloadEnabled(prefs.preload)
             .build()
         val p = Player(pconf, s)
         p.addEventsListener(
@@ -140,9 +166,23 @@ object SpotifyEngine {
     /** The live player, or null before the first successful login. */
     fun playerOrNull(): Player? = player
 
+    /** The live session, or null before the first successful login. */
+    fun sessionOrNull(): Session? = session
+
+    /** What the live session was built for — account and settings — so a change rebuilds it. */
+    @Volatile private var builtFor: Triple<String, String, com.engabd.sendpin.library.ProviderSettings.SpotifyPrefs>? = null
+
+    /** Clear the Spotify cache on disk (librespot's audio + metadata cache). Safe while idle. */
+    @Synchronized
+    fun clearCache(context: Context) {
+        close()
+        context.cacheDir.resolve("spotify").deleteRecursively()
+    }
+
     /** Tear down session and player. Safe to call when nothing is live. */
     @Synchronized
     fun close() {
+        builtFor = null
         _playing.value = false
         player?.close()
         player = null
@@ -152,4 +192,10 @@ object SpotifyEngine {
 
     /** The tap holder lives past sessions; the sink reads the tap through it. */
     class TapHolder(val tap: AudioAnalysisTap)
+
+    /** A 40-hex-character device id derived from [playerId] — see the `setDeviceId` note. */
+    fun spotifyDeviceId(playerId: String): String =
+        java.security.MessageDigest.getInstance("SHA-1")
+            .digest(playerId.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
 }

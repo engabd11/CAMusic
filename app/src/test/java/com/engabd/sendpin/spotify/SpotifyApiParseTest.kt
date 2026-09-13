@@ -5,6 +5,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * Spotify's Web API payload mapping, held against fixtures shaped like the real
@@ -148,5 +149,17 @@ class SpotifyApiParseTest {
                 obj("""{"track": {"id": null, "name": "Local file", "uri": "file:///x.mp3"}}"""),
             ),
         )
+    }
+
+    /**
+     * librespot rejects any device id that is not 40 hex characters — the app's UUID
+     * player id is 36 — and did so on every login until the id was hashed.
+     */
+    @Test
+    fun `the spotify device id is forty hex characters and stable`() {
+        val id = com.engabd.sendpin.spotify.SpotifyEngine.spotifyDeviceId("3fa85f64-5717-4562-b3fc-2c963f66afa6")
+        assertEquals(40, id.length)
+        assertTrue(id.all { it in '0'..'9' || it in 'a'..'f' }, id)
+        assertEquals(id, com.engabd.sendpin.spotify.SpotifyEngine.spotifyDeviceId("3fa85f64-5717-4562-b3fc-2c963f66afa6"))
     }
 }

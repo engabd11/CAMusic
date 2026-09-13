@@ -35,12 +35,7 @@ private fun serverKindIcon(kind: ServerKind): ImageVector = when (kind) {
     ServerKind.JELLYFIN -> Icons.Default.Theaters
     ServerKind.EMBY -> Icons.Default.VideoLibrary
     ServerKind.PLEX -> Icons.Default.PlayCircleFilled
-    // The streaming accounts have brand marks in dashboard-icons, but none are
-    // used while the kinds are experimental: a real (Spotify-green) logo sits in
-    // the picker looking exactly as settled as the Navidrome row, which is the
-    // one thing the experimental heading is there to deny. Distinct generic
-    // glyphs instead — Spotify the radio dial, Qobuz the equaliser, Tidal the
-    // cloud queue.
+    // Fallbacks only: the streaming accounts have their brand marks below.
     ServerKind.SPOTIFY -> Icons.Default.Radio
     ServerKind.QOBUZ -> Icons.Default.Equalizer
     ServerKind.TIDAL -> Icons.Default.CloudSync
@@ -84,13 +79,23 @@ private fun serverKindLogoRes(kind: ServerKind): Int? = when (kind) {
     ServerKind.ONEDRIVE -> R.drawable.ic_logo_onedrive
     ServerKind.DROPBOX -> R.drawable.ic_logo_dropbox
     ServerKind.BOX -> R.drawable.ic_logo_box
+    ServerKind.SPOTIFY -> R.drawable.ic_logo_spotify
+    ServerKind.QOBUZ -> R.drawable.ic_logo_qobuz
+    ServerKind.TIDAL -> R.drawable.ic_logo_tidal
     ServerKind.SMB, ServerKind.WEBDAV, ServerKind.PCLOUD, ServerKind.LOCAL, ServerKind.DOWNLOADS,
     ServerKind.MPD,
     ServerKind.FOOBAR2000,
-    // No brand marks while experimental — see serverKindIcon.
-    ServerKind.SPOTIFY, ServerKind.QOBUZ, ServerKind.TIDAL,
     -> null
 }
+
+/**
+ * Marks that are a single colour by design and ship here in white, so they read on
+ * the dark surfaces every one of these services uses. On a light theme they take
+ * the text colour instead — the only tinting a logo ever gets, and only because a
+ * monochrome mark has no colour of its own to lose.
+ */
+private fun isMonochromeMark(kind: ServerKind): Boolean =
+    kind == ServerKind.QOBUZ || kind == ServerKind.TIDAL
 
 /**
  * [kind]'s visual identity, wherever it needs showing: the real logo from
@@ -105,11 +110,15 @@ private fun serverKindLogoRes(kind: ServerKind): Int? = when (kind) {
 internal fun ServerKindGlyph(kind: ServerKind, tint: Color, modifier: Modifier = Modifier) {
     val logoRes = serverKindLogoRes(kind)
     if (logoRes != null) {
+        val light = com.engabd.sendpin.ui.theme.LocalSendspinColors.current.isLight
         Image(
             painterResource(logoRes),
             contentDescription = null,
             modifier = modifier,
             contentScale = ContentScale.Fit,
+            colorFilter = if (isMonochromeMark(kind) && light) {
+                androidx.compose.ui.graphics.ColorFilter.tint(com.engabd.sendpin.ui.theme.TextPrimary)
+            } else null,
         )
     } else {
         Icon(serverKindIcon(kind), contentDescription = null, tint = tint, modifier = modifier)

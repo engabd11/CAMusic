@@ -58,6 +58,11 @@ class TidalClient(
     @Volatile var userId: String = "",
     /** The account's country code, required by most v1 endpoints. */
     @Volatile var countryCode: String = "US",
+    /**
+     * The highest `audioquality` to ask for — the top of the chain [streamUrl]
+     * walks. See `ProviderSettings.TidalQuality`; `HI_RES` is everything.
+     */
+    @Volatile var maxQuality: String = "HI_RES",
     private val http: OkHttpClient = shared,
     private val json: Json = Json { ignoreUnknownKeys = true },
 ) {
@@ -306,7 +311,10 @@ class TidalClient(
      * quality means the manifest could not be decoded — try the next tier.
      */
     suspend fun streamUrl(trackId: String): String {
-        for (quality in listOf("HI_RES", "LOSSLESS", "HIGH")) {
+        val chain = com.engabd.sendpin.library.ProviderSettings.TidalQuality.chainFor(
+            com.engabd.sendpin.library.ProviderSettings.TidalQuality.from(maxQuality),
+        )
+        for (quality in chain) {
             val body = get(
                 "tracks/$trackId/playbackinfopostpaywall?audioquality=$quality" +
                     "&playbackmode=STREAM&assetpresentation=PREFERRED",
@@ -320,7 +328,38 @@ class TidalClient(
         throw TidalException("Tidal has no streamable file for track $trackId")
     }
 
+    /**
+     * Who is signed in and on what plan — `users/{id}` and `users/{id}/subscription`
+     * — for the settings page. Best-effort: a plan the API describes in a shape this
+     * does not know still leaves the name.
+     */
+    suspend fun account(): com.engabd.sendpin.library.ProviderAccount? {
+        if (userId.isBlank()) return null
+        val user = runCatching { get("users/$userId") }.getOrNull()
+        val sub = runCatching { get("users/$userId/subscription") }.getOrNull()
+        return parseAccount(user, sub)
+    }
+
     // ── Parsers (pure; fixture-tested) ────────────────────────────────────
+
+    /** [user] is `users/{id}`, [sub] is `users/{id}/subscription`; either may be missing. */
+    fun parseAccount(user: JsonObject?, sub: JsonObject?): com.engabd.sendpin.library.ProviderAccount? {
+        if (user == null && sub == null) return null
+        fun JsonObject?.str(key: String) = this?.get(key)?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+        val subscription = sub?.get("subscription") as? JsonObject
+        val plan = subscription.str("type") ?: sub.str("subscription")
+        val quality = sub.str("highestSoundQuality")
+        return com.engabd.sendpin.library.ProviderAccount(
+            name = listOfNotNull(user.str("firstName"), user.str("lastName")).joinToString(" ").ifBlank { null }
+                ?: user.str("username") ?: user.str("email") ?: user.str("nickname"),
+            plan = plan?.let { p -> p.lowercase().replaceFirstChar { it.uppercase() }.replace("_", " ") },
+            country = user.str("countryCode") ?: countryCode,
+            maxQuality = quality?.let { q ->
+                com.engabd.sendpin.library.ProviderSettings.TidalQuality.entries
+                    .firstOrNull { it.wire == q }?.label ?: q
+            },
+        )
+    }
 
     fun parseTrack(obj: JsonObject, albumContext: MaItem? = null): MaItem? {
         // Favourites endpoints wrap their payload in `item`; plain listings and
