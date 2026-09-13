@@ -14,6 +14,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.engabd.sendpin.library.ServerKind
+import com.engabd.sendpin.ui.theme.DefaultAccent
 import com.engabd.sendpin.ui.theme.LocalSendspinColors
 import com.engabd.sendpin.ui.theme.SendspinColors
 
@@ -55,12 +56,89 @@ data class ProviderSkin(
     val tagline: String,
 )
 
-/** The skin for [kind], on the current theme's inks. Null for a kind that has none. */
+/**
+ * The skin for [kind], on the current theme's inks. Every kind has one: the three
+ * streaming accounts in their own brand palettes, the self-hosted servers in
+ * theirs (Jellyfin's purple-to-cyan, Emby's green, Plex's gold on charcoal,
+ * Navidrome's and Music Assistant's blues), and the phone's own libraries in the
+ * app's accent, since they are not someone else's product.
+ *
+ * Only the accent, the hero band, the corners and the display type change for the
+ * server kinds; the inks stay the app's, because a Jellyfin page is still this
+ * app's settings page. The streaming accounts go further and take the service's
+ * surfaces too, because those pages stand in for an app the user already knows.
+ */
 @Composable
-fun providerSkin(kind: ServerKind): ProviderSkin? {
+fun providerSkin(kind: ServerKind): ProviderSkin {
     val base = LocalSendspinColors.current
     val light = base.isLight
+    val sans = FontFamily.SansSerif
+    fun display(weight: FontWeight, spacing: Float = 0f, family: FontFamily = sans) =
+        TextStyle(fontFamily = family, fontWeight = weight, fontSize = 30.sp, letterSpacing = spacing.sp)
+    fun label(spacing: Float = 1.4f, family: FontFamily = sans) =
+        TextStyle(fontFamily = family, fontWeight = FontWeight.Bold, fontSize = 11.sp, letterSpacing = spacing.sp)
+    /** A server kind's skin: the app's inks with the brand's accent, band and corners. */
+    fun server(
+        accent: Color, accent2: Color, corner: Dp, hero: List<Color>, tagline: String,
+        display: TextStyle = display(FontWeight.ExtraBold, -0.4f), label: TextStyle = label(), pill: Boolean = false,
+    ) = ProviderSkin(kind, accent, accent2, base, corner, pill, display, label, hero + base.ink, tagline)
     return when (kind) {
+        ServerKind.MUSIC_ASSISTANT -> server(
+            accent = Color(0xFF2FA8E6), accent2 = Color(0xFF7CD6F5), corner = 16.dp,
+            hero = listOf(Color(0xFF0E5C8C), Color(0xFF082E47)),
+            tagline = "One queue, every speaker in the house.",
+        )
+        ServerKind.NAVIDROME -> server(
+            accent = Color(0xFF3B8DE0), accent2 = Color(0xFF8BC1F5), corner = 14.dp,
+            hero = listOf(Color(0xFF1A4F86), Color(0xFF0B2540)),
+            tagline = "Your music, on your own server.",
+        )
+        ServerKind.SUBSONIC -> server(
+            accent = Color(0xFF4F7FD9), accent2 = Color(0xFF9DB9F0), corner = 14.dp,
+            hero = listOf(Color(0xFF2A3F80), Color(0xFF121C3B)),
+            tagline = "Any server that speaks Subsonic.",
+        )
+        ServerKind.JELLYFIN -> server(
+            accent = Color(0xFF00A4DC), accent2 = Color(0xFFAA5CC3), corner = 18.dp,
+            hero = listOf(Color(0xFFAA5CC3), Color(0xFF00A4DC), Color(0xFF0B1A33)),
+            tagline = "The free software media system.",
+            display = display(FontWeight.SemiBold, 0.2f),
+        )
+        ServerKind.EMBY -> server(
+            accent = Color(0xFF52B54B), accent2 = Color(0xFFA5E29F), corner = 12.dp,
+            hero = listOf(Color(0xFF2E7A2A), Color(0xFF11300F)),
+            tagline = "Your media, your way.",
+        )
+        ServerKind.PLEX -> server(
+            accent = Color(0xFFE5A00D), accent2 = Color(0xFFF5C55A), corner = 10.dp,
+            hero = listOf(Color(0xFF3D3D3F), Color(0xFF282A2D), Color(0xFF1B1C1E)),
+            tagline = "Stream everything, everywhere.",
+            display = display(FontWeight.Black, -0.6f),
+        )
+        ServerKind.MPD -> server(
+            accent = Color(0xFF7CB342), accent2 = Color(0xFFC5E1A5), corner = 4.dp,
+            hero = listOf(Color(0xFF1F2A1A), Color(0xFF0E140C)),
+            tagline = "The music player daemon.",
+            display = display(FontWeight.Medium, 0f, FontFamily.Monospace),
+            label = label(1.0f, FontFamily.Monospace),
+        )
+        ServerKind.FOOBAR2000 -> server(
+            accent = Color(0xFF3C87E0), accent2 = Color(0xFF9CC3F2), corner = 6.dp,
+            hero = listOf(Color(0xFF244E7A), Color(0xFF10233A)),
+            tagline = "Playing on the desktop, driven from here.",
+            display = display(FontWeight.Medium, 0f, FontFamily.Monospace),
+            label = label(1.0f, FontFamily.Monospace),
+        )
+        ServerKind.LOCAL -> server(
+            accent = DefaultAccent, accent2 = DefaultAccent.copy(alpha = 0.7f), corner = 16.dp,
+            hero = listOf(DefaultAccent.copy(alpha = 0.55f), DefaultAccent.copy(alpha = 0.18f)),
+            tagline = "Music already on this phone.",
+        )
+        ServerKind.DOWNLOADS -> server(
+            accent = Color(0xFF2FBF71), accent2 = Color(0xFF8EE0B4), corner = 16.dp,
+            hero = listOf(Color(0xFF1C6B40), Color(0xFF0C2E1B)),
+            tagline = "Kept on this phone, for wherever there is no network.",
+        )
         ServerKind.SPOTIFY -> ProviderSkin(
             kind = kind,
             accent = Color(0xFF1ED760),
@@ -123,7 +201,13 @@ fun providerSkin(kind: ServerKind): ProviderSkin? {
             hero = listOf(Color(0xFF00FFFF), Color(0xFF004C4C), Color(0xFF000000)),
             tagline = "Sound, in high fidelity.",
         )
-        else -> null
+        // A kind that is listed but not built yet has no page to dress; the app's own
+        // accent keeps the picker row honest until it does.
+        else -> server(
+            accent = DefaultAccent, accent2 = DefaultAccent.copy(alpha = 0.7f), corner = 16.dp,
+            hero = listOf(DefaultAccent.copy(alpha = 0.45f), DefaultAccent.copy(alpha = 0.12f)),
+            tagline = kind.blurb,
+        )
     }
 }
 

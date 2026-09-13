@@ -29,6 +29,10 @@ import com.engabd.sendpin.local.LocalFolders
 import com.engabd.sendpin.local.LocalMediaSource
 import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ui.design.GlassCard
+import com.engabd.sendpin.ui.design.ProviderSkin
+import com.engabd.sendpin.ui.design.ProviderTheme
+import com.engabd.sendpin.ui.design.providerSkin
+import com.engabd.sendpin.ui.screens.settings.providers.ProviderHero
 import com.engabd.sendpin.ui.design.a
 import com.engabd.sendpin.ui.design.ServerKindGlyph
 import com.engabd.sendpin.ui.design.TitleGap
@@ -277,14 +281,18 @@ private fun ServerCard(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(14.dp),
             ) {
+                // The kind's own colour behind its mark, active or not: the list
+                // reads as the row of services it is, and the active one keeps the
+                // app accent on the rest of its card.
+                val kindAccent = providerSkin(config.kind).accent
                 Box(
                     Modifier.size(44.dp).clip(RoundedCornerShape(12.dp))
-                        .background(if (active) accent.a(0.16f) else Glass),
+                        .background(if (active) kindAccent.a(0.22f) else kindAccent.a(0.10f)),
                     contentAlignment = Alignment.Center,
                 ) {
                     ServerKindGlyph(
                         config.kind,
-                        tint = if (active) accent else TextMuted,
+                        tint = if (active) kindAccent else kindAccent.a(0.75f),
                         modifier = Modifier.size(22.dp),
                     )
                 }
@@ -462,7 +470,9 @@ private fun ProviderPicker(accent: Color, onPick: (ServerKind) -> Unit) {
  * `ImageVector` and no logo to plug in.
  */
 @Composable
-private fun ProviderRow(kind: ServerKind, accent: Color, enabled: Boolean = true, onClick: () -> Unit) {
+private fun ProviderRow(kind: ServerKind, accentIn: Color, enabled: Boolean = true, onClick: () -> Unit) {
+    // The kind's own colour on its row, so the picker previews the page it opens.
+    val accent = if (enabled) providerSkin(kind).accent else accentIn
     GlassCard(radius = 16.dp) {
         Row(
             Modifier.fillMaxWidth().clickable(enabled = enabled, onClick = onClick).padding(16.dp),
@@ -508,7 +518,7 @@ private fun ServerDetail(
     isActive: Boolean,
     libraryVm: LibraryViewModel,
     settings: AppSettings,
-    accent: Color,
+    @Suppress("UNUSED_PARAMETER") accent: Color,
     scope: CoroutineScope,
     /** Opens this server's "this phone as a player" page. Music Assistant only. */
     onOpenPlayer: () -> Unit,
@@ -516,6 +526,29 @@ private fun ServerDetail(
     /** Re-point the route at the stored server once a new one has been saved. */
     onSaved: (String) -> Unit,
 ) {
+    // Every kind's page is dressed in that kind's colours — the same treatment the
+    // streaming accounts get, one notch quieter: the brand's accent, band and corners
+    // on the app's own inks. See ProviderSkin.
+    val skin = providerSkin(configIn.kind)
+    ProviderTheme(skin) {
+        ServerDetailBody(skin, configIn, isNew, isActive, libraryVm, settings, scope, onOpenPlayer, onDone, onSaved)
+    }
+}
+
+@Composable
+private fun ServerDetailBody(
+    skin: ProviderSkin,
+    configIn: ServerConfig,
+    isNew: Boolean,
+    isActive: Boolean,
+    libraryVm: LibraryViewModel,
+    settings: AppSettings,
+    scope: CoroutineScope,
+    onOpenPlayer: () -> Unit,
+    onDone: () -> Unit,
+    onSaved: (String) -> Unit,
+) {
+    val accent = skin.accent
     var config by remember(configIn.id) { mutableStateOf(configIn) }
     var label by remember(config.id) { mutableStateOf(config.label) }
     var url by remember(config.id) { mutableStateOf(config.url) }
@@ -573,7 +606,20 @@ private fun ServerDetail(
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        SettingsCard(title = config.kind.label, lead = config.kind.blurb) {
+        ProviderHero(
+            skin = skin,
+            isActive = isActive,
+            connecting = connecting,
+            ready = ready,
+            connError = connError,
+            signedIn = when {
+                config.kind.needsAddress -> url.isNotBlank()
+                config.kind.needsCredentials -> user.isNotBlank() || token.isNotBlank()
+                else -> true
+            },
+            isNew = isNew,
+        )
+        SettingsCard(title = "Name", lead = config.kind.blurb) {
             OledField(label, { label = it }, "Name (optional)", config.kind.label, accent)
             Note("What this server is called in the list. Worth setting once there is more than one.")
         }
