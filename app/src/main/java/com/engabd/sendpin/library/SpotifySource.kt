@@ -30,7 +30,24 @@ class SpotifySource(
     private val context: android.content.Context,
     private val username: String,
     private val password: String,
+    /** librespot's knobs, from the server config — see [ProviderSettings.SpotifyPrefs]. */
+    private val prefs: ProviderSettings.SpotifyPrefs = ProviderSettings.SpotifyPrefs(),
 ) : MusicSource {
+
+    /**
+     * Who is signed in: the session's own username and its `type` attribute
+     * ("premium"), straight from librespot — no Web API round trip.
+     */
+    fun account(): ProviderAccount? {
+        val s = SpotifyEngine.sessionOrNull() ?: return null
+        val product = runCatching { s.getUserAttribute("type") }.getOrNull()
+        return ProviderAccount(
+            name = runCatching { s.username() }.getOrNull(),
+            plan = product?.replaceFirstChar { it.uppercase() },
+            country = runCatching { s.countryCode() }.getOrNull(),
+            maxQuality = if (product == "premium") "Very high (320 kbps)" else "High (160 kbps)",
+        )
+    }
 
     override val kind: ServerKind = ServerKind.SPOTIFY
     override val providerId: String get() = SpotifyWebApi.PROVIDER
@@ -45,7 +62,7 @@ class SpotifySource(
         )
 
     private fun api(): SpotifyWebApi {
-        val session = SpotifyEngine.get(context, username, password)
+        val session = SpotifyEngine.get(context, username, password, prefs)
         return SpotifyWebApi(tokenProvider = { session.tokens().getToken().accessToken })
     }
 
@@ -53,7 +70,7 @@ class SpotifySource(
         if (username.isBlank() || password.isBlank()) {
             SourceError("Enter your Spotify username and password", isAuth = true)
         } else {
-            withContext_IO { SpotifyEngine.get(context, username, password) }
+            withContext_IO { SpotifyEngine.get(context, username, password, prefs) }
             null
         }
     } catch (e: SpotifyApiException) {
@@ -140,7 +157,7 @@ class SpotifySource(
 
     override suspend fun search(query: String, limit: Int): MaSearchResults {
         // Search rides librespot's own SearchManager — no Web API, no client id.
-        val session = SpotifyEngine.get(context, username, password)
+        val session = SpotifyEngine.get(context, username, password, prefs)
         return withContext_IO {
             // SearchManager speaks Gson; convert to kotlinx for the parsers.
             val gson = session.search().request(

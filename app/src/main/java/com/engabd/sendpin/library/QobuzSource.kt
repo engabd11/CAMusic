@@ -45,6 +45,9 @@ class QobuzSource(private val client: QobuzClient) : MusicSource {
             Capability.METADATA,
         )
 
+    /** What the login said about the account, once [probe] has run. */
+    fun account(): ProviderAccount? = client.account()
+
     /** Register the player-open resolver. Call once, after [login] has succeeded. */
     fun open() {
         StreamSchemes.register(QOBUZ_SCHEME) { id -> client.streamUrl(id) }

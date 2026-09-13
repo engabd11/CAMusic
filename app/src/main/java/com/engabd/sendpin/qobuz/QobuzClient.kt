@@ -53,6 +53,11 @@ class QobuzClient(
     @Volatile var appId: String = "",
     /** The app secret paired with [appId]. */
     @Volatile var appSecret: String = "",
+    /**
+     * The highest `format_id` to ask for — the top of the chain [streamUrl] walks.
+     * See `ProviderSettings.QobuzQuality`; 27 (hi-res, up to 192 kHz) is everything.
+     */
+    @Volatile var maxFormatId: Int = 27,
     private val http: OkHttpClient = shared,
     private val json: Json = Json { ignoreUnknownKeys = true },
 ) {
@@ -150,6 +155,39 @@ class QobuzClient(
             authToken = token
             user = body["user"]?.jsonObject
         }
+    }
+
+    /**
+     * What the login said about the account, for the settings page. Qobuz's `user`
+     * object carries the display name, the subscription's label, and under
+     * `credential.parameters` the streaming rights the plan actually includes —
+     * `lossless_streaming` and `hires_streaming` — which is what decides whether a
+     * hi-res tier is worth offering.
+     */
+    fun account(): com.engabd.sendpin.library.ProviderAccount? = user?.let { parseAccount(it) }
+
+    /** [u] is the `user` object of a `user/login` answer. Pure; fixture-tested. */
+    internal fun parseAccount(u: JsonObject): com.engabd.sendpin.library.ProviderAccount {
+        fun str(vararg path: String): String? {
+            var el: kotlinx.serialization.json.JsonElement? = u
+            for (k in path) el = (el as? JsonObject)?.get(k)
+            return (el as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() && it != "null" }
+        }
+        fun bool(vararg path: String): Boolean? = str(*path)?.toBooleanStrictOrNull()
+        val hiRes = bool("credential", "parameters", "hires_streaming")
+        val lossless = bool("credential", "parameters", "lossless_streaming")
+        return com.engabd.sendpin.library.ProviderAccount(
+            name = str("display_name") ?: str("firstname") ?: str("email") ?: str("login"),
+            plan = str("subscription", "offer") ?: str("credential", "label") ?: str("credential", "description"),
+            country = str("country_code") ?: str("country"),
+            maxQuality = when {
+                hiRes == true -> "Hi-Res"
+                lossless == true -> "CD quality"
+                hiRes == false && lossless == false -> "MP3"
+                else -> null
+            },
+            hiResAllowed = hiRes,
+        )
     }
 
     /** Forget the session; the next call logs in again. */
@@ -253,7 +291,7 @@ class QobuzClient(
      * per track and never cached.
      */
     suspend fun streamUrl(trackId: String): String {
-        for (formatId in QUALITY_ORDER) {
+        for (formatId in QUALITY_ORDER.filter { it <= maxFormatId }) {
             val body = fileUrl(trackId, formatId)
             val url = body?.get("url")?.jsonPrimitive?.contentOrNull
             if (!url.isNullOrBlank()) return url

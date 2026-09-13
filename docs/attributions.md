@@ -30,6 +30,7 @@ and freesound in particular hosts CC0, CC-BY, CC-BY-NC and Sampling+ side by sid
 ## Code and icons
 
 - Server-kind icons adapted from [dashboard-icons](https://github.com/walkxcode/dashboard-icons) (CC0). See `ServerKindIcon.kt`.
+  The Spotify, Qobuz and Tidal marks come from the same set; the Qobuz and Tidal marks are monochrome and ship recoloured white for dark surfaces. Spotify, Qobuz and Tidal are trademarks of their owners; the marks identify the service an account belongs to and imply no endorsement.
 - Protocol references ported or adapted with attribution: massdroid (MIT), Music Assistant mobile-app (Apache 2.0), sendspin-js. See [protocol-alignment.md](protocol-alignment.md).
 - Speed-limit pipeline input data: Transport Victoria, CC BY 4.0. See `tools/speed-limit-pipeline/README.md`.
 

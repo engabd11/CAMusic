@@ -291,6 +291,17 @@ a code), token storage in `ServerConfig` options, refresh handling.
 
 ## Phase 4 — Polish (cross-cutting)
 
+**Landed (PR: streaming-provider pages, 2026-09-13):** each account has its own settings
+page (`ui/screens/settings/providers/ProviderAccountPage.kt`) in the service's colours and
+type (`ui/design/ProviderSkin.kt`), with the settings its client actually exposes
+(`library/ProviderSettings.kt`): Spotify's librespot quality / normalisation / autoplay /
+crossfade / preload / device name, Qobuz's `format_id` ceiling, Tidal's `audioquality`
+ceiling; an account card from each provider's own answer (`ProviderAccount`); brand marks
+from dashboard-icons. The generic form's music-folder and stream-quality cards no longer
+show for accounts. Also fixed on the way: librespot rejected the app's UUID player id as a
+device id ("Device ID must be 40 chars long"), so Spotify could never have signed in — it is
+now a SHA-1 of the player id. Live smoke with real accounts remains the outstanding step.
+
 - Search federation: once a source has real search, confirm the existing multi-source search
   (`CarLibraryBridge.searchAll` pattern) includes it.
 - Settings copy: one line per provider naming the account requirement (Premium / subscription).

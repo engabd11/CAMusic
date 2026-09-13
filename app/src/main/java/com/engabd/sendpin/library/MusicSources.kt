@@ -160,6 +160,7 @@ object MusicSources {
                 password = config.password,
                 appId = ProviderAppCredentials.qobuzAppId(config),
                 appSecret = ProviderAppCredentials.qobuzAppSecret(config),
+                maxFormatId = ProviderSettings.QobuzQuality.from(config).formatId,
             ),
         )
 
@@ -170,6 +171,7 @@ object MusicSources {
             context,
             config.username,
             config.password,
+            ProviderSettings.SpotifyPrefs.from(config),
         )
 
         // Tidal signs in on Tidal's own page (device authorization flow) and keeps
@@ -184,6 +186,7 @@ object MusicSources {
                 tokenExpiresAt = config.option(ServerConfig.OPT_TIDAL_TOKEN_EXPIRES_AT)?.toLongOrNull() ?: 0,
                 userId = config.option(ServerConfig.OPT_TIDAL_USER_ID).orEmpty(),
                 countryCode = config.option(ServerConfig.OPT_TIDAL_COUNTRY_CODE).orEmpty().ifBlank { "US" },
+                maxQuality = ProviderSettings.TidalQuality.from(config).wire,
             ),
         )
 

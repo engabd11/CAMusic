@@ -86,14 +86,45 @@ internal fun LibrariesSection(
 
         else -> {
             val existing = servers.firstOrNull { it.id == detail }
+            val newKind = pendingKind(detail)
+            // A real id that is not in the list: either the list has not emitted yet
+            // (`servers` starts empty) or the server is gone. Neither is a reason to
+            // build a fresh Navidrome form under a Spotify route, which is what this
+            // used to do — every field reset and the page changed kind under the user.
+            // Wait for the list; once it has arrived and still has no such id, go back.
+            if (existing == null && newKind == null) {
+                LaunchedEffect(detail, servers) { if (servers.isNotEmpty()) onDetail(null) }
+                return
+            }
             // A server being added has no stored config yet, so one is built here —
             // and remembered, because `ServerConfig` mints a fresh id on construction
             // and a new one per recomposition would reset the form under the user.
-            val pending = remember(detail) {
-                existing ?: ServerConfig(kind = pendingKind(detail) ?: ServerKind.NAVIDROME)
+            // Keyed on the id it resolved to as well, so the list arriving after the
+            // route does not leave the page on a placeholder.
+            val pending = remember(detail, existing?.id) {
+                existing ?: ServerConfig(kind = newKind ?: ServerKind.NAVIDROME)
             }
             // Local-only mutable holder, so `config` stays the prop-backed source of truth.
             var config by remember(pending) { mutableStateOf(pending) }
+
+            if (config.kind.cloudAccount) {
+                // A streaming account is not a server: its own page, in its own colours,
+                // with the settings its client actually has. See ProviderAccountPage.
+                com.engabd.sendpin.ui.screens.settings.providers.ProviderAccountPage(
+                    configIn = config,
+                    isNew = existing == null,
+                    isActive = existing != null && existing.id == activeId,
+                    libraryVm = libraryVm,
+                    settings = settings,
+                    scope = scope,
+                    onDone = { onDetail(null) },
+                    onSaved = {
+                        config = existing ?: config
+                        onDetail(it)
+                    },
+                )
+                return
+            }
 
             ServerDetail(
                 configIn = config,
@@ -784,7 +815,9 @@ private fun ServerDetail(
         // with, decided in mpd.conf and not negotiable per request, so a picker
         // here would be a setting that changes nothing — the exact dishonesty the
         // settings audit went through this screen to remove.
-        if (config.kind.playsLocally && config.kind != ServerKind.LOCAL && config.kind != ServerKind.MPD && config.kind != ServerKind.FOOBAR2000) {
+        if (config.kind.playsLocally && !config.kind.cloudAccount &&
+            config.kind != ServerKind.LOCAL && config.kind != ServerKind.MPD && config.kind != ServerKind.FOOBAR2000
+        ) {
             SettingsCard(
                 title = "Stream quality",
                 lead = "What this server is asked to send. Downloads always take the original " +
@@ -875,6 +908,13 @@ private const val NEW_PREFIX = "__new__:"
 
 private fun pendingKind(detail: String): ServerKind? =
     if (detail.startsWith(NEW_PREFIX)) ServerKind.from(detail.removePrefix(NEW_PREFIX)) else null
+
+/**
+ * The kind behind a server route — a new-server route names it, a stored id is
+ * looked up in [servers] — so the header can say "Spotify" rather than "Server".
+ */
+internal fun serverKindOfRoute(detail: String, servers: List<ServerConfig>): ServerKind? =
+    pendingKind(detail) ?: servers.firstOrNull { it.id == detail }?.kind
 
 /**
  * This phone as a player on *this* Music Assistant server.

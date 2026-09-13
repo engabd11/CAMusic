@@ -205,4 +205,25 @@ class TidalClientTest {
         assertNull(client.parseAlbum(obj("""{"title": "no id"}""")))
         assertNull(client.parseArtist(obj("""{"name": "no id"}""")))
     }
+
+    @Test
+    fun `the account card reads the user and subscription answers`() {
+        val user = Json.parseToJsonElement("""{"firstName":"Ada","lastName":"Lovelace","countryCode":"GB","username":"ada"}""").jsonObject
+        val sub = Json.parseToJsonElement("""{"subscription":{"type":"HIFI_PLUS"},"highestSoundQuality":"HI_RES"}""").jsonObject
+        val a = client.parseAccount(user, sub)!!
+        assertEquals("Ada Lovelace", a.name)
+        assertEquals("Hifi plus", a.plan)
+        assertEquals("GB", a.country)
+        assertEquals("Max", a.maxQuality, "the tier is named as the app names it")
+    }
+
+    @Test
+    fun `an account with only a subscription answer still describes itself`() {
+        val sub = Json.parseToJsonElement("""{"subscription":{"type":"HIFI"},"highestSoundQuality":"LOSSLESS"}""").jsonObject
+        val a = client.parseAccount(null, sub)!!
+        assertNull(a.name)
+        assertEquals("Hifi", a.plan)
+        assertEquals("HiFi", a.maxQuality)
+        assertNull(client.parseAccount(null, null))
+    }
 }

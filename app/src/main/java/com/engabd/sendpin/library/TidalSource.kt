@@ -46,6 +46,9 @@ class TidalSource(private val client: TidalClient) : MusicSource {
     /** The underlying client, for setup flows that need Tidal itself. */
     val tidal: TidalClient get() = client
 
+    /** Who is signed in and on what plan; null until signed in. */
+    suspend fun account(): ProviderAccount? = if (client.ensureSignedIn()) client.account() else null
+
     /** Register the player-open resolver; call once the client holds a token. */
     fun open() {
         StreamSchemes.register(TIDAL_SCHEME) { id -> client.streamUrl(id) }

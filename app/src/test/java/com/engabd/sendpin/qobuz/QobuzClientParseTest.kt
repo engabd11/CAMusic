@@ -241,4 +241,34 @@ class QobuzClientParseTest {
         assertNull(client().parseAlbum(obj("""{"id": ""}""")))
         assertNull(client().parseArtist(obj("""{"name": "nameless id"}""")))
     }
+
+    @Test
+    fun `the account card reads the login's user object`() {
+        val u = Json.parseToJsonElement(
+            """{"display_name":"Ada","country_code":"GB",
+                "subscription":{"offer":"studio"},
+                "credential":{"label":"Qobuz Studio","parameters":{"lossless_streaming":true,"hires_streaming":true}}}""",
+        ).jsonObject
+        val a = client().parseAccount(u)
+        assertEquals("Ada", a.name)
+        assertEquals("studio", a.plan)
+        assertEquals("GB", a.country)
+        assertEquals("Hi-Res", a.maxQuality)
+        assertEquals(true, a.hiResAllowed)
+    }
+
+    @Test
+    fun `a CD-only plan says so, and an unknown one says nothing`() {
+        val cd = Json.parseToJsonElement(
+            """{"email":"ada@example.com","credential":{"parameters":{"lossless_streaming":true,"hires_streaming":false}}}""",
+        ).jsonObject
+        val a = client().parseAccount(cd)
+        assertEquals("ada@example.com", a.name)
+        assertEquals("CD quality", a.maxQuality)
+        assertEquals(false, a.hiResAllowed)
+        val bare = client().parseAccount(Json.parseToJsonElement("""{"login":"ada"}""").jsonObject)
+        assertEquals("ada", bare.name)
+        assertNull(bare.maxQuality)
+        assertNull(bare.hiResAllowed)
+    }
 }

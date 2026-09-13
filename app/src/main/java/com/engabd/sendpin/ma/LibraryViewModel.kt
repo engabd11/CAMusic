@@ -958,6 +958,22 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * What the active streaming account says about itself — name, plan, country —
+     * for its settings page. Null when the active source is not one of the three,
+     * is not signed in yet, or the provider does not answer.
+     */
+    suspend fun providerAccount(): com.engabd.sendpin.library.ProviderAccount? = try {
+        when (val s = source) {
+            is com.engabd.sendpin.library.QobuzSource -> s.account()
+            is com.engabd.sendpin.library.TidalSource -> s.account()
+            is com.engabd.sendpin.library.SpotifySource -> s.account()
+            else -> null
+        }
+    } catch (_: Exception) {
+        null
+    }
+
+    /**
      * Point the library at [config] and connect to it.
      *
      * The entry point for "the user picked a different server". [setBackend] handles
