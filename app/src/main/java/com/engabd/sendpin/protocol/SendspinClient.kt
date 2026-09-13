@@ -60,7 +60,7 @@ class SendspinClient(
 
     /**
      * Whether this client is in **idle mode** — no audio is flowing, so the timer
-     * loops relax to [IDLE_TIME_SYNC_MS] / [IDLE_STATE_REPORT_MS] to reduce
+     * loops relax to [IDLE_TIME_SYNC_MS] to reduce
      * background CPU and network traffic. The clock filter and sync gate still
      * run; they just sample less often. A `stream/start` flips this back to fast
      * cadence via [setIdleMode].
@@ -100,21 +100,12 @@ class SendspinClient(
     val syncMuted: StateFlow<Boolean> = _syncMuted.asStateFlow()
 
     /**
-     * Whether the clock filter has converged at least once on **this** connection.
-     *
-     * A latch rather than a live reading, and that is deliberate. The spec's rule is
-     * about the *first* `client/state`: do not offer yourself for playback before you
-     * can place a sample on the shared timeline. It is not an invitation to flap. A
-     * converged filter can be stood down for a moment by a single suspect residual
-     * (see [ClockKalmanFilter.isStepSuspected]), and reporting `available: false` on
-     * that would ask Music Assistant to drop a playing speaker out of its group over a
-     * blip it will have resolved by the next sample.
-     *
-     * So: unavailable until convergence, available from then until the socket closes.
-     * [SyncGate] still reports `state: "error"` and mutes for the transient case,
-     * which is the mechanism the spec actually gives for "synchronization issues".
+     * Whether a stream is open on this socket (`stream/start` seen, no `stream/end`
+     * yet). Gates the periodic `client/state` report: the official Music Assistant
+     * app reports every two seconds only while streaming, and on volume/mute
+     * changes at any time — nothing else.
      */
-    @Volatile private var everConverged = false
+    @Volatile private var streaming = false
 
     /** Roles the server actually activated, from `server/hello`. */
     private val _activeRoles = MutableStateFlow<List<String>>(emptyList())
@@ -381,26 +372,29 @@ class SendspinClient(
     }
 
     /**
-     * Report player state. [state] is `"synchronized"` or `"error"` per the spec —
-     * see [SyncGate] for when each is right.
+     * Report player state — volume, mute, latency trim — exactly the shape the official
+     * Music Assistant app sends: `player.state` is always `"synchronized"` and
+     * `available` is always true. See [PlayerStateInfo] and [ClientStatePayload] for
+     * why neither follows the clock filter any more.
      */
     fun sendClientState(
         volume: Int = lastVolume,
         muted: Boolean = lastMuted,
         staticDelayMs: Int = _staticDelayMs.value,
-        state: String = "synchronized",
     ) {
         lastVolume = volume; lastMuted = muted
         _staticDelayMs.value = staticDelayMs
         val msg = SendspinClientState(
             payload = ClientStatePayload(
-                state = state,
-                available = everConverged,
                 // The spec's wire range is 0..5000; a negative trim is meaningful
                 // locally (play later) but has nothing to say to the server. The signed
                 // value is kept in [_staticDelayMs] above, which is what the engine
                 // reads — see the echo guard in `handleIncoming`.
-                player = PlayerStateInfo(volume, muted, staticDelayMs.coerceIn(0, MAX_STATIC_DELAY_MS)),
+                player = PlayerStateInfo(
+                    volume = volume,
+                    muted = muted,
+                    staticDelayMs = staticDelayMs.coerceIn(0, MAX_STATIC_DELAY_MS),
+                ),
             )
         )
         webSocket?.send(json.encodeToString(msg))
@@ -427,11 +421,7 @@ class SendspinClient(
             // `webSocket = newWebSocket(...)` assignment in connect(), which would make
             // the field-based send() a silent no-op. Send the first frame via the param.
             this@SendspinClient.webSocket = webSocket
-            // A new socket is a new connection, and the spec's rule is per-connection:
-            // the first client/state on it must not claim availability the filter has
-            // not re-established. Cheap to re-earn — the seeded filter needs three
-            // samples at the 300 ms cold-start cadence.
-            everConverged = false
+            streaming = false
             val t = token
             dbg("ws OPEN (http ${response.code}) → ${if (t.isNullOrBlank()) "no token, sending hello" else "sending auth"}")
             if (t.isNullOrBlank()) {
@@ -566,10 +556,14 @@ class SendspinClient(
                 // The head of this stream is about to be scheduled against the clock,
                 // so take a fresh reading of it now rather than at the next tick.
                 resyncClock()
+                streaming = true
                 _streamFormat.value = msg.payload.player
                 sink?.onStreamStart(msg.payload.player)
             }
-            is SendspinIncoming.StreamEnd -> sink?.onStreamEnd()
+            is SendspinIncoming.StreamEnd -> {
+                streaming = false
+                sink?.onStreamEnd()
+            }
             is SendspinIncoming.StreamClear -> sink?.onStreamClear()
             is SendspinIncoming.ServerCommand -> msg.payload.player?.let { p ->
                 // Latched here rather than only downstream, so the value the client
@@ -696,16 +690,26 @@ class SendspinClient(
     }
 
     /**
-     * Report `client/state` on a loop, telling the truth about whether this player
-     * can actually be placed on the shared timeline yet — see [SyncGate].
+     * The clock-readiness loop: decides the local mute ([SyncGate]) and sends the
+     * periodic `client/state` report.
      *
-     * Faster while unconverged: the report is what the server acts on, so a stale
-     * "still error" costs group join latency for no reason.
+     * What goes on the wire follows the official Music Assistant app exactly: one
+     * report as soon as the session is up, then one every [STREAM_STATE_REPORT_MS]
+     * while a stream is open, and nothing in between — volume, mute and latency-trim
+     * changes send their own the moment they happen. The report's content never
+     * varies with the clock (see [PlayerStateInfo]).
+     *
+     * The clock decision itself still runs fast (300 ms) while the filter is
+     * unconverged, because that is when the mute has to lift promptly. It used to also
+     * put `state: "error"` and `available: false` on the wire from here; the server
+     * answered the first with stream rebuilds and the second by stopping playback.
      */
     private fun startStateReporting() {
         stateJob?.cancel()
         stateJob = scope.launch {
             var unreadySinceMs = System.currentTimeMillis()
+            var lastReportAtMs = 0L
+            var first = true
             while (isActive) {
                 val ready = clock.isReadyForPlaybackStart()
                 if (ready) unreadySinceMs = System.currentTimeMillis()
@@ -713,26 +717,20 @@ class SendspinClient(
                     clockReady = ready,
                     unreadyMs = if (ready) 0L else System.currentTimeMillis() - unreadySinceMs,
                 )
-                // Latched off the same decision the mute uses, so the two can never
-                // disagree, and so a filter that never converges still ends up
-                // available: SyncGate stops muting at its deadline on the argument
-                // that a player with nothing to be out of step with should still make
-                // a sound, and a player MA refuses to stream to makes none.
-                if (!everConverged && !d.muted) {
-                    everConverged = true
-                    dbg(if (ready) "clock converged → available:true" else "sync deadline passed → available:true")
-                }
                 if (_syncMuted.value != d.muted) {
                     dbg(if (d.muted) "clock unconverged → muting" else "clock ready → unmuting")
                 }
                 _syncMuted.value = d.muted
-                sendClientState(
-                    state = if (d.report == SyncGate.Report.SYNCHRONIZED) "synchronized" else "error"
-                )
+                val now = System.currentTimeMillis()
+                if (first || (streaming && now - lastReportAtMs >= STREAM_STATE_REPORT_MS)) {
+                    sendClientState()
+                    lastReportAtMs = now
+                    first = false
+                }
                 delay(when {
                     !ready -> 300L
-                    idleMode -> IDLE_STATE_REPORT_MS
-                    else -> 5_000L
+                    idleMode -> IDLE_TIME_SYNC_MS
+                    else -> STREAM_STATE_REPORT_MS
                 })
             }
         }
@@ -785,6 +783,7 @@ class SendspinClient(
         const val IDLE_TIME_SYNC_MS = 30_000L
 
         /** State reporting cadence when idle — the server doesn't need updates when nothing is playing. */
-        const val IDLE_STATE_REPORT_MS = 30_000L
+        /** Cadence of the periodic `client/state` report while a stream is open. */
+        const val STREAM_STATE_REPORT_MS = 2_000L
     }
 }

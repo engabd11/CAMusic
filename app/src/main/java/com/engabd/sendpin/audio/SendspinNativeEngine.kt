@@ -112,12 +112,6 @@ class SendspinNativeEngine(
      * Music Assistant gets another chance to send `stream/start`.
      */
     private val onFatalError: () -> Unit = {},
-    /**
-     * Fired the moment this engine actually starts producing audio.
-     * `stream/start` precedes decoder and audio-track warm-up by over a second;
-     * Playback.kt holds the playhead until this fires.
-     */
-    private val onAudible: () -> Unit = {},
 ) : SendspinPlaybackEngine {
 
     companion object {
@@ -372,9 +366,6 @@ class SendspinNativeEngine(
     @Volatile private var drainSignalled = false
     @Volatile private var endOfStreamSignalled = false
 
-    // Has the current stream produced audio yet?
-    @Volatile private var streamAudible = false
-
     // A held frame from a previous iteration (codec input was full).
     private var pendingFrame: EncodedFrame? = null
 
@@ -429,7 +420,6 @@ class SendspinNativeEngine(
     }
 
     override fun start(format: StreamStartPlayerInfo) {
-        streamAudible = false
         drainSignalled = false
         endOfStreamSignalled = false
         tailCut = false
@@ -1092,12 +1082,6 @@ class SendspinNativeEngine(
         audioLead.mediaTimeUs = mediaTimeUs
 
         writtenChunkCount++
-
-        // Signal audible on first chunk written.
-        if (!streamAudible) {
-            streamAudible = true
-            onAudible()
-        }
 
         maybeSampleNativeSync()
         maybeLogWriteTiming(serverTimestampUs, plan, nowUs(), writeLength, frames)

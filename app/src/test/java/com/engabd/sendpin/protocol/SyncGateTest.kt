@@ -7,25 +7,20 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * What the player tells the server about itself while its clock is converging.
- *
- * Reporting "synchronized" from the moment the socket opens — which is what this
- * replaced — tells the server the player is ready to join a group while its offset
- * is still seconds wide. In a group that is audible.
+ * Whether the player mutes itself while its clock is converging. Local policy only:
+ * nothing here goes on the wire any more (see [SyncGate]).
  */
 class SyncGateTest {
 
     @Test
-    fun `a converged clock reports synchronized and plays`() {
+    fun `a converged clock plays`() {
         val d = SyncGate.decide(clockReady = true, unreadyMs = 0)
-        assertEquals(SyncGate.Report.SYNCHRONIZED, d.report)
         assertFalse(d.muted)
     }
 
     @Test
-    fun `an unconverged clock reports error and mutes`() {
+    fun `an unconverged clock mutes`() {
         val d = SyncGate.decide(clockReady = false, unreadyMs = 500)
-        assertEquals(SyncGate.Report.ERROR, d.report)
         assertTrue(d.muted)
     }
 
@@ -34,9 +29,8 @@ class SyncGateTest {
      * the offset is clearly not coming, silence is the worse answer of the two.
      */
     @Test
-    fun `past the deadline it stops muting but keeps telling the truth`() {
+    fun `past the deadline it stops muting`() {
         val d = SyncGate.decide(clockReady = false, unreadyMs = SyncGate.MAX_MUTE_MS)
-        assertEquals(SyncGate.Report.ERROR, d.report)
         assertFalse(d.muted, "permanent silence is worse than being ungrouped")
     }
 

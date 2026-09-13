@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Where each queue's playhead is, right now.
@@ -115,6 +116,13 @@ class PlayerPositionTracker(
          */
         val speed: Float = 1f,
         val freezeReason: FreezeReason? = null,
+        /**
+         * The queue item the reading described, when the caller knows it. Only used
+         * to tell a *new* track reporting the same value from a server clock that has
+         * stopped advancing on the current one — see the stalled-clock rule in
+         * [PlayerPositionTracker.setAnchor].
+         */
+        val itemId: String? = null,
     ) {
         /**
          * Anchor plus speed-scaled time since it was taken, capped at the duration.
@@ -138,6 +146,33 @@ class PlayerPositionTracker(
     }
 
     private val anchors = MutableStateFlow<Map<String, Anchor>>(emptyMap())
+
+    /**
+     * The newest server stamp seen per queue, frozen anchors included.
+     *
+     * Kept apart from the anchor because a freeze replaces the anchor with one of our
+     * own (no stamp), and a reading that was already on the wire when the user
+     * dropped the scrubber can land *after* the freeze lifts. Without a memory that
+     * outlives the freeze, that reading — older than everything the queue had already
+     * shown — would be applied as news and snap the bar back to the pre-seek position
+     * for a beat. This is the official app's `QueueInfo.isBefore` gate.
+     */
+    private val stampHighWater = ConcurrentHashMap<String, Long>()
+
+    /**
+     * The newest stamp that arrived while a queue was frozen. Everything stamped up
+     * to and including it was captured while we were not listening, and stays
+     * ignored after the freeze lifts — a poll that merely restates such a reading
+     * is not news.
+     *
+     * Why it matters: right after a seek Music Assistant briefly publishes a bogus
+     * position — the *old* stream's elapsed plus the seek offset (168 s on a seek to
+     * 127 s, observed) — before the new stream resets it. The freeze rightly ignores
+     * it, but the same reading is still what the last poll holds when the freeze
+     * lifts a moment later, and re-applying it flashed the bar to 2:48 for most of a
+     * second before the corrected reading arrived.
+     */
+    private val frozenStampCeiling = ConcurrentHashMap<String, Long>()
 
     /**
      * How far behind this phone's wall clock the server's appears to run, in ms.
@@ -209,11 +244,34 @@ class PlayerPositionTracker(
      * 3. Otherwise the reading is applied — anchored to its own capture time when that
      *    is recent enough to project from, and to now when it is not.
      *
+     * Two more rules, both about readings that are not what they look like:
+     *
+     * - **Stale.** A reading whose stamp is older than one this queue has already
+     *   seen is dropped, even while frozen (see [stampHighWater]). Older by more than
+     *   [STALE_RESET_MS] is not a reordered poll but a server clock that stepped
+     *   back, and is accepted.
+     * - **Stalled.** While playing, a reading that repeats the held `elapsed_time` to
+     *   the millisecond under a stamp at least [STALL_MIN_MS] newer, for the same
+     *   queue item, is a server clock that has stopped advancing, not a position.
+     *   Music Assistant 2.10 does exactly this for its own Sendspin players on any
+     *   track short enough to be sent in one burst (about 30 s and under): the
+     *   player's elapsed never leaves `None`, so the queue reports `0` — or the seek
+     *   target, after a seek — with a fresh stamp every second for the whole track.
+     *   Anchoring those made the bar climb between polls and snap back on each one.
+     *   The running projection is kept instead. A real position cannot repeat across
+     *   a newer stamp (the server extrapolates it on every read), so a changed value
+     *   is always news — repeat-one's 29.4 → 0 and an outside restart's 120.3 → 0
+     *   both go through — and a *new* item reporting the same value is news too,
+     *   which is what [itemId] is for. A projection that has reached the end of the
+     *   track accepts the reading regardless: a repeat of a short track restarts at
+     *   the very value it was pinned on.
+     *
      * [isPlaying], [durationMs] and [speed] keep their current values when null, so an
      * event that only carries a new elapsed time doesn't wipe what a fuller poll
      * established.
      *
-     * Ignored entirely while the anchor is frozen — that is the point of the freeze.
+     * Ignored while the anchor is frozen — that is the point of the freeze — though
+     * the stamp is still remembered.
      */
     fun setAnchor(
         queueId: String,
@@ -222,10 +280,21 @@ class PlayerPositionTracker(
         isPlaying: Boolean? = null,
         durationMs: Long? = null,
         speed: Float? = null,
+        itemId: String? = null,
     ) {
+        if (capturedAtMs != null) {
+            val seen = stampHighWater[queueId]
+            if (seen != null && capturedAtMs < seen && seen - capturedAtMs < STALE_RESET_MS) return
+            stampHighWater[queueId] = capturedAtMs
+            val ceiling = frozenStampCeiling[queueId]
+            if (ceiling != null && capturedAtMs <= ceiling && !isFrozen(queueId)) return
+        }
         anchors.update { existing ->
             val current = existing[queueId]
-            if (current?.freezeReason != null) return@update existing
+            if (current?.freezeReason != null) {
+                if (capturedAtMs != null) frozenStampCeiling[queueId] = capturedAtMs
+                return@update existing
+            }
             val now = nowMs()
             val playing = isPlaying ?: current?.isPlaying ?: false
             val duration = durationMs ?: current?.durationMs ?: 0L
@@ -251,6 +320,19 @@ class PlayerPositionTracker(
                 return@update if (kept == current) existing else existing + (queueId to kept)
             }
 
+            // 2b. The server's clock has stopped: same value, newer stamp, same item,
+            //     still playing, track not run out. Not a position — see the class doc.
+            val stalled = running != null && playing && running.isPlaying &&
+                capturedAtMs != null && running.serverStampMs != null &&
+                elapsedMs == running.serverElapsedMs &&
+                capturedAtMs - running.serverStampMs >= STALL_MIN_MS &&
+                (itemId == null || running.itemId == null || itemId == running.itemId) &&
+                !running.isAtEnd(now)
+            if (stalled) {
+                val kept = running!!.copy(serverStampMs = capturedAtMs, durationMs = duration, speed = rate)
+                return@update if (kept == current) existing else existing + (queueId to kept)
+            }
+
             // 3. News. Project from the server's own capture time while it is close
             //    enough to be worth having; otherwise take the reading at arrival time,
             //    which also covers a server clock reading ahead of ours.
@@ -273,11 +355,37 @@ class PlayerPositionTracker(
                     elapsedMs = elapsedMs,
                     capturedAtMs = anchorAt,
                     serverElapsedMs = elapsedMs,
-                    serverStampMs = capturedAtMs,
+                    // An unstamped reading (a `queue_time_updated` event) keeps the
+                    // last stamped one on record, so the pair test and the stall
+                    // rule still have something to compare the next poll against.
+                    serverStampMs = capturedAtMs ?: running?.serverStampMs,
                     isPlaying = playing,
                     durationMs = duration,
                     speed = rate,
                     freezeReason = null,
+                    itemId = itemId ?: running?.itemId,
+                )
+            )
+        }
+    }
+
+    /**
+     * A play/pause transition on its own, from a `player_updated` event that carries
+     * no position. Snapshots the projected position and re-bases to now — rule 1 of
+     * [setAnchor], without a reading. Ignored while frozen: the server flickers a
+     * player to "paused" around a stream rebuild, and a hold waiting on that rebuild
+     * must not take it as news (the official app masks the same flicker).
+     */
+    fun setPlaying(queueId: String, isPlaying: Boolean) {
+        anchors.update { existing ->
+            val current = existing[queueId] ?: return@update existing
+            if (current.freezeReason != null || current.isPlaying == isPlaying) return@update existing
+            val now = nowMs()
+            existing + (
+                queueId to current.copy(
+                    elapsedMs = current.effectiveAt(now),
+                    capturedAtMs = now,
+                    isPlaying = isPlaying,
                 )
             )
         }
@@ -298,6 +406,7 @@ class PlayerPositionTracker(
         freeze(queueId, 0L, durationMs, FreezeReason.TRACK_CHANGE)
 
     private fun freeze(queueId: String, elapsedMs: Long, durationMs: Long?, reason: FreezeReason) {
+        frozenStampCeiling.remove(queueId)
         anchors.update { existing ->
             val current = existing[queueId]
             existing + (
@@ -322,12 +431,21 @@ class PlayerPositionTracker(
         anchors.update { existing ->
             val current = existing[queueId] ?: return@update existing
             if (current.freezeReason == null) return@update existing
+            val now = nowMs()
             existing + (
                 queueId to current.copy(
-                    elapsedMs = current.effectiveAt(nowMs()),
-                    capturedAtMs = nowMs(),
+                    elapsedMs = current.effectiveAt(now),
+                    capturedAtMs = now,
                     isPlaying = true,
                     freezeReason = null,
+                    // The server's own reading from here on is the held value — the
+                    // seek offset, or zero — until it starts counting, and for a
+                    // stream it sends in one burst it never does. Seeding the pair
+                    // with it (stamped at the newest reading seen while frozen, else
+                    // now) is what lets the stalled-clock rule recognise those
+                    // readings as a clock that is not moving rather than news.
+                    serverElapsedMs = current.elapsedMs,
+                    serverStampMs = frozenStampCeiling[queueId] ?: now,
                 )
             )
         }
@@ -367,10 +485,18 @@ class PlayerPositionTracker(
         }
 
     /** Forget a queue (it went away, or the target changed). */
-    fun remove(queueId: String) = anchors.update { it - queueId }
+    fun remove(queueId: String) {
+        stampHighWater.remove(queueId)
+        frozenStampCeiling.remove(queueId)
+        anchors.update { it - queueId }
+    }
 
     /** Forget everything — disconnect, or a server switch. */
-    fun clear() = anchors.update { emptyMap() }
+    fun clear() {
+        stampHighWater.clear()
+        frozenStampCeiling.clear()
+        anchors.update { emptyMap() }
+    }
 
     companion object {
         /**
@@ -406,6 +532,23 @@ class PlayerPositionTracker(
          * tight enough that a pause-then-event is caught.
          */
         const val MAX_PROJECTION_MS = 5_000L
+
+        /**
+         * How much older than the newest stamp seen a reading may be before it is
+         * taken as a server clock that stepped backwards rather than a reordered
+         * poll. A minute: no in-flight answer is that late, and an NTP correction
+         * that large must be followed or the queue would never anchor again.
+         */
+        const val STALE_RESET_MS = 60_000L
+
+        /**
+         * How much newer a stamp must be, over an unchanged `elapsed_time`, to read
+         * as a stalled server clock. Half a second: the server recomputes the value
+         * on every read while playing, so two reads that far apart cannot agree unless
+         * nothing is being computed. (Its stamps step about once a second, with
+         * enough jitter that a full second let one through at 903 ms.)
+         */
+        const val STALL_MIN_MS = 500L
 
         /**
          * How fast the [skew] estimate is allowed to drift back up, per reading.

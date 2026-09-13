@@ -578,8 +578,6 @@ class Playback(private val app: Context) {
             // The engine has exhausted its own retry — force a fresh Sendspin
             // socket rather than leaving a dead stream sitting there.
             onFatalError = { c.reconnectNow() },
-            // Audio is out. Signal the edge so the UI's optimistic freeze releases.
-            onAudible = { _audibleSeq.value += 1 },
         ).also {
             _maAudioSource.value = it.audioAnalysisTap to it.audioLead
         }
@@ -655,7 +653,13 @@ class Playback(private val app: Context) {
         // calls — all non-blocking — happen inline. Anything slower (audio focus,
         // starting a foreground service) is posted, or it stalls the socket.
         c.sink = object : SendspinClient.PlaybackSink {
-            override fun onAudio(frame: ByteArray) = eng.submit(frame)
+            override fun onAudio(frame: ByteArray) {
+                if (chunkEdge.onAudio()) {
+                    lastStreamChunkAtMs = System.currentTimeMillis()
+                    _streamChunkSeq.value += 1
+                }
+                eng.submit(frame)
+            }
 
             override fun onStreamStart(format: StreamStartPlayerInfo) {
                 // Classified before the engine is started, because the engine needs it:
@@ -675,6 +679,9 @@ class Playback(private val app: Context) {
                 tailJob?.cancel(); tailJob = null
                 coldEngineJob?.cancel(); coldEngineJob = null
                 eng.start(format)
+                // An announcement's first chunk must not release a hold placed on the
+                // music: the seek or skip it is waiting for has not happened yet.
+                if (streamKind != StreamClassifier.Kind.ANNOUNCEMENT) chunkEdge.onStreamStart()
                 idleJob?.cancel(); idleJob = null
                 val kind = streamKind
                 sessionScope.launch {
@@ -690,6 +697,7 @@ class Playback(private val app: Context) {
                 // tail is worth depends entirely on which, so ask.
                 val endedAt = SystemClock.elapsedRealtime()
                 lastStreamEndAtMs = endedAt
+                chunkEdge.onStreamEnd()
                 // Stamped now, while it is still unambiguous which stream ended. By
                 // the time the drain finishes, the engine may be playing a different
                 // one — see [SendspinPlaybackEngine.currentStreamId].
@@ -713,9 +721,13 @@ class Playback(private val app: Context) {
                 }
             }
 
-            override fun onStreamClear() = eng.flush()
+            override fun onStreamClear() {
+                chunkEdge.onStreamClear()
+                eng.flush()
+            }
 
             override fun onDisconnected() {
+                chunkEdge.onDisconnected()
                 // Park rather than tear down: a reconnect is usually seconds away and
                 // a matching stream/start will carry straight on through the tail.
                 eng.endOfStream()
@@ -921,49 +933,38 @@ class Playback(private val app: Context) {
         }
     }
 
-    // --- audible edge -------------------------------------------------------
+    // --- stream chunk edge --------------------------------------------------
     //
-    // The playhead itself is not here. It lives in `PlayerPositionTracker`, off Music
-    // Assistant's `elapsed_time` / `elapsed_time_last_updated`, on every path. What
-    // this side still owns is the one thing MA cannot see: the instant *this phone's*
-    // stream actually starts making a sound. `stream/start` precedes that by over
-    // 1.6 s (decoder and audio-track warm-up, measured on-device), and for that second
-    // the outgoing track is still coming out of the speaker.
+    // The playhead itself is not here. It lives in `MaPlayhead`, off Music Assistant's
+    // `elapsed_time` / `elapsed_time_last_updated`, on every path. What this side owns
+    // is the one thing MA cannot see: the instant *this phone's* stream (re)starts —
+    // see [StreamChunkEdge] for why that is the first chunk received and not the
+    // first one heard.
+
+    private val chunkEdge = StreamChunkEdge()
 
     /**
-     * Counts streams that have actually been heard.
-     *
-     * A level ("is it playing?") cannot answer "has the stream I am waiting for
-     * started?", because the outgoing track is still coming out of the speaker for
-     * more than a second after a skip is asked for. The UI's optimistic freeze needs
-     * the *edge*, so it samples this when it freezes and releases when it moves.
+     * Counts (re)started streams: bumps on the first audio chunk after a
+     * `stream/start` or `stream/clear`. A level ("is it playing?") cannot answer "has
+     * the stream I am waiting for started?", because the outgoing track keeps coming
+     * out of the speaker after a skip is asked for. The playhead's optimistic hold
+     * samples this when it arms and releases when it moves.
      */
-    private val _audibleSeq = MutableStateFlow(0L)
-    val audibleSeq: StateFlow<Long> = _audibleSeq.asStateFlow()
+    private val _streamChunkSeq = MutableStateFlow(0L)
+    val streamChunkSeq: StateFlow<Long> = _streamChunkSeq.asStateFlow()
+
+    /** Wall-clock instant of the most recent [streamChunkSeq] edge. */
+    @Volatile var lastStreamChunkAtMs: Long = 0L
+        private set
 
     /**
-     * Counts queue replacements this app asked for.
-     *
-     * The mirror of [audibleSeq]: that one is "a stream started being heard", this one
-     * is "the user asked for a different one". Between the two edges the position bar
-     * has nothing trustworthy to show — Music Assistant starts its stream job well
-     * before this phone makes a sound, so its `elapsed_time` is already one to two
-     * seconds in by the time the first poll lands, and adopting it made a freshly
-     * tapped song appear to start a second or two along.
-     *
-     * A skip already had this covered, because [MaNowPlaying.next] freezes the bar on
-     * the way out. Playing something from the library did not go through there, so it
-     * was the one route to a new track with nothing guarding the first anchor.
-     *
-     * Raised only for a queue *replacement*. Adding to the queue does not change what
-     * is playing, so freezing the bar for it would stop the position of the current
-     * track for no reason.
+     * A seek or skip asked of this phone's own player from the media session, Android
+     * Auto or a head unit, which reaches [onMediaSeek] / [onMediaNext] /
+     * [onMediaPrevious] directly rather than through `MaNowPlaying`. The playhead
+     * hooks in here so those bars hold exactly as the screen's does.
      */
-    private val _playStartSeq = MutableStateFlow(0L)
-    val playStartSeq: StateFlow<Long> = _playStartSeq.asStateFlow()
-
-    /** Called by [com.engabd.sendpin.ma.MaRepository] when it replaces a queue. */
-    fun noteQueueReplaced() { _playStartSeq.value += 1 }
+    @Volatile var onSelfSeekRequested: ((positionMs: Long) -> Unit)? = null
+    @Volatile var onSelfSkipRequested: (() -> Unit)? = null
 
     /**
      * Bring the player socket back now if it is down — see
@@ -1113,12 +1114,21 @@ class Playback(private val app: Context) {
         pauseRemotePlayer()
     }
 
-    fun onMediaNext() = transport { it.next(playerId); engine?.expectDiscontinuity("next") }
+    fun onMediaNext() {
+        onSelfSkipRequested?.invoke()
+        transport { it.next(playerId); engine?.expectDiscontinuity("next") }
+    }
 
-    fun onMediaPrevious() = transport { it.previous(playerId); engine?.expectDiscontinuity("previous") }
+    fun onMediaPrevious() {
+        onSelfSkipRequested?.invoke()
+        transport { it.previous(playerId); engine?.expectDiscontinuity("previous") }
+    }
 
     /** [positionSec] — seconds from the start of the current item, per `players/cmd/seek`. */
-    fun onMediaSeek(positionSec: Int) = transport { it.seek(playerId, positionSec); engine?.expectDiscontinuity("seek") }
+    fun onMediaSeek(positionSec: Int) {
+        onSelfSeekRequested?.invoke(positionSec * 1000L)
+        transport { it.seek(playerId, positionSec); engine?.expectDiscontinuity("seek") }
+    }
 
     /**
      * The user moved the volume.

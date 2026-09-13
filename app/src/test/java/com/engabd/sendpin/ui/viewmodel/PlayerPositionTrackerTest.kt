@@ -241,4 +241,188 @@ class PlayerPositionTrackerTest {
     fun `an unknown queue has no position`() {
         assertEquals(null, tracker.effectiveMs("nope"))
     }
+
+    // ── Staleness: the official app's `isBefore` gate ──────────────────────────
+
+    @Test
+    fun `a reading stamped older than one already held is dropped`() {
+        tracker.setAnchor(q, elapsedMs = 60_000, capturedAtMs = now, isPlaying = true, durationMs = 300_000)
+        // A poll answer that was on the wire before the reading above: older stamp,
+        // older position. Applying it would snap the bar back.
+        tracker.setAnchor(q, elapsedMs = 55_000, capturedAtMs = now - 2_000, isPlaying = true, durationMs = 300_000)
+        now += 1_000
+        assertEquals(61_000L, tracker.effectiveMs(q))
+    }
+
+    @Test
+    fun `stamps seen while frozen still count, so a pre-seek answer cannot land after release`() {
+        tracker.setAnchor(q, elapsedMs = 60_000, capturedAtMs = now, isPlaying = true, durationMs = 300_000)
+        tracker.setOptimisticSeek(q, elapsedMs = 200_000, durationMs = 300_000)
+        // The seek landed on the server: fresh stamp, target position. Ignored by the
+        // freeze, but remembered.
+        now += 500
+        tracker.setAnchor(q, elapsedMs = 200_000, capturedAtMs = now, isPlaying = true, durationMs = 300_000)
+        tracker.confirmPlaying(q)
+        // A poll answer from *before* the seek arrives late. It must not win.
+        tracker.setAnchor(q, elapsedMs = 60_400, capturedAtMs = now - 1_000, isPlaying = true, durationMs = 300_000)
+        now += 1_000
+        assertEquals(201_000L, tracker.effectiveMs(q))
+    }
+
+    @Test
+    fun `a stamp older by more than a minute is a server clock that stepped, and is accepted`() {
+        tracker.setAnchor(q, elapsedMs = 60_000, capturedAtMs = now, isPlaying = true, durationMs = 300_000)
+        tracker.setAnchor(q, elapsedMs = 10_000, capturedAtMs = now - 120_000, isPlaying = true, durationMs = 300_000)
+        // Anchored at arrival (the capture is far too old to project from).
+        assertEquals(10_000L, tracker.effectiveMs(q))
+    }
+
+    @Test
+    fun `an unstamped reading applies and leaves the high-water alone`() {
+        tracker.setAnchor(q, elapsedMs = 60_000, capturedAtMs = now, isPlaying = true, durationMs = 300_000)
+        tracker.setAnchor(q, elapsedMs = 120_000, capturedAtMs = null, isPlaying = true, durationMs = 300_000)
+        assertEquals(120_000L, tracker.effectiveMs(q))
+        // The next stamped reading newer than the first still goes through.
+        now += 1_000
+        tracker.setAnchor(q, elapsedMs = 121_000, capturedAtMs = now, isPlaying = true, durationMs = 300_000)
+        assertEquals(121_000L, tracker.effectiveMs(q))
+    }
+
+    // ── Stalled server clock: MA 2.10's short-track bug ───────────────────────
+
+    @Test
+    fun `the same elapsed under a newer stamp is a stalled clock, and the bar keeps ticking`() {
+        // MA reports 0 with a fresh stamp every second for a track it sent in one burst.
+        tracker.setAnchor(q, elapsedMs = 0, capturedAtMs = now, isPlaying = true, durationMs = 30_000, itemId = "a")
+        now += 5_000
+        tracker.setAnchor(q, elapsedMs = 0, capturedAtMs = now, isPlaying = true, durationMs = 30_000, itemId = "a")
+        assertEquals(5_000L, tracker.effectiveMs(q))
+        now += 5_000
+        tracker.setAnchor(q, elapsedMs = 0, capturedAtMs = now, isPlaying = true, durationMs = 30_000, itemId = "a")
+        assertEquals(10_000L, tracker.effectiveMs(q))
+    }
+
+    @Test
+    fun `a seek target pinned on a short track holds a ticking bar too`() {
+        tracker.setAnchor(q, elapsedMs = 10_000, capturedAtMs = now, isPlaying = true, durationMs = 25_000, itemId = "a")
+        now += 4_000
+        tracker.setAnchor(q, elapsedMs = 10_000, capturedAtMs = now, isPlaying = true, durationMs = 25_000, itemId = "a")
+        assertEquals(14_000L, tracker.effectiveMs(q))
+    }
+
+    @Test
+    fun `a changed elapsed is always news`() {
+        tracker.setAnchor(q, elapsedMs = 120_300, capturedAtMs = now, isPlaying = true, durationMs = 300_000, itemId = "a")
+        now += 2_000
+        // Someone restarted the track from another controller.
+        tracker.setAnchor(q, elapsedMs = 0, capturedAtMs = now, isPlaying = true, durationMs = 300_000, itemId = "a")
+        assertEquals(0L, tracker.effectiveMs(q))
+    }
+
+    @Test
+    fun `a new item reporting the same value is news`() {
+        // Two short tracks in a row, both pinned at zero by the server.
+        tracker.setAnchor(q, elapsedMs = 0, capturedAtMs = now, isPlaying = true, durationMs = 20_000, itemId = "a")
+        now += 19_000
+        tracker.setAnchor(q, elapsedMs = 0, capturedAtMs = now, isPlaying = true, durationMs = 22_000, itemId = "b")
+        assertEquals(0L, tracker.effectiveMs(q))
+    }
+
+    @Test
+    fun `a projection that reached the end accepts the same value again`() {
+        // Repeat-one of a pinned short track: the restart reports the value it was
+        // pinned on, under the same item id.
+        tracker.setAnchor(q, elapsedMs = 0, capturedAtMs = now, isPlaying = true, durationMs = 20_000, itemId = "a")
+        now += 21_000
+        assertTrue(tracker.isAtEnd(q))
+        tracker.setAnchor(q, elapsedMs = 0, capturedAtMs = now, isPlaying = true, durationMs = 20_000, itemId = "a")
+        assertEquals(0L, tracker.effectiveMs(q))
+    }
+
+    @Test
+    fun `paused readings never read as a stall`() {
+        tracker.setAnchor(q, elapsedMs = 40_000, capturedAtMs = now, isPlaying = false, durationMs = 300_000, itemId = "a")
+        now += 5_000
+        // MA freezes the stamp while paused, so this is the "not news" path — but
+        // even a refreshed stamp must not tick a paused bar.
+        tracker.setAnchor(q, elapsedMs = 40_000, capturedAtMs = now, isPlaying = false, durationMs = 300_000, itemId = "a")
+        now += 5_000
+        assertEquals(40_000L, tracker.effectiveMs(q))
+    }
+
+    // ── setPlaying ───────────────────────────────────────────────────────────
+
+    @Test
+    fun `setPlaying snapshots the projection on a transition`() {
+        tracker.setAnchor(q, elapsedMs = 10_000, capturedAtMs = now, isPlaying = true, durationMs = 300_000)
+        now += 3_000
+        tracker.setPlaying(q, false)
+        now += 10_000
+        assertEquals(13_000L, tracker.effectiveMs(q))
+        tracker.setPlaying(q, true)
+        now += 1_000
+        assertEquals(14_000L, tracker.effectiveMs(q))
+    }
+
+    @Test
+    fun `setPlaying is ignored while frozen`() {
+        tracker.setAnchor(q, elapsedMs = 10_000, capturedAtMs = now, isPlaying = true, durationMs = 300_000)
+        tracker.setOptimisticSeek(q, elapsedMs = 200_000, durationMs = 300_000)
+        // The server flickers the player to paused around the stream rebuild.
+        tracker.setPlaying(q, false)
+        assertTrue(tracker.isFrozen(q))
+        tracker.confirmPlaying(q)
+        now += 1_000
+        assertEquals(201_000L, tracker.effectiveMs(q))
+    }
+
+    @Test
+    fun `a reading seen while frozen is not news when the freeze lifts`() {
+        tracker.setAnchor(q, elapsedMs = 60_000, capturedAtMs = now, isPlaying = true, durationMs = 300_000)
+        tracker.setOptimisticSeek(q, elapsedMs = 127_000, durationMs = 300_000)
+        // MA's transient after a seek: the old stream's elapsed plus the offset.
+        now += 100
+        val bogusStamp = now
+        tracker.setAnchor(q, elapsedMs = 168_205, capturedAtMs = bogusStamp, isPlaying = true, durationMs = 300_000)
+        tracker.confirmPlaying(q)
+        // The poll restates the same reading a moment later. It must not flash the bar.
+        now += 100
+        tracker.setAnchor(q, elapsedMs = 168_205, capturedAtMs = bogusStamp, isPlaying = true, durationMs = 300_000)
+        assertEquals(127_100L, tracker.effectiveMs(q))
+        // The server then repeats the seek offset while it is not yet counting: not
+        // news either. Its first real reading is.
+        now += 500
+        tracker.setAnchor(q, elapsedMs = 127_000, capturedAtMs = now, isPlaying = true, durationMs = 300_000)
+        assertEquals(127_600L, tracker.effectiveMs(q))
+        now += 1_000
+        tracker.setAnchor(q, elapsedMs = 128_300, capturedAtMs = now, isPlaying = true, durationMs = 300_000)
+        assertEquals(128_300L, tracker.effectiveMs(q))
+    }
+
+    @Test
+    fun `the held value repeated after release is a clock not yet counting`() {
+        // A seek into the last ten seconds of a track: MA sends the remainder in one
+        // burst and never starts counting, so it reports the seek offset for ever.
+        tracker.setAnchor(q, elapsedMs = 60_000, capturedAtMs = now, isPlaying = true, durationMs = 245_000, itemId = "a")
+        tracker.setOptimisticSeek(q, elapsedMs = 235_000, durationMs = 245_000)
+        now += 100
+        tracker.setAnchor(q, elapsedMs = 236_140, capturedAtMs = now, isPlaying = true, durationMs = 245_000, itemId = "a")
+        tracker.confirmPlaying(q)
+        now += 4_500
+        tracker.setAnchor(q, elapsedMs = 235_000, capturedAtMs = now, isPlaying = true, durationMs = 245_000, itemId = "a")
+        assertEquals(239_500L, tracker.effectiveMs(q))
+        now += 5_000
+        tracker.setAnchor(q, elapsedMs = 235_000, capturedAtMs = now, isPlaying = true, durationMs = 245_000, itemId = "a")
+        assertEquals(244_500L, tracker.effectiveMs(q))
+    }
+
+    @Test
+    fun `with nothing seen while frozen the held value is still recognised`() {
+        tracker.setAnchor(q, elapsedMs = 60_000, capturedAtMs = now, isPlaying = true, durationMs = 245_000, itemId = "a")
+        tracker.setOptimisticSeek(q, elapsedMs = 235_000, durationMs = 245_000)
+        tracker.confirmPlaying(q)
+        now += 3_000
+        tracker.setAnchor(q, elapsedMs = 235_000, capturedAtMs = now, isPlaying = true, durationMs = 245_000, itemId = "a")
+        assertEquals(238_000L, tracker.effectiveMs(q))
+    }
 }

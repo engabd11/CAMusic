@@ -3,15 +3,16 @@ package com.engabd.sendpin.protocol
 import com.engabd.sendpin.audio.SendspinPlaybackSupport
 
 /**
- * What to report in `client/state`, and whether to mute, while the clock filter is
- * still converging.
+ * Whether to mute the output while the clock filter is still converging.
  *
- * The spec is explicit that a player which cannot yet place audio on the shared
- * timeline must say so — *"clients experiencing synchronization issues should send
- * `state: 'error'`, mute audio output, and continue buffering until synchronized"*.
- * Reporting `synchronized` from the moment the socket opens, as this used to,
- * tells the server the player is ready to join a group while its offset is still
- * seconds wide: in a group that is audible, and it is the listener who finds out.
+ * Local output policy only. This used to also decide what `client/state` said —
+ * `state: "error"` until the clock was ready, and `available: false` before it had
+ * ever been — on the spec's advice that a player "experiencing synchronization
+ * issues" should say so. Music Assistant's answer to both was to rebuild or stop
+ * the stream, and the official Music Assistant app never sends either; see
+ * [ClientStatePayload]. What remains here is the part that was always right: a
+ * player that cannot yet place a sample on the shared timeline should not be heard
+ * placing it wrongly.
  *
  * Pure, like [SendspinPlaybackSupport.HeadGate], so it can be tested without a
  * socket or a clock.
@@ -28,23 +29,15 @@ object SyncGate {
      */
     const val MAX_MUTE_MS = SendspinPlaybackSupport.HeadGate.MAX_STALL_MS
 
-    enum class Report {
-        /** The clock is trustworthy — normal operation. */
-        SYNCHRONIZED,
-
-        /** Not yet placed on the shared timeline. */
-        ERROR,
-    }
-
-    data class Decision(val report: Report, val muted: Boolean)
+    data class Decision(val muted: Boolean)
 
     fun decide(clockReady: Boolean, unreadyMs: Long, maxMuteMs: Long = MAX_MUTE_MS): Decision = when {
-        clockReady -> Decision(Report.SYNCHRONIZED, muted = false)
-        unreadyMs < maxMuteMs -> Decision(Report.ERROR, muted = true)
-        // Past the deadline the offset is not coming. Keep telling the server the
-        // truth, but stop muting: a solo player that never converges has nothing to
-        // be out of step with, and permanent silence is a worse answer than audio
-        // that is merely ungrouped. Mirrors HeadGate's PLAY_NOW escape exactly.
-        else -> Decision(Report.ERROR, muted = false)
+        clockReady -> Decision(muted = false)
+        unreadyMs < maxMuteMs -> Decision(muted = true)
+        // Past the deadline the offset is not coming. Stop muting: a solo player that
+        // never converges has nothing to be out of step with, and permanent silence
+        // is a worse answer than audio that is merely ungrouped. Mirrors HeadGate's
+        // PLAY_NOW escape exactly.
+        else -> Decision(muted = false)
     }
 }

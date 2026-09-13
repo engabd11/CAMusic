@@ -62,4 +62,52 @@ class MaEventTest {
         val e = event("""{"event": "queue_items_updated"}""")
         assertNull(e?.objectId)
     }
+
+    @Test
+    fun `the playhead events are told apart`() {
+        assertTrue(event("""{"event": "queue_updated"}""")!!.isQueueUpdated)
+        assertTrue(event("""{"event": "queue_added"}""")!!.isQueueUpdated)
+        assertTrue(event("""{"event": "queue_items_updated"}""")!!.isQueueUpdated)
+        assertFalse(event("""{"event": "queue_time_updated"}""")!!.isQueueUpdated)
+        assertTrue(event("""{"event": "queue_time_updated"}""")!!.isQueueTime)
+        assertTrue(event("""{"event": "player_updated"}""")!!.isPlayerUpdated)
+        assertFalse(event("""{"event": "player_updated"}""")!!.isQueueUpdated)
+    }
+
+    @Test
+    fun `queue_time_updated carries elapsed seconds`() {
+        val e = event("""{"event": "queue_time_updated", "object_id": "kitchen", "data": 12.345}""")!!
+        assertEquals(12_345L, MaParse.queueTimeMs(e))
+        assertNull(MaParse.queueTimeMs(event("""{"event": "queue_time_updated", "data": {}}""")!!))
+    }
+
+    @Test
+    fun `queue_updated carries a whole queue`() {
+        val e = event(
+            """{"event": "queue_updated", "object_id": "kitchen", "data": {
+                "queue_id": "kitchen", "state": "playing", "elapsed_time": 42.5,
+                "elapsed_time_last_updated": 1757700000.25,
+                "current_item": {"queue_item_id": "item-9", "duration": 200}
+            }}"""
+        )!!
+        val q = MaParse.queue(e.data!!.jsonObject)!!
+        assertEquals("kitchen", q.queueId)
+        assertTrue(q.isPlaying)
+        assertEquals(42_500L, q.elapsedMs)
+        assertEquals(1757700000.25, q.elapsedTimeLastUpdated)
+        assertEquals("item-9", q.currentQueueItemId)
+        assertEquals(200_000L, q.currentItemDurationMs)
+    }
+
+    @Test
+    fun `player_updated carries a whole player`() {
+        val e = event(
+            """{"event": "player_updated", "object_id": "up1", "data": {
+                "player_id": "up1", "playback_state": "paused", "display_name": "Kitchen"
+            }}"""
+        )!!
+        val p = MaParse.player(e.data!!.jsonObject)!!
+        assertEquals("up1", p.playerId)
+        assertFalse(p.isPlaying)
+    }
 }

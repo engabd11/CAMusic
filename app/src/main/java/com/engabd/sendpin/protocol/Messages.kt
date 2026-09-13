@@ -93,6 +93,16 @@ data class SendspinClientHello(
 
 @Serializable
 data class PlayerStateInfo(
+    /**
+     * Always `"synchronized"`, exactly as the official Music Assistant app reports it
+     * (its `PlayerStateValue.ERROR` exists and is never sent). The spec reserves
+     * `"error"` for an unrecoverable player; a clock filter still converging is not
+     * that, and telling the server otherwise was answered with stream rebuilds.
+     * Whether *this* device can place audio on the shared timeline yet is local
+     * output policy — [SyncGate] decides the mute, and nothing about it goes on the
+     * wire.
+     */
+    val state: String = "synchronized",
     val volume: Int = 100,
     val muted: Boolean = false,
     @SerialName("static_delay_ms") val staticDelayMs: Int = 0,
@@ -100,22 +110,18 @@ data class PlayerStateInfo(
 
 @Serializable
 data class ClientStatePayload(
-    val state: String = "synchronized",
     val player: PlayerStateInfo = PlayerStateInfo(),
     /**
-     * Whether this client is available to receive a stream.
+     * Whether this client is available to receive a stream. Always true, as the
+     * official app sends it.
      *
-     * Not a constant, and the spec is unusually direct about why: *"a player
-     * reports `available: true` only after it has established clock
-     * synchronization"*, and `true` means *"client is operational and ready to
-     * participate in playback; for a player or source this means its clock is
-     * synchronized"*. Music Assistant uses it to decide whether this player can be
-     * put in a group — so answering `true` from the moment the socket opens invites
-     * the server to add a speaker that cannot yet place a sample on the shared
-     * timeline, which is a group that sounds wrong from its first second.
-     *
-     * See [SendspinClient.sendClientState] for the one place that stops telling the
-     * truth about it, and why.
+     * This used to follow the clock filter ("`true` only once synchronised", which
+     * the spec does say), and reset to false on every socket open. What the server
+     * actually does with `available: false` is `quiesce_to_solo_stopped()`: it
+     * drops the player from its group and stops its playback. So every reconnect
+     * mid-track — a Wi-Fi blip, doze — stopped the music, and a clock hiccup after
+     * a stream start could too. A player that is not yet in sync is muted locally
+     * instead (see [SyncGate]); the server is never told it went away.
      */
     val available: Boolean = true,
 )
