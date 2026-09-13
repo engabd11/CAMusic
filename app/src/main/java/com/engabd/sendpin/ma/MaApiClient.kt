@@ -75,18 +75,38 @@ class MaApiClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
     @Volatile private var lastDialAtMs = 0L
 
     fun connect(url: String, token: String? = null, username: String? = null, password: String? = null) {
+        val nextWsUrl = url.trimEnd('/').replace("http://", "ws://").replace("https://", "wss://") + "/ws"
+        val nextLogin = if (!username.isNullOrBlank() && !password.isNullOrBlank()) username to password else null
+        // Already on this server with these credentials, and the socket is up or on
+        // its way: nothing to do. Every view model that needs Music Assistant calls
+        // this from its `init`, and the settings page calls it on every save and
+        // every library switch — each of those used to open a *new* socket and
+        // forget the old one. On a phone that had been through onboarding and a few
+        // library switches, six sockets to one server was the norm: one live, the
+        // rest never authenticated (the handshake answers through [ws], which by then
+        // pointed at a newer socket) but still pinged every thirty seconds and still
+        // holding a thread each, for the life of the process.
+        val same = nextWsUrl == wsUrl && nextLogin == login && token == this.token
+        if (same && !userClosed && (_state.value == State.CONNECTED || _state.value == State.CONNECTING)) return
         serverUrl = url
         this.token = token
-        this.login = if (!username.isNullOrBlank() && !password.isNullOrBlank()) username to password else null
+        this.login = nextLogin
         _state.value = State.CONNECTING
         userClosed = false; attempt = 0; reconnectJob?.cancel()
-        wsUrl = url.trimEnd('/').replace("http://", "ws://").replace("https://", "wss://") + "/ws"
+        wsUrl = nextWsUrl
         dial()
     }
 
-    /** Open a socket to [wsUrl], recording when — see [reconnectNow]'s rate limit. */
+    /**
+     * Open a socket to [wsUrl], recording when — see [reconnectNow]'s rate limit.
+     *
+     * Closes whatever socket was there first. OkHttp never closes a WebSocket on its
+     * own: one that is merely no longer referenced stays open, pinging, until the
+     * server drops it — and Music Assistant does not.
+     */
     private fun dial() {
         lastDialAtMs = android.os.SystemClock.elapsedRealtime()
+        ws?.close(1000, "redial")
         ws = http.newWebSocket(Request.Builder().url(wsUrl).build(), listener)
     }
 
@@ -157,15 +177,23 @@ class MaApiClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
     }
 
     private val listener = object : WebSocketListener() {
+        // Every callback checks that it is about the *current* socket. A socket this
+        // client has moved on from — closed by [dial] or [disconnect] — still reports
+        // its own closing, and acting on that used to fail every request in flight on
+        // the new socket and schedule a reconnect that replaced it, orphaning a
+        // healthy connection to open one more.
         override fun onMessage(webSocket: WebSocket, text: String) {
+            if (webSocket !== ws) return
             try { handle(text) } catch (e: Exception) { Log.e("MaApi", "handle: ${e.message}") }
         }
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+            if (webSocket !== ws) return
             _state.value = State.ERROR
             failPending(t.message ?: "Connection failed")
             scheduleReconnect()
         }
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+            if (webSocket !== ws) return
             if (_state.value != State.ERROR) _state.value = State.DISCONNECTED
             failPending("Connection closed")
             scheduleReconnect()
