@@ -20,6 +20,7 @@ class MessagesTest {
                 playerV1Support = PlayerV1Support(
                     supportedFormats = listOf(AudioFormatSpec("flac", 2, 48000, 16))
                 ),
+                trustLevel = "none",
                 supportedPairMethods = listOf(PairMethodDescriptor("pairing_psk", listOf("device"))),
                 unpairedAccess = UnpairedAccess(true),
             )
@@ -43,10 +44,16 @@ class MessagesTest {
     }
 
     @Test
-    fun `legacy hello adds client id and version`() {
+    fun `legacy hello is the pre-spec shape exactly`() {
         val s = json.encodeToString(SendspinClientHello(payload = ClientHelloPayload(name = "P", clientId = "abc", version = 1)))
         assertTrue("\"client_id\":\"abc\"" in s)
         assertTrue("\"version\":1" in s)
+        // A Music Assistant 2.10 in transition mode reads unpaired_access on a cleartext
+        // hello as a guest approval, after which its downgrade protection refuses the
+        // id unencrypted — so none of the encrypted-only fields may appear.
+        assertTrue("trust_level" !in s, s)
+        assertTrue("supported_pair_methods" !in s, s)
+        assertTrue("unpaired_access" !in s, s)
     }
 
     @Test

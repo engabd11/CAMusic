@@ -888,20 +888,16 @@ class SendspinClient(
 
     // --- Hello -------------------------------------------------------------------------
 
-    private fun helloPayload(trustLevel: String) = ClientHelloPayload(
-        name = clientName,
-        deviceInfo = deviceInfo,
-        playerV1Support = PlayerV1Support(supportedFormats = supportedFormats),
-        trustLevel = trustLevel,
-        supportedPairMethods = if (store.pairingPskEnabled) {
-            listOf(PairMethodDescriptor(method = ActivationPolicy.PAIR_METHOD_PSK, locations = listOf("device")))
-        } else emptyList(),
-        unpairedAccess = UnpairedAccess(store.unpairedAccessEnabled),
-    )
-
+    /** The pre-spec hello: id and version inside, none of the trust and pairing fields. */
     private fun sendLegacyHello(ws: WebSocket) {
         val hello = SendspinClientHello(
-            payload = helloPayload("none").copy(clientId = store.identity.peerId, version = 1),
+            payload = ClientHelloPayload(
+                name = clientName,
+                deviceInfo = deviceInfo,
+                playerV1Support = PlayerV1Support(supportedFormats = supportedFormats),
+                clientId = store.identity.peerId,
+                version = 1,
+            ),
         )
         val queued = ws.send(json.encodeToString(hello))
         dbg("sent legacy client/hello (queued=$queued)")
@@ -909,7 +905,19 @@ class SendspinClient(
 
     private fun sendEncryptedHello() {
         val trust = if (matched?.category == PskCategory.LONG_TERM) "user" else "none"
-        val queued = sendJson(json.encodeToString(SendspinClientHello(payload = helloPayload(trust))))
+        val hello = SendspinClientHello(
+            payload = ClientHelloPayload(
+                name = clientName,
+                deviceInfo = deviceInfo,
+                playerV1Support = PlayerV1Support(supportedFormats = supportedFormats),
+                trustLevel = trust,
+                supportedPairMethods = if (store.pairingPskEnabled) {
+                    listOf(PairMethodDescriptor(method = ActivationPolicy.PAIR_METHOD_PSK, locations = listOf("device")))
+                } else emptyList(),
+                unpairedAccess = UnpairedAccess(store.unpairedAccessEnabled),
+            ),
+        )
+        val queued = sendJson(json.encodeToString(hello))
         phase = Phase.ACTIVATE
         dbg("sent client/hello (trust=$trust, queued=$queued)")
     }
@@ -997,6 +1005,8 @@ class SendspinClient(
         dbg("legacy server/hello → CONNECTED ✓ (${serverName ?: "?"}, roles=$roles)")
         applyRoles(roles)
         becomeReady()
+        // The legacy server wants the initial state just the same, within its 5 s.
+        if (playerActive) scheduleInitialState()
     }
 
     private fun onServerActivate(payload: ServerActivatePayload) {
@@ -1031,8 +1041,14 @@ class SendspinClient(
                 activities = d.activities
                 applyRoles(d.activeRoles)
                 _security.value = Security(serverId ?: "?", serverName, session.category, encrypted = true)
+                // Also true after an in-band re-handshake, whose hello exchange runs
+                // the phase back through HELLO/ACTIVATE: the session is re-established.
                 val first = phase != Phase.READY
-                dbg("server/activate activities=${d.activities} roles=${d.activeRoles}" + if (first) " → CONNECTED ✓" else "")
+                val wasConnected = _state.value == State.CONNECTED
+                dbg(
+                    "server/activate activities=${d.activities} roles=${d.activeRoles}" +
+                        when { first && !wasConnected -> " → CONNECTED ✓"; first -> " (session re-established)"; else -> "" },
+                )
                 if (first) becomeReady()
                 if (pairing) {
                     startPairingAttempt(session)
@@ -1166,10 +1182,10 @@ class SendspinClient(
         val ws = webSocket
         webSocket = null
         sendGoodbye("unpaired")
+        // Not a user close, so onClosed reconnects: Music Assistant expects the device
+        // to "reconnect as unpaired" after an unpair, and the next handshake is offered
+        // the Sentinel PSK.
         ws?.close(1000, "unpaired")
-        // Music Assistant expects the device to "reconnect as unpaired" after an unpair.
-        attempt = 0
-        scheduleReconnect()
     }
 
     // --- Timers --------------------------------------------------------------------------

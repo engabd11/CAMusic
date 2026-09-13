@@ -1,163 +1,136 @@
-# Sendspin protocol — alignment target (what Music Assistant actually speaks)
+# Sendspin protocol — what the app speaks, and what Music Assistant does with it
 
-**Updated 2026-07-27 after studying two working, permissively-licensed clients:**
-- **massdroid** (`github.com/sfortis/massdroid_native`, **MIT**) — native Android/Kotlin MA player.
-- **MA mobile app** (`github.com/music-assistant/mobile-app`, **Apache 2.0**) — MA's own KMP app.
+**Updated 2026-09-14** against the published specification
+(sendspin-audio.com/build/spec), `aiosendspin` 9.1.1 (client *and* server, the version
+Music Assistant 2.10.x pins), the official MA mobile app, and a live MA 2.10.3. The
+earlier version of this file said MA's provider did not use the encrypted protocol; that
+was true of `aiosendspin` 6.0.5 (MA ≤ 2.9) and stopped being true with 2.10.
 
-Both are compatible with nowdroid's MIT license (attribute in ported files). They are the ground
-truth: **no packet capture and no Noise library are needed.**
+The implementation lives in `protocol/` (`SendspinClient`, `Messages`, `ActivationPolicy`,
+`ManagementHandler`) and `protocol/noise/` (X25519, the Noise KKpsk2 responder, transport
+framing, keys and PSKs, the pairing token, `PairingStore`).
 
-## The key correction
+## The session
 
-The published spec (`github.com/Sendspin/spec`) describes a fuller, **Noise-secured** protocol
-(`client/init` → Noise KKpsk2, Curve25519 ids, port 8927, binary type-byte framing). **Music
-Assistant's current built-in Sendspin provider does NOT use that.** What both working clients speak
-is a **plain WebSocket + JSON** protocol on MA's own web port:
+```
+ws://<ma-host>:8927/sendspin                      plain ws://, no auth (MA's documented endpoint)
+client/init {client_id, version:1, suite}         cleartext text frame
+server/init {server_id, version:1}                cleartext
+noise/handshake {data}   (message 1, server→)     cleartext; payload names the psk_id
+noise/handshake {data}   (message 2, →server)     cleartext; payload "{}"
+── every frame from here is a WebSocket binary frame holding a Noise ciphertext ──
+server/hello {name}
+client/hello {name, device_info, supported_roles, player@v1_support,
+              trust_level, supported_pair_methods, unpaired_access}
+server/activate {activities, active_roles?, pairing?}
+client/time ⇄ server/time                          200 ms bursts until the filter is ready
+client/state {available:true, player:{volume, muted, static_delay_ms,
+              required_lead_time_ms, min_buffer_ms, supported_commands}}
+stream/start → binary type 4 chunks → stream/clear / stream/end …
+```
 
-- Connect: `ws://<ma-host>:<ma-port>/sendspin` (MA default port **8095**; `wss://` for TLS). The
-  mDNS `_sendspin-server._tcp` record still locates a server, but MA integrates the endpoint on its
-  main port, and a standalone player can also just take a host:port.
-- **Text** WebSocket frames = JSON protocol messages. **Binary** frames = audio chunks. (No Noise, no
-  per-frame type byte — the WS frame kind *is* the discriminator.)
-- `client_id` is a **plain stable string** (a per-install UUID is fine — nowdroid's `PlayerIdentity`
-  is OK; drop the Curve25519 idea).
+- **Identity.** `client_id` is the base64url X25519 public key of a keypair the phone
+  generates once (`PairingStore`, `sendspin_pairing` prefs). It is also the Music
+  Assistant player id, so a new key is a new player in MA — which is what "Register
+  again as a new player" is for.
+- **Noise.** `Noise_KKpsk2_25519_AESGCM_SHA256`; the server is the initiator whoever
+  opened the socket. The prologue is the exact bytes of `client/init` + `server/init`.
+  Message 1's payload carries the `psk_id`; the phone looks it up and mixes that PSK in
+  before message 2. Both suites are implemented; AES-GCM is picked because every phone
+  accelerates it. X25519 is hand-rolled (RFC 7748 vectors in `X25519Test`) because the
+  platform's `XDH` only exists from API 33.
+- **Framing.** Decrypted plaintext starts with a type byte: `0` JSON, `4` audio
+  (`[4][int64 BE µs][codec data]`, the same header as before), `2`/`3` fragments of a
+  message larger than 65 518 bytes (a 24/192 PCM chunk is). Frames are decrypted on
+  OkHttp's reader thread in wire order, and every send goes through one lock, because
+  the transport counters are the replay protection.
+- **PSK categories.** *Sentinel* (a published constant — an unpaired "guest" session),
+  the phone's own *Pairing PSK* (only during a pairing), or a *long-term* record from an
+  earlier pairing. Which one matched bounds what `server/activate` may declare —
+  `ActivationPolicy` is the spec's table, with its ordered rejections
+  (`pairing_required` before `unauthorized`) and `pair/abort method_not_supported`.
+- **Pairing.** Only the Pairing PSK method (the one the spec requires; the PIN methods
+  are optional and need a CPace PAKE). The operator pastes the phone's token
+  (`SP:0…`, Settings › This phone › Pairing and trust) into MA's player *Setup*. MA
+  re-handshakes onto the Pairing PSK, sends `server/activate {activities:[pairing]}`,
+  the phone answers `client/pair-finalize {long_term_psk}`, persists the record only on
+  `server/pair-finalize`, and MA re-handshakes again onto the new long-term PSK, after
+  which the hello says `trust_level: user`. Measured at 170 ms end to end.
+- **Re-handshake.** Same state machine, prologue = the previous handshake hash, message
+  2 still under the old keys; handled on the socket thread under the send lock so
+  nothing of ours goes out under the old keys after it. Then `server/hello` →
+  `client/hello` → `server/activate` again, and the full player state is re-sent.
+- **Management.** With `management` in the activities (long-term paired only), the
+  server may list/add/remove records and read/patch the pairing config; every request
+  gets one `management/result`. No PIN methods, so `open-pairing-window` is `invalid`
+  and the PIN objects are absent from the config. `server/unpair` drops the record,
+  says goodbye `unpaired`, and reconnects — MA expects the device to "reconnect as
+  unpaired".
+- **State.** `available: true` goes out once, when the clock filter is fit to schedule
+  against (`isReadyForPlaybackStart`, ≈100 ms with a persisted seed, ≈1.6 s cold),
+  bounded by the server's 5 s initial-state window. It is *not* reset to false on a
+  reconnect: the server answers `available: false` by moving the player to a solo
+  stopped group. `required_lead_time_ms` = 400 and `min_buffer_ms` = 250 come from the
+  engine's real needs (`SendspinNativeEngine.REQUIRED_LEAD_TIME_MS`); with them the
+  first chunk lands with ~70 ms to spare instead of a trimmed intro. No undefined
+  fields (the old `state: "synchronized"` is gone); no periodic re-report — volume,
+  mute, trim and timing changes each send the full player object.
+- **Streams.** A `stream/start` on the open stream reconfigures without clearing
+  buffers (`SendspinPlaybackEngine.reconfigure`); re-sent chunks (at or behind the last
+  enqueued timestamp) are dropped. A stream that had to start on the local anchor is
+  re-gated onto the server timeline the moment the filter converges (one-shot resync).
 
-So nowdroid's original plain-WS assumption was basically right; the work is matching the exact
-message shapes, formats, and clock behaviour below.
+## The legacy dialect (MA ≤ 2.9, `aiosendspin` 6.0.5)
 
-## Handshake
+Picked from MA's unauthenticated `/info`: `schema_version` ≥ 45 (MA 2.10+) is
+encrypted, below is legacy, unknown is encrypted. The same gate the official app uses;
+never probed, never downgraded after a failed handshake. Legacy is the pre-spec shape
+exactly — `client/hello` first with `client_id` and `version` inside, answered by a
+`server/hello` carrying `active_roles`, text frames for JSON, raw binary for audio — and
+**must not** carry `trust_level`, `supported_pair_methods` or `unpaired_access`: see
+the quirks.
 
-**Direct / proxy (WebSocket):**
-1. Open `ws://host:8095/sendspin`.
-2. *(proxy/auth mode only)* send `{ "type":"auth", "token":"<token>", "client_id":"<id>" }` →
-   receive `{ "type":"auth_ok" }` (or `{ "type":"auth_error", "message":"…" }`). On a LAN direct
-   connection there may be no token step.
-3. Send `client/hello` (payload below) → receive `server/hello`.
-4. Time-sync loop (`client/time`/`server/time`) begins; `client/state` reports availability.
-5. `stream/start` → binary audio frames; `server/state` carries now-playing metadata;
-   `server/command` carries volume/mute; `stream/clear`/`stream/end` bound tracks.
+## Endpoints
 
-**Remote (WebRTC):** MA opens a `sendspin` data channel alongside the `ma-api` channel; same JSON
-protocol over the channel, **no per-channel auth** (inherited). (Later phase — direct WS first.)
+`ws://host:8927/sendspin` first (what the MA docs give for clients; no auth). MA's
+`:8095/sendspin` is an authenticated proxy to the same server (`auth` + token, then
+`auth_ok`, then the identical protocol) and is the fallback when only the web port is
+reachable. Both are the same server object and clock.
 
-## Messages (envelope: `{ "type", "payload" }`)
+## Music Assistant behaviours worth knowing (2.10.3)
 
-- `auth` → `{ token, client_id }` *(proxy only)*; replies `auth_ok` / `auth_error{message}`.
-- `client/hello` → `{ client_id, name, version, supported_roles:["player@v1","metadata@v1"],
-  device_info{product_name,manufacturer,software_version}, player@v1_support{supported_formats[],
-  buffer_capacity, supported_commands:["volume","mute"]} }`
-- `server/hello` → `{ server_id, name, version, active_roles[], connection_reason:"discovery"|"playback" }`
-- `client/time` → `{ client_transmitted }` (µs)
-- `server/time` → `{ client_transmitted, server_received, server_transmitted }` (client stamps its
-  own **T4 receive time** locally, at the WS onMessage callback — see Clock)
-- `client/state` → `{ state:"synchronized", player{ volume, muted, static_delay_ms } }`
-- `server/state` → `{ metadata{ title, artist, album, album_artist, artwork_url, year, track,
-  progress{ track_progress, track_duration, playback_speed }, repeat, shuffle, timestamp } }`
-- `stream/start` → `{ player{ codec, sample_rate, channels, bit_depth, codec_header? } }`
-- `stream/request-format` → `{ player{ codec, sample_rate, bit_depth, channels } }` (client asks for
-  a format change; server replies with a new `stream/start`)
-- `stream/clear` (no payload) — seek / track jump; `stream/end` (no payload) — end of stream
-- `server/command` → `{ player{ command, volume?, mute? } }` (e.g. `command:"volume"`)
-- `group/update` → `{ playback_state:"playing"|"stopped", group_id, group_name }`
-- `client/goodbye` → `{ reason }` — `shutdown` | `restart` (warm, ~30 s resume grace) | `user_request`
+- **Guest access is auto-approved.** A client advertising `unpaired_access.enabled`
+  gets `trust_unpaired` on first contact (`_auto_trust_guest_access`); the first
+  `server/activate` may carry no roles and a second one a few ms later carries them.
+- **`sendspin/pair_web_player`** (how the official app pairs silently through the MA
+  login) only works for clients MA classes as web players — `device_info.product_name`
+  in "Mobile Application" / "Web Browser" / "Web Player" / "PWA", or manufacturer
+  "Music Assistant" — and those players are hidden, private and not exposed to Home
+  Assistant. CAMusic stays a room player, so it pairs by token instead.
+- **Downgrade protection bites legacy clients.** A cleartext hello that carries
+  `unpaired_access` is *trusted* like a guest, and MA then refuses that client id
+  unencrypted for ever after ("Rejecting unencrypted connection claiming known
+  client"). Hence the legacy hello is the bare pre-spec shape.
+- **A phone that loses its half of a pairing** cannot reconnect while MA still holds
+  its half (the handshake fails on an unknown `psk_id`); the fix is MA's *Unpair*,
+  which is why the app offers no "forget pairings" button.
+- `allow_legacy_clients` (hidden, default on, "temporary") is what still admits the
+  cleartext dialect; MA shows such a player as "connected without encryption".
+- MA sends `set_static_delay 0` right after every initial state; the client's echo
+  guard keeps a locally negative trim from being erased by it.
 
-## Audio formats
+## Verification recipe
 
-`codec ∈ {flac, opus, pcm}`, `sample_rate` (default **48000**), `channels` (2), `bit_depth` (**16**),
-optional `codec_header` (base64, for FLAC). Battle-tested choices from massdroid:
-- **List FLAC first** in `supported_formats` — it is the server's fallback order when no preferred
-  format override is set; listing opus first makes grouped sync fall back to opus.
-- Keep everything **48 kHz / 16-bit** for grouped sync + Android `AudioTrack` PCM16 (no resample in
-  the timing path). 24-bit hi-res is a later, opt-in phase.
-- `buffer_capacity` ≈ a few MB (massdroid uses 4 MB ≈ 30 s FLAC) so a throughput dip rides the buffer.
-
-## Clock sync (Kalman)
-
-NTP 4-point exchange feeding a **2-D Kalman filter (offset + drift)** — a port of the Sendspin
-reference `sendspin-js/time-filter.ts` (the same filter massdroid ships). Critical detail: **stamp T4
-(client-received) at the WebSocket `onMessage` callback**, before deserialize/coroutine dispatch —
-capturing it later biases the offset low and the player plays late. Don't report
-`client/state` available / start grouped playback until the filter has converged (≥ ~8 low-RTT
-samples, error ≤ ~5 ms). `ClockKalmanFilter.kt` implements this (pure Kotlin, JVM-tested).
-
-## Gotchas (learned from the reference)
-
-- **Flexible duration**: `track_duration`/`track_progress` can be `123456` **or** `123456.0` (MA
-  multiplies a float duration by 1000 without an int cast). A strict `Long` serializer drops the whole
-  `server/state` and triggers reconnect loops — use a serializer that accepts both.
-- **Ordered stream**: control JSON and binary audio share one WebSocket; process them through **one
-  ordered flow** so `stream/clear` can't be reordered past audio frames.
-- **static_delay_ms**: manual per-player sync trim, sent in `client/state`.
-- **The binary chunk timestamp *is* the playout instant.** The spec: *"binary audio messages
-  contain timestamps in the server's time domain indicating when the audio should be played"*.
-  There is no server-advertised `buffer_ms` and nothing for the client to add — a client that
-  adds its own "scheduling headroom" to the presentation time is simply that far behind every
-  other speaker, permanently, with nothing in the protocol to converge it away. Scheduling slack
-  belongs *before* this number (the decode ring, the startup trim), never on top of it.
-- **One timeline, grouped or not.** Group membership does not change when a sample is due, so
-  solo playback is scheduled exactly like grouped playback. Anchoring a solo stream to local
-  `now` "because there is no one to sync with" makes a later group join a re-anchor across
-  however far apart the two timelines drifted — which the audio path cannot do without either a
-  long silence or giving up on correction altogether.
-- **`available` is not a constant.** *"A player reports `available: true` only after it has
-  established clock synchronization."* MA uses it to decide whether the player can be grouped.
-
-## nowdroid rewrite map (M0)
-
-| nowdroid file | becomes |
-|---|---|
-| `discovery/MaDiscovery.kt` | `_sendspin-server._tcp` + TXT `path` (**done**) |
-| `protocol/Messages.kt` + `AudioFormatSpec.kt` | reference-accurate `{type,payload}` models + `SendspinIncoming.parse` + a flexible-long serializer |
-| `protocol/ClockSync.kt` | the Kalman `ClockKalmanFilter` (**added, JVM-tested**) wired in |
-| `protocol/SendspinClient.kt` | plain-WS lifecycle: connect → (auth) → hello → time loop → ordered text/binary flow, reconnect/backoff |
-| `protocol/AudioFrame.kt` + `audio/*` | binary audio chunk handling per `stream/start` format (M1) |
-| `service/SendspinService.kt`, `ui/viewmodel/PlayerViewModel.kt` | orchestrate the above |
-
-References ported/adapted with attribution: massdroid (MIT), MA mobile-app (Apache 2.0), sendspin-js.
-
-## Music Assistant 2.10 — what changed for a client (verified against tags `2.9.13` and `2.10.0`)
-
-The API surface the app uses is **unchanged**: every command it sends
-(`music/*/library_items`, `music/*/get`, `music/search`, `player_queues/play_media`,
-`player_queues/get_active_queue`, `config/players/*`, …) still exists with the same argument
-names, and `player_queues/play_media` still takes `queue_id` / `media` / `option` / `radio_mode`.
-Three behaviour changes are worth knowing:
-
-- **Library listings are "summary" items now.** `music/<type>/library_items` gained
-  `summary: bool = True`, so a listing returns the slim `*Summary` model rather than a fully
-  hydrated one. It still carries `item_id`, `provider`, `media_type`, `uri` and the provider
-  mappings, so browse and playback are unaffected — but `None` fields are omitted from the
-  wire payload, so never treat an absent key as a meaningful value.
-
-- **Errors are localised on the wire.** `ErrorResultMessage` resolves a `translation_key` into
-  `details` for the connection's locale, and drops the key. `error_code` is therefore the only
-  stable thing to branch on (`MediaNotFoundError` = 2) — the message text is whatever language
-  the connection asked for.
-
-- **"The requested media item could not be found." is not about the uri.** A uri
-  `play_media` cannot resolve is *swallowed* (`queue_loader.py`, `except MusicAssistantError:
-  "Skipping %s: %s"`), and a request where nothing resolved ends with the distinct
-  `no_playable_items` — "There is nothing to play here." The generic `media_not_found` wording
-  reaches a client from `play_index` → `_load_item` instead: the item resolved, and then the
-  *stream* could not be obtained (provider refused, file gone, ffmpeg failed) or the audio
-  buffer could not be prepared. `player_queues/controller.py` re-raises those as
-  `MediaNotFoundError`, and the translation layer then replaces the actionable message with the
-  generic one — the real reason is left in the **server log** and nowhere else.
-  `MaRepository.describePlayFailure` re-probes `music/item_by_uri` so the app can tell the two
-  apart instead of blaming the library.
-
-### `preferred_sendspin_format`
-
-`MaRepository.setPreferredSendspinFormat` used to match the server's options as
-`"<codec>_<rate>_<depth>"`. Music Assistant writes them as
-`"<codec>:<rate>:<depth>:<channels>"` (`sendspin/player.py: format_to_option_value`, unchanged
-between 2.9 and 2.10), so nothing but `"automatic"` ever matched and a codec preference never
-left the phone. Fixed: `MaRepository.matchFormatOption` matches on the codec segment and takes
-the **first** option carrying it.
-
-First, not highest: the entry writes a whole fixed format override, and with none set
-aiosendspin already plays `compatible[0]` — the client's first advertised format
-(`_ensure_preferred_format`). So the first option for a codec is the one already in use, and
-writing it only makes the choice explicit and sticky across reconnects. The options themselves
-are built from the client's live `supported_formats`, so a player whose Sendspin role isn't
-connected has no options to match and the save is correctly skipped.
+- `./gradlew :app:testMobileDebugUnitTest --tests 'com.engabd.sendpin.protocol.*'` —
+  RFC 7748 vectors, a KKpsk2 transcript recorded from the reference `noiseprotocol`
+  library with fixed keys (both suites, message 2, hash, both transport directions),
+  framing, the token reference vector, the store, the activation table, management.
+- `SENDSPIN_SERVER=ws://192.168.0.48:8927/sendspin ./gradlew … --tests '*LiveServer*'`
+  runs the full bring-up against a real MA from the JVM.
+- On the phone: `adb logcat -s SendspinClient:* SendspinNative:*` shows the handshake
+  (`noise handshake complete (psk=…)`), activation, `clock ready → client/state
+  available`, and the engine's `write chunk#` / `sync sample drift=` lines.
+- MA's side over its API (`sendspin` / password in the team notes): `players/all`,
+  `config/players/setup {player_id}` → `config/flows/submit {flow_id, values:
+  {pairing_token}}` pairs; `config/players/invoke_action` with
+  `<client_id>||protocol||management_enter` / `unpair` drives management and unpair.

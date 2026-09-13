@@ -135,10 +135,17 @@ data class ClientHelloPayload(
     @SerialName("supported_roles") val supportedRoles: List<String> = listOf("player@v1", "metadata@v1"),
     @SerialName("device_info") val deviceInfo: DeviceInfo? = null,
     @SerialName("player@v1_support") val playerV1Support: PlayerV1Support? = null,
-    /** `user` when this session was admitted by a pairing record, else `none`. */
-    @SerialName("trust_level") val trustLevel: String = "none",
-    @SerialName("supported_pair_methods") val supportedPairMethods: List<PairMethodDescriptor> = emptyList(),
-    @SerialName("unpaired_access") val unpairedAccess: UnpairedAccess = UnpairedAccess(true),
+    /**
+     * Encrypted sessions only: `user` when this session was admitted by a pairing
+     * record, else `none`; the pairing methods on offer; the guest-access toggle.
+     * Null (omitted) on a legacy hello, which is the pre-spec shape exactly — a
+     * Music Assistant 2.10 in transition mode takes `unpaired_access` on a cleartext
+     * hello as a guest approval, and its downgrade protection then refuses that
+     * client id unencrypted for ever after.
+     */
+    @SerialName("trust_level") val trustLevel: String? = null,
+    @SerialName("supported_pair_methods") val supportedPairMethods: List<PairMethodDescriptor>? = null,
+    @SerialName("unpaired_access") val unpairedAccess: UnpairedAccess? = null,
     /**
      * Legacy (cleartext) hello only. Encrypted sessions carry both in `client/init`
      * and must not repeat them here; null is omitted from the wire.

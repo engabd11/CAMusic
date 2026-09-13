@@ -440,7 +440,9 @@ private fun SendspinPairingCard(viewModel: PlayerViewModel, accent: Color) {
     val security by viewModel.security.collectAsStateWithLifecycle()
     val store = viewModel.pairingStore
     var unpaired by remember { mutableStateOf(store.unpairedAccessEnabled) }
-    var records by remember { mutableStateOf(store.records().filter { it.serverId != null }) }
+    // Re-read whenever the session changes: a pairing lands as a session change, and
+    // so does an unpair.
+    val records = remember(security) { store.records().filter { it.serverId != null } }
     val token = remember(records) { store.pairingToken() }
     val context = LocalContext.current
 
@@ -489,17 +491,14 @@ private fun SendspinPairingCard(viewModel: PlayerViewModel, accent: Color) {
             style = MaterialTheme.typography.bodySmall,
             lineHeight = MaterialTheme.typography.bodySmall.lineHeight * 1.3f,
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OledButton("Copy token", accent = accent) {
-                val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                cm.setPrimaryClip(android.content.ClipData.newPlainText("Sendspin pairing token", token))
-            }
-            if (records.isNotEmpty()) {
-                OledButton("Forget pairings", accent = accent, outline = true) {
-                    records.forEach { store.removeRecord(it.pskId) }
-                    records = store.records().filter { it.serverId != null }
-                }
-            }
+        // No "forget pairings" here on purpose. The server keeps its half of a pairing,
+        // and a phone that has dropped its own half fails every handshake the server
+        // offers on that record until the operator unpairs in Music Assistant — which is
+        // the spec's route (server/unpair), and MA's own Unpair button. "Register again
+        // as a new player" above is the local reset, and takes the records with it.
+        OledButton("Copy token", accent = accent) {
+            val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            cm.setPrimaryClip(android.content.ClipData.newPlainText("Sendspin pairing token", token))
         }
     }
 }
