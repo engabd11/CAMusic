@@ -4,7 +4,7 @@
 
 1. Fork the repository
 2. Clone your fork: `git clone https://github.com/YOUR_USERNAME/CAMusic.git`
-3. Open in Android Studio (JDK 17, compileSdk 36)
+3. Open in Android Studio (JDK 17, compileSdk 37)
 4. Create a feature branch: `git checkout -b feat/my-feature`
 
 ## Project Structure
@@ -93,7 +93,7 @@ app/src/main/
 
 ## Testing
 
-- **Unit tests:** `app/src/test/` (JUnit + MockK) — 538 tests across 69 classes
+- **Unit tests:** `app/src/test/` (JUnit, kotlin-test, coroutines-test; no mocking library) — about 1,600 tests across ~170 classes
 - **Instrumented tests:** `app/src/androidTest/` (AndroidX Test)
 - **NDK and CMake are required** — the native Oboe output engine in `app/src/main/cpp/` is part of the build
 - **Run:** `./gradlew :app:testMobileDebugUnitTest` or `./gradlew :app:connectedMobileDebugAndroidTest`

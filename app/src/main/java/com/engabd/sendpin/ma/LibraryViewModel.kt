@@ -1211,6 +1211,23 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 val settled = kotlinx.coroutines.withTimeoutOrNull(CONNECT_TIMEOUT_MS) {
                     maApi.state.first { it == MaApiClient.State.CONNECTED || it == MaApiClient.State.ERROR }
                 }
+                // A socket that opened is not a login. Music Assistant answers the
+                // library commands to anyone but refuses `players/all` without a
+                // session, so a server that needs one still reported "Connected" here
+                // while the Speakers tab stayed empty and every poll failed with
+                // "Authentication is required" — a first-run dead end with nothing on
+                // screen naming the cause. Ask the one command that needs a login and
+                // say so if it is refused.
+                if (settled == MaApiClient.State.CONNECTED) {
+                    val refusal = runCatching { maRepo.players() }.exceptionOrNull() as? MaApiException
+                    if (refusal != null && refusal.code == MA_ERROR_AUTH_REQUIRED) {
+                        _connError.value = if (_maUser.value.isBlank()) {
+                            "This server needs a login — enter your Music Assistant username and password"
+                        } else {
+                            "Music Assistant refused that login — check the username and password"
+                        }
+                    }
+                }
                 _connecting.value = false
                 if (settled == null && _connError.value == null) {
                     _connError.value = "Couldn't reach $url - no answer within ${CONNECT_TIMEOUT_MS / 1000}s"
@@ -3962,6 +3979,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
          * never resolves is therefore not a slow connect, it is a screen with no way
          * forward, which is exactly what onboarding must never become.
          */
+        /** Music Assistant's error code for a command that needs a session it did not get. */
+        const val MA_ERROR_AUTH_REQUIRED = 20
+
         const val CONNECT_TIMEOUT_MS = 45_000L
 
         /**
