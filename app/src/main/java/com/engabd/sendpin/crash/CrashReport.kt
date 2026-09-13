@@ -5,8 +5,8 @@ import kotlinx.serialization.Serializable
 
 /**
  * One recorded crash. Kept small so the local store doesn't grow; the full stack
- * is enough to identify the site, and a user can add reproduction steps when they
- * share it.
+ * is enough to identify the site, and the [DebugBundle] it is written into carries
+ * the context around it.
  */
 @Serializable
 data class CrashReport(
@@ -30,23 +30,4 @@ data class CrashReport(
     val device: String,
     /** True if this crash has already been reported by the user. */
     val reported: Boolean = false,
-) {
-    /** A short title suitable for a GitHub issue. */
-    fun title(): String = "Crash: $exceptionClass${message?.let { " — ${it.take(60)}" } ?: ""}"
-
-    /** A formatted body for a GitHub issue or email. */
-    fun issueBody(): String = buildString {
-        appendLine("### Crash report")
-        appendLine("- **Time:** $time")
-        appendLine("- **Exception:** $exceptionClass")
-        message?.let { appendLine("- **Message:** $it") }
-        appendLine("- **Thread:** $thread")
-        appendLine("- **Version:** $versionName ($versionCode)")
-        appendLine("- **API level:** $apiLevel")
-        appendLine("- **Device:** $device")
-        appendLine()
-        appendLine("```")
-        appendLine(stackTrace)
-        appendLine("```")
-    }
-}
+)

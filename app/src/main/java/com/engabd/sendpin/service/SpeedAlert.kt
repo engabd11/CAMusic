@@ -1,5 +1,8 @@
 package com.engabd.sendpin.service
 
+import kotlin.math.floor
+import kotlin.math.roundToInt
+
 /**
  * The pure decision behind the speed-limit alert: given a speed reading, when does
  * it beep. Split out because [SpeedMonitor] is welded to `LocationManager` — there
@@ -14,7 +17,31 @@ object SpeedAlert {
      * variance and GPS jitter on top of it.
      */
     fun triggerSpeedKmh(limitKmh: Int, tolerancePct: Int): Float =
-        limitKmh * (1f + tolerancePct / 100f)
+        // Integer product first, one divide last. `limit * (1f + pct / 100f)` gave
+        // 104.99999 for 100 + 5%, and a reading of exactly 105 was then "over" it —
+        // which is the beep-at-the-tolerance bug, in float, before any threshold
+        // logic got a say.
+        limitKmh * (100 + tolerancePct) / 100f
+
+    /**
+     * The lowest whole km/h that counts as over the trigger — the number the
+     * driver would have to see on the display to be beeped.
+     *
+     * GPS speed is a float, and a driver in a 100 zone with 5% tolerance who is
+     * doing 105.3 km/h has *not* gone past 105: every speedometer, the overlay and
+     * the notification all show "105", and being beeped for it reads as being
+     * beeped *at* the tolerance rather than beyond it. So the reading is judged as
+     * the whole number it displays as, and that has to be strictly greater than
+     * the trigger — 106 for 100 + 5%, 52 for 50 + 3% (trigger 51.5).
+     */
+    fun firstAlertingSpeedKmh(limitKmh: Int, tolerancePct: Int): Int =
+        floor(triggerSpeedKmh(limitKmh, tolerancePct) + 1e-3f).toInt() + 1
+
+    /** Whether a raw reading is past the trigger by the rule in [firstAlertingSpeedKmh]. */
+    fun isOver(speedKmh: Float, triggerKmh: Float): Boolean =
+        // The epsilon guards the comparison against a trigger that is a whole number
+        // in intent but a hair under it in float.
+        speedKmh.roundToInt() > triggerKmh + 1e-3f
 
     /**
      * How long a driver has to be over the trigger before the alert sounds.
@@ -87,7 +114,7 @@ object SpeedAlert {
 
         /** @return true if this reading should trigger a beep. */
         fun onReading(speedKmh: Float, triggerKmh: Float, nowMs: Long): Boolean {
-            if (speedKmh <= triggerKmh) {
+            if (!isOver(speedKmh, triggerKmh)) {
                 if (overSinceMs == NONE) return false
                 if (underSinceMs == NONE) underSinceMs = nowMs
                 // Under, but not for long enough to call it a slow-down yet. The

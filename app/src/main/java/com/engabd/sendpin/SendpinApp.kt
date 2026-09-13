@@ -553,23 +553,10 @@ class SendpinApp : Application(), ImageLoaderFactory {
         appScope.launch {
             localPlayer.current.collect { downloads.protectedId = it?.id }
         }
-        // When the app is crashing and we already know about it, optionally open a
-        // GitHub issue automatically if the user has supplied a PAT. Do this in a
-        // fire-and-forget IO coroutine; we must not block the crash path.
-        appScope.launch {
-            val settings = AppSettings(this@SendpinApp)
-            if (settings.crashAutoUpload.first()) {
-                val token = settings.crashGitHubToken.first()
-                val repo = settings.crashGitHubRepo.first()
-                if (token.isNotBlank() && repo.isNotBlank()) {
-                    CrashReporter.lastUnreported()?.let { report ->
-                        CrashReporter.postToGitHub(repo, token, report).onSuccess {
-                            CrashReporter.markLastReported()
-                        }
-                    }
-                }
-            }
-        }
+        // Crashes used to be able to upload themselves to GitHub with a stored token.
+        // They no longer go anywhere on their own — the debug bundle is what gets
+        // shared, by hand — so a token an earlier build stored is removed here.
+        appScope.launch { AppSettings(this@SendpinApp).forgetCrashUploadCredentials() }
         // The media notification follows the local player's session rather than being
         // started by whichever screen happened to press play.
         //

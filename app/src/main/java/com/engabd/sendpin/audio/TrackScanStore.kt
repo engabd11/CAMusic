@@ -439,11 +439,12 @@ class TrackScanStore(private val dir: File) {
         /** Scans held in memory. Each is a few tens of kilobytes. */
         private const val MEMORY_ENTRIES = 24
 
-        // Sanity ceilings for lengths read off disk. A twelve-minute track at
-        // 190 BPM has under 2 300 beats; the curve is 10 Hz over the same cap.
-        private const val MAX_BEATS = 8_000
-        private const val MAX_SECTIONS = 512
-        private const val MAX_CURVE = 16_000
+        // Sanity ceilings for lengths read off disk. An hour at 190 BPM — the analysis
+        // cap, `TrackScanner.MAX_TRACK_S` — is 11 400 beats; the curve is 10 Hz over
+        // the same cap, 36 000 points. These only have to reject a corrupt header.
+        private const val MAX_BEATS = 16_000
+        private const val MAX_SECTIONS = 2_048
+        private const val MAX_CURVE = 48_000
 
         /**
          * A track id is not a filename — Music Assistant ids carry slashes and

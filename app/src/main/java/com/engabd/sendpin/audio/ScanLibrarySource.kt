@@ -86,8 +86,17 @@ object ScanLibrarySource {
                                 artist = item.subtitle,
                                 album = album.name,
                                 durationMs = (item.duration ?: 0).toLong() * 1000,
-                                streamUrl = client.streamUrl(item.itemId),
+                                // The stored file rather than the player's stream: a
+                                // transcode is throttled to playback speed and cut off
+                                // by servers that think nobody is listening, which is
+                                // how a sweep ended up with the first two minutes of
+                                // every track it had to transcode. `downloadUrl` is
+                                // blank on a library that has no such endpoint, and the
+                                // stream stands in there.
+                                streamUrl = client.downloadUrl(item.itemId).ifBlank { client.streamUrl(item.itemId) },
                                 localPath = downloads.localPath(item.itemId),
+                                scrobbleId = item.itemId,
+                                scrobbleProvider = client.providerId,
                             )
                         }
                     }

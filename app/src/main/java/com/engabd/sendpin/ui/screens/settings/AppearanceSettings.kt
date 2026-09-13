@@ -27,8 +27,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.engabd.sendpin.crash.CrashReporter
 import com.engabd.sendpin.crash.CrashReport
+import com.engabd.sendpin.crash.CrashReporter
+import com.engabd.sendpin.crash.DebugBundle
 import com.engabd.sendpin.BuildConfig
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.ui.design.HSlider
@@ -36,10 +37,10 @@ import com.engabd.sendpin.ui.design.LocalAccent
 import com.engabd.sendpin.ui.design.ToggleChip
 import com.engabd.sendpin.ui.theme.*
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.first
-import java.io.BufferedReader
-import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 
 /**
@@ -292,130 +293,119 @@ internal fun AboutCard(accent: Color) {
 }
 
 /**
- * Where a crash goes, and how far it gets without being asked.
+ * One file for a bug report, and the last crash it will carry.
  *
- * Its own page rather than a second card under "About": one of these is a version
- * number and a licence, the other asks for a GitHub personal access token.
+ * This page used to hold a GitHub repository, a personal access token and an
+ * auto-upload switch, and could open an issue with a bare stack trace in it. All of
+ * that is gone: what gets a bug fixed is the log around the failure, and a token on
+ * the phone was a secret with nothing to justify it. Now there is a debug file — the
+ * app's log, what was playing, the analysis queue, every recorded crash, the settings
+ * with secrets left out — and two ways to get it off the phone: save it, or share it.
+ * Attaching it to an issue is the user's move.
  */
 @Composable
 internal fun DiagnosticsCard(accent: Color) {
     val context = LocalContext.current
-    val settings = remember(context) { AppSettings(context) }
     val scope = rememberCoroutineScope()
 
-    // The repo and token are text fields behind a Save button, so they hold what is
-    // being typed. The switch is a switch: it persists on tap, like every other
-    // ToggleRow in Settings. It used to only set local state, so flipping it and
-    // leaving without pressing Save silently did nothing at all.
-    var repo by remember { mutableStateOf("engabd11/CAMusic") }
-    var token by remember { mutableStateOf("") }
-    var showToken by remember { mutableStateOf(false) }
     var lastReport by remember { mutableStateOf<CrashReport?>(null) }
-    var uploadResult by remember { mutableStateOf<String?>(null) }
+    var crashCount by remember { mutableStateOf(0) }
+    var status by remember { mutableStateOf<String?>(null) }
+    var building by remember { mutableStateOf(false) }
 
-    val autoUpload by settings.crashAutoUpload.collectAsStateWithLifecycle(initialValue = false)
-    // The *stored* token, not the typed one. `SendpinApp` reads the stored value on
-    // the crash path and quietly does nothing without it, so gating the switch on
-    // half-typed text would let it read "on" while nothing could ever be uploaded.
-    val savedToken by settings.crashGitHubToken.collectAsStateWithLifecycle(initialValue = "")
+    fun refresh() {
+        val reports = CrashReporter.reports()
+        crashCount = reports.size
+        lastReport = reports.lastOrNull()
+    }
+    LaunchedEffect(Unit) { refresh() }
 
-    LaunchedEffect(Unit) {
-        repo = settings.crashGitHubRepo.first()
-        token = settings.crashGitHubToken.first()
-        lastReport = CrashReporter.lastUnreported()
+    // "Save" goes through the system file picker, so the file lands wherever the user
+    // can find it again — Downloads, Drive, a folder — with no storage permission and
+    // no guessing about which app opens .txt. The bundle is built once the place is
+    // chosen, so it describes the moment of saving, not the moment the page opened.
+    val saveDoc = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            building = true
+            status = try {
+                val text = DebugBundle.build(context)
+                withContext(Dispatchers.IO) {
+                    context.contentResolver.openOutputStream(uri)?.use { out ->
+                        OutputStreamWriter(out).use { it.write(text) }
+                    }
+                }
+                "Saved"
+            } catch (e: Exception) {
+                "Could not save: ${e.message}"
+            }
+            building = false
+        }
     }
 
     SettingsCard(
-        title = "Crash reporting",
-        lead = "Crashes stay on this device unless you send them.",
-        info = "Crashes are written to this device and stay there. Share one to GitHub by " +
-            "hand, or enable automatic upload with a personal access token. Nothing leaves " +
-            "the phone until you do one of those two things.\n\nTip: a report is far more " +
-            "use with a line about what you were doing when it happened. The automatic " +
-            "upload cannot know that, so one manual share with a sentence attached beats " +
-            "ten silent ones.",
+        title = "Diagnostics",
+        lead = "One file with everything needed to look into a problem.",
+        info = "The debug file holds this app's recent log, what is playing and from where, " +
+            "the track-analysis queue, every crash recorded on this phone, and a copy of your " +
+            "settings with passwords, tokens and server logins left out. Nothing is sent " +
+            "anywhere by itself.\n\nTo report a problem: make the file straight after it " +
+            "happens, then attach it to a new issue at github.com/engabd11/CAMusic with a " +
+            "line about what you were doing.\n\nTip: the log only covers the current run of " +
+            "the app, so if it crashed, make the file as soon as it reopens.",
     ) {
-        OledField(
-            value = repo,
-            onChange = { repo = it },
-            label = "GitHub repository",
-            placeholder = "owner/repo",
-            accent = accent,
-        )
-        SecretField(
-            value = token,
-            onChange = { token = it },
-            label = "GitHub token (optional)",
-            accent = accent,
-            visible = showToken,
-            onVisibilityChange = { showToken = it },
-        )
-        Note("With a token, the app can open an issue automatically. Without one, you still get a one-tap share link.")
-        Spacer(Modifier.height(8.dp))
-        OledButton(
-            text = "Save repository and token",
-            accent = accent,
-            outline = true,
-        ) {
-            scope.launch {
-                settings.setCrashGitHubRepo(repo)
-                if (token.isNotBlank()) settings.setCrashGitHubToken(token)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OledButton(
+                text = if (building) "Building…" else "Save debug file",
+                accent = accent,
+                enabled = !building,
+                modifier = Modifier.weight(1f),
+            ) { saveDoc.launch(DebugBundle.fileName()) }
+            OledButton(
+                text = "Share",
+                accent = accent,
+                outline = true,
+                enabled = !building,
+                modifier = Modifier.weight(1f),
+            ) {
+                scope.launch {
+                    building = true
+                    status = try {
+                        val file = DebugBundle.write(context)
+                        context.startActivity(DebugBundle.shareIntent(context, file))
+                        null
+                    } catch (e: Exception) {
+                        "Could not share: ${e.message}"
+                    }
+                    building = false
+                }
             }
         }
-        Spacer(Modifier.height(8.dp))
-        // Below the button rather than above it, because it depends on what the
-        // button saved: the switch is only live once a token is actually stored.
-        ToggleRow(
-            title = "Upload crashes automatically",
-            subtitle = if (savedToken.isBlank()) "Save a token above first"
-                else "Opens an issue on the repository above, without asking",
-            checked = autoUpload && savedToken.isNotBlank(),
-            accent = accent,
-            enabled = savedToken.isNotBlank(),
-        ) { on -> scope.launch { settings.setCrashAutoUpload(on) } }
-        if (lastReport != null) {
-            CardDivider()
-            val report: CrashReport = lastReport ?: return@SettingsCard
+        status?.let {
+            Spacer(Modifier.height(6.dp))
+            Note(it, warn = it.startsWith("Could not"))
+        }
+
+        CardDivider()
+        val report = lastReport
+        if (report == null) {
+            Note("No crashes recorded on this phone.")
+        } else {
             Text(
                 "Last crash: ${report.exceptionClass}",
                 color = TextSecondary,
                 fontFamily = AppFont,
                 style = MaterialTheme.typography.bodySmall,
             )
-            Note(report.time)
+            Note(
+                report.time + " · " + report.versionName +
+                    if (crashCount > 1) " · $crashCount recorded, all go in the file" else "",
+            )
             Spacer(Modifier.height(6.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OledButton(
-                    text = "Share to GitHub",
-                    accent = accent,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    val url = CrashReporter.githubIssueUrl(repo, report)
-                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-                    CrashReporter.markLastReported()
-                    lastReport = null
-                }
-                if (token.isNotBlank()) {
-                    OledButton(
-                        text = "Upload now",
-                        accent = accent,
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        scope.launch {
-                            uploadResult = CrashReporter.postToGitHub(repo, token, report)
-                                .fold(
-                                    onSuccess = { "Issue #$it created" },
-                                    onFailure = { "Upload failed: ${it.message}" },
-                                )
-                            CrashReporter.markLastReported()
-                            lastReport = null
-                        }
-                    }
-                }
-            }
-            uploadResult?.let {
-                Spacer(Modifier.height(6.dp))
-                Note(it, warn = it.startsWith("Upload failed"))
+            OledButton(text = "Clear recorded crashes", accent = accent, outline = true) {
+                CrashReporter.clear()
+                lastReport = null
+                crashCount = 0
             }
         }
     }

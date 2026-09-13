@@ -11,21 +11,19 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 
 /**
- * Self-hosted crash reporter: catches uncaught exceptions, writes them to a
- * rotating local file, and can share them to GitHub either by opening the new-issue
- * URL or by posting via a personal access token.
+ * Catches uncaught exceptions and writes them to a rotating local file.
  *
- * No third-party crash service is involved. Reports stay on the device until the
- * user chooses to send them, and automatic uploading is opt-in (a GitHub token must
- * be provided in settings).
+ * That is all it does now. It used to be able to open a GitHub issue by itself,
+ * given a personal access token typed into Settings — a secret on the phone for a
+ * report that carried a stack trace and nothing around it. The crashes recorded
+ * here are read back into [DebugBundle], which is the one thing the app produces
+ * for a bug report, and nothing leaves the device unless the user shares that file.
  */
 object CrashReporter {
 
@@ -124,90 +122,6 @@ object CrashReporter {
     /** Delete all stored crash reports. */
     fun clear() {
         ioScope.launch { storeFile().delete() }
-    }
-
-    /**
-     * Build a GitHub new-issue URL with the crash pre-filled. This requires no token
-     * and no network permission — it simply opens the browser for the user to submit.
-     */
-    fun githubIssueUrl(repo: String, report: CrashReport): String {
-        val title = percentEncode(report.title())
-        val body = percentEncode(formatBody(report))
-        return "https://github.com/" + repo + "/issues/new?title=" + title + "&body=" + body
-    }
-
-    /**
-     * Post a crash directly to GitHub Issues using a personal access token.
-     * Requires the repo string in "owner/repo" form.
-     */
-    suspend fun postToGitHub(
-        repo: String,
-        token: String,
-        report: CrashReport,
-        labels: List<String> = listOf("crash", "auto-report"),
-    ): Result<String> = withContext(Dispatchers.IO) {
-        try {
-            val payload = JSONObject().apply {
-                put("title", report.title())
-                put("body", formatBody(report))
-                put("labels", JSONArray(labels))
-            }.toString()
-
-            val url = URL("https://api.github.com/repos/" + repo + "/issues")
-            val conn = (url.openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                setRequestProperty("Authorization", "token " + token)
-                setRequestProperty("Accept", "application/vnd.github+json")
-                setRequestProperty("Content-Type", "application/json")
-                setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
-                doOutput = true
-                connectTimeout = 15000
-                readTimeout = 30000
-            }
-            conn.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
-
-            val response = conn.inputStream.bufferedReader().use { it.readText() }
-            val code = conn.responseCode
-            if (code in 200..299) {
-                val number = JSONObject(response).optInt("number", -1)
-                Result.success(if (number > 0) number.toString() else "submitted")
-            } else {
-                Result.failure(Exception("GitHub returned " + code + ": " + response))
-            }
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
-    }
-
-    private fun percentEncode(s: String): String {
-        val out = StringBuilder()
-        for (ch in s) {
-            when {
-                ch.isLetterOrDigit() || ch == '-' || ch == '_' || ch == '.' || ch == '~' -> out.append(ch)
-                ch == ' ' -> out.append('+')
-                ch == '\n' -> out.append("%0A")
-                ch == '"' -> out.append("%22")
-                else -> out.append(String.format("%%%02X", ch.code))
-            }
-        }
-        return out.toString()
-    }
-
-    private fun formatBody(r: CrashReport): String {
-        val sb = StringBuilder()
-        sb.append("### Crash report").append("\n")
-        sb.append("- **Time:** ").append(r.time).append("\n")
-        sb.append("- **Exception:** ").append(r.exceptionClass).append("\n")
-        r.message?.let { sb.append("- **Message:** ").append(it).append("\n") }
-        sb.append("- **Thread:** ").append(r.thread).append("\n")
-        sb.append("- **Version:** ").append(r.versionName).append(" (").append(r.versionCode).append(")").append("\n")
-        sb.append("- **API level:** ").append(r.apiLevel).append("\n")
-        sb.append("- **Device:** ").append(r.device).append("\n")
-        sb.append("\n")
-        sb.append("```").append("\n")
-        sb.append(r.stackTrace).append("\n")
-        sb.append("```").append("\n")
-        return sb.toString()
     }
 
     private fun JSONArray.toReportList(): List<CrashReport> {

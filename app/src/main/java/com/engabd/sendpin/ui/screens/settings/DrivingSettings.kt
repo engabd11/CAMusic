@@ -349,13 +349,13 @@ private fun SpeedFeaturesRow(settings: AppSettings, accent: Color, scope: Corout
     val alertDescription = if (alertEnabled && hasLocation) {
         val effective = activeLimit
         if (effective != null && effective > 0) {
-            val trigger = com.engabd.sendpin.service.SpeedAlert.triggerSpeedKmh(effective, tolerancePct).toInt() + 1
+            val trigger = com.engabd.sendpin.service.SpeedAlert.firstAlertingSpeedKmh(effective, tolerancePct)
             // The hold is read from the tracker's own constant rather than typed
             // here, so the screen cannot end up promising a different wait than the
             // one the alert keeps.
             val hold = com.engabd.sendpin.service.SpeedAlert.CONFIRM_WINDOW_MS / 1000
-            if (autoDetect) "Auto: $effective km/h here — beeps after ${hold}s over $trigger km/h"
-            else "Beeps after ${hold}s over $trigger km/h"
+            if (autoDetect) "Auto: $effective km/h here — beeps after ${hold}s at $trigger km/h or more"
+            else "Beeps after ${hold}s at $trigger km/h or more"
         } else if (autoDetect) {
             "Detecting limit from location…"
         } else {
@@ -500,7 +500,7 @@ private fun SpeedFeaturesRow(settings: AppSettings, accent: Color, scope: Corout
                 "Used wherever the map data has no answer — outside Victoria, or on a road " +
                     "it does not cover. Worth setting even on auto."
             } else {
-                "The alert fires at this limit plus the tolerance, held for a few seconds."
+                "The alert fires once you are past this limit plus the tolerance, held for a few seconds."
             },
         )
     }

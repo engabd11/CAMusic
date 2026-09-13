@@ -36,28 +36,81 @@ object TrackScanner {
     private const val TAG = "TrackScanner"
 
     /**
-     * Analysis cap. Beyond twelve minutes a track is a DJ set or a live album
-     * side, where a global tempo estimate has little to say anyway, and the scan
-     * would cost more memory than the result is worth.
+     * Hard analysis cap, in seconds of audio.
+     *
+     * This used to be twelve minutes, on the argument that anything longer is a DJ
+     * set where a single tempo has little to say. That argument was wrong in
+     * practice: the set is exactly the track someone wants the lights right on for
+     * an hour, the tempo path already follows local tempo rather than one global
+     * number, and every other consumer of a scan — sections, the intensity arc,
+     * Smart crossfade's tail search, the DJ's key and energy reads — is only as good
+     * as the span it covers. A scan that stops early leaves the rest of the track
+     * to be worked out live, which is the very thing analysing ahead exists to
+     * avoid. So the ceiling is now the longest thing that can sensibly be called a
+     * track, and the real limit is the memory the extractor's per-frame rows need —
+     * see [maxAnalysableSeconds], which is what actually decides on a given phone.
      */
-    const val MAX_TRACK_S = 720f
+    const val MAX_TRACK_S = 3600f
 
-    /** Wall-clock ceiling on one decode, so a stalled source cannot pin a thread. */
-    private const val DECODE_TIMEOUT_MS = 120_000L
+    /**
+     * Roughly what one analysis frame costs to hold in the extractor: the onset
+     * filterbank rows, the melbank, the named bands, the chroma and the handful of
+     * scalar envelopes, all as floats, doubled because the growable lists copy on
+     * growth. Generous on purpose — it only has to keep a phone out of OOM.
+     */
+    private const val BYTES_PER_FRAME = 640L
+
+    /**
+     * How much of the heap the extractor may take before the decode is capped.
+     *
+     * A third: a scan runs alongside playback, the light show and whatever screen is
+     * open, and it is a background job that must never be the thing that kills the
+     * app. On a 256 MB heap that is roughly forty-five minutes of audio; on 512 MB,
+     * the full [MAX_TRACK_S].
+     */
+    private const val HEAP_SHARE = 0.33
+
+    /**
+     * How long the decoder may go without producing any output before the source is
+     * judged stalled.
+     *
+     * This replaces a two-minute ceiling on the *whole* decode, which was the wrong
+     * measure: a long hi-res FLAC on a slow phone is a perfectly healthy decode that
+     * takes longer than that, and cutting it off threw the track away — three times,
+     * and then for good. What a ceiling is actually for is a codec that has hung, and
+     * a hung codec is one that stops answering, so that is what is timed.
+     */
+    private const val STALL_TIMEOUT_MS = 60_000L
 
     private const val DEQUEUE_TIMEOUT_US = 10_000L
+
+    /**
+     * The most audio a scan may decode on this phone, in seconds.
+     *
+     * [MAX_TRACK_S] or what a third of the heap will hold, whichever is less — the
+     * analysis at 50 frames a second is the memory, not the decode.
+     */
+    fun maxAnalysableSeconds(): Float {
+        val budget = (Runtime.getRuntime().maxMemory() * HEAP_SHARE).toLong()
+        val frames = budget / BYTES_PER_FRAME
+        return (frames * FRAME_PERIOD).coerceIn(600f, MAX_TRACK_S)
+    }
 
     /**
      * Analyse the audio at [path].
      *
      * Cancellable at every buffer: a track change should stop the scan for the
      * track that is no longer playing immediately, not once it happens to finish.
+     *
+     * [onProgress] is called with 0..1 through the track as the decode advances,
+     * from the container's own duration; it is not called at all when the container
+     * does not say how long it is.
      */
-    suspend fun scan(path: String): ScanResult = withContext(Dispatchers.Default) {
+    suspend fun scan(path: String, onProgress: (Float) -> Unit = {}): ScanResult = withContext(Dispatchers.Default) {
         val previousPriority = Process.getThreadPriority(Process.myTid())
         Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
         try {
-            decode(path)
+            decode(path, onProgress)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -68,7 +121,7 @@ object TrackScanner {
         }
     }
 
-    private suspend fun decode(path: String): ScanResult {
+    private suspend fun decode(path: String, onProgress: (Float) -> Unit): ScanResult {
         if (!File(path).exists()) return ScanResult.Failed(ScanFailure.DECODE, "file is gone")
 
         val extractor = MediaExtractor()
@@ -89,18 +142,31 @@ object TrackScanner {
             codec.configure(inputFormat, null, null, 0)
             codec.start()
 
+            // The container's own duration, which the decode cannot know: a capped
+            // decode stops early and its frame count then describes the analysis, not
+            // the track. See [TrackScan.analysedS]. Read up front so progress can be
+            // reported against it.
+            val fullDurationUs = runCatching {
+                if (inputFormat.containsKey(MediaFormat.KEY_DURATION)) {
+                    inputFormat.getLong(MediaFormat.KEY_DURATION)
+                } else 0L
+            }.getOrDefault(0L)
+            val fullDurationS = fullDurationUs / 1_000_000f
+            val capUs = (maxAnalysableSeconds() * 1_000_000L).toLong()
+
             val ex = OfflineExtractor()
             val pump = Pump(ex)
             val info = MediaCodec.BufferInfo()
-            val deadline = System.currentTimeMillis() + DECODE_TIMEOUT_MS
+            var lastOutputAtMs = System.currentTimeMillis()
+            var lastReportedPct = -1
             var sawInputEos = false
             var sawOutputEos = false
             var outputFormat = codec.outputFormat
 
             while (!sawOutputEos) {
                 coroutineContext.ensureActive()
-                if (System.currentTimeMillis() > deadline) {
-                    return ScanResult.Failed(ScanFailure.DECODE, "decode timed out")
+                if (System.currentTimeMillis() - lastOutputAtMs > STALL_TIMEOUT_MS) {
+                    return ScanResult.Failed(ScanFailure.DECODE, "decoder stopped responding")
                 }
 
                 if (!sawInputEos) {
@@ -119,7 +185,17 @@ object TrackScanner {
                             extractor.advance()
                             // The cap is on decoded audio, and the presentation
                             // time is the cheapest honest measure of it.
-                            if (ptUs > MAX_TRACK_S * 1_000_000L) sawInputEos = true
+                            if (ptUs > capUs) sawInputEos = true
+                            if (fullDurationUs > 0) {
+                                // Whole percents only: the callback lands on a
+                                // StateFlow the settings screen draws from, and a
+                                // few thousand updates a second is a redraw storm.
+                                val pct = (ptUs * 100 / fullDurationUs).toInt().coerceIn(0, 100)
+                                if (pct != lastReportedPct) {
+                                    lastReportedPct = pct
+                                    onProgress(pct / 100f)
+                                }
+                            }
                         }
                     }
                 }
@@ -128,6 +204,7 @@ object TrackScanner {
                     MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> outputFormat = codec.outputFormat
                     MediaCodec.INFO_TRY_AGAIN_LATER -> Unit
                     else -> if (index >= 0) {
+                        lastOutputAtMs = System.currentTimeMillis()
                         if (info.size > 0) {
                             codec.getOutputBuffer(index)?.let { out ->
                                 out.position(info.offset)
@@ -142,14 +219,6 @@ object TrackScanner {
                     }
                 }
             }
-            // The container's own duration, which the decode cannot know: a capped
-            // decode stops early and its frame count then describes the analysis, not
-            // the track. See [TrackScan.analysedS].
-            val fullDurationS = runCatching {
-                if (inputFormat.containsKey(MediaFormat.KEY_DURATION)) {
-                    inputFormat.getLong(MediaFormat.KEY_DURATION) / 1_000_000f
-                } else 0f
-            }.getOrDefault(0f)
             return finishScan(ex, fullDurationS)
         } finally {
             runCatching { codec?.stop() }

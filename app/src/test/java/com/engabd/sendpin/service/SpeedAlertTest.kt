@@ -18,6 +18,44 @@ class SpeedAlertTest {
     }
 
     @Test
+    fun `first alerting speed is the whole km per h strictly past the trigger`() {
+        // 100 + 5% = 105 exactly: 105 is *at* the tolerance, 106 is past it.
+        assertEquals(106, SpeedAlert.firstAlertingSpeedKmh(limitKmh = 100, tolerancePct = 5))
+        // 50 + 3% = 51.5: 51 is under, 52 is the first whole number over.
+        assertEquals(52, SpeedAlert.firstAlertingSpeedKmh(limitKmh = 50, tolerancePct = 3))
+        assertEquals(81, SpeedAlert.firstAlertingSpeedKmh(limitKmh = 80, tolerancePct = 0))
+    }
+
+    @Test
+    fun `a reading that displays as the trigger is not over it`() {
+        // 105.4 shows as "105" on every speedometer, the overlay and the
+        // notification — beeping for it is beeping at the tolerance, not past it.
+        assertFalse(SpeedAlert.isOver(speedKmh = 105.4f, triggerKmh = 105f))
+        assertFalse(SpeedAlert.isOver(speedKmh = 105f, triggerKmh = 105f))
+        assertTrue(SpeedAlert.isOver(speedKmh = 105.6f, triggerKmh = 105f))
+        assertTrue(SpeedAlert.isOver(speedKmh = 106f, triggerKmh = 105f))
+        // Fractional trigger: 51.6 displays as 52, which is past 51.5.
+        assertTrue(SpeedAlert.isOver(speedKmh = 51.6f, triggerKmh = 51.5f))
+        assertFalse(SpeedAlert.isOver(speedKmh = 51.4f, triggerKmh = 51.5f))
+    }
+
+    @Test
+    fun `a whole-number trigger is exact in float`() {
+        // 100 × 1.05f is 104.99999, and that is how 105 km/h came to beep in a 100
+        // zone with 5% tolerance: the reading was over a trigger that should have
+        // been equal to it.
+        assertEquals(105f, SpeedAlert.triggerSpeedKmh(limitKmh = 100, tolerancePct = 5))
+        assertFalse(SpeedAlert.isOver(speedKmh = 105f, triggerKmh = SpeedAlert.triggerSpeedKmh(100, 5)))
+        assertTrue(SpeedAlert.isOver(speedKmh = 106f, triggerKmh = SpeedAlert.triggerSpeedKmh(100, 5)))
+    }
+
+    @Test
+    fun `sitting a fraction over the trigger never beeps`() {
+        val t = SpeedAlert.Tracker()
+        repeat(10) { assertFalse(t.onReading(speedKmh = 105.4f, triggerKmh = 105f, nowMs = it * 1000L)) }
+    }
+
+    @Test
     fun `at or below the trigger never beeps`() {
         val t = SpeedAlert.Tracker()
         repeat(10) { assertFalse(t.onReading(speedKmh = 84f, triggerKmh = 84f, nowMs = it * 1000L)) }
