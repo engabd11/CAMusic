@@ -84,3 +84,23 @@ class BridgeCertificateTest {
         assertTrue(cn.equals("001788fffe25b8f8", ignoreCase = true))
     }
 }
+
+class BridgeIdNormaliseTest {
+    @Test
+    fun `sixteen hex characters pass through lower-cased`() {
+        assertEquals("ecb5fafffe98a536", HueBridgeClient.normaliseBridgeId("ECB5FAFFFE98A536"))
+    }
+
+    @Test
+    fun `the discovery bug's double-encoded id decodes to the certificate's CN`() {
+        // "ecb5fafffe98a536" hex-encoded once more — what a bridge found over mDNS
+        // used to be stored as, and what the verifier then refused to match.
+        assertEquals("ecb5fafffe98a536", HueBridgeClient.normaliseBridgeId("65636235666166666665393861353336"))
+    }
+
+    @Test
+    fun `32 hex characters that are not an encoded id are left alone`() {
+        val raw = "00000000000000000000000000000000"
+        assertEquals(raw, HueBridgeClient.normaliseBridgeId(raw))
+    }
+}
