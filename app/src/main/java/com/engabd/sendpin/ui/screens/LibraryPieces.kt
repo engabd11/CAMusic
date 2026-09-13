@@ -195,15 +195,8 @@ internal fun LibrarySwitchOverlay(
 
 
 /**
- * One library in the switcher: its own mark, on glass that carries its colour.
- *
- * The rows used to be the same grey pill with a generic server-rack icon, so three
- * self-hosted servers read as three copies of one entry and the eye had to read every
- * name. Now each row is a frosted tile — a translucent fill with a hairline and a
- * faint top highlight, so it reads as glass rather than a flat card — with the
- * server's own colour ([serverKindColor]) bleeding in from behind the mark and fading
- * out across the row. The active one bleeds harder and takes the accent's check, so
- * "which one am I on" is answered before anything is read.
+ * One library in the switcher — [ServerKindTile], the same glass the onboarding list
+ * and the provider picker draw, with the accent's check on the active one.
  */
 @Composable
 private fun LibrarySwitchRow(
@@ -213,69 +206,22 @@ private fun LibrarySwitchRow(
     accent: androidx.compose.ui.graphics.Color,
     onClick: () -> Unit,
 ) {
-    val brand = serverKindColor(config.kind)
-    val shape = RoundedCornerShape(14.dp)
-    // The bleed: strongest behind the mark, gone by two-thirds of the way across.
-    val bleed = androidx.compose.ui.graphics.Brush.horizontalGradient(
-        0f to brand.copy(alpha = if (isActive) 0.34f else 0.20f),
-        0.65f to brand.copy(alpha = 0.04f),
-        1f to androidx.compose.ui.graphics.Color.Transparent,
+    ServerKindTile(
+        kind = config.kind,
+        title = config.displayName,
+        subtitle = subtitle,
+        active = isActive,
+        radius = 14.dp,
+        markSize = 40.dp,
+        subtitleMaxLines = 1,
+        trailing = {
+            if (isActive) {
+                Icon(
+                    Icons.Default.CheckCircle, contentDescription = "Active",
+                    tint = accent, modifier = Modifier.size(20.dp),
+                )
+            }
+        },
+        onClick = onClick,
     )
-    // The sheen: a whisper of white down from the top edge, which is what makes a
-    // translucent fill read as a pane rather than a tint.
-    val sheen = androidx.compose.ui.graphics.Brush.verticalGradient(
-        0f to androidx.compose.ui.graphics.Color.White.copy(alpha = 0.10f),
-        0.45f to androidx.compose.ui.graphics.Color.Transparent,
-    )
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clip(shape)
-            .background(Glass)
-            .background(bleed)
-            .background(sheen)
-            .border(
-                1.dp,
-                if (isActive) brand.copy(alpha = 0.6f) else brand.copy(alpha = 0.28f),
-                shape,
-            )
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 11.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        // The mark sits in its own small pane, so a logo with a transparent
-        // background has something to be seen against and a generic glyph gets the
-        // same footprint as a brand mark.
-        Box(
-            Modifier
-                .size(40.dp)
-                .clip(RoundedCornerShape(11.dp))
-                .background(brand.copy(alpha = 0.18f))
-                .border(1.dp, brand.copy(alpha = 0.35f), RoundedCornerShape(11.dp)),
-            contentAlignment = Alignment.Center,
-        ) {
-            ServerKindGlyph(config.kind, tint = brand, modifier = Modifier.size(24.dp))
-        }
-        Column(Modifier.weight(1f)) {
-            Text(
-                config.displayName,
-                color = TextPrimary, fontFamily = AppFont,
-                fontWeight = FontWeight.Bold, fontSize = 14.sp,
-                maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-            )
-            Text(
-                subtitle,
-                color = TextMuted, fontFamily = AppFont,
-                fontSize = 11.sp,
-                maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-            )
-        }
-        if (isActive) {
-            Icon(
-                Icons.Default.CheckCircle, contentDescription = "Active",
-                tint = accent, modifier = Modifier.size(20.dp),
-            )
-        }
-    }
 }

@@ -31,6 +31,7 @@ import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ui.design.GlassCard
 import com.engabd.sendpin.ui.design.a
 import com.engabd.sendpin.ui.design.ServerKindGlyph
+import com.engabd.sendpin.ui.design.ServerKindTile
 import com.engabd.sendpin.ui.design.TitleGap
 import com.engabd.sendpin.ui.theme.*
 import com.engabd.sendpin.discovery.PlayerIdentity
@@ -455,39 +456,23 @@ private fun ProviderPicker(accent: Color, onPick: (ServerKind) -> Unit) {
 }
 
 /**
- * [NavRow], specialised for a provider: the real brand mark where one exists, the
- * generic glyph otherwise — see [ServerKindGlyph]. Kept separate from `NavRow` itself
- * rather than widening its `icon: ImageVector` parameter, since every other caller of
- * `NavRow` (Stats, Downloads, Light Sync's own settings rows) has an actual
- * `ImageVector` and no logo to plug in.
+ * A provider to add: [ServerKindTile], the same glass tile as the library switcher and
+ * onboarding, greyed out for a kind that is not built yet.
  */
 @Composable
 private fun ProviderRow(kind: ServerKind, accent: Color, enabled: Boolean = true, onClick: () -> Unit) {
-    GlassCard(radius = 16.dp) {
-        Row(
-            Modifier.fillMaxWidth().clickable(enabled = enabled, onClick = onClick).padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            Box(
-                Modifier.size(34.dp).clip(RoundedCornerShape(10.dp))
-                    .background(if (enabled) accent.a(0.14f) else Glass),
-                contentAlignment = Alignment.Center,
-            ) {
-                ServerKindGlyph(kind, tint = if (enabled) accent else TextFaint, modifier = Modifier.size(18.dp))
-            }
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
-                Text(
-                    kind.label,
-                    color = if (enabled) TextPrimary else TextMuted,
-                    fontFamily = AppFont,
-                    style = MaterialTheme.typography.titleLarge,
-                )
-                Text(kind.blurb, color = TextFaint, fontFamily = AppFont, style = MaterialTheme.typography.bodySmall)
-            }
+    ServerKindTile(
+        kind = kind,
+        title = kind.label,
+        subtitle = kind.blurb,
+        enabled = enabled,
+        markSize = 36.dp,
+        subtitleMaxLines = 3,
+        trailing = {
             if (enabled) Icon(Icons.Default.ChevronRight, null, tint = TextMuted, modifier = Modifier.size(20.dp))
-        }
-    }
+        },
+        onClick = onClick,
+    )
 }
 
 // ── One server's settings ─────────────────────────────────────────────────
