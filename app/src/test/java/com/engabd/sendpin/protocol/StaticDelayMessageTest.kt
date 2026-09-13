@@ -59,16 +59,17 @@ class StaticDelayMessageTest {
     }
 
     /**
-     * The wire shape the official Music Assistant app sends, and nothing the server
-     * could read as a player in trouble: `state` lives under `player`, is always
-     * "synchronized", and `available` is always true. There is exactly one `state`
-     * key — the legacy top-level one is gone.
+     * `client/state` carries only what the spec defines. The pre-spec `state` field
+     * ("synchronized" / "error") is gone from both levels: the server used to answer it
+     * with stream rebuilds, and the spec now forbids undefined fields outright. Whether
+     * this player is fit to play is said once, in `available`, when the clock is ready.
      */
     @Test
-    fun `client state is always synchronized and available`() {
-        val encoded = json.encodeToString(SendspinClientState(payload = ClientStatePayload()))
-        assertTrue("\"player\":{\"state\":\"synchronized\"" in encoded, encoded)
+    fun `client state has no state field at any level`() {
+        val encoded = json.encodeToString(
+            SendspinClientState(payload = ClientStatePayload(available = true, player = PlayerStateInfo(volume = 1, muted = false, staticDelayMs = 0))),
+        )
         assertTrue("\"available\":true" in encoded, encoded)
-        assertEquals(1, Regex("\"state\"").findAll(encoded).count(), encoded)
+        assertEquals(0, Regex("\"state\"").findAll(encoded).count(), encoded)
     }
 }

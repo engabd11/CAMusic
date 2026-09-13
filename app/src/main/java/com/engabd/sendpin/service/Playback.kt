@@ -30,8 +30,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import com.engabd.sendpin.data.Http
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.JsonObject
@@ -104,6 +108,12 @@ class Playback(private val app: Context) {
 
     private val _connected = MutableStateFlow(false); val connected: StateFlow<Boolean> = _connected
     private val _connectionStatus = MutableStateFlow("Disconnected"); val connectionStatus: StateFlow<String> = _connectionStatus
+
+    /** How the current Sendspin session was admitted — encrypted or not, guest or paired. */
+    private val _security = MutableStateFlow<SendspinClient.Security?>(null); val security: StateFlow<SendspinClient.Security?> = _security
+
+    /** The phone's Sendspin identity and pairing records, for the settings screen. */
+    fun pairingStore() = PlayerIdentity.pairingStore(app)
 
     private val _trackTitle = MutableStateFlow(""); val trackTitle: StateFlow<String> = _trackTitle
     private val _artist = MutableStateFlow(""); val artist: StateFlow<String> = _artist
@@ -560,7 +570,11 @@ class Playback(private val app: Context) {
         sessionJob = SupervisorJob(scope.coroutineContext[Job])
         sessionScope = CoroutineScope(sessionJob + Dispatchers.Default)
 
-        val c = SendspinClient(); client = c
+        val store = PlayerIdentity.pairingStore(app)
+        val c = SendspinClient(store); client = c
+        // What this engine really needs at a stream head — see the engine's constants.
+        c.requiredLeadTimeMs = SendspinNativeEngine.REQUIRED_LEAD_TIME_MS
+        c.minBufferMs = SendspinNativeEngine.MIN_BUFFER_MS
         // Propagate the current idle state — if nothing is playing when the client
         // connects, start in idle mode rather than running fast timer loops until
         // the next isPlaying transition. The connection service drives this from
@@ -597,6 +611,7 @@ class Playback(private val app: Context) {
         }
 
         sessionScope.launch { c.state.collect { _connected.value = it == SendspinClient.State.CONNECTED } }
+        sessionScope.launch { c.security.collect { _security.value = it } }
         sessionScope.launch { c.statusText.collect { _connectionStatus.value = it } }
         sessionScope.launch { c.events.collect { _connectionLog.value = it } }
         sessionScope.launch {
@@ -719,6 +734,10 @@ class Playback(private val app: Context) {
                     _isPlaying.value = false
                     SendspinService.idleMedia(app)
                 }
+            }
+
+            override fun onStreamReconfigure(format: StreamStartPlayerInfo) {
+                eng.reconfigure(format)
             }
 
             override fun onStreamClear() {
@@ -923,7 +942,11 @@ class Playback(private val app: Context) {
                 bitPerfect = engineBitPerfect,
                 maxSampleRate = maxRate,
             )
-            c.connect(url, playerId, name, deviceInfo, formats, token)
+            // The dialect comes from the server's schema version, never from probing
+            // (a failed encrypted handshake is never downgraded to cleartext).
+            val base = httpBase(url)
+            val encryption = resolveEncryption(base)
+            c.connect(sendspinEndpoints(base, token), encryption, name, deviceInfo, formats)
             // The hello only *registers* a name; a player Music Assistant already
             // knows keeps whatever it was first registered under until its config is
             // changed. Push both the name and the format preference over the MA API
@@ -1293,6 +1316,7 @@ class Playback(private val app: Context) {
         client?.close(reason); client = null
         idleJob?.cancel(); idleJob = null
         _connected.value = false
+        _security.value = null
         _connectionStatus.value = "Disconnected"
         _currentFormat.value = "-"
         _streamQuality.value = null
@@ -1304,13 +1328,61 @@ class Playback(private val app: Context) {
         }
     }
 
+    /**
+     * The app's canonical form of a Music Assistant server: its base URL plus
+     * `/sendspin`. Only a label — [startSendspin] derives the real endpoints from the
+     * base it contains — kept because [connectToServer] recovers the MA base from it.
+     */
     private fun sendspinUrlFrom(base: String): String {
         val ws = base.trim().replace("https://", "wss://").replace("http://", "ws://")
             .let { if (it.startsWith("ws")) it else "ws://$it" }.trimEnd('/')
         return "$ws/sendspin"
     }
 
+    /**
+     * The Sendspin endpoints for a Music Assistant base URL: the native server on `:8927`
+     * (no authentication; what the MA docs give for clients), with the `:8095/sendspin`
+     * proxy — an authenticated pass-through to the same server — as the fallback for a
+     * network where only the web port is reachable. The proxy needs the API token.
+     */
+    private fun sendspinEndpoints(base: String, token: String?): List<SendspinClient.Endpoint> {
+        val host = base.substringAfter("://").substringBefore('/').substringBeforeLast(':')
+        val native = SendspinClient.Endpoint("ws://$host:$SENDSPIN_SERVER_PORT/sendspin")
+        val proxyScheme = if (base.startsWith("https://")) "wss://" else "ws://"
+        val proxy = SendspinClient.Endpoint(proxyScheme + base.substringAfter("://").trimEnd('/') + "/sendspin", token)
+        return if (token.isNullOrBlank()) listOf(native) else listOf(native, proxy)
+    }
+
+    /**
+     * Encrypted (spec) or legacy (cleartext) Sendspin, from the server's `/info`: MA
+     * schema 45 (release 2.10) is the first with the Noise handshake. Unknown — the
+     * endpoint unreachable or the JSON odd — is taken as current, so a phone never
+     * quietly drops to cleartext against a server that could have done better.
+     */
+    private suspend fun resolveEncryption(base: String): SendspinClient.Encryption {
+        val schema = runCatching {
+            withTimeoutOrNull(3_000) {
+                withContext(Dispatchers.IO) {
+                    val req = okhttp3.Request.Builder().url("$base/info").build()
+                    Http.base.newCall(req).execute().use { resp ->
+                        val body = resp.body?.string() ?: return@withContext null
+                        kotlinx.serialization.json.Json.parseToJsonElement(body).jsonObject["schema_version"]
+                            ?.jsonPrimitive?.content?.toIntOrNull()
+                    }
+                }
+            }
+        }.getOrNull()
+        android.util.Log.i("Playback", "MA schema_version=$schema → " + if (schema != null && schema < ENCRYPTED_MIN_SCHEMA) "legacy Sendspin" else "encrypted Sendspin")
+        return if (schema != null && schema < ENCRYPTED_MIN_SCHEMA) SendspinClient.Encryption.LEGACY else SendspinClient.Encryption.ENCRYPTED
+    }
+
     private companion object {
+        /** Music Assistant's Sendspin server port (the MA docs' `ws://host:8927/sendspin`). */
+        const val SENDSPIN_SERVER_PORT = 8927
+
+        /** First MA schema version whose Sendspin server speaks the encrypted protocol. */
+        const val ENCRYPTED_MIN_SCHEMA = 45
+
         /**
          * How long between group-state polls when nothing has hinted otherwise.
          *

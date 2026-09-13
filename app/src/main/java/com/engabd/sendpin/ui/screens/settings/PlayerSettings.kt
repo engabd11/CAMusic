@@ -196,6 +196,7 @@ internal fun PlayerSection(
         // taken meant leaving the page that changed it. Every row of it is about one
         // phone's registration with one Music Assistant server, which is this page.
         MaPlayerStatusCard(viewModel, settings)
+        SendspinPairingCard(viewModel, accent)
 
         SettingsCard(
             title = "Announcements",
@@ -419,6 +420,84 @@ private fun MaPlayerStatusCard(viewModel: PlayerViewModel, settings: AppSettings
                             android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS,
                         ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
                     )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * How Music Assistant is allowed to trust this phone (Sendspin spec §Pairing).
+ *
+ * A server that connects encrypted and unpaired is a "guest": it can play, and MA
+ * approves that on its own. Pairing is the one-time step that authenticates both sides
+ * for good, and the phone's half of it is the token shown here — the operator pastes it
+ * into MA under the player's Setup. Nothing here is needed for music to work; it is
+ * where a household that wants the stronger footing finds the pieces.
+ */
+@Composable
+private fun SendspinPairingCard(viewModel: PlayerViewModel, accent: Color) {
+    val security by viewModel.security.collectAsStateWithLifecycle()
+    val store = viewModel.pairingStore
+    var unpaired by remember { mutableStateOf(store.unpairedAccessEnabled) }
+    var records by remember { mutableStateOf(store.records().filter { it.serverId != null }) }
+    val token = remember(records) { store.pairingToken() }
+    val context = LocalContext.current
+
+    SettingsCard(
+        title = "Pairing and trust",
+        lead = "How Music Assistant is connected to this phone, and the token that lets it pair for good.",
+        info = "Every connection to a current Music Assistant is encrypted end to end. Without a " +
+            "pairing it is a guest session: it works, and Music Assistant allows it on its own, " +
+            "but neither side can prove who the other is. Pairing fixes that once: open this " +
+            "player's Setup in Music Assistant, choose to pair, and paste the token below. From " +
+            "then on both sides recognise each other by key.\n\nTurning guest access off makes " +
+            "pairing mandatory: an unpaired server is refused until it pairs.\n\nAn older Music " +
+            "Assistant (before 2.10) cannot encrypt; the phone then speaks its cleartext " +
+            "protocol, and pairing is not available.",
+    ) {
+        StatusPanel {
+            val session = security
+            StatusRow(
+                "Session",
+                when {
+                    session == null -> "Not connected"
+                    !session.encrypted -> "Cleartext (legacy server)"
+                    session.category == com.engabd.sendpin.protocol.noise.PskCategory.LONG_TERM -> "Encrypted · paired"
+                    session.category == com.engabd.sendpin.protocol.noise.PskCategory.PAIRING -> "Encrypted · pairing…"
+                    else -> "Encrypted · guest"
+                },
+            )
+            StatusRow("Server", session?.serverName ?: "—")
+            StatusRow("Paired servers", if (records.isEmpty()) "none" else records.size.toString())
+        }
+        ToggleRow(
+            title = "Allow guest access",
+            subtitle = "Let an unpaired Music Assistant play to this phone",
+            checked = unpaired,
+            accent = accent,
+        ) {
+            unpaired = it
+            store.unpairedAccessEnabled = it
+        }
+        CardDivider()
+        Text("Pairing token", color = TextPrimary, fontFamily = AppFont, style = MaterialTheme.typography.titleLarge)
+        Text(
+            token,
+            color = TextSecondary,
+            fontFamily = MonoFont,
+            style = MaterialTheme.typography.bodySmall,
+            lineHeight = MaterialTheme.typography.bodySmall.lineHeight * 1.3f,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OledButton("Copy token", accent = accent) {
+                val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("Sendspin pairing token", token))
+            }
+            if (records.isNotEmpty()) {
+                OledButton("Forget pairings", accent = accent, outline = true) {
+                    records.forEach { store.removeRecord(it.pskId) }
+                    records = store.records().filter { it.serverId != null }
                 }
             }
         }

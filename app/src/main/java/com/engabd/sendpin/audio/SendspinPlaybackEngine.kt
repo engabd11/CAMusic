@@ -15,6 +15,13 @@ import com.engabd.sendpin.protocol.StreamStartPlayerInfo
  */
 interface SendspinPlaybackEngine {
     fun start(format: StreamStartPlayerInfo)
+
+    /**
+     * A `stream/start` for the stream already open: the spec's in-place configuration
+     * update, which must not clear buffers. The same format is a no-op; a new one
+     * rebuilds the decoder for what arrives next while the ring plays on.
+     */
+    fun reconfigure(format: StreamStartPlayerInfo)
     fun submit(frame: ByteArray)
 
     /**
