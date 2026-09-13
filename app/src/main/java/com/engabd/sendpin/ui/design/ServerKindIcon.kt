@@ -89,6 +89,43 @@ private fun serverKindLogoRes(kind: ServerKind): Int? = when (kind) {
 }
 
 /**
+ * The one colour each [ServerKind] is known by, for surfaces that want to carry a
+ * server's identity without drawing its whole logo: the library switcher's rows
+ * bleed this through their glass, so the Jellyfin row is faintly Jellyfin-blue and
+ * the Plex row faintly Plex-gold before the name is read.
+ *
+ * Brand colours where a brand has one (Spotify's green, Plex's gold, Emby's green,
+ * Jellyfin's blue, Navidrome's blue, Kodi's cyan, the cloud drives' own blues);
+ * for the kinds that are protocols rather than products — a phone's own files, an
+ * MPD box, SMB — a hue chosen so no two neighbours in the picker share one.
+ * Exhaustive on purpose, like [serverKindIcon]: a new kind must pick a colour.
+ */
+fun serverKindColor(kind: ServerKind): Color = when (kind) {
+    ServerKind.MUSIC_ASSISTANT -> Color(0xFF2E9BEA)
+    ServerKind.NAVIDROME -> Color(0xFF3C8DCC)
+    ServerKind.SUBSONIC -> Color(0xFF5B7FE0)
+    ServerKind.JELLYFIN -> Color(0xFF00A4DC)
+    ServerKind.EMBY -> Color(0xFF52B54B)
+    ServerKind.PLEX -> Color(0xFFE5A00D)
+    ServerKind.SPOTIFY -> Color(0xFF1ED760)
+    ServerKind.QOBUZ -> Color(0xFF61A1DE)
+    ServerKind.TIDAL -> Color(0xFF00E0E0)
+    ServerKind.AUDIOBOOKSHELF -> Color(0xFFC98A2B)
+    ServerKind.KODI -> Color(0xFF17B2E7)
+    ServerKind.SMB -> Color(0xFF8E9AAF)
+    ServerKind.WEBDAV -> Color(0xFF7A8FA6)
+    ServerKind.GOOGLE_DRIVE -> Color(0xFF4285F4)
+    ServerKind.ONEDRIVE -> Color(0xFF0078D4)
+    ServerKind.DROPBOX -> Color(0xFF0061FF)
+    ServerKind.BOX -> Color(0xFF0061D5)
+    ServerKind.PCLOUD -> Color(0xFF17BED0)
+    ServerKind.LOCAL -> Color(0xFF9E9E9E)
+    ServerKind.DOWNLOADS -> Color(0xFF4CAF7D)
+    ServerKind.MPD -> Color(0xFFF26A21)
+    ServerKind.FOOBAR2000 -> Color(0xFFE8B84A)
+}
+
+/**
  * Marks that are a single colour by design and ship here in white, so they read on
  * the dark surfaces every one of these services uses. On a light theme they take
  * the text colour instead — the only tinting a logo ever gets, and only because a

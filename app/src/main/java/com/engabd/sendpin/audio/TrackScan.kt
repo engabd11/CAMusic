@@ -54,8 +54,8 @@ data class TrackScan(
     /**
      * How much of the track was actually analysed, in seconds.
      *
-     * Usually [durationS]. It is less on a track past [TrackScanner.MAX_TRACK_S], where
-     * the decode stops and the grid simply ends — the show falls back to working it out
+     * Usually [durationS]. It is less on a track past what [TrackScanner.maxAnalysableSeconds]
+     * allows on this phone, where the decode stops and the grid simply ends — the show falls back to working it out
      * live from there. That used to be invisible: a half-analysed DJ set presented
      * itself as analysed, and the moment the lights started guessing looked like a bug.
      */
@@ -105,8 +105,23 @@ data class TrackScan(
     /** The scan covers the whole track, rather than stopping at the analysis cap. */
     val complete: Boolean get() = analysedS >= durationS - 1f
 
-    /** A newer analyser has since been shipped, so re-reading this track would improve it. */
-    val outdated: Boolean get() = analyserVersion < ANALYSER_VERSION
+    /**
+     * The scan stopped at the analysis cap rather than because the audio ran out.
+     *
+     * Tells a track that is genuinely longer than the phone can hold an analysis of
+     * apart from a fetch that was cut short — the first is a fact about the track,
+     * the second is worth fetching again. The margin is a few seconds because the
+     * cap is applied to input timestamps and the decoder drains a little past it.
+     */
+    val withinCap: Boolean get() = analysedS >= TrackScanner.maxAnalysableSeconds() - 5f
+
+    /**
+     * Re-reading this track would improve it: a newer analyser has since been
+     * shipped, or the scan stops short of the track for a reason that was not the
+     * analysis cap — a cut-off fetch, or the old twelve-minute cap on a phone that
+     * can now hold more. Either way "Refresh" is the honest fix, not "Delete".
+     */
+    val outdated: Boolean get() = analyserVersion < ANALYSER_VERSION || (!complete && !withinCap)
 
     /**
      * The grid is worth scheduling the show against.

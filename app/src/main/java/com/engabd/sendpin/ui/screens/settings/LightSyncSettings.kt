@@ -8,9 +8,7 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -553,6 +551,9 @@ private fun TrackAnalysisCard(settings: AppSettings, accent: Color, advanced: Bo
             playing?.let { track -> PlayingTrackScan(track.title, playingScan, accent) }
         }
 
+        // ── The track being read right now ───────────────────────────────
+        progress.current?.let { title -> CurrentScan(title, progress.currentFraction, accent) { scans.skipCurrent() } }
+
         // ── The sweep, while it runs ─────────────────────────────────────
         if (progress.sweeping || progress.waitingForNetwork) {
             SweepProgress(progress, accent)
@@ -576,9 +577,13 @@ private fun TrackAnalysisCard(settings: AppSettings, accent: Color, advanced: Bo
             )
         }
 
-        Row(
-            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+        // Wrapping rather than scrolling sideways: with Advanced on this row held five
+        // pills, and the last two lived off the right edge of the screen where nobody
+        // scrolls a settings card to find them.
+        FlowRow(
+            Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             if (progress.sweeping) {
                 Pill("Stop sweep", true) { scans.cancelSweep() }
@@ -652,6 +657,39 @@ private fun PlayingTrackScan(title: String, scan: TrackScan?, accent: Color) {
 }
 
 /**
+ * The track being decoded right now: its name, how far through it the decode is, and
+ * a way past it.
+ *
+ * The bar is the decode's own position in the file, so it moves at the speed the
+ * phone reads audio — seconds for a song, a minute or two for a long mix. Skip is for
+ * exactly that mix: the one track in a sweep whose analysis is not worth waiting on.
+ */
+@Composable
+private fun CurrentScan(title: String, fraction: Float?, accent: Color, onSkip: () -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        FieldLabel("Analysing now")
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    title, color = TextSecondary, fontFamily = AppFont, fontSize = 12.sp,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
+                // Indeterminate before the first buffer lands (the fetch, on a streamed
+                // track) and for a file whose container gives no length: a bar that
+                // sits at zero reads as stuck, a faint full one reads as busy.
+                if (fraction != null) MeterBar(fraction, color = accent)
+                else MeterBar(1f, color = accent.copy(alpha = 0.25f))
+            }
+            Text(
+                fraction?.let { "${(it * 100).toInt()}%" } ?: "…",
+                color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
+            )
+            Pill("Skip", false, onClick = onSkip)
+        }
+    }
+}
+
+/**
  * How far through the sweep is, and why it is not moving when it is not.
  *
  * A count with no total cannot say whether a sweep is nearly done or has barely started,
@@ -665,7 +703,7 @@ private fun SweepProgress(progress: ScanProgress, accent: Color) {
         val total = progress.sweepTotal
         if (total > 0) {
             Text(
-                "$done of $total" + (progress.current?.let { " · $it" } ?: ""),
+                "$done of $total",
                 color = TextMuted, fontFamily = AppFont, fontSize = 11.sp,
                 maxLines = 1, overflow = TextOverflow.Ellipsis,
             )

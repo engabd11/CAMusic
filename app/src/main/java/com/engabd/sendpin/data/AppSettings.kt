@@ -190,10 +190,12 @@ class AppSettings(private val context: Context) {
         // SpeedLimitDatabase.databaseVersion() reads.
         private val SPEED_LIMIT_AUTO_DETECT = booleanPreferencesKey("speed_limit_auto_detect")
 
-        // Self-hosted crash reporting
-        private val CRASH_GITHUB_REPO = stringPreferencesKey("crash_github_repo") // owner/repo, e.g. engabd11/CAMusic
-        private val CRASH_GITHUB_TOKEN = stringPreferencesKey("crash_github_token") // encrypted PAT for auto-submit
-        private val CRASH_AUTO_UPLOAD = booleanPreferencesKey("crash_auto_upload") // false = manual share only
+        // Crash reporting used to be able to post to GitHub with a stored token. The
+        // keys stay named so [forgetCrashUploadCredentials] can remove what an older
+        // build left behind; nothing writes them any more.
+        private val CRASH_GITHUB_REPO = stringPreferencesKey("crash_github_repo")
+        private val CRASH_GITHUB_TOKEN = stringPreferencesKey("crash_github_token")
+        private val CRASH_AUTO_UPLOAD = booleanPreferencesKey("crash_auto_upload")
 
         // Direct Hue Bridge Light Sync
         private val HUE_BRIDGE_IP = stringPreferencesKey("hue_bridge_ip")
@@ -468,7 +470,7 @@ class AppSettings(private val context: Context) {
          */
         private val ENCRYPTED_KEY_NAMES = setOf(
             MA_PASSWORD.name, NAV_PASSWORD.name, HA_TOKEN.name,
-            HUE_APP_KEY.name, HUE_CLIENT_KEY.name, CRASH_GITHUB_TOKEN.name,
+            HUE_APP_KEY.name, HUE_CLIENT_KEY.name,
         )
 
         /** Not a real preference key — [SERVERS]' decrypted export lives under this in the JSON. */
@@ -2408,27 +2410,33 @@ class AppSettings(private val context: Context) {
         context.dataStore.edit { it[PHONE_CONDUCTOR_ENABLED] = on }
     }
 
-    // ── Crash reporting ────────────────────────────────────────────────────
+    // ── Diagnostics ────────────────────────────────────────────────────────
 
-    /** GitHub repo in owner/repo form, e.g. "engabd11/CAMusic". */
-    val crashGitHubRepo: Flow<String> = pref { it[CRASH_GITHUB_REPO] ?: "engabd11/CAMusic" }
-
-    /** Encrypted personal access token for automatic GitHub issue creation. */
-    val crashGitHubToken: Flow<String> = pref { Crypto.decrypt(it[CRASH_GITHUB_TOKEN] ?: "") }
-
-    /** Whether to attempt an automatic GitHub issue on crash. */
-    val crashAutoUpload: Flow<Boolean> = pref { it[CRASH_AUTO_UPLOAD] ?: false }
-
-    suspend fun setCrashGitHubRepo(repo: String) {
-        context.dataStore.edit { it[CRASH_GITHUB_REPO] = repo.trim() }
+    /**
+     * Remove the GitHub repository, token and auto-upload switch an older build may
+     * have stored. The token in particular is a secret that no longer has a reader,
+     * and a secret with no reader should not sit on the disk.
+     */
+    suspend fun forgetCrashUploadCredentials() = context.dataStore.edit {
+        it.remove(CRASH_GITHUB_REPO)
+        it.remove(CRASH_GITHUB_TOKEN)
+        it.remove(CRASH_AUTO_UPLOAD)
     }
 
-    suspend fun setCrashGitHubToken(token: String) {
-        context.dataStore.edit { it[CRASH_GITHUB_TOKEN] = Crypto.encrypt(token.trim()) }
+    /**
+     * Every stored preference as text, for the debug bundle.
+     *
+     * Raw values, keyed by preference name — the bundle filters out anything that
+     * looks like a secret by name, and the encrypted keys are left encrypted here
+     * regardless, so a name the filter misses still gives away nothing readable.
+     */
+    suspend fun diagnosticSnapshot(): Map<String, String> {
+        val prefs = context.dataStore.data.first()
+        return prefs.asMap().entries.associate { (key, value) ->
+            key.name to when {
+                key.name in ENCRYPTED_KEY_NAMES || key.name == SERVERS.name -> "<encrypted>"
+                else -> value.toString()
+            }
+        }
     }
-
-    suspend fun setCrashAutoUpload(auto: Boolean) {
-        context.dataStore.edit { it[CRASH_AUTO_UPLOAD] = auto }
-    }
-
 }

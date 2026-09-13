@@ -171,7 +171,7 @@ internal fun subPagesFor(section: SettingsSection): List<SubPage> = when (sectio
         SubPage(
             SYS_DIAGNOSTICS_ROUTE,
             "Diagnostics",
-            "Where a crash goes, and how far it gets without being asked",
+            "A debug file to attach to a bug report",
             Icons.Default.BugReport,
         ),
         SubPage(

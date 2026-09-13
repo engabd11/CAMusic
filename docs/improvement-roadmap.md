@@ -421,8 +421,11 @@ Genuinely still open:
   (`car/CarMediaLibraryService.kt`) with its own browse tree and a `ShadePlayer`-style
   session facade, beside the two existing media services rather than replacing
   either. Wants a Desktop Head Unit pass and a real head unit.
-- **Crash reporting throughput.** `crash/CrashReporter` stores locally and can
-  post to GitHub, but only uploads the most recent crash per launch.
+- **Crash reporting is a file, by design.** `crash/CrashReporter` stores crashes
+  locally and `crash/DebugBundle` folds them, the app's own logcat, playback and
+  analysis state and a redacted settings snapshot into one text file the user
+  saves or shares from Settings › Diagnostics. Nothing uploads itself; the
+  GitHub-token path was removed.
 - **No UI or service-lifecycle instrumented tests.** Two androidTest files pin
   specific regressions but do not cover the audio path end to end.
 - **The oversized files.** `LibraryViewModel.kt` (2,483 lines), `Playback.kt`

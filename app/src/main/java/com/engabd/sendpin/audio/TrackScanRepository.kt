@@ -7,11 +7,15 @@ import android.net.NetworkCapabilities
 import android.util.Log
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.data.Http
+import com.engabd.sendpin.library.MusicSource
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -48,6 +52,20 @@ import java.io.File
 class TrackScanRepository(
     private val context: Context,
     private val settings: AppSettings = AppSettings(context),
+    /**
+     * The library this phone plays from, for the original file behind a track.
+     *
+     * A track's [LocalTrack.streamUrl] is what the *player* opens, and on a Jellyfin
+     * or Navidrome set to transcode that is a live ffmpeg stream: throttled once it
+     * runs ahead of a playback position nobody is reporting, and cut off when the
+     * server decides the session is dead. The scanner is not playing — it wants the
+     * whole file, at once, at whatever speed the network gives — and every library
+     * that transcodes also serves the stored file untouched. That is the copy the
+     * analysis is read from wherever one can be named; the stream is the fallback.
+     */
+    private val sourceFor: () -> MusicSource? = {
+        (context.applicationContext as? com.engabd.sendpin.SendpinApp)?.musicSource?.value
+    },
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -115,6 +133,15 @@ class TrackScanRepository(
         synchronized(failures) { (failures[key] ?: 0) >= MAX_ATTEMPTS }
 
     private val http: OkHttpClient by lazy { Http.transfer() }
+
+    /**
+     * The scan being decoded right now, so [skipCurrent] has something to cancel.
+     *
+     * A child of the worker rather than the worker itself: cancelling the worker
+     * would end the queue, and the point of a skip is that the queue carries on
+     * with the next track.
+     */
+    @Volatile private var currentJob: Job? = null
 
     init {
         scope.launch { worker() }
@@ -207,6 +234,19 @@ class TrackScanRepository(
             if (store.has(key) || givenUpOn(key)) return@launch
             enqueue(ScanRequest(track, key, urgent, rescan = false))
         }
+    }
+
+    /**
+     * Abandon the track being analysed right now and move on to the next one.
+     *
+     * For the forty-minute mix in the middle of a sweep of three-minute songs: it is
+     * the one track whose analysis is not worth the wait, and without this the only
+     * way past it was to stop the whole sweep. The track is left alone for the rest
+     * of the session — a skip is a decision, not a failure — but it is listed with
+     * the failures as retryable, so "Retry" brings it back if the decision changes.
+     */
+    fun skipCurrent() {
+        currentJob?.cancel(CancellationException("skipped"))
     }
 
     /** Throw away [track]'s scan and analyse it again from scratch. */
@@ -344,7 +384,24 @@ class TrackScanRepository(
             }
             var outcome = Outcome.DONE
             try {
-                outcome = run(request)
+                // Run as a child so a skip cancels this request and nothing else. If
+                // the child is cancelled, `await` rethrows its cancellation — which is
+                // not the worker's own, so it is caught here rather than propagated.
+                outcome = coroutineScope {
+                    val job = async { run(request) }
+                    currentJob = job
+                    try {
+                        job.await()
+                    } catch (e: CancellationException) {
+                        // The worker being cancelled arrives the same way; tell the
+                        // two apart by asking whether *we* are still meant to run.
+                        ensureActive()
+                        noteSkipped(request)
+                        Outcome.DONE
+                    } finally {
+                        currentJob = null
+                    }
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -354,6 +411,10 @@ class TrackScanRepository(
                     queued.remove(request.key)
                     queued.size
                 }
+                // Back of the queue rather than straight away, so a server having a bad
+                // moment gets the rest of the sweep's worth of time before it is asked
+                // again. `rescan` so the stored-scan check does not short-circuit it.
+                if (outcome == Outcome.RETRY) scope.launch { enqueue(request.copy(rescan = true)) }
                 _progress.update {
                     // A parked track has not been swept — it is waiting. Counting it as
                     // done is what let a sweep report completion over an empty result.
@@ -364,6 +425,7 @@ class TrackScanRepository(
                     it.copy(
                         pending = stillQueued,
                         current = null,
+                        currentFraction = null,
                         sweepDone = done,
                         sweeping = it.sweeping && left > 0,
                     )
@@ -373,7 +435,11 @@ class TrackScanRepository(
     }
 
     /** What became of one request, which is not always "it ran". */
-    private enum class Outcome { DONE, PARKED }
+    private enum class Outcome {
+        DONE, PARKED,
+        /** The fetch came up short; the request goes back on the queue for another go. */
+        RETRY,
+    }
 
     private suspend fun run(request: ScanRequest): Outcome {
         if (!request.rescan) {
@@ -392,7 +458,7 @@ class TrackScanRepository(
         // A rescan is exempt: it is something the user just asked for by hand.
         if (!request.rescan && !settings.lightSyncPrescan.first()) return Outcome.DONE
 
-        _progress.update { it.copy(current = request.track.title, error = null) }
+        _progress.update { it.copy(current = request.track.title, currentFraction = null, error = null) }
 
         val local = request.track.localPath?.takeIf { File(it).exists() }
         val temp: File?
@@ -401,15 +467,15 @@ class TrackScanRepository(
             temp = null
             path = local
         } else {
-            val url = request.track.streamUrl
-            if (url.isNullOrBlank()) return Outcome.DONE
+            val urls = analysisUrls(request.track)
+            if (urls.isEmpty()) return Outcome.DONE
             if (settings.lightSyncPrescanWifiOnly.first() && isMetered()) {
                 // Not a failure — the setting is being honoured. Held until the
                 // connection is unmetered, and counted so the screen can say so.
                 park(request)
                 return Outcome.PARKED
             }
-            temp = fetch(url) ?: run {
+            temp = urls.firstNotNullOfOrNull { fetch(it) } ?: run {
                 noteFailure(request, "could not fetch the audio", ScanFailure.DECODE)
                 return Outcome.DONE
             }
@@ -417,12 +483,36 @@ class TrackScanRepository(
         }
 
         try {
-            when (val result = TrackScanner.scan(path)) {
+            val result = TrackScanner.scan(path) { fraction ->
+                _progress.update { it.copy(currentFraction = fraction) }
+            }
+            when (result) {
                 is ScanResult.Ok -> {
-                    synchronized(failures) { failures.remove(request.key) }
-                    synchronized(failedRequests) { failedRequests.remove(request.key) }
-                    store.save(request.key, result.scan)
-                    _completed.tryEmit(request.key)
+                    val scan = result.scan
+                    // A scan that stops short of the track's own length is what
+                    // "analysed for the first two minutes, the rest worked out live"
+                    // looks like from the inside. From a fetched file that is almost
+                    // always the fetch — a transcode the server cut off — and the
+                    // fix is to fetch it again, not to keep the fragment. A local file
+                    // that reads short is the file, and re-reading it gives the same
+                    // answer, so its scan is kept as the best there is. So is the
+                    // fragment once the fetch has been given its full run of tries:
+                    // a partial grid still beats none for the first play.
+                    val short = !scan.complete && !scan.withinCap
+                    val attemptsLeft = synchronized(failures) { (failures[request.key] ?: 0) + 1 < MAX_ATTEMPTS }
+                    if (short && temp != null && attemptsLeft) {
+                        noteFailure(
+                            request,
+                            "only ${(scan.analysedS / 60f).toInt()} of ${(scan.durationS / 60f).toInt()} min arrived, trying again",
+                            ScanFailure.DECODE,
+                        )
+                        return Outcome.RETRY
+                    } else {
+                        synchronized(failures) { failures.remove(request.key) }
+                        synchronized(failedRequests) { failedRequests.remove(request.key) }
+                        store.save(request.key, scan)
+                        _completed.tryEmit(request.key)
+                    }
                 }
                 is ScanResult.Failed -> noteFailure(request, describe(result), result.reason)
             }
@@ -430,6 +520,42 @@ class TrackScanRepository(
             temp?.delete()
         }
         return Outcome.DONE
+    }
+
+    /**
+     * Where to fetch [track]'s audio for analysis, best first.
+     *
+     * The library's original file where the track can be tied to the active library
+     * (see [sourceFor]), then the player's own stream. Each is tried in turn by
+     * [run]: a server that refuses downloads to this user falls through to the
+     * stream, which is what it was reading before.
+     */
+    private fun analysisUrls(track: LocalTrack): List<String> {
+        val out = LinkedHashSet<String>()
+        val source = sourceFor()
+        if (source != null && track.scrobbleProvider == source.providerId) {
+            track.scrobbleId?.takeIf { it.isNotBlank() }?.let { id ->
+                runCatching { source.downloadUrl(id) }.getOrNull()
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let(out::add)
+            }
+        }
+        track.streamUrl?.takeIf { it.isNotBlank() }?.let(out::add)
+        return out.toList()
+    }
+
+    private fun noteSkipped(request: ScanRequest) {
+        Log.i(TAG, "Skipped analysis of \"${request.track.title}\"")
+        synchronized(failures) { failures[request.key] = MAX_ATTEMPTS }
+        val note = ScanFailureNote(request.track.title, "skipped", retryable = true)
+        val notes = synchronized(failedRequests) {
+            failedRequests[request.key] = request to note
+            while (failedRequests.size > MAX_REMEMBERED_FAILURES) {
+                failedRequests.remove(failedRequests.keys.first())
+            }
+            failedRequests.values.map { it.second }.asReversed()
+        }
+        _progress.update { it.copy(failures = notes) }
     }
 
     private fun park(request: ScanRequest) {
@@ -488,9 +614,22 @@ class TrackScanRepository(
         val file = File(dir, "scan-${System.nanoTime()}.audio")
         try {
             http.newCall(Request.Builder().url(url).build()).execute().use { response ->
-                if (!response.isSuccessful) return@withContext null
+                if (!response.isSuccessful) {
+                    Log.i(TAG, "Fetch for analysis refused: HTTP ${response.code}")
+                    return@withContext null
+                }
                 val body = response.body ?: return@withContext null
-                file.outputStream().use { out -> body.byteStream().copyTo(out, 64 * 1024) }
+                val copied = file.outputStream().use { out -> body.byteStream().copyTo(out, 64 * 1024) }
+                // A server that says how long the file is and then sends less has cut
+                // the transfer off, and what arrived is a fragment. Analysing a fragment
+                // produces a scan of the first however-many minutes that then presents
+                // itself as the track; better to say so and try again.
+                val promised = body.contentLength()
+                if (promised > 0 && copied < promised) {
+                    Log.w(TAG, "Fetch for analysis short: $copied of $promised bytes")
+                    file.delete()
+                    return@withContext null
+                }
             }
             file
         } catch (e: CancellationException) {
@@ -569,6 +708,11 @@ class TrackScanRepository(
 data class ScanProgress(
     /** The track being analysed right now, or null when idle. */
     val current: String? = null,
+    /**
+     * How far through [current] the decode is, 0..1, or null before the first buffer
+     * and for a file whose container does not say how long it is.
+     */
+    val currentFraction: Float? = null,
     /** How many are queued, the current one included. */
     val pending: Int = 0,
     /** A library sweep is running. */
