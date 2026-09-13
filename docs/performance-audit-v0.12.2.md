@@ -21,7 +21,7 @@ was rebuilt, reinstalled and re-measured. The fixes are in the same PR as this d
 | F4 | `MaNowPlaying`'s event-driven refresh had no background gate and parsed on the main thread | P1 | **Fixed** |
 | F5 | Play button dead after a queue ended (`play()` is a no-op in `STATE_ENDED`) | P1 | **Fixed** |
 | F6 | Hue bridge id hex-encoded twice on mDNS discovery → every bridge call after pairing failed hostname verification | P0 | **Fixed** + self-heal |
-| F7 | Grouped playback: the phone played ~96 ms early ("unreported HAL latency" from the wrong output path) | P0 | **Fixed** |
+| F7 | Grouped playback: the phone played ~96 ms early ("unreported HAL latency" from the wrong output path) | P0 | **Fixed** (clock offset then verified within ~2 ms of an independent measurement) |
 | F8 | The phone never advertised `set_static_delay`, so MA offered it no static playback delay | P1 | **Fixed** |
 | F9 | Media session retired 60 s into a pause; media keys then went to another app | P2 | **Fixed** (kept while an item remains, 30 min cap) |
 | F10 | Glass backdrop blur: ~3 ms RenderThread per frame, a fifth of a core with the wave bar, invisible on today's backdrop | P2 | **User toggle**, default off |
@@ -303,22 +303,57 @@ server: identical `server_id`, clocks within 0.23 ms.
   found the hard way). Advertised there now; MA creates the phone's "Static playback delay"
   entry.
 
-### 7.3 The PC, measured
-Chirp through PortAudio vs the Stereo Mix loopback, group paused for silence:
+### 7.3 The PC — a measurement, then its correction
 
-| Output path | PortAudio's claimed lead | Audio actually left the mixer |
-|---|---|---|
-| MME, device 3 (the CLI's default) | 182 ms | **+44 / +52 / +58 ms later** than claimed |
-| WASAPI, device 13 | 17–37 ms | **+84 ms later** than claimed |
+A chirp through PortAudio (`latency='high'`) captured on the Realtek "Stereo Mix" loopback
+first read **+44…+58 ms later than PortAudio's claimed DAC time** on the MME path the CLI
+uses, and **+79…+85 ms** on WASAPI shared. That looked like the "phone ahead" answer. It
+was not: the same chirp through **WASAPI exclusive** — whose DAC timing is accurate — read
+**+67…+74 ms** too, so ~70 ms of every reading is the *capture* path (Stereo Mix reports
+40 ms of input latency and really takes ~110 ms). Corrected, the MME path lands at about
+**−18…+6 ms** from its claim: the PC is not measurably late through PortAudio. The
+"PC 50–85 ms late" conclusion in the first draft of this document was wrong.
 
-The CLI schedules against `outputBufferDacTime`, which is honoured; the Windows audio
-engine and Realtek driver add 50–85 ms *after* the point PortAudio can see — precisely the
-"delay after the device's audio port" the spec's per-player delay is for. This is the
-remaining "phone ahead": the PC is late. A 60 ms static delay was applied to the PC via
-MA (`sendspin_static_delay`; positive = play earlier) for the listening test — **still
-open** at the time of writing, continued in the follow-up.
+Two things the exercise did establish: the `sendspin-cli` 7.5.0 TUI **stalls** (audio
+underflow → re-anchor, then silence) every time the group composition changes and MA
+restarts the stream — including when a probe player joins or leaves — and its
+`aiosendspin` 6.0.5 cannot parse MA 2.10.3's `server/state` (the `controller` field), so
+its log is nothing but that traceback.
 
-### 7.4 Endpoint
+### 7.4 The phone's clock, checked independently
+
+The app logs `serverTs` and `present` for every chunk; `present − serverTs` is the offset
+it applies. The true phone-BOOTTIME ↔ server offset was measured without the app: the
+server clock against this PC over `client/time` (RTT 0.9 ms), and the phone's `/proc/uptime`
+streamed over one long-lived adb shell (40 samples, 10 ms spread). Result: **the app's
+offset is within −1.5…−6 ms of the truth** (the "−6" estimate carries the one-way USB
+latency as bias, so the real figure is nearer −1.5). With the DAC-timeline lock at ±0.5 ms,
+the phone outputs each sample at its server timestamp to within a few milliseconds.
+
+### 7.5 What the phone still does differently from the reference client
+
+Checked against `aiosendspin` 6.0.5 (client *and* server) and the spec:
+
+| Item | Reference / server | App | Effect |
+|---|---|---|---|
+| Endpoint | `ws://host:8927/sendspin` (mDNS `_sendspin._tcp`); `:8095/sendspin` is reserved for the web player | derives `:8095/sendspin` from the MA URL, sends `auth` first | works today (same server object, same clock); documented-wrong path |
+| `client/state` initial fields | `static_delay_ms`, `required_lead_time_ms`, `min_buffer_ms` "required on the initial state"; server defaults 250 ms / 250 ms | sends `static_delay_ms` and (now) `supported_commands`; omits lead/buffer | server schedules the group start 250 ms ahead while the engine wants `startBufferMs`+decode warm-up → the phone starts muted and snaps in; steady state unaffected |
+| `available` | "MUST NOT report `available: true` until the time filter has converged" | `state: synchronized`, `available: true` from the first state message (as the official MA app does) | same startup effect as above |
+| `stream/start` on an active stream | "updates the stream configuration without clearing buffers" | `configure()` flushes queues and decoder on every `stream/start` | a mid-stream format update would drop buffered audio; MA today always sends `stream/end` first |
+| Time-filter clock | `CLOCK_MONOTONIC_RAW` (immune to NTP slew) | `elapsedRealtimeNanos` (BOOTTIME, slewed) | drift term absorbs slew; ≤ 500 ppm transient |
+| Persisted offset seed | — | seeded via the wall clock with σ = 0.22 ms | re-converges within ~5 samples; harmless with 1 ms RTT |
+| Local-anchor fallback | — | if the filter is not ready within `SYNC_CLOCK_WAIT_MS` at stream start, chunks anchor to *local now + headroom* for the whole stream | would play at an arbitrary constant offset with no correction — the one code path that matches "ahead the entire song"; not seen in any log this session (`serverTimeline=true` throughout) |
+| Static delay sign | `play_time = local(ts) − static_delay` (positive = play earlier); the server only widens send-ahead by it | `presentation = local(ts) − staticDelayMs` | matches |
+| Drift correction | sample drop/insert, ≤ ±0.5 % | resampling, `MAX_RATE_DEV` clamp | matches intent |
+
+So the phone conforms where it matters for steady-state sync, and the two players' own
+telemetry each say "locked". The remaining audible offset is therefore in the parts no
+client can see — the post-DAC chains (Windows audio engine + Realtek on the PC; Samsung's
+DSP/amp on the phone) — which is exactly what the per-player static delay exists for, and
+which the phone can now be given (F8). The rows above marked as deviations are the
+follow-up work.
+
+### 7.6 Endpoint
 The app derives `ws://host:8095/sendspin` from the MA base URL. It works (same server,
 token-gated), but the MA docs reserve that path for the built-in web player and give
 `:8927/sendspin` as the Sendspin server. Switching to 8927 with a fallback is part of the
