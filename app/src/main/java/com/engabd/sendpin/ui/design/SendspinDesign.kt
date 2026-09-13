@@ -1407,11 +1407,18 @@ fun HSlider(
  * mitred joins throw small spikes that crawl along the line as the phase advances,
  * which is the "pixelated while moving" this replaces.
  *
- * The wobble is amplitude, not phase, that answers [playing]: the phase keeps
- * advancing regardless (cheap, and invisible at zero amplitude), and the amplitude
- * eases to flat on pause and back up on resume. Gating the *phase* instead would
- * either freeze mid-crest — a visibly different shape from the straight line the
- * paused bar is supposed to read as — or jump to it.
+ * The wobble is amplitude, not phase, that answers [playing]: the amplitude eases to
+ * flat on pause and back up on resume, and the wave keeps travelling the whole way
+ * down, so it settles onto the rail instead of freezing mid-crest. Gating the *phase*
+ * on [playing] would do exactly that — snap the curve sideways by up to a wavelength
+ * while it is still at full height, half a second before it flattens.
+ *
+ * What the phase read *is* gated on is the amplitude reaching zero, the one moment
+ * the phase stops meaning anything on screen. That gate is not about looks: reading
+ * the travelling phase in composition — not merely in the draw lambda — held this
+ * whole Canvas invalidating at the display refresh rate on a paused, static screen,
+ * measured at 905 frames / 15 s. Once the wave is flat nothing reads it, and a paused
+ * bar costs nothing; the transition itself keeps running unread, which is free.
  */
 @Composable
 fun WaveSeekBar(
@@ -1445,12 +1452,18 @@ fun WaveSeekBar(
         animationSpec = infiniteRepeatable(tween(WAVE_PERIOD_MS, easing = LinearEasing)),
         label = "phase",
     )
-    val phase = if (reduced) 0f else travelling
     val amplitudeDp by animateFloatAsState(
         targetValue = if (playing) WaveAmplitude.value else 0f,
         animationSpec = tween(WAVE_AMPLITUDE_MS),
         label = "waveAmplitude",
     )
+    // The amplitude is the gate, not [playing]: while the wave is still flattening
+    // the phase has something to modulate, and freezing it there is the sideways
+    // jump the header warns about. At zero amplitude the read drops out, nothing
+    // recomposes from the transition, and the paused screen goes from 60 fps to
+    // still. Not the same shape as the glowPulse gate below — that one swaps an
+    // alpha, which has no shape to jump.
+    val phase = if (reduced || amplitudeDp <= 0f) 0f else travelling
 
     // Allocated once, not once per frame. The draw lambda runs at 60 Hz while the
     // phase advances, and a fresh Path and Brush each time is 120 objects a second

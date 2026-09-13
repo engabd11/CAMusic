@@ -170,6 +170,9 @@ class Scrubber internal constructor(
     }
 }
 
+/** How long the scrubber holds a released seek target before the live value wins. */
+private const val SEEK_HOLD_MAX_MS = 4_000L
+
 @Composable
 fun rememberScrubber(viewModel: NowPlayingViewModel): Scrubber {
     val scrubber = remember(viewModel) { Scrubber(viewModel::seekTo) }
@@ -193,6 +196,15 @@ fun rememberScrubber(viewModel: NowPlayingViewModel): Scrubber {
         ) {
             scrubber.seekTarget = -1L
         }
+    }
+    // ...and regardless after a few seconds. A seek the server refused — past the
+    // item's duration, on an item with none — never catches up, and a remote
+    // speaker's bar has no hold of its own to lift; without this the thumb sat on
+    // the refused target until the track changed.
+    LaunchedEffect(scrubber.seekTarget) {
+        if (scrubber.seekTarget < 0) return@LaunchedEffect
+        kotlinx.coroutines.delay(SEEK_HOLD_MAX_MS)
+        scrubber.seekTarget = -1L
     }
     return scrubber
 }
@@ -328,7 +340,7 @@ fun TrackTitleBlock(state: NowPlayingViewModel.State, showComposer: Boolean = tr
             fontFamily = AppFont, fontWeight = FontWeight.ExtraBold,
             fontSize = 27.sp, letterSpacing = (-0.5).sp, maxLines = 1,
             overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
-            modifier = Modifier.titleMarquee(),
+            modifier = Modifier.titleMarquee(running = state.isPlaying),
         )
     }
     if (state.artist.isNotBlank()) {
@@ -338,7 +350,7 @@ fun TrackTitleBlock(state: NowPlayingViewModel.State, showComposer: Boolean = tr
                 state.artist, color = inkOn(0.62f), fontFamily = AppFont,
                 fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1,
                 overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
-                modifier = Modifier.titleMarquee(),
+                modifier = Modifier.titleMarquee(running = state.isPlaying),
             )
         }
     }
@@ -355,7 +367,7 @@ fun TrackTitleBlock(state: NowPlayingViewModel.State, showComposer: Boolean = tr
             Text(
                 state.album, color = TextFaint, style = MaterialTheme.typography.bodyMedium,
                 maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
-                modifier = Modifier.titleMarquee(),
+                modifier = Modifier.titleMarquee(running = state.isPlaying),
             )
         }
     }

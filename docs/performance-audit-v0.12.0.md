@@ -309,3 +309,12 @@ Textual configs need the `--txt` flag on this build; analyze with `trace_process
 - MA: 15.3% CPU foreground; ~11.5% backgrounded; `AudioOut_D` 1.4%.
 - Memory: 190 → 228 MB PSS plateau; 2,400 pref-flow chains; 129 `MaPlayer` / 88 `MaQueue`; 1 `MainActivity`.
 - Keep-alive idle: 0.0% CPU; wake lock held; 30 s heartbeats ≈ 11 KB/min.
+
+---
+
+**Update 2026-09-13.** F1 and F2 re-landed (revert of `e5cfff7`) on top of the playhead rewrite
+(#171). The "stuck at 0:02" seen after #165 was the old optimistic-freeze machinery, which #171
+removes; the gates themselves only decide when the wave phase is read and when the marquees run.
+Measured on the emulator with the gates back: 0 frames rendered over 10 s on a paused Now
+Playing, and the bar advances, holds on pause and resumes on the local path.
+
