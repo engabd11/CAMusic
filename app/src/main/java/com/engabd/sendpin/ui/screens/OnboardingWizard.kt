@@ -198,6 +198,7 @@ fun OnboardingWizard(
                         SpeakersStep(
                             playerVm = playerVm,
                             accent = accent,
+                            server = serverConfig,
                             onNext = { step = 4 },
                             onBack = { step = previous(3) },
                         )
@@ -583,7 +584,10 @@ private fun ConfigStep(
         // app-wide and outlives the step, so after a successful connect, a Back and a
         // different source it would have said "Connected" about a form nobody had
         // filled in yet — and offered to carry it forward.
-        val connectedHere = saved && ready && !connecting
+        // ...and only when nothing went wrong: a Music Assistant socket opens before
+        // the login is checked, so `ready` alone said "Connected" over a server that
+        // had just refused every command that needs one.
+        val connectedHere = saved && ready && !connecting && connError == null
 
         // Only after an attempt of this form's own, and only while one isn't running —
         // the previous failure is not news about the address being tried now.
@@ -867,14 +871,21 @@ private fun PermissionRow(
 private fun SpeakersStep(
     playerVm: PlayerViewModel,
     accent: Color,
+    /** The Music Assistant server the previous step connected to, if it did. */
+    server: ServerConfig?,
     onNext: () -> Unit,
     onBack: () -> Unit,
 ) {
     val discovered by playerVm.discoveredServers.collectAsStateWithLifecycle()
     val discovering by playerVm.isDiscovering.collectAsStateWithLifecycle()
-    var manual by remember { mutableStateOf("") }
-    var user by remember { mutableStateOf("") }
-    var pass by remember { mutableStateOf("") }
+    // The server is already known: the previous step just connected to it. Filling it
+    // in here means Register works on a network where mDNS does not — which is most
+    // networks with client isolation, and every emulator — instead of leaving the
+    // button dead under a "Scanning…" that quietly went away. The client normalises
+    // the address (http → ws, appends /sendspin), so the API address is enough.
+    var manual by remember { mutableStateOf(server?.url.orEmpty()) }
+    var user by remember { mutableStateOf(server?.username.orEmpty()) }
+    var pass by remember { mutableStateOf(server?.password.orEmpty()) }
     var name by remember { mutableStateOf(playerVm.deviceName) }
 
     LaunchedEffect(Unit) { playerVm.startDiscovery() }
@@ -902,6 +913,12 @@ private fun SpeakersStep(
                 CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = accent)
                 Text("Scanning…", color = TextMuted, fontSize = 13.sp)
             }
+        } else if (discovered.isEmpty()) {
+            Text(
+                if (manual.isNotBlank()) "Nothing announced itself on the network; the server from the previous step is filled in below."
+                else "Nothing announced itself on the network. Enter the server's address below.",
+                color = TextMuted, fontSize = 13.sp, textAlign = TextAlign.Center, modifier = Modifier.widthIn(max = 300.dp),
+            )
         }
         discovered.forEach { s ->
             ServerRow(s.name, "${s.host}:${s.port}", accent) {
@@ -910,7 +927,7 @@ private fun SpeakersStep(
         }
 
         Spacer(Modifier.height(12.dp))
-        OutlinedTextField(value = manual, onValueChange = { manual = it }, label = { Text("Or enter WebSocket URL") }, placeholder = { Text("ws://192.168.0.10:8095/ws") }, singleLine = true, modifier = Modifier.fillMaxWidth(), colors = accentTextFieldColors(accent))
+        OutlinedTextField(value = manual, onValueChange = { manual = it }, label = { Text("Server address") }, placeholder = { Text("http://192.168.0.10:8095") }, singleLine = true, modifier = Modifier.fillMaxWidth(), colors = accentTextFieldColors(accent))
 
         Spacer(Modifier.height(20.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {

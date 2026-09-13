@@ -172,6 +172,17 @@ class SpeakersViewModel(app: Application) : AndroidViewModel(app) {
                 _error.value = null
             }
         }
+        // The shared read's own failure — "Authentication is required" on a server
+        // that wants a login — is this screen's news too; an empty list says nothing.
+        viewModelScope.launch {
+            maNowPlaying.lastError.collect { err ->
+                if (err != null) {
+                    _error.value = if (err.contains("Authentication", ignoreCase = true)) {
+                        "Music Assistant needs a login to list players — add your username and password in Settings → Media Providers"
+                    } else err
+                }
+            }
+        }
         // Ask for a read now rather than waiting up to 5 s for the shared poll: opening
         // this screen is exactly the moment the list needs to be right.
         maNowPlaying.refreshNow()

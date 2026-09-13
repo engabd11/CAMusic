@@ -579,6 +579,7 @@ private fun rememberSettingsOverview(
     val ready by libraryViewModel.ready.collectAsStateWithLifecycle()
     val connecting by libraryViewModel.connecting.collectAsStateWithLifecycle()
     val offline by libraryViewModel.offline.collectAsStateWithLifecycle()
+    val connError by libraryViewModel.connError.collectAsStateWithLifecycle()
     val downloads by libraryViewModel.downloads.collectAsStateWithLifecycle()
     val mode by settings.lightSyncMode.collectAsStateWithLifecycle(initialValue = AppSettings.MODE_HA)
     val bridgeIp by settings.hueBridgeIp.collectAsStateWithLifecycle(initialValue = "")
@@ -612,6 +613,8 @@ private fun rememberSettingsOverview(
             active == null -> null
             connecting -> "Connecting…"
             offline -> "Offline, playing downloads"
+            // A refused login outranks an open socket — see LibraryViewModel.connect.
+            connError != null -> "Needs attention"
             ready -> "Connected"
             else -> "Not connected"
         },

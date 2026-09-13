@@ -754,8 +754,10 @@ private fun ServerDetail(
                         val (text, health) = when {
                             connecting -> "Connecting…" to Health.WORKING
                             offline -> "Offline, playing downloads" to Health.WARN
-                            ready -> "Connected" to Health.GOOD
+                            // Before `ready`: a Music Assistant socket can be open with
+                            // the login refused, and the refusal is the news.
                             connError != null -> connError!! to Health.BAD
+                            ready -> "Connected" to Health.GOOD
                             url.isBlank() && config.kind.needsAddress -> "Not set up" to Health.IDLE
                             else -> "Not connected" to Health.IDLE
                         }

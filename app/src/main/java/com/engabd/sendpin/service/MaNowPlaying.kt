@@ -367,6 +367,14 @@ class MaNowPlaying(private val app: Context) {
     private val refreshQueued = AtomicBoolean(false)
 
     /**
+     * Why the last read failed, or null when it succeeded. The Speakers screen shows
+     * it: a server that refuses `players/all` without a login used to leave that
+     * screen at "0 of 0 players" with the reason logged and nowhere else.
+     */
+    private val _lastError = MutableStateFlow<String?>(null)
+    val lastError: StateFlow<String?> = _lastError
+
+    /**
      * Re-read players and queues, one pass at a time.
      *
      * Serialised the same way the Now Playing screen's refresh is, and for the same
@@ -381,8 +389,10 @@ class MaNowPlaying(private val app: Context) {
             try {
                 do {
                     refreshQueued.set(false)
-                    val players = runCatching { repo.players() }.getOrNull()
+                    val playersResult = runCatching { repo.players() }
+                    val players = playersResult.getOrNull()
                     val queues = runCatching { repo.queues() }.getOrNull()
+                    _lastError.value = playersResult.exceptionOrNull()?.message
                     val connected = api.state.value == MaApiClient.State.CONNECTED
                     if (players != null && (players.isNotEmpty() || connected)) _players.value = players
                     if (queues != null && (queues.isNotEmpty() || connected)) _queues.value = queues
