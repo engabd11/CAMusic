@@ -45,6 +45,7 @@ import com.engabd.sendpin.local.LocalMediaSource
 import com.engabd.sendpin.ma.LibraryViewModel
 import com.engabd.sendpin.ui.design.Bloom
 import com.engabd.sendpin.ui.design.LocalAccent
+import com.engabd.sendpin.ui.design.ServerKindTile
 import com.engabd.sendpin.ui.design.TitleGap
 import com.engabd.sendpin.ui.design.a
 import com.engabd.sendpin.ui.screens.settings.OledButton
@@ -284,32 +285,28 @@ private fun SourceStep(
         Text("You can add more later in Settings → Libraries.", color = TextMuted, fontSize = 13.sp, textAlign = TextAlign.Center)
         Spacer(Modifier.height(20.dp))
 
+        // The same glass tiles as the library switcher this list leads to — each
+        // kind's own mark on its own colour — so the first screen and the one used
+        // every day agree on what a Jellyfin or a Navidrome looks like.
         SourceRow(
-            icon = Icons.Default.Cloud,
-            label = "Music Assistant",
+            kind = ServerKind.MUSIC_ASSISTANT,
             blurb = "Play to any speaker on the network with grouping and a server-side queue.",
-            accent = accent,
         ) { onPick(ServerKind.MUSIC_ASSISTANT) }
 
         SourceRow(
-            icon = Icons.Default.Storage,
-            label = "Navidrome",
+            kind = ServerKind.NAVIDROME,
             blurb = "A fast self-hosted Subsonic server, with synced lyrics and ReplayGain.",
-            accent = accent,
         ) { onPick(ServerKind.NAVIDROME) }
 
         SourceRow(
-            icon = Icons.Default.Dns,
-            label = "Jellyfin",
+            kind = ServerKind.JELLYFIN,
             blurb = "Open-source media server with a music library and original-file streaming.",
-            accent = accent,
         ) { onPick(ServerKind.JELLYFIN) }
 
         SourceRow(
-            icon = Icons.Default.Smartphone,
+            kind = ServerKind.LOCAL,
             label = "This device",
             blurb = "Music already on the phone or SD card, indexed by MediaStore.",
-            accent = accent,
         ) { onPick(ServerKind.LOCAL) }
 
         // The streaming accounts, set apart rather than mixed in. They are an
@@ -335,52 +332,28 @@ private fun SourceStep(
         )
         Spacer(Modifier.height(6.dp))
 
-        SourceRow(
-            icon = Icons.Default.Radio,
-            label = ServerKind.SPOTIFY.label,
-            blurb = ServerKind.SPOTIFY.blurb,
-            accent = accent,
-        ) { onPick(ServerKind.SPOTIFY) }
-
-        SourceRow(
-            icon = Icons.Default.Equalizer,
-            label = ServerKind.QOBUZ.label,
-            blurb = ServerKind.QOBUZ.blurb,
-            accent = accent,
-        ) { onPick(ServerKind.QOBUZ) }
-
-        SourceRow(
-            icon = Icons.Default.CloudSync,
-            label = ServerKind.TIDAL.label,
-            blurb = ServerKind.TIDAL.blurb,
-            accent = accent,
-        ) { onPick(ServerKind.TIDAL) }
+        SourceRow(kind = ServerKind.SPOTIFY, blurb = ServerKind.SPOTIFY.blurb) { onPick(ServerKind.SPOTIFY) }
+        SourceRow(kind = ServerKind.QOBUZ, blurb = ServerKind.QOBUZ.blurb) { onPick(ServerKind.QOBUZ) }
+        SourceRow(kind = ServerKind.TIDAL, blurb = ServerKind.TIDAL.blurb) { onPick(ServerKind.TIDAL) }
     }
 }
 
 @Composable
 private fun SourceRow(
-    icon: ImageVector,
-    label: String,
+    kind: ServerKind,
     blurb: String,
-    accent: Color,
+    label: String = kind.label,
     onClick: () -> Unit,
 ) {
-    Row(
-        Modifier.fillMaxWidth().padding(vertical = 6.dp).clip(RoundedCornerShape(16.dp)).background(Glass)
-            .border(1.dp, HairlineSoft, RoundedCornerShape(16.dp)).clickable(onClick = onClick).padding(16.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(Modifier.size(42.dp).clip(RoundedCornerShape(12.dp)).background(accent.a(0.14f)).border(1.dp, accent.a(0.35f), RoundedCornerShape(12.dp)), contentAlignment = Alignment.Center) {
-            Icon(icon, null, tint = accent, modifier = Modifier.size(22.dp))
-        }
-        Spacer(Modifier.width(14.dp))
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(TitleGap)) {
-            Text(label, color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-            Text(blurb, color = TextMuted, fontSize = 12.sp, lineHeight = 16.sp)
-        }
-        Icon(Icons.Default.ChevronRight, null, tint = TextFaint, modifier = Modifier.size(20.dp))
-    }
+    ServerKindTile(
+        kind = kind,
+        title = label,
+        subtitle = blurb,
+        modifier = Modifier.padding(vertical = 6.dp),
+        subtitleMaxLines = 3,
+        trailing = { Icon(Icons.Default.ChevronRight, null, tint = TextFaint, modifier = Modifier.size(20.dp)) },
+        onClick = onClick,
+    )
 }
 
 @Composable
