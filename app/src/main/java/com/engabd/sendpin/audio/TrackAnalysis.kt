@@ -7,6 +7,7 @@ import com.engabd.sendpin.hue.PICK_BEAT_FULL
 import com.engabd.sendpin.hue.PICK_BPM_HI
 import com.engabd.sendpin.hue.PICK_BPM_LO
 import com.engabd.sendpin.hue.intensitySignal
+import com.engabd.sendpin.hue.loudnessForIntensity
 import com.engabd.sendpin.hue.songCharacter
 import kotlin.math.PI
 import kotlin.math.abs
@@ -1260,6 +1261,60 @@ internal fun buildIntensityProfile(
         curve = decimate(curveFull, FRAME_PERIOD, CURVE_RATE_HZ),
         curveRateHz = CURVE_RATE_HZ,
     )
+}
+
+/**
+ * How loud the track is over time, recovered from its stored intensity curve.
+ *
+ * A scan does not keep a loudness curve of its own — it keeps the light show's
+ * intensity signal, which is loudness *plus* a steady lift for tempo and for how
+ * busy the beat is (see [intensitySignal]). That lift is the right thing for a
+ * bulb and the wrong thing for anyone asking where the music stops: at 120 BPM
+ * with a tracked grid it holds the curve near 0.19 through dead silence, and a
+ * "silence floor" on the raw curve is never crossed by any track faster than a
+ * ballad. [SmartCrossfade] was reading the raw curve, so its trimming of
+ * fade-outs and dead air almost never fired.
+ *
+ * The lift can be taken back off exactly, because everything that produced the
+ * stored curve is either constant per track (the tempo term) or recomputable from
+ * what is stored (the beat-rate term, from [TrackScan.beats]) and the smoothing
+ * and decimation in between are both linear. What is left is the p95-normalised
+ * RMS the analyser started from, sampled at [IntensityProfile.curveRateHz] and
+ * smoothed over [SECTION_WIN_S]: 1.0 at the loud parts of the song, 0.1 at
+ * −20 dB below them, and genuinely 0 where there is nothing.
+ *
+ * Recovered rather than stored because storing it is an analyser bump, which
+ * flags every scan in every library as outdated for a field the old scans
+ * already imply.
+ *
+ * Null where the scan has no profile to read.
+ */
+internal fun loudnessCurve(scan: TrackScan): FloatArray? {
+    val profile = scan.intensity ?: return null
+    val curve = profile.curve
+    val rate = profile.curveRateHz
+    if (curve.isEmpty() || rate <= 0f) return null
+    // The beat-rate term was built per analysis frame, smoothed and decimated
+    // along with everything else. Rebuilding it the same way — same beats, same
+    // window, same step — is what makes the subtraction exact rather than a
+    // guess at the steady state, which is off wherever the DP tracker spaced its
+    // beats unevenly through a fade.
+    val step = max(1, (1f / rate / FRAME_PERIOD).roundToInt())
+    val frames = curve.size * step
+    val grid = scan.gridUsable && scan.beats.isNotEmpty()
+    val perc = if (grid) {
+        decimate(
+            centredMovingAverage(beatRateCurve(scan.beats, frames), (SECTION_WIN_S / FRAME_PERIOD).roundToInt()),
+            FRAME_PERIOD,
+            rate,
+        )
+    } else {
+        null
+    }
+    return FloatArray(curve.size) { i ->
+        val p = perc?.let { if (i < it.size) it[i] else 0f } ?: 0f
+        loudnessForIntensity(curve[i], profile.tempo, p)
+    }
 }
 
 /**

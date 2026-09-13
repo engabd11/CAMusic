@@ -47,7 +47,8 @@ data class MixPlan(
  *  3. **The incoming track starts with silence.** Same as (1), from the other end.
  *
  * Every one of those is answered by data the scan already carries for Light Sync —
- * the intensity curve, the beat grid, the bar length. Nothing new is measured here.
+ * the intensity curve (with the light show's tempo lift taken back off it, see
+ * [loudnessCurve]), the beat grid, the bar length. Nothing new is measured here.
  *
  * ## What it does not do
  *
@@ -62,14 +63,31 @@ data class MixPlan(
 object SmartCrossfade {
 
     /**
-     * Below this on the scan's intensity curve, the track is not making music.
+     * Below this loudness the *end* of a track is no longer making music.
      *
-     * The curve is normalised to a percentile of the track's own range and smoothed
-     * over ~1.4 s, so this is not "digital silence" — it is "nothing is happening
-     * here", which is the useful question. Low enough that a quiet outro still
-     * counts as music, high enough to catch a fade that has run to nothing.
+     * Loudness here is the scan's p95-normalised RMS, recovered from its intensity
+     * curve by [loudnessCurve] — *not* the curve itself, which carries a tempo and
+     * beat-rate lift that never drops below about 0.1–0.25 on a gridded track and
+     * so can never be read as silence. Smoothed over ~1.4 s, so this is not
+     * "digital silence" — it is "nothing is happening here", which is the useful
+     * question.
+     *
+     * 0.1 is 20 dB under the loud parts of the song. A fade-out that far down is
+     * over as far as a room is concerned, and mixing into it is mixing into
+     * nothing; a quiet outro that is still *playing* sits well above it, because
+     * −20 dB is a whisper against a chorus, not a soft ending.
      */
-    const val SILENCE_FLOOR = 0.05f
+    const val SILENCE_FLOOR = 0.1f
+
+    /**
+     * The same question at the *front* of a track, asked more carefully.
+     *
+     * Half the tail's level — 26 dB down — because the two mistakes are not
+     * symmetric. Skipping a fade-out's last inaudible seconds costs nothing; skipping
+     * the first quiet bar of an intro is a song starting in the wrong place, on
+     * every play, with the listener there to hear it.
+     */
+    const val HEAD_SILENCE_FLOOR = 0.05f
 
     /**
      * The most the *front* of a track will be trimmed by, seconds.
@@ -198,32 +216,31 @@ object SmartCrossfade {
      * the real length and the scan may not — see [plan].
      */
     fun musicEndsAtS(scan: TrackScan, durationS: Float): Float {
-        val profile = scan.intensity ?: return durationS
-        val curve = profile.curve
-        val rate = profile.curveRateHz
-        if (curve.isEmpty() || rate <= 0f) return durationS
         // A scan that stopped early knows nothing about the end of the track, so it
         // has no business claiming the music stopped where its own data ran out.
         if (!scan.complete) return durationS
-        var i = curve.size - 1
-        while (i >= 0 && curve[i] < SILENCE_FLOOR) i--
+        val loud = loudnessCurve(scan) ?: return durationS
+        val rate = scan.intensity?.curveRateHz ?: return durationS
+        if (loud.isEmpty() || rate <= 0f) return durationS
+        var i = loud.size - 1
+        while (i >= 0 && loud[i] < SILENCE_FLOOR) i--
         if (i < 0) return durationS
         val endS = (i + 1) / rate
         return endS.coerceIn(max(0f, durationS - maxTailTrimS(durationS)), durationS)
     }
 
     /**
-     * When the music starts, in track seconds — the mirror of [musicEndsAtS], capped
-     * at [MAX_HEAD_TRIM_S] so an intro is never mistaken for padding.
+     * When the music starts, in track seconds — the mirror of [musicEndsAtS], against
+     * the stricter [HEAD_SILENCE_FLOOR] and capped at [MAX_HEAD_TRIM_S], so an intro
+     * is never mistaken for padding.
      */
     fun musicStartsAtS(scan: TrackScan): Float {
-        val profile = scan.intensity ?: return 0f
-        val curve = profile.curve
-        val rate = profile.curveRateHz
-        if (curve.isEmpty() || rate <= 0f) return 0f
+        val loud = loudnessCurve(scan) ?: return 0f
+        val rate = scan.intensity?.curveRateHz ?: return 0f
+        if (loud.isEmpty() || rate <= 0f) return 0f
         var i = 0
-        while (i < curve.size && curve[i] < SILENCE_FLOOR) i++
-        if (i >= curve.size) return 0f
+        while (i < loud.size && loud[i] < HEAD_SILENCE_FLOOR) i++
+        if (i >= loud.size) return 0f
         return (i / rate).coerceIn(0f, MAX_HEAD_TRIM_S)
     }
 
@@ -310,10 +327,15 @@ object SmartCrossfade {
      * hand-over fires produces exactly the cut this is all here to remove. So the
      * pre-roll is generous, and [CrossfadeDeck.ready] is what actually gates the
      * swap: this only decides how much of a head start it gets to become ready in.
+     *
+     * Becoming ready is not the end of it: the deck then has to be pulled into
+     * step with the main player, which [CrossfadeDeck.align] does in bursts of
+     * speed with a pause after each to let the clock catch up. Two of those need
+     * a little over three seconds, so even a local file gets four.
      */
     fun prerollFor(local: Boolean): Long = if (local) LOCAL_PREROLL_MS else STREAM_PREROLL_MS
 
-    const val LOCAL_PREROLL_MS = 3_000L
+    const val LOCAL_PREROLL_MS = 4_000L
     const val STREAM_PREROLL_MS = 8_000L
 
     /**
