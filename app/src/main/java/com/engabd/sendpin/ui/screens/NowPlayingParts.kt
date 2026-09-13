@@ -380,6 +380,8 @@ class PlayerSheetState {
     var speakers by mutableStateOf(false)
     var quality by mutableStateOf(false)
     var device by mutableStateOf(false)
+    /** The AirPlay receiver picker, off the top-left button. */
+    var airPlay by mutableStateOf(false)
     /** The long-press quick-actions sheet off the album art. */
     var actions by mutableStateOf(false)
     /** Cover-palette editor for Light Sync. */
@@ -607,6 +609,18 @@ fun BoxScope.PlayerOverlays(
         serverOutputDeviceName = state.serverOutputDeviceName,
         serverOutputFormat = state.serverOutputFormat,
     )
+    // AirPlay: the receiver picker, and the receiver's own Now Playing kept current.
+    val airPlayVm: com.engabd.sendpin.ui.viewmodel.AirPlayViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
+    AirPlayOverlay(
+        visible = sheets.airPlay,
+        viewModel = airPlayVm,
+        localSession = state.isLocalSession,
+        onDismiss = { sheets.airPlay = false },
+    )
+    val airPlayConnected by airPlayVm.connected.collectAsStateWithLifecycle()
+    LaunchedEffect(airPlayConnected, state.title, state.artist, state.album) {
+        if (airPlayConnected) airPlayVm.setNowPlaying(state.title, state.artist, state.album)
+    }
 }
 
 // ── Small shared pieces ───────────────────────────────────────────────────
