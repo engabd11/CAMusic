@@ -170,6 +170,9 @@ class Scrubber internal constructor(
     }
 }
 
+/** How long the scrubber holds a released seek target before the live value wins. */
+private const val SEEK_HOLD_MAX_MS = 4_000L
+
 @Composable
 fun rememberScrubber(viewModel: NowPlayingViewModel): Scrubber {
     val scrubber = remember(viewModel) { Scrubber(viewModel::seekTo) }
@@ -193,6 +196,15 @@ fun rememberScrubber(viewModel: NowPlayingViewModel): Scrubber {
         ) {
             scrubber.seekTarget = -1L
         }
+    }
+    // ...and regardless after a few seconds. A seek the server refused — past the
+    // item's duration, on an item with none — never catches up, and a remote
+    // speaker's bar has no hold of its own to lift; without this the thumb sat on
+    // the refused target until the track changed.
+    LaunchedEffect(scrubber.seekTarget) {
+        if (scrubber.seekTarget < 0) return@LaunchedEffect
+        kotlinx.coroutines.delay(SEEK_HOLD_MAX_MS)
+        scrubber.seekTarget = -1L
     }
     return scrubber
 }
