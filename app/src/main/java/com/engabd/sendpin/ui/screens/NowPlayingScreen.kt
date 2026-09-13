@@ -114,6 +114,7 @@ fun NowPlayingScreen(
     // Which sheet or card is up, if any. Shared with the overlay layout so the two
     // cannot drift — see PlayerSheetState.
     val sheets = rememberPlayerSheets()
+    val airPlayVm: com.engabd.sendpin.ui.viewmodel.AirPlayViewModel = viewModel()
     // The cover's slot: the sleeve, lyrics, or the live visualizer — a mode of the
     // player, not an overlay, so whichever is active takes the cover's place.
     var coverSlot by rememberSaveable { mutableStateOf(CoverSlot.ART) }
@@ -237,6 +238,7 @@ fun NowPlayingScreen(
                     // MA, Navidrome, Offline, or the streaming provider the track came
                     // from — on the same line as the speaker pill, not floating over it.
                     source = st.source,
+                    leading = { AirPlayButton(airPlayVm) { sheets.airPlay = true } },
                 )
 
                 Spacer(Modifier.height(4.dp))
@@ -400,7 +402,7 @@ fun NowPlayingScreen(
 
                 Spacer(Modifier.height(18.dp))
 
-                VolumeRow(st.volume) { viewModel.setVolume(it) }
+                VolumeRow(st.volume) { viewModel.setVolume(it); airPlayVm.setVolume(it) }
             }
 
             // Every sheet and card that sits over the player, in one call so the two
@@ -446,6 +448,8 @@ internal fun TopBar(
     onTap: () -> Unit,
     /** The source badge's text, or null to leave the corner empty. */
     source: String? = null,
+    /** The top-left corner: the AirPlay control, when this build has the sender. */
+    leading: @Composable () -> Unit = {},
 ) {
     val accent = LocalAccent.current
     Row(
@@ -453,7 +457,7 @@ internal fun TopBar(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Center,
     ) {
-        Box(Modifier.weight(1f))
+        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) { leading() }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Row(
                 Modifier

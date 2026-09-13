@@ -405,6 +405,10 @@ private fun CarPlayerPane(
                         groupSize = st.groupSize,
                         localSession = st.isLocalSession,
                         onTap = { if (st.isLocalSession) sheets.device = true else sheets.speakers = true },
+                    leading = {
+                        val airPlayVm: com.engabd.sendpin.ui.viewmodel.AirPlayViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
+                        AirPlayButton(airPlayVm) { sheets.airPlay = true }
+                    },
                         // No source badge. On the phone it fills the corner opposite the
                         // speaker pill; here the gear has that corner, and the two
                         // together squeezed the pill until the player's own name

@@ -106,6 +106,7 @@ fun NowPlayingOverlay(
 
     // Shared with the tab layout so the two cannot drift — see PlayerSheetState.
     val sheets = rememberPlayerSheets()
+    val airPlayVm: com.engabd.sendpin.ui.viewmodel.AirPlayViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
     // The cover's slot: the sleeve, lyrics, or the live visualizer — see NowPlayingScreen.
     var coverSlot by rememberSaveable { mutableStateOf(CoverSlot.ART) }
 
@@ -367,6 +368,7 @@ fun NowPlayingOverlay(
                     groupSize = st.groupSize,
                     localSession = st.isLocalSession,
                     onTap = { if (st.isLocalSession) sheets.device = true else sheets.speakers = true },
+                    leading = { AirPlayButton(airPlayVm) { sheets.airPlay = true } },
                     // Where the playback is coming from, on the speaker pill's own
                     // line — see the note on TopBar.
                     source = st.source,
@@ -539,7 +541,7 @@ fun NowPlayingOverlay(
 
                 Spacer(Modifier.height(24.dp))
 
-                VolumeRow(st.volume) { viewModel.setVolume(it) }
+                VolumeRow(st.volume) { viewModel.setVolume(it); airPlayVm.setVolume(it) }
             }
 
             PlayerOverlays(

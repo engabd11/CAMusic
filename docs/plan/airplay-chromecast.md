@@ -355,3 +355,19 @@ Now Playing UI. This is a protocol limitation, not a library one.
 
 3. **Mbed TLS handling**: vendor it in-repo (larger but CI-friendly) or fetch at
    CMake configure time (smaller repo, needs network at build)?
+
+---
+
+## Status (2026-09-13)
+
+- Phase 1 infrastructure: merged (#170).
+- Now Playing UI: landed — `AirPlayButton` in the top-left of Now Playing (tab, overlay and car
+  layouts), `AirPlayOverlay` receiver picker with PIN entry (`ui/screens/AirPlayOverlay.kt`),
+  `AirPlayViewModel` driving `LocalPlayer.airPlayOutput`; pairing credentials persisted in
+  `AppSettings.airPlayCredentials`, keyed by receiver id, and handed back on connect; the phone's
+  own output is silenced while a receiver is the output; the volume slider and the track's
+  title/artist/album are mirrored to the receiver. Artwork is not pushed yet.
+- Still to do: verification against a real Apple TV / HomePod (none was reachable from the
+  development machine), artwork on the receiver's Now Playing, Chromecast (Phase 1 of the
+  original plan) untouched.
+

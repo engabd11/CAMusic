@@ -403,9 +403,23 @@ class LocalPlayer(private val context: Context) {
         // gate. The processor stays in the chain always, but only copies PCM
         // to the native ring when AirPlay is connected — zero overhead otherwise.
         airPlayOutput?.let { out ->
+            // A first pairing hands back long-term credentials; kept here, at process
+            // scope, so a screen going away mid-pairing cannot lose them.
+            out._onCredentials = { deviceId, json ->
+                scope.launch { settings.setAirPlayCredentials(deviceId, json) }
+            }
             airPlayProcessor?.let { proc ->
                 scope.launch {
-                    out.connected.collect { connected -> proc.setFeeding(connected) }
+                    out.connected.collect { connected ->
+                        proc.setFeeding(connected)
+                        // The receiver is the output now. The phone keeps decoding —
+                        // that is where the receiver's audio comes from — but its own
+                        // speaker goes silent, or the room hears the track twice, a
+                        // couple of seconds apart. Back to the user's level on
+                        // disconnect.
+                        airPlayMuted = connected
+                        applyGain()
+                    }
                 }
             }
         }
@@ -1597,7 +1611,14 @@ class LocalPlayer(private val context: Context) {
      * exclusive output promises to remove from the signal. Volume belongs to the
      * device or the DAC now, not this app — see [ExclusiveOutput].
      */
+    /** True while an AirPlay receiver is the output; the local track gain is zero then. */
+    @Volatile private var airPlayMuted = false
+
     private fun applyGain() {
+        if (airPlayMuted) {
+            player.volume = 0f
+            return
+        }
         if (exclusiveOutput) {
             player.volume = 1f
             return

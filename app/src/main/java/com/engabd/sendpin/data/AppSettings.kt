@@ -358,6 +358,8 @@ class AppSettings(private val context: Context) {
          * no album id exists). Stored as a JSON object: { "id": [argb, argb, ...], ... }.
          */
         private val COVER_PALETTE_OVERRIDES = stringPreferencesKey("cover_palette_overrides")
+        /** AirPlay pairing credentials, a JSON object of receiver id → opaque blob. */
+        private val AIRPLAY_CREDENTIALS = stringPreferencesKey("airplay_credentials")
         // Creative features and UI fixes plan (PR #96) — each off by default until a
         // user turns it on, per the plan's own design principle.
         private val SWIPE_TO_SKIP = booleanPreferencesKey("swipe_to_skip")
@@ -1307,6 +1309,34 @@ class AppSettings(private val context: Context) {
     suspend fun setOnboardingSkipped(skipped: Boolean) {
         bootPrefs.edit().putBoolean("onboarding_skipped", skipped).apply()
         context.dataStore.edit { it[ONBOARDING_SKIPPED] = skipped }
+    }
+
+    /**
+     * Long-term AirPlay pairing credentials, keyed by the receiver's mDNS id. A
+     * receiver paired once with a PIN hands back a blob that skips the PIN next
+     * time; the sender asks for it on connect and hands a new one back on a fresh
+     * pairing. Opaque to the app — see `AirPlayOutput.onCredentials`.
+     */
+    val airPlayCredentials: Flow<Map<String, String>> = pref {
+        runCatching {
+            kotlinx.serialization.json.Json.parseToJsonElement(it[AIRPLAY_CREDENTIALS] ?: "{}")
+                .let { el -> (el as? kotlinx.serialization.json.JsonObject).orEmpty() }
+                .mapValues { (_, v) -> (v as? kotlinx.serialization.json.JsonPrimitive)?.content.orEmpty() }
+        }.getOrDefault(emptyMap())
+    }
+
+    suspend fun setAirPlayCredentials(deviceId: String, credentialsJson: String) {
+        context.dataStore.edit { prefs ->
+            val current = runCatching {
+                kotlinx.serialization.json.Json.parseToJsonElement(prefs[AIRPLAY_CREDENTIALS] ?: "{}")
+                    .let { el -> (el as? kotlinx.serialization.json.JsonObject).orEmpty() }
+                    .mapValues { (_, v) -> (v as? kotlinx.serialization.json.JsonPrimitive)?.content.orEmpty() }
+            }.getOrDefault(emptyMap())
+            val next = current + (deviceId to credentialsJson)
+            prefs[AIRPLAY_CREDENTIALS] = kotlinx.serialization.json.JsonObject(
+                next.mapValues { (_, v) -> kotlinx.serialization.json.JsonPrimitive(v) },
+            ).toString()
+        }
     }
 
     /** Collect the full set of settings, or the smaller set most users need. */
