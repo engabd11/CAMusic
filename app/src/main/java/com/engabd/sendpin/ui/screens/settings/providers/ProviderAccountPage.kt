@@ -226,8 +226,8 @@ private fun ProviderPageBody(
                 isActive -> {
                     val (text, health) = when {
                         connecting -> "Connecting…" to Health.WORKING
-                        ready -> "Connected" to Health.GOOD
                         connError != null -> connError!! to Health.BAD
+                        ready -> "Connected" to Health.GOOD
                         !signedIn -> "Not signed in" to Health.IDLE
                         else -> "Not connected" to Health.IDLE
                     }
@@ -318,8 +318,8 @@ private fun Hero(
                 val (text, tint) = when {
                     !isActive && !isNew -> "Not the active library" to Color.White.copy(alpha = 0.6f)
                     connecting -> "Connecting…" to Color.White
-                    ready && isActive -> "Connected" to skin.accent
                     connError != null && isActive -> "Not connected" to Color(0xFFFF6B6B)
+                    ready && isActive -> "Connected" to skin.accent
                     !signedIn -> "Sign in to start" to Color.White.copy(alpha = 0.7f)
                     else -> "Ready to connect" to Color.White.copy(alpha = 0.7f)
                 }
