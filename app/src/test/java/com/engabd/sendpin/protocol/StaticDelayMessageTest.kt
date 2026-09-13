@@ -47,22 +47,28 @@ class StaticDelayMessageTest {
     }
 
     @Test
-    fun `client state encodes the trim and the sync report`() {
+    fun `client state encodes the trim under the player object`() {
         val encoded = json.encodeToString(
             SendspinClientState(
                 payload = ClientStatePayload(
-                    state = "error",
                     player = PlayerStateInfo(volume = 80, muted = false, staticDelayMs = 250),
                 )
             )
         )
         assertTrue("\"static_delay_ms\":250" in encoded, encoded)
-        assertTrue("\"state\":\"error\"" in encoded, encoded)
     }
 
+    /**
+     * The wire shape the official Music Assistant app sends, and nothing the server
+     * could read as a player in trouble: `state` lives under `player`, is always
+     * "synchronized", and `available` is always true. There is exactly one `state`
+     * key — the legacy top-level one is gone.
+     */
     @Test
-    fun `the default report is synchronized`() {
+    fun `client state is always synchronized and available`() {
         val encoded = json.encodeToString(SendspinClientState(payload = ClientStatePayload()))
-        assertTrue("\"state\":\"synchronized\"" in encoded, encoded)
+        assertTrue("\"player\":{\"state\":\"synchronized\"" in encoded, encoded)
+        assertTrue("\"available\":true" in encoded, encoded)
+        assertEquals(1, Regex("\"state\"").findAll(encoded).count(), encoded)
     }
 }

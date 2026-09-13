@@ -49,12 +49,14 @@ class PlayerPositionSkewTest {
     @Test
     fun `the measured skew is not added to the position`() {
         repeat(10) { poll(elapsedMs = it * 1_000L, lagMs = 1_500) ; now += 1_000 }
-        // Last poll said 9_000 with a stamp 1.5s old, then 1s passed. Without the
-        // correction the bar would read ~11_500: the true 10_000 plus the 1.5s of skew.
-        poll(elapsedMs = 9_000, lagMs = 1_500)
+        // Last poll said 10_000 with a stamp 1.5s old, then 1s passed. Without the
+        // correction the bar would read ~12_500: the true 11_000 plus the 1.5s of skew.
+        // (The reading advances like a real one — a repeated value under a newer stamp
+        // is a stalled server clock, which the tracker deliberately does not re-anchor on.)
+        poll(elapsedMs = 10_000, lagMs = 1_500)
         now += 1_000
         val shown = tracker.effectiveMs(q)
-        assertTrue("bar ran ahead: $shown", shown in 9_500L..10_500L)
+        assertTrue("bar ran ahead: $shown", shown in 10_500L..11_500L)
     }
 
     @Test

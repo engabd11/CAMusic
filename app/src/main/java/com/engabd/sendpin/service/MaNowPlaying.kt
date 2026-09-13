@@ -10,8 +10,9 @@ import com.engabd.sendpin.ma.MaPlayer
 import com.engabd.sendpin.ma.MaQueue
 import com.engabd.sendpin.ma.MaRepository
 import com.engabd.sendpin.ma.maxSeekPositionMs
+import com.engabd.sendpin.ma.resolveTargetPlayer
 import com.engabd.sendpin.ma.seekableDurationMs
-import com.engabd.sendpin.ui.viewmodel.PlayerPositionTracker
+import kotlinx.serialization.json.JsonObject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -88,9 +89,21 @@ class MaNowPlaying(private val app: Context) {
     private val _target = MutableStateFlow("")
     private val _backend = MutableStateFlow("ma")
 
-    private val positions = PlayerPositionTracker()
+    /**
+     * The one playhead for the selected player — the screen's `NowPlayingViewModel`
+     * reads [positionMs] and routes its seeks and skips through here, so the bar on
+     * screen and the bar in the shade are the same bar.
+     */
+    private val playhead = MaPlayhead(scope)
 
-    private fun targetId() = _target.value.ifBlank { myPlayerId }
+    private fun targetId() = resolveTargetPlayer(_players.value, _target.value, myPlayerId)
+
+    /** The selected player as [playhead] needs it, resolved against the current lists. */
+    private fun target(): MaPlayhead.Target {
+        val id = targetId()
+        val p = _players.value.firstOrNull { it.playerId == id }
+        return MaPlayhead.Target(key = id, queueId = streamId(p), isSelf = targetIsThisPhone())
+    }
 
     /** The queue the selected player is really playing from — a member uses the leader's. */
     private fun streamId(p: MaPlayer?) = p?.syncedTo ?: targetId()
@@ -115,7 +128,7 @@ class MaNowPlaying(private val app: Context) {
     val now: StateFlow<Now?> =
         combine(_players, _queues, _target, owner.state) { players, queues, target, own ->
             if (own.sessionOwner == PlaybackOwner.Who.LOCAL) return@combine null
-            val id = target.ifBlank { myPlayerId }
+            val id = resolveTargetPlayer(players, target, myPlayerId)
             val p = players.firstOrNull { it.playerId == id } ?: return@combine null
             val np = p.nowPlaying?.takeIf { it.title.isNotBlank() } ?: return@combine null
             Now(
@@ -132,7 +145,7 @@ class MaNowPlaying(private val app: Context) {
                 // the same number Music Assistant will check it against.
                 durationMs = seekableDurationMs(queues.firstOrNull { it.queueId == streamId(p) }, p),
                 isPlaying = p.isPlaying,
-                isSelf = p.isSelfOrActiveOutput(myPlayerId),
+                isSelf = isThisPhone(p),
                 volumeLevel = p.volumeLevel,
                 // MA does not surface a separate mute flag on the player; volume 0 is
                 // what the session needs to render a muted icon, and unmuting is a
@@ -144,7 +157,7 @@ class MaNowPlaying(private val app: Context) {
     /** Whether the active queue has shuffle on — the driving bar's shuffle button state. */
     val shuffleActive: StateFlow<Boolean> =
         combine(_players, _queues, _target) { players, queues, target ->
-            val id = target.ifBlank { myPlayerId }
+            val id = resolveTargetPlayer(players, target, myPlayerId)
             val p = players.firstOrNull { it.playerId == id }
             queues.firstOrNull { it.queueId == streamId(p) }?.shuffleEnabled == true
         }.distinctUntilChanged().stateIn(scope, SharingStarted.Eagerly, false)
@@ -227,6 +240,29 @@ class MaNowPlaying(private val app: Context) {
                 .sample(300)
                 .collect { refresh() }
         }
+        // The playhead reads the events themselves, unsampled: a `queue_updated`
+        // names the new track with its elapsed and stamp, a `queue_time_updated`
+        // carries a seek's landing, a `player_updated` a pause — each is an anchor
+        // the sampled re-read above would only deliver a poll later. This is the
+        // official app's whole position pipeline; the poll is the floor under it.
+        scope.launch {
+            api.events
+                .mapNotNull { MaParse.event(it) }
+                .collect { e ->
+                    val t = target()
+                    when {
+                        e.isQueueTime -> MaParse.queueTimeMs(e)?.let { ms ->
+                            playhead.onQueueTime(t, e.objectId ?: return@collect, ms)
+                        }
+                        e.isQueueUpdated -> (e.data as? JsonObject)
+                            ?.let { MaParse.queue(it, api.serverUrl) }
+                            ?.let { q -> playhead.onQueueUpdated(t, q, _players.value.firstOrNull { it.playerId == t.key }) }
+                        e.isPlayerUpdated -> (e.data as? JsonObject)
+                            ?.let { MaParse.player(it, api.serverUrl) }
+                            ?.let { playhead.onPlayerUpdated(t, it) }
+                    }
+                }
+        }
         scope.launch {
             while (true) {
                 delay(POLL_MS)
@@ -253,62 +289,44 @@ class MaNowPlaying(private val app: Context) {
         // project between reads so the notification's seek bar moves smoothly rather
         // than stepping once per poll.
         scope.launch {
-            combine(_players, _queues, _target) { players, queues, target ->
-                val id = target.ifBlank { myPlayerId }
-                val p = players.firstOrNull { it.playerId == id }
-                Triple(id, p, queues.firstOrNull { it.queueId == streamId(p) })
-            }.collect { (id, player, queue) -> anchor(id, player, queue) }
+            combine(_players, _queues, _target) { players, queues, _ -> players to queues }
+                .collect { (players, queues) ->
+                    val t = target()
+                    val p = players.firstOrNull { it.playerId == t.key }
+                    playhead.onPoll(t, p, queues.firstOrNull { it.queueId == t.queueId })
+                }
         }
         scope.launch {
-            now.map { it?.playerId }.distinctUntilChanged().collectLatest { id ->
-                if (id == null) { _positionMs.value = 0L; return@collectLatest }
-                var lastEndPoll = 0L
-                positions.observe(id).collect { ms ->
-                    _positionMs.value = ms
-                    // The projection has run out the track and no fresh anchor arrived,
-                    // so the server has almost certainly moved on. Ask, rather than
-                    // leaving the shade pinned at the duration until the 5 s poll floor
-                    // comes round. Rate-limited: the ticker keeps emitting while pinned.
-                    // Mirrors `NowPlayingViewModel.followPosition`.
-                    if (positions.isAtEnd(id)) {
-                        val t = android.os.SystemClock.elapsedRealtime()
-                        if (t - lastEndPoll > END_REPOLL_MIN_MS) { lastEndPoll = t; refresh() }
+            combine(_players, _target) { _, _ -> targetId() }
+                .distinctUntilChanged()
+                .collectLatest { id ->
+                    var lastEndPoll = 0L
+                    playhead.observe(id).collect { ms ->
+                        _positionMs.value = ms
+                        // The projection has run out the track and no fresh anchor
+                        // arrived, so the server has almost certainly moved on. Ask,
+                        // rather than leaving the shade pinned at the duration until
+                        // the 5 s poll floor comes round. Rate-limited: the ticker
+                        // keeps emitting while pinned.
+                        if (playhead.isAtEnd(id)) {
+                            val t = android.os.SystemClock.elapsedRealtime()
+                            if (t - lastEndPoll > END_REPOLL_MIN_MS) { lastEndPoll = t; refresh() }
+                        }
                     }
                 }
-            }
         }
-        // When this phone is the player, audio starting to flow on it is the strongest
-        // confirmation available that a seek or skip actually landed — better than any
-        // inference from polled state, and it arrives sooner.
-        //
-        // The *edge*, not the level: `isPlaying` is already true when a skip is asked
-        // for, because the outgoing track keeps coming out of the speaker for over a
-        // second afterwards. Releasing on that hands the bar straight back to the old
-        // track's playhead. Mirrors `NowPlayingViewModel`, which drives the on-screen
-        // bar from the same signal.
+        // This phone's stream (re)starting is what lifts a hold placed on its own bar.
         scope.launch {
-            SendpinApp.instance.playback.audibleSeq.collect { seq ->
-                val armedAt = freezeAtAudibleSeq
-                if (armedAt < 0 || seq <= armedAt) return@collect
-                if (!targetIsThisPhone()) return@collect
-                val id = targetId()
-                if (positions.isFrozen(id)) releaseFreeze(id)
-            }
+            SendpinApp.instance.playback.streamChunkSeq.drop(1).collect { playhead.onStreamChunk(it) }
         }
-        // The other end of the same story: something in the app replaced the queue.
-        // A skip freezes on its way out through [next]/[previous], but a play started
-        // from the library never came through here, so its first anchor adopted MA's
-        // `elapsed_time` — already a second or two in, because the server begins the
-        // stream job well before this phone makes a sound. Freezing on the request and
-        // releasing on the audible edge is exactly what a skip already does; this just
-        // arms it for the route that was missing.
-        //
-        // `drop(1)` because a StateFlow replays its current value to a new collector,
-        // and the count standing at whatever it was is not a fresh request.
+        // A seek or skip that reached the player through the media session rather
+        // than through here still holds the bar the same way.
+        SendpinApp.instance.playback.onSelfSeekRequested = { ms ->
+            playhead.armSeek(target(), ms, now.value?.durationMs?.takeIf { it > 0 })
+        }
+        SendpinApp.instance.playback.onSelfSkipRequested = { playhead.armTrackChange(target()) }
         scope.launch {
-            SendpinApp.instance.playback.playStartSeq.drop(1).collect {
-                if (targetIsThisPhone()) freezeForTrackChange(targetId())
-            }
+            api.state.collect { if (it == MaApiClient.State.DISCONNECTED) playhead.clear() }
         }
     }
 
@@ -322,167 +340,25 @@ class MaNowPlaying(private val app: Context) {
     private fun targetIsThisPhone(): Boolean {
         val id = targetId()
         if (id == myPlayerId) return true
-        return _players.value.firstOrNull { it.playerId == id }
-            ?.isSelfOrActiveOutput(myPlayerId) == true
-    }
-
-    // ── Optimistic freeze bookkeeping ────────────────────────────────────────
-    //
-    // The same shape as `NowPlayingViewModel`'s, and for the same reason: a freeze
-    // that nothing releases is a bar that never moves again, so every one is paired
-    // with a condition that releases it and a watchdog that releases it anyway.
-
-    private var freezeWatchdog: kotlinx.coroutines.Job? = null
-    @Volatile private var pendingSeekMs: Long? = null
-    /**
-     * A skip is waiting to be confirmed. Its own flag rather than
-     * `pendingSkipFromTrack != null`, because that id is genuinely unknown when the
-     * user skips before anything has been polled — and "unknown" must not read as
-     * "nothing pending", which would confirm the freeze on the spot.
-     */
-    @Volatile private var pendingSkip = false
-    @Volatile private var pendingSkipFromTrack: String? = null
-    /**
-     * Identity of the track last seen, and the queue it belongs to.
-     *
-     * The pair, not the id alone. massdroid's `hasCurrentItemChanged` answers **false**
-     * when there is no previous item to compare against (`previous?.currentItem ?:
-     * return false`), and it gets a fresh start on a player switch because deselecting
-     * clears the queue snapshot. Keying the id by queue buys both here: no previous
-     * reading for this queue means no track change, so the first poll after a cold
-     * start - or after switching to another speaker - anchors the server's real
-     * position instead of slamming the bar to 0:00 and letting the next poll drag it
-     * back up. "I have never seen this queue" is not "the track just changed".
-     *
-     * Also what a pending skip is measured against - see [freezeForTrackChange].
-     */
-    @Volatile private var lastTrackId: String? = null
-    @Volatile private var lastTrackKey: String? = null
-
-    /**
-     * [Playback.audibleSeq] as it was when the current freeze was armed.
-     *
-     * The freeze may only be released by a stream that became audible *after* it —
-     * see the collector in `init` for why a level cannot express that.
-     */
-    @Volatile private var freezeAtAudibleSeq: Long = -1L
-
-    private fun freezeForSeek(playerId: String, target: Long) {
-        pendingSeekMs = target
-        pendingSkip = false
-        pendingSkipFromTrack = null
-        freezeAtAudibleSeq = SendpinApp.instance.playback.audibleSeq.value
-        positions.setOptimisticSeek(playerId, target, now.value?.durationMs?.takeIf { it > 0 })
-        armFreezeWatchdog(playerId, SEEK_FREEZE_TIMEOUT_MS)
-    }
-
-    private fun freezeForTrackChange(playerId: String) {
-        pendingSeekMs = null
-        pendingSkip = true
-        pendingSkipFromTrack = lastTrackId
-        freezeAtAudibleSeq = SendpinApp.instance.playback.audibleSeq.value
-        positions.setOptimisticTrackChange(playerId)
-        armFreezeWatchdog(playerId)
-    }
-
-    private fun armFreezeWatchdog(playerId: String, timeoutMs: Long = FREEZE_TIMEOUT_MS) {
-        freezeWatchdog?.cancel()
-        freezeWatchdog = scope.launch {
-            delay(timeoutMs)
-            releaseFreeze(playerId)
-        }
-    }
-
-    private fun releaseFreeze(playerId: String) {
-        pendingSeekMs = null
-        pendingSkip = false
-        pendingSkipFromTrack = null
-        freezeAtAudibleSeq = -1L
-        freezeWatchdog?.cancel(); freezeWatchdog = null
-        positions.confirmPlaying(playerId)
-    }
-
-    /** What the server is calling the current track, for detecting a skip landing. */
-    private fun trackIdOf(player: MaPlayer?, queue: MaQueue?): String? {
-        queue?.currentQueueItemId?.let { return it }
-        queue?.currentItem?.uri?.let { return it }
-        val np = player?.nowPlaying ?: return null
-        if (np.title.isBlank()) return null
-        return "${np.title}|${np.artist}|${np.durationMs}"
+        return _players.value.firstOrNull { it.playerId == id }?.let { isThisPhone(it) } == true
     }
 
     /**
-     * Feed the position tracker what the server last said.
+     * The protocol client each wrapper was last seen rendering through.
      *
-     * Keyed on the *player* rather than the queue, because that is what [observe] is
-     * watching and what the notification is about — a member and its leader share a
-     * queue but each get their own row in the shade's history.
+     * `active_output_protocol` is only set while the wrapper is actually playing:
+     * Music Assistant clears it on pause and between tracks. Without a memory of it,
+     * this phone stopped being "this phone" the moment it paused — a seek while
+     * paused got no hold, and the shade routed the next command to a "remote"
+     * player that was the phone itself. So a wrapper that last rendered through us,
+     * and has not since named anything else, is still us.
      */
-    private fun anchor(playerId: String, player: MaPlayer?, queue: MaQueue?) {
-        if (player == null) return
-        val np = player.nowPlaying
+    private val lastOutputProtocol = java.util.concurrent.ConcurrentHashMap<String, String>()
 
-        // Track identity is read *before* the playhead, and the playhead is allowed to
-        // be missing. A poll that names the track but carries no `elapsed_time` is
-        // still the news that a skip landed, and bailing out above this — which is
-        // what an `?: return` on the elapsed reading did — meant [lastTrackId] could
-        // stay behind, leaving a skip with nothing to confirm it but the watchdog.
-        val trackId = trackIdOf(player, queue)
-        val knownTrack = lastTrackId.takeIf { lastTrackKey == playerId }
-        val trackChanged = trackId != null && knownTrack != null && trackId != knownTrack
-        if (trackId != null) { lastTrackId = trackId; lastTrackKey = playerId }
-
-        val elapsed = queue?.elapsedMs ?: np?.elapsedMs
-
-        // Release an optimistic freeze once — and only once — the server corroborates
-        // it. A skip is confirmed by the server naming a different track; a seek by its
-        // clock landing near where the user dropped the scrubber.
-        if (positions.isFrozen(playerId)) {
-            val seekTarget = pendingSeekMs
-            val confirmed = when {
-                // `pendingSkipFromTrack` may be null — we can freeze for a skip before
-                // ever having seen what was playing. Any named track is progress then.
-                pendingSkip -> trackId != null && trackId != pendingSkipFromTrack
-                seekTarget != null ->
-                    elapsed != null && kotlin.math.abs(elapsed - seekTarget) < SEEK_CONFIRM_MS
-                else -> true
-            }
-            if (!confirmed) return
-            releaseFreeze(playerId)
-        }
-
-        if (elapsed == null) return
-
-        // The server's own capture timestamp (`elapsed_time_last_updated`, a Unix
-        // epoch in seconds) as local wall-clock ms, handed over raw: the tracker
-        // decides whether it is fresh enough to project from, and null means the
-        // server said nothing. Only taken when `elapsed` came from the queue too —
-        // the stamp describes the queue's reading, so pairing it with the player's
-        // fallback would anchor one number on another's timestamp.
-        val capturedAtMs = queue?.elapsedTimeLastUpdated
-            ?.takeIf { queue.elapsedMs != null }
-            ?.let { (it * 1000).toLong() }
-
-        if (trackChanged) {
-            positions.setAnchor(
-                queueId = playerId,
-                elapsedMs = 0L,
-                capturedAtMs = null,
-                isPlaying = player.isPlaying,
-                durationMs = seekableDurationMs(queue, player).takeIf { it > 0 },
-                speed = queue?.playbackSpeed,
-            )
-            return
-        }
-
-        positions.setAnchor(
-            queueId = playerId,
-            elapsedMs = elapsed,
-            capturedAtMs = capturedAtMs,
-            isPlaying = player.isPlaying,
-            durationMs = seekableDurationMs(queue, player).takeIf { it > 0 },
-            speed = queue?.playbackSpeed,
-        )
+    private fun isThisPhone(p: MaPlayer): Boolean {
+        p.activeOutputProtocol?.let { lastOutputProtocol[p.playerId] = it }
+        return p.isSelfOrActiveOutput(myPlayerId) ||
+            (p.activeOutputProtocol == null && lastOutputProtocol[p.playerId] == myPlayerId)
     }
 
     // --- refresh ----------------------------------------------------------
@@ -530,15 +406,22 @@ class MaNowPlaying(private val app: Context) {
         if (now.value?.isPlaying == true) repo.pause(targetId()) else repo.play(targetId())
     }
 
-    fun next() = command {
-        freezeForTrackChange(targetId())
-        repo.next(targetId())
-    }
+    fun next() = command { skipNext() }
 
-    fun previous() = command {
-        freezeForTrackChange(targetId())
-        repo.previous(targetId())
-    }
+    fun previous() = command { skipPrevious() }
+
+    /**
+     * Skip, holding this phone's own bar at zero until its new stream arrives — see
+     * [MaPlayhead.holdForTrackChange]. Throws what the server throws; [next] and
+     * [previous] swallow that, the screen's callers decide for themselves.
+     */
+    suspend fun skipNext() = playhead.holdForTrackChange(target()) { repo.next(targetId()) }
+
+    suspend fun skipPrevious() = playhead.holdForTrackChange(target()) { repo.previous(targetId()) }
+
+    /** Run [block] — a queue jump, a play — under the same hold as a skip. */
+    suspend fun <T> holdForTrackChange(block: suspend () -> T): T =
+        playhead.holdForTrackChange(target(), block)
 
     fun stop() = command { repo.stop(targetId()) }
 
@@ -553,30 +436,24 @@ class MaNowPlaying(private val app: Context) {
         repo.setShuffle(queue.queueId, !queue.shuffleEnabled)
     }
 
-    fun seekTo(positionMs: Long) = command {
-        val id = targetId()
-        // Clamped here rather than trusted from the caller: a media session hands
-        // over a position measured against the duration *it* was told, and Music
-        // Assistant rejects anything past `current_item.duration` outright — a
-        // rejection [command]'s `runCatching` would swallow, leaving the shade's bar
-        // frozen on a position playback never reached.
-        val target = positionMs.coerceIn(0L, maxSeekPositionMs(now.value?.durationMs ?: 0L))
-        // Hold the bar where the user dropped it: MA keeps reporting the old position
-        // for a beat after a seek, and rendering that makes the bar jump back.
-        //
-        // The freeze is released by [anchor] once the server corroborates it, never
-        // here. Confirming immediately after issuing the command — which is what this
-        // used to do — released the hold before the server had even processed the
-        // seek, so the very next poll reported the old position and the notification's
-        // bar snapped back. That is the whole reason the freeze exists.
-        freezeForSeek(id, target)
-        try {
-            repo.seek(id, (target / 1000).toInt())
-        } catch (e: Exception) {
-            // The seek did not happen, so let the bar say where playback really is
-            // instead of holding a target for six seconds and then jumping.
-            releaseFreeze(id)
-            throw e
+    fun seekTo(positionMs: Long) = command { seek(positionMs) }
+
+    /**
+     * Seek the selected player, holding this phone's own bar at the target until its
+     * new stream arrives — see [MaPlayhead.holdForSeek]. Throws what the server
+     * throws, so a caller with a toast can say why.
+     *
+     * Clamped here rather than trusted from the caller: a media session hands over a
+     * position measured against the duration *it* was told, and Music Assistant
+     * rejects anything past `current_item.duration` outright.
+     */
+    suspend fun seek(positionMs: Long) {
+        val duration = now.value?.durationMs ?: 0L
+        // Whole seconds: that is what `players/cmd/seek` takes, so the bar is held
+        // exactly where the server will land rather than up to a second past it.
+        val targetSec = (positionMs.coerceIn(0L, maxSeekPositionMs(duration)) / 1000).toInt()
+        playhead.holdForSeek(target(), targetSec * 1000L, duration.takeIf { it > 0 }) {
+            repo.seek(targetId(), targetSec)
         }
     }
 
@@ -600,22 +477,5 @@ class MaNowPlaying(private val app: Context) {
 
         /** Floor between end-of-track re-polls, so a pinned bar cannot spin the socket. */
         const val END_REPOLL_MIN_MS = 1_000L
-
-        /** How near the server's clock has to land for a seek to count as landed. */
-        const val SEEK_CONFIRM_MS = 3_000L
-
-        /**
-         * How long a freeze may hold out for a confirmation that never comes. A server
-         * that goes quiet should cost a stuck second, not a stuck bar.
-         */
-        const val FREEZE_TIMEOUT_MS = 6_000L
-
-        /**
-         * A seek's own, shorter deadline — see the note on
-         * `NowPlayingViewModel.SEEK_FREEZE_TIMEOUT_MS`. MA publishes a seek's target
-         * before it rebuilds the stream, so one that landed is confirmed by the next
-         * reading; the long wait only prolongs the lie told by one that did not.
-         */
-        const val SEEK_FREEZE_TIMEOUT_MS = 2_500L
     }
 }

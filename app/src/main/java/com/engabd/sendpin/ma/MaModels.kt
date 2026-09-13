@@ -418,6 +418,8 @@ data class MaQueue(
      */
     val currentItemDurationMs: Long? = null,
     val currentQueueItemId: String? = null,
+    /** The queue's own `state` (`playing`, `paused`, `idle`) — what a `queue_updated` event knows. */
+    val state: String = "idle",
     val dontStopTheMusic: Boolean = false,
     val playbackSpeed: Float = 1f,
     /** The queue's own playhead, which the player object doesn't always agree with. */
@@ -626,7 +628,48 @@ data class MaEvent(
      */
     val changesQueueContents: Boolean
         get() = name == "queue_items_updated" || name == "queue_added"
+
+    /** The payload is a whole queue object — the playhead's anchor source. */
+    val isQueueUpdated: Boolean
+        get() = name == "queue_updated" || name == "queue_added" || name == "queue_items_updated"
+
+    /**
+     * The payload is the queue's elapsed time in seconds. Music Assistant sends this
+     * on *jumps* (a seek, a position correction), not once a second.
+     */
+    val isQueueTime: Boolean get() = name == "queue_time_updated"
+
+    /** The payload is a whole player object — carries the play/pause state. */
+    val isPlayerUpdated: Boolean get() = name == "player_updated" || name == "player_added"
 }
+
+/**
+ * Which player the app is really addressing, given the one the user picked.
+ *
+ * [target] is the stored choice, and blank means this phone. But this phone is not
+ * always in the list: after a reconnect Music Assistant takes a moment to register
+ * it, and a stale choice can name a player that has since gone. Both used to leave
+ * the screen and the shade pointing at a player id nothing answered for, so:
+ *
+ * 1. the stored choice, if it is a player the server currently lists (or the list
+ *    is still empty — nothing to check against yet);
+ * 2. else this phone, if the server lists it;
+ * 3. else the first available player, or failing that the first listed.
+ *
+ * The moment the server finishes registering this phone it satisfies the first
+ * branch again and takes back over, without the user having to re-pick it. One
+ * function so the screen (`NowPlayingViewModel`) and the shade (`MaNowPlaying`) can
+ * never disagree about which player the bar belongs to.
+ */
+fun resolveTargetPlayer(players: List<MaPlayer>, target: String, myPlayerId: String): String {
+    val wanted = target.ifBlank { myPlayerId }
+    if (players.isEmpty() || players.any { it.playerId == wanted }) return wanted
+    if (players.any { it.playerId == myPlayerId }) return myPlayerId
+    return players.firstOrNull { it.available }?.playerId ?: players.first().playerId
+}
+
+/** Whether the queue itself says it is playing — a `queue_updated` payload carries no player. */
+val MaQueue.isPlaying: Boolean get() = state == "playing"
 
 /** A track similar to the seed (from sonic_similarity or music/tracks/similar_tracks). */
 data class MaSimilarTrack(
@@ -863,30 +906,32 @@ object MaParse {
 
     fun players(result: JsonElement?, serverUrl: String? = null): List<MaPlayer> {
         val arr = result as? JsonArray ?: return emptyList()
-        return arr.mapNotNull { el ->
-            val o = el as? JsonObject ?: return@mapNotNull null
-            val id = o["player_id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
-            MaPlayer(
-                playerId = id,
-                name = o["display_name"]?.jsonPrimitive?.contentOrNull
-                    ?: o["name"]?.jsonPrimitive?.contentOrNull ?: id,
-                available = o["available"]?.jsonPrimitive?.booleanOrNull ?: true,
-                powered = o["powered"]?.jsonPrimitive?.booleanOrNull ?: true,
-                type = o["type"]?.jsonPrimitive?.contentOrNull ?: "player",
-                state = o["playback_state"]?.jsonPrimitive?.contentOrNull ?: "idle",
-                volumeLevel = o["volume_level"]?.jsonPrimitive?.intOrNull ?: 0,
-                groupVolume = o["group_volume"]?.jsonPrimitive?.intOrNull,
-                syncedTo = o["synced_to"]?.jsonPrimitive?.contentOrNull,
-                // MA renamed this to `group_members`; older servers still send
-                // `group_childs`, so accept whichever one turns up.
-                groupChilds = strList(o["group_members"] ?: o["group_childs"]),
-                canGroupWith = strList(o["can_group_with"]),
-                supportedFeatures = strList(o["supported_features"]),
-                icon = o["icon"]?.jsonPrimitive?.contentOrNull,
-                activeOutputProtocol = o["active_output_protocol"]?.jsonPrimitive?.contentOrNull,
-                nowPlaying = nowPlaying(o["current_media"], o["elapsed_time"], serverUrl),
-            )
-        }
+        return arr.mapNotNull { el -> (el as? JsonObject)?.let { player(it, serverUrl) } }
+    }
+
+    /** One player object — a `players/all` element, or a `player_updated` payload. */
+    fun player(o: JsonObject, serverUrl: String? = null): MaPlayer? {
+        val id = o["player_id"]?.jsonPrimitive?.contentOrNull ?: return null
+        return MaPlayer(
+            playerId = id,
+            name = o["display_name"]?.jsonPrimitive?.contentOrNull
+                ?: o["name"]?.jsonPrimitive?.contentOrNull ?: id,
+            available = o["available"]?.jsonPrimitive?.booleanOrNull ?: true,
+            powered = o["powered"]?.jsonPrimitive?.booleanOrNull ?: true,
+            type = o["type"]?.jsonPrimitive?.contentOrNull ?: "player",
+            state = o["playback_state"]?.jsonPrimitive?.contentOrNull ?: "idle",
+            volumeLevel = o["volume_level"]?.jsonPrimitive?.intOrNull ?: 0,
+            groupVolume = o["group_volume"]?.jsonPrimitive?.intOrNull,
+            syncedTo = o["synced_to"]?.jsonPrimitive?.contentOrNull,
+            // MA renamed this to `group_members`; older servers still send
+            // `group_childs`, so accept whichever one turns up.
+            groupChilds = strList(o["group_members"] ?: o["group_childs"]),
+            canGroupWith = strList(o["can_group_with"]),
+            supportedFeatures = strList(o["supported_features"]),
+            icon = o["icon"]?.jsonPrimitive?.contentOrNull,
+            activeOutputProtocol = o["active_output_protocol"]?.jsonPrimitive?.contentOrNull,
+            nowPlaying = nowPlaying(o["current_media"], o["elapsed_time"], serverUrl),
+        )
     }
 
     private fun nowPlaying(el: JsonElement?, elapsed: JsonElement?, serverUrl: String?): MaNowPlaying? {
@@ -932,37 +977,44 @@ object MaParse {
 
     fun queues(result: JsonElement?, serverUrl: String? = null): List<MaQueue> {
         val arr = result as? JsonArray ?: return emptyList()
-        return arr.mapNotNull { el ->
-            val o = el as? JsonObject ?: return@mapNotNull null
-            val id = o["queue_id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
-            val current = o["current_item"] as? JsonObject
-            val (inputFormat, dsp) = streamFormats(current)
-            MaQueue(
-                queueId = id,
-                inputFormat = inputFormat,
-                dsp = dsp,
-                active = o["active"]?.jsonPrimitive?.booleanOrNull ?: true,
-                shuffleEnabled = o["shuffle_enabled"]?.jsonPrimitive?.booleanOrNull ?: false,
-                repeatMode = o["repeat_mode"]?.jsonPrimitive?.contentOrNull ?: "off",
-                currentIndex = o["current_index"]?.jsonPrimitive?.intOrNull,
-                itemCount = o["items"]?.jsonPrimitive?.intOrNull ?: 0,
-                currentItem = item(current?.get("media_item"), serverUrl),
-                // The QueueItem's own `duration` (seconds) first — that is the field
-                // MA validates a seek against. The media item's is the catalogue
-                // figure and only stands in when the queue item carries none.
-                currentItemDurationMs = durationSecMs(current?.get("duration"))
-                    ?: durationSecMs((current?.get("media_item") as? JsonObject)?.get("duration")),
-                currentQueueItemId = current?.get("queue_item_id")?.jsonPrimitive?.contentOrNull,
-                dontStopTheMusic = o["dont_stop_the_music_enabled"]?.jsonPrimitive?.booleanOrNull ?: false,
-                playbackSpeed = o["playback_speed"]?.jsonPrimitive?.floatOrNull ?: 1f,
-                elapsedMs = o["elapsed_time"]?.jsonPrimitive?.doubleOrNull?.let { (it * 1000).toLong() },
-                elapsedTimeLastUpdated = o["elapsed_time_last_updated"]?.jsonPrimitive?.doubleOrNull,
-                streamProvider = (current?.get("streamdetails") as? JsonObject)
-                    ?.get("provider")?.jsonPrimitive?.contentOrNull,
-                loudness = loudnessOf(current?.get("streamdetails") as? JsonObject),
-            )
-        }
+        return arr.mapNotNull { el -> (el as? JsonObject)?.let { queue(it, serverUrl) } }
     }
+
+    /** One queue object — a `player_queues/all` element, or a `queue_updated` payload. */
+    fun queue(o: JsonObject, serverUrl: String? = null): MaQueue? {
+        val id = o["queue_id"]?.jsonPrimitive?.contentOrNull ?: return null
+        val current = o["current_item"] as? JsonObject
+        val (inputFormat, dsp) = streamFormats(current)
+        return MaQueue(
+            queueId = id,
+            inputFormat = inputFormat,
+            dsp = dsp,
+            active = o["active"]?.jsonPrimitive?.booleanOrNull ?: true,
+            shuffleEnabled = o["shuffle_enabled"]?.jsonPrimitive?.booleanOrNull ?: false,
+            repeatMode = o["repeat_mode"]?.jsonPrimitive?.contentOrNull ?: "off",
+            currentIndex = o["current_index"]?.jsonPrimitive?.intOrNull,
+            itemCount = o["items"]?.jsonPrimitive?.intOrNull ?: 0,
+            currentItem = item(current?.get("media_item"), serverUrl),
+            // The QueueItem's own `duration` (seconds) first — that is the field
+            // MA validates a seek against. The media item's is the catalogue
+            // figure and only stands in when the queue item carries none.
+            currentItemDurationMs = durationSecMs(current?.get("duration"))
+                ?: durationSecMs((current?.get("media_item") as? JsonObject)?.get("duration")),
+            currentQueueItemId = current?.get("queue_item_id")?.jsonPrimitive?.contentOrNull,
+            state = o["state"]?.jsonPrimitive?.contentOrNull ?: "idle",
+            dontStopTheMusic = o["dont_stop_the_music_enabled"]?.jsonPrimitive?.booleanOrNull ?: false,
+            playbackSpeed = o["playback_speed"]?.jsonPrimitive?.floatOrNull ?: 1f,
+            elapsedMs = o["elapsed_time"]?.jsonPrimitive?.doubleOrNull?.let { (it * 1000).toLong() },
+            elapsedTimeLastUpdated = o["elapsed_time_last_updated"]?.jsonPrimitive?.doubleOrNull,
+            streamProvider = (current?.get("streamdetails") as? JsonObject)
+                ?.get("provider")?.jsonPrimitive?.contentOrNull,
+            loudness = loudnessOf(current?.get("streamdetails") as? JsonObject),
+        )
+    }
+
+    /** The elapsed seconds a `queue_time_updated` event carries, as milliseconds. */
+    fun queueTimeMs(e: MaEvent): Long? =
+        (e.data as? JsonPrimitive)?.doubleOrNull?.let { (it * 1000).toLong() }
 
     /**
      * One MA `AudioFormat` object → a [StreamQuality], or null when it says nothing

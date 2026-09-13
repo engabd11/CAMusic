@@ -21,16 +21,6 @@ class MaRepository(
     private val onPlaybackRequested: () -> Unit = {
         runCatching { com.engabd.sendpin.SendpinApp.instance.playback.wakePlayerSocket() }
     },
-    /**
-     * Called when a command has *replaced* a queue, so the position bar can hold at
-     * zero until sound is actually out — see [com.engabd.sendpin.service.Playback.playStartSeq].
-     *
-     * Distinct from [onPlaybackRequested], which fires for enqueues too: adding to the
-     * queue leaves the playing track alone, and freezing its position would be wrong.
-     */
-    private val onQueueReplaced: () -> Unit = {
-        runCatching { com.engabd.sendpin.SendpinApp.instance.playback.noteQueueReplaced() }
-    },
 ) {
 
     private val serverUrl: String? get() = api.serverUrl
@@ -733,10 +723,6 @@ class MaRepository(
                 startFromBeginning?.let { put("start_from_beginning", it) }
                 user?.let { put("user", it) }
             })
-            // After the command lands, not before: a play that the server refused has
-            // not replaced anything, and freezing the bar for it would leave the
-            // position of the track still playing stuck at zero.
-            if (option == "replace") onQueueReplaced()
         } catch (e: MaApiException) {
             throw describePlayFailure(e, uris)
         }
