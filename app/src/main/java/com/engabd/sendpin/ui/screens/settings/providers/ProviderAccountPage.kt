@@ -95,7 +95,7 @@ internal fun ProviderAccountPage(
     /** Re-point the route at the stored server once a new one has been saved. */
     onSaved: (String) -> Unit,
 ) {
-    val skin = providerSkin(configIn.kind) ?: return
+    val skin = providerSkin(configIn.kind)
     ProviderTheme(skin) { ProviderPageBody(skin, configIn, isNew, isActive, libraryVm, settings, scope, onDone, onSaved) }
 }
 
@@ -180,7 +180,7 @@ private fun ProviderPageBody(
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Hero(skin, isActive, connecting, ready, connError, signedIn, isNew)
+        ProviderHero(skin, isActive, connecting, ready, connError, signedIn, isNew)
 
         // ── Account ──────────────────────────────────────────────────────────
         SettingsCard(
@@ -286,7 +286,7 @@ private fun ProviderPageBody(
 
 /** The band at the top: the mark, the wordmark, a line of the service's voice, and its state. */
 @Composable
-private fun Hero(
+internal fun ProviderHero(
     skin: ProviderSkin,
     isActive: Boolean,
     connecting: Boolean,
@@ -325,8 +325,10 @@ private fun Hero(
                 }
                 Box(Modifier.size(7.dp).clip(RoundedCornerShape(100)).background(tint))
                 Text(text, color = Color.White.copy(alpha = 0.9f), style = skin.label)
-                Spacer(Modifier.width(2.dp))
-                ExperimentalBadge()
+                if (skin.kind.experimental) {
+                    Spacer(Modifier.width(2.dp))
+                    ExperimentalBadge()
+                }
             }
         }
     }
