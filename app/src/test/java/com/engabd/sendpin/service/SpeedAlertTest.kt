@@ -50,6 +50,28 @@ class SpeedAlertTest {
     }
 
     @Test
+    fun `the speed the settings screen promises is exactly the speed that beeps`() {
+        // The screen says "beeps after 2s at N km/h or more", and N comes from
+        // `firstAlertingSpeedKmh` while the beep comes from `isOver`. Two functions,
+        // one promise — and the bug this feature was reported for was the pair
+        // disagreeing by one. Swept rather than spot-checked, because the
+        // disagreement only showed up at the values where the float product lands a
+        // hair under a whole number.
+        for (limit in listOf(10, 25, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130)) {
+            for (tolerance in 0..20) {
+                val trigger = SpeedAlert.triggerSpeedKmh(limit, tolerance)
+                val first = SpeedAlert.firstAlertingSpeedKmh(limit, tolerance)
+                val where = "limit=$limit tolerance=$tolerance trigger=$trigger first=$first"
+                assertTrue(SpeedAlert.isOver(first.toFloat(), trigger), "should beep: $where")
+                assertFalse(SpeedAlert.isOver((first - 1).toFloat(), trigger), "should not beep: $where")
+                // And the promise is always past the tolerance, never at it: the
+                // whole point of the change.
+                assertTrue(first > trigger, "not past the tolerance: $where")
+            }
+        }
+    }
+
+    @Test
     fun `sitting a fraction over the trigger never beeps`() {
         val t = SpeedAlert.Tracker()
         repeat(10) { assertFalse(t.onReading(speedKmh = 105.4f, triggerKmh = 105f, nowMs = it * 1000L)) }

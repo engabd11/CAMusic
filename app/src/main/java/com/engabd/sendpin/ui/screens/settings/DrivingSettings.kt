@@ -62,7 +62,16 @@ internal fun DrivingModeCard(settings: AppSettings, accent: Color, scope: Corout
 
     val askBluetooth = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
-    ) { granted -> if (granted) scope.launch { bonded = bondedDevices(context) } }
+    ) { granted ->
+        if (granted) {
+            scope.launch { bonded = bondedDevices(context) }
+            // The startup connection query gives up silently without this permission,
+            // and it only re-runs when the nomination changes — so a user who grants
+            // it while already sitting in a connected car would have had `carConnected`
+            // stuck false, and with it the whole speed watch, until the next connect.
+            com.engabd.sendpin.SendpinApp.instance.drivingMode.refreshCarConnection()
+        }
+    }
 
     SettingsCard(
         title = "Driving",
@@ -87,11 +96,17 @@ internal fun DrivingModeCard(settings: AppSettings, accent: Color, scope: Corout
                 "mechanism is Floating window and the app was not opened before the map.",
         ) { on -> scope.launch { settings.setDrivingEnabled(on) } }
 
-        if (!enabled) return@SettingsCard
-
         CardDivider()
 
         // ── Which car ────────────────────────────────────────────────────────
+        //
+        // Above the `enabled` early return, not below it, because this is no longer
+        // only the driving bar's setting. The speed alert's GPS gate is *strictly*
+        // this nomination — no car picked means no location subscription, which
+        // means the alert can never fire — and the alert lives on a different page
+        // with its own switch. Behind the "Driving controls" toggle, the one field
+        // that arms it was unreachable to anyone who only wanted the alert, and
+        // nothing on either page said so.
         FieldLabel("Your car")
         if (!btGranted) {
             Note(
@@ -111,8 +126,8 @@ internal fun DrivingModeCard(settings: AppSettings, accent: Color, scope: Corout
             Note("No paired devices yet. Pair the phone with your car stereo, then come back.")
         } else {
             Note(
-                "Which of your paired devices is the car? Connecting to it turns the controls on; " +
-                    "disconnecting turns them off.",
+                "Which of your paired devices is the car? Connecting to it turns the controls on " +
+                    "and starts the speed alert watching; disconnecting turns both off.",
             )
             // A dropdown, not the segmented row this used to be. A phone that has been
             // in use for a while is paired with headphones, a watch, a speaker, a
@@ -137,11 +152,23 @@ internal fun DrivingModeCard(settings: AppSettings, accent: Color, scope: Corout
                 val (address, name) = bonded[i]
                 scope.launch { settings.setDrivingCar(address, name) }
             }
-            if (carName.isBlank()) {
-                Note("Nothing picked yet, the Quick Settings tile still works in the meantime.")
+            // The *address* is what the gate reads, so that is what "nothing picked"
+            // has to mean here — a name without one arms nothing.
+            if (carAddress.isBlank()) {
+                StatusLine(
+                    "Nothing picked yet. The Quick Settings tile still raises the controls by " +
+                        "hand, but the speed alert has no way to know you are driving and will " +
+                        "not watch your speed until a car is chosen here.",
+                    health = Health.WARN,
+                    accent = WarnAmber,
+                )
             }
             Note("${bonded.size} paired ${if (bonded.size == 1) "device" else "devices"}.")
         }
+
+        // Everything below is about the *bar* — where it appears and what draws it —
+        // so it stays behind the toggle that decides whether there is a bar at all.
+        if (!enabled) return@SettingsCard
 
         CardDivider()
 
@@ -296,6 +323,8 @@ private fun SpeedFeaturesRow(settings: AppSettings, accent: Color, scope: Corout
     // alert did not fire, and until now the screen could not answer it.
     val fixStatus by com.engabd.sendpin.SendpinApp.instance.speedMonitor
         .fixStatus.collectAsState(initial = null)
+    val serviceRefusal by com.engabd.sendpin.SendpinApp.instance.speedMonitor
+        .serviceRefusal.collectAsState(initial = null)
 
     // What the toggle was in the middle of doing when it had to stop and ask for
     // permission, so the grant can finish it.
@@ -406,14 +435,22 @@ private fun SpeedFeaturesRow(settings: AppSettings, accent: Color, scope: Corout
         )
 
         // ── Is it actually watching? ───────────────────────────────────────
+        //
+        // This line used to describe the old three-way gate — "starts when anything
+        // is playing… you do not need driving mode set up at all" — which stopped
+        // being true when GPS became strictly car-gated, and it is the sentence that
+        // makes a never-firing alert look armed. It now says what the monitor itself
+        // reports, including which of the ways to be idle this is.
         Note(
-            fixStatus ?: "Not watching — starts when anything is playing, or when your car connects.",
+            fixStatus ?: "Not watching.",
             title = "GPS",
-            info = "Your speed is watched whenever anything is playing on this phone — " +
-                "this app, Spotify, a podcast, anything — or whenever the car you " +
-                "picked in Driving connects, or you turn driving mode on by hand. Any " +
-                "one of those is enough; you do not need all three, and you do not " +
-                "need driving mode set up at all.\n\nWhile it is watching, a " +
+            info = "Your speed is read only while this phone is connected to the car you " +
+                "picked under Settings › Driving. Nothing else starts it: not music " +
+                "playing, not the Quick Settings tile, not driving mode being on by " +
+                "hand. GPS at a fix a second is the most expensive thing an app can " +
+                "ask a phone for, and the car link is the only signal that honestly " +
+                "means you are driving.\n\nSo if no car is picked, this alert cannot " +
+                "fire at all — pick one there first.\n\nWhile it is watching, a " +
                 "notification says so: that is what keeps Android delivering GPS " +
                 "fixes once you switch to your map. Android stops sending location " +
                 "to an app that is not on screen and has no such notification, which " +
@@ -422,6 +459,13 @@ private fun SpeedFeaturesRow(settings: AppSettings, accent: Color, scope: Corout
                 "minute or two, check that Location is on and that the phone can see " +
                 "the sky.",
         )
+
+        // Android refusing the background location service is the one failure that
+        // looks exactly like success from this screen: fixes arrive here, and the
+        // watch goes quiet the moment the map comes forward. It used to go to logcat.
+        serviceRefusal?.let {
+            StatusLine(it, health = Health.WARN, accent = WarnAmber)
+        }
 
         // The warning is a sound, a buzz and a notification. Only the last of those
         // needs a permission, and it is the one a driver actually sees — so say when
@@ -514,8 +558,9 @@ private fun SpeedFeaturesRow(settings: AppSettings, accent: Color, scope: Corout
             "too quiet on the motorway and much too loud coming off it. This moves the " +
             "volume with the speed instead of leaving you to.\n\nIt moves by a few steps, " +
             "slowly, and never past the volume you set by hand — it is a correction, not a " +
-            "second volume control.\n\nTip: it shares the GPS the speed alert uses, so " +
-            "turning either on is what starts location; turning both off stops it.",
+            "second volume control.\n\nTip: it shares the GPS the speed alert uses, and the " +
+            "same gate — it needs the car you picked under Driving to be connected, and " +
+            "turning both switches off stops location entirely.",
     ) { on -> requestThenSet(on) { settings.setSpeedAdaptiveVolume(on) } }
 
     if ((alertEnabled || adaptiveEnabled) && !hasLocation) {

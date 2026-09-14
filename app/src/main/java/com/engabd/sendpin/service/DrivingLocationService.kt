@@ -14,6 +14,9 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.engabd.sendpin.MainActivity
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * The foreground service that keeps [SpeedMonitor]'s GPS subscription alive once
@@ -80,11 +83,20 @@ class DrivingLocationService : Service() {
                 buildNotification(),
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION,
             )
+        }.onSuccess {
+            _refusal.value = null
         }.onFailure {
             // Survivable: the alert falls back to whatever location the platform
             // still hands a backgrounded app, which is little but not nothing, and
             // everything keeps working while CAMusic is the app on screen.
+            //
+            // Survivable is not the same as invisible, though, and logcat is the one
+            // place a driver will never look. This is the exact shape of "the app
+            // said it was watching and nothing ever beeped": fixes arrive while
+            // CAMusic is on screen, and the moment the map comes forward the
+            // subscription goes quiet with nothing to show for it. Said out loud.
             android.util.Log.w(TAG, "startForeground failed: ${it.message}")
+            _refusal.value = REFUSED_MESSAGE
         }
         return START_NOT_STICKY
     }
@@ -123,6 +135,32 @@ class DrivingLocationService : Service() {
         private const val NOTIFICATION_ID = 4131
 
         /**
+         * One sentence, written for a driver rather than for a stack trace. Android
+         * gives several different reasons for the same outcome — a background start
+         * on 12+, the while-in-use rule for a `location`-typed service on 14+ — and
+         * the remedy is the same for all of them, so the remedy is what it says.
+         */
+        private const val REFUSED_MESSAGE =
+            "Android would not let the speed watch keep running in the background, so " +
+                "the alert only works while CAMusic is on screen. Opening CAMusic once " +
+                "after the car connects is usually enough to fix it for the drive."
+
+        private val _refusal = MutableStateFlow<String?>(null)
+
+        /**
+         * Non-null while the platform is refusing to run this service — see
+         * [REFUSED_MESSAGE]. Exposed rather than logged because the failure is
+         * silent by nature: the subscription survives, the alert does not.
+         *
+         * Cleared when the service starts cleanly and when [stop] takes the watch
+         * down — deliberately *not* in `onDestroy`. The platform kills a service
+         * that never reached `startForeground`, so clearing there would wipe the
+         * message a few seconds after setting it, which is the one case it exists
+         * for.
+         */
+        val refusal: StateFlow<String?> = _refusal.asStateFlow()
+
+        /**
          * Start watching, if the grant is there to start with.
          *
          * `runCatching` around the start itself and not only around
@@ -139,11 +177,19 @@ class DrivingLocationService : Service() {
                     context,
                     Intent(context, DrivingLocationService::class.java),
                 )
+            }.onFailure {
+                // A refused *launch* never reaches onStartCommand, so it has to be
+                // reported from here or this half of the failure stays silent.
+                android.util.Log.w(TAG, "startForegroundService refused: ${it.message}")
+                _refusal.value = REFUSED_MESSAGE
             }
         }
 
         fun stop(context: Context) {
             runCatching { context.stopService(Intent(context, DrivingLocationService::class.java)) }
+            // Not left to onDestroy: a service that never managed to start has none
+            // to run, and a stale refusal would outlive the watch it was about.
+            _refusal.value = null
         }
 
         fun hasLocationPermission(context: Context): Boolean =
