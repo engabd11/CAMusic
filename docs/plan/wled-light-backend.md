@@ -291,3 +291,45 @@ timing/flicker behaviour on real hardware.
    controller with independent effects) are out of scope for v1 — CAMusic
    treats one WLED controller as one strip of N pixels in realtime mode,
    the same simplification it makes for a Hue "channel" being one bulb.
+
+## Status (2026-09-14)
+
+- **Phase 0: done, pending verification.** `hue/LightBridge.kt` (the
+  `LightBridge` interface, `SendOutcome`, `LightRoom`) and
+  `hue/HueLightBridge.kt` (wrapping `HueBridgeClient`/`DtlsPskClient`/
+  `HueStreamEncoder`) are in. `DirectLightSync` now renders through
+  `bridge: LightBridge` instead of touching `dtls`/`encoder`/`bridgeClient`
+  directly — `start()`, `cleanup()`, `emitFrame()`, `reconnectBridge()` (was
+  `reconnect()`) and `keepaliveLoop()` all go through the interface. The
+  `bridgeClient` property stays on `DirectLightSync` (delegating to
+  `HueLightBridge.bridgeClient`) for the Light Sync settings screen's
+  pairing/area-picker flow, which is unrelated to the streaming session.
+- **Two intentional, narrow deviations from strict byte-for-byte
+  behaviour**, both worth a reviewer's eye rather than assumed away:
+  1. `HueLightBridge.closeSession()` wraps `dtls?.close()` in a try/catch
+     (logging on failure); the original `cleanup()` called it unguarded, so
+     an exception there would have skipped the rest of cleanup (including
+     releasing the wake/Wi-Fi locks). This is strictly more defensive, not
+     a behaviour narrowing.
+  2. The Hue entertainment-area id used by `openSession`/`closeSession`/
+     `reconnect` is now the id resolved once by `fetchRoom()` (cached on
+     `HueLightBridge`), rather than being freshly re-read from
+     `AppSettings.hueEntertainmentConfigId` at every call site the way the
+     original `start()`/`cleanup()`/`reconnect()` each did independently.
+     Identical in the normal case (the stored id matches an existing area,
+     so both reads agree); only diverges if the user changes the selected
+     entertainment area in Settings while a session is live or recovering,
+     where the old code's mixed resolved-vs-freshly-read id usage looks more
+     like an inconsistency than an intended behaviour to preserve.
+- **Not yet done, and the actual gate on relying on this**: verification
+  against a real Hue bridge, and a run of the existing unit test suite.
+  Neither could be done from the environment this was written in — no
+  Android SDK/NDK is installed and the network policy does not reach
+  Google's Maven repository, so `./gradlew :app:testMobileDebugUnitTest`
+  itself could not be run here, on this branch or on an unmodified
+  checkout. The change was reviewed by hand instead: every removed
+  `dtls`/`encoder` reference was traced to its replacement, every call site
+  checked against `LightBridge`'s signatures, and the two deviations above
+  are the only ones found. Treat this as unverified until both checks run
+  somewhere that has the SDK and a bridge.
+- **Phase 1+ (WLED itself) not started.**
