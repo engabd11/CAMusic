@@ -73,10 +73,12 @@ class CPace private constructor(
         const val SHARE_SIZE = 32
         const val TAG_SIZE = 64
 
-        private val Q: BigInteger = BigInteger.TWO.pow(255).subtract(BigInteger.valueOf(19))
+        // Not BigInteger.TWO: that field only exists from API 33, and the app runs from 31.
+        private val TWO: BigInteger = BigInteger.valueOf(2)
+        private val Q: BigInteger = TWO.pow(255).subtract(BigInteger.valueOf(19))
         private val A: BigInteger = BigInteger.valueOf(486662)
-        private val Z: BigInteger = BigInteger.TWO   // the non-square Elligator2 uses on Curve25519
-        private val INV2: BigInteger = BigInteger.TWO.modInverse(Q)
+        private val Z: BigInteger = TWO   // the non-square Elligator2 uses on Curve25519
+        private val INV2: BigInteger = TWO.modInverse(Q)
         private val LEGENDRE_POWER: BigInteger = Q.subtract(BigInteger.ONE).shiftRight(1)
         private const val FIELD_BYTES = 32
         private const val SHA512_BLOCK_BYTES = 128
@@ -140,7 +142,7 @@ class CPace private constructor(
             return BigInteger(1, u.reversedArray())
         }
 
-        private fun inv0(x: BigInteger): BigInteger = x.modPow(Q.subtract(BigInteger.TWO), Q)
+        private fun inv0(x: BigInteger): BigInteger = x.modPow(Q.subtract(TWO), Q)
 
         /** Elligator2 map to the curve's u-coordinate, exactly as the reference computes it. */
         internal fun elligator2(rIn: BigInteger): ByteArray {
