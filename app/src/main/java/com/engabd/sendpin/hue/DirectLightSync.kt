@@ -1620,8 +1620,12 @@ class DirectLightSync(
      * wrong and expensive to get wrong twice. Everything here was previously inline in
      * [renderLoop], and this only ever spoke to the Hue bridge directly; see
      * `docs/plan/wled-light-backend.md`'s Phase 0 for why it now goes through [LightBridge]
-     * instead — the control flow, including the `sendFailures = 0` reset after every
-     * packet that does not itself trigger a reconnect, is unchanged.
+     * instead. One behaviour is deliberately *not* preserved from the pre-[LightBridge]
+     * version: [sendFailures] now resets only on [SendOutcome.Ok], not after every packet
+     * regardless of outcome — the old placement reset it right back to zero after a
+     * [SendOutcome.Failed] that hadn't yet hit [SEND_FAILURES_BEFORE_RECONNECT], so a real,
+     * sustained fault could never accumulate enough consecutive failures to trigger
+     * [reconnectBridge] at all.
      */
     private suspend fun emitFrame(due: Map<Int, Rgb>, now: Long): EmitResult {
         val packets = try {
@@ -1636,6 +1640,15 @@ class DirectLightSync(
                 is SendOutcome.Ok -> {
                     lastFrame = packet
                     lastSendAt = now
+                    // Only a successful send clears the counter. This used to run
+                    // unconditionally after every packet — including a Failed one that
+                    // hadn't yet hit the threshold — which wiped out `++sendFailures`
+                    // on the very next line before a second consecutive failure could
+                    // ever be counted. That made SEND_FAILURES_BEFORE_RECONNECT
+                    // effectively unreachable for a real, sustained network fault: the
+                    // show would go dark and simply stay dark, with no reconnect and no
+                    // `_error`, until the user stopped and restarted Light Sync by hand.
+                    sendFailures = 0
                 }
                 is SendOutcome.Revoked -> {
                     // Bridge-initiated teardown: the Hue app took the area, or the user
@@ -1658,7 +1671,6 @@ class DirectLightSync(
                     }
                 }
             }
-            sendFailures = 0
         }
         return EmitResult.OK
     }

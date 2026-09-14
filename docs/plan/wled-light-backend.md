@@ -310,32 +310,167 @@ timing/flicker behaviour on real hardware.
   `bridgeClient` property stays on `DirectLightSync` (delegating to
   `HueLightBridge.bridgeClient`) for the Light Sync settings screen's
   pairing/area-picker flow, which is unrelated to the streaming session.
-- **Two intentional, narrow deviations from strict byte-for-byte
-  behaviour**, both worth a reviewer's eye rather than assumed away:
-  1. `HueLightBridge.closeSession()` wraps `dtls?.close()` in a try/catch
-     (logging on failure); the original `cleanup()` called it unguarded, so
-     an exception there would have skipped the rest of cleanup (including
-     releasing the wake/Wi-Fi locks). This is strictly more defensive, not
-     a behaviour narrowing.
-  2. The Hue entertainment-area id used by `openSession`/`closeSession`/
-     `reconnect` is now the id resolved once by `fetchRoom()` (cached on
-     `HueLightBridge`), rather than being freshly re-read from
-     `AppSettings.hueEntertainmentConfigId` at every call site the way the
-     original `start()`/`cleanup()`/`reconnect()` each did independently.
-     Identical in the normal case (the stored id matches an existing area,
-     so both reads agree); only diverges if the user changes the selected
-     entertainment area in Settings while a session is live or recovering,
-     where the old code's mixed resolved-vs-freshly-read id usage looks more
-     like an inconsistency than an intended behaviour to preserve.
+- **One intentional deviation from strict byte-for-byte behaviour, kept:**
+  `HueLightBridge.closeSession()` wraps `dtls?.close()` in a try/catch
+  (logging on failure); the original `cleanup()` called it unguarded, so an
+  exception there would have skipped the rest of cleanup (including
+  releasing the wake/Wi-Fi locks). This is strictly more defensive, not a
+  behaviour narrowing.
+- **Two real bugs found on a follow-up review (`/code-review`, max effort)
+  and fixed since the note above was first written:**
+  1. `DirectLightSync.emitFrame()` reset `sendFailures = 0` unconditionally
+     after every packet, including one whose send had just failed and
+     hadn't yet reached `SEND_FAILURES_BEFORE_RECONNECT` — wiping the
+     increment out before a second consecutive failure could ever be
+     counted. This pre-dates the `LightBridge` refactor (it's the same
+     placement the original inline code used) but the refactor's own doc
+     comment asserted this exact control flow was "unchanged," restating
+     the bug with false confidence rather than catching it. Fixed: the
+     reset now happens only in the `SendOutcome.Ok` branch. Before this
+     fix, a sustained real network fault (not a bridge-initiated
+     revocation) froze the light show silently, with no reconnect attempt
+     and no `_error` shown, until the user stopped and restarted Light
+     Sync by hand.
+  2. `HueLightBridge.reconnect()` used the `configId` field `fetchRoom()`
+     cached at session start instead of re-reading
+     `AppSettings.hueEntertainmentConfigId` fresh on every attempt, unlike
+     the original `reconnect()` it replaced. A reconnect can run for up to
+     ~2 minutes (14 attempts); a user who changed the selected
+     entertainment area in Settings during that window would have every
+     subsequent attempt keep targeting the stale area. Fixed: re-reads the
+     setting fresh each attempt, and keeps the cached field in sync
+     afterward so `closeSession()`/`encode()` address whichever area the
+     reconnect actually landed on.
+- **One more thing the second review pass found, checked against the
+  original code, and confirmed is *not* new**: `reconnectBridge()` (in
+  `DirectLightSync`) passes `LightRoom(channels)` into `bridge.reconnect()`,
+  where `channels` is the class field `fetchRoom()` populated once at
+  session start and never refreshed — so even with fix 2 above making
+  `configId` correct, a reconnect that lands on a *different* entertainment
+  area (per the same "user switched areas mid-reconnect" scenario) still
+  builds that area's stream encoder from the *old* area's channel/gamut
+  list. Checked directly against `origin/master`'s pre-refactor
+  `reconnect()`: it has the identical shape — a freshly re-read `configId`
+  alongside the same never-refetched `channels` field. Not a regression
+  from this refactor, and not fixed here — a proper fix means deciding
+  whether a reconnect should re-fetch the entertainment configuration over
+  HTTPS (a new failure mode inside a path that exists specifically to
+  survive network trouble) or something else, which is a real design
+  question the original app never had to answer either, not a Phase 0
+  cleanup. Left as a known, narrow, self-healing (a full stop/start already
+  re-fetches everything correctly) limitation inherited as-is.
+- **A third review pass (the same `/code-review`, max effort) found one more
+  gap in fix 2, and it was fixed**: `HueLightBridge.reconnect()` updated the
+  `configId` field only *after* the DTLS handshake succeeded, not right
+  after the HTTP `action:start` claim did. If a reconnect attempt's HTTP
+  claim on a (possibly newly-selected) area succeeded but the DTLS connect
+  right after it then failed — a plausible split, since the two use
+  different transports — and every later attempt also failed, `configId`
+  never advanced past whatever it was before this attempt. The eventual
+  give-up path's `closeSession()` would then call `stopStream` on the
+  *wrong* area, leaving the area actually claimed this attempt marked
+  in-use on the bridge with no remaining code path to release it. Fixed:
+  `configId` now updates immediately once `startStream` succeeds, before
+  the DTLS connect is even attempted.
+- **A fourth review pass found the same field's last real gap, and it was
+  fixed**: `configId` was never *cleared*, only ever set — so a value left
+  over from a previous, successfully-run session could survive into a new
+  one whose own `fetchRoom()` then failed before setting a fresh value (a
+  bridge/host change in Settings, or the paired area having been deleted
+  since). `closeSession()`'s cleanup would still see a non-blank `configId`
+  and call `stopStream` with a leftover id against a host/appKey it has
+  nothing to do with — caught by that method's own try/catch, so not a
+  crash, but a wrong, wasted API call rather than none at all. Fixed:
+  `fetchRoom()` clears `configId` up front rather than only setting it on
+  success, and `closeSession()` clears it again at the end — so the field
+  never carries meaning past the session that set it.
+- **The reviewer's broader point, noted rather than acted on**: four
+  point-fixes to the same field (this one included) is itself a signal that
+  `configId` being an implicit mutable side-channel shared across
+  `fetchRoom`/`openSession`/`reconnect`/`closeSession` — rather than an
+  explicit value threaded through `LightBridge`'s interface — is what kept
+  producing one narrow bug per edge case instead of closing the whole
+  family at once (e.g. `fetchRoom()`/`reconnect()` returning the claimed id
+  explicitly, with `DirectLightSync` passing it into `closeSession(id)`).
+  That is a real design improvement worth making, but it changes
+  `LightBridge`'s interface shape — exactly the kind of change that most
+  wants a real build and a real bridge to validate before landing, neither
+  of which this environment can do. Left as a follow-up rather than
+  attempted here.
+- **A fifth review pass — fixed**: `HueLightBridge.send()`'s `DtlsPeerClosed`
+  branch built `SendOutcome.Revoked`'s message as `e.message ?: "The bridge
+  revoked the stream…"`. Since `DtlsPeerClosed.message` is never actually
+  null (`HueDtlsClient.kt` always builds one, e.g. `"bridge closed the
+  stream (close_notify)"`), the fallback never ran — every revocation
+  surfaced that raw protocol string on the Light Sync screen's error banner
+  instead of the original fixed, friendly one the pre-refactor code always
+  used there (it only put `e.message` in the *log* line, never in
+  `_error.value`). Fixed by dropping the `?:` fallback and always using the
+  fixed string; the raw message still goes to `Log.w`. Believed currently
+  unreachable in practice — nothing in `HueDtlsClient.kt`'s `DtlsPskClient`
+  actually throws `DtlsPeerClosed` today, per a repo-wide check — but the
+  branch exists for when that detection is wired up, and carrying the bug
+  forward silently would have meant it ships live the moment it is.
+- **Two edge cases surfaced by the same pass, matched against
+  `origin/master`, and left as pre-existing rather than fixed:**
+  1. A reconnect that fails on one Hue entertainment area and then succeeds
+     on a *different* one (only possible if the user changes the selected
+     area in Settings between two failed attempts within the same ~2-minute
+     retry window) claims the new area via `action:start` without ever
+     releasing the first one — `closeSession()` only ever stops whichever
+     area is current by the time it runs. Confirmed present in
+     `origin/master`'s own `reconnect()` before this refactor touched it, for
+     the same reason: it re-reads the entertainment-area setting fresh on
+     every attempt (by design — see the fix earlier in this list) without
+     ever stopping the area an earlier attempt in the same loop already
+     claimed. A real fix means tracking every area claimed across the retry
+     loop and releasing the ones not ultimately used, which is new
+     behaviour beyond what the app has ever done, not a Phase 0 cleanup.
+  2. The same "different area" case leaves `reconnectBridge()`'s
+     `LightRoom(channels)` — `channels` being the `DirectLightSync` field
+     `fetchRoom()` set once at session start and never refreshed — pointing
+     at the *original* area's channel/gamut list even once the reconnect
+     lands on a new one, so the rebuilt encoder clamps colours to the wrong
+     bulbs. This is the same root cause already recorded further up this
+     list ("checked against `origin/master`... confirmed is *not* new") —
+     noted again here because a later review pass re-found it independently
+     from the `configId` angle rather than the `channels` one.
+  Both require the same rare precondition (switching Hue areas *during* an
+  active network-fault recovery) and both self-heal on the next ordinary
+  stop/start, which re-fetches everything fresh. Worth fixing together with
+  the `configId`-threading redesign noted above, not as one-off patches.
+- **One more, judged not worth changing**: replacing the render loop's old
+  per-tick `val enc = encoder ?: continue; val client = dtls ?: continue`
+  with the single `sessionOpen` flag narrows a check that used to read two
+  fields atomically-enough for the loop's purposes into one that can go
+  stale a moment before `bridge.encode()`/`bridge.send()` actually run, if a
+  concurrent `stop()`/revocation-triggered `cleanup()` lands in that gap —
+  producing an occasional "Encode failed"/"Send failed" log line on
+  ordinary shutdown instead of a silent `continue`. Functionally harmless
+  (`running` is already false by then, so the loop exits right after) and
+  not a new class of race: the original `enc`/`client` locals were snapshot
+  at the same point and could just as easily go stale before `emitFrame`'s
+  own `client.send(packet)` ran, throwing from a socket `close()` had just
+  raced shut and landing in the same generic, rate-limited log line by a
+  different path. Left alone rather than adding synchronization for a
+  cosmetic difference in which log line an already-benign race produces.
+- **A pure efficiency observation, not acted on**: `start()` now reads the
+  same `AppSettings` values up to three times across `DirectLightSync`'s own
+  guard, `fetchRoom()`, and `openSession()` (11 DataStore reads per `start()`
+  versus 5 before), since each of those three methods independently reads
+  what it needs rather than one read being threaded through. Harmless in
+  practice — Light Sync `start()`/`stop()` are user-initiated, not a hot
+  loop, and DataStore reads are cheap — so left alone rather than
+  restructuring the validation flow to save a few reads on an infrequent
+  call.
 - **Not yet done, and the actual gate on relying on this**: verification
   against a real Hue bridge, and a run of the existing unit test suite.
   Neither could be done from the environment this was written in — no
   Android SDK/NDK is installed and the network policy does not reach
   Google's Maven repository, so `./gradlew :app:testMobileDebugUnitTest`
   itself could not be run here, on this branch or on an unmodified
-  checkout. The change was reviewed by hand instead: every removed
-  `dtls`/`encoder` reference was traced to its replacement, every call site
-  checked against `LightBridge`'s signatures, and the two deviations above
-  are the only ones found. Treat this as unverified until both checks run
-  somewhere that has the SDK and a bridge.
+  checkout. The change has been through two rounds of manual review (an
+  initial pass tracing every removed `dtls`/`encoder` reference to its
+  replacement, then a `/code-review` pass at max effort that caught the two
+  bugs above) but neither substitutes for a real build and a real bridge.
 - **Phase 1+ (WLED itself) not started.**

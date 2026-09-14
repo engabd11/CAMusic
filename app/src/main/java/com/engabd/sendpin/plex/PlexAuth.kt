@@ -147,9 +147,11 @@ object PlexAuth {
      * on each connection is what [parseResource] uses to prefer the LAN address
      * over one that would route through Plex's relay.
      *
-     * Best-effort: returns an empty list on any failure — parsed, unreachable, or
-     * simply no server on the account — rather than throwing, since the manual
-     * address field is always the fallback the caller already offers.
+     * Best-effort at two levels: the call as a whole returns an empty list rather
+     * than throwing on an unreachable network or an unparseable response, and one
+     * malformed resource in an otherwise-good response is skipped rather than
+     * emptying the whole list — either way, the manual address field is always
+     * the fallback the caller already offers.
      *
      * **Unverified against a real plex.tv account** — the response shape (in
      * particular the `local`/`relay` fields per connection) is documented, not
@@ -168,7 +170,22 @@ object PlexAuth {
                 resp.body?.string().orEmpty()
             }
             val array = json.parseToJsonElement(body) as? JsonArray ?: return@withContext emptyList()
-            array.mapNotNull { (it as? JsonObject)?.let(::parseResource) }
+            // One resource at a time, and a malformed one is skipped rather than
+            // discarding every other, well-formed server on the account: `.jsonPrimitive`
+            // throws (not just returns null) when a field exists but isn't the shape
+            // expected, and this response shape is admittedly unverified against a real
+            // account — see this function's own doc. Without a per-item boundary, that
+            // throw would propagate out of `mapNotNull` into the try/catch below and
+            // turn "one odd resource" into "no servers found" for the whole account.
+            array.mapNotNull { element ->
+                (element as? JsonObject)?.let { obj ->
+                    try {
+                        parseResource(obj)
+                    } catch (e: Exception) {
+                        null
+                    }
+                }
+            }
         } catch (e: Exception) {
             emptyList()
         }
@@ -188,7 +205,7 @@ object PlexAuth {
             it["local"]?.jsonPrimitive?.booleanOrNull == true && it["relay"]?.jsonPrimitive?.booleanOrNull != true
         } ?: connections.first()
         val protocol = best["protocol"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() } ?: "http"
-        val address = best["address"]?.jsonPrimitive?.contentOrNull ?: return null
+        val address = best["address"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() } ?: return null
         val port = best["port"]?.jsonPrimitive?.intOrNull ?: return null
         return PlexResource(name, "$protocol://$address:$port")
     }

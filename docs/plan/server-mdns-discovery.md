@@ -265,17 +265,44 @@ possible — see above), not yet verified against real servers.
   per-kind variants), and nothing here added a new settings toggle, so it
   should already just work under Simple mode. Not independently re-verified
   against the Simple/Advanced split at runtime.
-- **Two things worth a reviewer's attention beyond "does it build":**
-  1. Plex's discovered rows appear *below* the sign-in button (inside
-     `PlexSignInRow`), while the address field they fill sits *above* it in
-     the same card — tapping one scrolls the user's eye up to see the field
-     change. This follows the existing layout order (address field before
-     auth-specific UI) rather than reordering the card; flagging it in case
-     it reads as more confusing in practice than on paper.
-  2. `MediaServerDiscovery` sends a raw UDP broadcast rather than going
-     through NsdManager. On a phone with an active VPN or a mobile-data
-     default route alongside Wi-Fi, a plain `DatagramSocket` broadcast can
-     go out the wrong interface — a known Android gotcha this environment
-     has no device to check. If real-device testing finds Jellyfin/Emby
-     discovery unreliable specifically on such setups, binding the socket to
-     the Wi-Fi `Network` via `ConnectivityManager` is the fix.
+- **One thing still worth a reviewer's attention:** Plex's discovered rows
+  appear *below* the sign-in button (inside `PlexSignInRow`), while the
+  address field they fill sits *above* it in the same card — tapping one
+  scrolls the user's eye up to see the field change. This follows the
+  existing layout order (address field before auth-specific UI) rather than
+  reordering the card; flagging it in case it reads as more confusing in
+  practice than on paper.
+- **Two bugs found on a follow-up review (`/code-review`, max effort) and
+  fixed:**
+  1. `MediaServerDiscovery`'s constructor took a `Context` that nothing in
+     the class actually used — dead-parameter smell that turned out to be
+     exactly the VPN/mobile-data gotcha noted below waiting to be wired up.
+     Fixed: `context` now finds the phone's Wi-Fi `Network` (if it has one)
+     via `ConnectivityManager` and binds the discovery socket to it before
+     broadcasting, so the beacon goes out the Wi-Fi interface specifically
+     rather than whichever one the OS considers "default" — falling back
+     silently to the old unbound-socket behaviour if no Wi-Fi network is
+     found or the bind fails for any reason.
+  2. `scan()`'s polling loop had no suspension point and never checked for
+     cancellation, so cancelling the caller (backing out of the add-server
+     screen, or switching Jellyfin↔Emby before the ~1.5s window elapsed)
+     did not stop the scan early — the coroutine and its `Dispatchers.IO`
+     thread kept running for the rest of the window regardless. Fixed: an
+     explicit `ensureActive()` check once per poll (every ≤200ms), with
+     `CancellationException` re-thrown rather than swallowed by the
+     surrounding `catch (e: Exception)` so cancellation still propagates
+     correctly.
+  Both were caught by a review pass, not by running the code — this
+  environment still cannot broadcast a real UDP packet or receive a real
+  reply to confirm either fix against live hardware.
+- **A third bug, from a further review pass, in `PlexAuth.parseResource()`**:
+  a connection's `address` was checked for being present but not for being
+  blank (`""`), unlike `name`/`protocol` two lines above it, which both
+  already guard against that. A resource with an empty-but-present address
+  — plausible for a server plex.tv hasn't finished resolving connectivity
+  for — produced `PlexResource(name, "http://:32400")`, a malformed,
+  host-less URL that `DiscoveredServerRow` would have offered the user as a
+  normal, tappable pick. Fixed to reject a blank address the same way a
+  missing one already was; a regression test
+  (`a connection with a blank address is not offered as a malformed row`)
+  pins it in `PlexAuthTest.kt`.

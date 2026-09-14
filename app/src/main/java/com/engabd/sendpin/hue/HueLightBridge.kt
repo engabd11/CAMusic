@@ -64,6 +64,12 @@ class HueLightBridge(
     @Volatile private var encoder: HueStreamEncoder? = null
 
     override suspend fun fetchRoom(): LightRoom = withContext(Dispatchers.IO) {
+        // Cleared up front, not just set on success: without this, a *previous*
+        // session's configId survives a *this* session's failed fetch (a bridge/host
+        // change in Settings, or the area having been deleted) and closeSession()'s
+        // cleanup then fires stopStream against a leftover id that has nothing to do
+        // with the host/appKey it's being sent to.
+        configId = ""
         val host = settings.hueBridgeIp.first()
         val appKey = settings.hueAppKey.first()
         val wantedId = settings.hueEntertainmentConfigId.first()
@@ -122,6 +128,11 @@ class HueLightBridge(
         } catch (e: Exception) {
             Log.w(TAG, "Failed to stop stream on bridge: ${e.message}")
         }
+        // This session's claim is done either way — successfully released or not,
+        // there is nothing left this instance should still call stopStream for. The
+        // next session starts from fetchRoom(), which sets its own configId (or
+        // clears it again on failure) rather than inheriting whatever this one left.
+        configId = ""
     }
 
     override fun encode(colors: Map<Int, Rgb>): List<ByteArray> =
@@ -135,9 +146,16 @@ class HueLightBridge(
         } catch (e: DtlsPeerClosed) {
             // Bridge-initiated teardown: the Hue app took the area, or the user
             // pressed stop there. Deliberately never retried by the caller — see
-            // SendOutcome.Revoked's own doc.
+            // SendOutcome.Revoked's own doc. The user-facing message is always
+            // this fixed, friendly string — DirectLightSync.emitFrame() puts it
+            // straight into the Light Sync screen's error banner — while e.message
+            // (a technical "bridge closed the stream (close_notify)"-shaped string;
+            // DtlsPeerClosed never leaves it null) goes only to the log line. Do not
+            // use `e.message ?: "…"` here: since it is never null, that pattern would
+            // silently replace this message with the raw protocol string on every
+            // occurrence rather than only as a fallback.
             Log.w(TAG, "Bridge revoked the stream: ${e.message}")
-            SendOutcome.Revoked(e.message ?: "The bridge revoked the stream (another app may have taken over)")
+            SendOutcome.Revoked("The bridge revoked the stream (another app may have taken over)")
         } catch (e: Exception) {
             // A network fault, by elimination. Wi-Fi drops and roams are
             // ordinary events on a phone; the caller counts these toward reconnect.
@@ -193,9 +211,28 @@ class HueLightBridge(
                 val appKey = settings.hueAppKey.first()
                 val clientKey = settings.hueClientKey.first()
                 val appId = settings.hueAppId.first()
-                if (host.isBlank() || appKey.isBlank() || clientKey.isBlank() || configId.isBlank()) return false
+                // Re-read fresh on every attempt rather than trusting the [configId]
+                // field fetchRoom() cached at session start: a long reconnect can span
+                // up to ~2 minutes of retries, and if the user re-points Settings at a
+                // different entertainment area while it's running, every attempt after
+                // that should target the *new* area, not keep hammering the one that
+                // was live when the session started. Matches what this replaced —
+                // DirectLightSync's old reconnect() read this setting fresh too.
+                val freshConfigId = settings.hueEntertainmentConfigId.first()
+                if (host.isBlank() || appKey.isBlank() || clientKey.isBlank() || freshConfigId.isBlank()) return false
 
-                bridgeClient.startStream(host, appKey, configId, appId)
+                bridgeClient.startStream(host, appKey, freshConfigId, appId)
+                // Updated the moment the HTTP claim succeeds, not after the DTLS
+                // handshake too: if client.connect() below throws (a transient
+                // UDP/DTLS-path failure with the bridge's HTTP API otherwise fine)
+                // and every later attempt also fails, closeSession() must still
+                // release *this* area — the one actually claimed — rather than
+                // whatever area configId last pointed at. Getting this wrong left
+                // the newly claimed area marked "in use" on the bridge indefinitely,
+                // with the failed session instead releasing an area it no longer
+                // (or never did, this attempt) held.
+                configId = freshConfigId
+
                 val psk = clientKey.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
                 val identity = (appId.ifBlank { appKey }).toByteArray(Charsets.US_ASCII)
                 val client = DtlsPskClient(host, DTLS_PORT, identity, psk)
@@ -204,7 +241,7 @@ class HueLightBridge(
 
                 val carryXy = encoder?.snapshotXy()
                 encoder = HueStreamEncoder(
-                    configId,
+                    freshConfigId,
                     gamuts = room.channels.mapNotNull { ch -> ch.gamut?.let { ch.channelId to it } }.toMap(),
                 )
                 carryXy?.let { encoder?.restoreXy(it) }

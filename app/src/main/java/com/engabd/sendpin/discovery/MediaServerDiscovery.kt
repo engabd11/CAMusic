@@ -1,8 +1,12 @@
 package com.engabd.sendpin.discovery
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -28,9 +32,7 @@ import java.net.SocketTimeoutException
  * follows knows the difference and fails cleanly if it's the wrong one.
  *
  * **Unverified against a real Jellyfin or Emby server.** Written from the
- * documented beacon protocol; the reply's exact JSON shape and this
- * environment's ability to broadcast on the phone's actual Wi-Fi interface
- * (rather than, say, a VPN or mobile-data default route) have not been
+ * documented beacon protocol; the reply's exact JSON shape has not been
  * confirmed against live hardware. See `docs/plan/server-mdns-discovery.md`.
  */
 class MediaServerDiscovery(private val context: Context) {
@@ -58,12 +60,22 @@ class MediaServerDiscovery(private val context: Context) {
                 broadcast = true
                 soTimeout = 200  // per-receive poll, not the overall budget
             }
+            bindToWifiIfAvailable(socket)
+
             val message = MESSAGE.toByteArray(Charsets.UTF_8)
             socket.send(DatagramPacket(message, message.size, InetAddress.getByName("255.255.255.255"), DISCOVERY_PORT))
 
             val buf = ByteArray(2048)
             val deadline = System.currentTimeMillis() + timeoutMs
             while (System.currentTimeMillis() < deadline) {
+                // Checked once per poll (every ≤200ms, from soTimeout above) rather
+                // than left to the blocking receive() below to notice on its own —
+                // a plain socket read has no suspension point for kotlinx.coroutines
+                // to cancel cooperatively at, so without this a cancelled caller
+                // (backing out of the add-server screen mid-scan, or switching
+                // Jellyfin/Emby before the window elapses) would keep this coroutine
+                // and its IO thread running for the rest of timeoutMs regardless.
+                ensureActive()
                 try {
                     val packet = DatagramPacket(buf, buf.size)
                     socket.receive(packet)
@@ -74,12 +86,39 @@ class MediaServerDiscovery(private val context: Context) {
                     // Keep polling until the overall deadline above.
                 }
             }
+        } catch (e: CancellationException) {
+            throw e  // never swallow — this is what lets ensureActive() above actually cancel the scan.
         } catch (e: Exception) {
             Log.w(TAG, "Discovery scan failed: ${e.message}")
         } finally {
             socket?.close()
         }
         results.values.toList()
+    }
+
+    /**
+     * Route the broadcast through the Wi-Fi network specifically, when the
+     * phone has one connected.
+     *
+     * A plain [DatagramSocket] otherwise follows whatever the OS considers
+     * the *default* network — which can be mobile data or a VPN even while
+     * Wi-Fi is connected — and a beacon broadcast down the wrong interface
+     * never reaches the LAN the server is actually on. Best-effort: silently
+     * leaves the socket unbound (today's behaviour) if there is no Wi-Fi
+     * network to find or binding fails for any reason — never worse than
+     * not calling this at all.
+     */
+    private fun bindToWifiIfAvailable(socket: DatagramSocket) {
+        try {
+            val cm = context.applicationContext
+                .getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+            val wifiNetwork = cm.allNetworks.firstOrNull { network ->
+                cm.getNetworkCapabilities(network)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+            } ?: return
+            wifiNetwork.bindSocket(socket)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not bind the discovery socket to Wi-Fi, broadcasting on the default network instead: ${e.message}")
+        }
     }
 
     private fun parseReply(body: String): Found? = try {
