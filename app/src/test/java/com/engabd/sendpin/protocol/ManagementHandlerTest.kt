@@ -73,9 +73,23 @@ class ManagementHandlerTest {
         assertEquals("true", (cfg["pairing_psk"] as JsonObject)["enabled"]?.jsonPrimitive?.content)
         assertEquals("true", (cfg["unpaired_access"] as JsonObject)["enabled"]?.jsonPrimitive?.content)
         assertEquals(store.recordModePskId, (cfg["record_mode"] as JsonObject)["psk_id"]?.jsonPrimitive?.content)
-        // PIN methods are not implemented, so they are absent, and touching them is invalid.
-        assertNull(cfg["static_pin"]); assertNull(cfg["dynamic_pin"])
+        // Static PIN ships disabled and unprovisioned: enabling it with no PIN is invalid.
+        assertEquals("false", (cfg["static_pin"] as JsonObject)["enabled"]?.jsonPrimitive?.content)
         assertEquals("invalid", call("set-pairing-config", """{"static_pin":{"enabled":true}}""").result.payload.result)
+        assertEquals("invalid", call("set-pairing-config", """{"static_pin":{"enabled":true,"pin":"1234"}}""").result.payload.result)
+        assertEquals("ok", call("set-pairing-config", """{"static_pin":{"enabled":true,"pin":"12345678"}}""").result.payload.result)
+        assertTrue(store.staticPinEnabled)
+        assertEquals("ok", call("set-pairing-config", """{"static_pin":{"enabled":false}}""").result.payload.result)
+        assertFalse(store.staticPinEnabled)
+        // Dynamic PIN: enabled by default with the recommended minimum of six.
+        val dyn = cfg["dynamic_pin"] as JsonObject
+        assertEquals("true", dyn["enabled"]?.jsonPrimitive?.content)
+        assertEquals("6", dyn["min_pin_length"]?.jsonPrimitive?.content)
+        assertEquals("false", dyn["escalated"]?.jsonPrimitive?.content)
+        assertEquals("invalid", call("set-pairing-config", """{"dynamic_pin":{"min_pin_length":3}}""").result.payload.result)
+        assertEquals("ok", call("set-pairing-config", """{"dynamic_pin":{"min_pin_length":8,"enabled":false}}""").result.payload.result)
+        assertEquals(8, store.minPinLength)
+        assertFalse(store.dynamicPinEnabled)
 
         assertEquals("ok", call("set-pairing-config", """{"unpaired_access":{"enabled":false}}""").result.payload.result)
         assertFalse(store.unpairedAccessEnabled)
@@ -94,7 +108,13 @@ class ManagementHandlerTest {
     }
 
     @Test
-    fun `open-pairing-window is invalid without a PIN method`() {
-        assertEquals("invalid", call("open-pairing-window", "{}").result.payload.result)
+    fun `open-pairing-window needs an enabled PIN method`() {
+        var opened = 0
+        val h = ManagementHandler(store) { opened++ }
+        assertEquals("ok", h.handle("open-pairing-window", null, true, "s").result.payload.result)
+        assertEquals(1, opened)
+        store.dynamicPinEnabled = false
+        assertEquals("invalid", h.handle("open-pairing-window", null, true, "s").result.payload.result)
+        assertEquals(1, opened)
     }
 }

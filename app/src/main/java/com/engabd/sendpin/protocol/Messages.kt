@@ -123,6 +123,11 @@ data class PlayerV1Support(
 @Serializable
 data class PairMethodDescriptor(
     val method: String,
+    /** dynamic_pin only: where the PIN is shown. */
+    @SerialName("out_channels") val outChannels: List<String>? = null,
+    /** dynamic_pin only: the shortest PIN this client accepts, 4–12. */
+    @SerialName("min_pin_length") val minPinLength: Int? = null,
+    /** static_pin / pairing_psk only: where the operator finds the secret. */
     val locations: List<String>? = null,
 )
 
@@ -238,8 +243,56 @@ data class SendspinGoodbye(
 
 // --- Pairing and management (client → server) --------------------------------
 
+/** Exactly one of the two: the PSK in the clear (Pairing PSK flow) or wrapped under the PAKE output (PIN flows). */
 @Serializable
-data class ClientPairFinalizePayload(@SerialName("long_term_psk") val longTermPsk: String)
+data class ClientPairFinalizePayload(
+    @SerialName("long_term_psk") val longTermPsk: String? = null,
+    @SerialName("wrapped_psk") val wrappedPsk: String? = null,
+)
+
+@Serializable
+data class ClientPairPendingPayload(@SerialName("pairing_index") val pairingIndex: Int)
+
+@Serializable
+data class SendspinClientPairPending(
+    val type: String = "client/pair-pending",
+    val payload: ClientPairPendingPayload,
+)
+
+@Serializable
+data class ClientPairInitPayload(
+    @SerialName("pairing_index") val pairingIndex: Int,
+    /** Dynamic PIN only: the commitment to `nonce_B`. */
+    @SerialName("commit_B") val commitB: String? = null,
+)
+
+@Serializable
+data class SendspinClientPairInit(
+    val type: String = "client/pair-init",
+    val payload: ClientPairInitPayload,
+)
+
+@Serializable
+data class ClientPairAuthPayload(@SerialName("pake_msg_2") val pakeMsg2: String)
+
+@Serializable
+data class SendspinClientPairAuth(
+    val type: String = "client/pair-auth",
+    val payload: ClientPairAuthPayload,
+)
+
+@Serializable
+data class ClientPairConfirmPayload(
+    @SerialName("client_kc") val clientKc: String,
+    /** Dynamic PIN only: the opening of `commit_B`. */
+    @SerialName("nonce_B") val nonceB: String? = null,
+)
+
+@Serializable
+data class SendspinClientPairConfirm(
+    val type: String = "client/pair-confirm",
+    val payload: ClientPairConfirmPayload,
+)
 
 @Serializable
 data class SendspinClientPairFinalize(
@@ -341,7 +394,9 @@ data class MetadataProgressPayload(
      */
     val speedMilli: Long
         get() = when {
-            playbackSpeed == null || playbackSpeed <= 0L -> 1000L
+            playbackSpeed == null || playbackSpeed < 0L -> 1000L
+            // Zero is the spec's "paused": the position holds.
+            playbackSpeed == 0L -> 0L
             playbackSpeed <= 10L -> playbackSpeed * 1000L
             else -> playbackSpeed
         }
@@ -361,9 +416,6 @@ data class ServerMetadataPayload(
     val repeat: String? = null,
     val shuffle: Boolean? = null,
 )
-
-@Serializable
-data class ServerStatePayload(val metadata: ServerMetadataPayload? = null)
 
 @Serializable
 data class PlayerCommandPayload(
@@ -426,9 +478,19 @@ sealed class SendspinIncoming {
     data class StreamStart(val payload: StreamStartPayload) : SendspinIncoming()
     data class StreamEnd(val roles: List<String>?) : SendspinIncoming()
     data class StreamClear(val roles: List<String>?) : SendspinIncoming()
-    data class ServerState(val payload: ServerStatePayload) : SendspinIncoming()
+
+    /**
+     * `server/state`, kept raw because it is a delta: a field absent from the message
+     * is unchanged, a field set to `null` is cleared, and the whole role object set to
+     * `null` clears the role. [metadata] is null when the key was absent, [JsonNull]
+     * when the role was cleared, else the fields that changed. Merged by the client.
+     */
+    data class ServerState(val metadata: JsonElement?) : SendspinIncoming()
     data class ServerCommand(val payload: ServerCommandPayload) : SendspinIncoming()
     data object ServerPairFinalize : SendspinIncoming()
+    data class ServerPairInit(val nonceA: String?) : SendspinIncoming()
+    data class ServerPairAuth(val pakeMsg1: String?) : SendspinIncoming()
+    data class ServerPairConfirm(val serverKc: String?) : SendspinIncoming()
     data class PairAbort(val reason: String) : SendspinIncoming()
     data object ServerUnpair : SendspinIncoming()
     /** `management/<request>`, payload kept raw for [ManagementHandler]. */
@@ -468,14 +530,14 @@ sealed class SendspinIncoming {
                 )
                 "stream/end" -> StreamEnd(roles(payload))
                 "stream/clear" -> StreamClear(roles(payload))
-                "server/state" -> ServerState(
-                    payload?.let { json.decodeFromJsonElement(ServerStatePayload.serializer(), it) }
-                        ?: ServerStatePayload(),
-                )
+                "server/state" -> ServerState(metadata = (payload as? JsonObject)?.get("metadata"))
                 "server/command" -> payload?.let {
                     ServerCommand(json.decodeFromJsonElement(ServerCommandPayload.serializer(), it))
                 } ?: Unknown(type)
                 "server/pair-finalize" -> ServerPairFinalize
+                "server/pair-init" -> ServerPairInit((payload as? JsonObject)?.get("nonce_A")?.jsonPrimitive?.contentOrNull)
+                "server/pair-auth" -> ServerPairAuth((payload as? JsonObject)?.get("pake_msg_1")?.jsonPrimitive?.contentOrNull)
+                "server/pair-confirm" -> ServerPairConfirm((payload as? JsonObject)?.get("server_kc")?.jsonPrimitive?.contentOrNull)
                 "pair/abort" -> PairAbort((payload as? JsonObject)?.get("reason")?.jsonPrimitive?.contentOrNull ?: "")
                 "server/unpair" -> ServerUnpair
                 else -> if (type.startsWith("management/")) {

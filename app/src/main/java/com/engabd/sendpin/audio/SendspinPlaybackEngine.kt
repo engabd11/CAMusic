@@ -62,6 +62,13 @@ interface SendspinPlaybackEngine {
 
     fun flush()
     fun setVolume(v: Float)
+
+    /**
+     * The Sendspin `mute` command. A gate on the output, independent of the level
+     * (the phone's media volume) and of the focus duck in [setVolume]: the spec says a
+     * volume change must not clear the mute, so the two cannot share a knob.
+     */
+    fun setUserMuted(muted: Boolean)
     fun setSyncMuted(muted: Boolean)
     fun setPreferredDevice(device: AudioDeviceInfo?)
     fun release()

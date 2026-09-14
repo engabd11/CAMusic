@@ -625,6 +625,12 @@ class SendspinNativeEngine(
         applyOutputVolume()
     }
 
+    override fun setUserMuted(muted: Boolean) {
+        if (userMuted == muted) return
+        userMuted = muted
+        applyOutputVolume()
+    }
+
     override fun setSyncMuted(muted: Boolean) {
         if (syncMuted == muted) return
         syncMuted = muted

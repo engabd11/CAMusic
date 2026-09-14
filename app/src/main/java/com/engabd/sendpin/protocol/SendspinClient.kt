@@ -32,6 +32,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
@@ -122,6 +123,7 @@ class SendspinClient(
     private var gateJob: Job? = null
     private var initialStateJob: Job? = null
     private var reconnectJob: Job? = null
+    private var bringUpTimeoutJob: Job? = null
 
     @Volatile private var userClosed = false
     private var endpoints: List<Endpoint> = emptyList()
@@ -312,9 +314,60 @@ class SendspinClient(
     private var serverName: String? = null
     @Volatile private var initialStateSent = false
     private var pendingPairing: PendingPairing? = null
-    private val management = ManagementHandler(store)
+    private val management = ManagementHandler(store) { openPairingWindow() }
 
     private class PendingPairing(val psk: ByteArray, val serverId: String, val timeout: Job)
+
+    // ---- PIN pairing (spec §Dynamic PIN Pairing Flow, §Static PIN Pairing Flow, §Pairing Window) ----
+
+    /** Pairing `server/activate`s since the last Noise handshake — the spec's `pairing_index`. */
+    private var pairingIndex = 0
+    private var pinFlow: PinPairingFlow? = null
+    private var pinAttemptTimeout: Job? = null
+
+    /** When the pairing window closes (ms, elapsedRealtime); 0 = no window open. */
+    @Volatile private var pairingWindowUntilMs = 0L
+
+    /**
+     * A long-term PSK a pairing attempt has handed the server but the server has not
+     * yet acknowledged, keyed by its `psk_id`. The server's re-handshake onto it can
+     * arrive on the socket thread before the ingest coroutine has processed the
+     * `server/pair-finalize` that precedes it in the inbox; resolving it from here
+     * closes that race, and the later finalize handling persists idempotently.
+     */
+    @Volatile private var offeredPsk: Pair<String, ByteArray>? = null
+
+    /** A pairing attempt is waiting for the operator to allow pairing on this phone. */
+    private val _pairingPending = MutableStateFlow(false)
+    val pairingPending: StateFlow<Boolean> = _pairingPending.asStateFlow()
+
+    /** The dynamic PIN to show the operator while an attempt runs; null otherwise. */
+    private val _pairingPin = MutableStateFlow<String?>(null)
+    val pairingPin: StateFlow<String?> = _pairingPin.asStateFlow()
+
+    /** Whether a pairing window is open right now. */
+    val pairingWindowOpen: Boolean get() = pairingWindowUntilMs > android.os.SystemClock.elapsedRealtime()
+
+    /**
+     * The operator gesture that admits one PIN pairing attempt (spec §Pairing Window):
+     * a button on the phone, or a paired server's `management/open-pairing-window`.
+     * Open for five minutes, consumed by the `client/pair-init` it lets through.
+     */
+    fun openPairingWindow() {
+        pairingWindowUntilMs = android.os.SystemClock.elapsedRealtime() + PAIRING_WINDOW_MS
+        dbg("pairing window opened")
+        val flow = pinFlow ?: return
+        if (flow.state == PinPairingFlow.State.AWAIT_WINDOW) applyPinOutcome(flow.onWindowOpened())
+    }
+
+    /** The methods this client offers right now, as advertised in `client/hello`. */
+    private fun offeredPairMethods(): List<PairMethodDescriptor> = buildList {
+        if (store.pairingPskEnabled) add(PairMethodDescriptor(method = ActivationPolicy.PAIR_METHOD_PSK, locations = listOf("device")))
+        if (store.dynamicPinEnabled) {
+            add(PairMethodDescriptor(method = ActivationPolicy.PAIR_METHOD_DYNAMIC_PIN, outChannels = listOf("display"), minPinLength = store.minPinLength))
+        }
+        if (store.staticPinEnabled) add(PairMethodDescriptor(method = ActivationPolicy.PAIR_METHOD_STATIC_PIN, locations = listOf("operator")))
+    }
 
     /** True while `'pairing'` is declared: playback traffic is held (spec §Entering and leaving pairing). */
     private val pairing: Boolean get() = ActivationPolicy.PAIRING in activities
@@ -504,10 +557,12 @@ class SendspinClient(
     }
 
     private fun stopSessionJobs() {
+        bringUpTimeoutJob?.cancel(); bringUpTimeoutJob = null
         timeJob?.cancel(); timeJob = null
         gateJob?.cancel(); gateJob = null
         initialStateJob?.cancel(); initialStateJob = null
         pendingPairing?.timeout?.cancel(); pendingPairing = null
+        endPinAttempt()
     }
 
     /** Reset per-socket state before a (re)dial. */
@@ -525,6 +580,11 @@ class SendspinClient(
         _security.value = null
         initialStateSent = false
         pendingPairing?.timeout?.cancel(); pendingPairing = null
+        endPinAttempt()
+        pairingIndex = 0
+        offeredPsk = null
+        metadataState.clear()
+        _nowPlaying.value = null
     }
 
     // --- Sending -------------------------------------------------------------------
@@ -764,6 +824,18 @@ class SendspinClient(
     private fun beginProtocol(webSocket: WebSocket) {
         _state.value = State.AUTHENTICATING
         _statusText.value = "Handshaking…"
+        // The spec asks for a timeout on each handshake-phase message (it suggests
+        // 30 s); the reference client bounds the whole bring-up to the first
+        // server/activate the same way. A socket with no read timeout would otherwise
+        // wait for ever on a server that opened the socket and then went quiet.
+        bringUpTimeoutJob?.cancel()
+        bringUpTimeoutJob = scope.launch {
+            delay(BRING_UP_TIMEOUT_MS)
+            if (phase != Phase.READY && this@SendspinClient.webSocket === webSocket) {
+                dbg("bring-up timed out in phase $phase")
+                protocolError(webSocket, "no ${phase.name.lowercase()} reply within ${BRING_UP_TIMEOUT_MS / 1000}s")
+            }
+        }
         if (encryption == Encryption.LEGACY) {
             phase = Phase.HELLO
             sendLegacyHello(webSocket)
@@ -837,7 +909,15 @@ class SendspinClient(
         } catch (e: Exception) {
             throw NoiseHandshakeException("malformed Noise message 1 payload", e)
         }
-        val resolved = store.resolve(pskId) ?: throw NoiseHandshakeException("no PSK matches psk_id=${pskId.take(8)}…")
+        val resolved = store.resolve(pskId)
+            ?: offeredPsk?.takeIf { it.first == pskId }?.let { (id, psk) ->
+                // The server finalized a pairing and is already re-handshaking onto the new
+                // PSK; persist it now rather than lose the race with the inbox.
+                val sid = serverId ?: throw NoiseHandshakeException("no server id")
+                store.persistPairing(sid, psk)
+                ResolvedPsk(id, psk, PskCategory.LONG_TERM, sid)
+            }
+            ?: throw NoiseHandshakeException("no PSK matches psk_id=${pskId.take(8)}…")
         // Stored-pubkey record: the server it is bound to must be the one we reached.
         if (resolved.serverId != null && resolved.serverId != serverId) {
             throw NoiseHandshakeException("PSK bound to another server")
@@ -851,6 +931,7 @@ class SendspinClient(
         handshakeHash = result.handshakeHash
         matched = resolved
         handshakeFailures = 0
+        pairingIndex = 0
         if (resolved.category == PskCategory.LONG_TERM) store.markUsed(resolved.pskId)
     }
 
@@ -911,9 +992,7 @@ class SendspinClient(
                 deviceInfo = deviceInfo,
                 playerV1Support = PlayerV1Support(supportedFormats = supportedFormats),
                 trustLevel = trust,
-                supportedPairMethods = if (store.pairingPskEnabled) {
-                    listOf(PairMethodDescriptor(method = ActivationPolicy.PAIR_METHOD_PSK, locations = listOf("device")))
-                } else emptyList(),
+                supportedPairMethods = offeredPairMethods(),
                 unpairedAccess = UnpairedAccess(store.unpairedAccessEnabled),
             ),
         )
@@ -930,19 +1009,7 @@ class SendspinClient(
             is SendspinIncoming.ServerHello -> onServerHello(msg.raw)
             is SendspinIncoming.ServerActivate -> onServerActivate(msg.payload)
             is SendspinIncoming.ServerTime -> onServerTime(msg)
-            is SendspinIncoming.ServerState -> {
-                val m = msg.payload.metadata ?: return
-                _nowPlaying.value = NowPlaying(
-                    title = m.title.orEmpty(),
-                    artist = m.artist.orEmpty(),
-                    album = m.album.orEmpty(),
-                    artworkUrl = m.artworkUrl,
-                    durationMs = m.progress?.trackDuration,
-                    progressMs = m.progress?.trackProgress,
-                    progressAtServerUs = m.timestamp,
-                    speedMilli = m.progress?.speedMilli ?: 1000L,
-                )
-            }
+            is SendspinIncoming.ServerState -> onServerState(msg.metadata)
             is SendspinIncoming.GroupUpdate -> _groupUpdates.tryEmit(msg)
             is SendspinIncoming.StreamStart -> {
                 val format = msg.payload.player ?: return
@@ -966,9 +1033,16 @@ class SendspinClient(
             is SendspinIncoming.StreamClear -> if (msg.roles == null || "player" in msg.roles) sink?.onStreamClear()
             is SendspinIncoming.ServerCommand -> msg.payload.player?.let { onPlayerCommand(it) }
             is SendspinIncoming.ServerPairFinalize -> onPairFinalize()
+            is SendspinIncoming.ServerPairInit -> pinFlow?.let { applyPinOutcome(it.onServerPairInit(msg.nonceA)) }
+                ?: dbg("server/pair-init with no attempt in progress")
+            is SendspinIncoming.ServerPairAuth -> pinFlow?.let { applyPinOutcome(it.onServerPairAuth(msg.pakeMsg1)) }
+                ?: dbg("server/pair-auth with no attempt in progress")
+            is SendspinIncoming.ServerPairConfirm -> pinFlow?.let { applyPinOutcome(it.onServerPairConfirm(msg.serverKc)) }
+                ?: dbg("server/pair-confirm with no attempt in progress")
             is SendspinIncoming.PairAbort -> {
                 dbg("pair/abort ${msg.reason}")
                 pendingPairing?.timeout?.cancel(); pendingPairing = null
+                endPinAttempt()
             }
             is SendspinIncoming.ServerUnpair -> onServerUnpair()
             is SendspinIncoming.Management -> {
@@ -984,6 +1058,29 @@ class SendspinClient(
             }
             is SendspinIncoming.Unknown -> {}
         }
+    }
+
+    /** The metadata role's merged state — see [MetadataState] for the delta rules. */
+    private val metadataState = MetadataState()
+
+    private fun onServerState(metadata: JsonElement?) {
+        if (!metadataState.apply(metadata)) return
+        val m = try {
+            metadataState.snapshot(json)
+        } catch (e: Exception) {
+            Log.w(TAG, "metadata state failed to decode: ${e.message}")
+            return
+        } ?: run { _nowPlaying.value = null; return }
+        _nowPlaying.value = NowPlaying(
+            title = m.title.orEmpty(),
+            artist = m.artist.orEmpty(),
+            album = m.album.orEmpty(),
+            artworkUrl = m.artworkUrl,
+            durationMs = m.progress?.trackDuration,
+            progressMs = m.progress?.trackProgress,
+            progressAtServerUs = m.timestamp,
+            speedMilli = m.progress?.speedMilli ?: 1000L,
+        )
     }
 
     private fun onServerHello(raw: JsonObject) {
@@ -1013,6 +1110,7 @@ class SendspinClient(
         val session = matched ?: run { dbg("server/activate without a session"); return }
         // Any activation ends an in-flight pairing attempt, including one it rejects.
         pendingPairing?.timeout?.cancel(); pendingPairing = null
+        endPinAttempt()
 
         when (val d = ActivationPolicy.decide(
             category = session.category,
@@ -1021,7 +1119,7 @@ class SendspinClient(
             persistedRoles = _activeRoles.value,
             unpairedAccess = store.unpairedAccessEnabled,
             pairingMethod = payload.pairing?.method,
-            pairingPskOffered = store.pairingPskEnabled,
+            offeredMethods = offeredPairMethods().map { it.method }.toSet(),
         )) {
             is ActivationPolicy.Decision.Reject -> {
                 rejectWithGoodbye(
@@ -1051,7 +1149,11 @@ class SendspinClient(
                 )
                 if (first) becomeReady()
                 if (pairing) {
-                    startPairingAttempt(session)
+                    pairingIndex++
+                    when (payload.pairing?.method) {
+                        ActivationPolicy.PAIR_METHOD_PSK -> startPairingAttempt(session)
+                        else -> startPinAttempt(payload.pairing?.method ?: return, payload.pairing?.pinLength)
+                    }
                     return
                 }
                 // A (re)activated player role gets its full state; after a re-handshake the
@@ -1077,6 +1179,7 @@ class SendspinClient(
     /** First activation (or legacy hello): the session is up. */
     private fun becomeReady() {
         phase = Phase.READY
+        bringUpTimeoutJob?.cancel(); bringUpTimeoutJob = null
         attempt = 0
         _state.value = State.CONNECTED
         _statusText.value = "Connected"
@@ -1140,16 +1243,95 @@ class SendspinClient(
             }
         }
         pendingPairing = PendingPairing(psk, sid, timeout)
-        sendJson(json.encodeToString(SendspinClientPairFinalize(payload = ClientPairFinalizePayload(B64Url.encode(psk)))))
+        offeredPsk = SendspinPsk.idFor(psk) to psk
+        sendJson(json.encodeToString(SendspinClientPairFinalize(payload = ClientPairFinalizePayload(longTermPsk = B64Url.encode(psk)))))
         dbg("pairing: sent client/pair-finalize")
     }
 
     private fun onPairFinalize() {
+        pinFlow?.let { flow ->
+            applyPinOutcome(flow.onServerPairFinalize())
+            return
+        }
         val pending = pendingPairing ?: run { dbg("server/pair-finalize with no attempt in progress"); return }
         pending.timeout.cancel()
         pendingPairing = null
         store.persistPairing(pending.serverId, pending.psk)
+        offeredPsk = null
         dbg("paired with ${pending.serverId.take(8)}… — record persisted")
+    }
+
+    /** A PIN pairing activation: start the attempt, or signal the gesture it waits for. */
+    private fun startPinAttempt(method: String, pinLength: Int?) {
+        val sid = serverId ?: return
+        val h = handshakeHash ?: return
+        val flow = PinPairingFlow(
+            method = method,
+            suite = suite,
+            handshakeHash = h,
+            pairingIndex = pairingIndex,
+            pinLength = pinLength,
+            store = store,
+            serverId = sid,
+            json = json,
+            send = { sendJson(it) },
+            emitPin = { _pairingPin.value = it },
+        )
+        pinFlow = flow
+        val outcome = flow.begin(windowOpen = pairingWindowOpen)
+        if (flow.state == PinPairingFlow.State.AWAIT_WINDOW && outcome is PinPairingFlow.Outcome.Continue) {
+            _pairingPending.value = true
+            dbg("pairing ($method): waiting for the operator to allow it on this phone")
+        }
+        applyPinOutcome(outcome)
+    }
+
+    private fun applyPinOutcome(outcome: PinPairingFlow.Outcome) {
+        val flow = pinFlow ?: return
+        when (outcome) {
+            is PinPairingFlow.Outcome.Continue -> {}
+            is PinPairingFlow.Outcome.Started -> {
+                // The window admitted this attempt; the attempt timeout runs from here.
+                pairingWindowUntilMs = 0L
+                _pairingPending.value = false
+                dbg("pairing (${flow.method}): sent client/pair-init")
+                pinAttemptTimeout?.cancel()
+                pinAttemptTimeout = scope.launch {
+                    delay(PAIRING_ATTEMPT_TIMEOUT_MS)
+                    if (pinFlow === flow && flow.state != PinPairingFlow.State.DONE) {
+                        dbg("pairing attempt timed out")
+                        sendJson(json.encodeToString(SendspinPairAbort(payload = PairAbortPayload("attempt_timeout"))))
+                        endPinAttempt()
+                    }
+                }
+                offeredPsk = SendspinPsk.idFor(flow.longTermPsk) to flow.longTermPsk
+            }
+            is PinPairingFlow.Outcome.Abort -> {
+                dbg("pairing (${flow.method}) aborted: ${outcome.reason}")
+                sendJson(json.encodeToString(SendspinPairAbort(payload = PairAbortPayload(outcome.reason))))
+                endPinAttempt()
+            }
+            is PinPairingFlow.Outcome.ProtocolError -> {
+                dbg("pairing protocol error: ${outcome.what}")
+                endPinAttempt()
+                webSocket?.let { protocolError(it, outcome.what) }
+            }
+            is PinPairingFlow.Outcome.Paired -> {
+                dbg("paired with ${outcome.record.serverId?.take(8)}… via ${flow.method} — record persisted")
+                pinAttemptTimeout?.cancel(); pinAttemptTimeout = null
+                pinFlow = null
+                _pairingPin.value = null
+                _pairingPending.value = false
+            }
+        }
+    }
+
+    private fun endPinAttempt() {
+        pinAttemptTimeout?.cancel(); pinAttemptTimeout = null
+        pinFlow?.end()
+        pinFlow = null
+        _pairingPin.value = null
+        _pairingPending.value = false
     }
 
     /** `server/unpair`: drop the record it was admitted with, say goodbye, come back unpaired. */
@@ -1344,5 +1526,11 @@ class SendspinClient(
 
         /** The spec's recommended pairing attempt timeout. */
         const val PAIRING_ATTEMPT_TIMEOUT_MS = 120_000L
+
+        /** The spec's recommended pairing-window lifetime. */
+        const val PAIRING_WINDOW_MS = 5 * 60_000L
+
+        /** From the first Sendspin message to the first `server/activate` (or legacy `server/hello`). */
+        const val BRING_UP_TIMEOUT_MS = 30_000L
     }
 }

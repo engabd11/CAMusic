@@ -20,6 +20,7 @@ import kotlin.math.roundToInt
 import com.engabd.sendpin.ui.design.InfoChip
 import com.engabd.sendpin.ui.theme.MonoFont
 import com.engabd.sendpin.ui.theme.TextSecondary
+import com.engabd.sendpin.ui.theme.TextFaint
 import com.engabd.sendpin.ui.theme.WarnAmber
 import com.engabd.sendpin.ui.viewmodel.PlayerViewModel
 import kotlinx.serialization.json.JsonElement
@@ -445,6 +446,10 @@ private fun SendspinPairingCard(viewModel: PlayerViewModel, accent: Color) {
     val records = remember(security) { store.records().filter { it.serverId != null } }
     val token = remember(records) { store.pairingToken() }
     val context = LocalContext.current
+    val pairingPin by viewModel.pairingPin.collectAsStateWithLifecycle()
+    val pairingPending by viewModel.pairingPending.collectAsStateWithLifecycle()
+    var dynamicPin by remember { mutableStateOf(store.dynamicPinEnabled) }
+    var staticPin by remember { mutableStateOf(store.staticPin.takeIf { store.staticPinEnabled }) }
 
     SettingsCard(
         title = "Pairing and trust",
@@ -473,6 +478,27 @@ private fun SendspinPairingCard(viewModel: PlayerViewModel, accent: Color) {
             StatusRow("Server", session?.serverName ?: "—")
             StatusRow("Paired servers", if (records.isEmpty()) "none" else records.size.toString())
         }
+        // A PIN pairing in progress takes the top of the card: the code Music Assistant is
+        // asking for, or the gesture it is waiting on (spec §Pairing Window).
+        pairingPin?.let { pin ->
+            CardDivider()
+            Text("Pairing code", color = TextPrimary, fontFamily = AppFont, style = MaterialTheme.typography.titleLarge)
+            Text(
+                pin.chunked(3).joinToString(" "),
+                color = accent,
+                fontFamily = MonoFont,
+                style = MaterialTheme.typography.displaySmall,
+            )
+            Text(
+                "Enter this in Music Assistant to pair this phone. It is good for this attempt only.",
+                color = TextSecondary, fontFamily = AppFont, style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        if (pairingPending) {
+            CardDivider()
+            StatusLine("Music Assistant wants to pair with a PIN and is waiting for you to allow it here.", health = Health.WARN, accent = WarnAmber)
+            OledButton("Allow pairing", accent = accent) { viewModel.openPairingWindow() }
+        }
         ToggleRow(
             title = "Allow guest access",
             subtitle = "Let an unpaired Music Assistant play to this phone",
@@ -481,6 +507,48 @@ private fun SendspinPairingCard(viewModel: PlayerViewModel, accent: Color) {
         ) {
             unpaired = it
             store.unpairedAccessEnabled = it
+        }
+        ToggleRow(
+            title = "PIN pairing",
+            subtitle = "Pair by typing a code this phone shows into Music Assistant",
+            checked = dynamicPin,
+            accent = accent,
+            info = "The spec's dynamic PIN method: Music Assistant and this phone each contribute " +
+                "randomness, the phone shows the resulting code, and the operator types it into " +
+                "Music Assistant, which proves both sides are looking at the same device. Short " +
+                "codes, and the method after ten failed attempts, need the \"Allow pairing\" " +
+                "button here first.",
+        ) {
+            dynamicPin = it
+            store.dynamicPinEnabled = it
+        }
+        StatusPanel {
+            StatusRow("Static PIN", staticPin?.let { it.chunked(4).joinToString(" ") } ?: "off")
+        }
+        Text(
+            "A fixed eight-digit code for a Music Assistant with no way to show one back. Off " +
+                "until you set one up; every attempt with it needs \"Allow pairing\" here.",
+            color = TextFaint, fontFamily = AppFont, style = MaterialTheme.typography.bodySmall,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (staticPin == null) {
+                OledButton("Set up a static PIN", accent = accent, outline = true) {
+                    val pin = com.engabd.sendpin.protocol.noise.PinPairing.generateStaticPin()
+                    store.setStaticPin(pin, enabled = true)
+                    staticPin = pin
+                }
+            } else {
+                OledButton("New static PIN", accent = accent, outline = true) {
+                    val pin = com.engabd.sendpin.protocol.noise.PinPairing.generateStaticPin()
+                    store.setStaticPin(pin, enabled = true)
+                    staticPin = pin
+                }
+                OledButton("Turn off", accent = accent, outline = true) {
+                    store.setStaticPin(null, enabled = false)
+                    staticPin = null
+                }
+            }
+            OledButton("Allow pairing", accent = accent, outline = true) { viewModel.openPairingWindow() }
         }
         CardDivider()
         Text("Pairing token", color = TextPrimary, fontFamily = AppFont, style = MaterialTheme.typography.titleLarge)

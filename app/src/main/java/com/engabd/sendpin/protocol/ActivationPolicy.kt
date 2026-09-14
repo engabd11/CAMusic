@@ -26,6 +26,8 @@ object ActivationPolicy {
     const val PAIRING = "pairing"
     const val MANAGEMENT = "management"
     const val PAIR_METHOD_PSK = "pairing_psk"
+    const val PAIR_METHOD_DYNAMIC_PIN = "dynamic_pin"
+    const val PAIR_METHOD_STATIC_PIN = "static_pin"
 
     sealed class Decision {
         /** Apply: these are the activities and (sticky) roles now in force. */
@@ -56,7 +58,8 @@ object ActivationPolicy {
         persistedRoles: List<String>,
         unpairedAccess: Boolean,
         pairingMethod: String?,
-        pairingPskOffered: Boolean,
+        /** The methods this client currently offers (its `supported_pair_methods`). */
+        offeredMethods: Set<String>,
     ): Decision {
         val acts = activities.toSet()
 
@@ -83,10 +86,10 @@ object ActivationPolicy {
 
         if (PAIRING in acts) {
             // pairing.method is 'pairing_psk' iff the matched PSK is the Pairing PSK, and
-            // must be a method we currently offer.
+            // must be a method we currently offer — checked against the live config,
+            // which may have drifted from what the hello advertised.
             val methodMatchesPsk = (pairingMethod == PAIR_METHOD_PSK) == (category == PskCategory.PAIRING)
-            val offered = pairingMethod == PAIR_METHOD_PSK && pairingPskOffered
-            if (pairingMethod == null || !methodMatchesPsk || !offered) {
+            if (pairingMethod == null || !methodMatchesPsk || pairingMethod !in offeredMethods) {
                 return Decision.AbortPairing(acts, roles)
             }
         }

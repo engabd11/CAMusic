@@ -49,23 +49,44 @@ stream/start → binary type 4 chunks → stream/clear / stream/end …
   earlier pairing. Which one matched bounds what `server/activate` may declare —
   `ActivationPolicy` is the spec's table, with its ordered rejections
   (`pairing_required` before `unauthorized`) and `pair/abort method_not_supported`.
-- **Pairing.** Only the Pairing PSK method (the one the spec requires; the PIN methods
-  are optional and need a CPace PAKE). The operator pastes the phone's token
-  (`SP:0…`, Settings › This phone › Pairing and trust) into MA's player *Setup*. MA
-  re-handshakes onto the Pairing PSK, sends `server/activate {activities:[pairing]}`,
-  the phone answers `client/pair-finalize {long_term_psk}`, persists the record only on
-  `server/pair-finalize`, and MA re-handshakes again onto the new long-term PSK, after
-  which the hello says `trust_level: user`. Measured at 170 ms end to end.
+- **Pairing — all three methods.**
+  *Pairing PSK*: the operator pastes the phone's token (`SP:0…`, Settings › This phone ›
+  Pairing and trust) into MA's player *Setup*; MA re-handshakes onto the Pairing PSK,
+  sends `server/activate {activities:[pairing]}`, the phone answers
+  `client/pair-finalize {long_term_psk}` and persists only on `server/pair-finalize`,
+  then MA re-handshakes onto the new long-term PSK and the hello says `trust_level:
+  user`. 170 ms end to end.
+  *Dynamic PIN* (`PinPairingFlow`, `CPace`): `client/pair-init {pairing_index, commit_B}`
+  → `server/pair-init {nonce_A}` → the phone derives the PIN
+  (`SHA-256(label‖h‖nonce_A‖nonce_B) mod 10^L`) and shows it on the card and as a
+  notification → the operator types it into MA → `server/pair-auth`/`client/pair-auth`
+  (CPACE-X25519-SHA512 shares, sid = label‖h‖counter) → `server/pair-confirm` verified,
+  `client/pair-confirm {client_kc, nonce_B}` + `client/pair-finalize {wrapped_psk}` back
+  to back → `server/pair-finalize`. Gesture-gated (the card's *Allow pairing*) when the
+  session's PIN is under six digits or the method is escalated; the failure counter is
+  the spec's: up on a failed `server_kc`, reset on success, escalation at ten, persisted.
+  400 ms after the activation against MA 2.10.3.
+  *Static PIN*: an eight-digit PIN the operator provisions on the card (generated per
+  device, never a shared default; MA's management can rotate it), shipped off and
+  unprovisioned as the spec asks; every attempt is gesture-gated:
+  `client/pair-pending` → *Allow pairing* → `client/pair-init` → the same PAKE round.
+  Verified against MA 2.10.3 including the pending gesture and MA's
+  `pair/abort user_cancelled` when its flow is restarted.
+  The pairing window is five minutes and is consumed by the `client/pair-init` it
+  admits; `management/open-pairing-window` opens it too. A wrong PIN is
+  `pair/abort pin_mismatch` (verified live); an attempt that stalls times out at two
+  minutes with `attempt_timeout`.
 - **Re-handshake.** Same state machine, prologue = the previous handshake hash, message
   2 still under the old keys; handled on the socket thread under the send lock so
   nothing of ours goes out under the old keys after it. Then `server/hello` →
   `client/hello` → `server/activate` again, and the full player state is re-sent.
 - **Management.** With `management` in the activities (long-term paired only), the
-  server may list/add/remove records and read/patch the pairing config; every request
-  gets one `management/result`. No PIN methods, so `open-pairing-window` is `invalid`
-  and the PIN objects are absent from the config. `server/unpair` drops the record,
-  says goodbye `unpaired`, and reconnects — MA expects the device to "reconnect as
-  unpaired".
+  server may list/add/remove records and read/patch the pairing config — `pairing_psk`,
+  `static_pin` (enabling with no PIN provisioned and none supplied is `invalid`),
+  `dynamic_pin` (`enabled`, `min_pin_length` 4–12, `escalated`), `record_mode`,
+  `unpaired_access` — and open the pairing window; every request gets one
+  `management/result`. `server/unpair` drops the record, says goodbye `unpaired`, and
+  reconnects — MA expects the device to "reconnect as unpaired".
 - **State.** `available: true` goes out once, when the clock filter is fit to schedule
   against (`isReadyForPlaybackStart`, ≈100 ms with a persisted seed, ≈1.6 s cold),
   bounded by the server's 5 s initial-state window. It is *not* reset to false on a
@@ -79,6 +100,18 @@ stream/start → binary type 4 chunks → stream/clear / stream/end …
   buffers (`SendspinPlaybackEngine.reconfigure`); re-sent chunks (at or behind the last
   enqueued timestamp) are dropped. A stream that had to start on the local anchor is
   re-gated onto the server timeline the moment the filter converges (one-shot resync).
+- **Volume and mute.** The player volume is the phone's media volume, applied on the
+  spec's loudness curve: the OS volume step whose gain (`getStreamVolumeDb`) is nearest
+  `(volume/100)^1.5`, and reported back through the inverse. `mute` is a gate on the
+  engine's output, independent of the level, so a volume change never clears it and
+  `muted` is reported as such.
+- **Metadata.** `server/state` is merged as the spec's delta (`MetadataState`): absent
+  fields unchanged, `null` fields cleared, nested objects replaced whole, a `null` role
+  object clears the role; `playback_speed: 0` is paused.
+- **Bring-up timeout.** Thirty seconds from the first message to the first
+  `server/activate` (or legacy `server/hello`), after which the socket is closed.
+- **Goodbye reasons.** `user_request`, `restart`, `unauthorized`, `pairing_required`,
+  `unpaired`, and `another_server` when the user switches Music Assistant servers.
 
 ## Synchronisation, against the spec's normative text
 
@@ -109,10 +142,13 @@ the quirks.
 
 ## Endpoints
 
-`ws://host:8927/sendspin` first (what the MA docs give for clients; no auth). MA's
-`:8095/sendspin` is an authenticated proxy to the same server (`auth` + token, then
-`auth_ok`, then the identical protocol) and is the fallback when only the web port is
-reachable. Both are the same server object and clock.
+The server's own advertisement first — `_sendspin-server._tcp` on the configured MA host,
+whose TXT `path` and port are what the spec's client-initiated mode says to connect to
+(`SendspinServerDiscovery`, ~30 ms on the LAN) — then `ws://host:8927/sendspin` (the MA
+docs' default) if nothing answers. MA's `:8095/sendspin` is an authenticated proxy to the
+same server (`auth` + token, then `auth_ok`, then the identical protocol) and is the last
+fallback for a network where only the web port is reachable. All are the same server
+object and clock.
 
 ## Music Assistant behaviours worth knowing (2.10.3)
 
@@ -135,6 +171,26 @@ reachable. Both are the same server object and clock.
   cleartext dialect; MA shows such a player as "connected without encryption".
 - MA sends `set_static_delay 0` right after every initial state; the client's echo
   guard keeps a locally negative trim from being erased by it.
+- MA learns the offered pairing methods from the hello, so a static PIN provisioned
+  mid-session is offered after the next connection. Restarting MA's setup flow cancels an
+  attempt in flight (`pair/abort user_cancelled`) and starts a fresh one.
+- MA's management *enable static PIN* sends no PIN, which the spec makes `invalid`
+  until one is provisioned on the phone.
+
+## Conformance checklist (client-side normative statements)
+
+Every MUST/SHOULD that binds a player client, checked against the code on 2026-09-14:
+identity and Noise (§Encryption, §Communication, §Fragmentation) — met; handshake-phase
+timeout — met; no undefined fields sent, unknown fields ignored — met; time filter,
+burst cadence, `available` gating — met; activation table and rejection order — met;
+Pairing PSK required, dynamic PIN and static PIN "SHOULD" — met, with the failure
+counter, gesture gating, window lifetime, attempt timeout and the pairing token; token
+codec lenient/rejecting — met; management — met; `client/state` fields, persistence of
+`static_delay_ms`, volume/mute independence, the loudness curve — met; `server/state`
+delta merge — met; `stream/*` semantics, late-chunk drop, no startup warble, ±1 ms
+accuracy with the ±0.5 ms target, ±0.5 % speed cap, rare one-shot resync — met;
+`another_server` on a switch — met; discovery via `_sendspin-server._tcp` — met. The
+only deliberate deviation is the local clock (`CLOCK_BOOTTIME`, above).
 
 ## Verification recipe
 

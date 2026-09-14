@@ -17,7 +17,8 @@ class ActivationPolicyTest {
         unpaired: Boolean = true,
         method: String? = null,
         offered: Boolean = true,
-    ) = ActivationPolicy.decide(category, activities, roles, persisted, unpaired, method, offered)
+        offeredMethods: Set<String> = if (offered) setOf("pairing_psk", "dynamic_pin") else emptySet(),
+    ) = ActivationPolicy.decide(category, activities, roles, persisted, unpaired, method, offeredMethods)
 
     @Test
     fun `sentinel guest session with roles is accepted when unpaired access is on`() {
@@ -87,8 +88,13 @@ class ActivationPolicyTest {
     fun `pairing method must match the matched PSK and be offered`() {
         // pairing_psk on a sentinel session: mismatch → abort, connection open.
         assertIs<Decision.AbortPairing>(decide(PskCategory.SENTINEL, listOf("pairing"), emptyList(), method = "pairing_psk"))
-        // A PIN method we do not implement.
-        assertIs<Decision.AbortPairing>(decide(PskCategory.SENTINEL, listOf("pairing"), emptyList(), method = "dynamic_pin"))
+        // A PIN method on the Sentinel PSK is the normal case; one we do not offer is refused.
+        assertIs<Decision.Accept>(decide(PskCategory.SENTINEL, listOf("pairing"), emptyList(), method = "dynamic_pin"))
+        assertIs<Decision.AbortPairing>(decide(PskCategory.SENTINEL, listOf("pairing"), emptyList(), method = "static_pin"))
+        // A PIN method on the Pairing PSK contradicts the invariant.
+        assertIs<Decision.AbortPairing>(decide(PskCategory.PAIRING, listOf("pairing"), emptyList(), method = "dynamic_pin"))
+        // Re-verifying a paired device runs a PIN method on the long-term PSK.
+        assertIs<Decision.Accept>(decide(PskCategory.LONG_TERM, listOf("pairing"), emptyList(), method = "dynamic_pin"))
         // The right method on the right PSK, but the client has the method disabled.
         assertIs<Decision.AbortPairing>(decide(PskCategory.PAIRING, listOf("pairing"), emptyList(), method = "pairing_psk", offered = false))
         // No method at all.

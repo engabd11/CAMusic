@@ -55,6 +55,13 @@ class PairingStore(private val persistence: Persistence) {
         val unpairedAccessEnabled: Boolean = true,
         val records: List<PairingRecord> = emptyList(),
         val recordModePskId: String,
+        /** The static PIN, 8 digits; null until an operator provisions one (spec: shipped unprovisioned). */
+        val staticPin: String? = null,
+        val staticPinEnabled: Boolean = false,
+        val dynamicPinEnabled: Boolean = true,
+        val minPinLength: Int = PinPairing.DEFAULT_MIN_PIN_DIGITS,
+        /** Dynamic-PIN inner-authentication failures, persisted; escalates the method at ten. */
+        val pinFailures: Int = 0,
     )
 
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
@@ -96,6 +103,46 @@ class PairingStore(private val persistence: Persistence) {
         commit(fresh())
         identityCache = SendspinIdentity(B64Url.decode(doc.identityPrivate))
     }
+
+    // ---- PIN methods (spec §Dynamic PIN Pairing Flow, §Static PIN Pairing Flow) ----
+
+    val staticPin: String? get() = synchronized(lock) { doc.staticPin }
+
+    /** Offered only when enabled *and* provisioned. */
+    val staticPinEnabled: Boolean get() = synchronized(lock) { doc.staticPinEnabled && doc.staticPin != null }
+
+    /**
+     * Set the static PIN and/or its enabled flag. Enabling with nothing provisioned is
+     * refused (spec: "rejected as invalid"); a null [pin] keeps the current one.
+     */
+    fun setStaticPin(pin: String?, enabled: Boolean?): AddResult = synchronized(lock) {
+        if (pin != null && !PinPairing.isValidStaticPin(pin)) return AddResult.INVALID
+        val effectivePin = pin ?: doc.staticPin
+        val effectiveEnabled = enabled ?: doc.staticPinEnabled
+        if (effectiveEnabled && effectivePin == null) return AddResult.INVALID
+        commit(doc.copy(staticPin = effectivePin, staticPinEnabled = effectiveEnabled))
+        AddResult.OK
+    }
+
+    var dynamicPinEnabled: Boolean
+        get() = synchronized(lock) { doc.dynamicPinEnabled }
+        set(value) = synchronized(lock) { commit(doc.copy(dynamicPinEnabled = value)) }
+
+    val minPinLength: Int get() = synchronized(lock) { doc.minPinLength }
+
+    fun setMinPinLength(length: Int): Boolean = synchronized(lock) {
+        if (length !in PinPairing.MIN_PIN_DIGITS..PinPairing.MAX_PIN_DIGITS) return false
+        commit(doc.copy(minPinLength = length))
+        true
+    }
+
+    val pinFailures: Int get() = synchronized(lock) { doc.pinFailures }
+
+    /** Dynamic PIN is escalated to gesture-gating once the failure counter reaches the spec's ten. */
+    val isPinEscalated: Boolean get() = synchronized(lock) { doc.pinFailures >= PinPairing.ESCALATION_FAILURES }
+
+    fun recordPinFailure() = synchronized(lock) { commit(doc.copy(pinFailures = doc.pinFailures + 1)) }
+    fun resetPinFailures() = synchronized(lock) { if (doc.pinFailures != 0) commit(doc.copy(pinFailures = 0)) }
 
     val pairingPsk: ByteArray get() = synchronized(lock) { B64Url.decode(doc.pairingPsk) }
     val pairingPskId: String get() = SendspinPsk.idFor(pairingPsk)

@@ -2,6 +2,7 @@ package com.engabd.sendpin.protocol
 
 import com.engabd.sendpin.protocol.noise.B64Url
 import com.engabd.sendpin.protocol.noise.PairingStore
+import com.engabd.sendpin.protocol.noise.PinPairing
 import com.engabd.sendpin.protocol.noise.SendspinPsk
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -23,11 +24,14 @@ import kotlinx.serialization.json.put
  * everything else is here. Storage is unbounded on a phone, so the optional `storage`
  * accounting is omitted, as the spec allows.
  *
- * Only the Pairing PSK method is implemented, so the PIN-method objects are absent from
- * the config, a request touching them is `invalid`, and there is no pairing window to
- * open.
+ * [openPairingWindow] stands in for the operator gesture (spec
+ * §management/open-pairing-window): a no-op `ok` when a window is already open, and
+ * `invalid` while no PIN method is enabled.
  */
-class ManagementHandler(private val store: PairingStore) {
+class ManagementHandler(
+    private val store: PairingStore,
+    private val openPairingWindow: () -> Unit = {},
+) {
 
     class Outcome(val result: SendspinManagementResult, val closeUnauthorizedAfter: Boolean = false)
 
@@ -84,13 +88,27 @@ class ManagementHandler(private val store: PairingStore) {
                     "ok",
                     buildJsonObject {
                         put("pairing_psk", buildJsonObject { put("enabled", store.pairingPskEnabled) })
+                        // Configured secrets are never returned; only the flags and limits.
+                        put("static_pin", buildJsonObject { put("enabled", store.staticPinEnabled) })
+                        put(
+                            "dynamic_pin",
+                            buildJsonObject {
+                                put("enabled", store.dynamicPinEnabled)
+                                put("min_pin_length", store.minPinLength)
+                                put("escalated", store.isPinEscalated)
+                            },
+                        )
                         put("record_mode", buildJsonObject { put("psk_id", store.recordModePskId) })
                         put("unpaired_access", buildJsonObject { put("enabled", store.unpairedAccessEnabled) })
                     },
                 ),
             )
             "set-pairing-config" -> Outcome(result(setPairingConfig(payload)))
-            "open-pairing-window" -> Outcome(result("invalid"))
+            "open-pairing-window" -> {
+                if (!store.dynamicPinEnabled && !store.staticPinEnabled) return Outcome(result("invalid"))
+                openPairingWindow()
+                Outcome(result("ok"))
+            }
             else -> Outcome(result("invalid"))
         }
     }
@@ -101,16 +119,25 @@ class ManagementHandler(private val store: PairingStore) {
      */
     private fun setPairingConfig(payload: JsonObject?): String {
         payload ?: return "invalid"
-        if (payload.containsKey("static_pin") || payload.containsKey("dynamic_pin")) return "invalid"
         val pairingPsk = payload["pairing_psk"] as? JsonObject
+        val staticPin = payload["static_pin"] as? JsonObject
+        val dynamicPin = payload["dynamic_pin"] as? JsonObject
         val recordMode = payload["record_mode"] as? JsonObject
         val unpaired = payload["unpaired_access"] as? JsonObject
-        if (pairingPsk == null && payload.containsKey("pairing_psk")) return "invalid"
-        if (recordMode == null && payload.containsKey("record_mode")) return "invalid"
-        if (unpaired == null && payload.containsKey("unpaired_access")) return "invalid"
+        for (key in listOf("pairing_psk", "static_pin", "dynamic_pin", "record_mode", "unpaired_access")) {
+            if (payload.containsKey(key) && payload[key] !is JsonObject) return "invalid"
+        }
 
         val newPsk = pairingPsk?.string("psk")?.let { decodePsk(it) ?: return "invalid" }
         val pskEnabled = pairingPsk?.boolean("enabled")
+        val staticEnabled = staticPin?.boolean("enabled")
+        val staticValue = staticPin?.string("pin")
+        if (staticValue != null && !PinPairing.isValidStaticPin(staticValue)) return "invalid"
+        // Enabling with nothing provisioned and nothing supplied is the spec's `invalid`.
+        if (staticEnabled == true && staticValue == null && store.staticPin == null) return "invalid"
+        val dynamicEnabled = dynamicPin?.boolean("enabled")
+        val minPin = dynamicPin?.int("min_pin_length")
+        if (dynamicPin?.containsKey("min_pin_length") == true && (minPin == null || minPin !in PinPairing.MIN_PIN_DIGITS..PinPairing.MAX_PIN_DIGITS)) return "invalid"
         val recordModeId = recordMode?.string("psk_id")
         if (recordMode != null && recordModeId == null) return "invalid"
         val unpairedEnabled = unpaired?.boolean("enabled")
@@ -128,6 +155,11 @@ class ManagementHandler(private val store: PairingStore) {
             }
         }
         pskEnabled?.let { store.pairingPskEnabled = it }
+        if (staticPin != null && (staticValue != null || staticEnabled != null)) {
+            if (store.setStaticPin(staticValue, staticEnabled) != PairingStore.AddResult.OK) return "invalid"
+        }
+        dynamicEnabled?.let { store.dynamicPinEnabled = it }
+        minPin?.let { store.setMinPinLength(it) }
         recordModeId?.let { store.setRecordModePskId(it) }
         unpairedEnabled?.let { store.unpairedAccessEnabled = it }
         return "ok"
@@ -141,6 +173,7 @@ class ManagementHandler(private val store: PairingStore) {
 
     private fun JsonObject.string(key: String): String? = (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
     private fun JsonObject.boolean(key: String): Boolean? = (this[key] as? JsonPrimitive)?.booleanOrNull
+    private fun JsonObject.int(key: String): Int? = (this[key] as? JsonPrimitive)?.takeIf { !it.isString }?.contentOrNull?.toIntOrNull()
 
     private fun result(code: String, data: JsonElement? = null) =
         SendspinManagementResult(payload = ManagementResultPayload(result = code, data = data))

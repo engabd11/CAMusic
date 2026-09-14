@@ -21,7 +21,7 @@ class MessagesTest {
                     supportedFormats = listOf(AudioFormatSpec("flac", 2, 48000, 16))
                 ),
                 trustLevel = "none",
-                supportedPairMethods = listOf(PairMethodDescriptor("pairing_psk", listOf("device"))),
+                supportedPairMethods = listOf(PairMethodDescriptor("pairing_psk", locations = listOf("device"))),
                 unpairedAccess = UnpairedAccess(true),
             )
         )
@@ -143,7 +143,7 @@ class MessagesTest {
             json,
         )
         assertIs<SendspinIncoming.ServerState>(msg)
-        val meta = msg.payload.metadata!!
+        val meta = json.decodeFromJsonElement(ServerMetadataPayload.serializer(), msg.metadata!!)
         assertEquals("T", meta.title)
         assertEquals(123456L, meta.progress?.trackDuration)
         assertEquals(1000L, meta.progress?.trackProgress)
