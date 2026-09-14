@@ -24,24 +24,36 @@ namespace {
 // and cheap (48 kHz stereo i16 = ~768 KB; 96 kHz = ~1.5 MB).
 constexpr int RING_SECONDS = 4;
 
-// Below this |drift| the rate stays exactly 1.0 (locked). Kept tight (1 ms) so
-// steady-state lock lands sub-2ms like the old closed loop; the correction here
-// is the gentle resampler (a ~0.06% rate nudge at 1 ms), never the snap, so a
-// small deadzone does not reintroduce the getTimestamp-spike "cough" (that is
-// gated by the outlier-resistant ema + slew limit on the snap path below).
-constexpr int64_t STEADY_DEADZONE_US = 1000;
+// Below this |drift| the rate stays exactly 1.0 (locked, bit-exact). The Sendspin
+// spec's accuracy floor is ±1 ms with a target of ±0.5 ms, measured at the output
+// against the time filter's prediction, so the band inside which nothing is
+// corrected has to sit well under the floor: at the old 1 ms the error was free
+// to park *on* the floor, and did (a smoothed 0.9–1.3 ms in the live logs). It is
+// not the spec's own 100 µs dead band because the correction here is a linear
+// resampler, whose cycling fractional delay is a faint high-frequency flutter,
+// and the widest band that still holds the target keeps playback bit-exact for
+// most of every track. Anything a getTimestamp spike could do at this width is
+// already gated by the outlier-resistant ema and the slew limit below.
+constexpr int64_t STEADY_DEADZONE_US = 300;
 
 // At/above this |drift| we SNAP onto the server timeline immediately (integer
-// skip/insert) instead of crawling there — "respect the timestamp", like a
-// Cast receiver. A snap on a seek/relock is muted; an occasional unmuted snap
-// is one click, far better than seconds of audible desync.
-constexpr int64_t SNAP_US = 50000;
+// skip/insert) instead of crawling there — the spec's one-shot resynchronisation,
+// for a disturbance too large to correct smoothly (an underrun, a stall, a clock
+// re-seed), which it says must be rare. A snap on a seek/relock is muted; an
+// occasional unmuted snap is one click, far better than seconds of audible
+// desync. Set where the resampler below saturates: below this it can pull the
+// error back within two seconds at its capped rate, above it a click is cheaper.
+constexpr int64_t SNAP_US = 10000;
 
 // Between the deadzone and the snap threshold, converge by RESAMPLING (a small
 // playback-rate change with linear interpolation, sendspin-js style) — smooth
-// and click-free. Cap 3% (~30 ms/s); reached at the snap threshold.
-constexpr double MAX_RATE_DEV = 0.03;
-constexpr double RATE_K = MAX_RATE_DEV / static_cast<double>(SNAP_US);
+// and click-free. The spec caps the effective playback speed at ±0.5% of normal
+// (a sliding average over 150 ms) for continuous correction, so that is the cap;
+// it used to be 3%. The proportional gain is unchanged (0.06% per millisecond of
+// error), so the loop's time constant is still ~1.7 s and the cap is reached at
+// ~8 ms of error, just under the snap.
+constexpr double MAX_RATE_DEV = 0.005;
+constexpr double RATE_K = 6e-7;
 
 // A raw drift sample this far from the smoothed value is treated as a
 // getTimestamp outlier (bad DAC timestamp): it barely moves the estimate and

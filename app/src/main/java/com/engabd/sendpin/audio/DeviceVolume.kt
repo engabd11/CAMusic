@@ -61,6 +61,55 @@ class DeviceVolume(context: Context) {
         _level.value = read()
     }
 
+    /**
+     * Set the media volume from a Sendspin player volume (0–100), on the spec's loudness
+     * curve: "volume 50 should be perceived as half as loud as volume 100", which it
+     * defines as an amplitude of `(volume / 100)^1.5`. The phone's own volume steps sit
+     * on the OS's curve, which [AudioManager.getStreamVolumeDb] exposes, so the step
+     * chosen is the one whose gain is nearest the spec's amplitude for this volume —
+     * as close to the SHOULD as a stepped control gets. Zero is silence.
+     */
+    fun setPerceived(volume: Int) {
+        val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        if (max <= 0) return
+        val v = volume.coerceIn(0, 100)
+        val target = if (v == 0) 0 else {
+            val wantDb = 30.0 * Math.log10(v / 100.0)     // 20·log10(a), a = (v/100)^1.5
+            (1..max).minByOrNull { Math.abs(stepDb(it) - wantDb) } ?: Math.round(v / 100f * max)
+        }
+        runCatching { audio.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0) }
+        _level.value = read()
+    }
+
+    /** The current media volume as the Sendspin player volume (0–100), the inverse of [setPerceived]. */
+    fun perceivedPercent(): Int {
+        val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        val index = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
+        if (max <= 0 || index <= 0) return 0
+        if (index >= max) return 100
+        val db = stepDb(index)
+        return Math.round(100.0 * Math.pow(10.0, db / 30.0)).toInt().coerceIn(1, 100)
+    }
+
+    /** The OS's gain for one volume step on the current media output, in dB (0 at full). */
+    private fun stepDb(index: Int): Double {
+        // The output media takes: an attached headset or Bluetooth device wins, else the speaker.
+        val outputs = runCatching { audio.getDevices(AudioManager.GET_DEVICES_OUTPUTS).map { it.type } }.getOrDefault(emptyList())
+        val preferred = listOf(
+            android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+            android.media.AudioDeviceInfo.TYPE_USB_HEADSET,
+            android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET,
+            android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+            android.media.AudioDeviceInfo.TYPE_USB_DEVICE,
+        )
+        val device = preferred.firstOrNull { it in outputs } ?: android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+        val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        val full = runCatching { audio.getStreamVolumeDb(AudioManager.STREAM_MUSIC, max, device) }.getOrNull() ?: 0f
+        val at = runCatching { audio.getStreamVolumeDb(AudioManager.STREAM_MUSIC, index, device) }.getOrNull()
+            ?: return 20.0 * Math.log10(index.toDouble() / max)
+        return (at - full).toDouble()
+    }
+
     /** Re-read now — for the moments a screen becomes visible again. */
     fun refresh() { _level.value = read() }
 

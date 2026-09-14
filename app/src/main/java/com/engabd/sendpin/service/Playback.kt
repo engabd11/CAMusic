@@ -16,6 +16,7 @@ import com.engabd.sendpin.audio.StreamQuality
 import com.engabd.sendpin.data.AppSettings
 import com.engabd.sendpin.discovery.MaDiscovery
 import com.engabd.sendpin.discovery.PlayerIdentity
+import com.engabd.sendpin.discovery.SendspinServerDiscovery
 import com.engabd.sendpin.SendpinApp
 import com.engabd.sendpin.ma.MaApiClient
 import com.engabd.sendpin.ma.MaRepository
@@ -30,8 +31,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import com.engabd.sendpin.data.Http
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.JsonObject
@@ -104,6 +109,59 @@ class Playback(private val app: Context) {
 
     private val _connected = MutableStateFlow(false); val connected: StateFlow<Boolean> = _connected
     private val _connectionStatus = MutableStateFlow("Disconnected"); val connectionStatus: StateFlow<String> = _connectionStatus
+
+    /** How the current Sendspin session was admitted — encrypted or not, guest or paired. */
+    private val _security = MutableStateFlow<SendspinClient.Security?>(null); val security: StateFlow<SendspinClient.Security?> = _security
+
+    /** The phone's Sendspin identity and pairing records, for the settings screen. */
+    fun pairingStore() = PlayerIdentity.pairingStore(app)
+
+    /** The dynamic pairing PIN to show while Music Assistant is pairing with a PIN; null otherwise. */
+    private val _pairingPin = MutableStateFlow<String?>(null); val pairingPin: StateFlow<String?> = _pairingPin
+
+    /** A PIN pairing attempt is waiting for the operator to allow it on this phone. */
+    private val _pairingPending = MutableStateFlow(false); val pairingPending: StateFlow<Boolean> = _pairingPending
+
+    /** The operator gesture that admits one PIN pairing attempt for five minutes. */
+    fun openPairingWindow() { client?.openPairingWindow() }
+
+    /**
+     * The PIN and the pending gesture also go out as a notification: the operator is at
+     * Music Assistant's screen when they pair, and the phone may be across the room with
+     * its screen off. Nothing else in the app shows a PIN, so the channel is its own.
+     */
+    private fun showPairingNotification(pin: String?, pending: Boolean) {
+        val nm = app.getSystemService(android.content.Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+        if (pin == null && !pending) {
+            nm.cancel(PAIRING_NOTIFICATION_ID)
+            return
+        }
+        nm.createNotificationChannel(
+            android.app.NotificationChannel(PAIRING_CHANNEL_ID, "Pairing", android.app.NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "Pairing codes and requests from Music Assistant"
+            },
+        )
+        val open = android.app.PendingIntent.getActivity(
+            app, 0,
+            app.packageManager.getLaunchIntentForPackage(app.packageName),
+            android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val (title, text) = if (pin != null) {
+            "Pairing code ${pin.chunked(3).joinToString(" ")}" to "Enter it in Music Assistant to pair this phone"
+        } else {
+            "Music Assistant wants to pair" to "Open CAMusic and allow pairing on this phone"
+        }
+        val n = androidx.core.app.NotificationCompat.Builder(app, PAIRING_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_lock_lock)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setContentIntent(open)
+            .setOngoing(true)
+            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
+            .setCategory(androidx.core.app.NotificationCompat.CATEGORY_STATUS)
+            .build()
+        runCatching { nm.notify(PAIRING_NOTIFICATION_ID, n) }
+    }
 
     private val _trackTitle = MutableStateFlow(""); val trackTitle: StateFlow<String> = _trackTitle
     private val _artist = MutableStateFlow(""); val artist: StateFlow<String> = _artist
@@ -454,7 +512,9 @@ class Playback(private val app: Context) {
         scope.launch {
             deviceVolume.level.collect { level ->
                 _volume.value = level
-                client?.sendClientState(volume = (level * 100).toInt().coerceIn(0, 100))
+                // Reported on the spec's loudness curve, the inverse of how a `volume`
+                // command is applied — see DeviceVolume.setPerceived.
+                client?.sendClientState(volume = deviceVolume.perceivedPercent())
             }
         }
         // Wire the app lifecycle observer for warm reconnect and toggleable
@@ -521,8 +581,10 @@ class Playback(private val app: Context) {
     fun connectToServer(url: String, username: String = "", password: String = "", name: String = "") {
         // `disconnect` cancels whatever connect was already in flight, so an overlapping
         // call replaces the previous attempt instead of running beside it — see
-        // [connectJob] for what happened when two of them did.
-        disconnect(stopService = false)
+        // [connectJob] for what happened when two of them did. Leaving one server for
+        // another says so in the goodbye, as the spec requires of a client that switches.
+        val switching = client != null && _serverUrl.value.isNotBlank() && httpBase(_serverUrl.value) != httpBase(url)
+        disconnect(stopService = false, reason = if (switching) "another_server" else "user_request")
         _serverUrl.value = url
         _connectionStatus.value = "Signing in…"
         connectJob = scope.launch {
@@ -560,7 +622,11 @@ class Playback(private val app: Context) {
         sessionJob = SupervisorJob(scope.coroutineContext[Job])
         sessionScope = CoroutineScope(sessionJob + Dispatchers.Default)
 
-        val c = SendspinClient(); client = c
+        val store = PlayerIdentity.pairingStore(app)
+        val c = SendspinClient(store); client = c
+        // What this engine really needs at a stream head — see the engine's constants.
+        c.requiredLeadTimeMs = SendspinNativeEngine.REQUIRED_LEAD_TIME_MS
+        c.minBufferMs = SendspinNativeEngine.MIN_BUFFER_MS
         // Propagate the current idle state — if nothing is playing when the client
         // connects, start in idle mode rather than running fast timer loops until
         // the next isPlaying transition. The connection service drives this from
@@ -597,6 +663,9 @@ class Playback(private val app: Context) {
         }
 
         sessionScope.launch { c.state.collect { _connected.value = it == SendspinClient.State.CONNECTED } }
+        sessionScope.launch { c.security.collect { _security.value = it } }
+        sessionScope.launch { c.pairingPin.collect { _pairingPin.value = it; showPairingNotification(it, c.pairingPending.value) } }
+        sessionScope.launch { c.pairingPending.collect { _pairingPending.value = it; showPairingNotification(c.pairingPin.value, it) } }
         sessionScope.launch { c.statusText.collect { _connectionStatus.value = it } }
         sessionScope.launch { c.events.collect { _connectionLog.value = it } }
         sessionScope.launch {
@@ -631,9 +700,16 @@ class Playback(private val app: Context) {
                     // The engine's own scalar stays reserved for audio focus (see
                     // [focusListener]): ducking must not move the user's system volume,
                     // or every notification would permanently turn the phone down.
-                    "volume" -> cmd.volume?.let { v -> applyUserVolume(v / 100f) }
+                    "volume" -> cmd.volume?.let { v -> deviceVolume.setPerceived(v) }
+                    // A gate on the engine's output, not the device volume at zero: the
+                    // spec keeps volume and mute independent ("a volume change MUST NOT
+                    // clear the mute state"), and setting the level to zero both cleared
+                    // itself on the next volume command and reported as volume 0 rather
+                    // than as muted. The client latches the flag and reports it on every
+                    // state message from here on.
                     "mute" -> cmd.mute?.let { m ->
-                        if (m) deviceVolume.set(0f) else deviceVolume.set(_volume.value)
+                        eng.setUserMuted(m)
+                        c.sendClientState(muted = m)
                     }
                     // Latched by the client, which owns the value; persisted here so
                     // it survives a reconnect.
@@ -719,6 +795,10 @@ class Playback(private val app: Context) {
                     _isPlaying.value = false
                     SendspinService.idleMedia(app)
                 }
+            }
+
+            override fun onStreamReconfigure(format: StreamStartPlayerInfo) {
+                eng.reconfigure(format)
             }
 
             override fun onStreamClear() {
@@ -923,7 +1003,11 @@ class Playback(private val app: Context) {
                 bitPerfect = engineBitPerfect,
                 maxSampleRate = maxRate,
             )
-            c.connect(url, playerId, name, deviceInfo, formats, token)
+            // The dialect comes from the server's schema version, never from probing
+            // (a failed encrypted handshake is never downgraded to cleartext).
+            val base = httpBase(url)
+            val encryption = resolveEncryption(base)
+            c.connect(sendspinEndpoints(base, token), encryption, name, deviceInfo, formats)
             // The hello only *registers* a name; a player Music Assistant already
             // knows keeps whatever it was first registered under until its config is
             // changed. Push both the name and the format preference over the MA API
@@ -1293,6 +1377,10 @@ class Playback(private val app: Context) {
         client?.close(reason); client = null
         idleJob?.cancel(); idleJob = null
         _connected.value = false
+        _security.value = null
+        _pairingPin.value = null
+        _pairingPending.value = false
+        showPairingNotification(null, false)
         _connectionStatus.value = "Disconnected"
         _currentFormat.value = "-"
         _streamQuality.value = null
@@ -1304,13 +1392,69 @@ class Playback(private val app: Context) {
         }
     }
 
+    /**
+     * The app's canonical form of a Music Assistant server: its base URL plus
+     * `/sendspin`. Only a label — [startSendspin] derives the real endpoints from the
+     * base it contains — kept because [connectToServer] recovers the MA base from it.
+     */
     private fun sendspinUrlFrom(base: String): String {
         val ws = base.trim().replace("https://", "wss://").replace("http://", "ws://")
             .let { if (it.startsWith("ws")) it else "ws://$it" }.trimEnd('/')
         return "$ws/sendspin"
     }
 
+    /**
+     * The Sendspin endpoints for a Music Assistant base URL: the native server on `:8927`
+     * (no authentication; what the MA docs give for clients), with the `:8095/sendspin`
+     * proxy — an authenticated pass-through to the same server — as the fallback for a
+     * network where only the web port is reachable. The proxy needs the API token.
+     */
+    private suspend fun sendspinEndpoints(base: String, token: String?): List<SendspinClient.Endpoint> {
+        val host = base.substringAfter("://").substringBefore('/').substringBeforeLast(':')
+        // What the server advertises (`_sendspin-server._tcp`: its port and path) first,
+        // as the spec's client-initiated mode has it; the documented default when
+        // nothing answers in time.
+        val advertised = runCatching { SendspinServerDiscovery(app).resolve(host) }.getOrNull()
+        val derived = "ws://$host:$SENDSPIN_SERVER_PORT/sendspin"
+        val native = listOfNotNull(advertised, derived).distinct().map { SendspinClient.Endpoint(it) }
+        val proxyScheme = if (base.startsWith("https://")) "wss://" else "ws://"
+        val proxy = SendspinClient.Endpoint(proxyScheme + base.substringAfter("://").trimEnd('/') + "/sendspin", token)
+        return if (token.isNullOrBlank()) native else native + proxy
+    }
+
+    /**
+     * Encrypted (spec) or legacy (cleartext) Sendspin, from the server's `/info`: MA
+     * schema 45 (release 2.10) is the first with the Noise handshake. Unknown — the
+     * endpoint unreachable or the JSON odd — is taken as current, so a phone never
+     * quietly drops to cleartext against a server that could have done better.
+     */
+    private suspend fun resolveEncryption(base: String): SendspinClient.Encryption {
+        val schema = runCatching {
+            withTimeoutOrNull(3_000) {
+                withContext(Dispatchers.IO) {
+                    val req = okhttp3.Request.Builder().url("$base/info").build()
+                    Http.base.newCall(req).execute().use { resp ->
+                        val body = resp.body?.string() ?: return@withContext null
+                        kotlinx.serialization.json.Json.parseToJsonElement(body).jsonObject["schema_version"]
+                            ?.jsonPrimitive?.content?.toIntOrNull()
+                    }
+                }
+            }
+        }.getOrNull()
+        android.util.Log.i("Playback", "MA schema_version=$schema → " + if (schema != null && schema < ENCRYPTED_MIN_SCHEMA) "legacy Sendspin" else "encrypted Sendspin")
+        return if (schema != null && schema < ENCRYPTED_MIN_SCHEMA) SendspinClient.Encryption.LEGACY else SendspinClient.Encryption.ENCRYPTED
+    }
+
     private companion object {
+        /** Music Assistant's Sendspin server port (the MA docs' `ws://host:8927/sendspin`). */
+        const val SENDSPIN_SERVER_PORT = 8927
+
+        /** First MA schema version whose Sendspin server speaks the encrypted protocol. */
+        const val ENCRYPTED_MIN_SCHEMA = 45
+
+        const val PAIRING_CHANNEL_ID = "sendspin_pairing"
+        const val PAIRING_NOTIFICATION_ID = 0x5e9d
+
         /**
          * How long between group-state polls when nothing has hinted otherwise.
          *

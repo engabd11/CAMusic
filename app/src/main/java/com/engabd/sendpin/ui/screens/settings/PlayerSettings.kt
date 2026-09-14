@@ -20,6 +20,7 @@ import kotlin.math.roundToInt
 import com.engabd.sendpin.ui.design.InfoChip
 import com.engabd.sendpin.ui.theme.MonoFont
 import com.engabd.sendpin.ui.theme.TextSecondary
+import com.engabd.sendpin.ui.theme.TextFaint
 import com.engabd.sendpin.ui.theme.WarnAmber
 import com.engabd.sendpin.ui.viewmodel.PlayerViewModel
 import kotlinx.serialization.json.JsonElement
@@ -196,6 +197,7 @@ internal fun PlayerSection(
         // taken meant leaving the page that changed it. Every row of it is about one
         // phone's registration with one Music Assistant server, which is this page.
         MaPlayerStatusCard(viewModel, settings)
+        SendspinPairingCard(viewModel, accent)
 
         SettingsCard(
             title = "Announcements",
@@ -421,6 +423,150 @@ private fun MaPlayerStatusCard(viewModel: PlayerViewModel, settings: AppSettings
                     )
                 }
             }
+        }
+    }
+}
+
+/**
+ * How Music Assistant is allowed to trust this phone (Sendspin spec §Pairing).
+ *
+ * A server that connects encrypted and unpaired is a "guest": it can play, and MA
+ * approves that on its own. Pairing is the one-time step that authenticates both sides
+ * for good, and the phone's half of it is the token shown here — the operator pastes it
+ * into MA under the player's Setup. Nothing here is needed for music to work; it is
+ * where a household that wants the stronger footing finds the pieces.
+ */
+@Composable
+private fun SendspinPairingCard(viewModel: PlayerViewModel, accent: Color) {
+    val security by viewModel.security.collectAsStateWithLifecycle()
+    val store = viewModel.pairingStore
+    var unpaired by remember { mutableStateOf(store.unpairedAccessEnabled) }
+    // Re-read whenever the session changes: a pairing lands as a session change, and
+    // so does an unpair.
+    val records = remember(security) { store.records().filter { it.serverId != null } }
+    val token = remember(records) { store.pairingToken() }
+    val context = LocalContext.current
+    val pairingPin by viewModel.pairingPin.collectAsStateWithLifecycle()
+    val pairingPending by viewModel.pairingPending.collectAsStateWithLifecycle()
+    var dynamicPin by remember { mutableStateOf(store.dynamicPinEnabled) }
+    var staticPin by remember { mutableStateOf(store.staticPin.takeIf { store.staticPinEnabled }) }
+
+    SettingsCard(
+        title = "Pairing and trust",
+        lead = "How Music Assistant is connected to this phone, and the token that lets it pair for good.",
+        info = "Every connection to a current Music Assistant is encrypted end to end. Without a " +
+            "pairing it is a guest session: it works, and Music Assistant allows it on its own, " +
+            "but neither side can prove who the other is. Pairing fixes that once: open this " +
+            "player's Setup in Music Assistant, choose to pair, and paste the token below. From " +
+            "then on both sides recognise each other by key.\n\nTurning guest access off makes " +
+            "pairing mandatory: an unpaired server is refused until it pairs.\n\nAn older Music " +
+            "Assistant (before 2.10) cannot encrypt; the phone then speaks its cleartext " +
+            "protocol, and pairing is not available.",
+    ) {
+        StatusPanel {
+            val session = security
+            StatusRow(
+                "Session",
+                when {
+                    session == null -> "Not connected"
+                    !session.encrypted -> "Cleartext (legacy server)"
+                    session.category == com.engabd.sendpin.protocol.noise.PskCategory.LONG_TERM -> "Encrypted · paired"
+                    session.category == com.engabd.sendpin.protocol.noise.PskCategory.PAIRING -> "Encrypted · pairing…"
+                    else -> "Encrypted · guest"
+                },
+            )
+            StatusRow("Server", session?.serverName ?: "—")
+            StatusRow("Paired servers", if (records.isEmpty()) "none" else records.size.toString())
+        }
+        // A PIN pairing in progress takes the top of the card: the code Music Assistant is
+        // asking for, or the gesture it is waiting on (spec §Pairing Window).
+        pairingPin?.let { pin ->
+            CardDivider()
+            Text("Pairing code", color = TextPrimary, fontFamily = AppFont, style = MaterialTheme.typography.titleLarge)
+            Text(
+                pin.chunked(3).joinToString(" "),
+                color = accent,
+                fontFamily = MonoFont,
+                style = MaterialTheme.typography.displaySmall,
+            )
+            Text(
+                "Enter this in Music Assistant to pair this phone. It is good for this attempt only.",
+                color = TextSecondary, fontFamily = AppFont, style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        if (pairingPending) {
+            CardDivider()
+            StatusLine("Music Assistant wants to pair with a PIN and is waiting for you to allow it here.", health = Health.WARN, accent = WarnAmber)
+            OledButton("Allow pairing", accent = accent) { viewModel.openPairingWindow() }
+        }
+        ToggleRow(
+            title = "Allow guest access",
+            subtitle = "Let an unpaired Music Assistant play to this phone",
+            checked = unpaired,
+            accent = accent,
+        ) {
+            unpaired = it
+            store.unpairedAccessEnabled = it
+        }
+        ToggleRow(
+            title = "PIN pairing",
+            subtitle = "Pair by typing a code this phone shows into Music Assistant",
+            checked = dynamicPin,
+            accent = accent,
+            info = "The spec's dynamic PIN method: Music Assistant and this phone each contribute " +
+                "randomness, the phone shows the resulting code, and the operator types it into " +
+                "Music Assistant, which proves both sides are looking at the same device. Short " +
+                "codes, and the method after ten failed attempts, need the \"Allow pairing\" " +
+                "button here first.",
+        ) {
+            dynamicPin = it
+            store.dynamicPinEnabled = it
+        }
+        StatusPanel {
+            StatusRow("Static PIN", staticPin?.let { it.chunked(4).joinToString(" ") } ?: "off")
+        }
+        Text(
+            "A fixed eight-digit code for a Music Assistant with no way to show one back. Off " +
+                "until you set one up; every attempt with it needs \"Allow pairing\" here.",
+            color = TextFaint, fontFamily = AppFont, style = MaterialTheme.typography.bodySmall,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (staticPin == null) {
+                OledButton("Set up a static PIN", accent = accent, outline = true) {
+                    val pin = com.engabd.sendpin.protocol.noise.PinPairing.generateStaticPin()
+                    store.setStaticPin(pin, enabled = true)
+                    staticPin = pin
+                }
+            } else {
+                OledButton("New static PIN", accent = accent, outline = true) {
+                    val pin = com.engabd.sendpin.protocol.noise.PinPairing.generateStaticPin()
+                    store.setStaticPin(pin, enabled = true)
+                    staticPin = pin
+                }
+                OledButton("Turn off", accent = accent, outline = true) {
+                    store.setStaticPin(null, enabled = false)
+                    staticPin = null
+                }
+            }
+            OledButton("Allow pairing", accent = accent, outline = true) { viewModel.openPairingWindow() }
+        }
+        CardDivider()
+        Text("Pairing token", color = TextPrimary, fontFamily = AppFont, style = MaterialTheme.typography.titleLarge)
+        Text(
+            token,
+            color = TextSecondary,
+            fontFamily = MonoFont,
+            style = MaterialTheme.typography.bodySmall,
+            lineHeight = MaterialTheme.typography.bodySmall.lineHeight * 1.3f,
+        )
+        // No "forget pairings" here on purpose. The server keeps its half of a pairing,
+        // and a phone that has dropped its own half fails every handshake the server
+        // offers on that record until the operator unpairs in Music Assistant — which is
+        // the spec's route (server/unpair), and MA's own Unpair button. "Register again
+        // as a new player" above is the local reset, and takes the records with it.
+        OledButton("Copy token", accent = accent) {
+            val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            cm.setPrimaryClip(android.content.ClipData.newPlainText("Sendspin pairing token", token))
         }
     }
 }

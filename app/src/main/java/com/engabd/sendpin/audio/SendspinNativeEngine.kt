@@ -167,6 +167,20 @@ class SendspinNativeEngine(
 
         // Server-timeline mode: buffer threshold + clock gate before the first write.
         private const val SYNC_START_BUFFER_MS = 250L
+
+        /**
+         * What this engine reports as `required_lead_time_ms`: from the server's
+         * `stream/start` to the first chunk it can play in full. It needs
+         * [SYNC_START_BUFFER_MS] of audio queued before it starts, and before that a
+         * MediaCodec configured and an Oboe stream opened — a hundred-odd milliseconds
+         * on a warm phone, more on a cold one. The server only extends toward this for
+         * buffered sources, so a generous figure costs nothing on a normal track and
+         * buys an intact opening on a slow one.
+         */
+        const val REQUIRED_LEAD_TIME_MS = 400
+
+        /** `min_buffer_ms`: the queued audio the start gate insists on, kept up while streaming. */
+        const val MIN_BUFFER_MS = SYNC_START_BUFFER_MS.toInt()
         private const val SYNC_CLOCK_WAIT_MS = 3_000L
 
         /**
@@ -339,6 +353,8 @@ class SendspinNativeEngine(
     @Volatile private var activeSampleRate = 48_000
     @Volatile private var activeChannels = 2
     @Volatile private var lastEnqueuedTimestampUs = 0L
+    private var duplicateFrameCount = 0L
+    private var lateChunkCount = 0L
     @Volatile private var estimatedFrameDurationUs = 20_000L
     @Volatile private var startupWaitStartedMs = 0L
     @Volatile private var halOutputLatencyUs = 0L
@@ -471,6 +487,57 @@ class SendspinNativeEngine(
         ensurePlaybackThread()
     }
 
+    /**
+     * An in-place `stream/start` on the open stream (spec: "updates the stream
+     * configuration without clearing buffers").
+     *
+     * Same format: nothing to do — the queue, the decoder and the ring all carry on,
+     * and any chunk the server re-sends for the new configuration is a duplicate that
+     * [submit] drops. A changed format: the decoder is rebuilt for what arrives next
+     * and the undecoded old-format frames go with it (the server re-anchors this role
+     * as a late joiner and re-sends from near the playhead in the new format — see
+     * aiosendspin's `on_role_format_changed`), while the ring keeps playing what was
+     * already decoded. That is the documented "does not clear buffers unless its
+     * implementation requires it" concession; nothing here re-arms the start gate,
+     * so the timeline is untouched either way.
+     */
+    override fun reconfigure(format: StreamStartPlayerInfo) {
+        if (!configured) {
+            start(format)
+            return
+        }
+        val sameFormat = format.codec == activeCodec &&
+            format.sampleRate == activeSampleRate &&
+            format.channels == activeChannels &&
+            format.bitDepth == activeBitDepth
+        if (sameFormat) {
+            Log.d(TAG, "reconfigure: same format, buffers kept")
+            return
+        }
+        Log.d(TAG, "reconfigure: ${activeCodec} ${activeSampleRate}Hz/${activeBitDepth}bit → ${format.codec} ${format.sampleRate}Hz/${format.bitDepth}bit; decoder rebuilt, ring kept")
+        val rateChanged = format.sampleRate != activeSampleRate || format.channels != activeChannels
+        synchronized(codecLock) {
+            try { codec?.stop() } catch (_: Exception) {}
+            try { codec?.release() } catch (_: Exception) {}
+            codec = null
+            decoderMarks.clear()
+        }
+        // Frames of the old format cannot be decoded any more; the server re-sends.
+        configureGeneration++
+        frameQueue.clear()
+        frameQueueBytes.set(0)
+        lastEnqueuedTimestampUs = 0L
+        activeCodec = format.codec
+        activeBitDepth = format.bitDepth
+        if (rateChanged) {
+            // The output stream is opened at one rate; a new one needs a new stream.
+            activeSampleRate = format.sampleRate
+            activeChannels = format.channels
+            startNativeOutput()
+        }
+        codec = createCodec(format.codec, format.sampleRate, format.channels, format.bitDepth, format.codecHeader)
+    }
+
     override fun submit(frame: ByteArray) {
         if (!configured || paused) return
         if (awaitingFreshStream && !freshStreamGateExpired()) return
@@ -492,8 +559,16 @@ class SendspinNativeEngine(
             return
         }
 
-        receivedFrameCount++
         val previousTail = lastEnqueuedTimestampUs
+        // Chunks arrive in timestamp order within a stream, so one at or behind the
+        // last enqueued is a re-send — the server replays its cache after an in-place
+        // `stream/start` — and is already held. `stream/clear` and a fresh stream reset
+        // the tail, so a seek backwards is not caught by this.
+        if (previousTail > 0L && serverTimestampUs <= previousTail) {
+            if (duplicateFrameCount++ % 50 == 0L) Log.d(TAG, "dropping re-sent chunk ts=${serverTimestampUs / 1000}ms (tail ${previousTail / 1000}ms)")
+            return
+        }
+        receivedFrameCount++
         if (previousTail > 0L) {
             val spacing = serverTimestampUs - previousTail
             if (spacing in 5_000L..500_000L) estimatedFrameDurationUs = spacing
@@ -547,6 +622,12 @@ class SendspinNativeEngine(
 
     override fun setVolume(v: Float) {
         currentVolume = v.coerceIn(0f, 1f)
+        applyOutputVolume()
+    }
+
+    override fun setUserMuted(muted: Boolean) {
+        if (userMuted == muted) return
+        userMuted = muted
         applyOutputVolume()
     }
 
@@ -694,6 +775,35 @@ class SendspinNativeEngine(
                 else "a LOCAL anchor; this player cannot be grouped"),
         )
         return trimStartupLateFrames(neededMs, START_TARGET_HEADROOM_US)
+    }
+
+    /**
+     * The one-shot resynchronisation the spec allows for "an error too large to correct
+     * smoothly": a stream that began on the local anchor (see [startupGate]) is
+     * re-gated onto the server timeline now that the filter has converged. The
+     * decoded audio in the ring was placed on the wrong timeline and is dropped; the
+     * encoded frames still queued carry server timestamps and are placed afresh. A
+     * discontinuity, deliberately, and rare — the fallback itself only fires when the
+     * clock degrades between `available: true` and the next `stream/start`.
+     */
+    private fun reanchorToServerTimeline() {
+        Log.w(
+            TAG,
+            "clock converged (err=${clock.errorUs()}us) — leaving the LOCAL anchor for the " +
+                "server timeline; one-shot resync, ring=${nativeOutput.bufferedFrames() * 1000L / activeSampleRate}ms dropped",
+        )
+        nativeOutput.flush()
+        synchronized(codecLock) {
+            try { codec?.flush() } catch (_: Exception) {}
+            decoderMarks.clear()
+        }
+        pendingFrame = null
+        anchorServerUs = 0L
+        anchorLocalUs = 0L
+        serverTimeline = true
+        startupWaitStartedMs = 0L
+        playbackStarted = false
+        beginStartupMute()
     }
 
     /** Called from flushQueuesAndDecoder so mode-specific state can be reset. */
@@ -860,6 +970,12 @@ class SendspinNativeEngine(
             // Park while a reopen is in flight.
             if (reopenInFlight) {
                 sleepMs(10)
+                continue
+            }
+            // A stream that had to start on the local anchor moves to the server
+            // timeline the moment the clock is fit to schedule against.
+            if (playbackStarted && !serverTimeline && clock.isReadyForPlaybackStart()) {
+                reanchorToServerTimeline()
                 continue
             }
             // Start buffer gate (only before first startTrack).
@@ -1034,6 +1150,21 @@ class SendspinNativeEngine(
         if (length <= 0 || generation != playbackGeneration || paused) return
         if (chunkGeneration != configureGeneration) return
         val plan = timingPlan(serverTimestampUs)
+
+        // A chunk whose whole slot has already passed cannot be played in sync, and
+        // the spec says to drop it rather than play it late ("clients should drop
+        // these late chunks to maintain sync"). Only the wholly late are dropped here:
+        // one that is partly late is written, and the native callback skips into it.
+        // The startup trim handles the head of a stream before this point is reached.
+        val bytesPerFrame = activeChannels * (if (activeBitDepth == 24 && activeCodec == "pcm") 3 else 2)
+        val chunkDurationUs = length.toLong() / bytesPerFrame.coerceAtLeast(1) * 1_000_000L / activeSampleRate
+        if (plan.presentationUs + chunkDurationUs < nowUs() + plan.outputLatencyUs) {
+            if (lateChunkCount++ % 50 == 0L) {
+                Log.w(TAG, "dropping late chunk: serverTs=${serverTimestampUs / 1000}ms " +
+                    "late by ${(nowUs() + plan.outputLatencyUs - plan.presentationUs - chunkDurationUs) / 1000}ms (#$lateChunkCount)")
+            }
+            return
+        }
 
         // 24-bit PCM → 16-bit conversion (native output only supports int16).
         val writePcm: ByteArray
