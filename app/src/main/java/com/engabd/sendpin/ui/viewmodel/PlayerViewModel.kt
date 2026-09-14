@@ -42,6 +42,11 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     // Connection + playback state
     val connected = pb.connected
     val connectionStatus = pb.connectionStatus
+    val security = pb.security
+    val pairingStore = pb.pairingStore()
+    val pairingPin = pb.pairingPin
+    val pairingPending = pb.pairingPending
+    fun openPairingWindow() = pb.openPairingWindow()
     val trackTitle = pb.trackTitle
     val artist = pb.artist
     val album = pb.album

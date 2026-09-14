@@ -60,6 +60,15 @@ interface LightShowLayer {
      * A no-op by default, so a stateless layer stays a one-method contract.
      */
     fun reset() {}
+
+    /**
+     * The player has moved to another track.
+     *
+     * Distinct from [reset], which is a session boundary: Phantom Stage keeps its
+     * instrument positions for the whole session by design, so a track change
+     * must not reset it. A no-op by default for the same reason as [reset].
+     */
+    fun onTrackChanged() {}
 }
 
 /**
@@ -142,12 +151,30 @@ class LayerChain(private val layers: List<LightShowLayer>) {
     private val bufferB = HashMap<Int, Rgb>()
     private var useA = true
 
+    /**
+     * Per-layer running tally of how much each one moved the frame, for [trace].
+     * Only touched while tracing is on, so an untraced show pays one boolean.
+     */
+    private val traceSum = FloatArray(layers.size)
+    private val traceFrames = IntArray(layers.size)
+    private var traceLastLogMs = 0L
+
+    /**
+     * Read once per chain, not per frame: a chain is rebuilt on every toggle, so
+     * the property is picked up the next time a layer is switched. Guarded because
+     * `android.util.Log` is a stub under the JVM unit tests, and this class is
+     * exercised there with no Android at all.
+     */
+    private val tracing: Boolean =
+        runCatching { android.util.Log.isLoggable(TRACE_TAG, android.util.Log.DEBUG) }.getOrDefault(false)
+
     fun apply(base: Map<Int, Rgb>, context: LayerContext): Map<Int, Rgb> {
         var current = base
-        for (layer in layers) {
+        for ((i, layer) in layers.withIndex()) {
             val out = if (useA) bufferA else bufferB
             out.clear()
             val result = layer.apply(current, context, out)
+            if (tracing) tally(i, current, result)
             // Only take the buffer out of rotation if the layer actually used
             // it. A pass-through hands `base` straight back, and swapping then
             // would leave the next layer writing into the map the one after it
@@ -155,7 +182,49 @@ class LayerChain(private val layers: List<LightShowLayer>) {
             if (result === out) useA = !useA
             current = result
         }
+        if (tracing) trace(context)
         return current
+    }
+
+    /** Mean absolute RGB change [layer] made this frame, accumulated for [trace]. */
+    private fun tally(i: Int, before: Map<Int, Rgb>, after: Map<Int, Rgb>) {
+        if (after === before || before.isEmpty()) { traceFrames[i]++; return }
+        var acc = 0f
+        for ((ch, a) in before) {
+            val b = after[ch] ?: a
+            acc += kotlin.math.abs(b.first - a.first) + kotlin.math.abs(b.second - a.second) + kotlin.math.abs(b.third - a.third)
+        }
+        traceSum[i] += acc / (3f * before.size)
+        traceFrames[i]++
+    }
+
+    /**
+     * One line a second naming every layer in the chain, what it is reading
+     * (phase, tempo, key, position) and how much it moved the frame on average
+     * — `0.000` for a layer that is enabled but passing frames through untouched.
+     *
+     * Off unless `adb shell setprop log.tag.LightLayers DEBUG`. The layers have
+     * no other observable output: their work goes straight to the bridge as
+     * DTLS, so whether one is actually doing anything used to be a question only
+     * the lamps could answer.
+     */
+    private fun trace(context: LayerContext) {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - traceLastLogMs < 1_000L) return
+        traceLastLogMs = now
+        val parts = layers.mapIndexed { i, l ->
+            val n = traceFrames[i].coerceAtLeast(1)
+            val mean = traceSum[i] / n
+            traceSum[i] = 0f; traceFrames[i] = 0
+            "${l.id}=%.3f".format(mean)
+        }
+        android.util.Log.d(
+            TRACE_TAG,
+            "phase=${context.structure?.phase} bpm=${context.scan?.bpm} key=${context.scan?.key} " +
+                "stems=${context.stems != null} pos=%.1fs energy=%.2f beat=${context.frame.beat} ".format(
+                    context.trackPositionS, context.frame.energy,
+                ) + parts.joinToString(" "),
+        )
     }
 
     /** [LightShowLayer.reset] every layer in the chain. */
@@ -163,5 +232,8 @@ class LayerChain(private val layers: List<LightShowLayer>) {
 
     companion object {
         val EMPTY = LayerChain(emptyList())
+
+        /** `setprop log.tag.LightLayers DEBUG` turns [trace] on. */
+        const val TRACE_TAG = "LightLayers"
     }
 }

@@ -31,28 +31,29 @@ class PlayerIdentityInstrumentedTest {
     private val context = ApplicationProvider.getApplicationContext<android.content.Context>()
 
     /**
-     * The generation counter is real, persisted state on the device this runs on, so
-     * it is put back afterwards. A test that quietly bumped a developer's player id
-     * every run would be renaming their actual speaker.
+     * The identity is real, persisted state on the device this runs on — the phone's
+     * X25519 keypair and its pairing records — so it is put back afterwards. A test
+     * that quietly minted a developer's player id every run would be renaming their
+     * actual speaker and forgetting its pairings.
      */
-    private var savedGeneration = 0
+    private var savedStore: String? = null
 
     @Before
     fun remember() {
-        savedGeneration = prefs().getInt("generation", 0)
+        savedStore = prefs().getString("store", null)
     }
 
     @After
     fun restore() {
-        prefs().edit().putInt("generation", savedGeneration).apply()
+        prefs().edit().putString("store", savedStore).commit()
+        // The in-memory store caches the document; a fresh process would reload it.
+        // Reload through the same path the app uses by regenerating then restoring.
         PlayerIdentity.newIdentity(context)
-        prefs().edit().putInt("generation", savedGeneration).apply()
-        // Force the cache to reload from the restored generation.
-        PlayerIdentity.getPlayerId(context)
+        prefs().edit().putString("store", savedStore).commit()
     }
 
     private fun prefs() =
-        context.getSharedPreferences("player_identity", android.content.Context.MODE_PRIVATE)
+        context.getSharedPreferences("sendspin_pairing", android.content.Context.MODE_PRIVATE)
 
     @Test
     fun playerIdIsStableUntilItIsDeliberatelyChanged() {
@@ -80,8 +81,7 @@ class PlayerIdentityInstrumentedTest {
     @Test
     fun renamingTwiceGivesThreeDistinctIdentities() {
         // Music Assistant keeps the name a player was *first* registered under, so a
-        // second rename needs a second new identity. A generation counter that only
-        // ever advanced once would fix the first rename and silently break the second.
+        // second rename needs a second new identity — a fresh keypair each time.
         val a = PlayerIdentity.getPlayerId(context)
         PlayerIdentity.newIdentity(context)
         val b = PlayerIdentity.getPlayerId(context)

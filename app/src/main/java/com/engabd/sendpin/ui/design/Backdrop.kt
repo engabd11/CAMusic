@@ -7,6 +7,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -67,6 +68,11 @@ import androidx.compose.ui.unit.dp
  * Now Playing, chiefly — which is exactly where the source is applied.
  */
 class BackdropState internal constructor(internal val layer: GraphicsLayer) {
+    /**
+     * Whether panels blur what they sample — `AppSettings.glassBlur`, read once by
+     * [ProvideBackdrop] rather than by every panel on the screen.
+     */
+    internal var blur: Boolean = false
     /** Where the recorded region sits in root coordinates, so consumers can align to it. */
     internal var originInRoot by mutableStateOf(Offset.Zero)
 
@@ -88,6 +94,10 @@ val LocalBackdrop = compositionLocalOf<BackdropState?> { null }
 fun ProvideBackdrop(content: @Composable () -> Unit) {
     val layer = rememberGraphicsLayer()
     val state = remember(layer) { BackdropState(layer) }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val settings = remember(context) { com.engabd.sendpin.data.AppSettings(context.applicationContext) }
+    val blur by settings.glassBlur.collectAsState(initial = false)
+    state.blur = blur
     CompositionLocalProvider(LocalBackdrop provides state, content = content)
 }
 
@@ -137,8 +147,21 @@ fun Modifier.glassSurface(
     // the screens where it happens.
     if (state == null) return@composed bordered(this.clip(shape).background(tint))
 
+    // The blur is the user's call — `AppSettings.glassBlur`, off by default.
+    //
+    // The only backdrop anything records is [MeltBackdrop]'s wash: the cover at 192 px,
+    // blown up and already blurred 64 dp, under a smooth gradient. Blurring *that* by
+    // [blurRadius] is a 64 → 68 dp blur of an image with no feature narrower than the
+    // radius, which is to say nothing: with and without, the pills on Now Playing
+    // differ by at most 3/255 per channel. What it cost was real — HWUI re-runs a
+    // RenderEffect on every frame it draws, and a layer the size of the screen drawn
+    // by the source *and* by every panel came to ~3 ms of RenderThread per frame,
+    // about a fifth of a core once the wave seek bar had the screen drawing at full
+    // rate. Kept as a setting rather than removed: it is the difference between glass
+    // and a tint the moment a backdrop with detail in it is recorded.
     val radiusPx = with(LocalDensity.current) { blurRadius.toPx() }
-    state.layer.renderEffect = BlurEffect(radiusPx, radiusPx, TileMode.Clamp)
+    state.layer.renderEffect =
+        if (state.blur) BlurEffect(radiusPx, radiusPx, TileMode.Clamp) else null
     var positionInRoot by remember { mutableStateOf(Offset.Zero) }
 
     bordered(

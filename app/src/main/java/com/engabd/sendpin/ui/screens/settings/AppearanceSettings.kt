@@ -185,6 +185,39 @@ internal fun SeekBarCard(settings: AppSettings, scope: CoroutineScope) {
     }
 }
 
+/**
+ * The backdrop blur behind glass panels — a switch because it is the one purely
+ * cosmetic effect with a measurable cost and, on today's backdrop, no visible gain.
+ * See `AppSettings.glassBlur` for the numbers.
+ */
+@Composable
+internal fun GlassBlurCard(settings: AppSettings, accent: Color, scope: CoroutineScope) {
+    val glassBlur by settings.glassBlur.collectAsStateWithLifecycle(initialValue = false)
+    SettingsCard(
+        title = "Glass blur",
+        lead = "Whether the pills and chips blur what is behind them, or only tint it.",
+        info = "Every glass surface samples the album wash behind it. With this on it also " +
+            "blurs that sample — which the graphics pipeline has to redo on every frame " +
+            "the screen draws, about a fifth of a core while the wave seek bar is moving." +
+            "\n\nThe wash is already blurred far wider than this adds, so on Now Playing " +
+            "the two look the same. Off saves the work; on is there for the day the glass " +
+            "sits over something with detail in it.",
+    ) {
+        ToggleRow(
+            title = "Blur behind glass",
+            subtitle = if (glassBlur) {
+                "On — blurred every frame, costs battery while the screen is on"
+            } else {
+                "Off — sampled and tinted, no per-frame blur"
+            },
+            checked = glassBlur,
+            accent = accent,
+        ) { on ->
+            scope.launch { settings.setGlassBlur(on) }
+        }
+    }
+}
+
 @Composable
 internal fun ChameleonCard(settings: AppSettings, accent: Color, scope: CoroutineScope) {
     val chameleonBloom by settings.chameleonBloom.collectAsStateWithLifecycle(initialValue = false)

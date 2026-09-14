@@ -10,6 +10,7 @@ import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonDecoder
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
@@ -19,10 +20,18 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 
 /**
- * Sendspin wire messages, matching what Music Assistant actually speaks: plain
- * WebSocket + JSON, each message a `{ "type", "payload" }` envelope. Modeled on
- * the working massdroid client (MIT) and MA's own mobile app (Apache-2.0); see
- * `docs/protocol-alignment.md`.
+ * Sendspin wire messages: JSON `{ "type", "payload" }` envelopes, per the published
+ * specification (sendspin-audio.com/build/spec). Every field name here is the spec's;
+ * fields the spec does not define for a message are not sent ("Clients and servers MUST
+ * NOT send fields the specification does not define"), and unknown incoming fields are
+ * ignored.
+ *
+ * Two message families are new with the encrypted protocol: the cleartext
+ * `client/init` / `server/init` / `noise/handshake` trio that precedes the Noise
+ * handshake, and the `server/activate` + pairing + management set that follows it. The
+ * legacy (cleartext, pre-encryption) hello — `client_id` and `version` inside
+ * `client/hello`, roles inside `server/hello` — is kept for Music Assistant servers
+ * older than 2.10, gated on their schema version.
  */
 
 /**
@@ -48,14 +57,49 @@ object FlexibleLongSerializer : KSerializer<Long?> {
     }
 }
 
-// --- Outgoing messages ----------------------------------------------------
+// --- Cleartext init and Noise handshake --------------------------------------
 
+/** Only on Music Assistant's authenticated `:8095/sendspin` proxy, before anything else. */
 @Serializable
 data class SendspinAuthMessage(
     val type: String = "auth",
     val token: String,
     @SerialName("client_id") val clientId: String,
 )
+
+@Serializable
+data class ClientInitPayload(
+    @SerialName("client_id") val clientId: String,
+    val version: Int = 1,
+    val suite: String,
+)
+
+@Serializable
+data class SendspinClientInit(
+    val type: String = "client/init",
+    val payload: ClientInitPayload,
+)
+
+@Serializable
+data class ServerInitPayload(
+    @SerialName("server_id") val serverId: String,
+    val version: Int,
+)
+
+@Serializable
+data class NoiseHandshakePayload(val data: String)
+
+/** One Noise handshake message, base64url in `data`; both directions, first and re-handshake. */
+@Serializable
+data class SendspinNoiseHandshake(
+    val type: String = "noise/handshake",
+    val payload: NoiseHandshakePayload,
+)
+
+@Serializable
+data class NoiseMsg1Payload(@SerialName("psk_id") val pskId: String)
+
+// --- Hello ----------------------------------------------------------------
 
 @Serializable
 data class DeviceInfo(
@@ -75,14 +119,44 @@ data class PlayerV1Support(
     @SerialName("supported_commands") val supportedCommands: List<String> = listOf("volume", "mute"),
 )
 
+/** One entry of `supported_pair_methods` (spec §pair-method descriptor). */
+@Serializable
+data class PairMethodDescriptor(
+    val method: String,
+    /** dynamic_pin only: where the PIN is shown. */
+    @SerialName("out_channels") val outChannels: List<String>? = null,
+    /** dynamic_pin only: the shortest PIN this client accepts, 4–12. */
+    @SerialName("min_pin_length") val minPinLength: Int? = null,
+    /** static_pin / pairing_psk only: where the operator finds the secret. */
+    val locations: List<String>? = null,
+)
+
+@Serializable
+data class UnpairedAccess(val enabled: Boolean)
+
 @Serializable
 data class ClientHelloPayload(
-    @SerialName("client_id") val clientId: String,
     val name: String,
-    val version: Int = 1,
     @SerialName("supported_roles") val supportedRoles: List<String> = listOf("player@v1", "metadata@v1"),
     @SerialName("device_info") val deviceInfo: DeviceInfo? = null,
     @SerialName("player@v1_support") val playerV1Support: PlayerV1Support? = null,
+    /**
+     * Encrypted sessions only: `user` when this session was admitted by a pairing
+     * record, else `none`; the pairing methods on offer; the guest-access toggle.
+     * Null (omitted) on a legacy hello, which is the pre-spec shape exactly — a
+     * Music Assistant 2.10 in transition mode takes `unpaired_access` on a cleartext
+     * hello as a guest approval, and its downgrade protection then refuses that
+     * client id unencrypted for ever after.
+     */
+    @SerialName("trust_level") val trustLevel: String? = null,
+    @SerialName("supported_pair_methods") val supportedPairMethods: List<PairMethodDescriptor>? = null,
+    @SerialName("unpaired_access") val unpairedAccess: UnpairedAccess? = null,
+    /**
+     * Legacy (cleartext) hello only. Encrypted sessions carry both in `client/init`
+     * and must not repeat them here; null is omitted from the wire.
+     */
+    @SerialName("client_id") val clientId: String? = null,
+    val version: Int? = null,
 )
 
 @Serializable
@@ -91,45 +165,45 @@ data class SendspinClientHello(
     val payload: ClientHelloPayload,
 )
 
+// --- State, time, format, goodbye -------------------------------------------
+
+/**
+ * The `player` object of `client/state`. Every field is required on the initial
+ * report and optional in deltas; the client sends its full state each time (the
+ * spec allows resending unchanged fields), so in practice all are present.
+ */
 @Serializable
 data class PlayerStateInfo(
+    val volume: Int? = null,
+    val muted: Boolean? = null,
+    @SerialName("static_delay_ms") val staticDelayMs: Int? = null,
     /**
-     * Always `"synchronized"`, exactly as the official Music Assistant app reports it
-     * (its `PlayerStateValue.ERROR` exists and is never sent). The spec reserves
-     * `"error"` for an unrecoverable player; a clock filter still converging is not
-     * that, and telling the server otherwise was answered with stream rebuilds.
-     * Whether *this* device can place audio on the shared timeline yet is local
-     * output policy — [SyncGate] decides the mute, and nothing about it goes on the
-     * wire.
+     * From the server's `stream/start` transmit time to the first chunk this engine can
+     * play in full: decoder set-up, the output stream opening, and the start buffer it
+     * insists on. A hint; the server may give less.
      */
-    val state: String = "synchronized",
-    val volume: Int = 100,
-    val muted: Boolean = false,
-    @SerialName("static_delay_ms") val staticDelayMs: Int = 0,
+    @SerialName("required_lead_time_ms") val requiredLeadTimeMs: Int? = null,
+    /** The queued audio the server should keep this player above while streaming. */
+    @SerialName("min_buffer_ms") val minBufferMs: Int? = null,
+    /**
+     * `set_static_delay` is advertised here, at the state level, where the spec puts it
+     * (hello may only list volume/mute). Without it Music Assistant never creates the
+     * "Static playback delay (ms)" setting for this player.
+     */
+    @SerialName("supported_commands") val supportedCommands: List<String>? = null,
 )
 
 @Serializable
 data class ClientStatePayload(
-    val player: PlayerStateInfo = PlayerStateInfo(),
-    /**
-     * Whether this client is available to receive a stream. Always true, as the
-     * official app sends it.
-     *
-     * This used to follow the clock filter ("`true` only once synchronised", which
-     * the spec does say), and reset to false on every socket open. What the server
-     * actually does with `available: false` is `quiesce_to_solo_stopped()`: it
-     * drops the player from its group and stops its playback. So every reconnect
-     * mid-track — a Wi-Fi blip, doze — stopped the music, and a clock hiccup after
-     * a stream start could too. A player that is not yet in sync is muted locally
-     * instead (see [SyncGate]); the server is never told it went away.
-     */
-    val available: Boolean = true,
+    /** True only once the clock filter can place samples — see [SendspinClient]. */
+    val available: Boolean? = null,
+    val player: PlayerStateInfo? = null,
 )
 
 @Serializable
 data class SendspinClientState(
     val type: String = "client/state",
-    val payload: ClientStatePayload = ClientStatePayload(),
+    val payload: ClientStatePayload,
 )
 
 @Serializable
@@ -167,6 +241,86 @@ data class SendspinGoodbye(
     val payload: GoodbyePayload = GoodbyePayload(),
 )
 
+// --- Pairing and management (client → server) --------------------------------
+
+/** Exactly one of the two: the PSK in the clear (Pairing PSK flow) or wrapped under the PAKE output (PIN flows). */
+@Serializable
+data class ClientPairFinalizePayload(
+    @SerialName("long_term_psk") val longTermPsk: String? = null,
+    @SerialName("wrapped_psk") val wrappedPsk: String? = null,
+)
+
+@Serializable
+data class ClientPairPendingPayload(@SerialName("pairing_index") val pairingIndex: Int)
+
+@Serializable
+data class SendspinClientPairPending(
+    val type: String = "client/pair-pending",
+    val payload: ClientPairPendingPayload,
+)
+
+@Serializable
+data class ClientPairInitPayload(
+    @SerialName("pairing_index") val pairingIndex: Int,
+    /** Dynamic PIN only: the commitment to `nonce_B`. */
+    @SerialName("commit_B") val commitB: String? = null,
+)
+
+@Serializable
+data class SendspinClientPairInit(
+    val type: String = "client/pair-init",
+    val payload: ClientPairInitPayload,
+)
+
+@Serializable
+data class ClientPairAuthPayload(@SerialName("pake_msg_2") val pakeMsg2: String)
+
+@Serializable
+data class SendspinClientPairAuth(
+    val type: String = "client/pair-auth",
+    val payload: ClientPairAuthPayload,
+)
+
+@Serializable
+data class ClientPairConfirmPayload(
+    @SerialName("client_kc") val clientKc: String,
+    /** Dynamic PIN only: the opening of `commit_B`. */
+    @SerialName("nonce_B") val nonceB: String? = null,
+)
+
+@Serializable
+data class SendspinClientPairConfirm(
+    val type: String = "client/pair-confirm",
+    val payload: ClientPairConfirmPayload,
+)
+
+@Serializable
+data class SendspinClientPairFinalize(
+    val type: String = "client/pair-finalize",
+    val payload: ClientPairFinalizePayload,
+)
+
+@Serializable
+data class PairAbortPayload(val reason: String)
+
+@Serializable
+data class SendspinPairAbort(
+    val type: String = "pair/abort",
+    val payload: PairAbortPayload,
+)
+
+@Serializable
+data class ManagementResultPayload(
+    val result: String,
+    val data: JsonElement? = null,
+)
+
+@Serializable
+data class SendspinManagementResult(
+    val type: String = "management/result",
+    val payload: ManagementResultPayload,
+)
+
 // --- Incoming payloads ----------------------------------------------------
 
 @Serializable
@@ -174,6 +328,20 @@ data class ServerTimePayload(
     @SerialName("client_transmitted") val clientTransmitted: Long,
     @SerialName("server_received") val serverReceived: Long,
     @SerialName("server_transmitted") val serverTransmitted: Long = 0,
+)
+
+@Serializable
+data class ActivatePairing(
+    val method: String,
+    @SerialName("pin_length") val pinLength: Int? = null,
+)
+
+@Serializable
+data class ServerActivatePayload(
+    val activities: List<String> = emptyList(),
+    /** Sticky: null keeps the previous set; required (and so present) on the first. */
+    @SerialName("active_roles") val activeRoles: List<String>? = null,
+    val pairing: ActivatePairing? = null,
 )
 
 @Serializable
@@ -186,7 +354,10 @@ data class StreamStartPlayerInfo(
 )
 
 @Serializable
-data class StreamStartPayload(val player: StreamStartPlayerInfo = StreamStartPlayerInfo())
+data class StreamStartPayload(
+    @SerialName("server_transmitted") val serverTransmitted: Long = 0,
+    val player: StreamStartPlayerInfo? = null,
+)
 
 @Serializable
 data class MetadataProgressPayload(
@@ -223,7 +394,9 @@ data class MetadataProgressPayload(
      */
     val speedMilli: Long
         get() = when {
-            playbackSpeed == null || playbackSpeed <= 0L -> 1000L
+            playbackSpeed == null || playbackSpeed < 0L -> 1000L
+            // Zero is the spec's "paused": the position holds.
+            playbackSpeed == 0L -> 0L
             playbackSpeed <= 10L -> playbackSpeed * 1000L
             else -> playbackSpeed
         }
@@ -243,9 +416,6 @@ data class ServerMetadataPayload(
     val repeat: String? = null,
     val shuffle: Boolean? = null,
 )
-
-@Serializable
-data class ServerStatePayload(val metadata: ServerMetadataPayload? = null)
 
 @Serializable
 data class PlayerCommandPayload(
@@ -292,7 +462,10 @@ data class NowPlaying(
 sealed class SendspinIncoming {
     data object AuthOk : SendspinIncoming()
     data class AuthError(val message: String) : SendspinIncoming()
+
+    /** Encrypted sessions get `{name}`; legacy sessions get roles and a server id too. */
     data class ServerHello(val raw: JsonObject) : SendspinIncoming()
+    data class ServerActivate(val payload: ServerActivatePayload) : SendspinIncoming()
 
     // clientReceivedUs (T4) must be stamped at the WebSocket onMessage callback,
     // not here — capturing it after coroutine dispatch biases the clock offset.
@@ -303,13 +476,32 @@ sealed class SendspinIncoming {
         val groupName: String? = null,
     ) : SendspinIncoming()
     data class StreamStart(val payload: StreamStartPayload) : SendspinIncoming()
-    data object StreamEnd : SendspinIncoming()
-    data object StreamClear : SendspinIncoming()
-    data class ServerState(val payload: ServerStatePayload) : SendspinIncoming()
+    data class StreamEnd(val roles: List<String>?) : SendspinIncoming()
+    data class StreamClear(val roles: List<String>?) : SendspinIncoming()
+
+    /**
+     * `server/state`, kept raw because it is a delta: a field absent from the message
+     * is unchanged, a field set to `null` is cleared, and the whole role object set to
+     * `null` clears the role. [metadata] is null when the key was absent, [JsonNull]
+     * when the role was cleared, else the fields that changed. Merged by the client.
+     */
+    data class ServerState(val metadata: JsonElement?) : SendspinIncoming()
     data class ServerCommand(val payload: ServerCommandPayload) : SendspinIncoming()
+    data object ServerPairFinalize : SendspinIncoming()
+    data class ServerPairInit(val nonceA: String?) : SendspinIncoming()
+    data class ServerPairAuth(val pakeMsg1: String?) : SendspinIncoming()
+    data class ServerPairConfirm(val serverKc: String?) : SendspinIncoming()
+    data class PairAbort(val reason: String) : SendspinIncoming()
+    data object ServerUnpair : SendspinIncoming()
+    /** `management/<request>`, payload kept raw for [ManagementHandler]. */
+    data class Management(val request: String, val payload: JsonObject?) : SendspinIncoming()
     data class Unknown(val type: String) : SendspinIncoming()
 
     companion object {
+        private fun roles(payload: JsonElement?): List<String>? =
+            ((payload as? JsonObject)?.get("roles") as? kotlinx.serialization.json.JsonArray)
+                ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+
         fun parse(text: String, json: Json): SendspinIncoming {
             val obj = json.parseToJsonElement(text).jsonObject
             val type = obj["type"]?.jsonPrimitive?.content ?: return Unknown("no_type")
@@ -318,6 +510,10 @@ sealed class SendspinIncoming {
                 "auth_ok" -> AuthOk
                 "auth_error" -> AuthError(obj["message"]?.jsonPrimitive?.content ?: "Authentication failed")
                 "server/hello" -> ServerHello(obj)
+                "server/activate" -> ServerActivate(
+                    payload?.let { json.decodeFromJsonElement(ServerActivatePayload.serializer(), it) }
+                        ?: ServerActivatePayload(),
+                )
                 "server/time" -> payload?.let {
                     ServerTime(json.decodeFromJsonElement(ServerTimePayload.serializer(), it))
                 } ?: Unknown(type)
@@ -330,18 +526,23 @@ sealed class SendspinIncoming {
                 } ?: GroupUpdate()
                 "stream/start" -> StreamStart(
                     payload?.let { json.decodeFromJsonElement(StreamStartPayload.serializer(), it) }
-                        ?: StreamStartPayload()
+                        ?: StreamStartPayload(),
                 )
-                "stream/end" -> StreamEnd
-                "stream/clear" -> StreamClear
-                "server/state" -> ServerState(
-                    payload?.let { json.decodeFromJsonElement(ServerStatePayload.serializer(), it) }
-                        ?: ServerStatePayload()
-                )
+                "stream/end" -> StreamEnd(roles(payload))
+                "stream/clear" -> StreamClear(roles(payload))
+                "server/state" -> ServerState(metadata = (payload as? JsonObject)?.get("metadata"))
                 "server/command" -> payload?.let {
                     ServerCommand(json.decodeFromJsonElement(ServerCommandPayload.serializer(), it))
                 } ?: Unknown(type)
-                else -> Unknown(type)
+                "server/pair-finalize" -> ServerPairFinalize
+                "server/pair-init" -> ServerPairInit((payload as? JsonObject)?.get("nonce_A")?.jsonPrimitive?.contentOrNull)
+                "server/pair-auth" -> ServerPairAuth((payload as? JsonObject)?.get("pake_msg_1")?.jsonPrimitive?.contentOrNull)
+                "server/pair-confirm" -> ServerPairConfirm((payload as? JsonObject)?.get("server_kc")?.jsonPrimitive?.contentOrNull)
+                "pair/abort" -> PairAbort((payload as? JsonObject)?.get("reason")?.jsonPrimitive?.contentOrNull ?: "")
+                "server/unpair" -> ServerUnpair
+                else -> if (type.startsWith("management/")) {
+                    Management(type.removePrefix("management/"), payload as? JsonObject)
+                } else Unknown(type)
             }
         }
     }

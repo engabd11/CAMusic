@@ -120,6 +120,7 @@ class AppSettings(private val context: Context) {
         private val NOW_PLAYING_LAYOUT = stringPreferencesKey("now_playing_layout") // "tab" (default) | "overlay"
         private val SEEK_BAR_STYLE = stringPreferencesKey("seek_bar_style")     // "line" (default) | "wave" | "pill" | "glow"
         private val CHAMELEON_BLOOM = booleanPreferencesKey("chameleon_bloom")
+        private val GLASS_BLUR = booleanPreferencesKey("glass_blur")
         // Appearance. Defaults are the app as designed — OLED black with the accent
         // pulled from album art — so an untouched install looks exactly as before.
         private val THEME = stringPreferencesKey("theme")                       // oled | dark | light | system
@@ -877,6 +878,18 @@ class AppSettings(private val context: Context) {
     val seekBarStyle: Flow<String> = pref { it[SEEK_BAR_STYLE] ?: "line" }
     /** Chameleon dynamic canvas and ambient bloom behind Now Playing. Off by default. */
     val chameleonBloom: Flow<Boolean> = pref { it[CHAMELEON_BLOOM] ?: false }
+    /**
+     * Whether glass panels blur the backdrop they sample, or only sample it.
+     *
+     * Off by default: the only backdrop the app records is the album wash, which is
+     * already blurred 64 dp, so blurring it again is invisible (the pills differ by
+     * at most 3/255 per channel with and without) while HWUI re-runs the effect on
+     * every frame — about 3 ms of RenderThread each, a fifth of a core once the wave
+     * seek bar has the screen drawing at full rate. Kept as a switch rather than
+     * removed: it is the difference between glass and a tint the moment a backdrop
+     * with detail in it is recorded.
+     */
+    val glassBlur: Flow<Boolean> = pref { it[GLASS_BLUR] ?: false }
     /** Swipe right/left on Now Playing to skip forward/back. Off by default. */
     val swipeToSkip: Flow<Boolean> = pref { it[SWIPE_TO_SKIP] ?: false }
     /**
@@ -1263,6 +1276,10 @@ class AppSettings(private val context: Context) {
 
     suspend fun setChameleonBloom(enabled: Boolean) {
         context.dataStore.edit { it[CHAMELEON_BLOOM] = enabled }
+    }
+
+    suspend fun setGlassBlur(enabled: Boolean) {
+        context.dataStore.edit { it[GLASS_BLUR] = enabled }
     }
 
     suspend fun setSwipeToSkip(on: Boolean) {

@@ -1881,7 +1881,19 @@ class DirectLightSync(
             eng.mode = picked
             selectLimiter(picked)
         }
-        if (_autoLevel.value != picked) _autoLevel.value = picked
+        if (_autoLevel.value != picked) {
+            _autoLevel.value = picked
+            // Same switch as the layer trace: `setprop log.tag.LightLayers DEBUG`.
+            // The character is what decides which rungs are reachable at all.
+            if (Log.isLoggable(LayerChain.TRACE_TAG, Log.DEBUG)) {
+                Log.d(
+                    LayerChain.TRACE_TAG,
+                    "auto picked ${picked.wire}: character=%.2f signal=%.2f allowed=%s".format(
+                        picker.lastCharacter, picker.lastSignal, autoLevels.map { it.wire },
+                    ),
+                )
+            }
+        }
     }
 
     /**
@@ -2591,6 +2603,7 @@ class DirectLightSync(
      */
     private suspend fun onTrackChanged(track: LocalTrack?) {
         currentTrack = track
+        allLayers.forEach { it.onTrackChanged() }
         activeScan = null
         activeProfile = null
         scannedSignal = null

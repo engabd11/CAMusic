@@ -46,6 +46,9 @@ class HaClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
             .replace("https://", "wss://").replace("http://", "ws://")
             .let { if (it.startsWith("ws")) it else "ws://$it" } + "/api/websocket"
         nextId.set(1); pending.clear()
+        // Same rule as MaApiClient.dial: a socket nobody references is not a socket
+        // that closes. Whatever was here is shut before its replacement is opened.
+        ws?.close(1000, "redial")
         ws = http.newWebSocket(Request.Builder().url(wsUrl).build(), listener)
     }
 
@@ -56,14 +59,19 @@ class HaClient(private val json: Json = Json { ignoreUnknownKeys = true }) {
     }
 
     private val listener = object : WebSocketListener() {
+        // A socket this client has already replaced still reports its own closing;
+        // that must not touch the state of the one that replaced it.
         override fun onMessage(webSocket: WebSocket, text: String) {
+            if (webSocket !== ws) return
             try { handle(text) } catch (e: Exception) { Log.e("HaClient", "handle: ${e.message}") }
         }
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+            if (webSocket !== ws) return
             _state.value = State.ERROR
             pending.values.forEach { it.complete(null) }; pending.clear()
         }
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+            if (webSocket !== ws) return
             if (_state.value != State.ERROR) _state.value = State.DISCONNECTED
         }
     }

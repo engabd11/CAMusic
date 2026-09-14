@@ -177,8 +177,14 @@ class HueBridgeClient(
                 nsd.resolveService(serviceInfo, object : NsdManager.ResolveListener {
                     override fun onServiceResolved(info: NsdServiceInfo) {
                         val host = info.host?.hostAddress ?: return
+                        // The TXT record already *is* the sixteen hex characters, as
+                        // text. Hex-encoding those bytes again produced a 32-character
+                        // id that could never equal the certificate's Common Name, so
+                        // [bridgeIdVerifier] refused every request to a bridge found
+                        // this way once it was paired — "Hostname … not verified" on
+                        // the room list, with pairing itself having gone through.
                         val bridgeId = info.attributes["bridgeid"]
-                            ?.joinToString("") { "%02x".format(it.toInt() and 0xFF) }
+                            ?.let { normaliseBridgeId(String(it, Charsets.US_ASCII)) }
                             ?: ""
                         val modelId = info.attributes["modelid"]
                             ?.joinToString("") { it.toInt().toChar().toString() }
@@ -615,6 +621,25 @@ class HueBridgeClient(
         /** 16 hex characters, the shape of every bridge id. */
         private val BRIDGE_ID = Regex("^[0-9a-fA-F]{16}$")
 
+        /** The double-encoded shape the discovery bug wrote: hex of the id's own ASCII. */
+        private val DOUBLE_HEX_ID = Regex("^[0-9a-fA-F]{32}$")
+
+        /**
+         * A bridge id as the certificate will state it: sixteen lower-case hex chars.
+         *
+         * Also undoes the discovery bug's double encoding, so a bridge paired before
+         * the fix keeps working from its stored id rather than needing to be paired
+         * again: 32 hex characters that decode to 16 hex characters are that.
+         */
+        internal fun normaliseBridgeId(raw: String): String {
+            val id = raw.trim().lowercase()
+            if (DOUBLE_HEX_ID.matches(id)) {
+                val decoded = id.chunked(2).map { it.toInt(16).toChar() }.joinToString("").lowercase()
+                if (BRIDGE_ID.matches(decoded)) return decoded
+            }
+            return id
+        }
+
         private fun bridgeIdVerifier(expected: () -> String) = HostnameVerifier { _, session ->
             val cn = try {
                 (session.peerCertificates.firstOrNull() as? X509Certificate)?.let { commonName(it) }
@@ -622,7 +647,7 @@ class HueBridgeClient(
                 null
             } ?: return@HostnameVerifier false
             if (!BRIDGE_ID.matches(cn)) return@HostnameVerifier false
-            val want = expected()
+            val want = normaliseBridgeId(expected())
             want.isBlank() || cn.equals(want, ignoreCase = true)
         }
 

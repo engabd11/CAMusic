@@ -15,6 +15,13 @@ import com.engabd.sendpin.protocol.StreamStartPlayerInfo
  */
 interface SendspinPlaybackEngine {
     fun start(format: StreamStartPlayerInfo)
+
+    /**
+     * A `stream/start` for the stream already open: the spec's in-place configuration
+     * update, which must not clear buffers. The same format is a no-op; a new one
+     * rebuilds the decoder for what arrives next while the ring plays on.
+     */
+    fun reconfigure(format: StreamStartPlayerInfo)
     fun submit(frame: ByteArray)
 
     /**
@@ -55,6 +62,13 @@ interface SendspinPlaybackEngine {
 
     fun flush()
     fun setVolume(v: Float)
+
+    /**
+     * The Sendspin `mute` command. A gate on the output, independent of the level
+     * (the phone's media volume) and of the focus duck in [setVolume]: the spec says a
+     * volume change must not clear the mute, so the two cannot share a knob.
+     */
+    fun setUserMuted(muted: Boolean)
     fun setSyncMuted(muted: Boolean)
     fun setPreferredDevice(device: AudioDeviceInfo?)
     fun release()

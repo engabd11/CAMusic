@@ -266,6 +266,18 @@ internal fun loudnessForIntensity(intensity: Float, tempo: Float, perc: Float): 
  */
 class AutoIntensityPicker {
 
+    /**
+     * What the last [update] decided from — the song's character and this
+     * moment's signal — so the caller can say *why* a rung was picked. The
+     * character is what bounds the window (see [characterBand]): a song under
+     * roughly pop/house character never earns the top rung, which is the answer
+     * to "Auto never goes to High on this album".
+     */
+    @Volatile var lastCharacter: Float = 0f
+        private set
+    @Volatile var lastSignal: Float = 0f
+        private set
+
     private var signal = 0.56f   // mid-range, so the room opens mid-band
     private var slow = 0.56f
     private var beatRate = 0f
@@ -370,6 +382,8 @@ class AutoIntensityPicker {
             else -> this.signal
         }
         val target = resolve(sig, allowed, lo, hi, dynamics, mood, char)
+        lastCharacter = char
+        lastSignal = sig
 
         val current = level
         if (current == null) {

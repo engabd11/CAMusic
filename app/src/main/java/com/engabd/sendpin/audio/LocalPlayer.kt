@@ -1313,7 +1313,14 @@ class LocalPlayer(private val context: Context) {
         }
         // A playlist that ran to the end, or one an error tore down, needs preparing
         // again before it will make sound.
-        if (player.playbackState == Player.STATE_IDLE) player.prepare()
+        when (player.playbackState) {
+            Player.STATE_IDLE -> player.prepare()
+            // `play()` in STATE_ENDED is a no-op in media3 — nothing moves, nothing
+            // is reported — so the Play button went dead once an album finished:
+            // tap, and it stayed at 2:52 / 2:52. What a listener means by Play here
+            // is "again, from the top", which is a seek to the first item.
+            Player.STATE_ENDED -> player.seekTo(0, 0L)
+        }
         startOutput()
     }
 

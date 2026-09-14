@@ -84,6 +84,20 @@ class EmotionalArcLayerTest {
     }
 
     @Test
+    fun `a track change forgets the previous track's arc, and the tint eases out`() {
+        val layer = EmotionalArcLayer()
+        prime(layer)
+        // The next track only ever reports STEADY. Without the boundary the
+        // previous track's build would have this one reading cool for its whole
+        // length; with it, the residual temperature decays and the layer goes
+        // quiet — but not by snapping, so the very first frames may still move.
+        layer.onTrackChanged()
+        var out = redBase
+        repeat(2_000) { out = layer.apply(redBase, contextOf(StructureState(phase = SongPhase.STEADY))) }
+        assertEquals(redBase, out, "a STEADY-only track must end up untinted after a track change")
+    }
+
+    @Test
     fun `reset forgets both the temperature and the track's arc`() {
         val layer = EmotionalArcLayer()
         val hot = settle(layer, SongPhase.DROP)

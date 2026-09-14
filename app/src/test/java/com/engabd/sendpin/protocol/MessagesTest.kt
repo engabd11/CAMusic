@@ -12,29 +12,106 @@ class MessagesTest {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true; explicitNulls = false }
 
     @Test
-    fun `client hello uses MA wire field names`() {
+    fun `client hello uses the spec's field names`() {
         val hello = SendspinClientHello(
             payload = ClientHelloPayload(
-                clientId = "abc",
                 name = "Phone",
                 deviceInfo = DeviceInfo("Pixel", "Google", "Android 34"),
                 playerV1Support = PlayerV1Support(
                     supportedFormats = listOf(AudioFormatSpec("flac", 2, 48000, 16))
                 ),
+                trustLevel = "none",
+                supportedPairMethods = listOf(PairMethodDescriptor("pairing_psk", locations = listOf("device"))),
+                unpairedAccess = UnpairedAccess(true),
             )
         )
         val s = json.encodeToString(hello)
         assertTrue("\"type\":\"client/hello\"" in s)
-        assertTrue("\"client_id\":\"abc\"" in s)
         assertTrue("\"supported_roles\"" in s)
         assertTrue("\"player@v1_support\"" in s)
         assertTrue("\"supported_formats\"" in s)
         assertTrue("\"sample_rate\":48000" in s)
         assertTrue("\"bit_depth\":16" in s)
         assertTrue("\"product_name\":\"Pixel\"" in s)
-        // The player's *name* rides in `payload.name`. It was never asserted, and it
-        // is the field Music Assistant registers a new player under.
+        assertTrue("\"trust_level\":\"none\"" in s)
+        assertTrue("\"supported_pair_methods\":[{\"method\":\"pairing_psk\",\"locations\":[\"device\"]}]" in s)
+        assertTrue("\"unpaired_access\":{\"enabled\":true}" in s)
+        // An encrypted hello carries neither: both travel in client/init.
+        assertTrue("client_id" !in s, s)
+        assertTrue("\"version\"" !in s, s)
+        // The player's *name* rides in `payload.name` — the field MA registers a new player under.
         assertTrue("\"name\":\"Phone\"" in s, s)
+    }
+
+    @Test
+    fun `legacy hello is the pre-spec shape exactly`() {
+        val s = json.encodeToString(SendspinClientHello(payload = ClientHelloPayload(name = "P", clientId = "abc", version = 1)))
+        assertTrue("\"client_id\":\"abc\"" in s)
+        assertTrue("\"version\":1" in s)
+        // A Music Assistant 2.10 in transition mode reads unpaired_access on a cleartext
+        // hello as a guest approval, after which its downgrade protection refuses the
+        // id unencrypted — so none of the encrypted-only fields may appear.
+        assertTrue("trust_level" !in s, s)
+        assertTrue("supported_pair_methods" !in s, s)
+        assertTrue("unpaired_access" !in s, s)
+    }
+
+    @Test
+    fun `client state carries exactly the spec's player fields`() {
+        val s = json.encodeToString(
+            SendspinClientState(
+                payload = ClientStatePayload(
+                    available = true,
+                    player = PlayerStateInfo(
+                        volume = 40, muted = false, staticDelayMs = 120,
+                        requiredLeadTimeMs = 400, minBufferMs = 250,
+                        supportedCommands = listOf("set_static_delay"),
+                    ),
+                ),
+            ),
+        )
+        assertEquals(
+            """{"type":"client/state","payload":{"available":true,"player":{"volume":40,"muted":false,"static_delay_ms":120,"required_lead_time_ms":400,"min_buffer_ms":250,"supported_commands":["set_static_delay"]}}}""",
+            s,
+        )
+        // The pre-spec `state` field is gone: clients must not send undefined fields.
+        assertTrue("\"state\"" !in s)
+    }
+
+    @Test
+    fun `init and handshake messages match the spec`() {
+        val init = json.encodeToString(SendspinClientInit(payload = ClientInitPayload(clientId = "k", suite = "25519_AESGCM_SHA256")))
+        assertEquals("""{"type":"client/init","payload":{"client_id":"k","version":1,"suite":"25519_AESGCM_SHA256"}}""", init)
+        val hs = json.encodeToString(SendspinNoiseHandshake(payload = NoiseHandshakePayload("AAAA")))
+        assertEquals("""{"type":"noise/handshake","payload":{"data":"AAAA"}}""", hs)
+        val fin = json.encodeToString(SendspinClientPairFinalize(payload = ClientPairFinalizePayload("psk")))
+        assertEquals("""{"type":"client/pair-finalize","payload":{"long_term_psk":"psk"}}""", fin)
+    }
+
+    @Test
+    fun `parses activate, pairing and management messages`() {
+        val act = SendspinIncoming.parse(
+            """{"type":"server/activate","payload":{"activities":["pairing"],"active_roles":[],"pairing":{"method":"pairing_psk"}}}""",
+            json,
+        )
+        assertIs<SendspinIncoming.ServerActivate>(act)
+        assertEquals(listOf("pairing"), act.payload.activities)
+        assertEquals(emptyList(), act.payload.activeRoles)
+        assertEquals("pairing_psk", act.payload.pairing?.method)
+        // Omitted active_roles is null (sticky), not empty.
+        val sticky = SendspinIncoming.parse("""{"type":"server/activate","payload":{"activities":["playback"]}}""", json)
+        assertIs<SendspinIncoming.ServerActivate>(sticky)
+        assertEquals(null, sticky.payload.activeRoles)
+
+        assertIs<SendspinIncoming.ServerPairFinalize>(SendspinIncoming.parse("""{"type":"server/pair-finalize","payload":{}}""", json))
+        val abort = SendspinIncoming.parse("""{"type":"pair/abort","payload":{"reason":"user_cancelled"}}""", json)
+        assertIs<SendspinIncoming.PairAbort>(abort)
+        assertEquals("user_cancelled", abort.reason)
+        assertIs<SendspinIncoming.ServerUnpair>(SendspinIncoming.parse("""{"type":"server/unpair","payload":{}}""", json))
+        val mgmt = SendspinIncoming.parse("""{"type":"management/remove-record","payload":{"psk_id":"x"}}""", json)
+        assertIs<SendspinIncoming.Management>(mgmt)
+        assertEquals("remove-record", mgmt.request)
+        assertEquals("x", mgmt.payload?.get("psk_id")?.let { (it as kotlinx.serialization.json.JsonPrimitive).content })
     }
 
     @Test
@@ -66,7 +143,7 @@ class MessagesTest {
             json,
         )
         assertIs<SendspinIncoming.ServerState>(msg)
-        val meta = msg.payload.metadata!!
+        val meta = json.decodeFromJsonElement(ServerMetadataPayload.serializer(), msg.metadata!!)
         assertEquals("T", meta.title)
         assertEquals(123456L, meta.progress?.trackDuration)
         assertEquals(1000L, meta.progress?.trackProgress)
@@ -89,9 +166,12 @@ class MessagesTest {
             json,
         )
         assertIs<SendspinIncoming.StreamStart>(ss)
-        assertEquals("flac", ss.payload.player.codec)
+        assertEquals("flac", ss.payload.player?.codec)
 
         assertIs<SendspinIncoming.StreamEnd>(SendspinIncoming.parse("""{"type":"stream/end"}""", json))
+        val clear = SendspinIncoming.parse("""{"type":"stream/clear","payload":{"server_transmitted":1,"roles":["player","visualizer"]}}""", json)
+        assertIs<SendspinIncoming.StreamClear>(clear)
+        assertEquals(listOf("player", "visualizer"), clear.roles)
         assertIs<SendspinIncoming.Unknown>(SendspinIncoming.parse("""{"type":"whatever"}""", json))
     }
 

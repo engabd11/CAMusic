@@ -167,6 +167,20 @@ class SendspinNativeEngine(
 
         // Server-timeline mode: buffer threshold + clock gate before the first write.
         private const val SYNC_START_BUFFER_MS = 250L
+
+        /**
+         * What this engine reports as `required_lead_time_ms`: from the server's
+         * `stream/start` to the first chunk it can play in full. It needs
+         * [SYNC_START_BUFFER_MS] of audio queued before it starts, and before that a
+         * MediaCodec configured and an Oboe stream opened — a hundred-odd milliseconds
+         * on a warm phone, more on a cold one. The server only extends toward this for
+         * buffered sources, so a generous figure costs nothing on a normal track and
+         * buys an intact opening on a slow one.
+         */
+        const val REQUIRED_LEAD_TIME_MS = 400
+
+        /** `min_buffer_ms`: the queued audio the start gate insists on, kept up while streaming. */
+        const val MIN_BUFFER_MS = SYNC_START_BUFFER_MS.toInt()
         private const val SYNC_CLOCK_WAIT_MS = 3_000L
 
         /**
@@ -339,6 +353,8 @@ class SendspinNativeEngine(
     @Volatile private var activeSampleRate = 48_000
     @Volatile private var activeChannels = 2
     @Volatile private var lastEnqueuedTimestampUs = 0L
+    private var duplicateFrameCount = 0L
+    private var lateChunkCount = 0L
     @Volatile private var estimatedFrameDurationUs = 20_000L
     @Volatile private var startupWaitStartedMs = 0L
     @Volatile private var halOutputLatencyUs = 0L
@@ -471,6 +487,57 @@ class SendspinNativeEngine(
         ensurePlaybackThread()
     }
 
+    /**
+     * An in-place `stream/start` on the open stream (spec: "updates the stream
+     * configuration without clearing buffers").
+     *
+     * Same format: nothing to do — the queue, the decoder and the ring all carry on,
+     * and any chunk the server re-sends for the new configuration is a duplicate that
+     * [submit] drops. A changed format: the decoder is rebuilt for what arrives next
+     * and the undecoded old-format frames go with it (the server re-anchors this role
+     * as a late joiner and re-sends from near the playhead in the new format — see
+     * aiosendspin's `on_role_format_changed`), while the ring keeps playing what was
+     * already decoded. That is the documented "does not clear buffers unless its
+     * implementation requires it" concession; nothing here re-arms the start gate,
+     * so the timeline is untouched either way.
+     */
+    override fun reconfigure(format: StreamStartPlayerInfo) {
+        if (!configured) {
+            start(format)
+            return
+        }
+        val sameFormat = format.codec == activeCodec &&
+            format.sampleRate == activeSampleRate &&
+            format.channels == activeChannels &&
+            format.bitDepth == activeBitDepth
+        if (sameFormat) {
+            Log.d(TAG, "reconfigure: same format, buffers kept")
+            return
+        }
+        Log.d(TAG, "reconfigure: ${activeCodec} ${activeSampleRate}Hz/${activeBitDepth}bit → ${format.codec} ${format.sampleRate}Hz/${format.bitDepth}bit; decoder rebuilt, ring kept")
+        val rateChanged = format.sampleRate != activeSampleRate || format.channels != activeChannels
+        synchronized(codecLock) {
+            try { codec?.stop() } catch (_: Exception) {}
+            try { codec?.release() } catch (_: Exception) {}
+            codec = null
+            decoderMarks.clear()
+        }
+        // Frames of the old format cannot be decoded any more; the server re-sends.
+        configureGeneration++
+        frameQueue.clear()
+        frameQueueBytes.set(0)
+        lastEnqueuedTimestampUs = 0L
+        activeCodec = format.codec
+        activeBitDepth = format.bitDepth
+        if (rateChanged) {
+            // The output stream is opened at one rate; a new one needs a new stream.
+            activeSampleRate = format.sampleRate
+            activeChannels = format.channels
+            startNativeOutput()
+        }
+        codec = createCodec(format.codec, format.sampleRate, format.channels, format.bitDepth, format.codecHeader)
+    }
+
     override fun submit(frame: ByteArray) {
         if (!configured || paused) return
         if (awaitingFreshStream && !freshStreamGateExpired()) return
@@ -492,8 +559,16 @@ class SendspinNativeEngine(
             return
         }
 
-        receivedFrameCount++
         val previousTail = lastEnqueuedTimestampUs
+        // Chunks arrive in timestamp order within a stream, so one at or behind the
+        // last enqueued is a re-send — the server replays its cache after an in-place
+        // `stream/start` — and is already held. `stream/clear` and a fresh stream reset
+        // the tail, so a seek backwards is not caught by this.
+        if (previousTail > 0L && serverTimestampUs <= previousTail) {
+            if (duplicateFrameCount++ % 50 == 0L) Log.d(TAG, "dropping re-sent chunk ts=${serverTimestampUs / 1000}ms (tail ${previousTail / 1000}ms)")
+            return
+        }
+        receivedFrameCount++
         if (previousTail > 0L) {
             val spacing = serverTimestampUs - previousTail
             if (spacing in 5_000L..500_000L) estimatedFrameDurationUs = spacing
@@ -505,8 +580,15 @@ class SendspinNativeEngine(
     }
 
     override fun endOfStream(drain: Boolean) {
+        // Set on both paths: the server has ended the stream, so nothing more is
+        // coming until the next `stream/start`, and the playback loop's idle stop
+        // keys off this flag. It used to be set only when draining, which is the
+        // end of a track. A pause discards the tail instead, and so never asked for
+        // the idle stop at all — a paused session kept the output stream started
+        // and this engine's loop polling an empty queue for as long as it stayed
+        // paused.
+        endOfStreamSignalled = true
         if (drain) {
-            endOfStreamSignalled = true
             drainSignalled = true
             // Schedule idle stop for when the drain completes — the playback
             // loop will call scheduleIdleStop itself once the queue empties.
@@ -540,6 +622,12 @@ class SendspinNativeEngine(
 
     override fun setVolume(v: Float) {
         currentVolume = v.coerceIn(0f, 1f)
+        applyOutputVolume()
+    }
+
+    override fun setUserMuted(muted: Boolean) {
+        if (userMuted == muted) return
+        userMuted = muted
         applyOutputVolume()
     }
 
@@ -689,6 +777,35 @@ class SendspinNativeEngine(
         return trimStartupLateFrames(neededMs, START_TARGET_HEADROOM_US)
     }
 
+    /**
+     * The one-shot resynchronisation the spec allows for "an error too large to correct
+     * smoothly": a stream that began on the local anchor (see [startupGate]) is
+     * re-gated onto the server timeline now that the filter has converged. The
+     * decoded audio in the ring was placed on the wrong timeline and is dropped; the
+     * encoded frames still queued carry server timestamps and are placed afresh. A
+     * discontinuity, deliberately, and rare — the fallback itself only fires when the
+     * clock degrades between `available: true` and the next `stream/start`.
+     */
+    private fun reanchorToServerTimeline() {
+        Log.w(
+            TAG,
+            "clock converged (err=${clock.errorUs()}us) — leaving the LOCAL anchor for the " +
+                "server timeline; one-shot resync, ring=${nativeOutput.bufferedFrames() * 1000L / activeSampleRate}ms dropped",
+        )
+        nativeOutput.flush()
+        synchronized(codecLock) {
+            try { codec?.flush() } catch (_: Exception) {}
+            decoderMarks.clear()
+        }
+        pendingFrame = null
+        anchorServerUs = 0L
+        anchorLocalUs = 0L
+        serverTimeline = true
+        startupWaitStartedMs = 0L
+        playbackStarted = false
+        beginStartupMute()
+    }
+
     /** Called from flushQueuesAndDecoder so mode-specific state can be reset. */
     private fun onFlush() {
         anchorServerUs = 0L
@@ -744,16 +861,22 @@ class SendspinNativeEngine(
     private fun timingPlan(serverTimestampUs: Long): TimingPlan {
         val outputLatencyUs = nativeOutput.outputLatencyUs()
         val local = computeLocalPlan(serverTimestampUs, outputLatencyUs)
-        // Acoustic correction and unreported HAL gap exist ONLY for SYNC
-        // (group timeline alignment). DIRECT is pure FIFO.
-        // routeAcousticExtraUs is not configured in CAMusic (no acoustic
-        // calibration), so staticDelayUs is always 0 for now.
+        // Acoustic correction exists ONLY for SYNC (group timeline alignment).
+        // DIRECT is pure FIFO. routeAcousticExtraUs is not configured in CAMusic
+        // (no acoustic calibration), so staticDelayUs is always 0 for now.
         val staticDelayUs = 0L
-        val unreportedLatencyUs = if (isSync) {
-            (halOutputLatencyUs - outputLatencyUs).coerceAtLeast(0L)
-        } else {
-            0L
-        }
+        // No "unreported HAL latency" term any more. It was
+        // `halOutputLatencyUs - outputLatencyUs`, applied in SYNC only, on the
+        // theory that getTimestamp under-reports and AudioManager.getOutputLatency
+        // knows better. It does not: that hidden API describes the *primary*,
+        // deep-buffer output (109 ms on an S22 Ultra), not the MMAP stream this
+        // engine plays through, whose own calculateLatencyMillis is a stable 13 ms
+        // and holds clockErr at 0. Subtracting the 96 ms between them made this
+        // phone play 96 ms *early* in every group and never solo — heard as "the
+        // phone is ahead the whole song" against a PC Sendspin client on the same
+        // server clock. [halOutputLatencyUs] stays for the diagnostic log; any real
+        // acoustic offset is what the per-player static delay is for.
+        val unreportedLatencyUs = 0L
         // Static delay: positive = this path adds latency = play earlier (subtract).
         val staticDelayOffsetUs = staticDelayMs.toLong() * 1000L
         val presentationUs = local.localOutputUs +
@@ -849,9 +972,22 @@ class SendspinNativeEngine(
                 sleepMs(10)
                 continue
             }
+            // A stream that had to start on the local anchor moves to the server
+            // timeline the moment the clock is fit to schedule against.
+            if (playbackStarted && !serverTimeline && clock.isReadyForPlaybackStart()) {
+                reanchorToServerTimeline()
+                continue
+            }
             // Start buffer gate (only before first startTrack).
             if (!playbackStarted) {
                 if (!startupReady()) {
+                    // A stream that has ended cannot fill this buffer: a pause cuts
+                    // the tail, which clears `playbackStarted` and lands the loop
+                    // here, and here it spun — a hundred times a second, with the
+                    // output stream started under it — until the next stream/start.
+                    // The idle stop was only ever armed from the poll branch below,
+                    // which this gate never let it reach.
+                    if (endOfStreamSignalled && frameQueue.isEmpty() && decoderMarks.isEmpty()) scheduleIdleStop()
                     sleepMs(10)
                     continue
                 }
@@ -1014,6 +1150,21 @@ class SendspinNativeEngine(
         if (length <= 0 || generation != playbackGeneration || paused) return
         if (chunkGeneration != configureGeneration) return
         val plan = timingPlan(serverTimestampUs)
+
+        // A chunk whose whole slot has already passed cannot be played in sync, and
+        // the spec says to drop it rather than play it late ("clients should drop
+        // these late chunks to maintain sync"). Only the wholly late are dropped here:
+        // one that is partly late is written, and the native callback skips into it.
+        // The startup trim handles the head of a stream before this point is reached.
+        val bytesPerFrame = activeChannels * (if (activeBitDepth == 24 && activeCodec == "pcm") 3 else 2)
+        val chunkDurationUs = length.toLong() / bytesPerFrame.coerceAtLeast(1) * 1_000_000L / activeSampleRate
+        if (plan.presentationUs + chunkDurationUs < nowUs() + plan.outputLatencyUs) {
+            if (lateChunkCount++ % 50 == 0L) {
+                Log.w(TAG, "dropping late chunk: serverTs=${serverTimestampUs / 1000}ms " +
+                    "late by ${(nowUs() + plan.outputLatencyUs - plan.presentationUs - chunkDurationUs) / 1000}ms (#$lateChunkCount)")
+            }
+            return
+        }
 
         // 24-bit PCM → 16-bit conversion (native output only supports int16).
         val writePcm: ByteArray
@@ -1203,16 +1354,37 @@ class SendspinNativeEngine(
 
     private val idleStopRunnable = Runnable { stopOutputForIdle() }
 
+    /** Whether [idleStopRunnable] is posted. Guards [scheduleIdleStop] against re-arming. */
+    @Volatile private var idleStopArmed = false
+
+    /**
+     * Arm the idle stop, once.
+     *
+     * The playback loop asks for this on *every* empty poll after a stream has
+     * ended — one poll every ten milliseconds — and this used to answer each one
+     * with `removeCallbacks` + `postDelayed`, which restarted the five-second
+     * countdown ten milliseconds into itself. It could never reach zero while the
+     * loop that requested it was still running, which is exactly when it was
+     * needed. So a paused Music Assistant session kept its Oboe stream started,
+     * rendering silence five hundred times a second, and this loop polling an
+     * empty queue, until the next `stream/start` — indefinitely, with the screen
+     * off. Measured at six to seven per cent of a core for a phone doing nothing.
+     */
     private fun scheduleIdleStop() {
-        mainHandler.removeCallbacks(idleStopRunnable)
+        if (idleStopArmed) return
+        idleStopArmed = true
         mainHandler.postDelayed(idleStopRunnable, IDLE_OUTPUT_STOP_GRACE_MS)
     }
 
     private fun cancelIdleStop() {
+        idleStopArmed = false
         mainHandler.removeCallbacks(idleStopRunnable)
     }
 
     private fun stopOutputForIdle() {
+        // Disarmed either way: a stop that finds a reason to wait (a tail still
+        // draining) lets the loop arm the next one, rather than being the last.
+        idleStopArmed = false
         if (playbackStarted || outputPausedForIdle) return
         if (frameQueue.isNotEmpty()) return // still have encoded frames to decode
         if (nativeOutput.bufferedFrames() > 0) return // still have PCM in the ring

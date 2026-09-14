@@ -1,5 +1,7 @@
 package com.engabd.sendpin.ma
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.*
 
 /**
@@ -548,10 +550,21 @@ class MaRepository(
 
     // --- players + playback ----------------------------------------------
 
-    suspend fun players() = MaParse.players(api.sendCommand("players/all"), serverUrl)
+    // Both parsed off the caller's dispatcher. These are the two reads
+    // `MaNowPlaying` repeats for as long as the app is open — on a main-thread
+    // scope, so every player and queue on the server was being walked into models
+    // on the UI thread, up to a few times a second while anything was playing.
+    // `MaParse` is pure, so the only thing that changes is which thread pays.
+    suspend fun players(): List<MaPlayer> {
+        val raw = api.sendCommand("players/all")
+        return withContext(Dispatchers.Default) { MaParse.players(raw, serverUrl) }
+    }
 
     /** All player queues — carries the stream details behind the quality badge. */
-    suspend fun queues() = MaParse.queues(api.sendCommand("player_queues/all"), serverUrl)
+    suspend fun queues(): List<MaQueue> {
+        val raw = api.sendCommand("player_queues/all")
+        return withContext(Dispatchers.Default) { MaParse.queues(raw, serverUrl) }
+    }
 
     /**
      * The queue a player is actually playing from.
