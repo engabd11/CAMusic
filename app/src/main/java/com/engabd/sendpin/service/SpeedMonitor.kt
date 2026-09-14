@@ -23,7 +23,6 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -34,7 +33,8 @@ import kotlin.math.roundToInt
  *
  * ## When it watches — and when it absolutely does not
  *
- * Two things have to agree, and [SpeedWatchGate.shouldWatch] is the whole policy:
+ * Two things have to agree, and [SpeedWatchGate.state] is the whole policy — which
+ * also names *which* of them is missing, for [fixStatus] to report:
  *
  *  * at least one of the two features is switched on — nothing here asks for a
  *    location fix, or even keeps its `ACCESS_FINE_LOCATION` permission live in any
@@ -122,14 +122,33 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
     val limitDataStatus: StateFlow<String?> = _limitDataStatus.asStateFlow()
 
     /**
-     * Whether fixes are actually arriving, in one line, for the settings card.
+     * What the watch is doing, in one line, for the settings card.
      *
-     * The one question the UI could not answer before, and the first one anyone asks
-     * when an alert does not fire: is this thing even receiving anything? Null while
-     * nothing is listening.
+     * The first question anyone asks when an alert does not fire, and the one the UI
+     * could not answer: is this thing even receiving anything? It reports fixes while
+     * listening — and, just as importantly, *why it is not listening* when it is not.
+     * The three ways to be idle used to be one indistinguishable silence, and the
+     * screen papered over them with a sentence describing a gate that no longer
+     * exists ("starts when anything is playing"), so a speed alert switched on with
+     * no car ever nominated looked exactly like one that was armed and waiting. It
+     * can never fire, and now it says so. Null only when no speed feature is on, in
+     * which case the row it feeds is not on screen either.
      */
     private val _fixStatus = MutableStateFlow<String?>(null)
     val fixStatus: StateFlow<String?> = _fixStatus.asStateFlow()
+
+    /**
+     * The location foreground service being refused, or null.
+     *
+     * [DrivingLocationService] is what keeps `ACCESS_FINE_LOCATION` — a while-in-use
+     * grant — alive once the driver switches to their map, and Android can refuse to
+     * start it: a background start on 12+, or the while-in-use rule on 14+ for a
+     * `location`-typed service. Both were caught and written to logcat, which is the
+     * one place a driver will never look. Without the service the subscription goes
+     * quiet the moment the app leaves the screen, which is precisely the reported
+     * symptom — fixes in the app, no alert on the road.
+     */
+    val serviceRefusal: StateFlow<String?> = DrivingLocationService.refusal
 
     private var statusJob: Job? = null
 
@@ -157,6 +176,13 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
 
     @OptIn(ExperimentalCoroutinesApi::class)
     fun start() {
+        // The gate is that flag, so a monitor starting into a stale `false` — the
+        // app launched, or the process restarted by the media service, while the car
+        // was already connected — would watch nothing for the rest of the trip. The
+        // query is async and its answer arrives through `carConnected` like any
+        // other, so the collect below simply picks it up when it lands; this only
+        // makes sure something asked.
+        drivingMode.refreshCarConnection()
         gateJob?.cancel()
         gateJob = scope.launch {
             combine(
@@ -170,7 +196,7 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
                 // promise in the class doc.
                 .flatMapLatest { featureOn ->
                     if (!featureOn) {
-                        flowOf(false)
+                        flowOf(Gate(SpeedWatchGate.State.NO_FEATURE, ""))
                     } else {
                         // The strict battery gate: GPS only while the phone is
                         // connected to the designated car Bluetooth device. The
@@ -179,11 +205,31 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
                         // A severance flows through here in the same main-loop
                         // dispatch, so `stopLocationUpdates` runs the moment the
                         // link drops.
-                        drivingMode.carConnected.map { SpeedWatchGate.shouldWatch(featureOn, it) }
+                        //
+                        // The nomination is read alongside it, from the setting
+                        // rather than from the flag: a car that was never picked and
+                        // a picked car that is not connected are both "not linked",
+                        // and only the first of them is a dead end the driver has to
+                        // go and fix. The name comes too, so the idle line can say
+                        // which device it is waiting for.
+                        combine(
+                            drivingMode.carConnected,
+                            settings.drivingCarAddress,
+                            settings.drivingCarName,
+                        ) { linked, address, name ->
+                            Gate(
+                                SpeedWatchGate.state(
+                                    featureOn = true,
+                                    carNominated = address.isNotBlank(),
+                                    carLinked = linked,
+                                ),
+                                name,
+                            )
+                        }
                     }
                 }
                 .distinctUntilChanged()
-                .collect { shouldRun -> if (shouldRun) startLocationUpdates() else stopLocationUpdates() }
+                .collect { gate -> applyGate(gate) }
         }
         settingsJob?.cancel()
         settingsJob = scope.launch {
@@ -209,6 +255,37 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
         gateJob?.cancel()
         settingsJob?.cancel()
         stopLocationUpdates()
+        _fixStatus.value = null
+    }
+
+    /**
+     * Start or stop the subscription for this gate answer, and say what the answer
+     * was either way.
+     *
+     * The status is written *after* [stopLocationUpdates], not inside it: that
+     * function returns early when nothing was listening, which is exactly the case
+     * — the very first emission, with no car picked — the driver most needs a
+     * sentence for.
+     */
+    private fun applyGate(gate: Gate) {
+        if (gate.state == SpeedWatchGate.State.WATCHING) {
+            startLocationUpdates()
+        } else {
+            stopLocationUpdates()
+            _fixStatus.value = idleStatus(gate)
+        }
+    }
+
+    /** Why nothing is being watched, in the words of the thing the driver would fix. */
+    private fun idleStatus(gate: Gate): String? = when (gate.state) {
+        // The row this feeds is not on screen with both features off.
+        SpeedWatchGate.State.WATCHING, SpeedWatchGate.State.NO_FEATURE -> null
+        SpeedWatchGate.State.NO_CAR ->
+            "Not watching: no car picked. Speed is only read while the phone is connected " +
+                "to your car, so pick it under Settings › Driving — until then this alert " +
+                "cannot fire."
+        SpeedWatchGate.State.CAR_AWAY ->
+            "Not watching: waiting for ${gate.carName.ifBlank { "your car" }} to connect."
     }
 
     private fun startLocationUpdates() {
@@ -426,6 +503,9 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
     init {
         scope.launch { settings.speedAlertSound.collect { alertSoundId = it } }
     }
+
+    /** One gate answer: why the watch is on or off, and the car it concerns. */
+    private data class Gate(val state: SpeedWatchGate.State, val carName: String)
 
     private data class Tunables(
         val alert: Boolean,

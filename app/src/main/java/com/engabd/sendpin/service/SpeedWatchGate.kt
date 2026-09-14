@@ -15,8 +15,36 @@ package com.engabd.sendpin.service
  * "audio is playing", which is not evidence of a journey. Only the nominated car
  * being actually connected is, and the platform hands that signal over for free:
  * ACL broadcasts cost nothing to receive.
+ *
+ * The cost of that strictness is that the watch now has three separate ways to be
+ * off, and they used to be indistinguishable from the outside: a feature switched
+ * off, no car ever nominated, and a nominated car that is not connected all
+ * produced the same silence. [state] names which one it is, so the settings card
+ * can say so — the difference between "not driving yet" and "this can never
+ * fire" is the whole of the feature's support burden.
  */
 object SpeedWatchGate {
+
+    /** Why the watch is on, or why it is not. See [state]. */
+    enum class State {
+        /** A feature is on and the nominated car is connected: GPS runs. */
+        WATCHING,
+
+        /** Neither the alert nor adaptive volume is switched on. Nothing to watch for. */
+        NO_FEATURE,
+
+        /**
+         * No car has been nominated in Driving settings.
+         *
+         * The dead end worth naming out loud: the car link is the *only* way in, so
+         * a speed alert switched on without a car picked can never fire, however
+         * fast the phone is moving. Nothing on screen used to say so.
+         */
+        NO_CAR,
+
+        /** A car is nominated, it just is not connected right now — the normal idle. */
+        CAR_AWAY,
+    }
 
     /**
      * True only when a speed feature is switched on **and** the phone is connected
@@ -33,4 +61,22 @@ object SpeedWatchGate {
      *    designated-device link is the one signal this accepts.
      */
     fun shouldWatch(featureOn: Boolean, carLinked: Boolean): Boolean = featureOn && carLinked
+
+    /**
+     * The same decision, but saying *why* — see [State].
+     *
+     * Ordered so the answer is the first thing the user would have to fix: a
+     * feature that is off makes the car irrelevant, and a car that was never
+     * picked makes its connection state irrelevant in turn.
+     *
+     * [carLinked] cannot be true without [carNominated] (the link is to the
+     * nominated address), but the order above means a caller that gets that wrong
+     * is told to pick a car rather than being quietly sent to watch.
+     */
+    fun state(featureOn: Boolean, carNominated: Boolean, carLinked: Boolean): State = when {
+        !featureOn -> State.NO_FEATURE
+        !carNominated -> State.NO_CAR
+        !carLinked -> State.CAR_AWAY
+        else -> State.WATCHING
+    }
 }

@@ -2,6 +2,7 @@ package com.engabd.sendpin.service
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
@@ -185,17 +186,44 @@ class DrivingMode(private val app: Context) {
      */
     private val carReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
+            // Checked outright rather than safe-called through: a null intent has
+            // nothing to say either way, and the explicit return is what lets the
+            // rest of this read the intent directly.
+            if (intent == null) return
+            val action = intent.action ?: return
+
+            // The adapter's own state first: it carries no EXTRA_DEVICE, so it has
+            // to be answered before the device check below would throw it away.
+            //
+            // This is the hole the startup query alone left. `refreshCarConnection`
+            // gives up silently on an adapter that is off, and it only ever ran on
+            // a nomination change — so a phone whose Bluetooth came on *after* the
+            // process started (turned on for the drive, or restored by airplane
+            // mode going off) had no ACL transition to catch either, because the
+            // car connected before anything was listening for it. `carConnected`
+            // then read false for the whole trip, and with the gate now strictly
+            // that flag, the alert could not fire at any speed.
+            if (action == BluetoothAdapter.ACTION_STATE_CHANGED) {
+                when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)) {
+                    BluetoothAdapter.STATE_ON -> refreshCarConnection(wantedCarAddress)
+                    BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF -> {
+                        connectionQueryEpoch++
+                        _carConnected.value = false
+                    }
+                }
+                return
+            }
             val wanted = wantedCarAddress
             if (wanted.isBlank()) return
             @Suppress("DEPRECATION")
             val device: BluetoothDevice? =
                 if (android.os.Build.VERSION.SDK_INT >= 33) {
-                    intent?.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+                    intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
                 } else {
-                    intent?.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+                    intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
                 }
             if (device?.address != wanted) return
-            when (intent?.action) {
+            when (action) {
                 // A fresh drive starts clean — a dismissal from the last one must
                 // not carry over and leave the bar silently missing on this trip.
                 BluetoothDevice.ACTION_ACL_CONNECTED -> {
@@ -285,6 +313,9 @@ class DrivingMode(private val app: Context) {
                 // Handled identically to DISCONNECTED above — the head start is
                 // the point — so it has to be in the filter or it never arrives.
                 addAction(BluetoothDevice.ACTION_ACL_DISCONNECT_REQUESTED)
+                // Not an ACL event, but the one that decides whether the query
+                // above can answer at all — see the receiver's own comment.
+                addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 app.registerReceiver(carReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
@@ -334,6 +365,25 @@ class DrivingMode(private val app: Context) {
     }
 
     /**
+     * Re-ask the adapter whether the nominated car is connected, using the current
+     * nomination — the public door onto [refreshCarConnection] below.
+     *
+     * For the callers that know something has changed which that query is not
+     * itself told about: `BLUETOOTH_CONNECT` being granted (until it is, the query
+     * returns without asking anything, and nothing re-ran it), and
+     * [SpeedMonitor.start] being called — the latter because the monitor's whole
+     * gate is this flag, and a monitor starting into a stale `false` would watch
+     * nothing for the rest of the drive.
+     *
+     * Cheap and idempotent: a no-op without a nomination, the permission or an
+     * enabled adapter, and otherwise two async profile binds whose answers are
+     * epoch-guarded against the broadcasts that outrank them.
+     */
+    fun refreshCarConnection() {
+        refreshCarConnection(wantedCarAddress)
+    }
+
+    /**
      * Asks the adapter whether the nominated car is connected *right now*.
      *
      * [carReceiver] only ever sees ACL *transitions*, and nothing else replays the
@@ -341,8 +391,12 @@ class DrivingMode(private val app: Context) {
      * or have the process killed and restarted by the media service mid-drive, and
      * no broadcast is coming. Without this query `carConnected` reads false for the
      * whole drive, and the GPS gate — now strictly this flag — would keep the speed
-     * features dark for a trip that is already under way. It runs at process start,
-     * and again whenever the nomination changes.
+     * features dark for a trip that is already under way. It runs at process start
+     * and whenever the nomination changes, and — through [refreshCarConnection] —
+     * whenever the adapter comes on, the Bluetooth permission is granted, or
+     * [SpeedMonitor.start] is called. Those three are the cases where the answer can
+     * change without an ACL broadcast that this process was alive and permitted to
+     * hear, and each of them used to leave the flag stuck false for a whole drive.
      *
      * The answer arrives through profile proxies (see [QUERIED_PROFILES] for why
      * there are two), which means a real IPC round trip — so nothing here blocks:
@@ -351,8 +405,9 @@ class DrivingMode(private val app: Context) {
      *
      * Every exit is silent: a blank nomination, a missing `BLUETOOTH_CONNECT`
      * grant, no adapter or an off one all leave the flag exactly where it was —
-     * false — which is the correct "no designated car" answer, and the next ACL
-     * broadcast repairs it the moment one arrives.
+     * false — which is the correct "no designated car" answer. The next ACL
+     * broadcast repairs it the moment one arrives, and for the cases where none is
+     * coming, the callers listed above ask again.
      */
     @SuppressLint("MissingPermission")
     private fun refreshCarConnection(address: String) {
