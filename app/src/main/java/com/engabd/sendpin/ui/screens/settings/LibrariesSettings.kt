@@ -28,6 +28,8 @@ import com.engabd.sendpin.library.ServerKind
 import com.engabd.sendpin.local.LocalFolders
 import com.engabd.sendpin.local.LocalMediaSource
 import com.engabd.sendpin.ma.LibraryViewModel
+import com.engabd.sendpin.ui.design.DiscoveredServerPicker
+import com.engabd.sendpin.ui.design.DiscoveredServerRow
 import com.engabd.sendpin.ui.design.GlassCard
 import com.engabd.sendpin.ui.design.ProviderSkin
 import com.engabd.sendpin.ui.design.ProviderTheme
@@ -621,6 +623,7 @@ private fun ServerDetailBody(
             },
         ) {
             if (config.kind.hasAddress) {
+                DiscoveredServerPicker(config.kind, accent) { found -> url = found.url }
                 OledField(url, { url = it }, "Server address", config.kind.urlHint, accent)
             }
             if (config.kind == ServerKind.MPD) {
@@ -692,7 +695,13 @@ private fun ServerDetailBody(
                     SecretField(token, { token = it }, "Access token", accent, secretVisible, { secretVisible = it })
                 AuthStyle.LINKED_ACCOUNT -> when (config.kind) {
                     ServerKind.PLEX ->
-                        PlexSignInRow(hasToken = token.isNotBlank(), onToken = { token = it }, accent = accent, scope = scope)
+                        PlexSignInRow(
+                            hasToken = token.isNotBlank(),
+                            onToken = { token = it },
+                            onUrl = { url = it },
+                            accent = accent,
+                            scope = scope,
+                        )
                     // Tidal's device flow: the app mints a code, the user approves it
                     // in a browser, and the resulting tokens ride the config options.
                     // The row saves them itself — there is no form field to hold a
@@ -1135,17 +1144,27 @@ private fun LocalFolderCard(
  * button that mints a PIN, opens plex.tv in the browser with it pre-filled, and polls
  * [PlexAuth] until the user finishes signing in there or gives up. See [PlexAuth]'s
  * own docs for why this is a whole flow rather than a token exchange like Jellyfin's.
+ *
+ * The moment sign-in succeeds, [PlexAuth.listResources] asks plex.tv which
+ * Plex Media Servers are on the account — no LAN scan, since the token this
+ * flow just obtained is all that call needs — and offers them as
+ * [DiscoveredServerRow]s below, the same look the LAN-scanned kinds use in
+ * [com.engabd.sendpin.ui.design.DiscoveredServerPicker]. [onUrl] fills the
+ * address field above this card the same way a LAN pick does; [onToken]
+ * still carries the sign-in itself.
  */
 @Composable
 private fun PlexSignInRow(
     hasToken: Boolean,
     onToken: (String) -> Unit,
+    onUrl: (String) -> Unit,
     accent: Color,
     scope: CoroutineScope,
 ) {
     val context = LocalContext.current
     var working by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
+    var resources by remember { mutableStateOf<List<PlexAuth.PlexResource>>(emptyList()) }
 
     OledButton(
         when {
@@ -1158,6 +1177,7 @@ private fun PlexSignInRow(
     ) {
         working = true
         status = null
+        resources = emptyList()
         scope.launch {
             val clientId = PlayerIdentity.getPlayerId(context)
             try {
@@ -1179,7 +1199,12 @@ private fun PlexSignInRow(
                 val signedIn = token
                 if (signedIn != null) {
                     onToken(signedIn)
-                    status = "Signed in. Save & connect below to finish."
+                    resources = PlexAuth.listResources(signedIn, clientId)
+                    status = if (resources.isEmpty()) {
+                        "Signed in. Enter your server's address below."
+                    } else {
+                        "Signed in. Pick a server below, or enter its address."
+                    }
                 } else {
                     status = "Timed out waiting for plex.tv. Try again."
                 }
@@ -1194,4 +1219,7 @@ private fun PlexSignInRow(
         status ?: if (hasToken) "Signed in. Sign in again if playback ever stops working."
         else "Opens plex.tv in your browser to sign in, then comes back here on its own.",
     )
+    resources.forEach { resource ->
+        DiscoveredServerRow(resource.name, resource.url, "PL", accent) { onUrl(resource.url) }
+    }
 }

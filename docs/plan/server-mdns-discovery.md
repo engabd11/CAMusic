@@ -229,3 +229,53 @@ here has been built or run. Phase 1 is the lowest-risk place to start
 precisely because `MaDiscovery` is already shipped, tested-by-shipping
 code — the new work in that phase is UI wiring, not a new network protocol
 implementation.
+
+## Status (2026-09-14)
+
+All four phases implemented in one pass, reviewed by hand (no build was
+possible — see above), not yet verified against real servers.
+
+- **`library/ServerDiscovery.kt`** — `DiscoveredServer(kind, name, url)`, shared
+  by all three sources.
+- **Phase 1 (Music Assistant)** — done. `ui/design/DiscoveredServerPicker.kt`'s
+  `DiscoveredServerPicker` starts a fresh `MaDiscovery` instance (deliberately
+  not reusing `Playback`'s app-wide one — a different question, "which server
+  do I add" vs. "which server does this phone register on", and NsdManager
+  supports concurrent listeners for the same service type without conflict)
+  and shows rows the moment the composable enters. Wired into both
+  `OnboardingWizard.kt`'s `ConfigStep` and `LibrariesSettings.kt`'s
+  `ServerDetailBody`, immediately above the existing "Server address" field.
+- **Phase 2 (Jellyfin/Emby)** — done, unverified. New
+  `discovery/MediaServerDiscovery.kt`: a one-shot `scan()` that broadcasts
+  `"who is JellyfinServer?"` on UDP port 7359 and collects JSON replies for
+  1.5 s. Wired into the same `DiscoveredServerPicker` dispatcher. The
+  Jellyfin-vs-Emby ambiguity is resolved as planned — one scan, results shown
+  under whichever kind the user is actually setting up.
+- **Phase 3 (Plex)** — done, unverified. `PlexAuth.listResources(token,
+  clientIdentifier)` calls `GET plex.tv/api/v2/resources?includeHttps=1`,
+  filters to `provides` containing "server", and prefers each result's
+  `local`+non-`relay` connection. Wired into `LibrariesSettings.kt`'s
+  `PlexSignInRow` (onboarding has no Plex sign-in row at all yet — a
+  pre-existing gap, not something this pass added) — the moment the PIN flow
+  yields a token, the resources call runs and offers rows via the same
+  `DiscoveredServerRow` Phase 1/2 use, through a new `onUrl` callback.
+- **Phase 4 (polish)** — substantially achieved by construction rather than
+  as a separate pass: Phase 1 and 2 already share one `DiscoverySection`
+  composable (one "Scanning your network…" / "Nothing found" copy, not
+  per-kind variants), and nothing here added a new settings toggle, so it
+  should already just work under Simple mode. Not independently re-verified
+  against the Simple/Advanced split at runtime.
+- **Two things worth a reviewer's attention beyond "does it build":**
+  1. Plex's discovered rows appear *below* the sign-in button (inside
+     `PlexSignInRow`), while the address field they fill sits *above* it in
+     the same card — tapping one scrolls the user's eye up to see the field
+     change. This follows the existing layout order (address field before
+     auth-specific UI) rather than reordering the card; flagging it in case
+     it reads as more confusing in practice than on paper.
+  2. `MediaServerDiscovery` sends a raw UDP broadcast rather than going
+     through NsdManager. On a phone with an active VPN or a mobile-data
+     default route alongside Wi-Fi, a plain `DatagramSocket` broadcast can
+     go out the wrong interface — a known Android gotcha this environment
+     has no device to check. If real-device testing finds Jellyfin/Emby
+     discovery unreliable specifically on such setups, binding the socket to
+     the Wi-Fi `Network` via `ConnectivityManager` is the fix.
