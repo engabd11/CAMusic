@@ -6,6 +6,12 @@
 > Sync's transport so WLED becomes the second backend without touching the
 > show itself.
 
+> **Paused after Phase 0.** Light Sync stays Hue-only for now — the next
+> priority is `docs/plan/server-mdns-discovery.md` (automatic discovery of
+> library servers) instead. The `LightBridge` extraction below is done and
+> costs nothing to leave idle; picking this back up later means starting at
+> Phase 1 (the WLED transport itself), not redoing Phase 0.
+
 ## Executive summary
 
 Light Sync today is one pipeline with two halves that are already cleanly
