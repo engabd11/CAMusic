@@ -6,10 +6,9 @@
 
 ## Why this instead of WLED
 
-This replaces WLED as the next priority. Light Sync stays Hue-only for now —
-`docs/plan/wled-light-backend.md`'s Phase 0 (the `LightBridge` extraction) is
-done and shelved; its Phase 1+ (the WLED backend itself) is paused, not
-cancelled. Nothing here touches `hue/`.
+A generalised Light Sync backend (WLED as a second wire alongside Hue) was
+considered and set aside — Light Sync stays Hue-only at this stage. This
+plan is unrelated and touches nothing under `hue/`.
 
 ## Current state
 
@@ -223,9 +222,9 @@ toggle).
 ## What this environment could not verify
 
 No Music Assistant, Jellyfin, Emby, or Plex server was reachable to test
-discovery against, and (as with the WLED plan) this environment has no
-Android SDK/NDK and cannot resolve Google's Maven repository, so nothing
-here has been built or run. Phase 1 is the lowest-risk place to start
+discovery against, and this environment has no Android SDK/NDK and cannot
+resolve Google's Maven repository, so nothing here has been built or run.
+Phase 1 is the lowest-risk place to start
 precisely because `MaDiscovery` is already shipped, tested-by-shipping
 code — the new work in that phase is UI wiring, not a new network protocol
 implementation.
