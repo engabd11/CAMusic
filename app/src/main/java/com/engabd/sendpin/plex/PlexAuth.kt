@@ -4,8 +4,11 @@ import com.engabd.sendpin.data.Http
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import okhttp3.OkHttpClient
@@ -128,6 +131,83 @@ object PlexAuth {
         // answers exactly like one still pending — no `authToken` — and the caller's
         // own poll timeout is what gives up on it.
         return token
+    }
+
+    /** One Plex Media Server on the signed-in account, ready to fill a server address. */
+    data class PlexResource(val name: String, val url: String)
+
+    /**
+     * Every Plex Media Server on this account — LAN and remote alike.
+     *
+     * Unlike every other discovery source in `docs/plan/server-mdns-discovery.md`,
+     * this needs no LAN scan: [pollPin] already has a plex.tv access [token] the
+     * moment sign-in succeeds, and plex.tv's own resource list is one more
+     * authenticated GET away. `includeHttps=1` asks it to include each server's
+     * `.plex.direct` HTTPS connection alongside the plain HTTP one; `local`/`relay`
+     * on each connection is what [parseResource] uses to prefer the LAN address
+     * over one that would route through Plex's relay.
+     *
+     * Best-effort at two levels: the call as a whole returns an empty list rather
+     * than throwing on an unreachable network or an unparseable response, and one
+     * malformed resource in an otherwise-good response is skipped rather than
+     * emptying the whole list — either way, the manual address field is always
+     * the fallback the caller already offers.
+     *
+     * **Unverified against a real plex.tv account** — the response shape (in
+     * particular the `local`/`relay` fields per connection) is documented, not
+     * confirmed live from this environment. See `docs/plan/server-mdns-discovery.md`.
+     */
+    suspend fun listResources(token: String, clientIdentifier: String): List<PlexResource> = withContext(Dispatchers.IO) {
+        try {
+            val request = Request.Builder()
+                .url("https://plex.tv/api/v2/resources?includeHttps=1")
+                .get()
+                .plexHeaders(clientIdentifier)
+                .header("X-Plex-Token", token)
+                .build()
+            val body = http.newCall(request).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext emptyList()
+                resp.body?.string().orEmpty()
+            }
+            val array = json.parseToJsonElement(body) as? JsonArray ?: return@withContext emptyList()
+            // One resource at a time, and a malformed one is skipped rather than
+            // discarding every other, well-formed server on the account: `.jsonPrimitive`
+            // throws (not just returns null) when a field exists but isn't the shape
+            // expected, and this response shape is admittedly unverified against a real
+            // account — see this function's own doc. Without a per-item boundary, that
+            // throw would propagate out of `mapNotNull` into the try/catch below and
+            // turn "one odd resource" into "no servers found" for the whole account.
+            array.mapNotNull { element ->
+                (element as? JsonObject)?.let { obj ->
+                    try {
+                        parseResource(obj)
+                    } catch (e: Exception) {
+                        null
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    // Pure, so a resources payload can be held against this without a network
+    // call — mirrors parsePin/parseAuthToken above.
+    internal fun parseResource(o: JsonObject): PlexResource? {
+        val provides = o["provides"]?.jsonPrimitive?.contentOrNull ?: return null
+        if ("server" !in provides.split(",").map { it.trim() }) return null
+        val name = o["name"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() } ?: "Plex"
+        val connections = (o["connections"] as? JsonArray)?.mapNotNull { it as? JsonObject }
+            ?.takeIf { it.isNotEmpty() } ?: return null
+        // Prefer a local, non-relay connection — the LAN address this phone can
+        // reach directly — falling back to whatever plex.tv offered first.
+        val best = connections.firstOrNull {
+            it["local"]?.jsonPrimitive?.booleanOrNull == true && it["relay"]?.jsonPrimitive?.booleanOrNull != true
+        } ?: connections.first()
+        val protocol = best["protocol"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() } ?: "http"
+        val address = best["address"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() } ?: return null
+        val port = best["port"]?.jsonPrimitive?.intOrNull ?: return null
+        return PlexResource(name, "$protocol://$address:$port")
     }
 }
 
