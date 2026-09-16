@@ -512,9 +512,12 @@ class Playback(private val app: Context) {
         scope.launch {
             deviceVolume.level.collect { level ->
                 _volume.value = level
-                // Reported on the spec's loudness curve, the inverse of how a `volume`
-                // command is applied — see DeviceVolume.setPerceived.
-                client?.sendClientState(volume = deviceVolume.perceivedPercent())
+                // Reported as the plain fraction of the phone's volume scale — the
+                // exact inverse of how a `volume` command is applied, see
+                // DeviceVolume.setVolumePercent. No curve on either leg: the OS steps
+                // already sit on a perceptual curve, and mapping the spec's amplitude
+                // onto them again collapsed the top of the slider onto one step.
+                client?.sendClientState(volume = deviceVolume.volumePercent())
             }
         }
         // Wire the app lifecycle observer for warm reconnect and toggleable
@@ -700,7 +703,7 @@ class Playback(private val app: Context) {
                     // The engine's own scalar stays reserved for audio focus (see
                     // [focusListener]): ducking must not move the user's system volume,
                     // or every notification would permanently turn the phone down.
-                    "volume" -> cmd.volume?.let { v -> deviceVolume.setPerceived(v) }
+                    "volume" -> cmd.volume?.let { v -> deviceVolume.setVolumePercent(v) }
                     // A gate on the engine's output, not the device volume at zero: the
                     // spec keeps volume and mute independent ("a volume change MUST NOT
                     // clear the mute state"), and setting the level to zero both cleared
