@@ -621,7 +621,9 @@ fun BoxScope.PlayerOverlays(
         serverOutputDeviceName = state.serverOutputDeviceName,
         serverOutputFormat = state.serverOutputFormat,
     )
-    // AirPlay: the receiver picker, and the receiver's own Now Playing kept current.
+    // AirPlay: the receiver picker. The receiver's own Now Playing (name, cover,
+    // progress) is kept current by LocalPlayer itself, so it follows the track
+    // whether or not this screen is open.
     val airPlayVm: com.engabd.sendpin.ui.viewmodel.AirPlayViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
     AirPlayOverlay(
         visible = sheets.airPlay,
@@ -629,10 +631,6 @@ fun BoxScope.PlayerOverlays(
         localSession = state.isLocalSession,
         onDismiss = { sheets.airPlay = false },
     )
-    val airPlayConnected by airPlayVm.connected.collectAsStateWithLifecycle()
-    LaunchedEffect(airPlayConnected, state.title, state.artist, state.album) {
-        if (airPlayConnected) airPlayVm.setNowPlaying(state.title, state.artist, state.album)
-    }
 }
 
 // ── Small shared pieces ───────────────────────────────────────────────────

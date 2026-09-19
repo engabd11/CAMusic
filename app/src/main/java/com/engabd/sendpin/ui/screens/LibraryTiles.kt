@@ -607,9 +607,10 @@ internal fun DownloadJobRow(job: DownloadJob, viewModel: LibraryViewModel) {
                 fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
             Text(
-                if (job.failed) "Failed · tap to dismiss" else "Downloading · ${(job.fraction * 100).toInt()}%",
+                if (job.failed) "Failed · ${job.reason ?: "tap to dismiss"}"
+                else "Downloading · ${(job.fraction * 100).toInt()}%",
                 color = if (job.failed) ErrorRed else accent,
-                fontFamily = AppFont, fontSize = 12.sp, maxLines = 1,
+                fontFamily = AppFont, fontSize = 12.sp, maxLines = if (job.failed) 2 else 1,
             )
         }
         if (job.failed) {

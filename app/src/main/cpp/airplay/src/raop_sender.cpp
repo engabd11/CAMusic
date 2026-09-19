@@ -666,11 +666,40 @@ void RaopSender::setNowPlaying(const std::string& title, const std::string& arti
     if (state_ == State::Streaming && changed) sendMetadata_();
 }
 
+void RaopSender::setProgress(double positionSec, double durationSec) {
+    npPositionSec_ = std::max(0.0, positionSec);
+    npDurationSec_ = durationSec;
+    // Stored when not streaming and sent ahead of the metadata on the next
+    // RECORD; sent right away while streaming.
+    if (state_ == State::Streaming) sendProgress_();
+}
+
+void RaopSender::sendProgress_() {
+    if (state_ != State::Streaming || npDurationSec_ <= 0.0) return;
+    // The packet going out now is `current`; the track began `position`
+    // seconds of audio before it and ends `duration` after that. u32
+    // arithmetic on purpose: RTP timestamps wrap, and so must these.
+    const uint32_t current = rtptime32_();
+    const uint32_t start   = current - uint32_t(npPositionSec_ * kRaopRate);
+    const uint32_t end     = start + uint32_t(npDurationSec_ * kRaopRate);
+    Extra hdr;
+    if (!rtspSession_.empty())
+        hdr.push_back({"Session", rtspSession_});
+    hdr.push_back({"RTP-Info", "seq=" + std::to_string(seq_) + ";rtptime=" + std::to_string(current)});
+    const std::string body = "progress: " + std::to_string(start) + "/"
+        + std::to_string(current) + "/" + std::to_string(end) + "\r\n";
+    sendRequest_("SET_PARAMETER", rtspUri_(), "text/parameters", body, hdr);
+}
+
 void RaopSender::sendMetadata_() {
     if (state_ != State::Streaming) return;
     if (npTitle_.empty() && npArtist_.empty() && npAlbum_.empty()
         && npCover_.empty())
         return;
+    // Progress goes first — pyatv and owntone both send it ahead of the text
+    // and the artwork, and an Apple TV that gets the text alone names the
+    // track but draws no Now Playing screen for it.
+    sendProgress_();
     // RTP-Info ties the metadata to the audio timeline (pyatv form:
     // "seq=<rtpseq>;rtptime=<rtptime>"). Session present for AP1; for
     // AP2 it may be empty (the receiver tolerates its absence).

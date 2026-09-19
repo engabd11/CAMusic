@@ -112,6 +112,10 @@ object Http {
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .callTimeout(0, TimeUnit.MILLISECONDS)
+        // Whole audio files must not go through the 16 MB JSON cache: every download
+        // was written to disk twice, and a file bigger than the cache evicted it
+        // wholesale — including every API response it was holding.
+        .cache(null)
         .build()
 }
 

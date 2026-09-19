@@ -152,6 +152,14 @@ public:
                        const std::string& cover = {},
                        const std::string& coverMime = {});
 
+    // Where the track is: `progress: start/current/end` as a text/parameters
+    // SET_PARAMETER (pyatv/owntone form), all three in the RTP timestamp space
+    // the audio packets use, so the receiver can draw a bar that moves with
+    // the audio. An Apple TV shows no Now Playing screen for a RAOP stream
+    // until it has had one of these; metadata alone only names the track.
+    // Nothing is sent when not streaming.
+    void setProgress(double positionSec, double durationSec);
+
     // ── host i/o api: the host pushes in what happened ────────────────
     // (RaopLoop / RaopQtHost call these; an application never does.)
 
@@ -360,6 +368,8 @@ private:
     std::vector<int32_t>     backlogSeq_;
 
     std::string npTitle_, npArtist_, npAlbum_;   // now-playing metadata
+    double npPositionSec_ = 0.0, npDurationSec_ = 0.0;   // last setProgress, 0 = unknown
+    void sendProgress_();
     std::string npCover_, npCoverMime_;          // cover art bytes + MIME
 
     // -- v0.66.x Phase 2/3, auth + AP2 state --------------------------

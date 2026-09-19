@@ -64,28 +64,19 @@ class AirPlayDiscovery(private val context: Context) {
     )
 
     /**
-     * Parse the `features` TXT record field.
+     * Parse the features TXT record field — `ft` on `_raop._tcp`, `features` on
+     * `_airplay._tcp`; the same bits under two keys.
      *
-     * AirPlay `features` can be:
+     * It can be:
      * - A plain hex number: `0x4A8F00`
-     * - Comma-separated 32-bit sections (high,low): `0x124D2,0x4A8F00`
+     * - Comma-separated 32-bit sections: `0x4A7FDFD5,0x3C177FDE`
      * - With or without `0x` prefix
      *
-     * We combine the sections into a single 64-bit value (high section
-     * first, low section second). If parsing fails, returns 0.
+     * The sections are *low word first* — `0x5A7FFFF7,0x1E` is the 64-bit value
+     * `0x0000001E5A7FFFF7` — so the bits this class tests (16 and 17, both in the
+     * low word) come from the first section. If parsing fails, returns 0.
      */
-    private fun parseFeatures(raw: String): Long {
-        val sections = raw.split(",").map { it.trim() }
-        var result = 0L
-        for (section in sections) {
-            val hex = section.removePrefix("0x").removePrefix("0X")
-            val value = hex.toLongOrNull(16) ?: 0L
-            // Shift previous sections up and OR in the new one.
-            // For two sections (high, low), the first is the high 32 bits.
-            result = (result shl 32) or (value and 0xFFFFFFFFL)
-        }
-        return result
-    }
+    internal fun parseFeatures(raw: String): Long = Companion.parseFeatures(raw)
 
     /**
      * Parse the `sf` (status flags) TXT record field.
@@ -96,6 +87,19 @@ class AirPlayDiscovery(private val context: Context) {
     private fun parseSf(raw: String): Int {
         val trimmed = raw.trim().removePrefix("0x").removePrefix("0X")
         return trimmed.toIntOrNull(16) ?: trimmed.toIntOrNull() ?: 0
+    }
+
+    companion object {
+        /** See the instance [AirPlayDiscovery.parseFeatures]; static so a test can hold it. */
+        internal fun parseFeatures(raw: String): Long {
+            var result = 0L
+            raw.split(",").map { it.trim() }.forEachIndexed { index, section ->
+                val hex = section.removePrefix("0x").removePrefix("0X")
+                val value = hex.toLongOrNull(16) ?: 0L
+                result = result or ((value and 0xFFFFFFFFL) shl (32 * index))
+            }
+            return result
+        }
     }
 
     /**
@@ -127,14 +131,21 @@ class AirPlayDiscovery(private val context: Context) {
                     override fun onServiceResolved(si: NsdServiceInfo) {
                         val host = si.host?.hostAddress ?: return
                         val port = si.port.takeIf { it > 0 } ?: 7000
-                        val name = si.serviceName
+                        // A RAOP instance is named `<MAC>@<name>` — "BE9F8074C660@Lounge
+                        // Room". The part after the @ is what the receiver calls itself;
+                        // the whole string stays the id the stored credentials are keyed by.
+                        val name = si.serviceName.substringAfter('@').ifBlank { si.serviceName }
                         val deviceId = si.serviceName
                         val txt = si.attributes
 
                         val pw = txt["pw"]?.let { String(it) } == "true"
                         val am = txt["am"]?.let { String(it) } ?: ""
                         val sf = txt["sf"]?.let { String(it) }?.let(::parseSf) ?: 0
-                        val features = txt["features"]?.let { String(it) }?.let(::parseFeatures) ?: 0L
+                        // `_raop._tcp` carries the flags as `ft`; `features` is the
+                        // `_airplay._tcp` spelling. Reading only the latter left every
+                        // receiver at 0 — no AirPlay 2 bit, so an Apple TV was offered
+                        // the legacy RAOP path instead of the AirPlay 2 one it advertises.
+                        val features = (txt["ft"] ?: txt["features"])?.let { String(it) }?.let(::parseFeatures) ?: 0L
 
                         val authMode = when {
                             pw -> AuthMode.PASSWORD

@@ -284,8 +284,15 @@ class SpeedMonitor(private val context: Context, private val drivingMode: Drivin
             "Not watching: no car picked. Speed is only read while the phone is connected " +
                 "to your car, so pick it under Settings › Driving — until then this alert " +
                 "cannot fire."
-        SpeedWatchGate.State.CAR_AWAY ->
+        // A nominated car this process is not allowed to hear about is not a wait,
+        // it is a dead end — the same one NO_CAR is, one grant further along. Said
+        // in those words, with the fix, rather than as a wait that never ends.
+        SpeedWatchGate.State.CAR_AWAY -> if (!drivingMode.canSeeCar()) {
+            "Not watching: Bluetooth permission is missing, so this app cannot tell when " +
+                "${gate.carName.ifBlank { "your car" }} connects. Allow it below."
+        } else {
             "Not watching: waiting for ${gate.carName.ifBlank { "your car" }} to connect."
+        }
     }
 
     private fun startLocationUpdates() {

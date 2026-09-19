@@ -432,9 +432,15 @@ private fun MaPlayerStatusCard(viewModel: PlayerViewModel, settings: AppSettings
  *
  * A server that connects encrypted and unpaired is a "guest": it can play, and MA
  * approves that on its own. Pairing is the one-time step that authenticates both sides
- * for good, and the phone's half of it is the token shown here — the operator pastes it
- * into MA under the player's Setup. Nothing here is needed for music to work; it is
- * where a household that wants the stronger footing finds the pieces.
+ * for good, and the phone's half of it is a PIN: the static one shown here, typed into
+ * MA under the player's Setup, or the one-off code the phone shows when MA asks for a
+ * dynamic one. Nothing here is needed for music to work; it is where a household that
+ * wants the stronger footing finds the pieces.
+ *
+ * The spec's third method — a pairing *token* the phone mints and the operator pastes
+ * into MA — is still spoken on the wire but no longer shown. It was a 200-character
+ * blob with a Copy button under a PIN that does the same job in eight digits, and the
+ * page read as if both were needed.
  */
 @Composable
 private fun SendspinPairingCard(viewModel: PlayerViewModel, accent: Color) {
@@ -444,8 +450,6 @@ private fun SendspinPairingCard(viewModel: PlayerViewModel, accent: Color) {
     // Re-read whenever the session changes: a pairing lands as a session change, and
     // so does an unpair.
     val records = remember(security) { store.records().filter { it.serverId != null } }
-    val token = remember(records) { store.pairingToken() }
-    val context = LocalContext.current
     val pairingPin by viewModel.pairingPin.collectAsStateWithLifecycle()
     val pairingPending by viewModel.pairingPending.collectAsStateWithLifecycle()
     var dynamicPin by remember { mutableStateOf(store.dynamicPinEnabled) }
@@ -453,11 +457,12 @@ private fun SendspinPairingCard(viewModel: PlayerViewModel, accent: Color) {
 
     SettingsCard(
         title = "Pairing and trust",
-        lead = "How Music Assistant is connected to this phone, and the token that lets it pair for good.",
+        lead = "How Music Assistant is connected to this phone, and the PIN that lets it pair for good.",
         info = "Every connection to a current Music Assistant is encrypted end to end. Without a " +
             "pairing it is a guest session: it works, and Music Assistant allows it on its own, " +
             "but neither side can prove who the other is. Pairing fixes that once: open this " +
-            "player's Setup in Music Assistant, choose to pair, and paste the token below. From " +
+            "player's Setup in Music Assistant, choose to pair with a PIN, and type the static " +
+            "PIN below (or the code this phone shows, if Music Assistant asks for one). From " +
             "then on both sides recognise each other by key.\n\nTurning guest access off makes " +
             "pairing mandatory: an unpaired server is refused until it pairs.\n\nAn older Music " +
             "Assistant (before 2.10) cannot encrypt; the phone then speaks its cleartext " +
@@ -550,24 +555,11 @@ private fun SendspinPairingCard(viewModel: PlayerViewModel, accent: Color) {
             }
             OledButton("Allow pairing", accent = accent, outline = true) { viewModel.openPairingWindow() }
         }
-        CardDivider()
-        Text("Pairing token", color = TextPrimary, fontFamily = AppFont, style = MaterialTheme.typography.titleLarge)
-        Text(
-            token,
-            color = TextSecondary,
-            fontFamily = MonoFont,
-            style = MaterialTheme.typography.bodySmall,
-            lineHeight = MaterialTheme.typography.bodySmall.lineHeight * 1.3f,
-        )
         // No "forget pairings" here on purpose. The server keeps its half of a pairing,
         // and a phone that has dropped its own half fails every handshake the server
         // offers on that record until the operator unpairs in Music Assistant — which is
         // the spec's route (server/unpair), and MA's own Unpair button. "Register again
         // as a new player" above is the local reset, and takes the records with it.
-        OledButton("Copy token", accent = accent) {
-            val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-            cm.setPrimaryClip(android.content.ClipData.newPlainText("Sendspin pairing token", token))
-        }
     }
 }
 

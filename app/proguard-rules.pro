@@ -34,14 +34,19 @@
 -dontwarn org.openjsse.**
 -dontwarn androidx.media3.**
 
-# AirPlay's JNI bridge calls back into AirPlayOutput *by name* — GetMethodID in
-# airplay_jni.cpp for onLaunched/onClosed/onPinRequired/onCredentials. They are
-# private and never called from Kotlin, so R8 sees four dead methods and strips
-# them, and nativeInit() then throws NoSuchMethodError from AirPlayOutput's
-# constructor — which the player builds lazily at app start, so the minified
-# build died before its first frame. Native methods are already kept by
-# proguard-android-optimize.txt; it is only these callbacks that need naming.
+# AirPlay's JNI bridge reaches into AirPlayOutput *by name* — GetMethodID in
+# airplay_jni.cpp for onLaunched/onClosed/onPinRequired/onCredentials, and
+# GetFieldID for the `nativePtr` field every native entry point reads its bridge
+# pointer from. They are private and never touched from Kotlin, so R8 sees four
+# dead methods (stripped — nativeInit() then threw NoSuchMethodError from the
+# constructor and the minified build died before its first frame) and one
+# private field, which it *renames*: GetFieldID("nativePtr") then returns null and
+# ART aborts the process with "JNI DETECTED ERROR IN APPLICATION: fid == null" the
+# moment a receiver is tapped. The field was missing from this rule, which is why
+# picking an AirPlay device crashed every release build while debug was fine.
+# Native methods are already kept by proguard-android-optimize.txt.
 -keepclassmembers class com.engabd.sendpin.audio.AirPlayOutput {
+    private long nativePtr;
     private void onLaunched(boolean, java.lang.String);
     private void onClosed();
     private void onPinRequired(java.lang.String);
